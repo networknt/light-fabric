@@ -1,7 +1,7 @@
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use rsa::{Oaep, RsaPrivateKey, pkcs1::DecodeRsaPrivateKey, pkcs8::DecodePrivateKey};
 use sha2::Sha256;
 use thiserror::Error;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 
 #[derive(Error, Debug)]
 pub enum AsymmetricError {
@@ -25,7 +25,9 @@ impl AsymmetricDecryptor {
     pub fn from_pem(pem: &str) -> Result<Self, AsymmetricError> {
         let private_key = RsaPrivateKey::from_pkcs8_pem(pem)
             .or_else(|_| RsaPrivateKey::from_pkcs1_pem(pem)) // Fallback to PKCS#1 if PKCS#8 fails
-            .map_err(|e| AsymmetricError::KeyError(format!("Failed to load private key: {:?}", e)))?;
+            .map_err(|e| {
+                AsymmetricError::KeyError(format!("Failed to load private key: {:?}", e))
+            })?;
         Ok(Self { private_key })
     }
 

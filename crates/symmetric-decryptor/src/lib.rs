@@ -1,4 +1,4 @@
-use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
+use aes::cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7};
 use pbkdf2::pbkdf2_hmac;
 use sha2::Sha256;
 use thiserror::Error;
@@ -57,7 +57,7 @@ impl Decryptor for SymmetricDecryptor {
         let hash = hex::decode(parts[2])?;
 
         let key = self.derive_key(&salt);
-        
+
         type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
         let decryptor = Aes256CbcDec::new(&key.into(), &IV.into());
 
@@ -74,7 +74,7 @@ impl Decryptor for SymmetricDecryptor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aes::cipher::{block_padding::Pkcs7, BlockEncryptMut};
+    use aes::cipher::{BlockEncryptMut, block_padding::Pkcs7};
 
     #[test]
     fn test_decrypt_consistency() {

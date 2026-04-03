@@ -6,13 +6,20 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, mpsc};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
+use tokio::sync::{Mutex, mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 use tracing::{error, info};
 use url::Url;
+use uuid::Uuid;
 
 pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegistrationState {
+    Disconnected,
+    Registered { runtime_instance_id: Uuid },
+}
 
 #[async_trait::async_trait]
 pub trait RegistryHandler: Send + Sync {
@@ -27,6 +34,7 @@ pub struct PortalRegistryClient {
     registration_params: ServiceRegistrationParams,
     handler: Arc<dyn RegistryHandler>,
     outbound_tx: Arc<Mutex<Option<mpsc::Sender<Message>>>>,
+    registration_tx: watch::Sender<RegistrationState>,
 }
 
 impl PortalRegistryClient {
@@ -36,18 +44,21 @@ impl PortalRegistryClient {
         handler: Arc<dyn RegistryHandler>,
     ) -> anyhow::Result<Self> {
         let url = Url::parse(controller_url)?;
+        let (registration_tx, _) = watch::channel(RegistrationState::Disconnected);
         Ok(Self {
             controller_url: url,
             registration_params,
             handler,
             outbound_tx: Arc::new(Mutex::new(None)),
+            registration_tx,
         })
     }
 
-    pub async fn send_metadata_update(
-        &self,
-        update: ServiceMetadataUpdate,
-    ) -> anyhow::Result<()> {
+    pub fn subscribe_registration(&self) -> watch::Receiver<RegistrationState> {
+        self.registration_tx.subscribe()
+    }
+
+    pub async fn send_metadata_update(&self, update: ServiceMetadataUpdate) -> anyhow::Result<()> {
         let payload = JsonRpcMessage::new_notification(
             "service/update_metadata",
             serde_json::to_value(update)?,
@@ -74,7 +85,10 @@ impl PortalRegistryClient {
                     retry_delay = Duration::from_secs(1);
                 }
                 Err(e) => {
-                    error!("Registry connection error: {:?}. Retrying in {:?}", e, retry_delay);
+                    error!(
+                        "Registry connection error: {:?}. Retrying in {:?}",
+                        e, retry_delay
+                    );
                     tokio::time::sleep(retry_delay).await;
                     retry_delay = std::cmp::min(retry_delay * 2, Duration::from_secs(60));
                 }
@@ -116,7 +130,9 @@ impl PortalRegistryClient {
                         if let Some(method) = json_msg.method.as_deref() {
                             if json_msg.id.is_some() {
                                 // Request
-                                let result = handler.handle_request(method, json_msg.params.unwrap_or(json!({}))).await;
+                                let result = handler
+                                    .handle_request(method, json_msg.params.unwrap_or(json!({})))
+                                    .await;
                                 let response = JsonRpcMessage {
                                     jsonrpc: "2.0".to_string(),
                                     id: json_msg.id,
@@ -125,10 +141,17 @@ impl PortalRegistryClient {
                                     result: Some(result),
                                     error: None,
                                 };
-                                let _ = tx_clone.send(Message::Text(serde_json::to_string(&response)?.into())).await;
+                                let _ = tx_clone
+                                    .send(Message::Text(serde_json::to_string(&response)?.into()))
+                                    .await;
                             } else {
                                 // Notification
-                                handler.handle_notification(method, json_msg.params.unwrap_or(json!({}))).await;
+                                handler
+                                    .handle_notification(
+                                        method,
+                                        json_msg.params.unwrap_or(json!({})),
+                                    )
+                                    .await;
                             }
                         }
                     }
@@ -145,6 +168,7 @@ impl PortalRegistryClient {
             let mut guard = outbound_state.lock().await;
             *guard = None;
         }
+        let _ = self.registration_tx.send(RegistrationState::Disconnected);
 
         Ok(())
     }
@@ -158,14 +182,22 @@ impl PortalRegistryClient {
             register_params_val,
         );
 
-        ws_stream.send(Message::Text(serde_json::to_string(&register_msg)?.into())).await?;
+        ws_stream
+            .send(Message::Text(serde_json::to_string(&register_msg)?.into()))
+            .await?;
 
         if let Some(msg) = ws_stream.next().await {
             let text = msg?.into_text()?;
             let resp = serde_json::from_str::<JsonRpcMessage>(&text)?;
             if let Some(result) = resp.result {
                 let reg_resp: RegistrationResponse = serde_json::from_value(result)?;
-                info!("Successfully registered with controller. Instance ID: {}", reg_resp.runtime_instance_id);
+                let _ = self.registration_tx.send(RegistrationState::Registered {
+                    runtime_instance_id: reg_resp.runtime_instance_id,
+                });
+                info!(
+                    "Successfully registered with controller. Instance ID: {}",
+                    reg_resp.runtime_instance_id
+                );
                 return Ok(());
             } else if let Some(error) = resp.error {
                 return Err(anyhow::anyhow!("Registration failed: {}", error.message));
@@ -193,7 +225,9 @@ mod tests {
 
     #[tokio::test]
     async fn registration_and_metadata_update_match_controller_protocol() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind listener");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
         let addr = listener.local_addr().expect("listener addr");
         let (register_tx, register_rx) = oneshot::channel();
         let (update_tx, update_rx) = oneshot::channel();

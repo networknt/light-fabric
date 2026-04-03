@@ -352,12 +352,9 @@ mod tests {
 
     #[test]
     fn resolves_nested_variables_recursively() {
-        let loader = ConfigLoader::new(
-            "host: example.com\nbase_url: https://${host}\n",
-            None,
-            None,
-        )
-        .expect("loader");
+        let loader =
+            ConfigLoader::new("host: example.com\nbase_url: https://${host}\n", None, None)
+                .expect("loader");
         let mut value = Value::String("${base_url}/api".to_string());
 
         loader.resolve_value(&mut value).expect("resolve value");
@@ -384,8 +381,9 @@ mod tests {
             env::set_var(EXTERNAL_CONFIG_DIR_ENV, external_dir.path());
         }
 
-        let loader = ConfigLoader::new("host: example.com\nbase_url: https://${host}\n", None, None)
-            .expect("loader");
+        let loader =
+            ConfigLoader::new("host: example.com\nbase_url: https://${host}\n", None, None)
+                .expect("loader");
         let merged = loader
             .load_layered_files([base_path.as_path()])
             .expect("load layered files");
@@ -417,8 +415,8 @@ mod tests {
         )
         .expect("write toml");
 
-        let loader = ConfigLoader::new("base_url: https://typed.example\n", None, None)
-            .expect("loader");
+        let loader =
+            ConfigLoader::new("base_url: https://typed.example\n", None, None).expect("loader");
         let typed: ExampleConfig = loader.load_typed([path.as_path()]).expect("typed config");
 
         assert_eq!(
