@@ -82,11 +82,15 @@ pub struct PortalRegistryConfig {
     pub controller_discovery_token: String,
 }
 
-fn redact<S>(_: &String, serializer: S) -> Result<S::Ok, S::Error>
+fn redact<S>(value: &String, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
-    serializer.serialize_str("********")
+    if value.is_empty() {
+        serializer.serialize_str("")
+    } else {
+        serializer.serialize_str("********")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
