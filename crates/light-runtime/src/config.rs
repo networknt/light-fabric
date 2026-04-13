@@ -82,7 +82,8 @@ pub struct PortalRegistryConfig {
     pub controller_discovery_token: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RuntimeConfig {
     pub bootstrap: BootstrapConfig,
     pub server: ServerConfig,
@@ -92,7 +93,8 @@ pub struct RuntimeConfig {
     pub external_config_dir: PathBuf,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ServiceIdentity {
     pub service_id: String,
     pub version: String,
