@@ -76,10 +76,17 @@ impl Default for ServerConfig {
 #[serde(rename_all = "camelCase")]
 pub struct PortalRegistryConfig {
     pub portal_url: String,
-    #[serde(default)]
+    #[serde(default, serialize_with = "redact")]
     pub portal_token: String,
-    #[serde(default)]
+    #[serde(default, serialize_with = "redact")]
     pub controller_discovery_token: String,
+}
+
+fn redact<S>(_: &String, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str("********")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
