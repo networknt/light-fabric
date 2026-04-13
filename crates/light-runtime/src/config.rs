@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapConfig {
     #[serde(default = "default_host")]
@@ -20,11 +20,35 @@ pub struct BootstrapConfig {
     #[serde(default = "default_connect_timeout_ms")]
     pub connect_timeout: u64,
     pub config_server_uri: Option<String>,
+    #[serde(default)]
     pub authorization: Option<String>,
     pub bootstrap_cert_path: Option<PathBuf>,
     pub bootstrap_key_path: Option<PathBuf>,
     pub bootstrap_ca_cert_path: Option<PathBuf>,
     pub external_config_dir: Option<PathBuf>,
+}
+
+impl std::fmt::Debug for BootstrapConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BootstrapConfig")
+            .field("host", &self.host)
+            .field("service_id", &self.service_id)
+            .field("product_id", &self.product_id)
+            .field("product_version", &self.product_version)
+            .field("api_id", &self.api_id)
+            .field("api_version", &self.api_version)
+            .field("env_tag", &self.env_tag)
+            .field("accept_header", &self.accept_header)
+            .field("timeout", &self.timeout)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("config_server_uri", &self.config_server_uri)
+            .field("authorization", &self.authorization.as_ref().map(|v| if v.is_empty() { "" } else { "********" }))
+            .field("bootstrap_cert_path", &self.bootstrap_cert_path)
+            .field("bootstrap_key_path", &self.bootstrap_key_path)
+            .field("bootstrap_ca_cert_path", &self.bootstrap_ca_cert_path)
+            .field("external_config_dir", &self.external_config_dir)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,7 +96,7 @@ impl Default for ServerConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PortalRegistryConfig {
     pub portal_url: String,
@@ -80,6 +104,16 @@ pub struct PortalRegistryConfig {
     pub portal_token: String,
     #[serde(default)]
     pub controller_discovery_token: String,
+}
+
+impl std::fmt::Debug for PortalRegistryConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PortalRegistryConfig")
+            .field("portal_url", &self.portal_url)
+            .field("portal_token", if self.portal_token.is_empty() { &"" } else { &"********" })
+            .field("controller_discovery_token", if self.controller_discovery_token.is_empty() { &"" } else { &"********" })
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
