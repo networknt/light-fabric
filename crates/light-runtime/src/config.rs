@@ -20,7 +20,7 @@ pub struct BootstrapConfig {
     #[serde(default = "default_connect_timeout_ms")]
     pub connect_timeout: u64,
     pub config_server_uri: Option<String>,
-    #[serde(default, serialize_with = "redact_opt")]
+    #[serde(default)]
     pub authorization: Option<String>,
     pub bootstrap_cert_path: Option<PathBuf>,
     pub bootstrap_key_path: Option<PathBuf>,
