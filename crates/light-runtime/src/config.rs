@@ -100,9 +100,9 @@ impl Default for ServerConfig {
 #[serde(rename_all = "camelCase")]
 pub struct PortalRegistryConfig {
     pub portal_url: String,
-    #[serde(default, serialize_with = "redact")]
+    #[serde(default)]
     pub portal_token: String,
-    #[serde(default, serialize_with = "redact")]
+    #[serde(default)]
     pub controller_discovery_token: String,
 }
 
@@ -113,28 +113,6 @@ impl std::fmt::Debug for PortalRegistryConfig {
             .field("portal_token", if self.portal_token.is_empty() { &"" } else { &"********" })
             .field("controller_discovery_token", if self.controller_discovery_token.is_empty() { &"" } else { &"********" })
             .finish()
-    }
-}
-
-fn redact<S>(value: &String, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    if value.is_empty() {
-        serializer.serialize_str("")
-    } else {
-        serializer.serialize_str("********")
-    }
-}
-
-fn redact_opt<S>(value: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    match value {
-        Some(v) if !v.is_empty() => serializer.serialize_str("********"),
-        Some(_) => serializer.serialize_str(""),
-        None => serializer.serialize_none(),
     }
 }
 
