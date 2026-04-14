@@ -13,7 +13,6 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-tokio-rustls = "0.26"
 rustls-pemfile = "2"
 webpki-roots = "0.26"
 uuid = { workspace = true }

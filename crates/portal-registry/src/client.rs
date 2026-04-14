@@ -160,19 +160,25 @@ impl PortalRegistryClient {
     }
 
     async fn connect_and_loop(&self) -> anyhow::Result<()> {
-        let connector = if self.controller_url.scheme() == "wss" && (self.ca_certificate.is_some() || !self.verify_hostname) {
+        let connector = if self.controller_url.scheme() == "wss"
+            && (self.ca_certificate.is_some() || !self.verify_hostname)
+        {
+            if !self.verify_hostname && self.ca_certificate.is_none() {
+                return Err(anyhow::anyhow!(
+                    "verify_hostname=false requires an explicit CA certificate"
+                ));
+            }
+
             let mut root_store = rustls::RootCertStore::empty();
             if let Some(ca_cert) = &self.ca_certificate {
                 let mut reader = std::io::BufReader::new(std::io::Cursor::new(ca_cert));
                 for cert in rustls_pemfile::certs(&mut reader) {
                     root_store.add(cert?)?;
                 }
-            } else {
-                root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
             }
 
             let builder = rustls::ClientConfig::builder();
-            
+
             if !self.verify_hostname {
                 let supported_algs = rustls::crypto::CryptoProvider::get_default()
                     .map(|provider| provider.signature_verification_algorithms)
@@ -448,5 +454,91 @@ mod tests {
         assert_eq!(update["params"]["protocol"], "http");
 
         client_task.await.expect("join wrapper task");
+    }
+
+    #[tokio::test]
+    async fn registration_succeeds_when_ping_arrives_before_ack() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept connection");
+            let mut ws = accept_async(stream).await.expect("accept websocket");
+
+            let register = ws
+                .next()
+                .await
+                .expect("register message")
+                .expect("valid register frame")
+                .into_text()
+                .expect("register text");
+            let register_json = serde_json::from_str::<Value>(&register).expect("register json");
+            assert_eq!(register_json["method"], "service/register");
+
+            ws.send(Message::Ping("pre-ack".as_bytes().to_vec().into()))
+                .await
+                .expect("send ping");
+
+            let pong = ws
+                .next()
+                .await
+                .expect("pong frame")
+                .expect("valid pong frame");
+            match pong {
+                Message::Pong(payload) => assert_eq!(payload.to_vec(), b"pre-ack"),
+                other => panic!("expected pong, got {other:?}"),
+            }
+
+            ws.send(Message::Text(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": "register-1",
+                    "result": {
+                        "runtimeInstanceId": "0195ef10-2f24-7af2-85e9-a8ef54642f39",
+                        "status": "registered"
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .expect("send ack");
+
+            ws.close(None).await.expect("close websocket");
+        });
+
+        let client = PortalRegistryClient::new(
+            &format!("ws://{addr}"),
+            ServiceRegistrationParams {
+                service_id: "user-service".to_string(),
+                version: "1.0.0".to_string(),
+                protocol: "https".to_string(),
+                address: "127.0.0.1".to_string(),
+                port: 8443,
+                tags: HashMap::new(),
+                env_tag: None,
+                jwt: "token".to_string(),
+            },
+            Arc::new(NoopHandler),
+        )
+        .expect("build client");
+        let registration_rx = client.subscribe_registration();
+
+        let mut ws_stream = {
+            let (ws_stream, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
+                .await
+                .expect("connect websocket");
+            ws_stream
+        };
+
+        client
+            .register(&mut ws_stream)
+            .await
+            .expect("register succeeds after ping");
+
+        let state = registration_rx.borrow().clone();
+        assert!(matches!(state, RegistrationState::Registered { .. }));
     }
 }
