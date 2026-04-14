@@ -30,11 +30,11 @@ pub struct SchemaDefinition{
     #[serde(rename = "format", default = "default_schema_format")]
     pub format : String,
 
-    /// Gets/sets the schema's external resource, if any. Required if <see cref="Document"/> has not been set.
+    /// Gets/sets the schema's external resource, if any. Required if [`SchemaDefinition::document`] has not been set.
     #[serde(rename = "resource", skip_serializing_if = "Option::is_none")]
     pub resource : Option<ExternalResourceDefinition>,
 
-    /// Gets/sets the inline definition of the schema to use. Required if <see cref="Resource"/> has not been set.
+    /// Gets/sets the inline definition of the schema to use. Required if [`SchemaDefinition::resource`] has not been set.
     #[serde(rename = "document", skip_serializing_if = "Option::is_none")]
     pub document : Option<Value>
 
