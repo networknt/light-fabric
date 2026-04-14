@@ -8,10 +8,6 @@ pub struct BootstrapConfig {
     #[serde(default = "default_host")]
     pub host: String,
     pub service_id: Option<String>,
-    pub product_id: Option<String>,
-    pub product_version: Option<String>,
-    pub api_id: Option<String>,
-    pub api_version: Option<String>,
     pub env_tag: Option<String>,
     #[serde(default = "default_accept_header")]
     pub accept_header: String,
@@ -33,10 +29,6 @@ impl std::fmt::Debug for BootstrapConfig {
         f.debug_struct("BootstrapConfig")
             .field("host", &self.host)
             .field("service_id", &self.service_id)
-            .field("product_id", &self.product_id)
-            .field("product_version", &self.product_version)
-            .field("api_id", &self.api_id)
-            .field("api_version", &self.api_version)
             .field("env_tag", &self.env_tag)
             .field("accept_header", &self.accept_header)
             .field("timeout", &self.timeout)
@@ -116,11 +108,23 @@ impl std::fmt::Debug for PortalRegistryConfig {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientConfig {
+    #[serde(default = "default_verify_hostname")]
+    pub verify_hostname: bool,
+}
+
+pub(crate) fn default_verify_hostname() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeConfig {
     pub bootstrap: BootstrapConfig,
     pub server: ServerConfig,
+    pub client: Option<ClientConfig>,
     pub portal_registry: Option<PortalRegistryConfig>,
     pub service_identity: ServiceIdentity,
     pub config_dir: PathBuf,

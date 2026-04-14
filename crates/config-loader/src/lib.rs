@@ -159,7 +159,7 @@ impl ConfigLoader {
         match value {
             Value::String(s) => {
                 let resolved_str = self.expand_variables(s)?;
-                *value = self.auto_decrypt(resolved_str);
+                *value = self.resolve_scalar_value(resolved_str);
             }
             Value::Mapping(map) => {
                 for (_, v) in map.iter_mut() {
@@ -274,35 +274,48 @@ impl ConfigLoader {
         }
     }
 
-    fn auto_decrypt(&self, val: String) -> Value {
-        if val.starts_with("CRYPT:RSA:") {
+    fn resolve_scalar_value(&self, val: String) -> Value {
+        let decrypted = if val.starts_with("CRYPT:RSA:") {
             if let Some(ref ad) = self.asymmetric_decryptor {
                 match ad.decrypt(&val) {
-                    Ok(decrypted) => Value::String(decrypted),
+                    Ok(decrypted) => decrypted,
                     Err(e) => {
                         error!("Asymmetric decryption failed: {:?}", e);
-                        Value::String(val)
+                        val
                     }
                 }
             } else {
                 warn!("Found asymmetric secret but no private key provided.");
-                Value::String(val)
+                val
             }
         } else if val.starts_with("CRYPT:") {
             if let Some(ref sd) = self.symmetric_decryptor {
                 match sd.decrypt(&val) {
-                    Ok(decrypted) => Value::String(decrypted),
+                    Ok(decrypted) => decrypted,
                     Err(e) => {
                         error!("Symmetric decryption failed: {:?}", e);
-                        Value::String(val)
+                        val
                     }
                 }
             } else {
                 warn!("Found symmetric secret but no password provided.");
-                Value::String(val)
+                val
             }
         } else {
-            Value::String(val)
+            val
+        };
+
+        // Attempt to parse as bool or number if it looks like one
+        if decrypted == "true" {
+            Value::Bool(true)
+        } else if decrypted == "false" {
+            Value::Bool(false)
+        } else if let Ok(n) = decrypted.parse::<i64>() {
+            Value::Number(n.into())
+        } else if let Ok(f) = decrypted.parse::<f64>() {
+            Value::Number(f.into())
+        } else {
+            Value::String(decrypted)
         }
     }
 }
