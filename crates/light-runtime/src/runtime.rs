@@ -18,8 +18,8 @@ use tracing::{info, warn};
 use url::Url;
 
 use crate::config::{
-    BootstrapConfig, PortalRegistryConfig, RemoteBootstrapResult, RuntimeConfig, ServerConfig,
-    ServiceIdentity, default_accept_header, default_environment,
+    BootstrapConfig, ClientConfig, PortalRegistryConfig, RemoteBootstrapResult, RuntimeConfig,
+    ServerConfig, ServiceIdentity, default_accept_header, default_environment,
 };
 use crate::transport::{BoundTransport, TransportRuntime};
 
@@ -28,6 +28,7 @@ const CONFIG_SERVER_CERTS_CONTEXT_ROOT: &str = "/config-server/certs";
 const CONFIG_SERVER_FILES_CONTEXT_ROOT: &str = "/config-server/files";
 const STARTUP_FILE: &str = "startup.yml";
 const VALUES_FILE: &str = "values.yml";
+const CLIENT_FILE: &str = "client.yml";
 const SERVER_FILE: &str = "server.yml";
 const PORTAL_REGISTRY_FILE: &str = "portal-registry.yml";
 const CONFIG_PASSWORD_ENV: &str = "light_4j_config_password";
@@ -190,17 +191,17 @@ where
 {
     pub async fn start(mut self) -> Result<RunningRuntime<T>, RuntimeError> {
         self.state = LifecycleState::BootstrapLocal;
-        let bootstrap = self.load_bootstrap_config()?;
+        let (bootstrap, bootstrap_client) = self.load_bootstrap_config()?;
         let external_config_dir = self.resolve_external_config_dir(&bootstrap);
 
         self.state = LifecycleState::BootstrapRemoteOrFallback;
         let remote_result = self
-            .bootstrap_remote_if_needed(&bootstrap, &external_config_dir)
+            .bootstrap_remote_if_needed(&bootstrap, bootstrap_client.as_ref(), &external_config_dir)
             .await?;
 
         self.state = LifecycleState::BuildRuntime;
         let runtime_config =
-            self.build_runtime_config(bootstrap, external_config_dir, remote_result)?;
+            self.build_runtime_config(bootstrap, bootstrap_client, external_config_dir, remote_result)?;
 
         for module in &self.modules {
             module.on_runtime_built(&runtime_config).await?;
@@ -244,14 +245,18 @@ where
         })
     }
 
-    fn load_bootstrap_config(&self) -> Result<BootstrapConfig, RuntimeError> {
-        let startup_path = self.config_dir.join(STARTUP_FILE);
-        if !startup_path.exists() {
-            return Ok(BootstrapConfig::default());
-        }
+    fn load_bootstrap_config(&self) -> Result<(BootstrapConfig, Option<ClientConfig>), RuntimeError> {
+        let values = load_bootstrap_values(&self.config_dir)?;
+        let password = std::env::var(CONFIG_PASSWORD_ENV).ok();
+        let loader = ConfigLoader::from_values(values, password.as_deref(), None)?;
 
-        let content = fs::read_to_string(startup_path)?;
-        let mut config: BootstrapConfig = serde_yaml::from_str(&content)?;
+        let startup_path = self.config_dir.join(STARTUP_FILE);
+        let mut config = if startup_path.exists() {
+            self.load_typed_config::<BootstrapConfig>(&loader, STARTUP_FILE)?
+        } else {
+            BootstrapConfig::default()
+        };
+
         if config.accept_header.is_empty() {
             config.accept_header = default_accept_header();
         }
@@ -264,7 +269,10 @@ where
         if config.authorization.is_none() {
             config.authorization = std::env::var(PORTAL_AUTH_ENV).ok();
         }
-        Ok(config)
+
+        let client_config = self.try_load_typed_config::<ClientConfig>(&loader, CLIENT_FILE)?;
+
+        Ok((config, client_config))
     }
 
     fn resolve_external_config_dir(&self, bootstrap: &BootstrapConfig) -> PathBuf {
@@ -277,6 +285,7 @@ where
     async fn bootstrap_remote_if_needed(
         &self,
         bootstrap: &BootstrapConfig,
+        client_config: Option<&ClientConfig>,
         external_config_dir: &Path,
     ) -> Result<RemoteBootstrapResult, RuntimeError> {
         let Some(config_server_uri) = bootstrap.config_server_uri.as_deref() else {
@@ -284,7 +293,7 @@ where
         };
 
         fs::create_dir_all(external_config_dir)?;
-        let client = build_config_server_client(bootstrap)?;
+        let client = build_config_server_client(bootstrap, client_config)?;
         let query = build_query_params(bootstrap);
 
         match fetch_remote_values(&client, config_server_uri, &query, bootstrap).await {
@@ -332,6 +341,7 @@ where
     fn build_runtime_config(
         &self,
         bootstrap: BootstrapConfig,
+        client: Option<ClientConfig>,
         external_config_dir: PathBuf,
         remote_result: RemoteBootstrapResult,
     ) -> Result<RuntimeConfig, RuntimeError> {
@@ -343,9 +353,21 @@ where
         let password = std::env::var(CONFIG_PASSWORD_ENV).ok();
         let loader = ConfigLoader::from_values(values, password.as_deref(), None)?;
 
-        let server = self.load_typed_config::<ServerConfig>(&loader, SERVER_FILE)?;
-        let portal_registry =
-            self.try_load_typed_config::<PortalRegistryConfig>(&loader, PORTAL_REGISTRY_FILE)?;
+        let server =
+            self.load_typed_config::<ServerConfig>(&loader, &external_config_dir, SERVER_FILE)?;
+        let client = match client {
+            Some(c) => Some(c),
+            None => self.try_load_typed_config::<ClientConfig>(
+                &loader,
+                &external_config_dir,
+                CLIENT_FILE,
+            )?,
+        };
+        let portal_registry = self.try_load_typed_config::<PortalRegistryConfig>(
+            &loader,
+            &external_config_dir,
+            PORTAL_REGISTRY_FILE,
+        )?;
         let env_tag = bootstrap
             .env_tag
             .clone()
@@ -355,10 +377,12 @@ where
                 .service_id
                 .clone()
                 .unwrap_or_else(|| server.service_id.clone()),
-            version: bootstrap
-                .product_version
-                .clone()
-                .unwrap_or_else(|| "0.1.0".to_string()),
+            version: derive_service_version(
+                bootstrap
+                    .service_id
+                    .as_deref()
+                    .unwrap_or(server.service_id.as_str()),
+            ),
             env_tag,
             tags: HashMap::new(),
         };
@@ -366,6 +390,7 @@ where
         Ok(RuntimeConfig {
             bootstrap,
             server,
+            client,
             portal_registry,
             service_identity,
             config_dir: self.config_dir.clone(),
@@ -543,10 +568,20 @@ impl RegistryHandler for NoopRegistryHandler {}
 
 fn build_config_server_client(
     bootstrap: &BootstrapConfig,
+    client_config: Option<&ClientConfig>,
 ) -> Result<reqwest::Client, RuntimeError> {
     let mut client_builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_millis(bootstrap.connect_timeout))
         .timeout(Duration::from_millis(bootstrap.timeout));
+
+    if let Some(client) = client_config {
+        if !client.verify_hostname {
+            warn!(
+                "TLS hostname verification is disabled for the config-server client; this weakens server identity validation"
+            );
+            client_builder = client_builder.danger_accept_invalid_hostnames(true);
+        }
+    }
 
     if let Some(ca_cert_path) = &bootstrap.bootstrap_ca_cert_path {
         let cert = fs::read(ca_cert_path)?;
@@ -673,6 +708,17 @@ async fn fetch_remote_files(
     Ok(cached_files)
 }
 
+fn load_bootstrap_values(config_dir: &Path) -> Result<HashMap<String, Value>, RuntimeError> {
+    let values_path = config_dir.join(VALUES_FILE);
+    if !values_path.exists() {
+        return Ok(HashMap::new());
+    }
+
+    let content = fs::read_to_string(values_path)?;
+    let parsed: HashMap<String, Value> = serde_yaml::from_str(&content)?;
+    Ok(parsed)
+}
+
 fn load_values_map(
     config_dir: &Path,
     external_config_dir: &Path,
@@ -697,6 +743,19 @@ fn load_values_map(
     }
 
     Ok(values)
+}
+
+fn derive_service_version(service_id: &str) -> String {
+    service_id
+        .rsplit_once('-')
+        .and_then(|(_, suffix)| {
+            if suffix.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
+                Some(suffix.to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
 }
 
 fn to_microservice_ws_url(portal_url: &Url) -> Result<String, RuntimeError> {
@@ -740,7 +799,30 @@ fn strip_bearer_prefix(token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use tempfile::TempDir;
+    use crate::transport::{BoundTransport, ResolvedServerMetadata, TransportRuntime};
+
+    struct NoopTransport;
+
+    #[async_trait]
+    impl TransportRuntime for NoopTransport {
+        type Handle = ();
+
+        async fn bind(
+            &self,
+            _config: &RuntimeConfig,
+        ) -> Result<BoundTransport<Self::Handle>, RuntimeError> {
+            Ok(BoundTransport {
+                handle: (),
+                metadata: ResolvedServerMetadata::default(),
+            })
+        }
+
+        async fn stop(&self, _handle: &mut Self::Handle) -> Result<(), RuntimeError> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn builds_light_4j_style_query_parameters() {
@@ -761,6 +843,9 @@ mod tests {
             "com.networknt.petstore-1.0.0".to_string()
         )));
         assert!(query.contains(&("productId".to_string(), "agent".to_string())));
+        assert!(query.contains(&("productVersion".to_string(), "1.0.0".to_string())));
+        assert!(query.contains(&("apiId".to_string(), "petstore".to_string())));
+        assert!(query.contains(&("apiVersion".to_string(), "1.0.0".to_string())));
         assert!(query.contains(&("envTag".to_string(), "dev".to_string())));
     }
 
@@ -782,5 +867,39 @@ mod tests {
         assert_eq!(values["a"], Value::Number(1.into()));
         assert_eq!(values["b"], Value::String("remote".to_string()));
         assert_eq!(values["c"], Value::Bool(true));
+    }
+
+    #[test]
+    fn derives_service_version_from_service_id_suffix() {
+        assert_eq!(
+            derive_service_version("com.networknt.petstore-1.0.0"),
+            "1.0.0".to_string()
+        );
+    }
+
+    #[test]
+    fn falls_back_to_package_version_when_service_id_has_no_suffix() {
+        assert_eq!(
+            derive_service_version("com.networknt.petstore"),
+            env!("CARGO_PKG_VERSION").to_string()
+        );
+    }
+
+    #[test]
+    fn load_bootstrap_config_reads_client_config() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        fs::write(
+            config_dir.path().join(CLIENT_FILE),
+            "verifyHostname: false\n",
+        )
+        .expect("write client config");
+
+        let runtime = LightRuntimeBuilder::new(NoopTransport)
+            .with_config_dir(config_dir.path())
+            .build();
+
+        let (_bootstrap, client_config) = runtime.load_bootstrap_config().expect("bootstrap config");
+
+        assert_eq!(client_config.map(|c| c.verify_hostname), Some(false));
     }
 }

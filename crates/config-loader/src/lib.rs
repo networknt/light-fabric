@@ -7,13 +7,15 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use symmetric_decryptor::{Decryptor as SymmetricDecryptorTrait, SymmetricDecryptor};
 use thiserror::Error;
 use tracing::{error, warn};
 
 const EXTERNAL_CONFIG_DIR_ENV: &str = "LIGHT_RS_CONFIG_DIR";
 const MAX_EXPANSION_DEPTH: usize = 16;
+static WHOLE_VARIABLE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\$\{([^}:]+)(?::([^}]*))?\}$").expect("whole variable regex"));
 
 #[derive(Error, Debug)]
 pub enum ConfigError {
@@ -156,19 +158,37 @@ impl ConfigLoader {
     }
 
     pub fn resolve_value(&self, value: &mut Value) -> Result<(), ConfigError> {
+        self.resolve_value_with_depth(value, 0)
+    }
+
+    fn resolve_value_with_depth(
+        &self,
+        value: &mut Value,
+        depth: usize,
+    ) -> Result<(), ConfigError> {
+        if depth >= MAX_EXPANSION_DEPTH {
+            return Err(ConfigError::Convert(format!(
+                "nested value resolution exceeded max depth {MAX_EXPANSION_DEPTH} while resolving value: {:?}",
+                value
+            )));
+        }
         match value {
             Value::String(s) => {
-                let resolved_str = self.expand_variables(s)?;
-                *value = self.auto_decrypt(resolved_str);
+                if let Some(resolved_value) = self.resolve_whole_variable_reference(s, depth)? {
+                    *value = resolved_value;
+                } else {
+                    let resolved_str = self.expand_variables(s)?;
+                    *value = self.resolve_scalar_value(resolved_str);
+                }
             }
             Value::Mapping(map) => {
                 for (_, v) in map.iter_mut() {
-                    self.resolve_value(v)?;
+                    self.resolve_value_with_depth(v, depth)?;
                 }
             }
             Value::Sequence(seq) => {
                 for v in seq.iter_mut() {
-                    self.resolve_value(v)?;
+                    self.resolve_value_with_depth(v, depth)?;
                 }
             }
             _ => {}
@@ -203,6 +223,37 @@ impl ConfigLoader {
         }
 
         Err(ConfigError::UnresolvedVariable(current))
+    }
+
+    fn resolve_whole_variable_reference(
+        &self,
+        input: &str,
+        depth: usize,
+    ) -> Result<Option<Value>, ConfigError> {
+        let Some(caps) = WHOLE_VARIABLE_REGEX.captures(input) else {
+            return Ok(None);
+        };
+        let key = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+        let default = caps.get(2).map(|m| m.as_str());
+
+        if let Some(env_val) = self.get_env_value(key) {
+            return Ok(Some(self.resolve_scalar_from_text(env_val, true)));
+        }
+
+        if let Some(value) = self.values.get(key) {
+            let mut resolved = value.clone();
+            self.resolve_value_with_depth(&mut resolved, depth + 1)?;
+            return Ok(Some(resolved));
+        }
+
+        if let Some(default_value) = default {
+            return Ok(Some(self.resolve_scalar_from_text(
+                default_value.to_string(),
+                true,
+            )));
+        }
+
+        Err(ConfigError::UnresolvedVariable(input.to_string()))
     }
 
     pub async fn fetch_remote_config(
@@ -243,14 +294,21 @@ impl ConfigLoader {
     }
 
     fn get_value(&self, key: &str) -> Option<String> {
+        if let Some(env_val) = self.get_env_value(key) {
+            return Some(env_val);
+        }
+
+        self.values.get(key).and_then(Self::scalar_to_string)
+    }
+
+    fn get_env_value(&self, key: &str) -> Option<String> {
         if let Ok(env_val) = env::var(key.to_uppercase().replace('-', "_")) {
             return Some(env_val);
         }
         if let Ok(env_val) = env::var(key) {
             return Some(env_val);
         }
-
-        self.values.get(key).and_then(Self::scalar_to_string)
+        None
     }
 
     fn parse_config_str(path: &Path, content: &str) -> Result<Value, ConfigError> {
@@ -274,44 +332,77 @@ impl ConfigLoader {
         }
     }
 
-    fn auto_decrypt(&self, val: String) -> Value {
-        if val.starts_with("CRYPT:RSA:") {
+    fn resolve_scalar_value(&self, val: String) -> Value {
+        self.resolve_scalar_from_text(val, false)
+    }
+
+    fn resolve_scalar_from_text(&self, val: String, parse_scalar: bool) -> Value {
+        let decrypted = if val.starts_with("CRYPT:RSA:") {
             if let Some(ref ad) = self.asymmetric_decryptor {
                 match ad.decrypt(&val) {
-                    Ok(decrypted) => Value::String(decrypted),
+                    Ok(decrypted) => decrypted,
                     Err(e) => {
                         error!("Asymmetric decryption failed: {:?}", e);
-                        Value::String(val)
+                        val
                     }
                 }
             } else {
                 warn!("Found asymmetric secret but no private key provided.");
-                Value::String(val)
+                val
             }
         } else if val.starts_with("CRYPT:") {
             if let Some(ref sd) = self.symmetric_decryptor {
                 match sd.decrypt(&val) {
-                    Ok(decrypted) => Value::String(decrypted),
+                    Ok(decrypted) => decrypted,
                     Err(e) => {
                         error!("Symmetric decryption failed: {:?}", e);
-                        Value::String(val)
+                        val
                     }
                 }
             } else {
                 warn!("Found symmetric secret but no password provided.");
-                Value::String(val)
+                val
             }
         } else {
-            Value::String(val)
+            val
+        };
+        if parse_scalar {
+            Self::parse_text_scalar(&decrypted)
+        } else {
+            Value::String(decrypted)
         }
+    }
+
+    fn parse_text_scalar(input: &str) -> Value {
+        let trimmed = input.trim();
+        if trimmed.eq_ignore_ascii_case("true") {
+            return Value::Bool(true);
+        }
+        if trimmed.eq_ignore_ascii_case("false") {
+            return Value::Bool(false);
+        }
+        if let Ok(parsed) = trimmed.parse::<i64>() {
+            return serde_yaml::to_value(parsed).unwrap_or_else(|_| Value::String(input.to_string()));
+        }
+        if let Ok(parsed) = trimmed.parse::<f64>() {
+            if parsed.is_finite() {
+                return serde_yaml::to_value(parsed)
+                    .unwrap_or_else(|_| Value::String(input.to_string()));
+            }
+        }
+        Value::String(input.to_string())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aes::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
     use serde::Deserialize;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static ENV_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
     struct TempDir {
         path: PathBuf,
@@ -428,5 +519,120 @@ mod tests {
                 },
             }
         );
+    }
+
+    #[test]
+    fn preserves_expanded_bool_like_strings_as_strings() {
+        let loader =
+            ConfigLoader::new(
+                "feature_flag: \"true\"\nport: \"001\"\nscientific: \"1e3\"\n",
+                None,
+                None,
+            )
+                .expect("loader");
+
+        let mut bool_value = Value::String("${feature_flag}".to_string());
+        let mut number_value = Value::String("${port}".to_string());
+        let mut scientific_value = Value::String("${scientific}".to_string());
+
+        loader.resolve_value(&mut bool_value).expect("resolve bool");
+        loader
+            .resolve_value(&mut number_value)
+            .expect("resolve number");
+        loader
+            .resolve_value(&mut scientific_value)
+            .expect("resolve scientific");
+
+        assert_eq!(bool_value, Value::String("true".to_string()));
+        assert_eq!(number_value, Value::String("001".to_string()));
+        assert_eq!(scientific_value, Value::String("1e3".to_string()));
+    }
+
+    #[test]
+    fn whole_variable_expansion_preserves_typed_values() {
+        let loader = ConfigLoader::new("enabled: true\nport: 8083\n", None, None).expect("loader");
+
+        let mut bool_value = Value::String("${enabled:false}".to_string());
+        let mut number_value = Value::String("${port:8081}".to_string());
+
+        loader.resolve_value(&mut bool_value).expect("resolve bool");
+        loader
+            .resolve_value(&mut number_value)
+            .expect("resolve number");
+
+        assert_eq!(bool_value, Value::Bool(true));
+        assert_eq!(number_value, serde_yaml::to_value(8083).expect("yaml number"));
+    }
+
+    #[test]
+    fn whole_variable_default_values_are_typed() {
+        let loader = ConfigLoader::new("", None, None).expect("loader");
+
+        let mut bool_value = Value::String("${enabled:false}".to_string());
+        let mut number_value = Value::String("${port:8081}".to_string());
+
+        loader.resolve_value(&mut bool_value).expect("resolve bool");
+        loader
+            .resolve_value(&mut number_value)
+            .expect("resolve number");
+
+        assert_eq!(bool_value, Value::Bool(false));
+        assert_eq!(number_value, serde_yaml::to_value(8081).expect("yaml number"));
+    }
+
+    #[test]
+    fn multi_variable_strings_fall_back_to_regular_expansion() {
+        let loader =
+            ConfigLoader::new("host: example.com\nport: 8443\n", None, None).expect("loader");
+        let mut value = Value::String("${host}:${port}".to_string());
+
+        loader.resolve_value(&mut value).expect("resolve value");
+
+        assert_eq!(value, Value::String("example.com:8443".to_string()));
+    }
+
+    #[test]
+    fn whole_variable_env_values_are_decrypted_before_parsing() {
+        let _guard = ENV_TEST_MUTEX.lock().expect("env test mutex");
+        let salt = hex::decode("ebfab3ef4261185776a026acf72d24ee").expect("salt");
+        let key = {
+            let mut key = [0u8; 32];
+            pbkdf2::pbkdf2_hmac::<sha2::Sha256>(b"password", &salt, 65536, &mut key);
+            key
+        };
+        type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
+        let encryptor = Aes256CbcEnc::new(&key.into(), &[0u8; 16].into());
+        let mut buf = b"false".to_vec();
+        let msg_len = buf.len();
+        buf.resize(msg_len + 16, 0);
+        let ciphertext = encryptor
+            .encrypt_padded_mut::<Pkcs7>(&mut buf, msg_len)
+            .expect("encrypt")
+            .to_vec();
+        let encrypted = format!("CRYPT:{}:{}", hex::encode(salt), hex::encode(ciphertext));
+        unsafe {
+            env::set_var("ENCRYPTED_FLAG", encrypted);
+        }
+
+        let loader = ConfigLoader::new("", Some("password"), None).expect("loader");
+        let mut value = Value::String("${ENCRYPTED_FLAG}".to_string());
+        let resolved = loader.resolve_value(&mut value);
+
+        unsafe {
+            env::remove_var("ENCRYPTED_FLAG");
+        }
+
+        resolved.expect("resolve value");
+        assert_eq!(value, Value::Bool(false));
+    }
+
+    #[test]
+    fn self_referential_values_fail_instead_of_recursing_forever() {
+        let loader = ConfigLoader::new("key: \"${key}\"\n", None, None).expect("loader");
+        let mut value = Value::String("${key}".to_string());
+
+        let error = loader.resolve_value(&mut value).expect_err("cycle should fail");
+
+        assert!(matches!(error, ConfigError::Convert(_)));
     }
 }

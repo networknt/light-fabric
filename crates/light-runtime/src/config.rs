@@ -118,9 +118,29 @@ impl std::fmt::Debug for PortalRegistryConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ClientConfig {
+    #[serde(default = "default_verify_hostname")]
+    pub verify_hostname: bool,
+}
+
+impl Default for ClientConfig {
+    fn default() -> Self {
+        Self {
+            verify_hostname: default_verify_hostname(),
+        }
+    }
+}
+
+pub(crate) fn default_verify_hostname() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RuntimeConfig {
     pub bootstrap: BootstrapConfig,
     pub server: ServerConfig,
+    pub client: Option<ClientConfig>,
     pub portal_registry: Option<PortalRegistryConfig>,
     pub service_identity: ServiceIdentity,
     pub config_dir: PathBuf,
