@@ -117,7 +117,7 @@ impl WorkflowBuilder{
         self
     }
 
-    /// Builds the configure WorkflowDefinition
+    /// Builds the configured WorkflowDefinition
     pub fn build(self) -> WorkflowDefinition{
         self.workflow
     }
