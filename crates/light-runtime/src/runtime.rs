@@ -353,21 +353,13 @@ where
         let password = std::env::var(CONFIG_PASSWORD_ENV).ok();
         let loader = ConfigLoader::from_values(values, password.as_deref(), None)?;
 
-        let server =
-            self.load_typed_config::<ServerConfig>(&loader, &external_config_dir, SERVER_FILE)?;
+        let server = self.load_typed_config::<ServerConfig>(&loader, SERVER_FILE)?;
         let client = match client {
             Some(c) => Some(c),
-            None => self.try_load_typed_config::<ClientConfig>(
-                &loader,
-                &external_config_dir,
-                CLIENT_FILE,
-            )?,
+            None => self.try_load_typed_config::<ClientConfig>(&loader, CLIENT_FILE)?,
         };
-        let portal_registry = self.try_load_typed_config::<PortalRegistryConfig>(
-            &loader,
-            &external_config_dir,
-            PORTAL_REGISTRY_FILE,
-        )?;
+        let portal_registry =
+            self.try_load_typed_config::<PortalRegistryConfig>(&loader, PORTAL_REGISTRY_FILE)?;
         let env_tag = bootstrap
             .env_tag
             .clone()
