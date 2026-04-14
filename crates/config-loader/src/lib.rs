@@ -633,6 +633,6 @@ mod tests {
 
         let error = loader.resolve_value(&mut value).expect_err("cycle should fail");
 
-        assert!(matches!(error, ConfigError::UnresolvedVariable(_)));
+        assert!(matches!(error, ConfigError::Convert(_)));
     }
 }
