@@ -16,8 +16,9 @@ impl AuthenticationPolicyDefinitionBuilder {
     }
 
     /// Sets the name of the top-level authentication policy to use
-    pub fn use_(mut self, reference: &str){
+    pub fn use_(&mut self, reference: &str) -> &mut Self{
         self.reference = Some(reference.to_string());
+        self
     }
 
     /// Configures the policy to use 'Basic' authentication
@@ -140,8 +141,9 @@ impl BasicAuthenticationSchemeDefinitionBuilder{
     }
 
     /// Configures the authentication scheme to load from the specified secret
-    pub fn use_secret(mut self, secret: &str){
+    pub fn use_secret(&mut self, secret: &str) -> &mut Self{
         self.scheme.use_ = Some(secret.to_string());
+        self
     }
 
     /// Sets the username to use
@@ -177,8 +179,9 @@ impl BearerAuthenticationSchemeDefinitionBuilder{
     }
 
     /// Configures the authentication scheme to load from the specified secret
-    pub fn use_secret(&mut self, secret: &str){
+    pub fn use_secret(&mut self, secret: &str) -> &mut Self{
         self.scheme.use_ = Some(secret.to_string());
+        self
     }
 
     /// Sets the bearer token to use
@@ -208,8 +211,9 @@ impl CertificateAuthenticationSchemeDefinitionBuilder{
     }
 
     /// Configures the authentication scheme to load from the specified secret
-    pub fn use_secret(mut self, secret: &str){
+    pub fn use_secret(&mut self, secret: &str) -> &mut Self{
         self.scheme.use_ = Some(secret.to_string());
+        self
     }
 
     /// Builds the configured AuthenticationPolicyDefinition 
@@ -233,8 +237,9 @@ impl DigestAuthenticationSchemeDefinitionBuilder{
     }
     
     /// Configures the authentication scheme to load from the specified secret
-    pub fn use_secret(mut self, secret: &str){
+    pub fn use_secret(&mut self, secret: &str) -> &mut Self{
         self.scheme.use_ = Some(secret.to_string());
+        self
     }
 
     /// Sets the username to use
@@ -270,8 +275,9 @@ impl OAuth2AuthenticationSchemeDefinitionBuilder{
     }
 
     /// Configures the authentication scheme to load from the specified secret
-    pub fn use_secret(mut self, secret: &str){
+    pub fn use_secret(&mut self, secret: &str) -> &mut Self{
         self.scheme.use_ = Some(secret.to_string());
+        self
     }
 
     /// Sets the OAUTH2 endpoints to use
@@ -375,8 +381,9 @@ impl OpenIDConnectSchemeDefinitionBuilder{
     }
 
     /// Configures the authentication scheme to load from the specified secret
-    pub fn use_secret(mut self, secret: &str){
+    pub fn use_secret(&mut self, secret: &str) -> &mut Self{
         self.scheme.use_ = Some(secret.to_string());
+        self
     }
 
     /// Sets the uri of the OAUTH2 authority to use
@@ -392,7 +399,7 @@ impl OpenIDConnectSchemeDefinitionBuilder{
     }
 
     /// Sets the definition of the client to use
-    pub fn with_client<F>(mut self, setup: F) -> Self
+    pub fn with_client<F>(&mut self, setup: F) -> &mut Self
     where F: FnOnce(&mut OAuth2AuthenticationClientDefinitionBuilder) {
         let mut builder = OAuth2AuthenticationClientDefinitionBuilder::new();
         setup(&mut builder);

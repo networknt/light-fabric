@@ -105,12 +105,25 @@ impl Duration{
 
     /// Gets the the duration's total amount of milliseconds
     pub fn total_milliseconds(&self) -> u64{
-        let days_ms = self.days.unwrap_or(0) * 24 * 60 * 60 * 1000;
-        let hours_ms = self.hours.unwrap_or(0) * 60 * 60 * 1000;
-        let minutes_ms = self.minutes.unwrap_or(0) * 60 * 1000;
-        let seconds_ms = self.seconds.unwrap_or(0) * 1000;
+        let days_ms = self.days.unwrap_or(0)
+            .saturating_mul(24)
+            .saturating_mul(60)
+            .saturating_mul(60)
+            .saturating_mul(1000);
+        let hours_ms = self.hours.unwrap_or(0)
+            .saturating_mul(60)
+            .saturating_mul(60)
+            .saturating_mul(1000);
+        let minutes_ms = self.minutes.unwrap_or(0)
+            .saturating_mul(60)
+            .saturating_mul(1000);
+        let seconds_ms = self.seconds.unwrap_or(0).saturating_mul(1000);
         let millis = self.milliseconds.unwrap_or(0);
-        days_ms + hours_ms + minutes_ms + seconds_ms + millis
+        days_ms
+            .saturating_add(hours_ms)
+            .saturating_add(minutes_ms)
+            .saturating_add(seconds_ms)
+            .saturating_add(millis)
     }
 
 }

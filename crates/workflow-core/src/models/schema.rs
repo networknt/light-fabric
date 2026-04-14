@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use crate::models::resource::*;
 
-/// Provvides the default schema format
+/// Provides the default schema format
 fn default_schema_format() -> String{
     SchemaFormat::JSON.to_string()
 }

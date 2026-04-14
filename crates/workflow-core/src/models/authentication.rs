@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Provvides the default OAUTH2 rezquest encoding
+/// Provides the default OAUTH2 request encoding
 fn default_oauth2_request_encoding() -> String{
     OAuth2RequestEncoding::FORM_URL.to_string()
 }

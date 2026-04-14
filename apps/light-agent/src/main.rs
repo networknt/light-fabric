@@ -21,10 +21,44 @@ async fn health() -> &'static str {
     "ok"
 }
 
+fn is_sensitive_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    key.contains("authorization")
+        || key.contains("password")
+        || key.contains("secret")
+        || key.contains("token")
+        || key.contains("api_key")
+        || key.ends_with("key")
+}
+
+fn sanitize_json_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map.iter_mut() {
+                if is_sensitive_key(key) {
+                    *value = serde_json::Value::String("[REDACTED]".to_string());
+                } else {
+                    sanitize_json_value(value);
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                sanitize_json_value(value);
+            }
+        }
+        _ => {}
+    }
+}
+
 async fn info(config: Arc<RuntimeConfig>) -> Json<serde_json::Value> {
+    let mut sanitized_config = serde_json::to_value(config.as_ref())
+        .unwrap_or_else(|_| serde_json::json!({ "error": "config unavailable" }));
+    sanitize_json_value(&mut sanitized_config);
+
     Json(serde_json::json!({
         "status": "ready",
-        "config": config.as_ref()
+        "config": sanitized_config
     }))
 }
 

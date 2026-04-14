@@ -10,15 +10,18 @@ RUN apt-get update && \
 
 WORKDIR /usr/src/app
 
-# Copy the required crates from the workspace
+# Copy workspace root configuration
+COPY Cargo.toml Cargo.lock ./
+
+# Copy the required crates, frameworks, and apps
 # Note: This Dockerfile expects to be built from the workspace root context.
 # Use specific directory copies to avoid bringing in unnecessary files
-COPY light-rs/ light-rs/
-COPY light-axum/ light-axum/
-COPY light-agent/ light-agent/
+COPY crates/ crates/
+COPY frameworks/ frameworks/
+COPY apps/ apps/
 
 # Build the release binary within the light-agent directory
-WORKDIR /usr/src/app/light-agent
+WORKDIR /usr/src/app/apps/light-agent
 RUN cargo build --locked --release --target x86_64-unknown-linux-musl
 
 # Stage 2: Create the minimal runtime image
@@ -38,10 +41,10 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Copy the compiled binary from the builder stage
-COPY --from=builder --chown=agent:agent /usr/src/app/light-agent/target/x86_64-unknown-linux-musl/release/agent /app/light-agent
+COPY --from=builder --chown=agent:agent /usr/src/app/target/x86_64-unknown-linux-musl/release/agent /app/light-agent
 
-# Expose the correct agent port (aligned with config/server.yml)
-EXPOSE 8081
+# Expose the correct agent port (aligned with config/server.yml or values.yml)
+EXPOSE 8083
 
 # Run the binary
 USER agent:agent
