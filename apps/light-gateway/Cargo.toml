@@ -1,0 +1,9 @@
+[package]
+name = "light-gateway"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+light-pingora = { path = "../../frameworks/light-pingora" }
+anyhow = "1"

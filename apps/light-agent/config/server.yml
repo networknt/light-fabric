@@ -1,0 +1,11 @@
+ip: ${server.ip:0.0.0.0}
+httpPort: ${server.httpPort:8081}
+enableHttp: ${server.enableHttp:true}
+httpsPort: ${server.httpsPort:8443}
+enableHttps: ${server.enableHttps:false}
+serviceId: ${server.serviceId:com.networknt.agent.account-1.0.0}
+enableRegistry: ${server.enableRegistry:false}
+startOnRegistryFailure: ${server.startOnRegistryFailure:false}
+dynamicPort: ${server.dynamicPort:false}
+environment: ${server.environment:DEV}
+shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}

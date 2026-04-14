@@ -1,0 +1,16 @@
+[package]
+name = "light-axum"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+light-runtime = { path = "../../crates/light-runtime" }
+axum = { version = "0.8", features = ["ws", "macros"] }
+axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
+tokio = { version = "1", features = ["full"] }
+thiserror = "2"
+async-trait = "0.1"
+tower = "0.5"
+tracing = "0.1"
+anyhow = "1"
