@@ -6,4 +6,4 @@ license = "Apache-2.0"
 
 [dependencies]
 light-runtime = { path = "../../crates/light-runtime" }
-async-trait = "0.1"
+async-trait = { workspace = true }

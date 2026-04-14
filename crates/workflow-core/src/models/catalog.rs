@@ -1,4 +1,4 @@
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use crate::models::resource::*;
 
 /// Gets the name of the default catalog

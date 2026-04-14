@@ -1,4 +1,4 @@
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use crate::models::duration::*;
 
 /// Represents the definition of a retry policy

@@ -6,4 +6,4 @@ license = "Apache-2.0"
 
 [dependencies]
 light-pingora = { path = "../../frameworks/light-pingora" }
-anyhow = "1"
+anyhow = { workspace = true }

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 
 /// Represents an ordered key/value map array
-#[derive(Debug, Clone, PartialEq, serde_derive::Serialize, serde_derive::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(bound(
     serialize = "TKey: Serialize, TValue: Serialize",
     deserialize = "TKey: for<'d> Deserialize<'d> + Eq + Hash + Clone + PartialEq, TValue: for<'d> Deserialize<'d> + Clone + PartialEq"

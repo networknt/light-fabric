@@ -1,4 +1,4 @@
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
 /// Provvides the default OAUTH2 rezquest encoding
 fn default_oauth2_request_encoding() -> String{

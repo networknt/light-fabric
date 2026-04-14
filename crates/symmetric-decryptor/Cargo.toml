@@ -11,4 +11,4 @@ block-padding = "0.3"
 pbkdf2 = { version = "0.12", features = ["sha2"] }
 sha2 = "0.10"
 hex = "0.4"
-thiserror = "2"
+thiserror = { workspace = true }

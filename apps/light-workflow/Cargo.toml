@@ -4,20 +4,20 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-async-trait = "0.1"
-axum = "0.8"
-chrono = { version = "0.4", features = ["clock", "serde"] }
-futures-util = "0.3"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml = "0.9"
+async-trait = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 workflow-core = { path = "../../crates/workflow-core" }
 light-rule = { path = "../../crates/light-rule" }
 sqlx = { version = "0.8", features = ["chrono", "json", "postgres", "runtime-tokio-rustls", "uuid"] }
-thiserror = "2"
-tokio = { version = "1", features = ["full", "tracing"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-uuid = { version = "1", features = ["serde", "v4", "v7"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+reqwest = { workspace = true }
 regex = "1"

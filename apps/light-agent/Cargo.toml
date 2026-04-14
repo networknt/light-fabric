@@ -7,9 +7,9 @@ license = "Apache-2.0"
 [dependencies]
 light-runtime = { path = "../../crates/light-runtime" }
 light-axum = { path = "../../frameworks/light-axum" }
-axum = "0.8"
-tokio = { version = "1", features = ["full"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-anyhow = "1"
-serde_json = "1"
+axum = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }

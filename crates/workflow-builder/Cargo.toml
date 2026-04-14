@@ -13,5 +13,5 @@ categories = ["config", "parsing", "data-structures", "api-bindings"]
 
 [dependencies]
 workflow-core = { path = "../workflow-core" }
-serde_json = "1.0" 
-serde_yaml = "0.9"
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }

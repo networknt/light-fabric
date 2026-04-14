@@ -8,16 +8,16 @@ license.workspace = true
 config-loader = { path = "../config-loader" }
 symmetric-decryptor = { path = "../symmetric-decryptor" }
 asymmetric-decryptor = { path = "../asymmetric-decryptor" }
-tokio = { version = "1", features = ["full"] }
+tokio = { workspace = true }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-uuid = { version = "1", features = ["v7", "serde"] }
-anyhow = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
 jsonwebtoken = "9"
-thiserror = "2"
-tracing = "0.1"
-url = "2"
-futures-util = "0.3"
-async-trait = "0.1"
-chrono = { version = "0.4", features = ["serde"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+futures-util = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
