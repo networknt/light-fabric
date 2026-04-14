@@ -7,13 +7,15 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use symmetric_decryptor::{Decryptor as SymmetricDecryptorTrait, SymmetricDecryptor};
 use thiserror::Error;
 use tracing::{error, warn};
 
 const EXTERNAL_CONFIG_DIR_ENV: &str = "LIGHT_RS_CONFIG_DIR";
 const MAX_EXPANSION_DEPTH: usize = 16;
+static WHOLE_VARIABLE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\$\{([^}:]+)(?::([^}]*))?\}$").expect("whole variable regex"));
 
 #[derive(Error, Debug)]
 pub enum ConfigError {
@@ -180,12 +182,12 @@ impl ConfigLoader {
             }
             Value::Mapping(map) => {
                 for (_, v) in map.iter_mut() {
-                    self.resolve_value_with_depth(v, depth + 1)?;
+                    self.resolve_value_with_depth(v, depth)?;
                 }
             }
             Value::Sequence(seq) => {
                 for v in seq.iter_mut() {
-                    self.resolve_value_with_depth(v, depth + 1)?;
+                    self.resolve_value_with_depth(v, depth)?;
                 }
             }
             _ => {}
@@ -227,9 +229,7 @@ impl ConfigLoader {
         input: &str,
         depth: usize,
     ) -> Result<Option<Value>, ConfigError> {
-        let re =
-            Regex::new(r"^\$\{([^}:]+)(?::([^}]*))?\}$").expect("whole variable regex");
-        let Some(caps) = re.captures(input) else {
+        let Some(caps) = WHOLE_VARIABLE_REGEX.captures(input) else {
             return Ok(None);
         };
         let key = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
@@ -398,7 +398,10 @@ mod tests {
     use super::*;
     use aes::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
     use serde::Deserialize;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static ENV_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
     struct TempDir {
         path: PathBuf,
@@ -589,6 +592,7 @@ mod tests {
 
     #[test]
     fn whole_variable_env_values_are_decrypted_before_parsing() {
+        let _guard = ENV_TEST_MUTEX.lock().expect("env test mutex");
         let salt = hex::decode("ebfab3ef4261185776a026acf72d24ee").expect("salt");
         let key = {
             let mut key = [0u8; 32];
