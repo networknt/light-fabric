@@ -167,8 +167,9 @@ impl ConfigLoader {
         depth: usize,
     ) -> Result<(), ConfigError> {
         if depth >= MAX_EXPANSION_DEPTH {
-            return Err(ConfigError::UnresolvedVariable(format!(
-                "nested value resolution exceeded max depth {MAX_EXPANSION_DEPTH}"
+            return Err(ConfigError::Convert(format!(
+                "nested value resolution exceeded max depth {MAX_EXPANSION_DEPTH} while resolving value: {:?}",
+                value
             )));
         }
         match value {
