@@ -158,8 +158,12 @@ impl ConfigLoader {
     pub fn resolve_value(&self, value: &mut Value) -> Result<(), ConfigError> {
         match value {
             Value::String(s) => {
-                let resolved_str = self.expand_variables(s)?;
-                *value = self.resolve_scalar_value(resolved_str);
+                if let Some(resolved_value) = self.resolve_whole_variable_reference(s)? {
+                    *value = resolved_value;
+                } else {
+                    let resolved_str = self.expand_variables(s)?;
+                    *value = self.resolve_scalar_value(resolved_str);
+                }
             }
             Value::Mapping(map) => {
                 for (_, v) in map.iter_mut() {
@@ -205,6 +209,38 @@ impl ConfigLoader {
         Err(ConfigError::UnresolvedVariable(current))
     }
 
+    fn resolve_whole_variable_reference(
+        &self,
+        input: &str,
+    ) -> Result<Option<Value>, ConfigError> {
+        let Some(inner) = input.strip_prefix("${").and_then(|s| s.strip_suffix('}')) else {
+            return Ok(None);
+        };
+        if inner.contains("}${") {
+            return Ok(None);
+        }
+
+        let mut parts = inner.splitn(2, ':');
+        let key = parts.next().unwrap_or_default();
+        let default = parts.next();
+
+        if let Some(env_val) = self.get_env_value(key) {
+            return Ok(Some(Self::parse_text_scalar(&env_val)));
+        }
+
+        if let Some(value) = self.values.get(key) {
+            let mut resolved = value.clone();
+            self.resolve_value(&mut resolved)?;
+            return Ok(Some(resolved));
+        }
+
+        if let Some(default_value) = default {
+            return Ok(Some(Self::parse_text_scalar(default_value)));
+        }
+
+        Err(ConfigError::UnresolvedVariable(input.to_string()))
+    }
+
     pub async fn fetch_remote_config(
         &self,
         url: &str,
@@ -243,14 +279,21 @@ impl ConfigLoader {
     }
 
     fn get_value(&self, key: &str) -> Option<String> {
+        if let Some(env_val) = self.get_env_value(key) {
+            return Some(env_val);
+        }
+
+        self.values.get(key).and_then(Self::scalar_to_string)
+    }
+
+    fn get_env_value(&self, key: &str) -> Option<String> {
         if let Ok(env_val) = env::var(key.to_uppercase().replace('-', "_")) {
             return Some(env_val);
         }
         if let Ok(env_val) = env::var(key) {
             return Some(env_val);
         }
-
-        self.values.get(key).and_then(Self::scalar_to_string)
+        None
     }
 
     fn parse_config_str(path: &Path, content: &str) -> Result<Value, ConfigError> {
@@ -304,19 +347,27 @@ impl ConfigLoader {
         } else {
             val
         };
+        Value::String(decrypted)
+    }
 
-        // Attempt to parse as bool or number if it looks like one
-        if decrypted == "true" {
-            Value::Bool(true)
-        } else if decrypted == "false" {
-            Value::Bool(false)
-        } else if let Ok(n) = decrypted.parse::<i64>() {
-            Value::Number(n.into())
-        } else if let Ok(f) = decrypted.parse::<f64>() {
-            Value::Number(f.into())
-        } else {
-            Value::String(decrypted)
+    fn parse_text_scalar(input: &str) -> Value {
+        let trimmed = input.trim();
+        if trimmed.eq_ignore_ascii_case("true") {
+            return Value::Bool(true);
         }
+        if trimmed.eq_ignore_ascii_case("false") {
+            return Value::Bool(false);
+        }
+        if let Ok(parsed) = trimmed.parse::<i64>() {
+            return serde_yaml::to_value(parsed).unwrap_or_else(|_| Value::String(input.to_string()));
+        }
+        if let Ok(parsed) = trimmed.parse::<f64>() {
+            if parsed.is_finite() {
+                return serde_yaml::to_value(parsed)
+                    .unwrap_or_else(|_| Value::String(input.to_string()));
+            }
+        }
+        Value::String(input.to_string())
     }
 }
 
@@ -441,5 +492,64 @@ mod tests {
                 },
             }
         );
+    }
+
+    #[test]
+    fn preserves_expanded_bool_like_strings_as_strings() {
+        let loader =
+            ConfigLoader::new(
+                "feature_flag: \"true\"\nport: \"001\"\nscientific: \"1e3\"\n",
+                None,
+                None,
+            )
+                .expect("loader");
+
+        let mut bool_value = Value::String("${feature_flag}".to_string());
+        let mut number_value = Value::String("${port}".to_string());
+        let mut scientific_value = Value::String("${scientific}".to_string());
+
+        loader.resolve_value(&mut bool_value).expect("resolve bool");
+        loader
+            .resolve_value(&mut number_value)
+            .expect("resolve number");
+        loader
+            .resolve_value(&mut scientific_value)
+            .expect("resolve scientific");
+
+        assert_eq!(bool_value, Value::String("true".to_string()));
+        assert_eq!(number_value, Value::String("001".to_string()));
+        assert_eq!(scientific_value, Value::String("1e3".to_string()));
+    }
+
+    #[test]
+    fn whole_variable_expansion_preserves_typed_values() {
+        let loader = ConfigLoader::new("enabled: true\nport: 8083\n", None, None).expect("loader");
+
+        let mut bool_value = Value::String("${enabled:false}".to_string());
+        let mut number_value = Value::String("${port:8081}".to_string());
+
+        loader.resolve_value(&mut bool_value).expect("resolve bool");
+        loader
+            .resolve_value(&mut number_value)
+            .expect("resolve number");
+
+        assert_eq!(bool_value, Value::Bool(true));
+        assert_eq!(number_value, serde_yaml::to_value(8083).expect("yaml number"));
+    }
+
+    #[test]
+    fn whole_variable_default_values_are_typed() {
+        let loader = ConfigLoader::new("", None, None).expect("loader");
+
+        let mut bool_value = Value::String("${enabled:false}".to_string());
+        let mut number_value = Value::String("${port:8081}".to_string());
+
+        loader.resolve_value(&mut bool_value).expect("resolve bool");
+        loader
+            .resolve_value(&mut number_value)
+            .expect("resolve number");
+
+        assert_eq!(bool_value, Value::Bool(false));
+        assert_eq!(number_value, serde_yaml::to_value(8081).expect("yaml number"));
     }
 }

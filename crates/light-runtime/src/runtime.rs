@@ -246,7 +246,7 @@ where
     }
 
     fn load_bootstrap_config(&self) -> Result<(BootstrapConfig, Option<ClientConfig>), RuntimeError> {
-        let values = load_values_map(&self.config_dir, &self.config_dir, None)?;
+        let values = load_bootstrap_values(&self.config_dir)?;
         let password = std::env::var(CONFIG_PASSWORD_ENV).ok();
         let loader = ConfigLoader::from_values(values, password.as_deref(), None)?;
 
@@ -369,7 +369,12 @@ where
                 .service_id
                 .clone()
                 .unwrap_or_else(|| server.service_id.clone()),
-            version: "0.1.0".to_string(),
+            version: derive_service_version(
+                bootstrap
+                    .service_id
+                    .as_deref()
+                    .unwrap_or(server.service_id.as_str()),
+            ),
             env_tag,
             tags: HashMap::new(),
         };
@@ -563,6 +568,9 @@ fn build_config_server_client(
 
     if let Some(client) = client_config {
         if !client.verify_hostname {
+            warn!(
+                "TLS hostname verification is disabled for the config-server client; this weakens server identity validation"
+            );
             client_builder = client_builder.danger_accept_invalid_hostnames(true);
         }
     }
@@ -680,6 +688,17 @@ async fn fetch_remote_files(
     Ok(cached_files)
 }
 
+fn load_bootstrap_values(config_dir: &Path) -> Result<HashMap<String, Value>, RuntimeError> {
+    let values_path = config_dir.join(VALUES_FILE);
+    if !values_path.exists() {
+        return Ok(HashMap::new());
+    }
+
+    let content = fs::read_to_string(values_path)?;
+    let parsed: HashMap<String, Value> = serde_yaml::from_str(&content)?;
+    Ok(parsed)
+}
+
 fn load_values_map(
     config_dir: &Path,
     external_config_dir: &Path,
@@ -704,6 +723,19 @@ fn load_values_map(
     }
 
     Ok(values)
+}
+
+fn derive_service_version(service_id: &str) -> String {
+    service_id
+        .rsplit_once('-')
+        .and_then(|(_, suffix)| {
+            if suffix.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
+                Some(suffix.to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
 }
 
 fn to_microservice_ws_url(portal_url: &Url) -> Result<String, RuntimeError> {
@@ -747,7 +779,30 @@ fn strip_bearer_prefix(token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use tempfile::TempDir;
+    use crate::transport::{BoundTransport, ResolvedServerMetadata, TransportRuntime};
+
+    struct NoopTransport;
+
+    #[async_trait]
+    impl TransportRuntime for NoopTransport {
+        type Handle = ();
+
+        async fn bind(
+            &self,
+            _config: &RuntimeConfig,
+        ) -> Result<BoundTransport<Self::Handle>, RuntimeError> {
+            Ok(BoundTransport {
+                handle: (),
+                metadata: ResolvedServerMetadata::default(),
+            })
+        }
+
+        async fn stop(&self, _handle: &mut Self::Handle) -> Result<(), RuntimeError> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn builds_light_4j_style_query_parameters() {
@@ -785,5 +840,39 @@ mod tests {
         assert_eq!(values["a"], Value::Number(1.into()));
         assert_eq!(values["b"], Value::String("remote".to_string()));
         assert_eq!(values["c"], Value::Bool(true));
+    }
+
+    #[test]
+    fn derives_service_version_from_service_id_suffix() {
+        assert_eq!(
+            derive_service_version("com.networknt.petstore-1.0.0"),
+            "1.0.0".to_string()
+        );
+    }
+
+    #[test]
+    fn falls_back_to_package_version_when_service_id_has_no_suffix() {
+        assert_eq!(
+            derive_service_version("com.networknt.petstore"),
+            env!("CARGO_PKG_VERSION").to_string()
+        );
+    }
+
+    #[test]
+    fn load_bootstrap_config_reads_client_config() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        fs::write(
+            config_dir.path().join(CLIENT_FILE),
+            "verifyHostname: false\n",
+        )
+        .expect("write client config");
+
+        let runtime = LightRuntimeBuilder::new(NoopTransport)
+            .with_config_dir(config_dir.path())
+            .build();
+
+        let (_bootstrap, client_config) = runtime.load_bootstrap_config().expect("bootstrap config");
+
+        assert_eq!(client_config.map(|c| c.verify_hostname), Some(false));
     }
 }
