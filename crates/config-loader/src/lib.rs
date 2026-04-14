@@ -302,7 +302,8 @@ impl ConfigLoader {
     }
 
     fn get_env_value(&self, key: &str) -> Option<String> {
-        if let Ok(env_val) = env::var(key.to_uppercase().replace('-', "_")) {
+        let normalized = key.to_uppercase().replace(['-', '.'], "_");
+        if let Ok(env_val) = env::var(&normalized) {
             return Some(env_val);
         }
         if let Ok(env_val) = env::var(key) {
@@ -624,6 +625,29 @@ mod tests {
 
         resolved.expect("resolve value");
         assert_eq!(value, Value::Bool(false));
+    }
+
+    #[test]
+    fn dotted_keys_can_be_overridden_by_shell_friendly_env_vars() {
+        let _guard = ENV_TEST_MUTEX.lock().expect("env test mutex");
+        unsafe {
+            env::set_var("SERVER_SERVICEID", "com.networknt.agent.demo-1.0.0");
+        }
+
+        let loader = ConfigLoader::new("", None, None).expect("loader");
+        let mut value =
+            Value::String("${server.serviceId:com.networknt.agent.account-1.0.0}".to_string());
+        let resolved = loader.resolve_value(&mut value);
+
+        unsafe {
+            env::remove_var("SERVER_SERVICEID");
+        }
+
+        resolved.expect("resolve value");
+        assert_eq!(
+            value,
+            Value::String("com.networknt.agent.demo-1.0.0".to_string())
+        );
     }
 
     #[test]

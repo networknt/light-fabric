@@ -4,7 +4,7 @@ use axum_server::Handle;
 use light_runtime::{
     BoundTransport, ResolvedServerMetadata, RuntimeConfig, RuntimeError, TransportRuntime,
 };
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 
@@ -81,6 +81,7 @@ where
             .await
             .map_err(RuntimeError::Io)?;
         let local_addr = listener.local_addr().map_err(RuntimeError::Io)?;
+        let advertised_address = resolve_advertised_address(config, local_addr.ip())?;
         let std_listener = listener.into_std().map_err(RuntimeError::Io)?;
         std_listener
             .set_nonblocking(true)
@@ -128,7 +129,7 @@ where
             },
             metadata: ResolvedServerMetadata {
                 protocol: protocol.to_string(),
-                address: local_addr.ip().to_string(),
+                address: advertised_address,
                 port: local_addr.port(),
                 tags: Default::default(),
             },
@@ -142,4 +143,27 @@ where
             .map_err(|e| RuntimeError::Unsupported(format!("server task join failed: {e}")))?;
         Ok(())
     }
+}
+
+fn resolve_advertised_address(
+    config: &RuntimeConfig,
+    bound_ip: IpAddr,
+) -> Result<String, RuntimeError> {
+    if let Some(address) = config.server.advertised_address.as_deref() {
+        let trimmed = address.trim();
+        if trimmed.is_empty() {
+            return Err(RuntimeError::Unsupported(
+                "server.advertisedAddress must not be empty when provided".to_string(),
+            ));
+        }
+        return Ok(trimmed.to_string());
+    }
+
+    if bound_ip.is_unspecified() {
+        return Err(RuntimeError::Unsupported(
+            "server.ip resolves to an unspecified bind address; set server.advertisedAddress to a reachable IP for controller registration".to_string(),
+        ));
+    }
+
+    Ok(bound_ip.to_string())
 }

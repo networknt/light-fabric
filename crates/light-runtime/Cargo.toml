@@ -19,6 +19,7 @@ async-trait = { workspace = true }
 base64 = "0.22"
 anyhow = { workspace = true }
 futures-util = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 uuid = { workspace = true }
 
 [dev-dependencies]

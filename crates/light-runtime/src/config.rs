@@ -55,6 +55,8 @@ impl std::fmt::Debug for BootstrapConfig {
 #[serde(rename_all = "camelCase")]
 pub struct ServerConfig {
     pub ip: String,
+    #[serde(default)]
+    pub advertised_address: Option<String>,
     pub http_port: u16,
     pub enable_http: bool,
     pub https_port: u16,
@@ -80,6 +82,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             ip: "0.0.0.0".to_string(),
+            advertised_address: None,
             http_port: 8080,
             enable_http: true,
             https_port: 8443,

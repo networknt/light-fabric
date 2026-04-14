@@ -8,12 +8,62 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
-use tracing::{error, info};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tracing::{debug, error, info, warn};
 use url::Url;
 use uuid::Uuid;
 
 pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+#[derive(Debug)]
+struct NoHostnameVerifier {
+    roots: rustls::RootCertStore,
+}
+
+impl rustls::client::danger::ServerCertVerifier for NoHostnameVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        let verifier = rustls::client::WebPkiServerVerifier::builder(Arc::new(self.roots.clone()))
+            .build()
+            .map_err(|e| rustls::Error::General(format!("failed to build verifier: {e}")))?;
+        
+        // Use a dummy server name for verification to bypass hostname check
+        let dummy_name = rustls::pki_types::ServerName::try_from("localhost")
+            .map_err(|e| rustls::Error::General(format!("invalid dummy name: {e}")))?;
+            
+        verifier.verify_server_cert(end_entity, intermediates, &dummy_name, _ocsp_response, now)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegistrationState {
@@ -35,6 +85,8 @@ pub struct PortalRegistryClient {
     handler: Arc<dyn RegistryHandler>,
     outbound_tx: Arc<Mutex<Option<mpsc::Sender<Message>>>>,
     registration_tx: watch::Sender<RegistrationState>,
+    ca_certificate: Option<Vec<u8>>,
+    verify_hostname: bool,
 }
 
 impl PortalRegistryClient {
@@ -51,7 +103,19 @@ impl PortalRegistryClient {
             handler,
             outbound_tx: Arc::new(Mutex::new(None)),
             registration_tx,
+            ca_certificate: None,
+            verify_hostname: true,
         })
+    }
+
+    pub fn with_ca_certificate(mut self, ca_cert: Vec<u8>) -> Self {
+        self.ca_certificate = Some(ca_cert);
+        self
+    }
+
+    pub fn with_verify_hostname(mut self, verify: bool) -> Self {
+        self.verify_hostname = verify;
+        self
     }
 
     pub fn subscribe_registration(&self) -> watch::Receiver<RegistrationState> {
@@ -97,7 +161,37 @@ impl PortalRegistryClient {
     }
 
     async fn connect_and_loop(&self) -> anyhow::Result<()> {
-        let (mut ws_stream, _) = connect_async(self.controller_url.as_str()).await?;
+        let connector = if self.controller_url.scheme() == "wss" && (self.ca_certificate.is_some() || !self.verify_hostname) {
+            let mut root_store = rustls::RootCertStore::empty();
+            if let Some(ca_cert) = &self.ca_certificate {
+                let mut reader = std::io::BufReader::new(std::io::Cursor::new(ca_cert));
+                for cert in rustls_pemfile::certs(&mut reader) {
+                    root_store.add(cert?)?;
+                }
+            } else {
+                root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            }
+
+            let builder = rustls::ClientConfig::builder();
+            
+            if !self.verify_hostname {
+                let verifier = Arc::new(NoHostnameVerifier { roots: root_store });
+                let config = builder.dangerous().with_custom_certificate_verifier(verifier).with_no_client_auth();
+                Some(tokio_tungstenite::Connector::Rustls(Arc::new(config)))
+            } else {
+                let config = builder.with_root_certificates(root_store).with_no_client_auth();
+                Some(tokio_tungstenite::Connector::Rustls(Arc::new(config)))
+            }
+        } else {
+            None
+        };
+
+        let (mut ws_stream, _) = tokio_tungstenite::connect_async_tls_with_config(
+            self.controller_url.as_str(),
+            None,
+            false,
+            connector,
+        ).await?;
         info!("Connected to controller at {}", self.controller_url);
 
         // 1. Initial Handshake (service/register)
@@ -186,21 +280,45 @@ impl PortalRegistryClient {
             .send(Message::Text(serde_json::to_string(&register_msg)?.into()))
             .await?;
 
-        if let Some(msg) = ws_stream.next().await {
-            let text = msg?.into_text()?;
-            let resp = serde_json::from_str::<JsonRpcMessage>(&text)?;
-            if let Some(result) = resp.result {
-                let reg_resp: RegistrationResponse = serde_json::from_value(result)?;
-                let _ = self.registration_tx.send(RegistrationState::Registered {
-                    runtime_instance_id: reg_resp.runtime_instance_id,
-                });
-                info!(
-                    "Successfully registered with controller. Instance ID: {}",
-                    reg_resp.runtime_instance_id
-                );
-                return Ok(());
-            } else if let Some(error) = resp.error {
-                return Err(anyhow::anyhow!("Registration failed: {}", error.message));
+        while let Some(msg) = ws_stream.next().await {
+            match msg? {
+                Message::Text(text) => {
+                    debug!("Raw registration response: '{}'", text);
+                    let resp = serde_json::from_str::<JsonRpcMessage>(&text)?;
+                    if let Some(result) = resp.result {
+                        let reg_resp: RegistrationResponse = serde_json::from_value(result)?;
+                        let _ = self.registration_tx.send(RegistrationState::Registered {
+                            runtime_instance_id: reg_resp.runtime_instance_id,
+                        });
+                        info!(
+                            "Successfully registered with controller. Instance ID: {}",
+                            reg_resp.runtime_instance_id
+                        );
+                        return Ok(());
+                    } else if let Some(error) = resp.error {
+                        return Err(anyhow::anyhow!("Registration failed: {}", error.message));
+                    }
+                }
+                Message::Ping(payload) => {
+                    ws_stream.send(Message::Pong(payload)).await?;
+                }
+                Message::Pong(_) => {}
+                Message::Close(Some(frame)) => {
+                    return Err(anyhow::anyhow!(
+                        "Connection closed during registration: code={} reason={}",
+                        frame.code,
+                        frame.reason
+                    ));
+                }
+                Message::Close(None) => {
+                    return Err(anyhow::anyhow!("Connection closed during registration"));
+                }
+                Message::Binary(_) => {
+                    return Err(anyhow::anyhow!(
+                        "Unexpected binary frame received during registration"
+                    ));
+                }
+                Message::Frame(_) => {}
             }
         }
 
