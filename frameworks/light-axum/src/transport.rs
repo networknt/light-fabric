@@ -159,11 +159,66 @@ fn resolve_advertised_address(
         return Ok(trimmed.to_string());
     }
 
-    if bound_ip.is_unspecified() {
-        return Err(RuntimeError::Unsupported(
-            "server.ip resolves to an unspecified bind address; set server.advertisedAddress to a reachable IP for controller registration".to_string(),
-        ));
+    Ok(bound_ip.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_advertised_address;
+    use light_runtime::{BootstrapConfig, RuntimeConfig, RuntimeError, ServerConfig, ServiceIdentity};
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::path::PathBuf;
+
+    fn runtime_config() -> RuntimeConfig {
+        RuntimeConfig {
+            bootstrap: BootstrapConfig::default(),
+            server: ServerConfig::default(),
+            client: None,
+            portal_registry: None,
+            service_identity: ServiceIdentity::default(),
+            config_dir: PathBuf::from("config"),
+            external_config_dir: PathBuf::from("config"),
+        }
     }
 
-    Ok(bound_ip.to_string())
+    #[test]
+    fn uses_explicit_advertised_address_when_present() {
+        let mut config = runtime_config();
+        config.server.advertised_address = Some("172.18.0.10".to_string());
+
+        let address = resolve_advertised_address(
+            &config,
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        )
+        .expect("resolve advertised address");
+
+        assert_eq!(address, "172.18.0.10");
+    }
+
+    #[test]
+    fn falls_back_to_unspecified_bound_ip_without_failing() {
+        let config = runtime_config();
+
+        let address = resolve_advertised_address(
+            &config,
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        )
+        .expect("resolve advertised address");
+
+        assert_eq!(address, "0.0.0.0");
+    }
+
+    #[test]
+    fn rejects_empty_explicit_advertised_address() {
+        let mut config = runtime_config();
+        config.server.advertised_address = Some("   ".to_string());
+
+        let error = resolve_advertised_address(
+            &config,
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+        )
+        .expect_err("empty advertised address should fail");
+
+        assert!(matches!(error, RuntimeError::Unsupported(_)));
+    }
 }
