@@ -14,7 +14,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2"
-webpki-roots = "0.26"
 uuid = { workspace = true }
 anyhow = { workspace = true }
 jsonwebtoken = "9"

@@ -267,8 +267,7 @@ where
         if config.config_server_uri.is_none() {
             config.config_server_uri = std::env::var(CONFIG_SERVER_URI_ENV).ok();
         }
-        if let Some(env_authorization) = std::env::var(PORTAL_AUTH_ENV)
-            .ok()
+        if let Some(env_authorization) = get_env_value(PORTAL_AUTH_ENV)
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
         {
@@ -791,13 +790,19 @@ fn to_microservice_ws_url(portal_url: &Url) -> Result<String, RuntimeError> {
 }
 
 fn portal_token(config: &PortalRegistryConfig) -> Option<String> {
-    std::env::var(PORTAL_AUTH_ENV)
-        .ok()
+    get_env_value(PORTAL_AUTH_ENV)
         .filter(|value| !value.trim().is_empty())
         .map(|value| strip_bearer_prefix(&value))
         .or_else(|| {
             (!config.portal_token.trim().is_empty()).then(|| strip_bearer_prefix(&config.portal_token))
         })
+}
+
+fn get_env_value(key: &str) -> Option<String> {
+    let normalized = key.to_uppercase().replace(['-', '.'], "_");
+    std::env::var(&normalized)
+        .ok()
+        .or_else(|| std::env::var(key).ok())
 }
 
 fn strip_bearer_prefix(token: &str) -> String {
@@ -840,6 +845,22 @@ mod tests {
         async fn stop(&self, _handle: &mut Self::Handle) -> Result<(), RuntimeError> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn portal_auth_env_uses_shell_friendly_uppercase_name() {
+        unsafe {
+            std::env::remove_var(PORTAL_AUTH_ENV);
+            std::env::set_var("LIGHT_PORTAL_AUTHORIZATION", "Bearer test-token");
+        }
+
+        let value = get_env_value(PORTAL_AUTH_ENV);
+
+        unsafe {
+            std::env::remove_var("LIGHT_PORTAL_AUTHORIZATION");
+        }
+
+        assert_eq!(value.as_deref(), Some("Bearer test-token"));
     }
 
     #[test]
