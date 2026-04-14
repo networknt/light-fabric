@@ -193,15 +193,20 @@ dependencies = [
 name = "config-loader"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "arc-swap",
  "asymmetric-decryptor",
  "async-trait",
  "base64",
+ "cbc",
+ "hex",
+ "pbkdf2",
  "regex",
  "reqwest",
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "symmetric-decryptor",
  "thiserror 2.0.18",
  "tokio",

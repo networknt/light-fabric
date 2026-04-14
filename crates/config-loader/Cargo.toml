@@ -19,3 +19,10 @@ tracing = "0.1"
 async-trait = "0.1"
 base64 = "0.22"
 toml = "0.8"
+
+[dev-dependencies]
+aes = "0.8"
+cbc = "0.1"
+hex = "0.4"
+pbkdf2 = "0.12"
+sha2 = "0.10"

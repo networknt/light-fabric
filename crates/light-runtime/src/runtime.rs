@@ -592,6 +592,18 @@ fn build_query_params(bootstrap: &BootstrapConfig) -> Vec<(String, String)> {
     if let Some(value) = &bootstrap.service_id {
         params.push(("serviceId".to_string(), value.clone()));
     }
+    if let Some(value) = &bootstrap.product_id {
+        params.push(("productId".to_string(), value.clone()));
+    }
+    if let Some(value) = &bootstrap.product_version {
+        params.push(("productVersion".to_string(), value.clone()));
+    }
+    if let Some(value) = &bootstrap.api_id {
+        params.push(("apiId".to_string(), value.clone()));
+    }
+    if let Some(value) = &bootstrap.api_version {
+        params.push(("apiVersion".to_string(), value.clone()));
+    }
 
     params.push((
         "envTag".to_string(),
@@ -809,6 +821,10 @@ mod tests {
         let bootstrap = BootstrapConfig {
             host: "lightapi.net".to_string(),
             service_id: Some("com.networknt.petstore-1.0.0".to_string()),
+            product_id: Some("agent".to_string()),
+            product_version: Some("1.0.0".to_string()),
+            api_id: Some("petstore".to_string()),
+            api_version: Some("1.0.0".to_string()),
             env_tag: Some("dev".to_string()),
             ..BootstrapConfig::default()
         };
@@ -818,8 +834,11 @@ mod tests {
             "serviceId".to_string(),
             "com.networknt.petstore-1.0.0".to_string()
         )));
+        assert!(query.contains(&("productId".to_string(), "agent".to_string())));
+        assert!(query.contains(&("productVersion".to_string(), "1.0.0".to_string())));
+        assert!(query.contains(&("apiId".to_string(), "petstore".to_string())));
+        assert!(query.contains(&("apiVersion".to_string(), "1.0.0".to_string())));
         assert!(query.contains(&("envTag".to_string(), "dev".to_string())));
-        assert!(!query.iter().any(|(k, _)| k == "productId"));
     }
 
     #[test]

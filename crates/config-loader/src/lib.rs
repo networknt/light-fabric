@@ -156,9 +156,22 @@ impl ConfigLoader {
     }
 
     pub fn resolve_value(&self, value: &mut Value) -> Result<(), ConfigError> {
+        self.resolve_value_with_depth(value, 0)
+    }
+
+    fn resolve_value_with_depth(
+        &self,
+        value: &mut Value,
+        depth: usize,
+    ) -> Result<(), ConfigError> {
+        if depth >= MAX_EXPANSION_DEPTH {
+            return Err(ConfigError::UnresolvedVariable(format!(
+                "nested value resolution exceeded max depth {MAX_EXPANSION_DEPTH}"
+            )));
+        }
         match value {
             Value::String(s) => {
-                if let Some(resolved_value) = self.resolve_whole_variable_reference(s)? {
+                if let Some(resolved_value) = self.resolve_whole_variable_reference(s, depth)? {
                     *value = resolved_value;
                 } else {
                     let resolved_str = self.expand_variables(s)?;
@@ -167,12 +180,12 @@ impl ConfigLoader {
             }
             Value::Mapping(map) => {
                 for (_, v) in map.iter_mut() {
-                    self.resolve_value(v)?;
+                    self.resolve_value_with_depth(v, depth + 1)?;
                 }
             }
             Value::Sequence(seq) => {
                 for v in seq.iter_mut() {
-                    self.resolve_value(v)?;
+                    self.resolve_value_with_depth(v, depth + 1)?;
                 }
             }
             _ => {}
@@ -212,30 +225,31 @@ impl ConfigLoader {
     fn resolve_whole_variable_reference(
         &self,
         input: &str,
+        depth: usize,
     ) -> Result<Option<Value>, ConfigError> {
-        let Some(inner) = input.strip_prefix("${").and_then(|s| s.strip_suffix('}')) else {
+        let re =
+            Regex::new(r"^\$\{([^}:]+)(?::([^}]*))?\}$").expect("whole variable regex");
+        let Some(caps) = re.captures(input) else {
             return Ok(None);
         };
-        if inner.contains("}${") {
-            return Ok(None);
-        }
-
-        let mut parts = inner.splitn(2, ':');
-        let key = parts.next().unwrap_or_default();
-        let default = parts.next();
+        let key = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+        let default = caps.get(2).map(|m| m.as_str());
 
         if let Some(env_val) = self.get_env_value(key) {
-            return Ok(Some(Self::parse_text_scalar(&env_val)));
+            return Ok(Some(self.resolve_scalar_from_text(env_val, true)));
         }
 
         if let Some(value) = self.values.get(key) {
             let mut resolved = value.clone();
-            self.resolve_value(&mut resolved)?;
+            self.resolve_value_with_depth(&mut resolved, depth + 1)?;
             return Ok(Some(resolved));
         }
 
         if let Some(default_value) = default {
-            return Ok(Some(Self::parse_text_scalar(default_value)));
+            return Ok(Some(self.resolve_scalar_from_text(
+                default_value.to_string(),
+                true,
+            )));
         }
 
         Err(ConfigError::UnresolvedVariable(input.to_string()))
@@ -318,6 +332,10 @@ impl ConfigLoader {
     }
 
     fn resolve_scalar_value(&self, val: String) -> Value {
+        self.resolve_scalar_from_text(val, false)
+    }
+
+    fn resolve_scalar_from_text(&self, val: String, parse_scalar: bool) -> Value {
         let decrypted = if val.starts_with("CRYPT:RSA:") {
             if let Some(ref ad) = self.asymmetric_decryptor {
                 match ad.decrypt(&val) {
@@ -347,7 +365,11 @@ impl ConfigLoader {
         } else {
             val
         };
-        Value::String(decrypted)
+        if parse_scalar {
+            Self::parse_text_scalar(&decrypted)
+        } else {
+            Value::String(decrypted)
+        }
     }
 
     fn parse_text_scalar(input: &str) -> Value {
@@ -374,6 +396,7 @@ impl ConfigLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aes::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
     use serde::Deserialize;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -551,5 +574,60 @@ mod tests {
 
         assert_eq!(bool_value, Value::Bool(false));
         assert_eq!(number_value, serde_yaml::to_value(8081).expect("yaml number"));
+    }
+
+    #[test]
+    fn multi_variable_strings_fall_back_to_regular_expansion() {
+        let loader =
+            ConfigLoader::new("host: example.com\nport: 8443\n", None, None).expect("loader");
+        let mut value = Value::String("${host}:${port}".to_string());
+
+        loader.resolve_value(&mut value).expect("resolve value");
+
+        assert_eq!(value, Value::String("example.com:8443".to_string()));
+    }
+
+    #[test]
+    fn whole_variable_env_values_are_decrypted_before_parsing() {
+        let salt = hex::decode("ebfab3ef4261185776a026acf72d24ee").expect("salt");
+        let key = {
+            let mut key = [0u8; 32];
+            pbkdf2::pbkdf2_hmac::<sha2::Sha256>(b"password", &salt, 65536, &mut key);
+            key
+        };
+        type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
+        let encryptor = Aes256CbcEnc::new(&key.into(), &[0u8; 16].into());
+        let mut buf = b"false".to_vec();
+        let msg_len = buf.len();
+        buf.resize(msg_len + 16, 0);
+        let ciphertext = encryptor
+            .encrypt_padded_mut::<Pkcs7>(&mut buf, msg_len)
+            .expect("encrypt")
+            .to_vec();
+        let encrypted = format!("CRYPT:{}:{}", hex::encode(salt), hex::encode(ciphertext));
+        unsafe {
+            env::set_var("ENCRYPTED_FLAG", encrypted);
+        }
+
+        let loader = ConfigLoader::new("", Some("password"), None).expect("loader");
+        let mut value = Value::String("${ENCRYPTED_FLAG}".to_string());
+        let resolved = loader.resolve_value(&mut value);
+
+        unsafe {
+            env::remove_var("ENCRYPTED_FLAG");
+        }
+
+        resolved.expect("resolve value");
+        assert_eq!(value, Value::Bool(false));
+    }
+
+    #[test]
+    fn self_referential_values_fail_instead_of_recursing_forever() {
+        let loader = ConfigLoader::new("key: \"${key}\"\n", None, None).expect("loader");
+        let mut value = Value::String("${key}".to_string());
+
+        let error = loader.resolve_value(&mut value).expect_err("cycle should fail");
+
+        assert!(matches!(error, ConfigError::UnresolvedVariable(_)));
     }
 }
