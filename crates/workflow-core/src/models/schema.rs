@@ -1,0 +1,41 @@
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use crate::models::resource::*;
+
+/// Provides the default schema format
+fn default_schema_format() -> String{
+    SchemaFormat::JSON.to_string()
+}
+
+/// Enumerates all supported schema formats
+pub struct SchemaFormat;
+impl SchemaFormat {
+    /// Gets the Avro schema format
+    pub const AVRO: &'static str = "avro";
+    /// Gets the JSON schema format
+    pub const JSON: &'static str = "json";
+    /// Gets the XML schema format
+    pub const XML: &'static str = "xml";
+}
+
+/// Represents the definition of a schema
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SchemaDefinition{
+
+    /// Gets/sets the name of the schema to use, if any
+    #[serde(rename = "use", skip_serializing_if = "Option::is_none")]
+    pub use_: Option<String>,
+
+    /// Gets/sets the schema's format. Defaults to 'json'. The (optional) version of the format can be set using `{format}:{version}`.
+    #[serde(rename = "format", default = "default_schema_format")]
+    pub format : String,
+
+    /// Gets/sets the schema's external resource, if any. Required if [`SchemaDefinition::document`] has not been set.
+    #[serde(rename = "resource", skip_serializing_if = "Option::is_none")]
+    pub resource : Option<ExternalResourceDefinition>,
+
+    /// Gets/sets the inline definition of the schema to use. Required if [`SchemaDefinition::resource`] has not been set.
+    #[serde(rename = "document", skip_serializing_if = "Option::is_none")]
+    pub document : Option<Value>
+
+}

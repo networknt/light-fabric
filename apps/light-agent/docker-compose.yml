@@ -1,0 +1,23 @@
+---
+version: '3.8'
+
+services:
+  light-agent:
+    build:
+      # Build context is set to the workspace root to include dependencies
+      context: ..
+      dockerfile: light-agent/docker/Dockerfile
+    image: networknt/light-agent:latest
+    container_name: light-agent
+    ports:
+      # Use 8081 as the target port to match config/server.yml
+      - "8081:8081"
+    volumes:
+      # Mount to /config which is symlinked to /app/config in the container
+      - ./config:/config
+    networks:
+      - portal-net
+
+networks:
+  portal-net:
+    driver: bridge

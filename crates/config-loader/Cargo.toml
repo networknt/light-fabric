@@ -7,16 +7,16 @@ license.workspace = true
 [dependencies]
 symmetric-decryptor = { path = "../symmetric-decryptor" }
 asymmetric-decryptor = { path = "../asymmetric-decryptor" }
-serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9"
-serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-tokio = { version = "1", features = ["full"] }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
 arc-swap = "1"
 regex = "1"
-thiserror = "2"
-tracing = "0.1"
-async-trait = "0.1"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
 base64 = "0.22"
 toml = "0.8"
 

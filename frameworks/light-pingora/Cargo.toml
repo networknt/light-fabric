@@ -1,0 +1,9 @@
+[package]
+name = "light-pingora"
+version.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+
+[dependencies]
+light-runtime = { path = "../../crates/light-runtime" }
+async-trait = { workspace = true }

@@ -1,0 +1,17 @@
+[package]
+name = "workflow-core"
+version.workspace = true
+edition.workspace = true
+authors = ["stevehu@gmail.com"]
+description = "Contains Agentic Workflow DSL models"
+homepage = "https://agentic-workflow.org"
+repository = "https://github.com/agentic-workflow/sdk-rust"
+documentation = "https://github.com/agentic-workflow/agentic-workflow-doc"
+license = "Apache-2.0"
+keywords = ["agentic-workflow", "sdk", "core"]
+categories = ["config", "parsing", "data-structures", "api-bindings"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }

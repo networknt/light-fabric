@@ -1,0 +1,17 @@
+[package]
+name = "workflow-builder"
+version.workspace = true
+edition.workspace = true
+authors = ["stevehu@gmail.com"]
+description = "Contains services used to build AgenticWorkflow workflow definitions programatically"
+homepage = "https://agentic-workflow.org"
+repository = "https://github.com/agentic-workflow/sdk-rust"
+documentation = "https://github.com/agentic-workflow/agentic-workflow-doc"
+license = "Apache-2.0"
+keywords = ["agentic-workflow", "sdk", "builders"]
+categories = ["config", "parsing", "data-structures", "api-bindings"]
+
+[dependencies]
+workflow-core = { path = "../workflow-core" }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
