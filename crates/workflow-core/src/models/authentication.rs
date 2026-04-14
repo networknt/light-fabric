@@ -226,7 +226,7 @@ pub struct OAuth2TokenDefinition{
 
 }
 
-/// Represents the configuration of OAUTH2 endpoints/// Represents the configuration of OAUTH2 endpoints
+/// Represents the configuration of OAUTH2 endpoints
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OAuth2AuthenticationEndpointsDefinition{
 
