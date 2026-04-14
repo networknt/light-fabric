@@ -9,7 +9,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 use url::Url;
 use uuid::Uuid;
 
@@ -18,6 +18,7 @@ pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 #[derive(Debug)]
 struct NoHostnameVerifier {
     roots: rustls::RootCertStore,
+    supported_algs: rustls::crypto::WebPkiSupportedAlgorithms,
 }
 
 impl rustls::client::danger::ServerCertVerifier for NoHostnameVerifier {
@@ -29,39 +30,37 @@ impl rustls::client::danger::ServerCertVerifier for NoHostnameVerifier {
         _ocsp_response: &[u8],
         now: rustls::pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        let verifier = rustls::client::WebPkiServerVerifier::builder(Arc::new(self.roots.clone()))
-            .build()
-            .map_err(|e| rustls::Error::General(format!("failed to build verifier: {e}")))?;
-        
-        // Use a dummy server name for verification to bypass hostname check
-        let dummy_name = rustls::pki_types::ServerName::try_from("localhost")
-            .map_err(|e| rustls::Error::General(format!("invalid dummy name: {e}")))?;
-            
-        verifier.verify_server_cert(end_entity, intermediates, &dummy_name, _ocsp_response, now)
+        let cert = rustls::server::ParsedCertificate::try_from(end_entity)?;
+        rustls::client::verify_server_cert_signed_by_trust_anchor(
+            &cert,
+            &self.roots,
+            intermediates,
+            now,
+            self.supported_algs.all,
+        )?;
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
 
     fn verify_tls12_signature(
         &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.supported_algs)
     }
 
     fn verify_tls13_signature(
         &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.supported_algs)
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        rustls::crypto::ring::default_provider()
-            .signature_verification_algorithms
-            .supported_schemes()
+        self.supported_algs.supported_schemes()
     }
 }
 
@@ -175,7 +174,15 @@ impl PortalRegistryClient {
             let builder = rustls::ClientConfig::builder();
             
             if !self.verify_hostname {
-                let verifier = Arc::new(NoHostnameVerifier { roots: root_store });
+                let supported_algs = rustls::crypto::CryptoProvider::get_default()
+                    .map(|provider| provider.signature_verification_algorithms)
+                    .unwrap_or_else(|| {
+                        rustls::crypto::ring::default_provider().signature_verification_algorithms
+                    });
+                let verifier = Arc::new(NoHostnameVerifier {
+                    roots: root_store,
+                    supported_algs,
+                });
                 let config = builder.dangerous().with_custom_certificate_verifier(verifier).with_no_client_auth();
                 Some(tokio_tungstenite::Connector::Rustls(Arc::new(config)))
             } else {
