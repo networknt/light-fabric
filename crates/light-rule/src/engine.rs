@@ -73,7 +73,9 @@ impl RuleEngine {
         // In a real environment, evaluate `operand` json path against `context`
         // For simplicity of this port scaffold, grab direct key.
         let actual_val = match context.get(operand_path) {
-            Some(v) => v.as_str().unwrap_or("").to_string(),
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Null) => "".to_string(),
+            Some(v) => v.to_string(),
             None => "".to_string(),
         };
 
