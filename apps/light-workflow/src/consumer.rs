@@ -1,5 +1,5 @@
 use crate::events::{CloudEventEnvelope, WorkflowStartedPayload};
-use agentic_workflow_core::models::workflow::WorkflowDefinition;
+use workflow_core::models::workflow::WorkflowDefinition;
 use serde_json::from_str;
 use serde_yaml;
 use sqlx::{PgPool, Postgres, Transaction, postgres::PgListener};
@@ -24,11 +24,11 @@ pub struct EventConsumer {
 }
 
 impl EventConsumer {
-    fn supported_task_type(task_def: &agentic_workflow_core::models::task::TaskDefinition) -> Option<&'static str> {
+    fn supported_task_type(task_def: &workflow_core::models::task::TaskDefinition) -> Option<&'static str> {
         match task_def {
-            agentic_workflow_core::models::task::TaskDefinition::Call(_) => Some("call"),
-            agentic_workflow_core::models::task::TaskDefinition::Set(_) => Some("set"),
-            agentic_workflow_core::models::task::TaskDefinition::Switch(_) => Some("switch"),
+            workflow_core::models::task::TaskDefinition::Call(_) => Some("call"),
+            workflow_core::models::task::TaskDefinition::Set(_) => Some("set"),
+            workflow_core::models::task::TaskDefinition::Switch(_) => Some("switch"),
             _ => None,
         }
     }

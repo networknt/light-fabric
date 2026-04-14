@@ -11,8 +11,8 @@ futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-agentic_workflow_core = { path = "../../../sdk-rust/core" }
-light-rule = { path = "../light-rule" }
+workflow-core = { path = "../../crates/workflow-core" }
+light-rule = { path = "../../crates/light-rule" }
 sqlx = { version = "0.8", features = ["chrono", "json", "postgres", "runtime-tokio-rustls", "uuid"] }
 thiserror = "2"
 tokio = { version = "1", features = ["full", "tracing"] }

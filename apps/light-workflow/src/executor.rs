@@ -1,7 +1,7 @@
-use agentic_workflow_core::models::task::{
+use workflow_core::models::task::{
     CallTaskDefinition, SetValue, TaskDefinition, TaskDefinitionFields,
 };
-use agentic_workflow_core::models::workflow::WorkflowDefinition;
+use workflow_core::models::workflow::WorkflowDefinition;
 use light_rule::{ActionRegistry, MultiThreadRuleExecutor, RuleConfig, RuleEngine};
 use regex::Regex;
 use serde_json::{Map as JsonMap, Number, Value, json};
@@ -188,10 +188,10 @@ impl TaskExecutor {
         match task_def {
             TaskDefinition::Call(CallTaskDefinition::Http(http_call)) => {
                 let configured_uri = match &http_call.with.endpoint {
-                    agentic_workflow_core::models::resource::OneOfEndpointDefinitionOrUri::Uri(
+                    workflow_core::models::resource::OneOfEndpointDefinitionOrUri::Uri(
                         uri,
                     ) => uri.clone(),
-                    agentic_workflow_core::models::resource::OneOfEndpointDefinitionOrUri::Endpoint(
+                    workflow_core::models::resource::OneOfEndpointDefinitionOrUri::Endpoint(
                         endpoint,
                     ) => endpoint.uri.clone(),
                 };
