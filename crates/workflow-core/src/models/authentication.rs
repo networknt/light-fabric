@@ -217,7 +217,7 @@ pub struct OAuth2AuthenticationRequestDefinition{
 pub struct OAuth2TokenDefinition{
 
     /// Gets/sets the security token to use
-    #[serde(rename = "encoding")]
+    #[serde(rename = "token")]
     pub token : String,
 
     /// Gets/sets the type of security token to use

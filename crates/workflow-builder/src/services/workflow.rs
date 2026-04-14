@@ -92,7 +92,7 @@ impl WorkflowBuilder{
     where F: FnOnce(&mut AuthenticationPolicyDefinitionBuilder){
         let mut builder = AuthenticationPolicyDefinitionBuilder::new();
         setup(&mut builder);
-        let authentication = builder.build();
+        let authentication = builder.build().expect("The authentication policy must be configured");
         if self.workflow.use_.is_none(){
             self.workflow.use_ = Some(ComponentDefinitionCollection::default());
         }

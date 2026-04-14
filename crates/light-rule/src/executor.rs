@@ -112,32 +112,32 @@ impl MultiThreadRuleExecutor {
         };
 
         let crate::models::EndpointConfig::Map(map) = endpoint_config;
-            if let Some(rule_ids_val) = map.get(rule_type) {
-                if let Some(rule_ids_arr) = rule_ids_val.as_array() {
-                    let rule_ids: Vec<String> = rule_ids_arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect();
+        if let Some(rule_ids_val) = map.get(rule_type) {
+            if let Some(rule_ids_arr) = rule_ids_val.as_array() {
+                let rule_ids: Vec<String> = rule_ids_arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect();
 
-                    // Apply permissions if present
-                    if let Some(perm) = map.get("permission") {
-                        if let Value::Object(perm_map) = perm {
-                            if let Value::Object(input_map) = input {
-                                for (k, v) in perm_map {
-                                    input_map.insert(k.clone(), v.clone());
-                                }
+                // Apply permissions if present
+                if let Some(perm) = map.get("permission") {
+                    if let Value::Object(perm_map) = perm {
+                        if let Value::Object(input_map) = input {
+                            for (k, v) in perm_map {
+                                input_map.insert(k.clone(), v.clone());
                             }
                         }
                     }
-
-                    let logic = if rule_type == "req-tra" || rule_type == "res-tra" {
-                        "all"
-                    } else {
-                        "parallel"
-                    };
-
-                    return self.execute_rules(&rule_ids, logic, input).await;
                 }
+
+                let logic = if rule_type == "req-tra" || rule_type == "res-tra" {
+                    "all"
+                } else {
+                    "parallel"
+                };
+
+                return self.execute_rules(&rule_ids, logic, input).await;
             }
+        }
         
         Ok(true)
     }

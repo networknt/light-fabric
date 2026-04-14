@@ -94,25 +94,25 @@ impl AuthenticationPolicyDefinitionBuilder {
     }
 
     /// Builds the configured AuthenticationPolicyDefinition
-    pub fn build(self) -> AuthenticationPolicyDefinition{
+    pub fn build(self) -> Result<AuthenticationPolicyDefinition, &'static str>{
         if self.reference.is_some(){
             let mut authentication = AuthenticationPolicyDefinition::default();
             authentication.use_ = self.reference;
-            authentication
+            Ok(authentication)
         }
         else{
             if let Some(builder) = self.builder {
-                match builder {
+                Ok(match builder {
                     AuthenticationSchemeBuilder::Basic(builder) => builder.build(),
                     AuthenticationSchemeBuilder::Bearer(builder) => builder.build(),
                     AuthenticationSchemeBuilder::Certificate(builder) => builder.build(),
                     AuthenticationSchemeBuilder::Digest(builder) => builder.build(),
                     AuthenticationSchemeBuilder::OAUTH2(builder) => builder.build(),
                     AuthenticationSchemeBuilder::OIDC(builder) => builder.build()
-                } 
-            } 
+                })
+            }
             else {
-                panic!("The authentication policy must be configured");
+                Err("The authentication policy must be configured")
             }
         }
     }

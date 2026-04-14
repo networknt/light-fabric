@@ -2054,7 +2054,7 @@ impl EndpointDefinitionBuilder{
     where F: FnOnce(&mut AuthenticationPolicyDefinitionBuilder){
         let mut builder = AuthenticationPolicyDefinitionBuilder::new();
         setup(&mut builder);
-        let authentication = builder.build();
+        let authentication = builder.build().expect("The authentication policy must be configured");
         self.endpoint.authentication = Some(authentication);
         self
     }
