@@ -16,8 +16,9 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
-static TEMPLATE_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\$\{\{\s*(.*?)\s*\}\}").expect("valid template regex"));
+static TEMPLATE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\$\{\{\s*([^}]*(?:}[^}]+)*)\s*\}\}").expect("valid template regex")
+});
 const TASK_LOCK_TIMEOUT_MINUTES: i64 = 5;
 const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
 
