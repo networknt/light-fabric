@@ -190,6 +190,7 @@ where
     T: TransportRuntime,
 {
     pub async fn start(mut self) -> Result<RunningRuntime<T>, RuntimeError> {
+        init_rustls_provider();
         self.state = LifecycleState::BootstrapLocal;
         let (bootstrap, bootstrap_client) = self.load_bootstrap_config()?;
         let external_config_dir = self.resolve_external_config_dir(&bootstrap);
@@ -266,8 +267,11 @@ where
         if config.config_server_uri.is_none() {
             config.config_server_uri = std::env::var(CONFIG_SERVER_URI_ENV).ok();
         }
-        if config.authorization.is_none() {
-            config.authorization = std::env::var(PORTAL_AUTH_ENV).ok();
+        if let Some(env_authorization) = get_env_value(PORTAL_AUTH_ENV)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        {
+            config.authorization = Some(env_authorization);
         }
 
         let client_config = self.try_load_typed_config::<ClientConfig>(&loader, CLIENT_FILE)?;
@@ -473,14 +477,30 @@ where
         .with_jwt(&token)
         .build();
 
-        let client = Arc::new(
+        let mut client =
             PortalRegistryClient::new(&ws_url, registration, Arc::clone(&self.registry_handler))
                 .map_err(|e| {
                     RuntimeError::Unsupported(format!(
                         "failed to build portal registry client: {e}"
                     ))
-                })?,
-        );
+                })?;
+
+        if let Some(ca_cert_path) = &runtime_config.bootstrap.bootstrap_ca_cert_path {
+            let ca_cert = fs::read(ca_cert_path)?;
+            client = client.with_ca_certificate(ca_cert);
+        }
+
+        let verify_hostname = runtime_config
+            .client
+            .as_ref()
+            .map(|c| c.verify_hostname)
+            .unwrap_or(true);
+        if !verify_hostname {
+            warn!("TLS hostname verification is disabled for the portal-registry client; this weakens server identity validation");
+        }
+        client = client.with_verify_hostname(verify_hostname);
+
+        let client = Arc::new(client);
         let mut registration_rx = client.subscribe_registration();
         let task_client = Arc::clone(&client);
         let registration_task = tokio::spawn(async move {
@@ -770,14 +790,19 @@ fn to_microservice_ws_url(portal_url: &Url) -> Result<String, RuntimeError> {
 }
 
 fn portal_token(config: &PortalRegistryConfig) -> Option<String> {
-    if !config.portal_token.trim().is_empty() {
-        Some(strip_bearer_prefix(&config.portal_token))
-    } else {
-        std::env::var(PORTAL_AUTH_ENV)
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .map(|value| strip_bearer_prefix(&value))
-    }
+    get_env_value(PORTAL_AUTH_ENV)
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| strip_bearer_prefix(&value))
+        .or_else(|| {
+            (!config.portal_token.trim().is_empty()).then(|| strip_bearer_prefix(&config.portal_token))
+        })
+}
+
+fn get_env_value(key: &str) -> Option<String> {
+    let normalized = key.to_uppercase().replace(['-', '.'], "_");
+    std::env::var(&normalized)
+        .ok()
+        .or_else(|| std::env::var(key).ok())
 }
 
 fn strip_bearer_prefix(token: &str) -> String {
@@ -786,6 +811,12 @@ fn strip_bearer_prefix(token: &str) -> String {
         .or_else(|| token.strip_prefix("bearer "))
         .unwrap_or(token)
         .to_string()
+}
+
+fn init_rustls_provider() {
+    if let Err(e) = rustls::crypto::ring::default_provider().install_default() {
+        warn!("rustls crypto provider was already installed or failed to install: {e:?}");
+    }
 }
 
 #[cfg(test)]
@@ -814,6 +845,22 @@ mod tests {
         async fn stop(&self, _handle: &mut Self::Handle) -> Result<(), RuntimeError> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn portal_auth_env_uses_shell_friendly_uppercase_name() {
+        unsafe {
+            std::env::remove_var(PORTAL_AUTH_ENV);
+            std::env::set_var("LIGHT_PORTAL_AUTHORIZATION", "Bearer test-token");
+        }
+
+        let value = get_env_value(PORTAL_AUTH_ENV);
+
+        unsafe {
+            std::env::remove_var("LIGHT_PORTAL_AUTHORIZATION");
+        }
+
+        assert_eq!(value.as_deref(), Some("Bearer test-token"));
     }
 
     #[test]
