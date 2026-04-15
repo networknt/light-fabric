@@ -1,0 +1,3 @@
+gatewayUrl: ${mcp-client.gatewayUrl:http://localhost:8080}
+path: ${mcp-client.path:/mcp}
+timeout: ${mcp-client.timeout:5000}

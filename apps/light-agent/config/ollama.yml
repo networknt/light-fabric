@@ -1,0 +1,7 @@
+# Ollama Client Configuration
+
+# The URL of the local Ollama server
+ollamaUrl: ${ollama.ollamaUrl:http://localhost:11434}
+
+# The default model to use
+model: ${ollama.model:gemma4:e4b}
