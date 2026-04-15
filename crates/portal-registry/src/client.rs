@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, mpsc, watch};
+use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, info};
@@ -14,6 +15,7 @@ use url::Url;
 use uuid::Uuid;
 
 pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+const REGISTRATION_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 struct NoHostnameVerifier {
@@ -293,49 +295,58 @@ impl PortalRegistryClient {
             .send(Message::Text(serde_json::to_string(&register_msg)?.into()))
             .await?;
 
-        while let Some(msg) = ws_stream.next().await {
-            match msg? {
-                Message::Text(text) => {
-                    debug!("Raw registration response: '{}'", text);
-                    let resp = serde_json::from_str::<JsonRpcMessage>(&text)?;
-                    if let Some(result) = resp.result {
-                        let reg_resp: RegistrationResponse = serde_json::from_value(result)?;
-                        let _ = self.registration_tx.send(RegistrationState::Registered {
-                            runtime_instance_id: reg_resp.runtime_instance_id,
-                        });
-                        info!(
-                            "Successfully registered with controller. Instance ID: {}",
-                            reg_resp.runtime_instance_id
-                        );
-                        return Ok(());
-                    } else if let Some(error) = resp.error {
-                        return Err(anyhow::anyhow!("Registration failed: {}", error.message));
+        timeout(REGISTRATION_ACK_TIMEOUT, async {
+            while let Some(msg) = ws_stream.next().await {
+                match msg? {
+                    Message::Text(text) => {
+                        debug!("Raw registration response: '{}'", text);
+                        let resp = serde_json::from_str::<JsonRpcMessage>(&text)?;
+                        if let Some(result) = resp.result {
+                            let reg_resp: RegistrationResponse = serde_json::from_value(result)?;
+                            let _ = self.registration_tx.send(RegistrationState::Registered {
+                                runtime_instance_id: reg_resp.runtime_instance_id,
+                            });
+                            info!(
+                                "Successfully registered with controller. Instance ID: {}",
+                                reg_resp.runtime_instance_id
+                            );
+                            return Ok(());
+                        } else if let Some(error) = resp.error {
+                            return Err(anyhow::anyhow!("Registration failed: {}", error.message));
+                        }
                     }
+                    Message::Ping(payload) => {
+                        ws_stream.send(Message::Pong(payload)).await?;
+                    }
+                    Message::Pong(_) => {}
+                    Message::Close(Some(frame)) => {
+                        return Err(anyhow::anyhow!(
+                            "Connection closed during registration: code={} reason={}",
+                            frame.code,
+                            frame.reason
+                        ));
+                    }
+                    Message::Close(None) => {
+                        return Err(anyhow::anyhow!("Connection closed during registration"));
+                    }
+                    Message::Binary(_) => {
+                        return Err(anyhow::anyhow!(
+                            "Unexpected binary frame received during registration"
+                        ));
+                    }
+                    Message::Frame(_) => {}
                 }
-                Message::Ping(payload) => {
-                    ws_stream.send(Message::Pong(payload)).await?;
-                }
-                Message::Pong(_) => {}
-                Message::Close(Some(frame)) => {
-                    return Err(anyhow::anyhow!(
-                        "Connection closed during registration: code={} reason={}",
-                        frame.code,
-                        frame.reason
-                    ));
-                }
-                Message::Close(None) => {
-                    return Err(anyhow::anyhow!("Connection closed during registration"));
-                }
-                Message::Binary(_) => {
-                    return Err(anyhow::anyhow!(
-                        "Unexpected binary frame received during registration"
-                    ));
-                }
-                Message::Frame(_) => {}
             }
-        }
 
-        Err(anyhow::anyhow!("Connection closed during registration"))
+            Err(anyhow::anyhow!("Connection closed during registration"))
+        })
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Timed out waiting {:?} for controller registration acknowledgement",
+                REGISTRATION_ACK_TIMEOUT
+            )
+        })?
     }
 }
 
