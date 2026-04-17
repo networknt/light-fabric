@@ -1,5 +1,4 @@
 use crate::events::{CloudEventEnvelope, WorkflowStartedPayload};
-use workflow_core::models::workflow::WorkflowDefinition;
 use serde_json::from_str;
 use serde_yaml;
 use sqlx::{PgPool, Postgres, Transaction, postgres::PgListener};
@@ -7,6 +6,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, error, info};
 use uuid::Uuid;
+use workflow_core::models::workflow::WorkflowDefinition;
 
 #[derive(sqlx::FromRow)]
 pub struct RawEvent {
@@ -24,7 +24,9 @@ pub struct EventConsumer {
 }
 
 impl EventConsumer {
-    fn supported_task_type(task_def: &workflow_core::models::task::TaskDefinition) -> Option<&'static str> {
+    fn supported_task_type(
+        task_def: &workflow_core::models::task::TaskDefinition,
+    ) -> Option<&'static str> {
         match task_def {
             workflow_core::models::task::TaskDefinition::Call(_) => Some("call"),
             workflow_core::models::task::TaskDefinition::Set(_) => Some("set"),

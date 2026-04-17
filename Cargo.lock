@@ -1321,6 +1321,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
  "uuid",
 ]
@@ -1374,7 +1375,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64",
  "reqwest",
  "serde",
  "serde_json",

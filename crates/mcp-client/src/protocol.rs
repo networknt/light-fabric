@@ -52,7 +52,7 @@ pub struct McpToolsListResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpToolCallResult {
     pub content: Vec<McpContent>,
-    #[serde(default)]
+    #[serde(default, rename = "isError")]
     pub is_error: bool,
 }
 
@@ -62,5 +62,9 @@ pub enum McpContent {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "image")]
-    Image { data: String, mime_type: String },
+    Image {
+        data: String,
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+    },
 }

@@ -3,13 +3,13 @@ pub mod models;
 #[cfg(test)]
 mod unit_tests {
 
+    use crate::models::authentication::*;
     use crate::models::duration::*;
-    use crate::models::workflow::*;
-    use crate::models::task::*;
     use crate::models::map::*;
     use crate::models::resource::*;
     use crate::models::retry::*;
-    use crate::models::authentication::*;
+    use crate::models::task::*;
+    use crate::models::workflow::*;
     use serde_json::json;
 
     #[test]
@@ -19,21 +19,46 @@ mod unit_tests {
         let version = "1.0.0";
         let title = Some("fake-title".to_string());
         let summary = Some("fake-summary".to_string());
-        let document = WorkflowDefinitionMetadata::new(namespace, name, version, title.clone(), summary.clone(), None, None);
+        let document = WorkflowDefinitionMetadata::new(
+            namespace,
+            name,
+            version,
+            title.clone(),
+            summary.clone(),
+            None,
+            None,
+        );
         let mut call_task = CallTaskDefinition::new_function("http", None, Some(true));
         if let CallTaskDefinition::Function(ref mut f) = call_task {
-             f.common.then = Some("continue".to_string());
+            f.common.then = Some("continue".to_string());
         }
-        let do_task = DoTaskDefinition::new(Map::from(vec![("set".to_string(), TaskDefinition::Wait(WaitTaskDefinition::new(OneOfDurationOrIso8601Expression::Duration(Duration::from_milliseconds(200)))))]));
+        let do_task = DoTaskDefinition::new(Map::from(vec![(
+            "set".to_string(),
+            TaskDefinition::Wait(WaitTaskDefinition::new(
+                OneOfDurationOrIso8601Expression::Duration(Duration::from_milliseconds(200)),
+            )),
+        )]));
         let mut workflow = WorkflowDefinition::new(document);
         workflow.do_ = Map::new();
-        workflow.do_.add("callTask".to_string(), TaskDefinition::Call(call_task));
-        workflow.do_.add("doTask".to_string(), TaskDefinition::Do(do_task));
+        workflow
+            .do_
+            .add("callTask".to_string(), TaskDefinition::Call(call_task));
+        workflow
+            .do_
+            .add("doTask".to_string(), TaskDefinition::Do(do_task));
         let json_serialization_result = serde_json::to_string_pretty(&workflow);
         let yaml_serialization_result = serde_yaml::to_string(&workflow);
-        assert!(json_serialization_result.is_ok(), "JSON Serialization failed: {:?}", json_serialization_result.err());
-        assert!(yaml_serialization_result.is_ok(), "YAML Serialization failed: {:?}", yaml_serialization_result.err());
-        if let Result::Ok(yaml) = yaml_serialization_result{
+        assert!(
+            json_serialization_result.is_ok(),
+            "JSON Serialization failed: {:?}",
+            json_serialization_result.err()
+        );
+        assert!(
+            yaml_serialization_result.is_ok(),
+            "YAML Serialization failed: {:?}",
+            yaml_serialization_result.err()
+        );
+        if let Result::Ok(yaml) = yaml_serialization_result {
             println!("{}", yaml)
         }
         assert_eq!(workflow.document.namespace, namespace);
@@ -254,7 +279,11 @@ mod unit_tests {
         let result: Result<SetTaskDefinition, _> = serde_json::from_value(serde_json::json!({
             "set": set_value_map
         }));
-        assert!(result.is_ok(), "Failed to deserialize set task with map: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Failed to deserialize set task with map: {:?}",
+            result.err()
+        );
 
         let set_task = result.unwrap();
         match set_task.set {
@@ -277,7 +306,11 @@ mod unit_tests {
         let result: Result<SetTaskDefinition, _> = serde_json::from_value(serde_json::json!({
             "set": set_value_expr_json
         }));
-        assert!(result.is_ok(), "Failed to deserialize set task with expression: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Failed to deserialize set task with expression: {:?}",
+            result.err()
+        );
 
         let set_task = result.unwrap();
         match set_task.set {
@@ -297,7 +330,11 @@ mod unit_tests {
             "wait": "PT30S"
         });
         let result: Result<WaitTaskDefinition, _> = serde_json::from_value(wait_task_json);
-        assert!(result.is_ok(), "Failed to deserialize wait task with ISO 8601: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Failed to deserialize wait task with ISO 8601: {:?}",
+            result.err()
+        );
 
         let wait_task = result.unwrap();
         match wait_task.wait {
@@ -319,7 +356,11 @@ mod unit_tests {
             }
         });
         let result: Result<WaitTaskDefinition, _> = serde_json::from_value(wait_task_json);
-        assert!(result.is_ok(), "Failed to deserialize wait task with inline duration: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Failed to deserialize wait task with inline duration: {:?}",
+            result.err()
+        );
 
         let wait_task = result.unwrap();
         match wait_task.wait {
@@ -342,8 +383,13 @@ mod unit_tests {
             "code": "console.log('test')",
             "arguments": ["hello", "world"]
         });
-        let result: Result<ScriptProcessDefinition, _> = serde_json::from_value(script_process_json);
-        assert!(result.is_ok(), "Failed to deserialize script with array arguments: {:?}", result.err());
+        let result: Result<ScriptProcessDefinition, _> =
+            serde_json::from_value(script_process_json);
+        assert!(
+            result.is_ok(),
+            "Failed to deserialize script with array arguments: {:?}",
+            result.err()
+        );
 
         let script = result.unwrap();
         assert_eq!(script.language, "javascript");
@@ -367,8 +413,13 @@ mod unit_tests {
             "arguments": ["arg1"],
             "environment": {"FOO": "bar"}
         });
-        let result: Result<ScriptProcessDefinition, _> = serde_json::from_value(script_process_json);
-        assert!(result.is_ok(), "Failed to deserialize script with stdin: {:?}", result.err());
+        let result: Result<ScriptProcessDefinition, _> =
+            serde_json::from_value(script_process_json);
+        assert!(
+            result.is_ok(),
+            "Failed to deserialize script with stdin: {:?}",
+            result.err()
+        );
 
         let script = result.unwrap();
         assert_eq!(script.language, "python");
@@ -376,7 +427,10 @@ mod unit_tests {
         assert!(script.arguments.is_some());
         assert_eq!(script.arguments.as_ref().unwrap().len(), 1);
         assert!(script.environment.is_some());
-        assert_eq!(script.environment.as_ref().unwrap().get("FOO"), Some(&"bar".to_string()));
+        assert_eq!(
+            script.environment.as_ref().unwrap().get("FOO"),
+            Some(&"bar".to_string())
+        );
     }
 
     #[test]

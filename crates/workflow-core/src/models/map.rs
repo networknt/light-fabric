@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::Hash;
 
@@ -36,7 +36,6 @@ where
     TKey: Eq + Hash + Clone + Serialize + for<'d> Deserialize<'d> + PartialEq,
     TValue: Clone + Serialize + for<'d> Deserialize<'d> + PartialEq,
 {
-
     /// Initializes a new map
     pub fn new() -> Self {
         Self::default()
@@ -61,5 +60,4 @@ where
         single_entry.insert(key, value);
         self.entries.push(single_entry);
     }
-
 }

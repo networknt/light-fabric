@@ -128,7 +128,7 @@ impl OllamaProvider {
             .to_string()
     }
 
-    pub fn new(base_url: Option<&str>, api_key: Option<&str>) -> Self {
+    pub fn new(base_url: Option<&str>, api_key: Option<&str>) -> anyhow::Result<Self> {
         Self::new_with_reasoning(base_url, api_key, None)
     }
 
@@ -136,7 +136,7 @@ impl OllamaProvider {
         base_url: Option<&str>,
         api_key: Option<&str>,
         reasoning_enabled: Option<bool>,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let api_key = api_key.and_then(|value| {
             let trimmed = value.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_string())
@@ -151,17 +151,18 @@ impl OllamaProvider {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(300))
             .build()
-            .expect("Failed to build reqwest Client for OllamaProvider");
+            .map_err(|error| {
+                anyhow::anyhow!("Failed to build reqwest Client for OllamaProvider: {error}")
+            })?;
 
-        Self {
+        Ok(Self {
             base_url,
             api_key,
             reasoning_enabled,
             is_local,
             client,
-        }
+        })
     }
-
 
     fn resolve_request_details(&self, model: &str) -> anyhow::Result<(String, bool)> {
         let requests_cloud = model.ends_with(":cloud");
@@ -539,7 +540,7 @@ impl OllamaProvider {
 impl Provider for OllamaProvider {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
-            native_tool_calling: false,
+            native_tool_calling: true,
             vision: true,
             prompt_caching: false,
         }
@@ -751,25 +752,25 @@ mod tests {
 
     #[test]
     fn default_url() {
-        let p = OllamaProvider::new(None, None);
+        let p = OllamaProvider::new(None, None).unwrap();
         assert_eq!(p.base_url, "http://localhost:11434");
     }
 
     #[test]
     fn custom_url_trailing_slash() {
-        let p = OllamaProvider::new(Some("http://192.168.1.100:11434/"), None);
+        let p = OllamaProvider::new(Some("http://192.168.1.100:11434/"), None).unwrap();
         assert_eq!(p.base_url, "http://192.168.1.100:11434");
     }
 
     #[test]
     fn custom_url_no_trailing_slash() {
-        let p = OllamaProvider::new(Some("http://myserver:11434"), None);
+        let p = OllamaProvider::new(Some("http://myserver:11434"), None).unwrap();
         assert_eq!(p.base_url, "http://myserver:11434");
     }
 
     #[test]
     fn cloud_suffix_strips_model_name() {
-        let p = OllamaProvider::new(Some("https://ollama.com"), Some("ollama-key"));
+        let p = OllamaProvider::new(Some("https://ollama.com"), Some("ollama-key")).unwrap();
         let (model, should_auth) = p.resolve_request_details("qwen3:cloud").unwrap();
         assert_eq!(model, "qwen3");
         assert!(should_auth);

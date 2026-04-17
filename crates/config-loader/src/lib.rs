@@ -161,11 +161,7 @@ impl ConfigLoader {
         self.resolve_value_with_depth(value, 0)
     }
 
-    fn resolve_value_with_depth(
-        &self,
-        value: &mut Value,
-        depth: usize,
-    ) -> Result<(), ConfigError> {
+    fn resolve_value_with_depth(&self, value: &mut Value, depth: usize) -> Result<(), ConfigError> {
         if depth >= MAX_EXPANSION_DEPTH {
             return Err(ConfigError::Convert(format!(
                 "nested value resolution exceeded max depth {MAX_EXPANSION_DEPTH} while resolving value: {:?}",
@@ -247,10 +243,9 @@ impl ConfigLoader {
         }
 
         if let Some(default_value) = default {
-            return Ok(Some(self.resolve_scalar_from_text(
-                default_value.to_string(),
-                true,
-            )));
+            return Ok(Some(
+                self.resolve_scalar_from_text(default_value.to_string(), true),
+            ));
         }
 
         Err(ConfigError::UnresolvedVariable(input.to_string()))
@@ -383,7 +378,8 @@ impl ConfigLoader {
             return Value::Bool(false);
         }
         if let Ok(parsed) = trimmed.parse::<i64>() {
-            return serde_yaml::to_value(parsed).unwrap_or_else(|_| Value::String(input.to_string()));
+            return serde_yaml::to_value(parsed)
+                .unwrap_or_else(|_| Value::String(input.to_string()));
         }
         if let Ok(parsed) = trimmed.parse::<f64>() {
             if parsed.is_finite() {
@@ -524,13 +520,12 @@ mod tests {
 
     #[test]
     fn preserves_expanded_bool_like_strings_as_strings() {
-        let loader =
-            ConfigLoader::new(
-                "feature_flag: \"true\"\nport: \"001\"\nscientific: \"1e3\"\n",
-                None,
-                None,
-            )
-                .expect("loader");
+        let loader = ConfigLoader::new(
+            "feature_flag: \"true\"\nport: \"001\"\nscientific: \"1e3\"\n",
+            None,
+            None,
+        )
+        .expect("loader");
 
         let mut bool_value = Value::String("${feature_flag}".to_string());
         let mut number_value = Value::String("${port}".to_string());
@@ -562,7 +557,10 @@ mod tests {
             .expect("resolve number");
 
         assert_eq!(bool_value, Value::Bool(true));
-        assert_eq!(number_value, serde_yaml::to_value(8083).expect("yaml number"));
+        assert_eq!(
+            number_value,
+            serde_yaml::to_value(8083).expect("yaml number")
+        );
     }
 
     #[test]
@@ -578,7 +576,10 @@ mod tests {
             .expect("resolve number");
 
         assert_eq!(bool_value, Value::Bool(false));
-        assert_eq!(number_value, serde_yaml::to_value(8081).expect("yaml number"));
+        assert_eq!(
+            number_value,
+            serde_yaml::to_value(8081).expect("yaml number")
+        );
     }
 
     #[test]
@@ -655,7 +656,9 @@ mod tests {
         let loader = ConfigLoader::new("key: \"${key}\"\n", None, None).expect("loader");
         let mut value = Value::String("${key}".to_string());
 
-        let error = loader.resolve_value(&mut value).expect_err("cycle should fail");
+        let error = loader
+            .resolve_value(&mut value)
+            .expect_err("cycle should fail");
 
         assert!(matches!(error, ConfigError::Convert(_)));
     }

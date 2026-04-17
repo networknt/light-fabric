@@ -6,4 +6,4 @@ pub mod models;
 pub use action::{ActionRegistry, RuleActionPlugin};
 pub use engine::RuleEngine;
 pub use executor::{MultiThreadRuleExecutor, RuntimeState};
-pub use models::{RuleConfig, EndpointConfig, Rule, RuleCondition, RuleAction};
+pub use models::{EndpointConfig, Rule, RuleAction, RuleCondition, RuleConfig};

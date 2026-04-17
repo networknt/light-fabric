@@ -49,3 +49,46 @@ pub fn extract_ollama_image_payload(image_ref: &str) -> Option<String> {
         Some(image_ref.trim().to_string()).filter(|value| !value.is_empty())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_ollama_image_payload, parse_image_markers};
+
+    #[test]
+    fn parses_multiple_markers() {
+        let input = "before [IMAGE: first.png] middle [IMAGE:data:image/png;base64,Zm9v] after";
+        let (cleaned, refs) = parse_image_markers(input);
+        assert_eq!(cleaned, "before  middle  after");
+        assert_eq!(refs, vec!["first.png", "data:image/png;base64,Zm9v"]);
+    }
+
+    #[test]
+    fn keeps_empty_marker_in_text() {
+        let input = "hello [IMAGE:   ] world";
+        let (cleaned, refs) = parse_image_markers(input);
+        assert_eq!(cleaned, "hello [IMAGE:   ] world");
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn keeps_unclosed_marker_in_text() {
+        let input = "hello [IMAGE:missing";
+        let (cleaned, refs) = parse_image_markers(input);
+        assert_eq!(cleaned, "hello [IMAGE:missing");
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn preserves_non_ascii_text() {
+        let input = "你好 [IMAGE: 图像.png] мир";
+        let (cleaned, refs) = parse_image_markers(input);
+        assert_eq!(cleaned, "你好  мир");
+        assert_eq!(refs, vec!["图像.png"]);
+    }
+
+    #[test]
+    fn extracts_data_url_payload() {
+        let payload = extract_ollama_image_payload("data:image/png;base64, Zm9vYmFy ");
+        assert_eq!(payload.as_deref(), Some("Zm9vYmFy"));
+    }
+}

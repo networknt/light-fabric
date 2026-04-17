@@ -3,9 +3,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-fn deserialize_string_or_number_opt<'de, D>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error>
+fn deserialize_string_or_number_opt<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -17,11 +15,10 @@ where
         Some(other) => {
             return Err(serde::de::Error::custom(format!(
                 "expected string or number, got {other}"
-            )))
+            )));
         }
     })
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

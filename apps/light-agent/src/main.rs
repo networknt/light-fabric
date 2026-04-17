@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use axum::{
     Router,
     extract::{
-        State, Query,
+        Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::HeaderMap,
@@ -26,6 +26,8 @@ use tokio::sync::Mutex;
 use tower_http::services::ServeDir;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
+
+const MAX_SESSION_MESSAGES: usize = 40;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -98,9 +100,21 @@ enum ServerMessage {
     Error { message: String },
 }
 
-async fn handle_socket(socket: WebSocket, state: Arc<AgentState>, initial_session_id: Option<String>, authorization: Option<String>) {
+fn trim_history(history: &mut Vec<ChatMessage>) {
+    let excess = history.len().saturating_sub(MAX_SESSION_MESSAGES);
+    if excess > 0 {
+        history.drain(0..excess);
+    }
+}
+
+async fn handle_socket(
+    socket: WebSocket,
+    state: Arc<AgentState>,
+    initial_session_id: Option<String>,
+    authorization: Option<String>,
+) {
     let (mut sender, mut receiver) = socket.split();
-    
+
     // Immediate Session Initialization
     let session_id = initial_session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let _ = sender
@@ -140,6 +154,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AgentState>, initial_sessio
                 .entry(session_id.clone())
                 .or_insert_with(Vec::new);
             history.push(ChatMessage::user(client_msg.text));
+            trim_history(history);
             let messages = history.clone();
             drop(history_guard);
 
@@ -149,6 +164,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AgentState>, initial_sessio
                         let mut history_guard = state.sessions.lock().await;
                         if let Some(h) = history_guard.get_mut(&session_id) {
                             h.push(ChatMessage::assistant(text.clone()));
+                            trim_history(h);
                         }
                         let _ = sender
                             .send(Message::Text(
@@ -184,10 +200,14 @@ async fn run_agent_loop(
     authorization: Option<&str>,
 ) -> Result<ChatResponse> {
     // 1. Fetch tools from MCP Gateway (forward Authorization if present)
-    let mcp_tools = state.mcp_client.list_tools(authorization).await.unwrap_or_else(|e| {
-        warn!("Failed to fetch MCP tools: {}", e);
-        vec![]
-    });
+    let mcp_tools = state
+        .mcp_client
+        .list_tools(authorization)
+        .await
+        .unwrap_or_else(|e| {
+            warn!("Failed to fetch MCP tools: {}", e);
+            vec![]
+        });
     info!("Fetched {} MCP tool(s) from gateway", mcp_tools.len());
     let tool_specs: Vec<ToolSpec> = mcp_tools
         .into_iter()
@@ -296,9 +316,8 @@ async fn main() -> anyhow::Result<()> {
     let startup_config: BootstrapConfig = loader
         .load_typed([config_dir.join("startup.yml")])
         .unwrap_or_default();
-    let client_config: Option<ClientConfig> = loader
-        .load_typed([config_dir.join("client.yml")])
-        .ok();
+    let client_config: Option<ClientConfig> =
+        loader.load_typed([config_dir.join("client.yml")]).ok();
 
     let mcp_gateway_url = format!(
         "{}/{}",
@@ -317,7 +336,9 @@ async fn main() -> anyhow::Result<()> {
         .map(|c| c.verify_hostname)
         .unwrap_or(true);
     if !verify_hostname {
-        warn!("TLS hostname verification is disabled for the MCP gateway client; this weakens server identity validation");
+        warn!(
+            "TLS hostname verification is disabled for the MCP gateway client; this weakens server identity validation"
+        );
     }
 
     let mcp_client = McpGatewayClient::with_options(
@@ -325,10 +346,12 @@ async fn main() -> anyhow::Result<()> {
         ca_cert.as_deref(),
         verify_hostname,
         mcp_config.timeout_ms,
-    ).context("Failed to build MCP gateway client")?;
+    )
+    .context("Failed to build MCP gateway client")?;
 
     let state = Arc::new(AgentState {
-        provider: OllamaProvider::new(Some(&ollama_config.ollama_url), None),
+        provider: OllamaProvider::new(Some(&ollama_config.ollama_url), None)
+            .context("Failed to build Ollama provider")?,
         mcp_client,
         ollama_config,
         sessions: Arc::new(Mutex::new(HashMap::new())),

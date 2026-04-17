@@ -1,18 +1,22 @@
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use light_rule::{
-    ActionRegistry, EndpointConfig, MultiThreadRuleExecutor, Rule, RuleAction, RuleCondition, 
-    RuleConfig, RuleEngine, RuleActionPlugin
+    ActionRegistry, EndpointConfig, MultiThreadRuleExecutor, Rule, RuleAction, RuleActionPlugin,
+    RuleCondition, RuleConfig, RuleEngine,
 };
 
 struct MockAction;
 
 #[async_trait]
 impl RuleActionPlugin for MockAction {
-    async fn execute(&self, rule_context: &mut Value, action_values: &Option<Value>) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    async fn execute(
+        &self,
+        rule_context: &mut Value,
+        action_values: &Option<Value>,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         if let Some(vals) = action_values {
             if let Some(msg) = vals.get("message") {
                 if let Value::Object(map) = rule_context {
@@ -67,14 +71,14 @@ fn build_test_config() -> (RuleConfig, Arc<RuleEngine>) {
 
     // 3. Build Endpoint Rules
     let mut endpoint_rules = HashMap::new();
-    
+
     let mut api_map = HashMap::new();
-    api_map.insert("access-control".into(), json!(["rule_access_01", "rule_access_02"]));
-    
-    endpoint_rules.insert(
-        "/api/test@get".into(), 
-        EndpointConfig::Map(api_map)
+    api_map.insert(
+        "access-control".into(),
+        json!(["rule_access_01", "rule_access_02"]),
     );
+
+    endpoint_rules.insert("/api/test@get".into(), EndpointConfig::Map(api_map));
 
     let config = RuleConfig {
         rule_bodies,
@@ -95,7 +99,10 @@ async fn test_parallel_access_control_pass() {
         "client_status": "verified"
     });
 
-    let result = executor.execute_endpoint_rules("/api/test@get", "access-control", &mut context).await.unwrap();
+    let result = executor
+        .execute_endpoint_rules("/api/test@get", "access-control", &mut context)
+        .await
+        .unwrap();
     assert!(result, "Expected rules to pass");
 }
 
@@ -110,7 +117,10 @@ async fn test_parallel_access_control_fail() {
         "client_status": "verified"
     });
 
-    let result = executor.execute_endpoint_rules("/api/test@get", "access-control", &mut context).await.unwrap();
+    let result = executor
+        .execute_endpoint_rules("/api/test@get", "access-control", &mut context)
+        .await
+        .unwrap();
     assert!(!result, "Expected to fail because role != admin");
 }
 
@@ -125,10 +135,20 @@ async fn test_sequential_logic_all() {
     });
 
     // Execute sequentially (ANY rule means if ANY fail it stops, actually ALL logic stops on first fail)
-    let result = executor.execute_rules(&["rule_access_01".into(), "rule_access_02".into()], "all", &mut context).await.unwrap();
+    let result = executor
+        .execute_rules(
+            &["rule_access_01".into(), "rule_access_02".into()],
+            "all",
+            &mut context,
+        )
+        .await
+        .unwrap();
     assert!(result, "Expected all to pass");
 
     // In sequential mode, `input` MUST be meaningfully mutated.
     // Let's verify `MockAction` mutated our original map.
-    assert_eq!(context.get("last_message").unwrap().as_str().unwrap(), "Access Granted");
+    assert_eq!(
+        context.get("last_message").unwrap().as_str().unwrap(),
+        "Access Granted"
+    );
 }

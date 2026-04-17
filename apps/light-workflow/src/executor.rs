@@ -1,7 +1,3 @@
-use workflow_core::models::task::{
-    CallTaskDefinition, SetValue, TaskDefinition, TaskDefinitionFields,
-};
-use workflow_core::models::workflow::WorkflowDefinition;
 use light_rule::{ActionRegistry, MultiThreadRuleExecutor, RuleConfig, RuleEngine};
 use regex::Regex;
 use serde_json::{Map as JsonMap, Number, Value, json};
@@ -14,6 +10,10 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{error, info};
 use uuid::Uuid;
+use workflow_core::models::task::{
+    CallTaskDefinition, SetValue, TaskDefinition, TaskDefinitionFields,
+};
+use workflow_core::models::workflow::WorkflowDefinition;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 static TEMPLATE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -189,28 +189,29 @@ impl TaskExecutor {
         match task_def {
             TaskDefinition::Call(CallTaskDefinition::Http(http_call)) => {
                 let configured_uri = match &http_call.with.endpoint {
-                    workflow_core::models::resource::OneOfEndpointDefinitionOrUri::Uri(
-                        uri,
-                    ) => uri.clone(),
+                    workflow_core::models::resource::OneOfEndpointDefinitionOrUri::Uri(uri) => {
+                        uri.clone()
+                    }
                     workflow_core::models::resource::OneOfEndpointDefinitionOrUri::Endpoint(
                         endpoint,
                     ) => endpoint.uri.clone(),
                 };
-                let resolved_uri = self.resolve_template_to_string(&configured_uri, &claimed.context_data);
+                let resolved_uri =
+                    self.resolve_template_to_string(&configured_uri, &claimed.context_data);
                 let validated_uri = self.validate_resolved_uri(&configured_uri, &resolved_uri)?;
 
-                let method = reqwest::Method::from_bytes(http_call.with.method.as_bytes()).map_err(
-                    |err| {
+                let method = reqwest::Method::from_bytes(http_call.with.method.as_bytes())
+                    .map_err(|err| {
                         io::Error::new(
                             io::ErrorKind::InvalidInput,
                             format!("invalid HTTP method '{}': {}", http_call.with.method, err),
                         )
-                    },
-                )?;
+                    })?;
                 let mut req_builder = self.http_client.request(method, validated_uri.clone());
 
                 if let Some(body) = &http_call.with.body {
-                    req_builder = req_builder.json(&self.resolve_json_value(body, &claimed.context_data));
+                    req_builder =
+                        req_builder.json(&self.resolve_json_value(body, &claimed.context_data));
                 }
 
                 info!(">>> Making HTTP request to: {}", validated_uri);
@@ -301,9 +302,10 @@ impl TaskExecutor {
                         }
                         Value::Object(resolved)
                     }
-                    SetValue::Expression(expression) => {
-                        self.resolve_json_value(&Value::String(expression.clone()), &claimed.context_data)
-                    }
+                    SetValue::Expression(expression) => self.resolve_json_value(
+                        &Value::String(expression.clone()),
+                        &claimed.context_data,
+                    ),
                 };
 
                 Ok(TaskExecutionResult {
@@ -324,10 +326,10 @@ impl TaskExecutor {
                             continue;
                         }
 
-                        let when = case_def
-                            .when
-                            .as_deref()
-                            .or_else(|| (!case_name.eq_ignore_ascii_case("default")).then_some(case_name.as_str()));
+                        let when = case_def.when.as_deref().or_else(|| {
+                            (!case_name.eq_ignore_ascii_case("default"))
+                                .then_some(case_name.as_str())
+                        });
 
                         if let Some(when) = when {
                             if self.evaluate_condition(when, &claimed.context_data)? {
@@ -438,7 +440,8 @@ impl TaskExecutor {
         };
 
         let base_context = context_data_override.unwrap_or(context_data);
-        let new_context = self.apply_exports(raw_definition, &task.wf_task_id, base_context, &task_output);
+        let new_context =
+            self.apply_exports(raw_definition, &task.wf_task_id, base_context, &task_output);
 
         sqlx::query(
             "UPDATE process_info_t SET context_data = $1 WHERE host_id = $2 AND process_id = $3",
@@ -495,7 +498,10 @@ impl TaskExecutor {
                 .execute(&mut **tx)
                 .await?;
 
-                info!(">>> Transitioned to Next Task: {} ({})", next_name, next_type);
+                info!(
+                    ">>> Transitioned to Next Task: {} ({})",
+                    next_name, next_type
+                );
             } else {
                 let message = format!(
                     "invalid next task reference '{}' from task {} in workflow {}",
@@ -683,12 +689,18 @@ impl TaskExecutor {
         Ok(row.0)
     }
 
-    fn parse_configured_destination_uri(&self, configured_uri: &str) -> Result<reqwest::Url, DynError> {
+    fn parse_configured_destination_uri(
+        &self,
+        configured_uri: &str,
+    ) -> Result<reqwest::Url, DynError> {
         let scheme_separator = "://";
         let scheme_end = configured_uri.find(scheme_separator).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("invalid configured endpoint URI '{}': missing scheme", configured_uri),
+                format!(
+                    "invalid configured endpoint URI '{}': missing scheme",
+                    configured_uri
+                ),
             )
         })?;
         let scheme = &configured_uri[..scheme_end];
@@ -701,7 +713,10 @@ impl TaskExecutor {
         if authority.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("invalid configured endpoint URI '{}': missing host", configured_uri),
+                format!(
+                    "invalid configured endpoint URI '{}': missing host",
+                    configured_uri
+                ),
             )
             .into());
         }
@@ -721,7 +736,10 @@ impl TaskExecutor {
         reqwest::Url::parse(&destination_uri).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("invalid configured endpoint URI '{}': {}", configured_uri, e),
+                format!(
+                    "invalid configured endpoint URI '{}': {}",
+                    configured_uri, e
+                ),
             )
             .into()
         })
@@ -740,11 +758,10 @@ impl TaskExecutor {
             )
         })?;
 
-        let destination_unchanged =
-            matches!(resolved.scheme(), "http" | "https")
-                && configured.scheme() == resolved.scheme()
-                && configured.host_str() == resolved.host_str()
-                && configured.port_or_known_default() == resolved.port_or_known_default();
+        let destination_unchanged = matches!(resolved.scheme(), "http" | "https")
+            && configured.scheme() == resolved.scheme()
+            && configured.host_str() == resolved.host_str()
+            && configured.port_or_known_default() == resolved.port_or_known_default();
 
         if destination_unchanged {
             Ok(resolved)
@@ -811,7 +828,10 @@ impl TaskExecutor {
         let expression = expression.trim();
 
         if self.has_comparison_operator(expression) {
-            return self.evaluate_condition(expression, context).ok().map(Value::Bool);
+            return self
+                .evaluate_condition(expression, context)
+                .ok()
+                .map(Value::Bool);
         }
 
         if let Some(path) = expression.strip_prefix('.') {
@@ -939,9 +959,8 @@ impl TaskExecutor {
     }
 
     fn parse_quoted_string(value: &str) -> Option<String> {
-        let quoted =
-            (value.starts_with('"') && value.ends_with('"'))
-                || (value.starts_with('\'') && value.ends_with('\''));
+        let quoted = (value.starts_with('"') && value.ends_with('"'))
+            || (value.starts_with('\'') && value.ends_with('\''));
         quoted.then(|| value[1..value.len() - 1].to_string())
     }
 }

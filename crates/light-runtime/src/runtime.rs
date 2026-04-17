@@ -201,8 +201,12 @@ where
             .await?;
 
         self.state = LifecycleState::BuildRuntime;
-        let runtime_config =
-            self.build_runtime_config(bootstrap, bootstrap_client, external_config_dir, remote_result)?;
+        let runtime_config = self.build_runtime_config(
+            bootstrap,
+            bootstrap_client,
+            external_config_dir,
+            remote_result,
+        )?;
 
         for module in &self.modules {
             module.on_runtime_built(&runtime_config).await?;
@@ -246,7 +250,9 @@ where
         })
     }
 
-    fn load_bootstrap_config(&self) -> Result<(BootstrapConfig, Option<ClientConfig>), RuntimeError> {
+    fn load_bootstrap_config(
+        &self,
+    ) -> Result<(BootstrapConfig, Option<ClientConfig>), RuntimeError> {
         let values = load_bootstrap_values(&self.config_dir)?;
         let password = std::env::var(CONFIG_PASSWORD_ENV).ok();
         let loader = ConfigLoader::from_values(values, password.as_deref(), None)?;
@@ -496,7 +502,9 @@ where
             .map(|c| c.verify_hostname)
             .unwrap_or(true);
         if !verify_hostname {
-            warn!("TLS hostname verification is disabled for the portal-registry client; this weakens server identity validation");
+            warn!(
+                "TLS hostname verification is disabled for the portal-registry client; this weakens server identity validation"
+            );
         }
         client = client.with_verify_hostname(verify_hostname);
 
@@ -794,7 +802,8 @@ fn portal_token(config: &PortalRegistryConfig) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
         .map(|value| strip_bearer_prefix(&value))
         .or_else(|| {
-            (!config.portal_token.trim().is_empty()).then(|| strip_bearer_prefix(&config.portal_token))
+            (!config.portal_token.trim().is_empty())
+                .then(|| strip_bearer_prefix(&config.portal_token))
         })
 }
 
@@ -822,9 +831,9 @@ fn init_rustls_provider() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::{BoundTransport, ResolvedServerMetadata, TransportRuntime};
     use async_trait::async_trait;
     use tempfile::TempDir;
-    use crate::transport::{BoundTransport, ResolvedServerMetadata, TransportRuntime};
 
     struct NoopTransport;
 
@@ -937,7 +946,8 @@ mod tests {
             .with_config_dir(config_dir.path())
             .build();
 
-        let (_bootstrap, client_config) = runtime.load_bootstrap_config().expect("bootstrap config");
+        let (_bootstrap, client_config) =
+            runtime.load_bootstrap_config().expect("bootstrap config");
 
         assert_eq!(client_config.map(|c| c.verify_hostname), Some(false));
     }
