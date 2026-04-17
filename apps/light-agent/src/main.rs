@@ -1,23 +1,26 @@
 use anyhow::{Context, Result};
 use axum::{
     Router,
-    extract::{State, ws::{Message, WebSocket, WebSocketUpgrade}},
-    routing::get,
+    extract::{
+        State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+    },
     response::IntoResponse,
+    routing::get,
 };
-use tower_http::services::ServeDir;
-use futures_util::{SinkExt, StreamExt};
-use light_runtime::LightRuntimeBuilder;
-use light_axum::{AxumApp, AxumTransport, ServerContext};
 use config_loader::ConfigLoader;
-use model_provider::{OllamaProvider, Provider, ChatMessage, ChatRequest, ToolSpec, ChatResponse};
-use mcp_client::{McpGatewayClient, McpContent};
+use futures_util::{SinkExt, StreamExt};
+use light_axum::{AxumApp, AxumTransport, ServerContext};
+use light_runtime::LightRuntimeBuilder;
+use mcp_client::{McpContent, McpGatewayClient};
+use model_provider::{ChatMessage, ChatRequest, ChatResponse, OllamaProvider, Provider, ToolSpec};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{info, error, warn};
+use tower_http::services::ServeDir;
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -51,7 +54,7 @@ impl AxumApp for AgentApp {
     fn router(&self, _context: ServerContext) -> Router {
         Router::new()
             .route("/health", get(health))
-            .route("/ws", get(ws_handler))
+            .route("/chat", get(ws_handler))
             .fallback_service(ServeDir::new("public").append_index_html_on_directories(true))
             .with_state(self.state.clone())
     }
@@ -94,26 +97,40 @@ async fn handle_socket(socket: WebSocket, state: Arc<AgentState>) {
             let client_msg: ClientMessage = match serde_json::from_str(&text) {
                 Ok(m) => m,
                 Err(e) => {
-                    let _ = sender.send(Message::Text(serde_json::to_string(&ServerMessage::Error {
-                        message: format!("Invalid message format: {}", e),
-                    }).unwrap().into())).await;
+                    let _ = sender
+                        .send(Message::Text(
+                            serde_json::to_string(&ServerMessage::Error {
+                                message: format!("Invalid message format: {}", e),
+                            })
+                            .unwrap()
+                            .into(),
+                        ))
+                        .await;
                     continue;
                 }
             };
 
-            let session_id = client_msg.session_id.unwrap_or_else(|| {
-                uuid::Uuid::new_v4().to_string()
-            });
+            let session_id = client_msg
+                .session_id
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
             if current_session_id.is_none() {
                 current_session_id = Some(session_id.clone());
-                let _ = sender.send(Message::Text(serde_json::to_string(&ServerMessage::Session {
-                    session_id: session_id.clone(),
-                }).unwrap().into())).await;
+                let _ = sender
+                    .send(Message::Text(
+                        serde_json::to_string(&ServerMessage::Session {
+                            session_id: session_id.clone(),
+                        })
+                        .unwrap()
+                        .into(),
+                    ))
+                    .await;
             }
 
             let mut history_guard = state.sessions.lock().await;
-            let history = history_guard.entry(session_id.clone()).or_insert_with(Vec::new);
+            let history = history_guard
+                .entry(session_id.clone())
+                .or_insert_with(Vec::new);
             history.push(ChatMessage::user(client_msg.text));
             let messages = history.clone();
             drop(history_guard);
@@ -125,39 +142,62 @@ async fn handle_socket(socket: WebSocket, state: Arc<AgentState>) {
                         if let Some(h) = history_guard.get_mut(&session_id) {
                             h.push(ChatMessage::assistant(text.clone()));
                         }
-                        let _ = sender.send(Message::Text(serde_json::to_string(&ServerMessage::Text {
-                            text,
-                        }).unwrap().into())).await;
+                        let _ = sender
+                            .send(Message::Text(
+                                serde_json::to_string(&ServerMessage::Text { text })
+                                    .unwrap()
+                                    .into(),
+                            ))
+                            .await;
                     }
                 }
                 Err(e) => {
                     error!("Agent loop error: {}", e);
-                    let _ = sender.send(Message::Text(serde_json::to_string(&ServerMessage::Error {
-                        message: format!("Error: {}", e),
-                    }).unwrap().into())).await;
+                    let _ = sender
+                        .send(Message::Text(
+                            serde_json::to_string(&ServerMessage::Error {
+                                message: format!("Error: {}", e),
+                            })
+                            .unwrap()
+                            .into(),
+                        ))
+                        .await;
                 }
             }
         }
     }
 }
 
-async fn run_agent_loop(state: &AgentState, mut messages: Vec<ChatMessage>) -> Result<ChatResponse> {
+async fn run_agent_loop(
+    state: &AgentState,
+    mut messages: Vec<ChatMessage>,
+) -> Result<ChatResponse> {
     // 1. Fetch tools from MCP Gateway
     let mcp_tools = state.mcp_client.list_tools(None).await.unwrap_or_default();
-    let tool_specs: Vec<ToolSpec> = mcp_tools.into_iter().map(|t| ToolSpec {
-        name: t.name,
-        description: t.description,
-        parameters: t.input_schema,
-    }).collect();
+    let tool_specs: Vec<ToolSpec> = mcp_tools
+        .into_iter()
+        .map(|t| ToolSpec {
+            name: t.name,
+            description: t.description,
+            parameters: t.input_schema,
+        })
+        .collect();
 
     // 2. Loop until we have a final text response (max 10 iterations)
     for _ in 0..10 {
         let request = ChatRequest {
             messages: &messages,
-            tools: if tool_specs.is_empty() { None } else { Some(&tool_specs) },
+            tools: if tool_specs.is_empty() {
+                None
+            } else {
+                Some(&tool_specs)
+            },
         };
 
-        let response = state.provider.chat(request, &state.ollama_config.model, 0.7).await?;
+        let response = state
+            .provider
+            .chat(request, &state.ollama_config.model, 0.7)
+            .await?;
 
         if response.tool_calls.is_empty() {
             return Ok(response);
@@ -165,19 +205,25 @@ async fn run_agent_loop(state: &AgentState, mut messages: Vec<ChatMessage>) -> R
 
         // Handle tool calls
         info!("Executing {} tool call(s)", response.tool_calls.len());
-        
+
         // Add assistant message with tool calls to history
         let assistant_msg = ChatMessage {
             role: "assistant".into(),
             content: serde_json::to_string(&serde_json::json!({
                 "tool_calls": response.tool_calls
-            })).unwrap(),
+            }))
+            .unwrap(),
         };
         messages.push(assistant_msg);
 
         for tool_call in &response.tool_calls {
-            let args: serde_json::Value = serde_json::from_str(&tool_call.arguments).unwrap_or_default();
-            match state.mcp_client.call_tool(None, &tool_call.name, args).await {
+            let args: serde_json::Value =
+                serde_json::from_str(&tool_call.arguments).unwrap_or_default();
+            match state
+                .mcp_client
+                .call_tool(None, &tool_call.name, args)
+                .await
+            {
                 Ok(result) => {
                     let mut text_result = String::new();
                     for content in result.content {
@@ -191,7 +237,8 @@ async fn run_agent_loop(state: &AgentState, mut messages: Vec<ChatMessage>) -> R
                             "tool_call_id": tool_call.id,
                             "tool_name": tool_call.name,
                             "content": text_result
-                        })).unwrap(),
+                        }))
+                        .unwrap(),
                     });
                 }
                 Err(e) => {
@@ -202,7 +249,8 @@ async fn run_agent_loop(state: &AgentState, mut messages: Vec<ChatMessage>) -> R
                             "tool_call_id": tool_call.id,
                             "tool_name": tool_call.name,
                             "content": format!("Error: {}", e)
-                        })).unwrap(),
+                        }))
+                        .unwrap(),
                     });
                 }
             }
@@ -247,15 +295,15 @@ async fn main() -> anyhow::Result<()> {
         .start()
         .await
         .context("failed to start agent runtime")?;
-    
+
     tokio::signal::ctrl_c()
         .await
         .context("failed to listen for shutdown signal")?;
-    
+
     running
         .shutdown()
         .await
         .context("failed to shut down agent")?;
-    
+
     Ok(())
 }
