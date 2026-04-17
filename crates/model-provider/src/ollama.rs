@@ -12,6 +12,7 @@ pub struct OllamaProvider {
     api_key: Option<String>,
     reasoning_enabled: Option<bool>,
     is_local: bool,
+    client: Client,
 }
 
 // ─── Request Structures ───────────────────────────────────────────────────────
@@ -116,7 +117,7 @@ impl OllamaProvider {
     fn normalize_base_url(raw_url: &str) -> String {
         let trimmed = raw_url.trim().trim_end_matches('/');
         if trimmed.is_empty() {
-            return String::new();
+            return "http://localhost:11434".to_string();
         }
 
         trimmed
@@ -147,20 +148,20 @@ impl OllamaProvider {
             .and_then(|url| url.host_str().map(|host| host.to_string()))
             .is_some_and(|host| matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1"));
 
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .expect("Failed to build reqwest Client for OllamaProvider");
+
         Self {
             base_url,
             api_key,
             reasoning_enabled,
             is_local,
+            client,
         }
     }
 
-    fn http_client(&self) -> Client {
-        Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
-            .build()
-            .unwrap_or_default()
-    }
 
     fn resolve_request_details(&self, model: &str) -> anyhow::Result<(String, bool)> {
         let requests_cloud = model.ends_with(":cloud");
@@ -300,7 +301,7 @@ impl OllamaProvider {
             .collect();
 
         if images.is_empty() {
-            return (Some(content.to_string()), None);
+            return (Some(cleaned.trim().to_string()), None);
         }
 
         let cleaned = cleaned.trim();
@@ -420,7 +421,7 @@ impl OllamaProvider {
 
         let url = format!("{}/api/chat", self.base_url);
 
-        let mut request_builder = self.http_client().post(&url).json(&request);
+        let mut request_builder = self.client.post(&url).json(&request);
 
         if should_auth && let Some(key) = self.api_key.as_ref() {
             request_builder = request_builder.bearer_auth(key);

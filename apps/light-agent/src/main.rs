@@ -113,7 +113,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AgentState>, initial_sessio
         ))
         .await;
 
-    let current_session_id: Option<String> = Some(session_id);
+    let current_session_id: String = session_id;
 
     while let Some(Ok(msg)) = receiver.next().await {
         if let Message::Text(text) = msg {
@@ -133,7 +133,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AgentState>, initial_sessio
                 }
             };
 
-            let session_id = current_session_id.clone().unwrap();
+            let session_id = current_session_id.clone();
 
             let mut history_guard = state.sessions.lock().await;
             let history = history_guard
@@ -174,6 +174,8 @@ async fn handle_socket(socket: WebSocket, state: Arc<AgentState>, initial_sessio
             }
         }
     }
+    // Connection closed — remove session history to prevent unbounded memory growth.
+    state.sessions.lock().await.remove(&current_session_id);
 }
 
 async fn run_agent_loop(
@@ -298,7 +300,11 @@ async fn main() -> anyhow::Result<()> {
         .load_typed([config_dir.join("client.yml")])
         .ok();
 
-    let mcp_gateway_url = format!("{}{}", mcp_config.gateway_url, mcp_config.path);
+    let mcp_gateway_url = format!(
+        "{}/{}",
+        mcp_config.gateway_url.trim_end_matches('/'),
+        mcp_config.path.trim_start_matches('/')
+    );
 
     // Load TLS settings from the shared config files, consistent with how the
     // config-server and controller-rs clients are built by light-runtime.
@@ -320,6 +326,7 @@ async fn main() -> anyhow::Result<()> {
             &mcp_gateway_url,
             ca_cert.as_deref(),
             verify_hostname,
+            mcp_config.timeout,
         ),
         ollama_config,
         sessions: Arc::new(Mutex::new(HashMap::new())),
