@@ -35,9 +35,12 @@ pub struct JsonRpcError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct McpTool {
     pub name: String,
+    #[serde(default)]
     pub description: String,
+    #[serde(default)]
     pub input_schema: serde_json::Value,
 }
 

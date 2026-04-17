@@ -10,9 +10,31 @@ pub struct McpGatewayClient {
 
 impl McpGatewayClient {
     pub fn new(url: &str) -> Self {
+        Self::with_options(url, None, true)
+    }
+
+    /// Create a client with explicit TLS options.
+    ///
+    /// - `ca_cert_pem`: PEM-encoded CA certificate to trust (e.g. loaded from `config/ca.pem`).
+    /// - `verify_hostname`: When `false`, hostname verification is skipped but the certificate
+    ///   chain is still validated against `ca_cert_pem` (mirrors the config-server client behaviour).
+    pub fn with_options(url: &str, ca_cert_pem: Option<&[u8]>, verify_hostname: bool) -> Self {
+        let mut builder = Client::builder();
+
+        if let Some(pem) = ca_cert_pem {
+            if let Ok(cert) = reqwest::Certificate::from_pem(pem) {
+                builder = builder.add_root_certificate(cert);
+            }
+        }
+
+        if !verify_hostname {
+            builder = builder.danger_accept_invalid_hostnames(true);
+        }
+
+        let client = builder.build().expect("Failed to build reqwest Client");
         Self {
             url: url.to_string(),
-            client: Client::new(),
+            client,
         }
     }
 
