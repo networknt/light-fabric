@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use axum::{
     Router,
     extract::{
-        State,
+        State, Query,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     response::IntoResponse,
@@ -66,9 +66,11 @@ async fn health() -> &'static str {
 
 async fn ws_handler(
     ws: WebSocketUpgrade,
+    Query(params): Query<HashMap<String, String>>,
     State(state): State<Arc<AgentState>>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    let session_id = params.get("sessionId").cloned();
+    ws.on_upgrade(move |socket| handle_socket(socket, state, session_id))
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,9 +90,22 @@ enum ServerMessage {
     Error { message: String },
 }
 
-async fn handle_socket(socket: WebSocket, state: Arc<AgentState>) {
+async fn handle_socket(socket: WebSocket, state: Arc<AgentState>, initial_session_id: Option<String>) {
     let (mut sender, mut receiver) = socket.split();
-    let mut current_session_id: Option<String> = None;
+    
+    // Immediate Session Initialization
+    let session_id = initial_session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let _ = sender
+        .send(Message::Text(
+            serde_json::to_string(&ServerMessage::Session {
+                session_id: session_id.clone(),
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await;
+
+    let mut current_session_id: Option<String> = Some(session_id);
 
     while let Some(Ok(msg)) = receiver.next().await {
         if let Message::Text(text) = msg {
@@ -112,9 +127,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<AgentState>) {
 
             let session_id = client_msg
                 .session_id
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                .unwrap_or_else(|| current_session_id.clone().unwrap());
 
-            if current_session_id.is_none() {
+            if current_session_id.as_ref() != Some(&session_id) {
                 current_session_id = Some(session_id.clone());
                 let _ = sender
                     .send(Message::Text(
