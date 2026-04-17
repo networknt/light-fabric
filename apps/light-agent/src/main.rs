@@ -320,14 +320,16 @@ async fn main() -> anyhow::Result<()> {
         warn!("TLS hostname verification is disabled for the MCP gateway client; this weakens server identity validation");
     }
 
+    let mcp_client = McpGatewayClient::with_options(
+        &mcp_gateway_url,
+        ca_cert.as_deref(),
+        verify_hostname,
+        mcp_config.timeout_ms,
+    ).context("Failed to build MCP gateway client")?;
+
     let state = Arc::new(AgentState {
         provider: OllamaProvider::new(Some(&ollama_config.ollama_url), None),
-        mcp_client: McpGatewayClient::with_options(
-            &mcp_gateway_url,
-            ca_cert.as_deref(),
-            verify_hostname,
-            mcp_config.timeout_ms,
-        ),
+        mcp_client,
         ollama_config,
         sessions: Arc::new(Mutex::new(HashMap::new())),
     });

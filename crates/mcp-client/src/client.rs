@@ -9,7 +9,7 @@ pub struct McpGatewayClient {
 }
 
 impl McpGatewayClient {
-    pub fn new(url: &str) -> Self {
+    pub fn new(url: &str) -> Result<Self> {
         Self::with_options(url, None, true, 30_000)
     }
 
@@ -18,28 +18,27 @@ impl McpGatewayClient {
     /// - `ca_cert_pem`: PEM-encoded CA certificate to trust (e.g. loaded from `config/ca.pem`).
     /// - `verify_hostname`: When `false`, hostname verification is skipped but the certificate
     ///   chain is still validated against `ca_cert_pem` (mirrors the config-server client behaviour).
-    pub fn with_options(url: &str, ca_cert_pem: Option<&[u8]>, verify_hostname: bool, timeout_ms: u64) -> Self {
+    pub fn with_options(url: &str, ca_cert_pem: Option<&[u8]>, verify_hostname: bool, timeout_ms: u64) -> Result<Self> {
         let mut builder = Client::builder();
         builder = builder
             .timeout(std::time::Duration::from_millis(timeout_ms))
             .connect_timeout(std::time::Duration::from_millis(timeout_ms));
 
         if let Some(pem) = ca_cert_pem {
-            match reqwest::Certificate::from_pem(pem) {
-                Ok(cert) => { builder = builder.add_root_certificate(cert); }
-                Err(e) => { tracing::warn!("Failed to parse CA certificate PEM, TLS will use system roots: {}", e); }
-            }
+            let cert = reqwest::Certificate::from_pem(pem)
+                .context("Invalid ca_cert_pem: failed to parse PEM-encoded CA certificate")?;
+            builder = builder.add_root_certificate(cert);
         }
 
         if !verify_hostname {
             builder = builder.danger_accept_invalid_hostnames(true);
         }
 
-        let client = builder.build().expect("Failed to build reqwest Client");
-        Self {
+        let client = builder.build().context("Failed to build reqwest Client")?;
+        Ok(Self {
             url: url.to_string(),
             client,
-        }
+        })
     }
 
     pub async fn list_tools(&self, auth_header: Option<&str>) -> Result<Vec<McpTool>> {

@@ -471,7 +471,14 @@ impl OllamaProvider {
                 );
                 self.send_request_inner(&messages, model, temperature, should_auth, tools, None)
                     .await
-                    .map_err(|_| first_err)
+                    .map_err(|retry_err| {
+                        anyhow::anyhow!(
+                            "Ollama request failed with think=true, and retry without reasoning also failed. \
+                            initial error: {}; retry error: {}",
+                            first_err,
+                            retry_err
+                        )
+                    })
             }
             Err(e) => Err(e),
         }
@@ -486,7 +493,7 @@ impl OllamaProvider {
                     serde_json::to_string(&tool_args).unwrap_or_else(|_| "{}".to_string());
 
                 serde_json::json!({
-                    "id": tc.id,
+                    "id": tc.id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                     "type": "function",
                     "function": {
                         "name": tool_name,
