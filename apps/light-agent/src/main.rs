@@ -39,7 +39,7 @@ pub struct OllamaConfig {
 pub struct McpClientConfig {
     pub gateway_url: String,
     pub path: String,
-    pub timeout: u64,
+    pub timeout_ms: u64,
 }
 
 struct AgentState {
@@ -326,7 +326,7 @@ async fn main() -> anyhow::Result<()> {
             &mcp_gateway_url,
             ca_cert.as_deref(),
             verify_hostname,
-            mcp_config.timeout,
+            mcp_config.timeout_ms,
         ),
         ollama_config,
         sessions: Arc::new(Mutex::new(HashMap::new())),

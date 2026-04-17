@@ -15,5 +15,3 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 base64 = "0.22"
 
-[dev-dependencies]
-tokio = { workspace = true, features = ["full"] }

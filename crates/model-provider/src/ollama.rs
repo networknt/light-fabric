@@ -722,9 +722,9 @@ impl Provider for OllamaProvider {
                     serde_json::json!({
                         "type": "function",
                         "function": {
-                            "name": s.name,
-                            "description": s.description,
-                            "parameters": s.parameters
+                            "name": &s.name,
+                            "description": &s.description,
+                            "parameters": &s.parameters
                         }
                     })
                 })
