@@ -5,13 +5,17 @@ use axum::{
         State, Query,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
+    http::HeaderMap,
     response::IntoResponse,
     routing::get,
 };
 use config_loader::ConfigLoader;
 use futures_util::{SinkExt, StreamExt};
 use light_axum::{AxumApp, AxumTransport, ServerContext};
-use light_runtime::LightRuntimeBuilder;
+use light_runtime::{
+    LightRuntimeBuilder,
+    config::{BootstrapConfig, ClientConfig},
+};
 use mcp_client::{McpContent, McpGatewayClient};
 use model_provider::{ChatMessage, ChatRequest, ChatResponse, OllamaProvider, Provider, ToolSpec};
 use serde::{Deserialize, Serialize};
@@ -67,15 +71,19 @@ async fn health() -> &'static str {
 async fn ws_handler(
     ws: WebSocketUpgrade,
     Query(params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
     State(state): State<Arc<AgentState>>,
 ) -> impl IntoResponse {
     let session_id = params.get("sessionId").cloned();
-    ws.on_upgrade(move |socket| handle_socket(socket, state, session_id))
+    let authorization = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    ws.on_upgrade(move |socket| handle_socket(socket, state, session_id, authorization))
 }
 
 #[derive(Debug, Deserialize)]
 struct ClientMessage {
-    pub session_id: Option<String>,
     pub text: String,
 }
 
@@ -90,7 +98,7 @@ enum ServerMessage {
     Error { message: String },
 }
 
-async fn handle_socket(socket: WebSocket, state: Arc<AgentState>, initial_session_id: Option<String>) {
+async fn handle_socket(socket: WebSocket, state: Arc<AgentState>, initial_session_id: Option<String>, authorization: Option<String>) {
     let (mut sender, mut receiver) = socket.split();
     
     // Immediate Session Initialization
@@ -105,7 +113,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AgentState>, initial_sessio
         ))
         .await;
 
-    let mut current_session_id: Option<String> = Some(session_id);
+    let current_session_id: Option<String> = Some(session_id);
 
     while let Some(Ok(msg)) = receiver.next().await {
         if let Message::Text(text) = msg {
@@ -125,22 +133,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AgentState>, initial_sessio
                 }
             };
 
-            let session_id = client_msg
-                .session_id
-                .unwrap_or_else(|| current_session_id.clone().unwrap());
-
-            if current_session_id.as_ref() != Some(&session_id) {
-                current_session_id = Some(session_id.clone());
-                let _ = sender
-                    .send(Message::Text(
-                        serde_json::to_string(&ServerMessage::Session {
-                            session_id: session_id.clone(),
-                        })
-                        .unwrap()
-                        .into(),
-                    ))
-                    .await;
-            }
+            let session_id = current_session_id.clone().unwrap();
 
             let mut history_guard = state.sessions.lock().await;
             let history = history_guard
@@ -150,7 +143,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AgentState>, initial_sessio
             let messages = history.clone();
             drop(history_guard);
 
-            match run_agent_loop(&state, messages).await {
+            match run_agent_loop(&state, messages, authorization.as_deref()).await {
                 Ok(response) => {
                     if let Some(text) = response.text {
                         let mut history_guard = state.sessions.lock().await;
@@ -186,9 +179,14 @@ async fn handle_socket(socket: WebSocket, state: Arc<AgentState>, initial_sessio
 async fn run_agent_loop(
     state: &AgentState,
     mut messages: Vec<ChatMessage>,
+    authorization: Option<&str>,
 ) -> Result<ChatResponse> {
-    // 1. Fetch tools from MCP Gateway
-    let mcp_tools = state.mcp_client.list_tools(None).await.unwrap_or_default();
+    // 1. Fetch tools from MCP Gateway (forward Authorization if present)
+    let mcp_tools = state.mcp_client.list_tools(authorization).await.unwrap_or_else(|e| {
+        warn!("Failed to fetch MCP tools: {}", e);
+        vec![]
+    });
+    info!("Fetched {} MCP tool(s) from gateway", mcp_tools.len());
     let tool_specs: Vec<ToolSpec> = mcp_tools
         .into_iter()
         .map(|t| ToolSpec {
@@ -236,7 +234,7 @@ async fn run_agent_loop(
                 serde_json::from_str(&tool_call.arguments).unwrap_or_default();
             match state
                 .mcp_client
-                .call_tool(None, &tool_call.name, args)
+                .call_tool(authorization, &tool_call.name, args)
                 .await
             {
                 Ok(result) => {
@@ -291,11 +289,38 @@ async fn main() -> anyhow::Result<()> {
     let ollama_config: OllamaConfig = loader.load_typed([config_dir.join("ollama.yml")])?;
     let mcp_config: McpClientConfig = loader.load_typed([config_dir.join("mcp-client.yml")])?;
 
+    // Load startup.yml (for bootstrap_ca_cert_path) and client.yml (for verify_hostname).
+    // This mirrors how the config-server and controller-rs clients are configured in light-runtime.
+    let startup_config: BootstrapConfig = loader
+        .load_typed([config_dir.join("startup.yml")])
+        .unwrap_or_default();
+    let client_config: Option<ClientConfig> = loader
+        .load_typed([config_dir.join("client.yml")])
+        .ok();
+
     let mcp_gateway_url = format!("{}{}", mcp_config.gateway_url, mcp_config.path);
+
+    // Load TLS settings from the shared config files, consistent with how the
+    // config-server and controller-rs clients are built by light-runtime.
+    let ca_cert: Option<Vec<u8>> = startup_config
+        .bootstrap_ca_cert_path
+        .as_deref()
+        .and_then(|path| std::fs::read(path).ok());
+    let verify_hostname: bool = client_config
+        .as_ref()
+        .map(|c| c.verify_hostname)
+        .unwrap_or(true);
+    if !verify_hostname {
+        warn!("TLS hostname verification is disabled for the MCP gateway client; this weakens server identity validation");
+    }
 
     let state = Arc::new(AgentState {
         provider: OllamaProvider::new(Some(&ollama_config.ollama_url), None),
-        mcp_client: McpGatewayClient::new(&mcp_gateway_url),
+        mcp_client: McpGatewayClient::with_options(
+            &mcp_gateway_url,
+            ca_cert.as_deref(),
+            verify_hostname,
+        ),
         ollama_config,
         sessions: Arc::new(Mutex::new(HashMap::new())),
     });
