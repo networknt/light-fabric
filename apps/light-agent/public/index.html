@@ -132,7 +132,7 @@
             const text = messageInput.value;
             if (text && ws) {
                 log('User', text);
-                const payload = { text: text };
+                const payload = { text };
                 ws.send(JSON.stringify(payload));
                 messageInput.value = '';
             }
