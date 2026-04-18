@@ -28,6 +28,7 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 const MAX_SESSION_MESSAGES: usize = 40;
+const MAX_ACTIVE_SESSIONS: usize = 256;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -107,6 +108,15 @@ fn trim_history(history: &mut Vec<ChatMessage>) {
     }
 }
 
+fn rollback_last_user_message(history: &mut Vec<ChatMessage>, expected_text: &str) {
+    if history
+        .last()
+        .is_some_and(|message| message.role == "user" && message.content == expected_text)
+    {
+        history.pop();
+    }
+}
+
 async fn handle_socket(
     socket: WebSocket,
     state: Arc<AgentState>,
@@ -129,6 +139,28 @@ async fn handle_socket(
 
     let current_session_id: String = session_id;
 
+    {
+        let mut sessions = state.sessions.lock().await;
+        if !sessions.contains_key(&current_session_id) {
+            if sessions.len() >= MAX_ACTIVE_SESSIONS {
+                let _ = sender
+                    .send(Message::Text(
+                        serde_json::to_string(&ServerMessage::Error {
+                            message: format!(
+                                "Too many active sessions. Limit is {}.",
+                                MAX_ACTIVE_SESSIONS
+                            ),
+                        })
+                        .unwrap()
+                        .into(),
+                    ))
+                    .await;
+                return;
+            }
+            sessions.insert(current_session_id.clone(), Vec::new());
+        }
+    }
+
     while let Some(Ok(msg)) = receiver.next().await {
         if let Message::Text(text) = msg {
             let client_msg: ClientMessage = match serde_json::from_str(&text) {
@@ -148,12 +180,13 @@ async fn handle_socket(
             };
 
             let session_id = current_session_id.clone();
+            let user_text = client_msg.text.clone();
 
             let mut history_guard = state.sessions.lock().await;
             let history = history_guard
                 .entry(session_id.clone())
                 .or_insert_with(Vec::new);
-            history.push(ChatMessage::user(client_msg.text));
+            history.push(ChatMessage::user(user_text.clone()));
             trim_history(history);
             let messages = history.clone();
             drop(history_guard);
@@ -177,6 +210,11 @@ async fn handle_socket(
                 }
                 Err(e) => {
                     error!("Agent loop error: {}", e);
+                    let mut history_guard = state.sessions.lock().await;
+                    if let Some(history) = history_guard.get_mut(&session_id) {
+                        rollback_last_user_message(history, &user_text);
+                    }
+                    drop(history_guard);
                     let _ = sender
                         .send(Message::Text(
                             serde_json::to_string(&ServerMessage::Error {
@@ -378,4 +416,51 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to shut down agent")?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ChatMessage, MAX_SESSION_MESSAGES, rollback_last_user_message, trim_history};
+
+    #[test]
+    fn trim_history_keeps_recent_messages() {
+        let mut history: Vec<ChatMessage> = (0..(MAX_SESSION_MESSAGES + 5))
+            .map(|index| ChatMessage::user(format!("msg-{index}")))
+            .collect();
+
+        trim_history(&mut history);
+
+        assert_eq!(history.len(), MAX_SESSION_MESSAGES);
+        assert_eq!(history.first().unwrap().content, "msg-5");
+        assert_eq!(
+            history.last().unwrap().content,
+            format!("msg-{}", MAX_SESSION_MESSAGES + 4)
+        );
+    }
+
+    #[test]
+    fn rollback_last_user_message_removes_failed_turn() {
+        let mut history = vec![
+            ChatMessage::assistant("existing reply"),
+            ChatMessage::user("failed prompt"),
+        ];
+
+        rollback_last_user_message(&mut history, "failed prompt");
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].role, "assistant");
+    }
+
+    #[test]
+    fn rollback_last_user_message_leaves_other_entries_untouched() {
+        let mut history = vec![
+            ChatMessage::user("previous prompt"),
+            ChatMessage::assistant("previous reply"),
+        ];
+
+        rollback_last_user_message(&mut history, "failed prompt");
+
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[1].content, "previous reply");
+    }
 }
