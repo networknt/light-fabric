@@ -1,9 +1,9 @@
-use crate::models::{Rule, RuleConfig};
 use crate::engine::RuleEngine;
+use crate::models::{Rule, RuleConfig};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{error, debug};
+use tracing::{debug, error};
 
 /// State of the executor, containing the rules and endpoints mappings.
 pub struct RuntimeState {
@@ -31,7 +31,11 @@ impl MultiThreadRuleExecutor {
     }
 
     /// Execute a single rule by its ID.
-    pub async fn execute_rule(&self, rule_id: &str, input: &mut Value) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn execute_rule(
+        &self,
+        rule_id: &str,
+        input: &mut Value,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         if let Some(rule) = self.state.rules.get(rule_id) {
             self.engine.execute_rule(rule, input).await
         } else {
@@ -41,7 +45,12 @@ impl MultiThreadRuleExecutor {
     }
 
     /// Execute multiple rules using a given logic ("all", "any", "parallel").
-    pub async fn execute_rules(&self, rule_ids: &[String], logic: &str, input: &mut Value) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn execute_rules(
+        &self,
+        rule_ids: &[String],
+        logic: &str,
+        input: &mut Value,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         if rule_ids.is_empty() {
             return Ok(true);
         }
@@ -88,12 +97,14 @@ impl MultiThreadRuleExecutor {
             }
 
             let results = futures::future::join_all(handles).await;
-            
+
             let mut any_failed = false;
             for res in results {
                 match res {
-                    Ok(Ok(true)) => {}, // Rule passed
-                    _ => { any_failed = true; } // Join error or rule failed
+                    Ok(Ok(true)) => {} // Rule passed
+                    _ => {
+                        any_failed = true;
+                    } // Join error or rule failed
                 }
             }
 
@@ -102,7 +113,12 @@ impl MultiThreadRuleExecutor {
     }
 
     /// Execute rules configured for a specific service entry and rule type.
-    pub async fn execute_endpoint_rules(&self, service_entry: &str, rule_type: &str, input: &mut Value) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn execute_endpoint_rules(
+        &self,
+        service_entry: &str,
+        rule_type: &str,
+        input: &mut Value,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         let endpoint_config = match self.state.endpoint_rules.get(service_entry) {
             Some(c) => c,
             None => {
@@ -117,7 +133,8 @@ impl MultiThreadRuleExecutor {
         };
         if let Some(rule_ids_val) = map.get(rule_type) {
             if let Some(rule_ids_arr) = rule_ids_val.as_array() {
-                let rule_ids: Vec<String> = rule_ids_arr.iter()
+                let rule_ids: Vec<String> = rule_ids_arr
+                    .iter()
                     .filter_map(|v| v.as_str().map(|s| s.to_string()))
                     .collect();
 
@@ -141,7 +158,7 @@ impl MultiThreadRuleExecutor {
                 return self.execute_rules(&rule_ids, logic, input).await;
             }
         }
-        
+
         Ok(true)
     }
 }

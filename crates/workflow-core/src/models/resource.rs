@@ -1,10 +1,9 @@
-use serde::{Deserialize, Serialize};
 use crate::models::authentication::*;
+use serde::{Deserialize, Serialize};
 
 /// Represents the definition of an external resource
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ExternalResourceDefinition{
-
+pub struct ExternalResourceDefinition {
     /// Gets/sets the name of the external resource to use, if any
     #[serde(rename = "use", skip_serializing_if = "Option::is_none")]
     pub use_: Option<String>,
@@ -15,29 +14,25 @@ pub struct ExternalResourceDefinition{
 
     /// Gets/sets the endpoint at which to get the defined resource
     #[serde(rename = "endpoint")]
-    pub endpoint: OneOfEndpointDefinitionOrUri
-
+    pub endpoint: OneOfEndpointDefinitionOrUri,
 }
-
 
 /// Represents the definition of an endpoint
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct EndpointDefinition{
-
+pub struct EndpointDefinition {
     /// Gets/sets the endpoint's uri
     #[serde(rename = "uri")]
-    pub uri : String,
+    pub uri: String,
 
     /// Gets/sets the endpoint's authentication policy, if any
     #[serde(rename = "authentication", skip_serializing_if = "Option::is_none")]
-    pub authentication: Option<AuthenticationPolicyDefinition>
-
+    pub authentication: Option<AuthenticationPolicyDefinition>,
 }
 
 /// Represents a value that can be either an EndpointDefinition or an Uri
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum OneOfEndpointDefinitionOrUri{
+pub enum OneOfEndpointDefinitionOrUri {
     /// Variant holding an EndpointDefinition
     Endpoint(EndpointDefinition),
     /// Variant holding a URL

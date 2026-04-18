@@ -42,7 +42,13 @@ impl std::fmt::Debug for BootstrapConfig {
             .field("timeout", &self.timeout)
             .field("connect_timeout", &self.connect_timeout)
             .field("config_server_uri", &self.config_server_uri)
-            .field("authorization", &self.authorization.as_ref().map(|v| if v.is_empty() { "" } else { "********" }))
+            .field(
+                "authorization",
+                &self
+                    .authorization
+                    .as_ref()
+                    .map(|v| if v.is_empty() { "" } else { "********" }),
+            )
             .field("bootstrap_cert_path", &self.bootstrap_cert_path)
             .field("bootstrap_key_path", &self.bootstrap_key_path)
             .field("bootstrap_ca_cert_path", &self.bootstrap_ca_cert_path)
@@ -113,8 +119,22 @@ impl std::fmt::Debug for PortalRegistryConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PortalRegistryConfig")
             .field("portal_url", &self.portal_url)
-            .field("portal_token", if self.portal_token.is_empty() { &"" } else { &"********" })
-            .field("controller_discovery_token", if self.controller_discovery_token.is_empty() { &"" } else { &"********" })
+            .field(
+                "portal_token",
+                if self.portal_token.is_empty() {
+                    &""
+                } else {
+                    &"********"
+                },
+            )
+            .field(
+                "controller_discovery_token",
+                if self.controller_discovery_token.is_empty() {
+                    &""
+                } else {
+                    &"********"
+                },
+            )
             .finish()
     }
 }

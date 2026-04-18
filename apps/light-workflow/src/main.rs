@@ -41,8 +41,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let consumer = EventConsumer::new(
         pool.clone(),
         "workflow-engine-group".to_string(),
-        0, // partition_id
-        1, // total_partitions
+        0,  // partition_id
+        1,  // total_partitions
         10, // batch_size
     );
 
@@ -50,20 +50,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let executor = TaskExecutor::new(pool);
 
     // Run them concurrently
-    let consumer_handle = tokio::spawn(async move {
-        consumer.run().await
-    });
+    let consumer_handle = tokio::spawn(async move { consumer.run().await });
 
-    let executor_handle = tokio::spawn(async move {
-        executor.run().await
-    });
+    let executor_handle = tokio::spawn(async move { executor.run().await });
 
     tokio::try_join!(
         async {
             consumer_handle
                 .await
                 .map_err(|err| -> Box<dyn Error + Send + Sync> {
-                    Box::new(io::Error::other(format!("consumer task failed to join: {err}")))
+                    Box::new(io::Error::other(format!(
+                        "consumer task failed to join: {err}"
+                    )))
                 })?
                 .map_err(|err| Box::new(err) as Box<dyn Error + Send + Sync>)
         },
@@ -71,7 +69,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             executor_handle
                 .await
                 .map_err(|err| -> Box<dyn Error + Send + Sync> {
-                    Box::new(io::Error::other(format!("executor task failed to join: {err}")))
+                    Box::new(io::Error::other(format!(
+                        "executor task failed to join: {err}"
+                    )))
                 })?
                 .map_err(|err| err)
         }

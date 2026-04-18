@@ -1,11 +1,10 @@
+use crate::models::task::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::models::task::*;
 
 /// Represents the definition of a an extension
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ExtensionDefinition{
-
+pub struct ExtensionDefinition {
     /// Gets/sets the type of task to extend
     #[serde(rename = "extend")]
     pub extend: String,
@@ -20,5 +19,5 @@ pub struct ExtensionDefinition{
 
     /// Gets/sets a name/definition list, if any, of the tasks to execute after the extended task
     #[serde(rename = "after", skip_serializing_if = "Option::is_none")]
-    pub after: Option<Vec<HashMap<String, TaskDefinition>>>
+    pub after: Option<Vec<HashMap<String, TaskDefinition>>>,
 }

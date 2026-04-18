@@ -165,7 +165,9 @@ fn resolve_advertised_address(
 #[cfg(test)]
 mod tests {
     use super::resolve_advertised_address;
-    use light_runtime::{BootstrapConfig, RuntimeConfig, RuntimeError, ServerConfig, ServiceIdentity};
+    use light_runtime::{
+        BootstrapConfig, RuntimeConfig, RuntimeError, ServerConfig, ServiceIdentity,
+    };
     use std::net::{IpAddr, Ipv4Addr};
     use std::path::PathBuf;
 
@@ -186,11 +188,8 @@ mod tests {
         let mut config = runtime_config();
         config.server.advertised_address = Some("172.18.0.10".to_string());
 
-        let address = resolve_advertised_address(
-            &config,
-            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-        )
-        .expect("resolve advertised address");
+        let address = resolve_advertised_address(&config, IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+            .expect("resolve advertised address");
 
         assert_eq!(address, "172.18.0.10");
     }
@@ -199,11 +198,8 @@ mod tests {
     fn falls_back_to_unspecified_bound_ip_without_failing() {
         let config = runtime_config();
 
-        let address = resolve_advertised_address(
-            &config,
-            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-        )
-        .expect("resolve advertised address");
+        let address = resolve_advertised_address(&config, IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+            .expect("resolve advertised address");
 
         assert_eq!(address, "0.0.0.0");
     }
@@ -213,11 +209,8 @@ mod tests {
         let mut config = runtime_config();
         config.server.advertised_address = Some("   ".to_string());
 
-        let error = resolve_advertised_address(
-            &config,
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-        )
-        .expect_err("empty advertised address should fail");
+        let error = resolve_advertised_address(&config, IpAddr::V4(Ipv4Addr::LOCALHOST))
+            .expect_err("empty advertised address should fail");
 
         assert!(matches!(error, RuntimeError::Unsupported(_)));
     }

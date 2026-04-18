@@ -191,10 +191,15 @@ impl PortalRegistryClient {
                     roots: root_store,
                     supported_algs,
                 });
-                let config = builder.dangerous().with_custom_certificate_verifier(verifier).with_no_client_auth();
+                let config = builder
+                    .dangerous()
+                    .with_custom_certificate_verifier(verifier)
+                    .with_no_client_auth();
                 Some(tokio_tungstenite::Connector::Rustls(Arc::new(config)))
             } else {
-                let config = builder.with_root_certificates(root_store).with_no_client_auth();
+                let config = builder
+                    .with_root_certificates(root_store)
+                    .with_no_client_auth();
                 Some(tokio_tungstenite::Connector::Rustls(Arc::new(config)))
             }
         } else {
@@ -206,7 +211,8 @@ impl PortalRegistryClient {
             None,
             false,
             connector,
-        ).await?;
+        )
+        .await?;
         info!("Connected to controller at {}", self.controller_url);
 
         // 1. Initial Handshake (service/register)

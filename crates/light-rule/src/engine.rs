@@ -1,8 +1,8 @@
-use crate::models::{Rule, RuleCondition};
 use crate::action::ActionRegistry;
+use crate::models::{Rule, RuleCondition};
 use serde_json::Value;
 use std::sync::Arc;
-use tracing::{error, debug};
+use tracing::{debug, error};
 
 /// The core Rule Engine for evaluating conditions and executing actions.
 pub struct RuleEngine {
@@ -17,9 +17,13 @@ impl RuleEngine {
 
     /// Execute a single rule against a context Object (map).
     /// Returns true if rules passed and actions executed successfully, false otherwise.
-    pub async fn execute_rule(&self, rule: &Rule, context: &mut Value) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn execute_rule(
+        &self,
+        rule: &Rule,
+        context: &mut Value,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         debug!("Executing rule {}", rule.rule_id);
-        
+
         // 1. Evaluate Conditions
         if let Some(ref conditions) = rule.conditions {
             let mut all_passed = true;
@@ -45,17 +49,26 @@ impl RuleEngine {
                     match plugin.execute(context, &action.action_values).await {
                         Ok(res) => {
                             if !res {
-                                debug!("Action {} returned false for rule {}", action.action_class_name, rule.rule_id);
+                                debug!(
+                                    "Action {} returned false for rule {}",
+                                    action.action_class_name, rule.rule_id
+                                );
                                 return Ok(false);
                             }
                         }
                         Err(e) => {
-                            error!("Error executing action {} in rule {}: {}", action.action_class_name, rule.rule_id, e);
+                            error!(
+                                "Error executing action {} in rule {}: {}",
+                                action.action_class_name, rule.rule_id, e
+                            );
                             return Err(e);
                         }
                     }
                 } else {
-                    error!("Action class not found in registry: {}", action.action_class_name);
+                    error!(
+                        "Action class not found in registry: {}",
+                        action.action_class_name
+                    );
                     return Ok(false);
                 }
             }
@@ -85,12 +98,16 @@ impl RuleEngine {
             ">" => {
                 if let (Ok(a), Ok(b)) = (actual_val.parse::<f64>(), expected.parse::<f64>()) {
                     a > b
-                } else { false }
+                } else {
+                    false
+                }
             }
             "<" => {
                 if let (Ok(a), Ok(b)) = (actual_val.parse::<f64>(), expected.parse::<f64>()) {
                     a < b
-                } else { false }
+                } else {
+                    false
+                }
             }
             _ => {
                 error!("Unknown operator: {}", operator);

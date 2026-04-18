@@ -1,6 +1,3 @@
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::collections::HashMap;
 use crate::models::authentication::*;
 use crate::models::catalog::*;
 use crate::models::duration::*;
@@ -13,6 +10,9 @@ use crate::models::output::*;
 use crate::models::retry::*;
 use crate::models::task::*;
 use crate::models::timeout::*;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
 
 /// Gets the namespace to use by default for workflow definitions
 pub const DEFAULT_NAMESPACE: &str = "default";
@@ -29,7 +29,7 @@ fn default_dsl_version() -> String {
 }
 
 // Provides the default runtime expression language
-fn default_runtime_expression_language() -> String{
+fn default_runtime_expression_language() -> String {
     RuntimeExpressionLanguage::JQ.to_string()
 }
 
@@ -44,8 +44,7 @@ impl RuntimeExpressionLanguage {
 
 /// Represents the definition of a workflow
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WorkflowDefinition{
-
+pub struct WorkflowDefinition {
     /// Gets/sets an object used to document the defined workflow
     #[serde(rename = "document")]
     pub document: WorkflowDefinitionMetadata,
@@ -77,30 +76,26 @@ pub struct WorkflowDefinition{
     /// Gets/sets a name/value mapping of the tasks to perform
     #[serde(rename = "do")]
     pub do_: Map<String, TaskDefinition>,
-
 }
 impl WorkflowDefinition {
-
     // Initializes a new workflow definition
     pub fn new(document: WorkflowDefinitionMetadata) -> Self {
-        Self { 
-            document, 
+        Self {
+            document,
             input: None,
             use_: None,
-            timeout: None, 
+            timeout: None,
             output: None,
             schedule: None,
             evaluate: None,
-            do_: Map::new()
+            do_: Map::new(),
         }
     }
-    
 }
 
 /// Represents the metadata of a workflow, including its name, version, and description.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowDefinitionMetadata {
-    
     /// Gets/sets the version of the DSL used to define the workflow
     #[serde(rename = "dsl")]
     pub dsl: String,
@@ -133,13 +128,20 @@ pub struct WorkflowDefinitionMetadata {
 
     /// Gets/sets a key/value mapping, if any, of additional information associated with the workflow
     #[serde(rename = "metadata", skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<HashMap<String, Value>>
+    pub metadata: Option<HashMap<String, Value>>,
 }
-impl WorkflowDefinitionMetadata{
-
+impl WorkflowDefinitionMetadata {
     // Initializes a new workflow definition metadata
-    pub fn new(namespace : &str, name: &str, version : &str, title: Option<String>, summary : Option<String>, tags: Option<HashMap<String, String>>, metadata: Option<HashMap<String, Value>>) -> Self {
-        Self { 
+    pub fn new(
+        namespace: &str,
+        name: &str,
+        version: &str,
+        title: Option<String>,
+        summary: Option<String>,
+        tags: Option<HashMap<String, String>>,
+        metadata: Option<HashMap<String, Value>>,
+    ) -> Self {
+        Self {
             dsl: default_dsl_version(),
             namespace: namespace.to_owned(),
             name: name.to_owned(),
@@ -147,16 +149,14 @@ impl WorkflowDefinitionMetadata{
             title,
             summary,
             tags,
-            metadata
+            metadata,
         }
     }
-
 }
 
 /// Represents the definition of a workflow's schedule
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WorkflowScheduleDefinition{
-
+pub struct WorkflowScheduleDefinition {
     /// Gets/sets the name of the schedule to use, if any
     #[serde(rename = "use", skip_serializing_if = "Option::is_none")]
     pub use_: Option<String>,
@@ -164,7 +164,6 @@ pub struct WorkflowScheduleDefinition{
     /// Gets/sets an object used to document the defined workflow
     #[serde(rename = "every", skip_serializing_if = "Option::is_none")]
     pub every: Option<Duration>,
-
 
     /// Gets/sets the schedule using a CRON expression, e.g., '0 0 * * *' for daily at midnight.
     #[serde(rename = "cron", skip_serializing_if = "Option::is_none")]
@@ -176,28 +175,24 @@ pub struct WorkflowScheduleDefinition{
 
     /// Gets/sets the events that trigger the workflow execution
     #[serde(rename = "on", skip_serializing_if = "Option::is_none")]
-    pub on: Option<EventConsumptionStrategyDefinition>
-
+    pub on: Option<EventConsumptionStrategyDefinition>,
 }
 
 /// Represents an object used to configure the workflow's runtime expression evaluation
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RuntimeExpressionEvaluationConfiguration{
-
+pub struct RuntimeExpressionEvaluationConfiguration {
     /// Gets/sets the language used for writing runtime expressions
     #[serde(rename = "language", default = "default_runtime_expression_language")]
     pub language: String,
 
     /// Gets/sets the language used for writing runtime expressions
     #[serde(rename = "mode", skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>
-
+    pub mode: Option<String>,
 }
 
 /// Represents a collection of workflow components
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ComponentDefinitionCollection{
-
+pub struct ComponentDefinitionCollection {
     /// Gets/sets a name/value mapping of the workflow's reusable authentication policies
     #[serde(rename = "authentications", skip_serializing_if = "Option::is_none")]
     pub authentications: Option<HashMap<String, AuthenticationPolicyDefinition>>,
@@ -214,7 +209,6 @@ pub struct ComponentDefinitionCollection{
     #[serde(rename = "extensions", skip_serializing_if = "Option::is_none")]
     pub extensions: Option<HashMap<String, ExtensionDefinition>>,
 
-
     /// Gets/sets a name/value mapping of the workflow's reusable functions
     #[serde(rename = "functions", skip_serializing_if = "Option::is_none")]
     pub functions: Option<HashMap<String, TaskDefinition>>,
@@ -230,5 +224,4 @@ pub struct ComponentDefinitionCollection{
     /// Gets/sets a name/value mapping of the workflow's reusable timeouts
     #[serde(rename = "timeouts", skip_serializing_if = "Option::is_none")]
     pub timeouts: Option<HashMap<String, TimeoutDefinition>>,
-
 }
