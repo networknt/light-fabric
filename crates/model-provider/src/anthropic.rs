@@ -185,7 +185,7 @@ impl AnthropicProvider {
         Some(native_tools)
     }
 
-    fn convert_messages(messages: &[ChatMessage]) -> (Option<SystemPrompt>, Vec<NativeMessage>) {
+    async fn convert_messages(messages: &[ChatMessage]) -> (Option<SystemPrompt>, Vec<NativeMessage>) {
         let mut system_text = None;
         let mut native_messages = Vec::new();
 
@@ -242,7 +242,7 @@ impl AnthropicProvider {
                     let mut content_blocks = Vec::new();
 
                     for img_ref in &image_refs {
-                        if let Some(payload) = crate::multimodal::extract_anthropic_image_payload(img_ref) {
+                        if let Some(payload) = crate::multimodal::extract_anthropic_image_payload(img_ref).await {
                             content_blocks.push(NativeContentOut::Image {
                                 source: ImageSource {
                                     source_type: "base64".to_string(),
@@ -403,7 +403,7 @@ impl Provider for AnthropicProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ProviderChatResponse> {
-        let (system, messages) = Self::convert_messages(request.messages);
+        let (system, messages) = Self::convert_messages(request.messages).await;
         let tools = Self::convert_tools(request.tools);
         self.send_request(system, messages, model, temperature, tools).await
     }
@@ -415,7 +415,7 @@ impl Provider for AnthropicProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ProviderChatResponse> {
-        let (system, messages) = Self::convert_messages(messages);
+        let (system, messages) = Self::convert_messages(messages).await;
         let native_tools = if tools.is_empty() {
             None
         } else {

@@ -25,14 +25,12 @@ use sqlx::{PgPool, Row};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tower_http::services::ServeDir;
-use tracing::{error, info, warn};
+use tracing::{error, warn};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 const MAX_SESSION_MESSAGES: usize = 40;
-const MAX_ACTIVE_SESSIONS: usize = 256;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +45,13 @@ pub struct McpClientConfig {
     pub gateway_url: String,
     pub path: String,
     pub timeout_ms: u64,
+}
+
+fn required_uuid_env_var(name: &str) -> anyhow::Result<Uuid> {
+    let raw = std::env::var(name)
+        .with_context(|| format!("Required environment variable {name} is not set"))?;
+    Uuid::parse_str(&raw)
+        .with_context(|| format!("Environment variable {name} must be a valid UUID"))
 }
 
 struct AgentState {
@@ -185,7 +190,15 @@ async fn handle_socket(
             history.push(ChatMessage::user(user_text.clone()));
             trim_history(&mut history);
 
-            match run_agent_loop(&state, history.clone(), authorization.as_deref(), &current_session_id).await {
+            match run_agent_loop(
+                &state,
+                history.clone(),
+                authorization.as_deref(),
+                &current_session_id,
+                bank_id,
+            )
+            .await
+            {
                 Ok(response) => {
                     if let Some(text) = response.text {
                         history.push(ChatMessage::assistant(text.clone()));
@@ -243,9 +256,9 @@ async fn run_agent_loop(
     mut messages: Vec<ChatMessage>,
     authorization: Option<&str>,
     session_id: &str,
+    bank_id: Uuid,
 ) -> Result<ChatResponse> {
     let user_prompt = messages.last().map(|m| m.content.clone()).unwrap_or_default();
-    let bank_id = Uuid::parse_str(session_id).unwrap_or(Uuid::new_v4()); // Using session_id as bank_id for simplicity
 
     // 1. Recall Memory (Context Injection)
     // For now, we use a zero-vector since we don't have an embedding service yet.
@@ -410,10 +423,12 @@ async fn main() -> anyhow::Result<()> {
     )
     .context("Failed to build MCP gateway client")?;
 
-    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/portal".to_string());
+    let db_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/portal".to_string());
     let pool = PgPool::connect(&db_url).await.context("Failed to connect to database")?;
-    
+
     let memory = Arc::new(PgHindsightClient::new(pool.clone()));
+    let host_id = required_uuid_env_var("LIGHT_AGENT_HOST_ID")?;
 
     // Registry Client Configuration
     let registry_handler = Arc::new(NoopRegistryHandler);
@@ -443,7 +458,7 @@ async fn main() -> anyhow::Result<()> {
         memory,
         registry,
         db: pool,
-        host_id: Uuid::nil(), // Replace with real host_id from config
+        host_id,
     });
 
     let app = AgentApp { state };

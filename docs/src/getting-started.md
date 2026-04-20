@@ -6,7 +6,7 @@ To get started with Light-RS, add the necessary crates to your `Cargo.toml`.
 
 ```toml
 [dependencies]
-light-model-provider = { git = "https://github.com/networknt/light-rs" }
+model-provider = { git = "https://github.com/networknt/light-rs" }
 ```
 
 ## Basic Usage
@@ -14,11 +14,11 @@ light-model-provider = { git = "https://github.com/networknt/light-rs" }
 Here is a quick example of how to initialize an OpenAI provider:
 
 ```rust
-use light_model_provider::{OpenAiProvider, Provider};
+use model_provider::{OpenAiProvider, Provider};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let provider = OpenAiProvider::new(Some("your-api-key"))?;
+    let provider = OpenAiProvider::new(None, Some("your-api-key"))?;
     let response = provider.chat_with_system(
         Some("You are a helpful assistant."),
         "Hello!",

@@ -58,6 +58,7 @@ impl RouterProvider {
                 return (*idx, resolved_model.clone());
             }
             warn!(hint = hint, "Unknown route hint, falling back to default provider");
+            return (self.default_index, self.default_model.clone());
         }
         (self.default_index, model.to_string())
     }
@@ -114,5 +115,89 @@ impl Provider for RouterProvider {
         let (idx, resolved_model) = self.resolve(model);
         let (_, provider) = &self.providers[idx];
         provider.chat_with_tools(messages, tools, &resolved_model, temperature).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Route, RouterProvider};
+    use crate::traits::{ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities};
+    use async_trait::async_trait;
+
+    struct TestProvider;
+
+    #[async_trait]
+    impl Provider for TestProvider {
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities::default()
+        }
+
+        async fn chat_with_system(
+            &self,
+            _system_prompt: Option<&str>,
+            _message: &str,
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+
+        async fn chat_with_history(
+            &self,
+            _messages: &[ChatMessage],
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+
+        async fn chat(
+            &self,
+            _request: ChatRequest<'_>,
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<ChatResponse> {
+            Ok(ChatResponse {
+                text: Some(String::new()),
+                tool_calls: Vec::new(),
+                usage: None,
+                reasoning_content: None,
+            })
+        }
+
+        async fn chat_with_tools(
+            &self,
+            _messages: &[ChatMessage],
+            _tools: &[serde_json::Value],
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<ChatResponse> {
+            Ok(ChatResponse {
+                text: Some(String::new()),
+                tool_calls: Vec::new(),
+                usage: None,
+                reasoning_content: None,
+            })
+        }
+    }
+
+    #[test]
+    fn unknown_hint_falls_back_to_default_model() {
+        let router = RouterProvider::new(
+            vec![("default".to_string(), Box::new(TestProvider))],
+            vec![(
+                "known".to_string(),
+                Route {
+                    provider_name: "default".to_string(),
+                    model: "resolved-model".to_string(),
+                },
+            )],
+            "default-model".to_string(),
+        );
+
+        let (provider_index, model) = router.resolve("hint:missing");
+
+        assert_eq!(provider_index, 0);
+        assert_eq!(model, "default-model");
     }
 }

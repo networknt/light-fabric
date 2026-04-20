@@ -57,7 +57,7 @@ pub struct AnthropicImagePayload {
     pub data: String,
 }
 
-pub fn extract_anthropic_image_payload(image_ref: &str) -> Option<AnthropicImagePayload> {
+pub async fn extract_anthropic_image_payload(image_ref: &str) -> Option<AnthropicImagePayload> {
     if image_ref.starts_with("data:") {
         let comma_idx = image_ref.find(',')?;
         let header = &image_ref[5..comma_idx];
@@ -70,7 +70,7 @@ pub fn extract_anthropic_image_payload(image_ref: &str) -> Option<AnthropicImage
         }
     } else if std::path::Path::new(image_ref.trim()).exists() {
         let path = std::path::Path::new(image_ref.trim());
-        let bytes = std::fs::read(path).ok()?;
+        let bytes = tokio::fs::read(path).await.ok()?;
         let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("jpg");
         let media_type = match ext.to_lowercase().as_str() {
@@ -86,8 +86,8 @@ pub fn extract_anthropic_image_payload(image_ref: &str) -> Option<AnthropicImage
     }
 }
 
-pub fn extract_gemini_image_payload(image_ref: &str) -> Option<AnthropicImagePayload> {
-    extract_anthropic_image_payload(image_ref)
+pub async fn extract_gemini_image_payload(image_ref: &str) -> Option<AnthropicImagePayload> {
+    extract_anthropic_image_payload(image_ref).await
 }
 
 #[cfg(test)]

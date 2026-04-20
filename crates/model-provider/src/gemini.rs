@@ -113,7 +113,7 @@ impl GeminiProvider {
         self
     }
 
-    fn convert_messages(messages: &[ChatMessage]) -> (Option<Content>, Vec<Content>) {
+    async fn convert_messages(messages: &[ChatMessage]) -> (Option<Content>, Vec<Content>) {
         let mut system_instruction = None;
         let mut contents = Vec::new();
 
@@ -132,7 +132,7 @@ impl GeminiProvider {
                         parts.push(Part::Text { text });
                     }
                     for img_ref in image_refs {
-                        if let Some(payload) = crate::multimodal::extract_gemini_image_payload(&img_ref) {
+                        if let Some(payload) = crate::multimodal::extract_gemini_image_payload(&img_ref).await {
                             parts.push(Part::Inline {
                                 inline_data: InlineData {
                                     mime_type: payload.media_type,
@@ -200,7 +200,7 @@ impl Provider for GeminiProvider {
         temperature: f64,
     ) -> anyhow::Result<ProviderChatResponse> {
         let api_key = self.api_key.as_ref().ok_or_else(|| anyhow::anyhow!("Gemini API key not set."))?;
-        let (system_instruction, contents) = Self::convert_messages(request.messages);
+        let (system_instruction, contents) = Self::convert_messages(request.messages).await;
 
         let gen_request = GenerateContentRequest {
             contents,

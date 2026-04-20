@@ -137,7 +137,7 @@ impl BedrockProvider {
         self
     }
 
-    fn convert_messages(messages: &[ChatMessage]) -> (Option<Vec<SystemBlock>>, Vec<ConverseMessage>) {
+    async fn convert_messages(messages: &[ChatMessage]) -> (Option<Vec<SystemBlock>>, Vec<ConverseMessage>) {
         let mut system = Vec::new();
         let mut converse_messages = Vec::new();
 
@@ -153,7 +153,7 @@ impl BedrockProvider {
                         content.push(ContentBlock::Text(TextBlock { text }));
                     }
                     for img_ref in image_refs {
-                        if let Some(payload) = crate::multimodal::extract_gemini_image_payload(&img_ref) {
+                        if let Some(payload) = crate::multimodal::extract_gemini_image_payload(&img_ref).await {
                             let format = match payload.media_type.as_str() {
                                 "image/png" => "png",
                                 "image/gif" => "gif",
@@ -302,7 +302,7 @@ impl Provider for BedrockProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ProviderChatResponse> {
-        let (system, messages) = Self::convert_messages(request.messages);
+        let (system, messages) = Self::convert_messages(request.messages).await;
         let bedrock_request = ConverseRequest {
             messages,
             system,
