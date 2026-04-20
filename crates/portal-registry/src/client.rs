@@ -165,12 +165,29 @@ impl PortalRegistryClient {
             guard.clone()
         };
         
-        let outbound = outbound.ok_or_else(|| anyhow::anyhow!("registry client is not connected"))?;
-        outbound.send(message).await.map_err(|_| anyhow::anyhow!("failed to send search request"))?;
+        let outbound = match outbound {
+            Some(outbound) => outbound,
+            None => {
+                self.pending_requests.lock().await.remove(&id);
+                return Err(anyhow::anyhow!("registry client is not connected"));
+            }
+        };
+        if outbound.send(message).await.is_err() {
+            self.pending_requests.lock().await.remove(&id);
+            return Err(anyhow::anyhow!("failed to send search request"));
+        }
 
-        let response = timeout(Duration::from_secs(10), rx).await
-            .map_err(|_| anyhow::anyhow!("skill search timed out"))?
-            .map_err(|_| anyhow::anyhow!("skill search response channel closed"))?;
+        let response = match timeout(Duration::from_secs(10), rx).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(_)) => {
+                self.pending_requests.lock().await.remove(&id);
+                return Err(anyhow::anyhow!("skill search response channel closed"));
+            }
+            Err(_) => {
+                self.pending_requests.lock().await.remove(&id);
+                return Err(anyhow::anyhow!("skill search timed out"));
+            }
+        };
 
         if let Some(error) = response.error {
             return Err(anyhow::anyhow!("Skill search failed: {}", error.message));
@@ -333,6 +350,7 @@ impl PortalRegistryClient {
             let mut guard = outbound_state.lock().await;
             *guard = None;
         }
+        self.pending_requests.lock().await.clear();
         let _ = self.registration_tx.send(RegistrationState::Disconnected);
 
         Ok(())

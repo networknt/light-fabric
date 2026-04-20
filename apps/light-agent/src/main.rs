@@ -169,7 +169,14 @@ async fn handle_socket(
             let client_msg: ClientMessage = match serde_json::from_str(&text) {
                 Ok(m) => m,
                 Err(e) => {
-                    let _ = sender.send(Message::Text(serde_json::to_string(&ServerMessage::Error { message: format!("Invalid message format: {}", e) }).unwrap().into())).await;
+                    match serde_json::to_string(&ServerMessage::Error { message: format!("Invalid message format: {}", e) }) {
+                        Ok(payload) => {
+                            let _ = sender.send(Message::Text(payload.into())).await;
+                        }
+                        Err(serialize_err) => {
+                            error!("Failed to serialize server error message: {}", serialize_err);
+                        }
+                    }
                     continue;
                 }
             };
@@ -184,27 +191,47 @@ async fn handle_socket(
                         history.push(ChatMessage::assistant(text.clone()));
                         trim_history(&mut history);
 
-                        // Save to DB
-                        let _ = sqlx::query(
-                            "INSERT INTO agent_session_history_t (host_id, session_id, bank_id, messages)
-                            VALUES ($1, $2, $3, $4)
-                            ON CONFLICT (host_id, session_id) 
-                            DO UPDATE SET messages = $4, update_ts = CURRENT_TIMESTAMP"
-                        )
-                        .bind(state.host_id)
-                        .bind(session_uuid)
-                        .bind(bank_id)
-                        .bind(serde_json::to_value(&history).unwrap())
-                        .execute(&state.db)
-                        .await;
+                        match serde_json::to_value(&history) {
+                            Ok(history_payload) => {
+                                let _ = sqlx::query(
+                                    "INSERT INTO agent_session_history_t (host_id, session_id, bank_id, messages)
+                                    VALUES ($1, $2, $3, $4)
+                                    ON CONFLICT (host_id, session_id) 
+                                    DO UPDATE SET messages = $4, update_ts = CURRENT_TIMESTAMP"
+                                )
+                                .bind(state.host_id)
+                                .bind(session_uuid)
+                                .bind(bank_id)
+                                .bind(history_payload)
+                                .execute(&state.db)
+                                .await;
+                            }
+                            Err(e) => {
+                                error!("Failed to serialize session history: {}", e);
+                            }
+                        }
 
-                        let _ = sender.send(Message::Text(serde_json::to_string(&ServerMessage::Text { text }).unwrap().into())).await;
+                        match serde_json::to_string(&ServerMessage::Text { text }) {
+                            Ok(payload) => {
+                                let _ = sender.send(Message::Text(payload.into())).await;
+                            }
+                            Err(e) => {
+                                error!("Failed to serialize server text message: {}", e);
+                            }
+                        }
                     }
                 }
                 Err(e) => {
                     error!("Agent loop error: {}", e);
                     rollback_last_user_message(&mut history, &user_text);
-                    let _ = sender.send(Message::Text(serde_json::to_string(&ServerMessage::Error { message: format!("Error: {}", e) }).unwrap().into())).await;
+                    match serde_json::to_string(&ServerMessage::Error { message: format!("Error: {}", e) }) {
+                        Ok(payload) => {
+                            let _ = sender.send(Message::Text(payload.into())).await;
+                        }
+                        Err(serialize_err) => {
+                            error!("Failed to serialize server error message: {}", serialize_err);
+                        }
+                    }
                 }
             }
         }
