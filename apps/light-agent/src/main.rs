@@ -19,6 +19,9 @@ use light_runtime::{
 use mcp_client::{McpContent, McpGatewayClient};
 use model_provider::{ChatMessage, ChatRequest, ChatResponse, OllamaProvider, Provider, ToolSpec};
 use serde::{Deserialize, Serialize};
+use hindsight_client::{HindsightMemory, PgHindsightClient};
+use portal_registry::{PortalRegistryClient, ServiceRegistrationParams, RegistryHandler};
+use sqlx::{PgPool, Row};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,6 +29,7 @@ use tokio::sync::Mutex;
 use tower_http::services::ServeDir;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
+use uuid::Uuid;
 
 const MAX_SESSION_MESSAGES: usize = 40;
 const MAX_ACTIVE_SESSIONS: usize = 256;
@@ -49,7 +53,10 @@ struct AgentState {
     ollama_config: OllamaConfig,
     provider: OllamaProvider,
     mcp_client: McpGatewayClient,
-    sessions: Arc<Mutex<HashMap<String, Vec<ChatMessage>>>>,
+    memory: Arc<dyn HindsightMemory>,
+    registry: Arc<PortalRegistryClient>,
+    db: PgPool,
+    host_id: Uuid,
 }
 
 #[derive(Clone)]
@@ -139,170 +146,146 @@ async fn handle_socket(
 
     let current_session_id: String = session_id;
 
-    {
-        let mut sessions = state.sessions.lock().await;
-        if !sessions.contains_key(&current_session_id) {
-            if sessions.len() >= MAX_ACTIVE_SESSIONS {
-                let _ = sender
-                    .send(Message::Text(
-                        serde_json::to_string(&ServerMessage::Error {
-                            message: format!(
-                                "Too many active sessions. Limit is {}.",
-                                MAX_ACTIVE_SESSIONS
-                            ),
-                        })
-                        .unwrap()
-                        .into(),
-                    ))
-                    .await;
-                return;
-            }
-            sessions.insert(current_session_id.clone(), Vec::new());
-        }
-    }
+    // 1. Load or Initialize Session
+    let session_uuid = Uuid::parse_str(&current_session_id).unwrap_or_else(|_| Uuid::new_v4());
+    let bank_id = session_uuid; // Using session as bank for simplicity
+
+    let mut history = match sqlx::query(
+        "SELECT messages FROM agent_session_history_t WHERE host_id = $1 AND session_id = $2"
+    )
+    .bind(state.host_id)
+    .bind(session_uuid)
+    .fetch_optional(&state.db)
+    .await {
+        Ok(Some(row)) => {
+            let messages: serde_json::Value = row.get("messages");
+            serde_json::from_value::<Vec<ChatMessage>>(messages).unwrap_or_default()
+        },
+        _ => Vec::new(),
+    };
 
     while let Some(Ok(msg)) = receiver.next().await {
         if let Message::Text(text) = msg {
             let client_msg: ClientMessage = match serde_json::from_str(&text) {
                 Ok(m) => m,
                 Err(e) => {
-                    let _ = sender
-                        .send(Message::Text(
-                            serde_json::to_string(&ServerMessage::Error {
-                                message: format!("Invalid message format: {}", e),
-                            })
-                            .unwrap()
-                            .into(),
-                        ))
-                        .await;
+                    let _ = sender.send(Message::Text(serde_json::to_string(&ServerMessage::Error { message: format!("Invalid message format: {}", e) }).unwrap().into())).await;
                     continue;
                 }
             };
 
-            let session_id = current_session_id.clone();
             let user_text = client_msg.text.clone();
-
-            let mut history_guard = state.sessions.lock().await;
-            let history = history_guard
-                .entry(session_id.clone())
-                .or_insert_with(Vec::new);
             history.push(ChatMessage::user(user_text.clone()));
-            trim_history(history);
-            let messages = history.clone();
-            drop(history_guard);
+            trim_history(&mut history);
 
-            match run_agent_loop(&state, messages, authorization.as_deref()).await {
+            match run_agent_loop(&state, history.clone(), authorization.as_deref(), &current_session_id).await {
                 Ok(response) => {
                     if let Some(text) = response.text {
-                        let mut history_guard = state.sessions.lock().await;
-                        if let Some(h) = history_guard.get_mut(&session_id) {
-                            h.push(ChatMessage::assistant(text.clone()));
-                            trim_history(h);
-                        }
-                        let _ = sender
-                            .send(Message::Text(
-                                serde_json::to_string(&ServerMessage::Text { text })
-                                    .unwrap()
-                                    .into(),
-                            ))
-                            .await;
+                        history.push(ChatMessage::assistant(text.clone()));
+                        trim_history(&mut history);
+
+                        // Save to DB
+                        let _ = sqlx::query(
+                            "INSERT INTO agent_session_history_t (host_id, session_id, bank_id, messages)
+                            VALUES ($1, $2, $3, $4)
+                            ON CONFLICT (host_id, session_id) 
+                            DO UPDATE SET messages = $4, update_ts = CURRENT_TIMESTAMP"
+                        )
+                        .bind(state.host_id)
+                        .bind(session_uuid)
+                        .bind(bank_id)
+                        .bind(serde_json::to_value(&history).unwrap())
+                        .execute(&state.db)
+                        .await;
+
+                        let _ = sender.send(Message::Text(serde_json::to_string(&ServerMessage::Text { text }).unwrap().into())).await;
                     }
                 }
                 Err(e) => {
                     error!("Agent loop error: {}", e);
-                    let mut history_guard = state.sessions.lock().await;
-                    if let Some(history) = history_guard.get_mut(&session_id) {
-                        rollback_last_user_message(history, &user_text);
-                    }
-                    drop(history_guard);
-                    let _ = sender
-                        .send(Message::Text(
-                            serde_json::to_string(&ServerMessage::Error {
-                                message: format!("Error: {}", e),
-                            })
-                            .unwrap()
-                            .into(),
-                        ))
-                        .await;
+                    rollback_last_user_message(&mut history, &user_text);
+                    let _ = sender.send(Message::Text(serde_json::to_string(&ServerMessage::Error { message: format!("Error: {}", e) }).unwrap().into())).await;
                 }
             }
         }
     }
-    // Connection closed — remove session history to prevent unbounded memory growth.
-    state.sessions.lock().await.remove(&current_session_id);
 }
 
 async fn run_agent_loop(
     state: &AgentState,
     mut messages: Vec<ChatMessage>,
     authorization: Option<&str>,
+    session_id: &str,
 ) -> Result<ChatResponse> {
-    // 1. Fetch tools from MCP Gateway (forward Authorization if present)
-    let mcp_tools = state
-        .mcp_client
-        .list_tools(authorization)
-        .await
-        .unwrap_or_else(|e| {
-            warn!("Failed to fetch MCP tools: {}", e);
-            vec![]
-        });
-    info!("Fetched {} MCP tool(s) from gateway", mcp_tools.len());
-    let tool_specs: Vec<ToolSpec> = mcp_tools
-        .into_iter()
-        .map(|t| ToolSpec {
+    let user_prompt = messages.last().map(|m| m.content.clone()).unwrap_or_default();
+    let bank_id = Uuid::parse_str(session_id).unwrap_or(Uuid::new_v4()); // Using session_id as bank_id for simplicity
+
+    // 1. Recall Memory (Context Injection)
+    // For now, we use a zero-vector since we don't have an embedding service yet.
+    // In production, user_prompt would be embedded first.
+    let relevant_memories = state.memory.recall(state.host_id, bank_id, vec![0.0; 384], 5).await?;
+    if !relevant_memories.is_empty() {
+        let mut context_msg = String::from("Relevant context from your memory:\n");
+        for mem in relevant_memories {
+            context_msg.push_str(&format!("- {}\n", mem.content));
+        }
+        // Inject as a system hint or prefix to the user message
+        if let Some(msg) = messages.last_mut() {
+            msg.content = format!("{}\n\n{}", context_msg, msg.content);
+        }
+    }
+
+    // 2. Discover Skills (Dynamic Tooling - Pattern B)
+    let search_results = state.registry.search_skills(user_prompt.to_string(), Some(10)).await.unwrap_or_else(|e| {
+        warn!("Skill search failed: {}", e);
+        portal_registry::SkillSearchResponse { skills: vec![] }
+    });
+
+    let mut tool_specs: Vec<ToolSpec> = search_results.skills.into_iter().map(|s| ToolSpec {
+        name: s.tool_name,
+        description: s.description,
+        parameters: s.input_schema,
+    }).collect();
+
+    // Still include MCP tools for now
+    let mcp_tools = state.mcp_client.list_tools(authorization).await.unwrap_or_default();
+    for t in mcp_tools {
+        tool_specs.push(ToolSpec {
             name: t.name,
             description: t.description,
             parameters: t.input_schema,
-        })
-        .collect();
+        });
+    }
 
-    // 2. Loop until we have a final text response (max 10 iterations)
+    // 3. Main LLM Loop
+    let mut final_response = None;
     for _ in 0..10 {
-        let request = ChatRequest {
-            messages: &messages,
-            tools: if tool_specs.is_empty() {
-                None
-            } else {
-                Some(&tool_specs)
-            },
+        let response = {
+            let request = ChatRequest {
+                messages: &messages,
+                tools: if tool_specs.is_empty() { None } else { Some(&tool_specs) },
+            };
+            state.provider.chat(request, &state.ollama_config.model, 0.7).await?
         };
-
-        let response = state
-            .provider
-            .chat(request, &state.ollama_config.model, 0.7)
-            .await?;
 
         if response.tool_calls.is_empty() {
-            return Ok(response);
+            final_response = Some(response);
+            break;
         }
 
-        // Handle tool calls
-        info!("Executing {} tool call(s)", response.tool_calls.len());
-
-        // Add assistant message with tool calls to history
-        let assistant_msg = ChatMessage {
+        // Add assistant message with tool calls
+        messages.push(ChatMessage {
             role: "assistant".into(),
-            content: serde_json::to_string(&serde_json::json!({
-                "tool_calls": response.tool_calls
-            }))
-            .unwrap(),
-        };
-        messages.push(assistant_msg);
+            content: serde_json::to_string(&serde_json::json!({ "tool_calls": response.tool_calls })).unwrap(),
+        });
 
         for tool_call in &response.tool_calls {
-            let args: serde_json::Value =
-                serde_json::from_str(&tool_call.arguments).unwrap_or_default();
-            match state
-                .mcp_client
-                .call_tool(authorization, &tool_call.name, args)
-                .await
-            {
+            let args: serde_json::Value = serde_json::from_str(&tool_call.arguments).unwrap_or_default();
+            match state.mcp_client.call_tool(authorization, &tool_call.name, args).await {
                 Ok(result) => {
                     let mut text_result = String::new();
                     for content in result.content {
-                        if let McpContent::Text { text } = content {
-                            text_result.push_str(&text);
-                        }
+                        if let McpContent::Text { text } = content { text_result.push_str(&text); }
                     }
                     messages.push(ChatMessage {
                         role: "tool".into(),
@@ -310,8 +293,7 @@ async fn run_agent_loop(
                             "tool_call_id": tool_call.id,
                             "tool_name": tool_call.name,
                             "content": text_result
-                        }))
-                        .unwrap(),
+                        })).unwrap(),
                     });
                 }
                 Err(e) => {
@@ -322,15 +304,29 @@ async fn run_agent_loop(
                             "tool_call_id": tool_call.id,
                             "tool_name": tool_call.name,
                             "content": format!("Error: {}", e)
-                        }))
-                        .unwrap(),
+                        })).unwrap(),
                     });
                 }
             }
         }
     }
 
-    Err(anyhow::anyhow!("Max iterations reached in agent loop"))
+    let response = final_response.ok_or_else(|| anyhow::anyhow!("Max iterations reached"))?;
+
+    // 4. Retain Experience (Learning)
+    if let Some(ref text) = response.text {
+        let trajectory = format!("User: {}\nAssistant: {}", user_prompt, text);
+        let _ = state.memory.retain(
+            state.host_id,
+            bank_id,
+            &trajectory,
+            "experience",
+            None,
+            serde_json::json!({ "session_id": session_id })
+        ).await.map_err(|e| warn!("Failed to retain memory: {}", e));
+    }
+
+    Ok(response)
 }
 
 #[tokio::main]
@@ -387,12 +383,40 @@ async fn main() -> anyhow::Result<()> {
     )
     .context("Failed to build MCP gateway client")?;
 
+    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/portal".to_string());
+    let pool = PgPool::connect(&db_url).await.context("Failed to connect to database")?;
+    
+    let memory = Arc::new(PgHindsightClient::new(pool.clone()));
+
+    // Registry Client Configuration
+    let registry_handler = Arc::new(NoopRegistryHandler);
+    let registration_params = ServiceRegistrationParams {
+        service_id: "light-agent".to_string(),
+        version: "0.1.0".to_string(),
+        protocol: "ws".to_string(),
+        address: "localhost".to_string(),
+        port: 4000,
+        tags: HashMap::new(),
+        env_tag: Some("dev".to_string()),
+        jwt: "agent-token".to_string(),
+    };
+    
+    let registry_url = "ws://localhost:8080/ws"; // Controller URL
+    let registry = Arc::new(PortalRegistryClient::new(registry_url, registration_params, registry_handler)?);
+    let registry_clone = Arc::clone(&registry);
+    tokio::spawn(async move {
+        registry_clone.run().await;
+    });
+
     let state = Arc::new(AgentState {
         provider: OllamaProvider::new(Some(&ollama_config.ollama_url), None)
             .context("Failed to build Ollama provider")?,
         mcp_client,
         ollama_config,
-        sessions: Arc::new(Mutex::new(HashMap::new())),
+        memory,
+        registry,
+        db: pool,
+        host_id: Uuid::nil(), // Replace with real host_id from config
     });
 
     let app = AgentApp { state };
@@ -417,6 +441,10 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+struct NoopRegistryHandler;
+#[async_trait::async_trait]
+impl RegistryHandler for NoopRegistryHandler {}
 
 #[cfg(test)]
 mod tests {

@@ -1,0 +1,9 @@
+[book]
+authors = ["Steve Hu"]
+language = "en"
+src = "src"
+title = "Light-RS Documentation"
+
+[output.html]
+git-repository-url = "https://github.com/networknt/light-rs"
+edit-url-template = "https://github.com/networknt/light-rs/edit/master/docs/{path}"

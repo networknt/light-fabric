@@ -1,0 +1,476 @@
+use crate::traits::{
+    ChatMessage, ChatRequest as ProviderChatRequest, ChatResponse as ProviderChatResponse,
+    Provider, ProviderCapabilities, TokenUsage, ToolCall as ProviderToolCall, ToolSpec,
+};
+use crate::multimodal;
+use async_trait::async_trait;
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Mutex;
+use tracing::warn;
+
+const GITHUB_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
+const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
+const GITHUB_ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
+const GITHUB_API_KEY_URL: &str = "https://api.github.com/copilot_internal/v2/token";
+const DEFAULT_API: &str = "https://api.githubcopilot.com";
+
+#[derive(Debug, Deserialize)]
+struct DeviceCodeResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    #[serde(default = "default_interval")]
+    interval: u64,
+    #[serde(default = "default_expires_in")]
+    expires_in: u64,
+}
+
+fn default_interval() -> u64 { 5 }
+fn default_expires_in() -> u64 { 900 }
+
+#[derive(Debug, Deserialize)]
+struct AccessTokenResponse {
+    access_token: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ApiKeyInfo {
+    token: String,
+    expires_at: i64,
+    #[serde(default)]
+    endpoints: Option<ApiEndpoints>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ApiEndpoints {
+    api: Option<String>,
+}
+
+struct CachedApiKey {
+    token: String,
+    api_endpoint: String,
+    expires_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct ApiChatRequest<'a> {
+    model: String,
+    messages: Vec<ApiMessage>,
+    temperature: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<NativeToolSpec<'a>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ApiMessage {
+    role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<ApiContent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<NativeToolCall>>,
+}
+
+#[derive(Debug, Serialize)]
+struct NativeToolSpec<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: NativeToolFunctionSpec<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct NativeToolFunctionSpec<'a> {
+    name: &'a str,
+    description: &'a str,
+    parameters: &'a serde_json::Value,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct NativeToolCall {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
+    function: NativeFunctionCall,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct NativeFunctionCall {
+    name: String,
+    arguments: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+enum ApiContent {
+    Text(String),
+    Parts(Vec<ContentPart>),
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+enum ContentPart {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image_url")]
+    ImageUrl { image_url: ImageUrlDetail },
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ImageUrlDetail {
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiChatResponse {
+    choices: Vec<Choice>,
+    #[serde(default)]
+    usage: Option<UsageInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UsageInfo {
+    #[serde(default)]
+    prompt_tokens: Option<u64>,
+    #[serde(default)]
+    completion_tokens: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Choice {
+    message: ResponseMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResponseMessage {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<NativeToolCall>>,
+}
+
+pub struct CopilotProvider {
+    github_token: Option<String>,
+    refresh_lock: Arc<Mutex<Option<CachedApiKey>>>,
+    token_dir: PathBuf,
+    client: Client,
+}
+
+impl CopilotProvider {
+    pub fn new(github_token: Option<&str>) -> anyhow::Result<Self> {
+        let token_dir = directories::ProjectDirs::from("", "", "light-rs")
+            .map(|dir| dir.config_dir().join("copilot"))
+            .unwrap_or_else(|| {
+                let user = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
+                std::env::temp_dir().join(format!("light-rs-copilot-{user}"))
+            });
+
+        if let Err(err) = std::fs::create_dir_all(&token_dir) {
+            warn!("Failed to create Copilot token directory {:?}: {err}", token_dir);
+        }
+
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .map_err(|e| anyhow::anyhow!("Failed to build reqwest Client for CopilotProvider: {e}"))?;
+
+        Ok(Self {
+            github_token: github_token.filter(|s| !s.is_empty()).map(String::from),
+            refresh_lock: Arc::new(Mutex::new(None)),
+            token_dir,
+            client,
+        })
+    }
+
+    const COPILOT_HEADERS: [(&str, &str); 4] = [
+        ("Editor-Version", "vscode/1.85.1"),
+        ("Editor-Plugin-Version", "copilot/1.155.0"),
+        ("User-Agent", "GithubCopilot/1.155.0"),
+        ("Accept", "application/json"),
+    ];
+
+    fn to_api_content(role: &str, content: &str) -> Option<ApiContent> {
+        if role != "user" {
+            return Some(ApiContent::Text(content.to_string()));
+        }
+
+        let (cleaned_text, image_refs) = multimodal::parse_image_markers(content);
+        if image_refs.is_empty() {
+            return Some(ApiContent::Text(content.to_string()));
+        }
+
+        let mut parts = Vec::with_capacity(image_refs.len() + 1);
+        let trimmed = cleaned_text.trim();
+        if !trimmed.is_empty() {
+            parts.push(ContentPart::Text { text: trimmed.to_string() });
+        }
+        for image_ref in image_refs {
+            parts.push(ContentPart::ImageUrl { image_url: ImageUrlDetail { url: image_ref } });
+        }
+
+        Some(ApiContent::Parts(parts))
+    }
+
+    fn convert_messages(messages: &[ChatMessage]) -> Vec<ApiMessage> {
+        messages.iter().map(|m| {
+            if m.role == "assistant"
+                && let Ok(value) = serde_json::from_str::<serde_json::Value>(&m.content)
+                && let Some(tool_calls_value) = value.get("tool_calls")
+                && let Ok(parsed_calls) = serde_json::from_value::<Vec<ProviderToolCall>>(tool_calls_value.clone())
+            {
+                let tool_calls = parsed_calls.into_iter().map(|tc| NativeToolCall {
+                    id: Some(tc.id),
+                    kind: Some("function".to_string()),
+                    function: NativeFunctionCall { name: tc.name, arguments: tc.arguments },
+                }).collect();
+                let content = value.get("content").and_then(|v| v.as_str()).map(|s| ApiContent::Text(s.to_string()));
+                return ApiMessage { role: "assistant".to_string(), content, tool_call_id: None, tool_calls: Some(tool_calls) };
+            }
+
+            if m.role == "tool" && let Ok(value) = serde_json::from_str::<serde_json::Value>(&m.content) {
+                let tool_call_id = value.get("tool_call_id").and_then(|v| v.as_str()).map(ToString::to_string);
+                let content = value.get("content").and_then(|v| v.as_str()).map(|s| ApiContent::Text(s.to_string()));
+                return ApiMessage { role: "tool".to_string(), content, tool_call_id, tool_calls: None };
+            }
+
+            ApiMessage {
+                role: m.role.clone(),
+                content: Self::to_api_content(&m.role, &m.content),
+                tool_call_id: None,
+                tool_calls: None,
+            }
+        }).collect()
+    }
+
+    async fn send_chat_request(
+        &self,
+        messages: Vec<ApiMessage>,
+        tools: Option<&[ToolSpec]>,
+        model: &str,
+        temperature: f64,
+    ) -> anyhow::Result<ProviderChatResponse> {
+        let (token, endpoint) = self.get_api_key().await?;
+        let url = format!("{}/chat/completions", endpoint.trim_end_matches('/'));
+
+        let native_tools = tools.map(|ts| ts.iter().map(|t| NativeToolSpec {
+            kind: "function",
+            function: NativeToolFunctionSpec { name: &t.name, description: &t.description, parameters: &t.parameters },
+        }).collect::<Vec<_>>());
+
+        let request = ApiChatRequest {
+            model: model.to_string(),
+            messages,
+            temperature,
+            tool_choice: native_tools.as_ref().map(|_| "auto".to_string()),
+            tools: native_tools,
+        };
+
+        let mut req = self.client.post(&url).header("Authorization", format!("Bearer {token}")).json(&request);
+        for (h, v) in &Self::COPILOT_HEADERS { req = req.header(*h, *v); }
+
+        let response = req.send().await?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("GitHub Copilot error ({}): {}", status, body);
+        }
+
+        let api_response: ApiChatResponse = response.json().await?;
+        let usage = api_response.usage.map(|u| TokenUsage {
+            input_tokens: u.prompt_tokens,
+            output_tokens: u.completion_tokens,
+            cached_input_tokens: None,
+        });
+        let choice = api_response.choices.into_iter().next().ok_or_else(|| anyhow::anyhow!("No response from Copilot"))?;
+
+        let tool_calls = choice.message.tool_calls.unwrap_or_default().into_iter().map(|tc| ProviderToolCall {
+            id: tc.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            name: tc.function.name,
+            arguments: tc.function.arguments,
+        }).collect();
+
+        Ok(ProviderChatResponse { text: choice.message.content, tool_calls, usage, reasoning_content: None })
+    }
+
+    async fn get_api_key(&self) -> anyhow::Result<(String, String)> {
+        let mut cached = self.refresh_lock.lock().await;
+        let now = chrono::Utc::now().timestamp();
+
+        if let Some(c) = cached.as_ref() && now + 120 < c.expires_at {
+            return Ok((c.token.clone(), c.api_endpoint.clone()));
+        }
+
+        if let Some(info) = self.load_api_key_from_disk().await && now + 120 < info.expires_at {
+            let endpoint = info.endpoints.as_ref().and_then(|e| e.api.clone()).unwrap_or_else(|| DEFAULT_API.to_string());
+            let token = info.token.clone();
+            *cached = Some(CachedApiKey { token: token.clone(), api_endpoint: endpoint.clone(), expires_at: info.expires_at });
+            return Ok((token, endpoint));
+        }
+
+        let access_token = self.get_github_access_token().await?;
+        let info = self.exchange_for_api_key(&access_token).await?;
+        self.save_api_key_to_disk(&info).await;
+
+        let endpoint = info.endpoints.as_ref().and_then(|e| e.api.clone()).unwrap_or_else(|| DEFAULT_API.to_string());
+        *cached = Some(CachedApiKey { token: info.token.clone(), api_endpoint: endpoint.clone(), expires_at: info.expires_at });
+        Ok((info.token, endpoint))
+    }
+
+    async fn get_github_access_token(&self) -> anyhow::Result<String> {
+        if let Some(t) = &self.github_token { return Ok(t.clone()); }
+        let path = self.token_dir.join("access-token");
+        if let Ok(cached) = tokio::fs::read_to_string(&path).await {
+            let token = cached.trim();
+            if !token.is_empty() { return Ok(token.to_string()); }
+        }
+        let token = self.device_code_login().await?;
+        write_file_secure(&path, &token).await;
+        Ok(token)
+    }
+
+    async fn device_code_login(&self) -> anyhow::Result<String> {
+        let response: DeviceCodeResponse = self.client.post(GITHUB_DEVICE_CODE_URL).header("Accept", "application/json")
+            .json(&serde_json::json!({ "client_id": GITHUB_CLIENT_ID, "scope": "read:user" })).send().await?.error_for_status()?.json().await?;
+
+        let mut poll_interval = Duration::from_secs(response.interval.max(5));
+        let expires_at = tokio::time::Instant::now() + Duration::from_secs(response.expires_in.max(1));
+
+        eprintln!("\nGitHub Copilot authentication required.\nVisit: {}\nCode: {}\n", response.verification_uri, response.user_code);
+
+        while tokio::time::Instant::now() < expires_at {
+            tokio::time::sleep(poll_interval).await;
+            let token_response: AccessTokenResponse = self.client.post(GITHUB_ACCESS_TOKEN_URL).header("Accept", "application/json")
+                .json(&serde_json::json!({ "client_id": GITHUB_CLIENT_ID, "device_code": response.device_code, "grant_type": "urn:ietf:params:oauth:grant-type:device_code" }))
+                .send().await?.json().await?;
+
+            if let Some(token) = token_response.access_token { return Ok(token); }
+            match token_response.error.as_deref() {
+                Some("slow_down") => { poll_interval += Duration::from_secs(5); }
+                Some("authorization_pending") | None => {}
+                Some(error) => anyhow::bail!("GitHub auth failed: {error}"),
+            }
+        }
+        anyhow::bail!("Timed out waiting for GitHub authorization")
+    }
+
+    async fn exchange_for_api_key(&self, access_token: &str) -> anyhow::Result<ApiKeyInfo> {
+        let mut req = self.client.get(GITHUB_API_KEY_URL).header("Authorization", format!("token {access_token}"));
+        for (h, v) in &Self::COPILOT_HEADERS { req = req.header(*h, *v); }
+        let response = req.send().await?;
+
+        if !response.status().is_success() {
+            if response.status().as_u16() == 401 || response.status().as_u16() == 403 {
+                tokio::fs::remove_file(self.token_dir.join("access-token")).await.ok();
+            }
+            anyhow::bail!("Failed to get Copilot API key: {}", response.status());
+        }
+        Ok(response.json().await?)
+    }
+
+    async fn load_api_key_from_disk(&self) -> Option<ApiKeyInfo> {
+        let path = self.token_dir.join("api-key.json");
+        let data = tokio::fs::read_to_string(&path).await.ok()?;
+        serde_json::from_str(&data).ok()
+    }
+
+    async fn save_api_key_to_disk(&self, info: &ApiKeyInfo) {
+        let path = self.token_dir.join("api-key.json");
+        if let Ok(json) = serde_json::to_string_pretty(info) {
+            write_file_secure(&path, &json).await;
+        }
+    }
+}
+
+async fn write_file_secure(path: &Path, content: &str) {
+    let path = path.to_path_buf();
+    let content = content.to_string();
+    let _ = tokio::task::spawn_blocking(move || {
+        #[cfg(unix)] {
+            use std::io::Write;
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path)?;
+            file.write_all(content.as_bytes())?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        #[cfg(not(unix))] { std::fs::write(&path, &content)?; }
+        Ok::<(), std::io::Error>(())
+    }).await;
+}
+
+#[async_trait]
+impl Provider for CopilotProvider {
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities { native_tool_calling: true, vision: true, prompt_caching: false }
+    }
+
+    async fn chat_with_system(&self, system_prompt: Option<&str>, message: &str, model: &str, temperature: f64) -> anyhow::Result<String> {
+        let mut messages = Vec::new();
+        if let Some(s) = system_prompt { messages.push(ApiMessage { role: "system".to_string(), content: Some(ApiContent::Text(s.to_string())), tool_call_id: None, tool_calls: None }); }
+        messages.push(ApiMessage { role: "user".to_string(), content: Self::to_api_content("user", message), tool_call_id: None, tool_calls: None });
+        let resp = self.send_chat_request(messages, None, model, temperature).await?;
+        Ok(resp.text.unwrap_or_default())
+    }
+
+    async fn chat_with_history(&self, messages: &[ChatMessage], model: &str, temperature: f64) -> anyhow::Result<String> {
+        let resp = self.send_chat_request(Self::convert_messages(messages), None, model, temperature).await?;
+        Ok(resp.text.unwrap_or_default())
+    }
+
+    async fn chat(&self, request: ProviderChatRequest<'_>, model: &str, temperature: f64) -> anyhow::Result<ProviderChatResponse> {
+        self.send_chat_request(Self::convert_messages(request.messages), request.tools, model, temperature).await
+    }
+
+    async fn chat_with_tools(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[serde_json::Value],
+        model: &str,
+        temperature: f64,
+    ) -> anyhow::Result<ProviderChatResponse> {
+        let native_messages = Self::convert_messages(messages);
+        let (token, endpoint) = self.get_api_key().await?;
+        let url = format!("{}/chat/completions", endpoint.trim_end_matches('/'));
+
+        let request = serde_json::json!({
+            "model": model,
+            "messages": native_messages,
+            "temperature": temperature,
+            "tools": tools,
+            "tool_choice": "auto"
+        });
+
+        let mut req = self.client.post(&url).header("Authorization", format!("Bearer {token}")).json(&request);
+        for (h, v) in &Self::COPILOT_HEADERS { req = req.header(*h, *v); }
+
+        let response = req.send().await?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("GitHub Copilot error ({}): {}", status, body);
+        }
+
+        let api_response: ApiChatResponse = response.json().await?;
+        let usage = api_response.usage.map(|u| TokenUsage {
+            input_tokens: u.prompt_tokens,
+            output_tokens: u.completion_tokens,
+            cached_input_tokens: None,
+        });
+        let choice = api_response.choices.into_iter().next().ok_or_else(|| anyhow::anyhow!("No response from Copilot"))?;
+
+        let tool_calls = choice.message.tool_calls.unwrap_or_default().into_iter().map(|tc| ProviderToolCall {
+            id: tc.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            name: tc.function.name,
+            arguments: tc.function.arguments,
+        }).collect();
+
+        Ok(ProviderChatResponse { text: choice.message.content, tool_calls, usage, reasoning_content: None })
+    }
+}

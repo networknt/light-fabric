@@ -1,12 +1,14 @@
 use crate::protocol::{
     JsonRpcMessage, RegistrationResponse, ServiceMetadataUpdate, ServiceRegistrationParams,
+    SkillSearchRequest, SkillSearchResponse,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, mpsc, watch};
+use tokio::sync::{Mutex, mpsc, watch, oneshot};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
@@ -88,6 +90,7 @@ pub struct PortalRegistryClient {
     registration_tx: watch::Sender<RegistrationState>,
     ca_certificate: Option<Vec<u8>>,
     verify_hostname: bool,
+    pending_requests: Arc<Mutex<HashMap<String, oneshot::Sender<JsonRpcMessage>>>>,
 }
 
 impl PortalRegistryClient {
@@ -106,6 +109,7 @@ impl PortalRegistryClient {
             registration_tx,
             ca_certificate: None,
             verify_hostname: true,
+            pending_requests: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -139,6 +143,41 @@ impl PortalRegistryClient {
         tx.send(message)
             .await
             .map_err(|_| anyhow::anyhow!("registry client connection is closed"))
+    }
+
+    pub async fn search_skills(&self, query: String, limit: Option<i32>) -> anyhow::Result<SkillSearchResponse> {
+        let id = Uuid::new_v4().to_string();
+        let payload = JsonRpcMessage::new_request(
+            json!(id),
+            "skill/search",
+            serde_json::to_value(SkillSearchRequest { query, limit })?,
+        );
+        
+        let (tx, rx) = oneshot::channel::<JsonRpcMessage>();
+        {
+            let mut pending = self.pending_requests.lock().await;
+            pending.insert(id.clone(), tx);
+        }
+
+        let message = Message::Text(serde_json::to_string(&payload)?.into());
+        let outbound = {
+            let guard = self.outbound_tx.lock().await;
+            guard.clone()
+        };
+        
+        let outbound = outbound.ok_or_else(|| anyhow::anyhow!("registry client is not connected"))?;
+        outbound.send(message).await.map_err(|_| anyhow::anyhow!("failed to send search request"))?;
+
+        let response = timeout(Duration::from_secs(10), rx).await
+            .map_err(|_| anyhow::anyhow!("skill search timed out"))?
+            .map_err(|_| anyhow::anyhow!("skill search response channel closed"))?;
+
+        if let Some(error) = response.error {
+            return Err(anyhow::anyhow!("Skill search failed: {}", error.message));
+        }
+
+        let result = response.result.ok_or_else(|| anyhow::anyhow!("no result in skill search response"))?;
+        Ok(serde_json::from_value(result)?)
     }
 
     pub async fn run(&self) {
@@ -243,8 +282,9 @@ impl PortalRegistryClient {
                 Message::Text(text) => {
                     if let Ok(json_msg) = serde_json::from_str::<JsonRpcMessage>(&text) {
                         if let Some(method) = json_msg.method.as_deref() {
+                            // Request or Notification
                             if json_msg.id.is_some() {
-                                // Request
+                                // Request from server
                                 let result = handler
                                     .handle_request(method, json_msg.params.unwrap_or(json!({})))
                                     .await;
@@ -260,13 +300,23 @@ impl PortalRegistryClient {
                                     .send(Message::Text(serde_json::to_string(&response)?.into()))
                                     .await;
                             } else {
-                                // Notification
+                                // Notification from server
                                 handler
                                     .handle_notification(
                                         method,
                                         json_msg.params.unwrap_or(json!({})),
                                     )
                                     .await;
+                            }
+                        } else if let Some(id_val) = json_msg.id.as_ref() {
+                            // Response to our request
+                            let id_str = match id_val {
+                                serde_json::Value::String(s) => s.clone(),
+                                _ => id_val.to_string(),
+                            };
+                            let mut pending = self.pending_requests.lock().await;
+                            if let Some(tx) = pending.remove(&id_str) {
+                                let _ = tx.send(json_msg);
                             }
                         }
                     }

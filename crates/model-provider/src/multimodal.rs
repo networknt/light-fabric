@@ -1,3 +1,5 @@
+use base64::Engine as _;
+
 const IMAGE_MARKER_PREFIX: &str = "[IMAGE:";
 
 pub fn parse_image_markers(content: &str) -> (String, Vec<String>) {
@@ -48,6 +50,44 @@ pub fn extract_ollama_image_payload(image_ref: &str) -> Option<String> {
     } else {
         Some(image_ref.trim().to_string()).filter(|value| !value.is_empty())
     }
+}
+
+pub struct AnthropicImagePayload {
+    pub media_type: String,
+    pub data: String,
+}
+
+pub fn extract_anthropic_image_payload(image_ref: &str) -> Option<AnthropicImagePayload> {
+    if image_ref.starts_with("data:") {
+        let comma_idx = image_ref.find(',')?;
+        let header = &image_ref[5..comma_idx];
+        let media_type = header.split(';').next().unwrap_or("image/jpeg").to_string();
+        let data = image_ref[comma_idx + 1..].trim().to_string();
+        if data.is_empty() {
+            None
+        } else {
+            Some(AnthropicImagePayload { media_type, data })
+        }
+    } else if std::path::Path::new(image_ref.trim()).exists() {
+        let path = std::path::Path::new(image_ref.trim());
+        let bytes = std::fs::read(path).ok()?;
+        let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("jpg");
+        let media_type = match ext.to_lowercase().as_str() {
+            "png" => "image/png",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            _ => "image/jpeg",
+        }
+        .to_string();
+        Some(AnthropicImagePayload { media_type, data })
+    } else {
+        None
+    }
+}
+
+pub fn extract_gemini_image_payload(image_ref: &str) -> Option<AnthropicImagePayload> {
+    extract_anthropic_image_payload(image_ref)
 }
 
 #[cfg(test)]
