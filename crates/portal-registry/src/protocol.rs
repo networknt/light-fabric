@@ -89,3 +89,23 @@ pub struct RegistrationResponse {
     pub runtime_instance_id: Uuid,
     pub status: String,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SkillSearchRequest {
+    pub query: String,
+    pub limit: Option<i32>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SkillSummary {
+    pub skill_id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub tool_name: String,
+    pub input_schema: Value,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SkillSearchResponse {
+    pub skills: Vec<SkillSummary>,
+}
