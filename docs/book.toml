@@ -5,5 +5,6 @@ src = "src"
 title = "Light-RS Documentation"
 
 [output.html]
+site-url = "/light-rs/"
 git-repository-url = "https://github.com/networknt/light-rs"
 edit-url-template = "https://github.com/networknt/light-rs/edit/master/docs/{path}"
