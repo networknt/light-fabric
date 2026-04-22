@@ -25,3 +25,7 @@ target
 
 /target
 docs/book/
+.gitnexus
+.claude/
+AGENTS.md
+CLAUDE.md
