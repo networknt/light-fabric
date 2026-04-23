@@ -473,15 +473,20 @@ where
         let portal_url = Url::parse(&portal_registry.portal_url)?;
         let ws_url = to_microservice_ws_url(&portal_url)?;
         let token = portal_token(&portal_registry).ok_or(RuntimeError::MissingPortalToken)?;
-        let registration = RegistrationBuilder::new(
+        let mut registration = RegistrationBuilder::new(
             &runtime_config.service_identity.service_id,
             &runtime_config.service_identity.version,
             &metadata.protocol,
             &metadata.address,
             metadata.port,
         )
-        .with_jwt(&token)
-        .build();
+        .with_jwt(&token);
+
+        if let Some(env_tag) = runtime_config.service_identity.env_tag.as_deref() {
+            registration = registration.with_env(env_tag);
+        }
+
+        let registration = registration.build();
 
         let mut client =
             PortalRegistryClient::new(&ws_url, registration, Arc::clone(&self.registry_handler))

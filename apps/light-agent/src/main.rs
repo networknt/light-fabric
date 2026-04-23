@@ -11,16 +11,16 @@ use axum::{
 };
 use config_loader::ConfigLoader;
 use futures_util::{SinkExt, StreamExt};
+use hindsight_client::{HindsightMemory, PgHindsightClient};
 use light_axum::{AxumApp, AxumTransport, ServerContext};
 use light_runtime::{
     LightRuntimeBuilder,
-    config::{BootstrapConfig, ClientConfig},
+    config::{BootstrapConfig, ClientConfig, PortalRegistryConfig, ServerConfig},
 };
 use mcp_client::{McpContent, McpGatewayClient};
 use model_provider::{ChatMessage, ChatRequest, ChatResponse, OllamaProvider, Provider, ToolSpec};
+use portal_registry::{PortalRegistryClient, RegistryHandler, ServiceRegistrationParams};
 use serde::{Deserialize, Serialize};
-use hindsight_client::{HindsightMemory, PgHindsightClient};
-use portal_registry::{PortalRegistryClient, ServiceRegistrationParams, RegistryHandler};
 use sqlx::{PgPool, Row};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -28,6 +28,7 @@ use std::sync::Arc;
 use tower_http::services::ServeDir;
 use tracing::{error, warn};
 use tracing_subscriber::EnvFilter;
+use url::Url;
 use uuid::Uuid;
 
 const MAX_SESSION_MESSAGES: usize = 40;
@@ -52,6 +53,54 @@ fn required_uuid_env_var(name: &str) -> anyhow::Result<Uuid> {
         .with_context(|| format!("Required environment variable {name} is not set"))?;
     Uuid::parse_str(&raw)
         .with_context(|| format!("Environment variable {name} must be a valid UUID"))
+}
+
+fn to_registry_ws_url(portal_url: &str) -> anyhow::Result<String> {
+    let mut url = Url::parse(portal_url)
+        .with_context(|| format!("Invalid portal registry URL: {portal_url}"))?;
+    let scheme = match url.scheme() {
+        "https" => "wss",
+        "http" => "ws",
+        other => anyhow::bail!("Unsupported portal registry URL scheme: {other}"),
+    };
+    url.set_scheme(scheme)
+        .map_err(|_| anyhow::anyhow!("Failed to convert portal registry URL scheme"))?;
+    url.set_path("/ws/microservice");
+    url.set_query(None);
+    Ok(url.to_string())
+}
+
+fn registry_advertised_address(server_config: &ServerConfig) -> String {
+    server_config
+        .advertised_address
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            if server_config.ip == "0.0.0.0" {
+                "127.0.0.1".to_string()
+            } else {
+                server_config.ip.clone()
+            }
+        })
+}
+
+fn registry_token(config: &PortalRegistryConfig) -> Option<String> {
+    std::env::var("LIGHT_PORTAL_AUTHORIZATION")
+        .ok()
+        .or_else(|| std::env::var("light_portal_authorization").ok())
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| strip_bearer_prefix(&value))
+        .or_else(|| {
+            (!config.portal_token.trim().is_empty()).then(|| strip_bearer_prefix(&config.portal_token))
+        })
+}
+
+fn strip_bearer_prefix(token: &str) -> String {
+    token
+        .strip_prefix("Bearer ")
+        .or_else(|| token.strip_prefix("bearer "))
+        .unwrap_or(token)
+        .to_string()
 }
 
 struct AgentState {
@@ -156,16 +205,17 @@ async fn handle_socket(
     let bank_id = session_uuid; // Using session as bank for simplicity
 
     let mut history = match sqlx::query(
-        "SELECT messages FROM agent_session_history_t WHERE host_id = $1 AND session_id = $2"
+        "SELECT messages FROM agent_session_history_t WHERE host_id = $1 AND session_id = $2",
     )
     .bind(state.host_id)
     .bind(session_uuid)
     .fetch_optional(&state.db)
-    .await {
+    .await
+    {
         Ok(Some(row)) => {
             let messages: serde_json::Value = row.get("messages");
             serde_json::from_value::<Vec<ChatMessage>>(messages).unwrap_or_default()
-        },
+        }
         _ => Vec::new(),
     };
 
@@ -174,12 +224,17 @@ async fn handle_socket(
             let client_msg: ClientMessage = match serde_json::from_str(&text) {
                 Ok(m) => m,
                 Err(e) => {
-                    match serde_json::to_string(&ServerMessage::Error { message: format!("Invalid message format: {}", e) }) {
+                    match serde_json::to_string(&ServerMessage::Error {
+                        message: format!("Invalid message format: {}", e),
+                    }) {
                         Ok(payload) => {
                             let _ = sender.send(Message::Text(payload.into())).await;
                         }
                         Err(serialize_err) => {
-                            error!("Failed to serialize server error message: {}", serialize_err);
+                            error!(
+                                "Failed to serialize server error message: {}",
+                                serialize_err
+                            );
                         }
                     }
                     continue;
@@ -237,12 +292,17 @@ async fn handle_socket(
                 Err(e) => {
                     error!("Agent loop error: {}", e);
                     rollback_last_user_message(&mut history, &user_text);
-                    match serde_json::to_string(&ServerMessage::Error { message: format!("Error: {}", e) }) {
+                    match serde_json::to_string(&ServerMessage::Error {
+                        message: format!("Error: {}", e),
+                    }) {
                         Ok(payload) => {
                             let _ = sender.send(Message::Text(payload.into())).await;
                         }
                         Err(serialize_err) => {
-                            error!("Failed to serialize server error message: {}", serialize_err);
+                            error!(
+                                "Failed to serialize server error message: {}",
+                                serialize_err
+                            );
                         }
                     }
                 }
@@ -258,12 +318,18 @@ async fn run_agent_loop(
     session_id: &str,
     bank_id: Uuid,
 ) -> Result<ChatResponse> {
-    let user_prompt = messages.last().map(|m| m.content.clone()).unwrap_or_default();
+    let user_prompt = messages
+        .last()
+        .map(|m| m.content.clone())
+        .unwrap_or_default();
 
     // 1. Recall Memory (Context Injection)
     // For now, we use a zero-vector since we don't have an embedding service yet.
     // In production, user_prompt would be embedded first.
-    let relevant_memories = state.memory.recall(state.host_id, bank_id, vec![0.0; 384], 5).await?;
+    let relevant_memories = state
+        .memory
+        .recall(state.host_id, bank_id, vec![0.0; 384], 5)
+        .await?;
     if !relevant_memories.is_empty() {
         let mut context_msg = String::from("Relevant context from your memory:\n");
         for mem in relevant_memories {
@@ -276,19 +342,31 @@ async fn run_agent_loop(
     }
 
     // 2. Discover Skills (Dynamic Tooling - Pattern B)
-    let search_results = state.registry.search_skills(user_prompt.to_string(), Some(10)).await.unwrap_or_else(|e| {
-        warn!("Skill search failed: {}", e);
-        portal_registry::SkillSearchResponse { skills: vec![] }
-    });
+    let search_results = state
+        .registry
+        .search_skills(user_prompt.to_string(), Some(10))
+        .await
+        .unwrap_or_else(|e| {
+            warn!("Skill search failed: {}", e);
+            portal_registry::SkillSearchResponse { skills: vec![] }
+        });
 
-    let mut tool_specs: Vec<ToolSpec> = search_results.skills.into_iter().map(|s| ToolSpec {
-        name: s.tool_name,
-        description: s.description,
-        parameters: s.input_schema,
-    }).collect();
+    let mut tool_specs: Vec<ToolSpec> = search_results
+        .skills
+        .into_iter()
+        .map(|s| ToolSpec {
+            name: s.tool_name,
+            description: s.description,
+            parameters: s.input_schema,
+        })
+        .collect();
 
     // Still include MCP tools for now
-    let mcp_tools = state.mcp_client.list_tools(authorization).await.unwrap_or_default();
+    let mcp_tools = state
+        .mcp_client
+        .list_tools(authorization)
+        .await
+        .unwrap_or_default();
     for t in mcp_tools {
         tool_specs.push(ToolSpec {
             name: t.name,
@@ -303,9 +381,16 @@ async fn run_agent_loop(
         let response = {
             let request = ChatRequest {
                 messages: &messages,
-                tools: if tool_specs.is_empty() { None } else { Some(&tool_specs) },
+                tools: if tool_specs.is_empty() {
+                    None
+                } else {
+                    Some(&tool_specs)
+                },
             };
-            state.provider.chat(request, &state.ollama_config.model, 0.7).await?
+            state
+                .provider
+                .chat(request, &state.ollama_config.model, 0.7)
+                .await?
         };
 
         if response.tool_calls.is_empty() {
@@ -316,16 +401,26 @@ async fn run_agent_loop(
         // Add assistant message with tool calls
         messages.push(ChatMessage {
             role: "assistant".into(),
-            content: serde_json::to_string(&serde_json::json!({ "tool_calls": response.tool_calls })).unwrap(),
+            content: serde_json::to_string(
+                &serde_json::json!({ "tool_calls": response.tool_calls }),
+            )
+            .unwrap(),
         });
 
         for tool_call in &response.tool_calls {
-            let args: serde_json::Value = serde_json::from_str(&tool_call.arguments).unwrap_or_default();
-            match state.mcp_client.call_tool(authorization, &tool_call.name, args).await {
+            let args: serde_json::Value =
+                serde_json::from_str(&tool_call.arguments).unwrap_or_default();
+            match state
+                .mcp_client
+                .call_tool(authorization, &tool_call.name, args)
+                .await
+            {
                 Ok(result) => {
                     let mut text_result = String::new();
                     for content in result.content {
-                        if let McpContent::Text { text } = content { text_result.push_str(&text); }
+                        if let McpContent::Text { text } = content {
+                            text_result.push_str(&text);
+                        }
                     }
                     messages.push(ChatMessage {
                         role: "tool".into(),
@@ -333,7 +428,8 @@ async fn run_agent_loop(
                             "tool_call_id": tool_call.id,
                             "tool_name": tool_call.name,
                             "content": text_result
-                        })).unwrap(),
+                        }))
+                        .unwrap(),
                     });
                 }
                 Err(e) => {
@@ -344,7 +440,8 @@ async fn run_agent_loop(
                             "tool_call_id": tool_call.id,
                             "tool_name": tool_call.name,
                             "content": format!("Error: {}", e)
-                        })).unwrap(),
+                        }))
+                        .unwrap(),
                     });
                 }
             }
@@ -356,14 +453,18 @@ async fn run_agent_loop(
     // 4. Retain Experience (Learning)
     if let Some(ref text) = response.text {
         let trajectory = format!("User: {}\nAssistant: {}", user_prompt, text);
-        let _ = state.memory.retain(
-            state.host_id,
-            bank_id,
-            &trajectory,
-            "experience",
-            None,
-            serde_json::json!({ "session_id": session_id })
-        ).await.map_err(|e| warn!("Failed to retain memory: {}", e));
+        let _ = state
+            .memory
+            .retain(
+                state.host_id,
+                bank_id,
+                &trajectory,
+                "experience",
+                None,
+                serde_json::json!({ "session_id": session_id }),
+            )
+            .await
+            .map_err(|e| warn!("Failed to retain memory: {}", e));
     }
 
     Ok(response)
@@ -392,6 +493,12 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_default();
     let client_config: Option<ClientConfig> =
         loader.load_typed([config_dir.join("client.yml")]).ok();
+    let server_config: ServerConfig = loader
+        .load_typed([config_dir.join("server.yml")])
+        .context("Failed to load server.yml")?;
+    let portal_registry_config: PortalRegistryConfig = loader
+        .load_typed([config_dir.join("portal-registry.yml")])
+        .context("Failed to load portal-registry.yml")?;
 
     let mcp_gateway_url = format!(
         "{}/{}",
@@ -424,8 +531,10 @@ async fn main() -> anyhow::Result<()> {
     .context("Failed to build MCP gateway client")?;
 
     let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/portal".to_string());
-    let pool = PgPool::connect(&db_url).await.context("Failed to connect to database")?;
+        .unwrap_or_else(|_| "postgres://postgres:secret@localhost:5432/configserver".to_string());
+    let pool = PgPool::connect(&db_url)
+        .await
+        .context("Failed to connect to database")?;
 
     let memory = Arc::new(PgHindsightClient::new(pool.clone()));
     let host_id = required_uuid_env_var("LIGHT_AGENT_HOST_ID")?;
@@ -433,18 +542,38 @@ async fn main() -> anyhow::Result<()> {
     // Registry Client Configuration
     let registry_handler = Arc::new(NoopRegistryHandler);
     let registration_params = ServiceRegistrationParams {
-        service_id: "light-agent".to_string(),
+        service_id: server_config.service_id.clone(),
         version: "0.1.0".to_string(),
-        protocol: "ws".to_string(),
-        address: "localhost".to_string(),
-        port: 4000,
+        protocol: if server_config.enable_https {
+            "https".to_string()
+        } else {
+            "http".to_string()
+        },
+        address: registry_advertised_address(&server_config),
+        port: if server_config.enable_https {
+            server_config.https_port
+        } else {
+            server_config.http_port
+        },
         tags: HashMap::new(),
-        env_tag: Some("dev".to_string()),
-        jwt: "agent-token".to_string(),
+        env_tag: (!server_config.environment.is_empty()).then(|| server_config.environment.clone()),
+        jwt: registry_token(&portal_registry_config)
+            .context("Missing portal registry token; set light_portal_authorization or portalRegistry.portalToken")?,
     };
-    
-    let registry_url = "ws://localhost:8080/ws"; // Controller URL
-    let registry = Arc::new(PortalRegistryClient::new(registry_url, registration_params, registry_handler)?);
+
+    let registry_url = to_registry_ws_url(&portal_registry_config.portal_url)?;
+    if !verify_hostname {
+        warn!(
+            "TLS hostname verification is disabled for the portal-registry client; this weakens server identity validation"
+        );
+    }
+    let mut registry_client =
+        PortalRegistryClient::new(&registry_url, registration_params, registry_handler)?;
+    if let Some(ca_cert) = &ca_cert {
+        registry_client = registry_client.with_ca_certificate(ca_cert.clone());
+    }
+    registry_client = registry_client.with_verify_hostname(verify_hostname);
+    let registry = Arc::new(registry_client);
     let registry_clone = Arc::clone(&registry);
     tokio::spawn(async move {
         registry_clone.run().await;
