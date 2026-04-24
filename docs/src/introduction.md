@@ -21,6 +21,24 @@ By building Light-Fabric on a Rust foundation, we achieve:
 
 ## Core Components
 
-- **`light-fabric/crates/model-provider`**: A unified interface for multiple LLM providers.
-- **`light-fabric/frameworks`**: Core infrastructure for services.
-- **`light-fabric/apps`**: Reference applications and microservices.
+The Light-Fabric is composed of modular crates, infrastructure frameworks, and reference applications:
+
+### Crates
+- **`crates/model-provider`**: A unified interface for multiple LLM providers (Ollama, etc.).
+- **`crates/hindsight-client`**: Client for the Hindsight biomimetic memory system.
+- **`crates/mcp-client`**: Implementation of the Model Context Protocol (MCP) for tool discovery and execution.
+- **`crates/portal-registry`**: Integration with the Light-Portal for service registration and discovery.
+- **`crates/light-runtime`**: Core runtime foundation for building agentic and microservice components.
+- **`crates/light-rule`**: High-performance [rule engine](https://github.com/agentic-workflow/rule-specification) for fine-grained authorization and data filtering.
+- **`crates/workflow-core` & `workflow-builder`**: Core engine and builder for complex agentic workflows.
+- **`crates/config-loader`**: Flexible configuration management for enterprise environments.
+- **`crates/asymmetric-decryptor` & `symmetric-decryptor`**: Security utilities for sensitive data handling.
+
+### Frameworks
+- **`frameworks/light-axum`**: A specialized microservice & agentic framework built on top of the Axum web ecosystem.
+- **`frameworks/light-pingora`**: High-performance proxy and gateway framework built on top of Cloudflare's Pingora.
+
+### Applications
+- **`apps/light-agent`**: A managed AI agent capable of using tools, accessing memory, and executing complex tasks.
+- **`apps/light-gateway`**: An enterprise-grade gateway for securing and governing API and agent traffic.
+- **`apps/light-workflow`**: A service for orchestrating and executing long-running [agentic workflows](https://github.com/agentic-workflow/workflow-specification).
