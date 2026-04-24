@@ -22,3 +22,4 @@
 # Comparisons
 
 - [vs. AgentGateway](comparisons/vs-agentgateway.md)
+    - [Detailed MCP Comparison](comparisons/vs-agent-gateway-mcp.md)

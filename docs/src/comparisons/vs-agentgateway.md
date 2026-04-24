@@ -50,14 +50,61 @@ AgentGateway generally passes tool definitions through to the provider. The mana
 
 ---
 
+## 4. Orchestration: Hybrid Agentic Workflows
+
+### Light-Fabric (Integrated Orchestrator)
+Light-Fabric treats orchestration as a foundational service. It implements a **Hybrid Model**:
+- **Deterministic Process**: The overall business logic (e.g., insurance claim steps) is fixed and compliant.
+- **Autonomous Tasks**: Individual steps within the process are delegated to agents.
+- **Statefulness**: The Fabric manages long-running state across days or weeks, ensuring durability.
+
+### AgentGateway (Stateless Proxy)
+AgentGateway is primarily a stateless component. 
+- **External Orchestration**: The workflow logic must reside in your application code or an external engine (like Temporal). 
+- **Proxy Only**: It handles the communication but does not "understand" or manage the multi-step business process itself.
+
+---
+
+## 5. Security: The Rule Engine
+
+### Light-Fabric (Integrated Governance)
+Light-Fabric includes an integrated **YAML-based Rule Engine** (`light-rule`) designed for fine-grained authorization:
+- **Data Filtering**: Automatically masks or filters response data (column/row level) based on policies.
+- **Policy Enforcement**: Checks permissions *before* an agent executes a tool or accesses a memory unit.
+- **Hot-Reloading**: Security rules can be updated in real-time without redeploying the platform.
+
+### AgentGateway (Basic Middleware)
+AgentGateway typically provides basic security features like API key validation or rate limiting.
+- **Limited Filtering**: While it can intercept traffic, implementing complex, context-aware data masking usually requires writing custom middleware or handling it at the application level.
+
+---
+
+## 6. MCP Support: Gateway vs. Ecosystem
+
+### Light-Fabric (Integrated Tooling)
+Light-Fabric treats **Model Context Protocol (MCP)** as a primary source for agent tools.
+- **Direct Integration**: Agents use the `mcp-client` to directly consume tools from MCP servers.
+- **Registry Management**: MCP servers are registered in the `light-portal`, allowing for centralized discovery and governance.
+- **Unified Security**: The same Fine-Grained Authorization rules apply to MCP tools as they do to native Rust tools.
+
+### AgentGateway (Specialized MCP Proxy)
+AgentGateway provides a highly specialized **MCP Gateway** layer.
+- **Protocol Translation**: It excels at translating between different MCP transports (SSE, Streamable HTTP, etc.).
+- **Exposing Servers**: Its primary role is to make MCP servers accessible to external applications through a normalized gateway interface.
+- **Advanced Networking**: Includes features like stream merging and specialized MCP routing.
+
+For a deep dive into the technical differences, see our **[Detailed MCP Feature Comparison](vs-agent-gateway-mcp.md)**.
+
+---
+
 ## Summary: Which to Choose?
 
 ### Choose Light-Fabric if:
-- You are building an **Enterprise AI Strategy** that requires unified governance across multiple teams.
-- You need to manage the **entire lifecycle** of agents, not just their API calls.
-- You require **advanced data privacy** (column/row masking) and **long-term memory** (Hindsight) out of the box.
+- You are building an **Enterprise AI Strategy** that requires unified governance, stateful workflows, and integrated security.
+- You need to manage the **entire lifecycle** of agents and the business processes they participate in.
+- You require **advanced data privacy** (masking) and **long-term memory** (Hindsight) as native platform features.
 
 ### Choose AgentGateway if:
 - You need a **lightweight proxy** to handle LLM provider failover and basic request normalization.
-- You prefer to manage agent logic, memory, and governance entirely within your application code.
-- You are looking for a simple tool to solve **immediate connectivity** needs without implementing a full platform layer.
+- You prefer to manage agent logic, workflows, memory, and security entirely within your external application stack.
+- You are looking for a simple tool to solve **immediate connectivity** needs without implementing a comprehensive platform layer.
