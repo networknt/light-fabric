@@ -11,8 +11,8 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["Steve Hu <stevehu@gmail.com>"]
-description = "Light-RS framework for high-performance microservices"
-repository = "https://github.com/networknt/light-rs"
+description = "Light-Fabric platform for enterprise AI services"
+repository = "https://github.com/networknt/light-fabric"
 
 [workspace.dependencies]
 anyhow = "1"

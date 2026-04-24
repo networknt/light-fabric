@@ -13,4 +13,5 @@
 # Design
 
 - [Centralized Skills](design/centralized-agent-skills.md)
-- [Hindsight Memory Integration](design/hindsight-memory-integration.md)
+- [Hindsight Memory](design/hindsight-memory.md)
+- [Fine-Grained Authorization](design/fine-grained-authorization.md)

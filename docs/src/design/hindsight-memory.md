@@ -1,12 +1,14 @@
-# Advanced Agent Memory (Hindsight Integration)
+# Hindsight Memory
 
-Hindsight™ is the core memory system for `light-rs`, designed to move beyond simple chat logs into **Biomimetic Memory**. Instead of just remembering what was said, the agent learns and forms mental models over time.
+**Hindsight Memory** is the core memory system for `light-rs`, designed to move beyond simple chat logs. Instead of just remembering what was said, the agent learns and forms mental models over time.
+
+This design is strongly inspired by the paper [Hindsight is 20/20: Building Agent Memory that Retains, Recalls, and Reflects](https://arxiv.org/abs/2512.12818) and extends it with multi-tenant support.
 
 ---
 
 ## 1. Core Concepts
 
-Hindsight organizes information into three distinct "Pathway" types:
+Hindsight memory organizes information into three distinct "Pathway" types:
 
 1.  **World Facts**: Objective truths about the environment (e.g., "The production server is in US-East-1").
 2.  **Experiences**: The agent's own history of actions and results (e.g., "I tried to deploy to US-East-1 and it failed due to a timeout").
@@ -41,12 +43,16 @@ The Hindsight system is fully integrated into the portal's multi-tenant schema:
 
 | Table Name | Description |
 | :--- | :--- |
-| `agent_memory_bank_t` | The primary container. Defines disposition (skepticism, empathy). |
-| `agent_memory_unit_t` | Sentence-level memories with vector embeddings. |
-| `agent_memory_entity_t` | Knowledge Graph nodes, linked to system users (`user_t`). |
-| `agent_memory_entity_cooccur_t` | Tracks how often entities appear together for associative recall. |
-| `agent_memory_link_t` | Defines causal and semantic relationships between memories. |
+| `agent_memory_bank_t` | The primary container. Defines personality and disposition (skepticism, empathy). |
+| `agent_memory_doc_t` | Source documents (logs, files, transcripts) that provide the raw text for memory units. |
+| `agent_memory_unit_t` | Sentence-level "atoms" of thought. Stores content, embeddings, and fact types (world, experience, etc.). |
+| `agent_memory_entity_t` | Resolved Knowledge Graph nodes, optionally linked to platform users (`user_t`). |
+| `agent_memory_unit_entity_t` | The join table linking individual memories to the entities they mention. |
+| `agent_memory_entity_cooccur_t` | Association graph tracking concept relationships and co-occurrence counts. |
+| `agent_memory_link_t` | Defines causal and semantic relationships between memories (causes, enables, etc.). |
 | `agent_memory_directive_t`| "Hard rules" that override probabilistic learning. |
+| `agent_memory_reflection_t`| Synthesized high-level insights generated during the "Reflect" phase. |
+| `agent_session_history_t`| The live record of active conversations, linked to a specific bank for context. |
 
 ---
 
@@ -54,14 +60,15 @@ The Hindsight system is fully integrated into the portal's multi-tenant schema:
 
 Isolation is managed at the **Bank** level using three scoping tiers:
 
-1.  **Global Host Bank** (`user_id` is NULL, `agent_def_id` is NULL):
-    - Knowledge shared across all users and all agents in the organization.
-    - Used for company-wide documentation and SOPs.
-2.  **Shared Agent Bank** (`user_id` is NULL, `agent_def_id` is SET):
+1.  **Global Host Bank** (`user_id` IS NULL, `agent_def_id` IS NULL):
+    - Knowledge shared across all users and all agents within a specific `host_id`.
+    - Ideal for organization-wide SOPs, common facts, and shared documentation.
+2.  **Shared Agent Bank** (`user_id` IS NULL, `agent_def_id` IS NOT NULL):
     - Knowledge shared by all users interacting with a specific agent type.
-    - Used for agent "Personas" or specialized domain knowledge.
-3.  **Private User Bank** (`user_id` is SET):
+    - Used for maintaining a consistent agent "Persona" or specialized domain expertise.
+3.  **Private User Bank** (`user_id` IS NOT NULL):
     - Knowledge unique to a specific user.
+    - Can be scoped further by `agent_def_id` to provide user-specific memory within a particular agent persona.
     - Used for personal preferences, private history, and individualized learning.
 
 ---

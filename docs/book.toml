@@ -2,9 +2,9 @@
 authors = ["Steve Hu"]
 language = "en"
 src = "src"
-title = "Light-RS Documentation"
+title = "Light-Fabric Documentation"
 
 [output.html]
-site-url = "/light-rs/"
-git-repository-url = "https://github.com/networknt/light-rs"
-edit-url-template = "https://github.com/networknt/light-rs/edit/master/docs/{path}"
+site-url = "/light-fabric/"
+git-repository-url = "https://github.com/networknt/light-fabric"
+edit-url-template = "https://github.com/networknt/light-fabric/edit/master/docs/{path}"
