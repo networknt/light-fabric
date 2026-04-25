@@ -13,13 +13,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Initialize logging
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(
-            env::var("RUST_LOG").unwrap_or_else(|_| "light_workflow=debug,info".into()),
-        ))
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    init_tracing();
 
     info!("Light Workflow Engine starting...");
 
@@ -78,4 +72,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     )?;
 
     Ok(())
+}
+
+fn init_tracing() {
+    let filter = tracing_subscriber::EnvFilter::new(
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "light_workflow=debug,info".into()),
+    );
+    let use_ansi = std::env::var("WORKFLOW_LOG_ANSI")
+        .ok()
+        .map(|v| v.trim().to_lowercase())
+        .map(|v| v == "true" || v == "1" || v == "yes" || v == "on");
+
+    let fmt_layer = tracing_subscriber::fmt::layer();
+
+    let subscriber = tracing_subscriber::registry().with(filter);
+
+    match use_ansi {
+        Some(use_ansi) => subscriber.with(fmt_layer.with_ansi(use_ansi)).init(),
+        None => subscriber.with(fmt_layer).init(),
+    }
 }
