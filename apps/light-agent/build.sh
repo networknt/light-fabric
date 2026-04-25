@@ -9,6 +9,8 @@ IMAGE_NAME="networknt/light-agent"
 VERSION=""
 LOCAL_BUILD=false
 NO_CACHE_ARG=""
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 show_help() {
   echo " "
@@ -59,8 +61,9 @@ if [[ -z "$VERSION" ]]; then
 fi
 
 echo "Building Docker image with version ${VERSION}"
-# Note: We use the parent directory (..) as the build context to include workspace dependencies.
-docker build ${NO_CACHE_ARG} -t "${IMAGE_NAME}:${VERSION}" -t "${IMAGE_NAME}:latest" -f ./docker/Dockerfile ..
+# Use the workspace root as the build context because the Dockerfile copies
+# Cargo.toml, crates/, frameworks/, and apps/.
+docker build ${NO_CACHE_ARG} -t "${IMAGE_NAME}:${VERSION}" -t "${IMAGE_NAME}:latest" -f "${SCRIPT_DIR}/docker/Dockerfile" "${REPO_ROOT}"
 echo "Images built with version ${VERSION}"
 
 if $LOCAL_BUILD; then

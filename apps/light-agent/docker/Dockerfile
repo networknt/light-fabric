@@ -41,7 +41,7 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Copy the compiled binary from the builder stage
-COPY --from=builder --chown=agent:agent /usr/src/app/target/x86_64-unknown-linux-musl/release/agent /app/light-agent
+COPY --from=builder --chown=agent:agent /usr/src/app/target/x86_64-unknown-linux-musl/release/light-agent /app/light-agent
 
 # Expose the correct agent port (aligned with config/server.yml or values.yml)
 EXPOSE 8083
