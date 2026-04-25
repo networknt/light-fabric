@@ -472,11 +472,7 @@ async fn run_agent_loop(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    init_tracing();
 
     let config_dir = PathBuf::from("config");
     let values_path = config_dir.join("values.yml");
@@ -611,6 +607,21 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to shut down agent")?;
 
     Ok(())
+}
+
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let use_ansi = std::env::var("AGENT_LOG_ANSI")
+        .ok()
+        .map(|v| v.trim().to_lowercase())
+        .map(|v| v == "true" || v == "1" || v == "yes" || v == "on");
+
+    let subscriber = tracing_subscriber::fmt().with_env_filter(filter);
+
+    match use_ansi {
+        Some(use_ansi) => subscriber.with_ansi(use_ansi).init(),
+        None => subscriber.init(),
+    }
 }
 
 struct NoopRegistryHandler;
