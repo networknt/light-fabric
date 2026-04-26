@@ -64,7 +64,7 @@ impl HindsightMemory for PgHindsightClient {
         sqlx::query(
             "INSERT INTO agent_memory_unit_t 
             (host_id, unit_id, bank_id, content, fact_type, embedding, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)"
+            VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(host_id)
         .bind(unit_id)
@@ -93,7 +93,7 @@ impl HindsightMemory for PgHindsightClient {
             FROM agent_memory_unit_t
             WHERE host_id = $1 AND bank_id = $2
             ORDER BY embedding <=> $3
-            LIMIT $4"
+            LIMIT $4",
         )
         .bind(host_id)
         .bind(bank_id)

@@ -1,6 +1,4 @@
-use crate::traits::{
-    ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities,
-};
+use crate::traits::{ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -53,7 +51,13 @@ impl ReliableProvider {
     fn is_retryable(err: &anyhow::Error) -> bool {
         let msg = err.to_string().to_lowercase();
         // 429 and 5xx are retryable. 4xx (except 429/408) are not.
-        if msg.contains("429") || msg.contains("500") || msg.contains("502") || msg.contains("503") || msg.contains("504") || msg.contains("timeout") {
+        if msg.contains("429")
+            || msg.contains("500")
+            || msg.contains("502")
+            || msg.contains("503")
+            || msg.contains("504")
+            || msg.contains("timeout")
+        {
             return true;
         }
         // Heuristic for transient network issues
@@ -67,7 +71,10 @@ impl ReliableProvider {
 #[async_trait]
 impl Provider for ReliableProvider {
     fn capabilities(&self) -> ProviderCapabilities {
-        self.providers.first().map(|(_, p)| p.capabilities()).unwrap_or_default()
+        self.providers
+            .first()
+            .map(|(_, p)| p.capabilities())
+            .unwrap_or_default()
     }
 
     async fn chat_with_system(
@@ -84,23 +91,33 @@ impl Provider for ReliableProvider {
             for (provider_name, provider) in &self.providers {
                 let mut backoff = Duration::from_millis(self.base_backoff_ms);
                 for attempt in 0..=self.max_retries {
-                    match provider.chat_with_system(system_prompt, message, current_model, temperature).await {
+                    match provider
+                        .chat_with_system(system_prompt, message, current_model, temperature)
+                        .await
+                    {
                         Ok(resp) => {
                             if attempt > 0 || *current_model != model {
-                                info!(provider = provider_name, model = *current_model, attempt, "ReliableProvider recovered");
+                                info!(
+                                    provider = provider_name,
+                                    model = *current_model,
+                                    attempt,
+                                    "ReliableProvider recovered"
+                                );
                             }
                             return Ok(resp);
                         }
                         Err(e) => {
                             let retryable = Self::is_retryable(&e);
                             let err_msg = e.to_string();
-                            failures.push(format!("{provider_name}/{current_model} (attempt {attempt}): {err_msg}"));
-                            
+                            failures.push(format!(
+                                "{provider_name}/{current_model} (attempt {attempt}): {err_msg}"
+                            ));
+
                             if !retryable || attempt == self.max_retries {
                                 warn!(provider = provider_name, model = *current_model, attempt, error = %err_msg, "Attempt failed, moving to next");
                                 break;
                             }
-                            
+
                             tokio::time::sleep(backoff).await;
                             backoff = (backoff * 2).min(Duration::from_secs(10));
                         }
@@ -124,10 +141,15 @@ impl Provider for ReliableProvider {
             for (provider_name, provider) in &self.providers {
                 let mut backoff = Duration::from_millis(self.base_backoff_ms);
                 for attempt in 0..=self.max_retries {
-                    match provider.chat_with_history(messages, current_model, temperature).await {
+                    match provider
+                        .chat_with_history(messages, current_model, temperature)
+                        .await
+                    {
                         Ok(resp) => return Ok(resp),
                         Err(e) => {
-                            if !Self::is_retryable(&e) || attempt == self.max_retries { break; }
+                            if !Self::is_retryable(&e) || attempt == self.max_retries {
+                                break;
+                            }
                             failures.push(format!("{provider_name}/{current_model}: {e}"));
                             tokio::time::sleep(backoff).await;
                             backoff = (backoff * 2).min(Duration::from_secs(10));
@@ -153,7 +175,9 @@ impl Provider for ReliableProvider {
                     match provider.chat(request, current_model, temperature).await {
                         Ok(resp) => return Ok(resp),
                         Err(e) => {
-                            if !Self::is_retryable(&e) || attempt == self.max_retries { break; }
+                            if !Self::is_retryable(&e) || attempt == self.max_retries {
+                                break;
+                            }
                             tokio::time::sleep(backoff).await;
                             backoff = (backoff * 2).min(Duration::from_secs(10));
                         }
@@ -176,10 +200,15 @@ impl Provider for ReliableProvider {
             for (_, provider) in &self.providers {
                 let mut backoff = Duration::from_millis(self.base_backoff_ms);
                 for attempt in 0..=self.max_retries {
-                    match provider.chat_with_tools(messages, tools, current_model, temperature).await {
+                    match provider
+                        .chat_with_tools(messages, tools, current_model, temperature)
+                        .await
+                    {
                         Ok(resp) => return Ok(resp),
                         Err(e) => {
-                            if !Self::is_retryable(&e) || attempt == self.max_retries { break; }
+                            if !Self::is_retryable(&e) || attempt == self.max_retries {
+                                break;
+                            }
                             tokio::time::sleep(backoff).await;
                             backoff = (backoff * 2).min(Duration::from_secs(10));
                         }

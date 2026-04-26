@@ -120,7 +120,9 @@ impl OpenAiProvider {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(300))
             .build()
-            .map_err(|e| anyhow::anyhow!("Failed to build reqwest Client for OpenAiProvider: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to build reqwest Client for OpenAiProvider: {e}")
+            })?;
 
         Ok(Self {
             base_url: base_url
@@ -140,14 +142,10 @@ impl OpenAiProvider {
     fn adjust_temperature_for_model(model: &str, requested_temperature: f64) -> f64 {
         let requires_1_0 = matches!(
             model,
-            "gpt-5"
-                | "gpt-5-mini"
-                | "gpt-5-nano"
-                | "o1"
-                | "o3"
-                | "o3-mini"
-                | "o4-mini"
-        ) || model.starts_with("o1-") || model.starts_with("o3-") || model.starts_with("o4-");
+            "gpt-5" | "gpt-5-mini" | "gpt-5-nano" | "o1" | "o3" | "o3-mini" | "o4-mini"
+        ) || model.starts_with("o1-")
+            || model.starts_with("o3-")
+            || model.starts_with("o4-");
 
         if requires_1_0 {
             1.0
@@ -248,9 +246,10 @@ impl OpenAiProvider {
         temperature: f64,
         tools: Option<Vec<NativeToolSpec>>,
     ) -> anyhow::Result<ProviderChatResponse> {
-        let api_key = self.api_key.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("OpenAI API key not set.")
-        })?;
+        let api_key = self
+            .api_key
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("OpenAI API key not set."))?;
 
         let native_request = NativeChatRequest {
             model: model.to_string(),
@@ -261,7 +260,8 @@ impl OpenAiProvider {
             max_tokens: self.max_tokens,
         };
 
-        let response = self.client
+        let response = self
+            .client
             .post(format!("{}/chat/completions", self.base_url))
             .header("Authorization", format!("Bearer {api_key}"))
             .json(&native_request)
@@ -333,7 +333,9 @@ impl Provider for OpenAiProvider {
         }
         messages.push(ChatMessage::user(message));
 
-        let response = self.chat_with_history(&messages, model, temperature).await?;
+        let response = self
+            .chat_with_history(&messages, model, temperature)
+            .await?;
         Ok(response)
     }
 
@@ -343,8 +345,19 @@ impl Provider for OpenAiProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let response = self.chat(ProviderChatRequest { messages, tools: None }, model, temperature).await?;
-        response.text.ok_or_else(|| anyhow::anyhow!("No text response from OpenAI"))
+        let response = self
+            .chat(
+                ProviderChatRequest {
+                    messages,
+                    tools: None,
+                },
+                model,
+                temperature,
+            )
+            .await?;
+        response
+            .text
+            .ok_or_else(|| anyhow::anyhow!("No text response from OpenAI"))
     }
 
     async fn chat(
@@ -355,7 +368,8 @@ impl Provider for OpenAiProvider {
     ) -> anyhow::Result<ProviderChatResponse> {
         let native_messages = Self::convert_messages(request.messages);
         let native_tools = Self::convert_tools(request.tools);
-        self.send_request(native_messages, model, temperature, native_tools).await
+        self.send_request(native_messages, model, temperature, native_tools)
+            .await
     }
 
     async fn chat_with_tools(
@@ -372,10 +386,14 @@ impl Provider for OpenAiProvider {
             Some(
                 tools
                     .iter()
-                    .map(|t| serde_json::from_value(t.clone()).map_err(|e| anyhow::anyhow!("Invalid tool spec: {e}")))
+                    .map(|t| {
+                        serde_json::from_value(t.clone())
+                            .map_err(|e| anyhow::anyhow!("Invalid tool spec: {e}"))
+                    })
                     .collect::<Result<Vec<NativeToolSpec>, _>>()?,
             )
         };
-        self.send_request(native_messages, model, temperature, native_tools).await
+        self.send_request(native_messages, model, temperature, native_tools)
+            .await
     }
 }

@@ -91,7 +91,8 @@ fn registry_token(config: &PortalRegistryConfig) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
         .map(|value| strip_bearer_prefix(&value))
         .or_else(|| {
-            (!config.portal_token.trim().is_empty()).then(|| strip_bearer_prefix(&config.portal_token))
+            (!config.portal_token.trim().is_empty())
+                .then(|| strip_bearer_prefix(&config.portal_token))
         })
 }
 

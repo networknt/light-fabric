@@ -16,6 +16,10 @@ use super::timeout::OneOfTimeoutDefinitionOrReference;
 /// Enumerates all supported task types
 pub struct TaskType;
 impl TaskType {
+    /// Gets the type of an 'ask' task
+    pub const ASK: &'static str = "ask";
+    /// Gets the type of an 'assert' task
+    pub const ASSERT: &'static str = "assert";
     /// Gets the type of a 'call' task
     pub const CALL: &'static str = "call";
     /// Gets the type of a 'do' task
@@ -42,6 +46,10 @@ impl TaskType {
     pub const WAIT: &'static str = "wait";
     /// Gets the type of a 'mcp' call
     pub const CALL_MCP: &'static str = "mcp";
+    /// Gets the type of a 'jsonrpc' call
+    pub const CALL_JSONRPC: &'static str = "jsonrpc";
+    /// Gets the type of an 'openrpc' call
+    pub const CALL_OPENRPC: &'static str = "openrpc";
     /// Gets the type of a 'a2a' call
     pub const CALL_A2A: &'static str = "a2a";
 }
@@ -63,6 +71,10 @@ impl ProcessType {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum TaskDefinition {
+    /// Variant holding the definition of an 'ask' task
+    Ask(AskTaskDefinition),
+    /// Variant holding the definition of an 'assert' task
+    Assert(AssertTaskDefinition),
     /// Variant holding the definition of a 'call' task
     Call(CallTaskDefinition),
     /// Variant holding the definition of a 'do' task
@@ -101,6 +113,18 @@ impl<'de> serde::Deserialize<'de> for TaskDefinition {
         if value.get("for").is_some() {
             return ForTaskDefinition::deserialize(value)
                 .map(TaskDefinition::For)
+                .map_err(serde::de::Error::custom);
+        }
+
+        if value.get("ask").is_some() {
+            return AskTaskDefinition::deserialize(value)
+                .map(TaskDefinition::Ask)
+                .map_err(serde::de::Error::custom);
+        }
+
+        if value.get("assert").is_some() {
+            return AssertTaskDefinition::deserialize(value)
+                .map(TaskDefinition::Assert)
                 .map_err(serde::de::Error::custom);
         }
 
@@ -201,6 +225,14 @@ pub struct TaskDefinitionFields {
     #[serde(rename = "export", skip_serializing_if = "Option::is_none")]
     pub export: Option<OutputDataModelDefinition>,
 
+    /// Gets/sets user-facing explanation metadata for agent-guided execution
+    #[serde(rename = "explain", skip_serializing_if = "Option::is_none")]
+    pub explain: Option<ExplainDefinition>,
+
+    /// Gets/sets a replay-safety key for mutating operations
+    #[serde(rename = "idempotencyKey", skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+
     /// Gets/sets the task's timeout, if any
     #[serde(rename = "timeout", skip_serializing_if = "Option::is_none")]
     pub timeout: Option<OneOfTimeoutDefinitionOrReference>,
@@ -226,11 +258,193 @@ impl TaskDefinitionFields {
             input: None,
             output: None,
             export: None,
+            explain: None,
+            idempotency_key: None,
             timeout: None,
             then: None,
             metadata: None,
         }
     }
+}
+
+/// User-facing guidance for agent-guided workflow execution.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExplainDefinition {
+    #[serde(rename = "purpose", skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
+    #[serde(rename = "visible", skip_serializing_if = "Option::is_none")]
+    pub visible: Option<bool>,
+    #[serde(rename = "before", skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+    #[serde(rename = "success", skip_serializing_if = "Option::is_none")]
+    pub success: Option<String>,
+    #[serde(rename = "failure", skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+    #[serde(rename = "requires", skip_serializing_if = "Option::is_none")]
+    pub requires: Option<Vec<Value>>,
+}
+
+/// Represents an ask task used to pause workflow execution for human input.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AskTaskDefinition {
+    #[serde(rename = "ask")]
+    pub ask: AskDefinition,
+    #[serde(flatten)]
+    pub common: TaskDefinitionFields,
+}
+
+impl TaskDefinitionBase for AskTaskDefinition {
+    fn task_type(&self) -> &str {
+        TaskType::ASK
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AskDefinition {
+    #[serde(rename = "prompt")]
+    pub prompt: String,
+    #[serde(rename = "mode", skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(rename = "options", skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<AskOption>>,
+    #[serde(rename = "optionsFrom", skip_serializing_if = "Option::is_none")]
+    pub options_from: Option<String>,
+    #[serde(rename = "schema", skip_serializing_if = "Option::is_none")]
+    pub schema: Option<Value>,
+    #[serde(rename = "validate", skip_serializing_if = "Option::is_none")]
+    pub validate: Option<AskValidation>,
+    #[serde(rename = "default", skip_serializing_if = "Option::is_none")]
+    pub default: Option<Value>,
+    #[serde(rename = "required", skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+    #[serde(rename = "timeout", skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<Value>,
+    #[serde(rename = "onTimeout", skip_serializing_if = "Option::is_none")]
+    pub on_timeout: Option<AskTimeoutPolicy>,
+    #[serde(rename = "retryOnInvalid", skip_serializing_if = "Option::is_none")]
+    pub retry_on_invalid: Option<Value>,
+    #[serde(rename = "sensitive", skip_serializing_if = "Option::is_none")]
+    pub sensitive: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AskOption {
+    Value(String),
+    Option {
+        label: String,
+        value: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AskValidation {
+    #[serde(rename = "minLength", skip_serializing_if = "Option::is_none")]
+    pub min_length: Option<u64>,
+    #[serde(rename = "maxLength", skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<u64>,
+    #[serde(rename = "pattern", skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    #[serde(rename = "enum", skip_serializing_if = "Option::is_none")]
+    pub enum_: Option<Vec<Value>>,
+    #[serde(rename = "schema", skip_serializing_if = "Option::is_none")]
+    pub schema: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AskTimeoutPolicy {
+    Action(String),
+    Policy {
+        action: String,
+        #[serde(rename = "default", skip_serializing_if = "Option::is_none")]
+        default: Option<Value>,
+    },
+}
+
+/// Represents an assert task used to validate workflow state or task output.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AssertTaskDefinition {
+    #[serde(rename = "assert")]
+    pub assert: AssertDefinition,
+    #[serde(flatten)]
+    pub common: TaskDefinitionFields,
+}
+
+impl TaskDefinitionBase for AssertTaskDefinition {
+    fn task_type(&self) -> &str {
+        TaskType::ASSERT
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AssertDefinition {
+    #[serde(rename = "value", skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
+    #[serde(rename = "equals", skip_serializing_if = "Option::is_none")]
+    pub equals: Option<Value>,
+    #[serde(rename = "contains", skip_serializing_if = "Option::is_none")]
+    pub contains: Option<Value>,
+    #[serde(rename = "matches", skip_serializing_if = "Option::is_none")]
+    pub matches: Option<String>,
+    #[serde(rename = "exists", skip_serializing_if = "Option::is_none")]
+    pub exists: Option<bool>,
+    #[serde(rename = "json", skip_serializing_if = "Option::is_none")]
+    pub json: Option<HashMap<String, AssertComparison>>,
+    #[serde(rename = "schema", skip_serializing_if = "Option::is_none")]
+    pub schema: Option<Value>,
+    #[serde(rename = "rule", skip_serializing_if = "Option::is_none")]
+    pub rule: Option<AssertRule>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AssertRule {
+    #[serde(rename = "ruleId")]
+    pub rule_id: String,
+    #[serde(rename = "input", skip_serializing_if = "Option::is_none")]
+    pub input: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AssertComparison {
+    Object(AssertComparisonObject),
+    Expression(String),
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AssertComparisonObject {
+    #[serde(rename = "equals", skip_serializing_if = "Option::is_none")]
+    pub equals: Option<Value>,
+    #[serde(rename = "contains", skip_serializing_if = "Option::is_none")]
+    pub contains: Option<Value>,
+    #[serde(rename = "matches", skip_serializing_if = "Option::is_none")]
+    pub matches: Option<String>,
+    #[serde(rename = "exists", skip_serializing_if = "Option::is_none")]
+    pub exists: Option<bool>,
+    #[serde(rename = "hasLength", skip_serializing_if = "Option::is_none")]
+    pub has_length: Option<HasLengthComparison>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum HasLengthComparison {
+    Exact(u64),
+    Range(HasLengthRange),
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HasLengthRange {
+    #[serde(rename = "gt", skip_serializing_if = "Option::is_none")]
+    pub gt: Option<u64>,
+    #[serde(rename = "gte", skip_serializing_if = "Option::is_none")]
+    pub gte: Option<u64>,
+    #[serde(rename = "lt", skip_serializing_if = "Option::is_none")]
+    pub lt: Option<u64>,
+    #[serde(rename = "lte", skip_serializing_if = "Option::is_none")]
+    pub lte: Option<u64>,
 }
 
 /// Represents the definition of a task used to call a predefined function
@@ -249,6 +463,10 @@ pub enum CallTaskDefinition {
     A2a(Box<CallA2aTaskDefinition>),
     /// MCP call
     Mcp(Box<CallMcpTaskDefinition>),
+    /// JSON-RPC call
+    JsonRpc(Box<CallJsonRpcTaskDefinition>),
+    /// OpenRPC-described JSON-RPC call
+    OpenRpc(Box<CallOpenRpcTaskDefinition>),
     /// Rule call
     Rule(Box<CallRuleDefinition>),
     /// Generic function call
@@ -285,6 +503,12 @@ impl<'de> serde::Deserialize<'de> for CallTaskDefinition {
                 .map_err(serde::de::Error::custom),
             "mcp" => CallMcpTaskDefinition::deserialize(value)
                 .map(|v| CallTaskDefinition::Mcp(Box::new(v)))
+                .map_err(serde::de::Error::custom),
+            "jsonrpc" => CallJsonRpcTaskDefinition::deserialize(value)
+                .map(|v| CallTaskDefinition::JsonRpc(Box::new(v)))
+                .map_err(serde::de::Error::custom),
+            "openrpc" => CallOpenRpcTaskDefinition::deserialize(value)
+                .map(|v| CallTaskDefinition::OpenRpc(Box::new(v)))
                 .map_err(serde::de::Error::custom),
             "rule" => CallRuleDefinition::deserialize(value)
                 .map(|v| CallTaskDefinition::Rule(Box::new(v)))
@@ -433,6 +657,9 @@ pub struct GrpcArguments {
     /// Arguments
     #[serde(rename = "arguments", skip_serializing_if = "Option::is_none")]
     pub arguments: Option<HashMap<String, Value>>,
+    /// Transport to use for the gRPC call
+    #[serde(rename = "transport", skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
 }
 
 /// Definition of a gRPC service
@@ -617,74 +844,158 @@ impl Default for CallMcpTaskDefinition {
 /// Arguments for an MCP call
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpArguments {
-    /// Protocol version
-    #[serde(rename = "protocolVersion", skip_serializing_if = "Option::is_none")]
-    pub protocol_version: Option<String>,
-    /// MCP method
-    #[serde(rename = "method")]
-    pub method: String,
-    /// Method parameters
-    #[serde(rename = "parameters", skip_serializing_if = "Option::is_none")]
-    pub parameters: Option<Value>,
-    /// Call transport configuration
-    #[serde(rename = "transport")]
-    pub transport: McpTransportDefinition,
-    /// Client identification
-    #[serde(rename = "client", skip_serializing_if = "Option::is_none")]
-    pub client: Option<McpClientDefinition>,
+    #[serde(rename = "document", skip_serializing_if = "Option::is_none")]
+    pub document: Option<ExternalResourceDefinition>,
+    #[serde(rename = "serverRef", skip_serializing_if = "Option::is_none")]
+    pub server_ref: Option<String>,
+    #[serde(rename = "session", skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    #[serde(rename = "server", skip_serializing_if = "Option::is_none")]
+    pub server: Option<McpServerDefinition>,
+    #[serde(rename = "tool", skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    #[serde(rename = "resource", skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+    #[serde(rename = "prompt", skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(rename = "arguments", skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<HashMap<String, Value>>,
+    #[serde(rename = "authentication", skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<OneOfAuthenticationPolicyDefinitionOrReference>,
+    #[serde(rename = "output", skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
 }
 
-/// Configuration for MCP transport
+/// Inline MCP server connection configuration.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpServerDefinition {
+    #[serde(rename = "endpoint", skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<OneOfEndpointDefinitionOrUri>,
+    #[serde(rename = "transport", skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    #[serde(rename = "command", skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(rename = "args", skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+    #[serde(rename = "env", skip_serializing_if = "Option::is_none")]
+    pub env: Option<HashMap<String, String>>,
+    #[serde(rename = "authentication", skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<OneOfAuthenticationPolicyDefinitionOrReference>,
+}
+
+/// Reusable MCP session lifecycle configuration.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpSessionDefinition {
+    #[serde(rename = "server")]
+    pub server: Value,
+    #[serde(rename = "initialize", skip_serializing_if = "Option::is_none")]
+    pub initialize: Option<bool>,
+    #[serde(rename = "reuse", skip_serializing_if = "Option::is_none")]
+    pub reuse: Option<bool>,
+    #[serde(rename = "close", skip_serializing_if = "Option::is_none")]
+    pub close: Option<String>,
+    #[serde(rename = "timeout", skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<Value>,
+}
+
+/// Represents the definition of a task used to perform a JSON-RPC 2.0 call.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum McpTransportDefinition {
-    /// HTTP transport
-    #[serde(rename = "http")]
-    Http(McpHttpTransportDefinition),
-    /// Stdio transport
-    #[serde(rename = "stdio")]
-    Stdio(McpStdioTransportDefinition),
+pub struct CallJsonRpcTaskDefinition {
+    #[serde(rename = "call")]
+    pub call: String,
+    #[serde(rename = "with")]
+    pub with: JsonRpcArguments,
+    #[serde(flatten)]
+    pub common: TaskDefinitionFields,
 }
 
-impl Default for McpTransportDefinition {
+impl Default for CallJsonRpcTaskDefinition {
     fn default() -> Self {
-        McpTransportDefinition::Http(McpHttpTransportDefinition::default())
+        Self {
+            call: "jsonrpc".to_string(),
+            with: JsonRpcArguments::default(),
+            common: TaskDefinitionFields::default(),
+        }
     }
 }
 
-/// HTTP transport for MCP
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct McpHttpTransportDefinition {
-    /// HTTP endpoint
+pub struct JsonRpcArguments {
     #[serde(rename = "endpoint")]
     pub endpoint: OneOfEndpointDefinitionOrUri,
-    /// Custom headers
+    #[serde(rename = "transport", skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    #[serde(rename = "method")]
+    pub method: String,
+    #[serde(rename = "params", skip_serializing_if = "Option::is_none")]
+    pub params: Option<Value>,
+    #[serde(rename = "id", skip_serializing_if = "Option::is_none")]
+    pub id: Option<Value>,
+    #[serde(rename = "notification", skip_serializing_if = "Option::is_none")]
+    pub notification: Option<bool>,
     #[serde(rename = "headers", skip_serializing_if = "Option::is_none")]
-    pub headers: Option<HashMap<String, String>>,
+    pub headers: Option<Value>,
+    #[serde(rename = "authentication", skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<OneOfAuthenticationPolicyDefinitionOrReference>,
+    #[serde(rename = "output", skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(rename = "errorPolicy", skip_serializing_if = "Option::is_none")]
+    pub error_policy: Option<JsonRpcErrorPolicy>,
 }
 
-/// Stdio transport for MCP
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct McpStdioTransportDefinition {
-    /// Command to execute
-    #[serde(rename = "command")]
-    pub command: String,
-    /// Command arguments
-    #[serde(rename = "arguments", skip_serializing_if = "Option::is_none")]
-    pub arguments: Option<Vec<String>>,
-    /// Environment variables
-    #[serde(rename = "environment", skip_serializing_if = "Option::is_none")]
-    pub environment: Option<HashMap<String, String>>,
+/// Represents the definition of a task used to perform an OpenRPC-described JSON-RPC call.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CallOpenRpcTaskDefinition {
+    #[serde(rename = "call")]
+    pub call: String,
+    #[serde(rename = "with")]
+    pub with: OpenRpcArguments,
+    #[serde(flatten)]
+    pub common: TaskDefinitionFields,
 }
 
-/// Client definition for MCP
+impl Default for CallOpenRpcTaskDefinition {
+    fn default() -> Self {
+        Self {
+            call: "openrpc".to_string(),
+            with: OpenRpcArguments::default(),
+            common: TaskDefinitionFields::default(),
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct McpClientDefinition {
-    /// Client name
-    #[serde(rename = "name")]
-    pub name: String,
-    /// Client version
-    #[serde(rename = "version")]
-    pub version: String,
+pub struct OpenRpcArguments {
+    #[serde(rename = "document")]
+    pub document: ExternalResourceDefinition,
+    #[serde(rename = "server", skip_serializing_if = "Option::is_none")]
+    pub server: Option<Value>,
+    #[serde(rename = "transport", skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    #[serde(rename = "method")]
+    pub method: String,
+    #[serde(rename = "params", skip_serializing_if = "Option::is_none")]
+    pub params: Option<Value>,
+    #[serde(rename = "id", skip_serializing_if = "Option::is_none")]
+    pub id: Option<Value>,
+    #[serde(rename = "notification", skip_serializing_if = "Option::is_none")]
+    pub notification: Option<bool>,
+    #[serde(rename = "authentication", skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<OneOfAuthenticationPolicyDefinitionOrReference>,
+    #[serde(rename = "output", skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(rename = "errorPolicy", skip_serializing_if = "Option::is_none")]
+    pub error_policy: Option<JsonRpcErrorPolicy>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JsonRpcErrorPolicy {
+    #[serde(rename = "throw", skip_serializing_if = "Option::is_none")]
+    pub throw: Option<bool>,
+    #[serde(rename = "errorType", skip_serializing_if = "Option::is_none")]
+    pub error_type: Option<String>,
+    #[serde(rename = "includeResponse", skip_serializing_if = "Option::is_none")]
+    pub include_response: Option<bool>,
 }
 
 /// Represents the definition of a generic task used to call a function
@@ -717,6 +1028,8 @@ impl CallTaskDefinition {
             Self::OpenApi(v) => &v.common,
             Self::A2a(v) => &v.common,
             Self::Mcp(v) => &v.common,
+            Self::JsonRpc(v) => &v.common,
+            Self::OpenRpc(v) => &v.common,
             Self::Rule(v) => &v.common,
             Self::Function(v) => &v.common,
         }
@@ -731,6 +1044,8 @@ impl CallTaskDefinition {
             Self::OpenApi(v) => &mut v.common,
             Self::A2a(v) => &mut v.common,
             Self::Mcp(v) => &mut v.common,
+            Self::JsonRpc(v) => &mut v.common,
+            Self::OpenRpc(v) => &mut v.common,
             Self::Rule(v) => &mut v.common,
             Self::Function(v) => &mut v.common,
         }

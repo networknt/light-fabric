@@ -3,11 +3,11 @@ use crate::traits::{
     Provider, ProviderCapabilities, TokenUsage, ToolCall as ProviderToolCall,
 };
 use async_trait::async_trait;
+use chrono::Utc;
+use hmac::{Hmac, Mac};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use hmac::{Hmac, Mac};
-use chrono::Utc;
 
 pub struct BedrockProvider {
     region: String,
@@ -120,7 +120,9 @@ impl BedrockProvider {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(300))
             .build()
-            .map_err(|e| anyhow::anyhow!("Failed to build reqwest Client for BedrockProvider: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to build reqwest Client for BedrockProvider: {e}")
+            })?;
 
         Ok(Self {
             region: region.unwrap_or(DEFAULT_REGION).to_string(),
@@ -137,14 +139,18 @@ impl BedrockProvider {
         self
     }
 
-    async fn convert_messages(messages: &[ChatMessage]) -> (Option<Vec<SystemBlock>>, Vec<ConverseMessage>) {
+    async fn convert_messages(
+        messages: &[ChatMessage],
+    ) -> (Option<Vec<SystemBlock>>, Vec<ConverseMessage>) {
         let mut system = Vec::new();
         let mut converse_messages = Vec::new();
 
         for msg in messages {
             match msg.role.as_str() {
                 "system" => {
-                    system.push(SystemBlock::Text(TextBlock { text: msg.content.clone() }));
+                    system.push(SystemBlock::Text(TextBlock {
+                        text: msg.content.clone(),
+                    }));
                 }
                 "user" | "assistant" => {
                     let (text, image_refs) = crate::multimodal::parse_image_markers(&msg.content);
@@ -153,7 +159,9 @@ impl BedrockProvider {
                         content.push(ContentBlock::Text(TextBlock { text }));
                     }
                     for img_ref in image_refs {
-                        if let Some(payload) = crate::multimodal::extract_gemini_image_payload(&img_ref).await {
+                        if let Some(payload) =
+                            crate::multimodal::extract_gemini_image_payload(&img_ref).await
+                        {
                             let format = match payload.media_type.as_str() {
                                 "image/png" => "png",
                                 "image/gif" => "gif",
@@ -163,16 +171,24 @@ impl BedrockProvider {
                             content.push(ContentBlock::Image(ImageWrapper {
                                 image: ImageBlock {
                                     format: format.to_string(),
-                                    source: ImageSource { bytes: payload.data },
+                                    source: ImageSource {
+                                        bytes: payload.data,
+                                    },
                                 },
                             }));
                         }
                     }
                     if content.is_empty() {
-                        content.push(ContentBlock::Text(TextBlock { text: msg.content.clone() }));
+                        content.push(ContentBlock::Text(TextBlock {
+                            text: msg.content.clone(),
+                        }));
                     }
                     converse_messages.push(ConverseMessage {
-                        role: if msg.role == "assistant" { "assistant".to_string() } else { "user".to_string() },
+                        role: if msg.role == "assistant" {
+                            "assistant".to_string()
+                        } else {
+                            "user".to_string()
+                        },
                         content,
                     });
                 }
@@ -180,7 +196,14 @@ impl BedrockProvider {
             }
         }
 
-        (if system.is_empty() { None } else { Some(system) }, converse_messages)
+        (
+            if system.is_empty() {
+                None
+            } else {
+                Some(system)
+            },
+            converse_messages,
+        )
     }
 
     fn sign_request(
@@ -189,15 +212,23 @@ impl BedrockProvider {
         url: &str,
         payload: &[u8],
     ) -> anyhow::Result<reqwest::header::HeaderMap> {
-        let access_key = self.access_key_id.as_ref().ok_or_else(|| anyhow::anyhow!("AWS access key not set"))?;
-        let secret_key = self.secret_access_key.as_ref().ok_or_else(|| anyhow::anyhow!("AWS secret key not set"))?;
+        let access_key = self
+            .access_key_id
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("AWS access key not set"))?;
+        let secret_key = self
+            .secret_access_key
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("AWS secret key not set"))?;
 
         let now = Utc::now();
         let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
         let date_stamp = now.format("%Y%m%d").to_string();
 
         let url_parsed = reqwest::Url::parse(url)?;
-        let host = url_parsed.host_str().ok_or_else(|| anyhow::anyhow!("Invalid URL host"))?;
+        let host = url_parsed
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid URL host"))?;
         let path = url_parsed.path();
 
         let mut headers = reqwest::header::HeaderMap::new();
@@ -238,7 +269,10 @@ impl BedrockProvider {
             hex::encode(Sha256::digest(canonical_request.as_bytes()))
         );
 
-        let k_date = hmac_sha256(format!("AWS4{}", secret_key).as_bytes(), date_stamp.as_bytes());
+        let k_date = hmac_sha256(
+            format!("AWS4{}", secret_key).as_bytes(),
+            date_stamp.as_bytes(),
+        );
         let k_region = hmac_sha256(&k_date, self.region.as_bytes());
         let k_service = hmac_sha256(&k_region, b"bedrock");
         let k_signing = hmac_sha256(&k_service, b"aws4_request");
@@ -282,7 +316,9 @@ impl Provider for BedrockProvider {
             messages.push(ChatMessage::system(sys));
         }
         messages.push(ChatMessage::user(message));
-        let resp = self.chat_with_history(&messages, model, temperature).await?;
+        let resp = self
+            .chat_with_history(&messages, model, temperature)
+            .await?;
         Ok(resp)
     }
 
@@ -292,8 +328,18 @@ impl Provider for BedrockProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let resp = self.chat(ProviderChatRequest { messages, tools: None }, model, temperature).await?;
-        resp.text.ok_or_else(|| anyhow::anyhow!("No text response from Bedrock"))
+        let resp = self
+            .chat(
+                ProviderChatRequest {
+                    messages,
+                    tools: None,
+                },
+                model,
+                temperature,
+            )
+            .await?;
+        resp.text
+            .ok_or_else(|| anyhow::anyhow!("No text response from Bedrock"))
     }
 
     async fn chat(
@@ -321,7 +367,8 @@ impl Provider for BedrockProvider {
         let payload = serde_json::to_vec(&bedrock_request)?;
         let headers = self.sign_request("POST", &url, &payload)?;
 
-        let response = self.client
+        let response = self
+            .client
             .post(url)
             .headers(headers)
             .body(payload)
@@ -342,7 +389,9 @@ impl Provider for BedrockProvider {
         });
 
         let mut text_parts = Vec::new();
-        if let Some(output) = bedrock_response.output && let Some(message) = output.message {
+        if let Some(output) = bedrock_response.output
+            && let Some(message) = output.message
+        {
             for block in message.content {
                 if let ResponseContentBlock::Text(tb) = block {
                     text_parts.push(tb.text);

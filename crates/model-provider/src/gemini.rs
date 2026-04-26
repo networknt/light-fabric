@@ -96,7 +96,9 @@ impl GeminiProvider {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(300))
             .build()
-            .map_err(|e| anyhow::anyhow!("Failed to build reqwest Client for GeminiProvider: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to build reqwest Client for GeminiProvider: {e}")
+            })?;
 
         Ok(Self {
             base_url: base_url
@@ -122,7 +124,9 @@ impl GeminiProvider {
                 "system" => {
                     system_instruction = Some(Content {
                         role: None,
-                        parts: vec![Part::Text { text: msg.content.clone() }],
+                        parts: vec![Part::Text {
+                            text: msg.content.clone(),
+                        }],
                     });
                 }
                 "user" | "assistant" => {
@@ -132,7 +136,9 @@ impl GeminiProvider {
                         parts.push(Part::Text { text });
                     }
                     for img_ref in image_refs {
-                        if let Some(payload) = crate::multimodal::extract_gemini_image_payload(&img_ref).await {
+                        if let Some(payload) =
+                            crate::multimodal::extract_gemini_image_payload(&img_ref).await
+                        {
                             parts.push(Part::Inline {
                                 inline_data: InlineData {
                                     mime_type: payload.media_type,
@@ -142,10 +148,16 @@ impl GeminiProvider {
                         }
                     }
                     if parts.is_empty() {
-                        parts.push(Part::Text { text: msg.content.clone() });
+                        parts.push(Part::Text {
+                            text: msg.content.clone(),
+                        });
                     }
                     contents.push(Content {
-                        role: Some(if msg.role == "assistant" { "model".to_string() } else { "user".to_string() }),
+                        role: Some(if msg.role == "assistant" {
+                            "model".to_string()
+                        } else {
+                            "user".to_string()
+                        }),
                         parts,
                     });
                 }
@@ -179,7 +191,9 @@ impl Provider for GeminiProvider {
             messages.push(ChatMessage::system(sys));
         }
         messages.push(ChatMessage::user(message));
-        let resp = self.chat_with_history(&messages, model, temperature).await?;
+        let resp = self
+            .chat_with_history(&messages, model, temperature)
+            .await?;
         Ok(resp)
     }
 
@@ -189,8 +203,18 @@ impl Provider for GeminiProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let resp = self.chat(ProviderChatRequest { messages, tools: None }, model, temperature).await?;
-        resp.text.ok_or_else(|| anyhow::anyhow!("No text response from Gemini"))
+        let resp = self
+            .chat(
+                ProviderChatRequest {
+                    messages,
+                    tools: None,
+                },
+                model,
+                temperature,
+            )
+            .await?;
+        resp.text
+            .ok_or_else(|| anyhow::anyhow!("No text response from Gemini"))
     }
 
     async fn chat(
@@ -199,7 +223,10 @@ impl Provider for GeminiProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ProviderChatResponse> {
-        let api_key = self.api_key.as_ref().ok_or_else(|| anyhow::anyhow!("Gemini API key not set."))?;
+        let api_key = self
+            .api_key
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Gemini API key not set."))?;
         let (system_instruction, contents) = Self::convert_messages(request.messages).await;
 
         let gen_request = GenerateContentRequest {
@@ -211,12 +238,11 @@ impl Provider for GeminiProvider {
             },
         };
 
-        let url = format!("{}/models/{}:generateContent?key={}", self.base_url, model, api_key);
-        let response = self.client
-            .post(url)
-            .json(&gen_request)
-            .send()
-            .await?;
+        let url = format!(
+            "{}/models/{}:generateContent?key={}",
+            self.base_url, model, api_key
+        );
+        let response = self.client.post(url).json(&gen_request).send().await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -238,7 +264,9 @@ impl Provider for GeminiProvider {
         let mut text_parts = Vec::new();
         let mut reasoning_parts = Vec::new();
 
-        if let Some(candidates) = gen_response.candidates && let Some(candidate) = candidates.first() {
+        if let Some(candidates) = gen_response.candidates
+            && let Some(candidate) = candidates.first()
+        {
             if let Some(content) = &candidate.content {
                 for part in &content.parts {
                     if let Some(text) = &part.text {

@@ -3,9 +3,9 @@ use crate::traits::{
     Provider, ProviderCapabilities, TokenUsage, ToolCall as ProviderToolCall,
 };
 use async_trait::async_trait;
+use hmac::{Hmac, Mac};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -61,7 +61,9 @@ impl GlmProvider {
         Ok(Self {
             api_key_id: id,
             api_key_secret: secret,
-            base_url: base_url.map(|u| u.trim_end_matches('/').to_string()).unwrap_or_else(|| "https://open.bigmodel.cn/api/paas/v4".to_string()),
+            base_url: base_url
+                .map(|u| u.trim_end_matches('/').to_string())
+                .unwrap_or_else(|| "https://open.bigmodel.cn/api/paas/v4".to_string()),
             token_cache: Mutex::new(None),
             client,
         })
@@ -72,9 +74,7 @@ impl GlmProvider {
             anyhow::bail!("GLM API key not set or invalid format. Expected 'id.secret'.");
         }
 
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)?
-            .as_millis() as u64;
+        let now_ms = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
 
         if let Ok(cache) = self.token_cache.lock() {
             if let Some((ref token, expiry)) = *cache {
@@ -138,7 +138,9 @@ impl Provider for GlmProvider {
             messages.push(ChatMessage::system(sys));
         }
         messages.push(ChatMessage::user(message));
-        let resp = self.chat_with_history(&messages, model, temperature).await?;
+        let resp = self
+            .chat_with_history(&messages, model, temperature)
+            .await?;
         Ok(resp)
     }
 
@@ -148,8 +150,18 @@ impl Provider for GlmProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let resp = self.chat(ProviderChatRequest { messages, tools: None }, model, temperature).await?;
-        resp.text.ok_or_else(|| anyhow::anyhow!("No text response from GLM"))
+        let resp = self
+            .chat(
+                ProviderChatRequest {
+                    messages,
+                    tools: None,
+                },
+                model,
+                temperature,
+            )
+            .await?;
+        resp.text
+            .ok_or_else(|| anyhow::anyhow!("No text response from GLM"))
     }
 
     async fn chat(
@@ -160,7 +172,8 @@ impl Provider for GlmProvider {
     ) -> anyhow::Result<ProviderChatResponse> {
         let token = self.generate_token()?;
 
-        let native_messages: Vec<NativeMessage> = request.messages
+        let native_messages: Vec<NativeMessage> = request
+            .messages
             .iter()
             .map(|m| NativeMessage {
                 role: m.role.clone(),
@@ -175,7 +188,8 @@ impl Provider for GlmProvider {
         };
 
         let url = format!("{}/chat/completions", self.base_url);
-        let response = self.client
+        let response = self
+            .client
             .post(url)
             .header("Authorization", format!("Bearer {token}"))
             .json(&native_request)
@@ -189,7 +203,11 @@ impl Provider for GlmProvider {
         }
 
         let native_response: NativeChatResponse = response.json().await?;
-        let choice = native_response.choices.into_iter().next().ok_or_else(|| anyhow::anyhow!("No response from GLM"))?;
+        let choice = native_response
+            .choices
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("No response from GLM"))?;
 
         Ok(ProviderChatResponse {
             text: Some(choice.message.content),

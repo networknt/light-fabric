@@ -9,8 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const DEFAULT_CODEX_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
-const DEFAULT_CODEX_INSTRUCTIONS: &str =
-    "You are Codex, a concise and helpful coding assistant.";
+const DEFAULT_CODEX_INSTRUCTIONS: &str = "You are Codex, a concise and helpful coding assistant.";
 
 pub struct CodexProvider {
     responses_url: String,
@@ -115,13 +114,16 @@ impl CodexProvider {
         account_id: Option<&str>,
         reasoning_effort: Option<&str>,
     ) -> anyhow::Result<Self> {
-        let responses_url = Self::normalize_responses_url(base_url.unwrap_or(DEFAULT_CODEX_RESPONSES_URL));
-        
+        let responses_url =
+            Self::normalize_responses_url(base_url.unwrap_or(DEFAULT_CODEX_RESPONSES_URL));
+
         let client = Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(300))
             .build()
-            .map_err(|e| anyhow::anyhow!("Failed to build reqwest Client for CodexProvider: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to build reqwest Client for CodexProvider: {e}")
+            })?;
 
         Ok(Self {
             responses_url,
@@ -196,9 +198,13 @@ impl CodexProvider {
     }
 
     fn resolve_reasoning_effort(&self, model_id: &str) -> String {
-        let effort = self.reasoning_effort.as_deref().unwrap_or("xhigh").to_ascii_lowercase();
+        let effort = self
+            .reasoning_effort
+            .as_deref()
+            .unwrap_or("xhigh")
+            .to_ascii_lowercase();
         let id = model_id.rsplit('/').next().unwrap_or(model_id);
-        
+
         if id == "gpt-5-codex" {
             return match effort.as_str() {
                 "low" | "medium" | "high" => effort,
@@ -235,7 +241,9 @@ impl CodexProvider {
             parallel_tool_calls: true,
         };
 
-        let mut request_builder = self.client.post(&self.responses_url)
+        let mut request_builder = self
+            .client
+            .post(&self.responses_url)
             .header("OpenAI-Beta", "responses=experimental")
             .header("originator", "pi")
             .header("accept", "text/event-stream")
@@ -259,7 +267,10 @@ impl CodexProvider {
         self.decode_responses_body(response).await
     }
 
-    async fn decode_responses_body(&self, response: reqwest::Response) -> anyhow::Result<ChatResponse> {
+    async fn decode_responses_body(
+        &self,
+        response: reqwest::Response,
+    ) -> anyhow::Result<ChatResponse> {
         let mut body = String::new();
         let mut pending_utf8 = Vec::new();
         let mut stream = response.bytes_stream();
@@ -272,7 +283,12 @@ impl CodexProvider {
         self.parse_responses_payload(&body)
     }
 
-    fn append_utf8_chunk(&self, body: &mut String, pending: &mut Vec<u8>, chunk: &[u8]) -> anyhow::Result<()> {
+    fn append_utf8_chunk(
+        &self,
+        body: &mut String,
+        pending: &mut Vec<u8>,
+        chunk: &[u8],
+    ) -> anyhow::Result<()> {
         pending.extend_from_slice(chunk);
         match std::str::from_utf8(pending) {
             Ok(text) => {
@@ -302,9 +318,13 @@ impl CodexProvider {
 
         for line in payload.lines() {
             let line = line.trim();
-            if !line.starts_with("data:") { continue; }
+            if !line.starts_with("data:") {
+                continue;
+            }
             let data = line[5..].trim();
-            if data == "[DONE]" { break; }
+            if data == "[DONE]" {
+                break;
+            }
 
             if let Ok(event) = serde_json::from_str::<Value>(data) {
                 if let Some(msg) = self.extract_error(&event) {
@@ -360,10 +380,18 @@ impl CodexProvider {
     fn extract_error(&self, event: &Value) -> Option<String> {
         let kind = event.get("type").and_then(Value::as_str);
         if kind == Some("error") {
-            return event.get("message").and_then(Value::as_str).map(ToString::to_string);
+            return event
+                .get("message")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
         }
         if kind == Some("response.failed") {
-            return event.get("response").and_then(|r| r.get("error")).and_then(|e| e.get("message")).and_then(Value::as_str).map(ToString::to_string);
+            return event
+                .get("response")
+                .and_then(|r| r.get("error"))
+                .and_then(|e| e.get("message"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
         }
         None
     }
@@ -392,7 +420,9 @@ impl Provider for CodexProvider {
         }
         messages.push(ChatMessage::user(message));
 
-        let response = self.chat_with_history(&messages, model, _temperature).await?;
+        let response = self
+            .chat_with_history(&messages, model, _temperature)
+            .await?;
         Ok(response)
     }
 
@@ -402,8 +432,19 @@ impl Provider for CodexProvider {
         model: &str,
         _temperature: f64,
     ) -> anyhow::Result<String> {
-        let response = self.chat(crate::traits::ChatRequest { messages, tools: None }, model, _temperature).await?;
-        response.text.ok_or_else(|| anyhow::anyhow!("No text response from Codex"))
+        let response = self
+            .chat(
+                crate::traits::ChatRequest {
+                    messages,
+                    tools: None,
+                },
+                model,
+                _temperature,
+            )
+            .await?;
+        response
+            .text
+            .ok_or_else(|| anyhow::anyhow!("No text response from Codex"))
     }
 
     async fn chat(
@@ -422,8 +463,16 @@ impl Provider for CodexProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
-        // Codex experimental responses API technically supports tools, 
+        // Codex experimental responses API technically supports tools,
         // but for now we follow the existing native_tool_calling: false capability.
-        self.chat(crate::traits::ChatRequest { messages, tools: None }, model, temperature).await
+        self.chat(
+            crate::traits::ChatRequest {
+                messages,
+                tools: None,
+            },
+            model,
+            temperature,
+        )
+        .await
     }
 }
