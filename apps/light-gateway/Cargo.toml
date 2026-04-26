@@ -5,5 +5,15 @@ edition.workspace = true
 license = "Apache-2.0"
 
 [dependencies]
+light-runtime = { path = "../../crates/light-runtime" }
 light-pingora = { path = "../../frameworks/light-pingora" }
+config-loader = { path = "../../crates/config-loader" }
 anyhow = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+pingora = { version = "0.8.0", features = ["proxy", "rustls"] }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

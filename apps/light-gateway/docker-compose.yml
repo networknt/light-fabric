@@ -1,0 +1,22 @@
+services:
+  light-gateway:
+    build:
+      context: ../..
+      dockerfile: apps/light-gateway/docker/Dockerfile
+    image: networknt/light-gateway:latest
+    container_name: light-gateway
+    environment:
+      LIGHT_PORTAL_AUTHORIZATION: ${LIGHT_PORTAL_AUTHORIZATION:-}
+      LIGHT_CONFIG_SERVER_URI: ${LIGHT_CONFIG_SERVER_URI:-https://local.lightapi.net}
+      SERVER_ADVERTISEDADDRESS: ${SERVER_ADVERTISEDADDRESS:-127.0.0.1}
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+    volumes:
+      - ./config:/config
+    networks:
+      - portal-net
+
+networks:
+  portal-net:
+    driver: bridge

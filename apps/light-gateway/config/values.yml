@@ -1,0 +1,5 @@
+gateway.upstreams:
+  - address: 127.0.0.1:8081
+    tls: false
+    sni: ""
+    hostHeader: localhost
