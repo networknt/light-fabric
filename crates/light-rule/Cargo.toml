@@ -13,3 +13,4 @@ async-trait = { workspace = true }
 evalexpr = "11.0"
 thiserror = { workspace = true }
 tracing = { workspace = true }
+regex = "1"
