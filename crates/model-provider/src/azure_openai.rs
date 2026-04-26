@@ -127,7 +127,9 @@ impl AzureOpenAiProvider {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(300))
             .build()
-            .map_err(|e| anyhow::anyhow!("Failed to build reqwest Client for AzureOpenAiProvider: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to build reqwest Client for AzureOpenAiProvider: {e}")
+            })?;
 
         Ok(Self {
             credential: credential.map(ToString::to_string),
@@ -237,11 +239,10 @@ impl AzureOpenAiProvider {
         temperature: f64,
         tools: Option<Vec<NativeToolSpec>>,
     ) -> anyhow::Result<ProviderChatResponse> {
-        let credential = self.credential.as_ref().ok_or_else(|| {
-            anyhow::anyhow!(
-                "Azure OpenAI API key not set."
-            )
-        })?;
+        let credential = self
+            .credential
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Azure OpenAI API key not set."))?;
 
         let native_request = NativeChatRequest {
             messages,
@@ -250,7 +251,8 @@ impl AzureOpenAiProvider {
             tools,
         };
 
-        let response = self.client
+        let response = self
+            .client
             .post(self.chat_completions_url())
             .header("api-key", credential.as_str())
             .json(&native_request)
@@ -321,7 +323,9 @@ impl Provider for AzureOpenAiProvider {
             messages.push(ChatMessage::system(sys));
         }
         messages.push(ChatMessage::user(message));
-        let resp = self.chat_with_history(&messages, _model, temperature).await?;
+        let resp = self
+            .chat_with_history(&messages, _model, temperature)
+            .await?;
         Ok(resp)
     }
 
@@ -331,8 +335,18 @@ impl Provider for AzureOpenAiProvider {
         _model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let resp = self.chat(ProviderChatRequest { messages, tools: None }, _model, temperature).await?;
-        resp.text.ok_or_else(|| anyhow::anyhow!("No text response from Azure OpenAI"))
+        let resp = self
+            .chat(
+                ProviderChatRequest {
+                    messages,
+                    tools: None,
+                },
+                _model,
+                temperature,
+            )
+            .await?;
+        resp.text
+            .ok_or_else(|| anyhow::anyhow!("No text response from Azure OpenAI"))
     }
 
     async fn chat(
@@ -343,7 +357,8 @@ impl Provider for AzureOpenAiProvider {
     ) -> anyhow::Result<ProviderChatResponse> {
         let native_messages = Self::convert_messages(request.messages);
         let native_tools = Self::convert_tools(request.tools);
-        self.send_request(native_messages, temperature, native_tools).await
+        self.send_request(native_messages, temperature, native_tools)
+            .await
     }
 
     async fn chat_with_tools(
@@ -360,10 +375,14 @@ impl Provider for AzureOpenAiProvider {
             Some(
                 tools
                     .iter()
-                    .map(|t| serde_json::from_value(t.clone()).map_err(|e| anyhow::anyhow!("Invalid tool spec: {e}")))
+                    .map(|t| {
+                        serde_json::from_value(t.clone())
+                            .map_err(|e| anyhow::anyhow!("Invalid tool spec: {e}"))
+                    })
                     .collect::<Result<Vec<_>, _>>()?,
             )
         };
-        self.send_request(native_messages, temperature, native_tools).await
+        self.send_request(native_messages, temperature, native_tools)
+            .await
     }
 }

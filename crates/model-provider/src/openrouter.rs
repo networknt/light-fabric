@@ -123,7 +123,9 @@ impl OpenRouterProvider {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(300))
             .build()
-            .map_err(|e| anyhow::anyhow!("Failed to build reqwest Client for OpenRouterProvider: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to build reqwest Client for OpenRouterProvider: {e}")
+            })?;
 
         Ok(Self {
             base_url: base_url
@@ -263,7 +265,10 @@ impl OpenRouterProvider {
         temperature: f64,
         tools: Option<Vec<NativeToolSpec>>,
     ) -> anyhow::Result<ProviderChatResponse> {
-        let api_key = self.api_key.as_ref().ok_or_else(|| anyhow::anyhow!("OpenRouter API key not set."))?;
+        let api_key = self
+            .api_key
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("OpenRouter API key not set."))?;
 
         let native_request = NativeChatRequest {
             model: model.to_string(),
@@ -274,7 +279,8 @@ impl OpenRouterProvider {
             max_tokens: self.max_tokens,
         };
 
-        let response = self.client
+        let response = self
+            .client
             .post(format!("{}/chat/completions", self.base_url))
             .header("Authorization", format!("Bearer {api_key}"))
             .header("HTTP-Referer", "https://github.com/networknt/light-rs")
@@ -347,7 +353,9 @@ impl Provider for OpenRouterProvider {
             messages.push(ChatMessage::system(sys));
         }
         messages.push(ChatMessage::user(message));
-        let resp = self.chat_with_history(&messages, model, temperature).await?;
+        let resp = self
+            .chat_with_history(&messages, model, temperature)
+            .await?;
         Ok(resp)
     }
 
@@ -357,8 +365,18 @@ impl Provider for OpenRouterProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let resp = self.chat(ProviderChatRequest { messages, tools: None }, model, temperature).await?;
-        resp.text.ok_or_else(|| anyhow::anyhow!("No text response from OpenRouter"))
+        let resp = self
+            .chat(
+                ProviderChatRequest {
+                    messages,
+                    tools: None,
+                },
+                model,
+                temperature,
+            )
+            .await?;
+        resp.text
+            .ok_or_else(|| anyhow::anyhow!("No text response from OpenRouter"))
     }
 
     async fn chat(
@@ -369,7 +387,8 @@ impl Provider for OpenRouterProvider {
     ) -> anyhow::Result<ProviderChatResponse> {
         let native_messages = Self::convert_messages(request.messages);
         let native_tools = Self::convert_tools(request.tools);
-        self.send_request(native_messages, model, temperature, native_tools).await
+        self.send_request(native_messages, model, temperature, native_tools)
+            .await
     }
 
     async fn chat_with_tools(
@@ -392,14 +411,22 @@ impl Provider for OpenRouterProvider {
                             kind: "function".to_string(),
                             function: NativeToolFunctionSpec {
                                 name: func.get("name")?.as_str()?.to_string(),
-                                description: func.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string(),
-                                parameters: func.get("parameters").cloned().unwrap_or(serde_json::json!({})),
+                                description: func
+                                    .get("description")
+                                    .and_then(|d| d.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                parameters: func
+                                    .get("parameters")
+                                    .cloned()
+                                    .unwrap_or(serde_json::json!({})),
                             },
                         })
                     })
                     .collect(),
             )
         };
-        self.send_request(native_messages, model, temperature, native_tools).await
+        self.send_request(native_messages, model, temperature, native_tools)
+            .await
     }
 }

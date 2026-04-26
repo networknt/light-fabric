@@ -11,13 +11,16 @@ use tokio::time::sleep;
 use tracing::{error, info};
 use uuid::Uuid;
 use workflow_core::models::task::{
-    CallTaskDefinition, SetValue, TaskDefinition, TaskDefinitionFields,
+    AssertComparison, AssertComparisonObject, AssertDefinition, CallTaskDefinition,
+    HasLengthComparison, JsonRpcArguments, JsonRpcErrorPolicy, McpArguments, McpServerDefinition,
+    OpenRpcArguments, SetValue, TaskDefinition, TaskDefinitionFields,
 };
 use workflow_core::models::workflow::WorkflowDefinition;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 static TEMPLATE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\$\{\{\s*([^}]*(?:}[^}]+)*)\s*\}\}").expect("valid template regex")
+    Regex::new(r"\$\{\{\s*([^}]*(?:}[^}]+)*)\s*\}\}|\$\{\s*([^}]*)\s*\}")
+        .expect("valid template regex")
 });
 const TASK_LOCK_TIMEOUT_MINUTES: i64 = 5;
 const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -55,6 +58,8 @@ pub struct TaskExecutor {
 impl TaskExecutor {
     fn supported_task_type_name(task_def: &TaskDefinition) -> Option<&'static str> {
         match task_def {
+            TaskDefinition::Ask(_) => Some("ask"),
+            TaskDefinition::Assert(_) => Some("assert"),
             TaskDefinition::Call(_) => Some("call"),
             TaskDefinition::Set(_) => Some("set"),
             TaskDefinition::Switch(_) => Some("switch"),
@@ -138,7 +143,7 @@ impl TaskExecutor {
                     locked = 'N'
                     OR (locked = 'Y' AND update_ts < CURRENT_TIMESTAMP - make_interval(mins => $1))
                   )
-                  AND task_type IN ('call', 'set', 'switch')
+                  AND task_type IN ('ask', 'assert', 'call', 'set', 'switch')
                 ORDER BY priority DESC, started_ts ASC
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
@@ -187,6 +192,19 @@ impl TaskExecutor {
             })?;
 
         match task_def {
+            TaskDefinition::Ask(ask_task) => Ok(TaskExecutionResult {
+                status_code: "W",
+                task_output: json!({
+                    "status": "waiting_for_input",
+                    "ask": ask_task.ask,
+                    "message": "Task is waiting for human input"
+                }),
+                next_task: None,
+                context_data: None,
+            }),
+            TaskDefinition::Assert(assert_task) => {
+                self.execute_assert_task(&assert_task.assert, &claimed.context_data)
+            }
             TaskDefinition::Call(CallTaskDefinition::Http(http_call)) => {
                 let configured_uri = match &http_call.with.endpoint {
                     workflow_core::models::resource::OneOfEndpointDefinitionOrUri::Uri(uri) => {
@@ -269,6 +287,18 @@ impl TaskExecutor {
                     next_task: None,
                     context_data: None,
                 })
+            }
+            TaskDefinition::Call(CallTaskDefinition::JsonRpc(jsonrpc_call)) => {
+                self.execute_jsonrpc_call(&jsonrpc_call.with, &claimed.context_data)
+                    .await
+            }
+            TaskDefinition::Call(CallTaskDefinition::OpenRpc(openrpc_call)) => {
+                self.execute_openrpc_call(&openrpc_call.with, &claimed.context_data)
+                    .await
+            }
+            TaskDefinition::Call(CallTaskDefinition::Mcp(mcp_call)) => {
+                self.execute_mcp_call(&mcp_call.with, &claimed.definition, &claimed.context_data)
+                    .await
             }
             TaskDefinition::Call(CallTaskDefinition::Rule(rule_call)) => {
                 let rule_id = &rule_call.with.rule_id;
@@ -365,6 +395,811 @@ impl TaskExecutor {
         }
     }
 
+    async fn execute_jsonrpc_call(
+        &self,
+        args: &JsonRpcArguments,
+        context: &Value,
+    ) -> Result<TaskExecutionResult, DynError> {
+        let configured_uri = self.endpoint_to_uri(&args.endpoint);
+        self.execute_jsonrpc_request(
+            &configured_uri,
+            &args.method,
+            args.params.as_ref(),
+            args.id.as_ref(),
+            args.notification.unwrap_or(false),
+            args.headers.as_ref(),
+            args.output.as_deref(),
+            args.error_policy.as_ref(),
+            context,
+        )
+        .await
+    }
+
+    async fn execute_openrpc_call(
+        &self,
+        args: &OpenRpcArguments,
+        context: &Value,
+    ) -> Result<TaskExecutionResult, DynError> {
+        let document = self.fetch_external_json(&args.document, context).await?;
+        let method_definition = self.find_openrpc_method(&document, &args.method)?;
+        let resolved_params = args
+            .params
+            .as_ref()
+            .map(|params| self.resolve_json_value(params, context));
+        self.validate_openrpc_params(method_definition, &args.method, resolved_params.as_ref())?;
+        let configured_uri = self.resolve_openrpc_server_uri(&document, args.server.as_ref())?;
+        self.execute_jsonrpc_request(
+            &configured_uri,
+            &args.method,
+            resolved_params.as_ref(),
+            args.id.as_ref(),
+            args.notification.unwrap_or(false),
+            None,
+            args.output.as_deref(),
+            args.error_policy.as_ref(),
+            context,
+        )
+        .await
+    }
+
+    async fn execute_mcp_call(
+        &self,
+        args: &McpArguments,
+        definition: &WorkflowDefinition,
+        context: &Value,
+    ) -> Result<TaskExecutionResult, DynError> {
+        let server = self.resolve_mcp_server(args, definition)?;
+        if let Some(transport) = server.transport.as_deref() {
+            if !matches!(transport, "http" | "streamable-http") {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("unsupported MCP transport '{}'", transport),
+                )
+                .into());
+            }
+        }
+
+        let endpoint = server.endpoint.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "MCP call requires an endpoint from with.server, with.session, or with.serverRef",
+            )
+        })?;
+        let configured_uri = self.endpoint_to_uri(endpoint);
+        let arguments = args
+            .arguments
+            .as_ref()
+            .map(|arguments| {
+                Value::Object(
+                    arguments
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect(),
+                )
+            })
+            .unwrap_or_else(|| json!({}));
+
+        let (method, params) = if let Some(tool) = &args.tool {
+            (
+                "tools/call".to_string(),
+                json!({
+                    "name": tool,
+                    "arguments": arguments
+                }),
+            )
+        } else if let Some(resource) = &args.resource {
+            (
+                "resources/read".to_string(),
+                json!({
+                    "uri": self.resolve_template_to_string(resource, context)
+                }),
+            )
+        } else if let Some(prompt) = &args.prompt {
+            (
+                "prompts/get".to_string(),
+                json!({
+                    "name": prompt,
+                    "arguments": arguments
+                }),
+            )
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "MCP call requires one of tool, resource, or prompt",
+            )
+            .into());
+        };
+
+        self.execute_jsonrpc_request(
+            &configured_uri,
+            &method,
+            Some(&params),
+            None,
+            false,
+            None,
+            args.output.as_deref().or(Some("result")),
+            None,
+            context,
+        )
+        .await
+    }
+
+    async fn execute_jsonrpc_request(
+        &self,
+        configured_uri: &str,
+        method: &str,
+        params: Option<&Value>,
+        id: Option<&Value>,
+        notification: bool,
+        headers: Option<&Value>,
+        output: Option<&str>,
+        error_policy: Option<&JsonRpcErrorPolicy>,
+        context: &Value,
+    ) -> Result<TaskExecutionResult, DynError> {
+        let resolved_uri = self.resolve_template_to_string(&configured_uri, context);
+        let validated_uri = self.validate_resolved_uri(&configured_uri, &resolved_uri)?;
+
+        let mut request = JsonMap::new();
+        request.insert("jsonrpc".to_string(), Value::String("2.0".to_string()));
+        request.insert("method".to_string(), Value::String(method.to_string()));
+        if let Some(params) = params {
+            request.insert(
+                "params".to_string(),
+                self.resolve_json_value(params, context),
+            );
+        }
+        if !notification {
+            request.insert("id".to_string(), id.cloned().unwrap_or_else(|| json!(1)));
+        }
+
+        let mut req_builder = self.http_client.post(validated_uri.clone());
+        if let Some(headers) = headers {
+            if let Value::Object(headers) = self.resolve_json_value(headers, context) {
+                for (key, value) in headers {
+                    req_builder = req_builder.header(key, self.stringify_json_value(&value));
+                }
+            }
+        }
+
+        info!(">>> Making JSON-RPC request to: {}", validated_uri);
+        let resp = req_builder.json(&Value::Object(request)).send().await?;
+        let status = resp.status();
+        let body = resp.bytes().await?;
+        if body.len() > MAX_HTTP_RESPONSE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "JSON-RPC response too large: more than {} bytes",
+                    MAX_HTTP_RESPONSE_BYTES
+                ),
+            )
+            .into());
+        }
+
+        if notification {
+            return Ok(TaskExecutionResult {
+                status_code: if status.is_success() { "C" } else { "F" },
+                task_output: json!({ "status": status.as_u16() }),
+                next_task: None,
+                context_data: None,
+            });
+        }
+
+        let response = if body.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice::<Value>(&body).unwrap_or_else(|_| {
+                json!({
+                    "error": status.as_u16(),
+                    "body": String::from_utf8_lossy(&body).to_string()
+                })
+            })
+        };
+
+        let has_jsonrpc_error = response.get("error").is_some();
+        let throw_on_error = error_policy.and_then(|policy| policy.throw).unwrap_or(true);
+        if has_jsonrpc_error && throw_on_error {
+            let mut output = json!({
+                "type": error_policy
+                    .and_then(|policy| policy.error_type.clone())
+                    .unwrap_or_else(|| "https://agentic-workflow.org/errors/jsonrpc-error".to_string()),
+                "status": 400,
+                "title": "JSON-RPC error",
+                "detail": "JSON-RPC response contained an error"
+            });
+            if error_policy
+                .and_then(|policy| policy.include_response)
+                .unwrap_or(true)
+            {
+                output["response"] = response;
+            }
+            return Ok(TaskExecutionResult {
+                status_code: "F",
+                task_output: output,
+                next_task: None,
+                context_data: None,
+            });
+        }
+
+        let task_output = match output.unwrap_or("result") {
+            "raw" | "response" => response,
+            "result" => response
+                .get("result")
+                .cloned()
+                .unwrap_or_else(|| response.clone()),
+            _ => response,
+        };
+
+        Ok(TaskExecutionResult {
+            status_code: if status.is_success() { "C" } else { "F" },
+            task_output,
+            next_task: None,
+            context_data: None,
+        })
+    }
+
+    async fn fetch_external_json(
+        &self,
+        resource: &workflow_core::models::resource::ExternalResourceDefinition,
+        context: &Value,
+    ) -> Result<Value, DynError> {
+        let configured_uri = self.endpoint_to_uri(&resource.endpoint);
+        let resolved_uri = self.resolve_template_to_string(&configured_uri, context);
+        let validated_uri = self.validate_resolved_uri(&configured_uri, &resolved_uri)?;
+
+        let resp = self.http_client.get(validated_uri.clone()).send().await?;
+        let status = resp.status();
+        let body = resp.bytes().await?;
+        if body.len() > MAX_HTTP_RESPONSE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "external resource response too large: more than {} bytes",
+                    MAX_HTTP_RESPONSE_BYTES
+                ),
+            )
+            .into());
+        }
+        if !status.is_success() {
+            return Err(io::Error::other(format!(
+                "failed to fetch external resource {}: HTTP {}",
+                validated_uri, status
+            ))
+            .into());
+        }
+
+        serde_json::from_slice::<Value>(&body)
+            .or_else(|_| serde_yaml::from_slice::<Value>(&body))
+            .map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("external resource is not valid JSON or YAML: {}", err),
+                )
+                .into()
+            })
+    }
+
+    fn resolve_openrpc_server_uri(
+        &self,
+        document: &Value,
+        server_selector: Option<&Value>,
+    ) -> Result<String, DynError> {
+        let selected_server = if let Some(selector) = server_selector {
+            if let Some(url) = selector.as_str() {
+                if url.starts_with("http://") || url.starts_with("https://") {
+                    return Ok(url.to_string());
+                }
+                self.find_openrpc_server_by_name(document, url)
+            } else if selector.get("url").is_some() || selector.get("endpoint").is_some() {
+                Some(selector)
+            } else if let Some(name) = selector.get("name").and_then(Value::as_str) {
+                self.find_openrpc_server_by_name(document, name)
+            } else {
+                None
+            }
+        } else {
+            document
+                .get("servers")
+                .and_then(Value::as_array)
+                .and_then(|servers| servers.first())
+        };
+
+        let selected_server = selected_server.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OpenRPC call requires with.server or at least one document servers[].url",
+            )
+        })?;
+
+        self.openrpc_server_url(selected_server, server_selector)
+    }
+
+    fn openrpc_server_url(
+        &self,
+        server: &Value,
+        server_selector: Option<&Value>,
+    ) -> Result<String, DynError> {
+        if let Some(endpoint) = server.get("endpoint") {
+            let endpoint: workflow_core::models::resource::OneOfEndpointDefinitionOrUri =
+                serde_json::from_value(endpoint.clone()).map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("invalid OpenRPC server endpoint: {}", err),
+                    )
+                })?;
+            return Ok(self.endpoint_to_uri(&endpoint));
+        }
+
+        let mut url = server
+            .get("url")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "OpenRPC server requires url or endpoint",
+                )
+            })?
+            .to_string();
+
+        let mut variables = HashMap::new();
+        if let Some(defaults) = server.get("variables").and_then(Value::as_object) {
+            for (name, definition) in defaults {
+                if let Some(default) = definition.get("default").and_then(Value::as_str) {
+                    variables.insert(name.clone(), default.to_string());
+                }
+            }
+        }
+        if let Some(selector) = server_selector {
+            if let Some(overrides) = selector.get("variables").and_then(Value::as_object) {
+                for (name, value) in overrides {
+                    variables.insert(name.clone(), self.stringify_json_value(value));
+                }
+            }
+        }
+
+        for (name, value) in variables {
+            url = url.replace(&format!("{{{}}}", name), &value);
+        }
+
+        if url.contains('{') || url.contains('}') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("OpenRPC server URL has unresolved variables: {}", url),
+            )
+            .into());
+        }
+
+        Ok(url)
+    }
+
+    fn find_openrpc_server_by_name<'a>(
+        &self,
+        document: &'a Value,
+        name: &str,
+    ) -> Option<&'a Value> {
+        document
+            .get("servers")?
+            .as_array()?
+            .iter()
+            .find(|server| server.get("name").and_then(Value::as_str) == Some(name))
+    }
+
+    fn find_openrpc_method<'a>(
+        &self,
+        document: &'a Value,
+        method_name: &str,
+    ) -> Result<&'a Value, DynError> {
+        document
+            .get("methods")
+            .and_then(Value::as_array)
+            .and_then(|methods| {
+                methods
+                    .iter()
+                    .find(|method| method.get("name").and_then(Value::as_str) == Some(method_name))
+            })
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("OpenRPC method '{}' not found in document", method_name),
+                )
+                .into()
+            })
+    }
+
+    fn validate_openrpc_params(
+        &self,
+        method_definition: &Value,
+        method_name: &str,
+        params: Option<&Value>,
+    ) -> Result<(), DynError> {
+        let Some(descriptors) = method_definition.get("params").and_then(Value::as_array) else {
+            return Ok(());
+        };
+
+        for (index, descriptor) in descriptors.iter().enumerate() {
+            let name = descriptor
+                .get("name")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+                .unwrap_or_else(|| index.to_string());
+            let value = match params {
+                Some(Value::Object(map)) => map.get(&name),
+                Some(Value::Array(values)) => values.get(index),
+                Some(Value::Null) | None => None,
+                Some(other) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "OpenRPC method '{}' params must be an object or array, got {}",
+                            method_name, other
+                        ),
+                    )
+                    .into());
+                }
+            };
+
+            let required = descriptor
+                .get("required")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if required && value.is_none() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "OpenRPC method '{}' is missing required param '{}'",
+                        method_name, name
+                    ),
+                )
+                .into());
+            }
+
+            if let Some(value) = value {
+                self.validate_openrpc_schema_type(method_name, &name, value, descriptor)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_openrpc_schema_type(
+        &self,
+        method_name: &str,
+        param_name: &str,
+        value: &Value,
+        descriptor: &Value,
+    ) -> Result<(), DynError> {
+        let Some(schema_type) = descriptor
+            .get("schema")
+            .and_then(|schema| schema.get("type"))
+            .and_then(Value::as_str)
+        else {
+            return Ok(());
+        };
+
+        let type_matches = match schema_type {
+            "string" => value.is_string(),
+            "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+            "number" => value.is_number(),
+            "boolean" => value.is_boolean(),
+            "array" => value.is_array(),
+            "object" => value.is_object(),
+            _ => true,
+        };
+
+        if type_matches {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "OpenRPC method '{}' param '{}' expected type '{}', got {}",
+                    method_name, param_name, schema_type, value
+                ),
+            )
+            .into())
+        }
+    }
+
+    fn resolve_mcp_server(
+        &self,
+        args: &McpArguments,
+        definition: &WorkflowDefinition,
+    ) -> Result<McpServerDefinition, DynError> {
+        if let Some(server) = &args.server {
+            return Ok(server.clone());
+        }
+
+        let session_name = args.session.as_deref().or(args.server_ref.as_deref());
+        if let Some(session_name) = session_name {
+            let sessions = definition
+                .use_
+                .as_ref()
+                .and_then(|use_| use_.mcp_sessions.as_ref())
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "MCP session '{}' referenced but use.mcpSessions is not defined",
+                            session_name
+                        ),
+                    )
+                })?;
+            let session = sessions.get(session_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("MCP session '{}' not found", session_name),
+                )
+            })?;
+
+            if let Some(server_name) = session.server.as_str() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!(
+                        "MCP session '{}' references server '{}' by name, but named server resolution is not implemented yet",
+                        session_name, server_name
+                    ),
+                )
+                .into());
+            }
+
+            return serde_json::from_value::<McpServerDefinition>(session.server.clone()).map_err(
+                |err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "invalid MCP session '{}' server definition: {}",
+                            session_name, err
+                        ),
+                    )
+                    .into()
+                },
+            );
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "MCP call requires with.server, with.session, or with.serverRef",
+        )
+        .into())
+    }
+
+    fn execute_assert_task(
+        &self,
+        assertion: &AssertDefinition,
+        context: &Value,
+    ) -> Result<TaskExecutionResult, DynError> {
+        let value = assertion
+            .value
+            .as_ref()
+            .map(|value| self.resolve_json_value(value, context))
+            .unwrap_or_else(|| context.clone());
+
+        let mut failures = Vec::new();
+        self.evaluate_assert_field(
+            "equals",
+            &value,
+            assertion.equals.as_ref(),
+            context,
+            &mut failures,
+        );
+        self.evaluate_assert_field(
+            "contains",
+            &value,
+            assertion.contains.as_ref(),
+            context,
+            &mut failures,
+        );
+        if let Some(pattern) = &assertion.matches {
+            let regex = Regex::new(pattern).map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid assert.matches regex '{}': {}", pattern, err),
+                )
+            })?;
+            if !value.as_str().map(|s| regex.is_match(s)).unwrap_or(false) {
+                failures.push(format!("value does not match pattern {}", pattern));
+            }
+        }
+        if let Some(expected_exists) = assertion.exists {
+            let exists = !value.is_null();
+            if exists != expected_exists {
+                failures.push(format!(
+                    "exists expected {}, got {}",
+                    expected_exists, exists
+                ));
+            }
+        }
+        if let Some(json_assertions) = &assertion.json {
+            for (path, comparison) in json_assertions {
+                let selected = self
+                    .lookup_json_path(&value, path)
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                if let Err(err) = self.evaluate_assert_comparison(&selected, comparison, context) {
+                    failures.push(format!("{}: {}", path, err));
+                }
+            }
+        }
+
+        if failures.is_empty() {
+            Ok(TaskExecutionResult {
+                status_code: "C",
+                task_output: json!({ "passed": true, "value": value }),
+                next_task: None,
+                context_data: None,
+            })
+        } else {
+            Ok(TaskExecutionResult {
+                status_code: "F",
+                task_output: json!({
+                    "type": "https://agentic-workflow.org/errors/assertion-failed",
+                    "status": 400,
+                    "title": "Assertion failed",
+                    "detail": failures.join("; "),
+                    "data": {
+                        "failures": failures,
+                        "actual": value
+                    }
+                }),
+                next_task: None,
+                context_data: None,
+            })
+        }
+    }
+
+    fn evaluate_assert_field(
+        &self,
+        operator: &str,
+        actual: &Value,
+        expected: Option<&Value>,
+        context: &Value,
+        failures: &mut Vec<String>,
+    ) {
+        if let Some(expected) = expected {
+            let expected = self.resolve_json_value(expected, context);
+            let passed = match operator {
+                "equals" => actual == &expected,
+                "contains" => self.value_contains(actual, &expected),
+                _ => true,
+            };
+            if !passed {
+                failures.push(format!(
+                    "{} expected {}, got {}",
+                    operator, expected, actual
+                ));
+            }
+        }
+    }
+
+    fn evaluate_assert_comparison(
+        &self,
+        actual: &Value,
+        comparison: &AssertComparison,
+        context: &Value,
+    ) -> Result<(), String> {
+        match comparison {
+            AssertComparison::Expression(expression) => {
+                if self
+                    .evaluate_condition(expression, actual)
+                    .map_err(|err| err.to_string())?
+                {
+                    Ok(())
+                } else {
+                    Err(format!("expression evaluated to false: {}", expression))
+                }
+            }
+            AssertComparison::Object(comparison) => {
+                self.evaluate_assert_comparison_object(actual, comparison, context)
+            }
+        }
+    }
+
+    fn evaluate_assert_comparison_object(
+        &self,
+        actual: &Value,
+        comparison: &AssertComparisonObject,
+        context: &Value,
+    ) -> Result<(), String> {
+        if let Some(expected) = &comparison.equals {
+            let expected = self.resolve_json_value(expected, context);
+            if actual != &expected {
+                return Err(format!("equals expected {}, got {}", expected, actual));
+            }
+        }
+        if let Some(expected) = &comparison.contains {
+            let expected = self.resolve_json_value(expected, context);
+            if !self.value_contains(actual, &expected) {
+                return Err(format!("contains expected {}, got {}", expected, actual));
+            }
+        }
+        if let Some(pattern) = &comparison.matches {
+            let regex = Regex::new(pattern).map_err(|err| err.to_string())?;
+            if !actual.as_str().map(|s| regex.is_match(s)).unwrap_or(false) {
+                return Err(format!("matches expected {}, got {}", pattern, actual));
+            }
+        }
+        if let Some(expected_exists) = comparison.exists {
+            let exists = !actual.is_null();
+            if exists != expected_exists {
+                return Err(format!(
+                    "exists expected {}, got {}",
+                    expected_exists, exists
+                ));
+            }
+        }
+        if let Some(has_length) = &comparison.has_length {
+            let len = self.value_length(actual).ok_or_else(|| {
+                format!(
+                    "hasLength requires string, array, or object, got {}",
+                    actual
+                )
+            })?;
+            match has_length {
+                HasLengthComparison::Exact(expected) => {
+                    if len != *expected {
+                        return Err(format!("hasLength expected {}, got {}", expected, len));
+                    }
+                }
+                HasLengthComparison::Range(range) => {
+                    if let Some(gt) = range.gt {
+                        if len <= gt {
+                            return Err(format!("hasLength expected > {}, got {}", gt, len));
+                        }
+                    }
+                    if let Some(gte) = range.gte {
+                        if len < gte {
+                            return Err(format!("hasLength expected >= {}, got {}", gte, len));
+                        }
+                    }
+                    if let Some(lt) = range.lt {
+                        if len >= lt {
+                            return Err(format!("hasLength expected < {}, got {}", lt, len));
+                        }
+                    }
+                    if let Some(lte) = range.lte {
+                        if len > lte {
+                            return Err(format!("hasLength expected <= {}, got {}", lte, len));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn endpoint_to_uri(
+        &self,
+        endpoint: &workflow_core::models::resource::OneOfEndpointDefinitionOrUri,
+    ) -> String {
+        match endpoint {
+            workflow_core::models::resource::OneOfEndpointDefinitionOrUri::Uri(uri) => uri.clone(),
+            workflow_core::models::resource::OneOfEndpointDefinitionOrUri::Endpoint(endpoint) => {
+                endpoint.uri.clone()
+            }
+        }
+    }
+
+    fn value_contains(&self, actual: &Value, expected: &Value) -> bool {
+        match (actual, expected) {
+            (Value::String(actual), Value::String(expected)) => actual.contains(expected),
+            (Value::Array(values), expected) => values.iter().any(|value| value == expected),
+            (Value::Object(map), Value::String(key)) => map.contains_key(key),
+            (Value::Object(map), Value::Object(expected)) => expected
+                .iter()
+                .all(|(key, value)| map.get(key).map(|actual| actual == value).unwrap_or(false)),
+            _ => false,
+        }
+    }
+
+    fn value_length(&self, value: &Value) -> Option<u64> {
+        match value {
+            Value::String(value) => Some(value.chars().count() as u64),
+            Value::Array(values) => Some(values.len() as u64),
+            Value::Object(values) => Some(values.len() as u64),
+            _ => None,
+        }
+    }
+
     async fn finish_task(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -397,6 +1232,11 @@ impl TaskExecutor {
                 result.context_data,
             )
             .await?;
+        } else if result.status_code == "W" {
+            info!(
+                ">>> Workflow task waiting for input: {} ({})",
+                claimed.task.wf_task_id, claimed.task.wf_instance_id
+            );
         } else {
             sqlx::query(
                 "UPDATE process_info_t SET status_code = 'F', completed_ts = CURRENT_TIMESTAMP WHERE host_id = $1 AND process_id = $2",
@@ -623,6 +1463,8 @@ impl TaskExecutor {
 
     fn common_fields<'a>(&self, task_def: &'a TaskDefinition) -> &'a TaskDefinitionFields {
         match task_def {
+            TaskDefinition::Ask(task) => &task.common,
+            TaskDefinition::Assert(task) => &task.common,
             TaskDefinition::Call(call) => call.common(),
             TaskDefinition::Do(task) => &task.common,
             TaskDefinition::Emit(task) => &task.common,
@@ -721,7 +1563,7 @@ impl TaskExecutor {
             .into());
         }
 
-        if authority.contains("${{") || authority.contains("}}") {
+        if authority.contains("${") {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
@@ -804,14 +1646,23 @@ impl TaskExecutor {
     fn resolve_template_value(&self, template: &str, context: &Value) -> Value {
         if let Some(captures) = TEMPLATE_REGEX.captures(template) {
             if captures.get(0).map(|m| m.as_str()) == Some(template) {
+                let expression = captures
+                    .get(1)
+                    .or_else(|| captures.get(2))
+                    .map(|m| m.as_str())
+                    .unwrap_or_default();
                 return self
-                    .evaluate_expression_to_value(captures.get(1).unwrap().as_str(), context)
+                    .evaluate_expression_to_value(expression, context)
                     .unwrap_or_else(|| Value::String(template.to_string()));
             }
         }
 
         let replaced = TEMPLATE_REGEX.replace_all(template, |caps: &regex::Captures<'_>| {
-            let expression = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+            let expression = caps
+                .get(1)
+                .or_else(|| caps.get(2))
+                .map(|m| m.as_str())
+                .unwrap_or_default();
             self.evaluate_expression_to_value(expression, context)
                 .map(|value| self.stringify_json_value(&value))
                 .unwrap_or_else(|| {
@@ -935,6 +1786,40 @@ impl TaskExecutor {
                 continue;
             }
             current = current.get(segment)?;
+        }
+        Some(current)
+    }
+
+    fn lookup_json_path<'a>(&self, value: &'a Value, path: &str) -> Option<&'a Value> {
+        let path = path.trim().strip_prefix('$').unwrap_or(path.trim());
+        let path = path.strip_prefix('.').unwrap_or(path);
+        if path.is_empty() {
+            return Some(value);
+        }
+
+        let mut current = value;
+        for segment in path.split('.') {
+            if segment.is_empty() {
+                continue;
+            }
+            let mut remainder = segment;
+            if let Some(field_end) = remainder.find('[') {
+                let field = &remainder[..field_end];
+                if !field.is_empty() {
+                    current = current.get(field)?;
+                }
+                remainder = &remainder[field_end..];
+            } else {
+                current = current.get(remainder)?;
+                continue;
+            }
+
+            while let Some(index_start) = remainder.find('[') {
+                let index_end = remainder[index_start + 1..].find(']')? + index_start + 1;
+                let index: usize = remainder[index_start + 1..index_end].parse().ok()?;
+                current = current.get(index)?;
+                remainder = &remainder[index_end + 1..];
+            }
         }
         Some(current)
     }

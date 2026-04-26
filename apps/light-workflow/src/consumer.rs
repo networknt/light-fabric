@@ -28,6 +28,8 @@ impl EventConsumer {
         task_def: &workflow_core::models::task::TaskDefinition,
     ) -> Option<&'static str> {
         match task_def {
+            workflow_core::models::task::TaskDefinition::Ask(_) => Some("ask"),
+            workflow_core::models::task::TaskDefinition::Assert(_) => Some("assert"),
             workflow_core::models::task::TaskDefinition::Call(_) => Some("call"),
             workflow_core::models::task::TaskDefinition::Set(_) => Some("set"),
             workflow_core::models::task::TaskDefinition::Switch(_) => Some("switch"),
@@ -264,7 +266,7 @@ impl EventConsumer {
                         let task_id = Uuid::new_v4();
                         let task_type = Self::supported_task_type(task_def).ok_or_else(|| {
                             let message = format!(
-                                "unsupported initial task type for workflow {}: first task '{}' must be one of call/set/switch",
+                                "unsupported initial task type for workflow {}: first task '{}' must be one of ask/assert/call/set/switch",
                                 payload.wf_def_id, task_name
                             );
                             error!("{}", message);

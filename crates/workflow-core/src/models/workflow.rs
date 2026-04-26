@@ -201,6 +201,10 @@ pub struct ComponentDefinitionCollection {
     #[serde(rename = "catalogs", skip_serializing_if = "Option::is_none")]
     pub catalogs: Option<HashMap<String, CatalogDefinition>>,
 
+    /// Gets/sets a name/value mapping of reusable MCP session lifecycle configurations
+    #[serde(rename = "mcpSessions", skip_serializing_if = "Option::is_none")]
+    pub mcp_sessions: Option<HashMap<String, McpSessionDefinition>>,
+
     /// Gets/sets a name/value mapping of the workflow's errors, if any
     #[serde(rename = "errors", skip_serializing_if = "Option::is_none")]
     pub errors: Option<HashMap<String, ErrorDefinition>>,

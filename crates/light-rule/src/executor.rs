@@ -127,10 +127,7 @@ impl MultiThreadRuleExecutor {
             }
         };
 
-        let map = match endpoint_config {
-            crate::models::EndpointConfig::Map(map) => map,
-            _ => return Ok(true),
-        };
+        let crate::models::EndpointConfig::Map(map) = endpoint_config;
         if let Some(rule_ids_val) = map.get(rule_type) {
             if let Some(rule_ids_arr) = rule_ids_val.as_array() {
                 let rule_ids: Vec<String> = rule_ids_arr

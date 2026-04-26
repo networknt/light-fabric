@@ -1,8 +1,8 @@
+use crate::multimodal;
 use crate::traits::{
     ChatMessage, ChatRequest as ProviderChatRequest, ChatResponse as ProviderChatResponse,
     Provider, ProviderCapabilities, TokenUsage, ToolCall as ProviderToolCall, ToolSpec,
 };
-use crate::multimodal;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -29,8 +29,12 @@ struct DeviceCodeResponse {
     expires_in: u64,
 }
 
-fn default_interval() -> u64 { 5 }
-fn default_expires_in() -> u64 { 900 }
+fn default_interval() -> u64 {
+    5
+}
+fn default_expires_in() -> u64 {
+    900
+}
 
 #[derive(Debug, Deserialize)]
 struct AccessTokenResponse {
@@ -174,13 +178,18 @@ impl CopilotProvider {
             });
 
         if let Err(err) = std::fs::create_dir_all(&token_dir) {
-            warn!("Failed to create Copilot token directory {:?}: {err}", token_dir);
+            warn!(
+                "Failed to create Copilot token directory {:?}: {err}",
+                token_dir
+            );
         }
 
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(300))
             .build()
-            .map_err(|e| anyhow::anyhow!("Failed to build reqwest Client for CopilotProvider: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to build reqwest Client for CopilotProvider: {e}")
+            })?;
 
         Ok(Self {
             github_token: github_token.filter(|s| !s.is_empty()).map(String::from),
@@ -210,44 +219,79 @@ impl CopilotProvider {
         let mut parts = Vec::with_capacity(image_refs.len() + 1);
         let trimmed = cleaned_text.trim();
         if !trimmed.is_empty() {
-            parts.push(ContentPart::Text { text: trimmed.to_string() });
+            parts.push(ContentPart::Text {
+                text: trimmed.to_string(),
+            });
         }
         for image_ref in image_refs {
-            parts.push(ContentPart::ImageUrl { image_url: ImageUrlDetail { url: image_ref } });
+            parts.push(ContentPart::ImageUrl {
+                image_url: ImageUrlDetail { url: image_ref },
+            });
         }
 
         Some(ApiContent::Parts(parts))
     }
 
     fn convert_messages(messages: &[ChatMessage]) -> Vec<ApiMessage> {
-        messages.iter().map(|m| {
-            if m.role == "assistant"
-                && let Ok(value) = serde_json::from_str::<serde_json::Value>(&m.content)
-                && let Some(tool_calls_value) = value.get("tool_calls")
-                && let Ok(parsed_calls) = serde_json::from_value::<Vec<ProviderToolCall>>(tool_calls_value.clone())
-            {
-                let tool_calls = parsed_calls.into_iter().map(|tc| NativeToolCall {
-                    id: Some(tc.id),
-                    kind: Some("function".to_string()),
-                    function: NativeFunctionCall { name: tc.name, arguments: tc.arguments },
-                }).collect();
-                let content = value.get("content").and_then(|v| v.as_str()).map(|s| ApiContent::Text(s.to_string()));
-                return ApiMessage { role: "assistant".to_string(), content, tool_call_id: None, tool_calls: Some(tool_calls) };
-            }
+        messages
+            .iter()
+            .map(|m| {
+                if m.role == "assistant"
+                    && let Ok(value) = serde_json::from_str::<serde_json::Value>(&m.content)
+                    && let Some(tool_calls_value) = value.get("tool_calls")
+                    && let Ok(parsed_calls) =
+                        serde_json::from_value::<Vec<ProviderToolCall>>(tool_calls_value.clone())
+                {
+                    let tool_calls = parsed_calls
+                        .into_iter()
+                        .map(|tc| NativeToolCall {
+                            id: Some(tc.id),
+                            kind: Some("function".to_string()),
+                            function: NativeFunctionCall {
+                                name: tc.name,
+                                arguments: tc.arguments,
+                            },
+                        })
+                        .collect();
+                    let content = value
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .map(|s| ApiContent::Text(s.to_string()));
+                    return ApiMessage {
+                        role: "assistant".to_string(),
+                        content,
+                        tool_call_id: None,
+                        tool_calls: Some(tool_calls),
+                    };
+                }
 
-            if m.role == "tool" && let Ok(value) = serde_json::from_str::<serde_json::Value>(&m.content) {
-                let tool_call_id = value.get("tool_call_id").and_then(|v| v.as_str()).map(ToString::to_string);
-                let content = value.get("content").and_then(|v| v.as_str()).map(|s| ApiContent::Text(s.to_string()));
-                return ApiMessage { role: "tool".to_string(), content, tool_call_id, tool_calls: None };
-            }
+                if m.role == "tool"
+                    && let Ok(value) = serde_json::from_str::<serde_json::Value>(&m.content)
+                {
+                    let tool_call_id = value
+                        .get("tool_call_id")
+                        .and_then(|v| v.as_str())
+                        .map(ToString::to_string);
+                    let content = value
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .map(|s| ApiContent::Text(s.to_string()));
+                    return ApiMessage {
+                        role: "tool".to_string(),
+                        content,
+                        tool_call_id,
+                        tool_calls: None,
+                    };
+                }
 
-            ApiMessage {
-                role: m.role.clone(),
-                content: Self::to_api_content(&m.role, &m.content),
-                tool_call_id: None,
-                tool_calls: None,
-            }
-        }).collect()
+                ApiMessage {
+                    role: m.role.clone(),
+                    content: Self::to_api_content(&m.role, &m.content),
+                    tool_call_id: None,
+                    tool_calls: None,
+                }
+            })
+            .collect()
     }
 
     async fn send_chat_request(
@@ -260,10 +304,18 @@ impl CopilotProvider {
         let (token, endpoint) = self.get_api_key().await?;
         let url = format!("{}/chat/completions", endpoint.trim_end_matches('/'));
 
-        let native_tools = tools.map(|ts| ts.iter().map(|t| NativeToolSpec {
-            kind: "function",
-            function: NativeToolFunctionSpec { name: &t.name, description: &t.description, parameters: &t.parameters },
-        }).collect::<Vec<_>>());
+        let native_tools = tools.map(|ts| {
+            ts.iter()
+                .map(|t| NativeToolSpec {
+                    kind: "function",
+                    function: NativeToolFunctionSpec {
+                        name: &t.name,
+                        description: &t.description,
+                        parameters: &t.parameters,
+                    },
+                })
+                .collect::<Vec<_>>()
+        });
 
         let request = ApiChatRequest {
             model: model.to_string(),
@@ -273,8 +325,14 @@ impl CopilotProvider {
             tools: native_tools,
         };
 
-        let mut req = self.client.post(&url).header("Authorization", format!("Bearer {token}")).json(&request);
-        for (h, v) in &Self::COPILOT_HEADERS { req = req.header(*h, *v); }
+        let mut req = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .json(&request);
+        for (h, v) in &Self::COPILOT_HEADERS {
+            req = req.header(*h, *v);
+        }
 
         let response = req.send().await?;
         if !response.status().is_success() {
@@ -289,29 +347,56 @@ impl CopilotProvider {
             output_tokens: u.completion_tokens,
             cached_input_tokens: None,
         });
-        let choice = api_response.choices.into_iter().next().ok_or_else(|| anyhow::anyhow!("No response from Copilot"))?;
+        let choice = api_response
+            .choices
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("No response from Copilot"))?;
 
-        let tool_calls = choice.message.tool_calls.unwrap_or_default().into_iter().map(|tc| ProviderToolCall {
-            id: tc.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-            name: tc.function.name,
-            arguments: tc.function.arguments,
-        }).collect();
+        let tool_calls = choice
+            .message
+            .tool_calls
+            .unwrap_or_default()
+            .into_iter()
+            .map(|tc| ProviderToolCall {
+                id: tc.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                name: tc.function.name,
+                arguments: tc.function.arguments,
+            })
+            .collect();
 
-        Ok(ProviderChatResponse { text: choice.message.content, tool_calls, usage, reasoning_content: None })
+        Ok(ProviderChatResponse {
+            text: choice.message.content,
+            tool_calls,
+            usage,
+            reasoning_content: None,
+        })
     }
 
     async fn get_api_key(&self) -> anyhow::Result<(String, String)> {
         let mut cached = self.refresh_lock.lock().await;
         let now = chrono::Utc::now().timestamp();
 
-        if let Some(c) = cached.as_ref() && now + 120 < c.expires_at {
+        if let Some(c) = cached.as_ref()
+            && now + 120 < c.expires_at
+        {
             return Ok((c.token.clone(), c.api_endpoint.clone()));
         }
 
-        if let Some(info) = self.load_api_key_from_disk().await && now + 120 < info.expires_at {
-            let endpoint = info.endpoints.as_ref().and_then(|e| e.api.clone()).unwrap_or_else(|| DEFAULT_API.to_string());
+        if let Some(info) = self.load_api_key_from_disk().await
+            && now + 120 < info.expires_at
+        {
+            let endpoint = info
+                .endpoints
+                .as_ref()
+                .and_then(|e| e.api.clone())
+                .unwrap_or_else(|| DEFAULT_API.to_string());
             let token = info.token.clone();
-            *cached = Some(CachedApiKey { token: token.clone(), api_endpoint: endpoint.clone(), expires_at: info.expires_at });
+            *cached = Some(CachedApiKey {
+                token: token.clone(),
+                api_endpoint: endpoint.clone(),
+                expires_at: info.expires_at,
+            });
             return Ok((token, endpoint));
         }
 
@@ -319,17 +404,29 @@ impl CopilotProvider {
         let info = self.exchange_for_api_key(&access_token).await?;
         self.save_api_key_to_disk(&info).await;
 
-        let endpoint = info.endpoints.as_ref().and_then(|e| e.api.clone()).unwrap_or_else(|| DEFAULT_API.to_string());
-        *cached = Some(CachedApiKey { token: info.token.clone(), api_endpoint: endpoint.clone(), expires_at: info.expires_at });
+        let endpoint = info
+            .endpoints
+            .as_ref()
+            .and_then(|e| e.api.clone())
+            .unwrap_or_else(|| DEFAULT_API.to_string());
+        *cached = Some(CachedApiKey {
+            token: info.token.clone(),
+            api_endpoint: endpoint.clone(),
+            expires_at: info.expires_at,
+        });
         Ok((info.token, endpoint))
     }
 
     async fn get_github_access_token(&self) -> anyhow::Result<String> {
-        if let Some(t) = &self.github_token { return Ok(t.clone()); }
+        if let Some(t) = &self.github_token {
+            return Ok(t.clone());
+        }
         let path = self.token_dir.join("access-token");
         if let Ok(cached) = tokio::fs::read_to_string(&path).await {
             let token = cached.trim();
-            if !token.is_empty() { return Ok(token.to_string()); }
+            if !token.is_empty() {
+                return Ok(token.to_string());
+            }
         }
         let token = self.device_code_login().await?;
         write_file_secure(&path, &token).await;
@@ -337,13 +434,25 @@ impl CopilotProvider {
     }
 
     async fn device_code_login(&self) -> anyhow::Result<String> {
-        let response: DeviceCodeResponse = self.client.post(GITHUB_DEVICE_CODE_URL).header("Accept", "application/json")
-            .json(&serde_json::json!({ "client_id": GITHUB_CLIENT_ID, "scope": "read:user" })).send().await?.error_for_status()?.json().await?;
+        let response: DeviceCodeResponse = self
+            .client
+            .post(GITHUB_DEVICE_CODE_URL)
+            .header("Accept", "application/json")
+            .json(&serde_json::json!({ "client_id": GITHUB_CLIENT_ID, "scope": "read:user" }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
 
         let mut poll_interval = Duration::from_secs(response.interval.max(5));
-        let expires_at = tokio::time::Instant::now() + Duration::from_secs(response.expires_in.max(1));
+        let expires_at =
+            tokio::time::Instant::now() + Duration::from_secs(response.expires_in.max(1));
 
-        eprintln!("\nGitHub Copilot authentication required.\nVisit: {}\nCode: {}\n", response.verification_uri, response.user_code);
+        eprintln!(
+            "\nGitHub Copilot authentication required.\nVisit: {}\nCode: {}\n",
+            response.verification_uri, response.user_code
+        );
 
         while tokio::time::Instant::now() < expires_at {
             tokio::time::sleep(poll_interval).await;
@@ -351,9 +460,13 @@ impl CopilotProvider {
                 .json(&serde_json::json!({ "client_id": GITHUB_CLIENT_ID, "device_code": response.device_code, "grant_type": "urn:ietf:params:oauth:grant-type:device_code" }))
                 .send().await?.json().await?;
 
-            if let Some(token) = token_response.access_token { return Ok(token); }
+            if let Some(token) = token_response.access_token {
+                return Ok(token);
+            }
             match token_response.error.as_deref() {
-                Some("slow_down") => { poll_interval += Duration::from_secs(5); }
+                Some("slow_down") => {
+                    poll_interval += Duration::from_secs(5);
+                }
                 Some("authorization_pending") | None => {}
                 Some(error) => anyhow::bail!("GitHub auth failed: {error}"),
             }
@@ -362,13 +475,20 @@ impl CopilotProvider {
     }
 
     async fn exchange_for_api_key(&self, access_token: &str) -> anyhow::Result<ApiKeyInfo> {
-        let mut req = self.client.get(GITHUB_API_KEY_URL).header("Authorization", format!("token {access_token}"));
-        for (h, v) in &Self::COPILOT_HEADERS { req = req.header(*h, *v); }
+        let mut req = self
+            .client
+            .get(GITHUB_API_KEY_URL)
+            .header("Authorization", format!("token {access_token}"));
+        for (h, v) in &Self::COPILOT_HEADERS {
+            req = req.header(*h, *v);
+        }
         let response = req.send().await?;
 
         if !response.status().is_success() {
             if response.status().as_u16() == 401 || response.status().as_u16() == 403 {
-                tokio::fs::remove_file(self.token_dir.join("access-token")).await.ok();
+                tokio::fs::remove_file(self.token_dir.join("access-token"))
+                    .await
+                    .ok();
             }
             anyhow::bail!("Failed to get Copilot API key: {}", response.status());
         }
@@ -393,39 +513,91 @@ async fn write_file_secure(path: &Path, content: &str) {
     let path = path.to_path_buf();
     let content = content.to_string();
     let _ = tokio::task::spawn_blocking(move || {
-        #[cfg(unix)] {
+        #[cfg(unix)]
+        {
             use std::io::Write;
             use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-            let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path)?;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&path)?;
             file.write_all(content.as_bytes())?;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
         }
-        #[cfg(not(unix))] { std::fs::write(&path, &content)?; }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&path, &content)?;
+        }
         Ok::<(), std::io::Error>(())
-    }).await;
+    })
+    .await;
 }
 
 #[async_trait]
 impl Provider for CopilotProvider {
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities { native_tool_calling: true, vision: true, prompt_caching: false }
+        ProviderCapabilities {
+            native_tool_calling: true,
+            vision: true,
+            prompt_caching: false,
+        }
     }
 
-    async fn chat_with_system(&self, system_prompt: Option<&str>, message: &str, model: &str, temperature: f64) -> anyhow::Result<String> {
+    async fn chat_with_system(
+        &self,
+        system_prompt: Option<&str>,
+        message: &str,
+        model: &str,
+        temperature: f64,
+    ) -> anyhow::Result<String> {
         let mut messages = Vec::new();
-        if let Some(s) = system_prompt { messages.push(ApiMessage { role: "system".to_string(), content: Some(ApiContent::Text(s.to_string())), tool_call_id: None, tool_calls: None }); }
-        messages.push(ApiMessage { role: "user".to_string(), content: Self::to_api_content("user", message), tool_call_id: None, tool_calls: None });
-        let resp = self.send_chat_request(messages, None, model, temperature).await?;
+        if let Some(s) = system_prompt {
+            messages.push(ApiMessage {
+                role: "system".to_string(),
+                content: Some(ApiContent::Text(s.to_string())),
+                tool_call_id: None,
+                tool_calls: None,
+            });
+        }
+        messages.push(ApiMessage {
+            role: "user".to_string(),
+            content: Self::to_api_content("user", message),
+            tool_call_id: None,
+            tool_calls: None,
+        });
+        let resp = self
+            .send_chat_request(messages, None, model, temperature)
+            .await?;
         Ok(resp.text.unwrap_or_default())
     }
 
-    async fn chat_with_history(&self, messages: &[ChatMessage], model: &str, temperature: f64) -> anyhow::Result<String> {
-        let resp = self.send_chat_request(Self::convert_messages(messages), None, model, temperature).await?;
+    async fn chat_with_history(
+        &self,
+        messages: &[ChatMessage],
+        model: &str,
+        temperature: f64,
+    ) -> anyhow::Result<String> {
+        let resp = self
+            .send_chat_request(Self::convert_messages(messages), None, model, temperature)
+            .await?;
         Ok(resp.text.unwrap_or_default())
     }
 
-    async fn chat(&self, request: ProviderChatRequest<'_>, model: &str, temperature: f64) -> anyhow::Result<ProviderChatResponse> {
-        self.send_chat_request(Self::convert_messages(request.messages), request.tools, model, temperature).await
+    async fn chat(
+        &self,
+        request: ProviderChatRequest<'_>,
+        model: &str,
+        temperature: f64,
+    ) -> anyhow::Result<ProviderChatResponse> {
+        self.send_chat_request(
+            Self::convert_messages(request.messages),
+            request.tools,
+            model,
+            temperature,
+        )
+        .await
     }
 
     async fn chat_with_tools(
@@ -447,8 +619,14 @@ impl Provider for CopilotProvider {
             "tool_choice": "auto"
         });
 
-        let mut req = self.client.post(&url).header("Authorization", format!("Bearer {token}")).json(&request);
-        for (h, v) in &Self::COPILOT_HEADERS { req = req.header(*h, *v); }
+        let mut req = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .json(&request);
+        for (h, v) in &Self::COPILOT_HEADERS {
+            req = req.header(*h, *v);
+        }
 
         let response = req.send().await?;
         if !response.status().is_success() {
@@ -463,14 +641,29 @@ impl Provider for CopilotProvider {
             output_tokens: u.completion_tokens,
             cached_input_tokens: None,
         });
-        let choice = api_response.choices.into_iter().next().ok_or_else(|| anyhow::anyhow!("No response from Copilot"))?;
+        let choice = api_response
+            .choices
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("No response from Copilot"))?;
 
-        let tool_calls = choice.message.tool_calls.unwrap_or_default().into_iter().map(|tc| ProviderToolCall {
-            id: tc.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-            name: tc.function.name,
-            arguments: tc.function.arguments,
-        }).collect();
+        let tool_calls = choice
+            .message
+            .tool_calls
+            .unwrap_or_default()
+            .into_iter()
+            .map(|tc| ProviderToolCall {
+                id: tc.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                name: tc.function.name,
+                arguments: tc.function.arguments,
+            })
+            .collect();
 
-        Ok(ProviderChatResponse { text: choice.message.content, tool_calls, usage, reasoning_content: None })
+        Ok(ProviderChatResponse {
+            text: choice.message.content,
+            tool_calls,
+            usage,
+            reasoning_content: None,
+        })
     }
 }

@@ -1,4 +1,6 @@
-use crate::traits::{ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities, TokenUsage};
+use crate::traits::{
+    ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities, TokenUsage,
+};
 use async_trait::async_trait;
 use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
@@ -153,7 +155,10 @@ impl Provider for ClaudeCodeProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let system = messages.iter().find(|m| m.role == "system").map(|m| m.content.as_str());
+        let system = messages
+            .iter()
+            .find(|m| m.role == "system")
+            .map(|m| m.content.as_str());
         let turns: Vec<&ChatMessage> = messages.iter().filter(|m| m.role != "system").collect();
 
         let user_message = if turns.len() <= 1 {
@@ -182,7 +187,9 @@ impl Provider for ClaudeCodeProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
-        let text = self.chat_with_history(request.messages, model, temperature).await?;
+        let text = self
+            .chat_with_history(request.messages, model, temperature)
+            .await?;
         Ok(ChatResponse {
             text: Some(text),
             tool_calls: Vec::new(),
@@ -198,6 +205,14 @@ impl Provider for ClaudeCodeProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
-        self.chat(ChatRequest { messages, tools: None }, model, temperature).await
+        self.chat(
+            ChatRequest {
+                messages,
+                tools: None,
+            },
+            model,
+            temperature,
+        )
+        .await
     }
 }

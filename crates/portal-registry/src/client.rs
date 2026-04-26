@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, mpsc, watch, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
@@ -145,14 +145,18 @@ impl PortalRegistryClient {
             .map_err(|_| anyhow::anyhow!("registry client connection is closed"))
     }
 
-    pub async fn search_skills(&self, query: String, limit: Option<i32>) -> anyhow::Result<SkillSearchResponse> {
+    pub async fn search_skills(
+        &self,
+        query: String,
+        limit: Option<i32>,
+    ) -> anyhow::Result<SkillSearchResponse> {
         let id = Uuid::new_v4().to_string();
         let payload = JsonRpcMessage::new_request(
             json!(id),
             "skill/search",
             serde_json::to_value(SkillSearchRequest { query, limit })?,
         );
-        
+
         let (tx, rx) = oneshot::channel::<JsonRpcMessage>();
         {
             let mut pending = self.pending_requests.lock().await;
@@ -164,7 +168,7 @@ impl PortalRegistryClient {
             let guard = self.outbound_tx.lock().await;
             guard.clone()
         };
-        
+
         let outbound = match outbound {
             Some(outbound) => outbound,
             None => {
@@ -193,7 +197,9 @@ impl PortalRegistryClient {
             return Err(anyhow::anyhow!("Skill search failed: {}", error.message));
         }
 
-        let result = response.result.ok_or_else(|| anyhow::anyhow!("no result in skill search response"))?;
+        let result = response
+            .result
+            .ok_or_else(|| anyhow::anyhow!("no result in skill search response"))?;
         Ok(serde_json::from_value(result)?)
     }
 

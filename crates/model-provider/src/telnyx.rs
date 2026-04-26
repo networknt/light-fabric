@@ -1,7 +1,5 @@
-use crate::traits::{
-    ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities,
-};
 use crate::compatible::CompatibleProvider;
+use crate::traits::{ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities};
 use async_trait::async_trait;
 
 pub struct TelnyxProvider {
@@ -35,7 +33,9 @@ impl Provider for TelnyxProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        self.inner.chat_with_system(system_prompt, message, model, temperature).await
+        self.inner
+            .chat_with_system(system_prompt, message, model, temperature)
+            .await
     }
 
     async fn chat_with_history(
@@ -44,7 +44,9 @@ impl Provider for TelnyxProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        self.inner.chat_with_history(messages, model, temperature).await
+        self.inner
+            .chat_with_history(messages, model, temperature)
+            .await
     }
 
     async fn chat(
@@ -63,6 +65,8 @@ impl Provider for TelnyxProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
-        self.inner.chat_with_tools(messages, tools, model, temperature).await
+        self.inner
+            .chat_with_tools(messages, tools, model, temperature)
+            .await
     }
 }

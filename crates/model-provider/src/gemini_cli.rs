@@ -1,4 +1,6 @@
-use crate::traits::{ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities, TokenUsage};
+use crate::traits::{
+    ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities, TokenUsage,
+};
 use async_trait::async_trait;
 use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
@@ -59,7 +61,10 @@ impl GeminiCliProvider {
         cmd.stderr(std::process::Stdio::piped());
 
         let mut child = cmd.spawn().map_err(|err| {
-            anyhow::anyhow!("Failed to spawn Gemini CLI binary at {}: {err}", self.binary_path.display())
+            anyhow::anyhow!(
+                "Failed to spawn Gemini CLI binary at {}: {err}",
+                self.binary_path.display()
+            )
         })?;
 
         if let Some(mut stdin) = child.stdin.take() {
@@ -114,9 +119,18 @@ impl Provider for GeminiCliProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let system = messages.iter().find(|m| m.role == "system").map(|m| m.content.as_str());
-        let last_user = messages.iter().rev().find(|m| m.role == "user").map(|m| m.content.as_str()).unwrap_or("");
-        self.chat_with_system(system, last_user, model, temperature).await
+        let system = messages
+            .iter()
+            .find(|m| m.role == "system")
+            .map(|m| m.content.as_str());
+        let last_user = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "user")
+            .map(|m| m.content.as_str())
+            .unwrap_or("");
+        self.chat_with_system(system, last_user, model, temperature)
+            .await
     }
 
     async fn chat(
@@ -125,7 +139,9 @@ impl Provider for GeminiCliProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
-        let text = self.chat_with_history(request.messages, model, temperature).await?;
+        let text = self
+            .chat_with_history(request.messages, model, temperature)
+            .await?;
         Ok(ChatResponse {
             text: Some(text),
             tool_calls: Vec::new(),
@@ -141,6 +157,14 @@ impl Provider for GeminiCliProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
-        self.chat(ChatRequest { messages, tools: None }, model, temperature).await
+        self.chat(
+            ChatRequest {
+                messages,
+                tools: None,
+            },
+            model,
+            temperature,
+        )
+        .await
     }
 }

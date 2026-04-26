@@ -115,7 +115,9 @@ impl CompatibleProvider {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(300))
             .build()
-            .map_err(|e| anyhow::anyhow!("Failed to build reqwest Client for CompatibleProvider: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to build reqwest Client for CompatibleProvider: {e}")
+            })?;
 
         Ok(Self {
             name: name.to_string(),
@@ -232,7 +234,8 @@ impl CompatibleProvider {
             max_tokens: self.max_tokens,
         };
 
-        let mut request = self.client
+        let mut request = self
+            .client
             .post(format!("{}/chat/completions", self.base_url))
             .json(&native_request);
 
@@ -306,7 +309,9 @@ impl Provider for CompatibleProvider {
             messages.push(ChatMessage::system(sys));
         }
         messages.push(ChatMessage::user(message));
-        let resp = self.chat_with_history(&messages, model, temperature).await?;
+        let resp = self
+            .chat_with_history(&messages, model, temperature)
+            .await?;
         Ok(resp)
     }
 
@@ -316,8 +321,18 @@ impl Provider for CompatibleProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let resp = self.chat(ProviderChatRequest { messages, tools: None }, model, temperature).await?;
-        resp.text.ok_or_else(|| anyhow::anyhow!("No text response from {}", self.name))
+        let resp = self
+            .chat(
+                ProviderChatRequest {
+                    messages,
+                    tools: None,
+                },
+                model,
+                temperature,
+            )
+            .await?;
+        resp.text
+            .ok_or_else(|| anyhow::anyhow!("No text response from {}", self.name))
     }
 
     async fn chat(
@@ -328,7 +343,8 @@ impl Provider for CompatibleProvider {
     ) -> anyhow::Result<ProviderChatResponse> {
         let native_messages = Self::convert_messages(request.messages);
         let native_tools = Self::convert_tools(request.tools);
-        self.send_request(native_messages, model, temperature, native_tools).await
+        self.send_request(native_messages, model, temperature, native_tools)
+            .await
     }
 
     async fn chat_with_tools(
@@ -345,10 +361,14 @@ impl Provider for CompatibleProvider {
             Some(
                 tools
                     .iter()
-                    .map(|t| serde_json::from_value(t.clone()).map_err(|e| anyhow::anyhow!("Invalid tool spec: {e}")))
+                    .map(|t| {
+                        serde_json::from_value(t.clone())
+                            .map_err(|e| anyhow::anyhow!("Invalid tool spec: {e}"))
+                    })
                     .collect::<Result<Vec<NativeToolSpec>, _>>()?,
             )
         };
-        self.send_request(native_messages, model, temperature, native_tools).await
+        self.send_request(native_messages, model, temperature, native_tools)
+            .await
     }
 }

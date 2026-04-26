@@ -1,6 +1,4 @@
-use crate::traits::{
-    ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities,
-};
+use crate::traits::{ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use tracing::{info, warn};
@@ -37,7 +35,11 @@ impl RouterProvider {
                 match index {
                     Some(i) => Some((hint, (i, route.model))),
                     None => {
-                        warn!(hint = hint, provider = route.provider_name, "Route references unknown provider, skipping");
+                        warn!(
+                            hint = hint,
+                            provider = route.provider_name,
+                            "Route references unknown provider, skipping"
+                        );
                         None
                     }
                 }
@@ -57,7 +59,10 @@ impl RouterProvider {
             if let Some((idx, resolved_model)) = self.routes.get(hint) {
                 return (*idx, resolved_model.clone());
             }
-            warn!(hint = hint, "Unknown route hint, falling back to default provider");
+            warn!(
+                hint = hint,
+                "Unknown route hint, falling back to default provider"
+            );
             return (self.default_index, self.default_model.clone());
         }
         (self.default_index, model.to_string())
@@ -67,7 +72,10 @@ impl RouterProvider {
 #[async_trait]
 impl Provider for RouterProvider {
     fn capabilities(&self) -> ProviderCapabilities {
-        self.providers.get(self.default_index).map(|(_, p)| p.capabilities()).unwrap_or_default()
+        self.providers
+            .get(self.default_index)
+            .map(|(_, p)| p.capabilities())
+            .unwrap_or_default()
     }
 
     async fn chat_with_system(
@@ -79,8 +87,14 @@ impl Provider for RouterProvider {
     ) -> anyhow::Result<String> {
         let (idx, resolved_model) = self.resolve(model);
         let (name, provider) = &self.providers[idx];
-        info!(provider = name, model = resolved_model, "Router dispatching request");
-        provider.chat_with_system(system_prompt, message, &resolved_model, temperature).await
+        info!(
+            provider = name,
+            model = resolved_model,
+            "Router dispatching request"
+        );
+        provider
+            .chat_with_system(system_prompt, message, &resolved_model, temperature)
+            .await
     }
 
     async fn chat_with_history(
@@ -91,7 +105,9 @@ impl Provider for RouterProvider {
     ) -> anyhow::Result<String> {
         let (idx, resolved_model) = self.resolve(model);
         let (_, provider) = &self.providers[idx];
-        provider.chat_with_history(messages, &resolved_model, temperature).await
+        provider
+            .chat_with_history(messages, &resolved_model, temperature)
+            .await
     }
 
     async fn chat(
@@ -114,7 +130,9 @@ impl Provider for RouterProvider {
     ) -> anyhow::Result<ChatResponse> {
         let (idx, resolved_model) = self.resolve(model);
         let (_, provider) = &self.providers[idx];
-        provider.chat_with_tools(messages, tools, &resolved_model, temperature).await
+        provider
+            .chat_with_tools(messages, tools, &resolved_model, temperature)
+            .await
     }
 }
 

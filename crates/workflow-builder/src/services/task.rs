@@ -35,6 +35,28 @@ impl GenericTaskDefinitionBuilder {
         }
     }
 
+    /// Configures the task to ask for human input.
+    pub fn ask(&mut self, prompt: &str) -> &mut AskTaskDefinitionBuilder {
+        let builder = AskTaskDefinitionBuilder::new(prompt);
+        self.builder = Some(TaskDefinitionBuilder::Ask(builder));
+        if let Some(TaskDefinitionBuilder::Ask(ref mut builder)) = self.builder {
+            builder
+        } else {
+            unreachable!("Builder should always be set to Ask");
+        }
+    }
+
+    /// Configures the task to assert a value.
+    pub fn assert(&mut self) -> &mut AssertTaskDefinitionBuilder {
+        let builder = AssertTaskDefinitionBuilder::new();
+        self.builder = Some(TaskDefinitionBuilder::Assert(builder));
+        if let Some(TaskDefinitionBuilder::Assert(ref mut builder)) = self.builder {
+            builder
+        } else {
+            unreachable!("Builder should always be set to Assert");
+        }
+    }
+
     /// Configures the task to perform subtasks sequentially
     pub fn do_(&mut self) -> &mut DoTaskDefinitionBuilder {
         let builder = DoTaskDefinitionBuilder::new();
@@ -169,6 +191,8 @@ impl GenericTaskDefinitionBuilder {
     pub fn build(self) -> TaskDefinition {
         if let Some(builder) = self.builder {
             match builder {
+                TaskDefinitionBuilder::Ask(builder) => builder.build(),
+                TaskDefinitionBuilder::Assert(builder) => builder.build(),
                 TaskDefinitionBuilder::Call(builder) => builder.build(),
                 TaskDefinitionBuilder::Do(builder) => builder.build(),
                 TaskDefinitionBuilder::Emit(builder) => builder.build(),
@@ -190,6 +214,8 @@ impl GenericTaskDefinitionBuilder {
 
 /// Enumerates all supported task definition builders
 pub enum TaskDefinitionBuilder {
+    Ask(AskTaskDefinitionBuilder),
+    Assert(AssertTaskDefinitionBuilder),
     Call(CalltaskDefinitionBuilder),
     Do(DoTaskDefinitionBuilder),
     Emit(EmitTaskDefinitionBuilder),
@@ -237,6 +263,105 @@ pub trait TaskDefinitionBuilderBase {
 
     /// Builds the configured TaskDefinition
     fn build(self) -> TaskDefinition;
+}
+
+/// Represents the service used to build AskTaskDefinitions.
+pub struct AskTaskDefinitionBuilder {
+    task: AskTaskDefinition,
+}
+
+impl AskTaskDefinitionBuilder {
+    pub fn new(prompt: &str) -> Self {
+        Self {
+            task: AskTaskDefinition {
+                ask: AskDefinition {
+                    prompt: prompt.to_string(),
+                    ..AskDefinition::default()
+                },
+                common: TaskDefinitionFields::default(),
+            },
+        }
+    }
+
+    pub fn mode(&mut self, mode: &str) -> &mut Self {
+        self.task.ask.mode = Some(mode.to_string());
+        self
+    }
+
+    pub fn option(&mut self, label: &str, value: Value) -> &mut Self {
+        if self.task.ask.options.is_none() {
+            self.task.ask.options = Some(Vec::new());
+        }
+        if let Some(options) = &mut self.task.ask.options {
+            options.push(AskOption::Option {
+                label: label.to_string(),
+                value,
+                description: None,
+            });
+        }
+        self
+    }
+
+    pub fn then(&mut self, directive: &str) -> &mut Self {
+        self.task.common.then = Some(directive.to_string());
+        self
+    }
+
+    pub fn build(self) -> TaskDefinition {
+        TaskDefinition::Ask(self.task)
+    }
+}
+
+/// Represents the service used to build AssertTaskDefinitions.
+pub struct AssertTaskDefinitionBuilder {
+    task: AssertTaskDefinition,
+}
+
+impl AssertTaskDefinitionBuilder {
+    pub fn new() -> Self {
+        Self {
+            task: AssertTaskDefinition::default(),
+        }
+    }
+
+    pub fn value(&mut self, value: Value) -> &mut Self {
+        self.task.assert.value = Some(value);
+        self
+    }
+
+    pub fn equals(&mut self, value: Value) -> &mut Self {
+        self.task.assert.equals = Some(value);
+        self
+    }
+
+    pub fn contains(&mut self, value: Value) -> &mut Self {
+        self.task.assert.contains = Some(value);
+        self
+    }
+
+    pub fn exists(&mut self, value: bool) -> &mut Self {
+        self.task.assert.exists = Some(value);
+        self
+    }
+
+    pub fn json_path(&mut self, path: &str, comparison: AssertComparison) -> &mut Self {
+        if self.task.assert.json.is_none() {
+            self.task.assert.json = Some(HashMap::new());
+        }
+        if let Some(json) = &mut self.task.assert.json {
+            json.insert(path.to_string(), comparison);
+        }
+        self
+    }
+
+    pub fn then(&mut self, directive: &str) -> &mut Self {
+        self.task.common.then = Some(directive.to_string());
+        self
+    }
+
+    pub fn build(self) -> TaskDefinition {
+        TaskDefinition::Assert(self.task)
+    }
 }
 
 /// Represents the service used to build CallTaskDefinitions

@@ -3,11 +3,8 @@ pub mod models;
 #[cfg(test)]
 mod unit_tests {
 
-    use crate::models::authentication::*;
     use crate::models::duration::*;
     use crate::models::map::*;
-    use crate::models::resource::*;
-    use crate::models::retry::*;
     use crate::models::task::*;
     use crate::models::workflow::*;
     use serde_json::json;
@@ -500,5 +497,99 @@ mod unit_tests {
                 panic!("Failed to deserialize workflow with extension: {}", e);
             }
         }
+    }
+
+    #[test]
+    fn test_ask_assert_jsonrpc_and_mcp_deserialization() {
+        let workflow_json = json!({
+            "document": {
+                "dsl": "0.10.0",
+                "namespace": "test",
+                "name": "agentic",
+                "version": "0.1.0"
+            },
+            "use": {
+                "mcpSessions": {
+                    "gateway": {
+                        "server": "gatewayMcp",
+                        "reuse": true
+                    }
+                }
+            },
+            "do": [
+                {
+                    "ask-authz": {
+                        "ask": {
+                            "prompt": "Configure endpoint authorization?",
+                            "mode": "choice",
+                            "options": [
+                                { "label": "Skip", "value": "skip" }
+                            ]
+                        },
+                        "export": {
+                            "as": {
+                                "authzChoice": "${ .result }"
+                            }
+                        }
+                    }
+                },
+                {
+                    "register-api": {
+                        "call": "jsonrpc",
+                        "with": {
+                            "endpoint": "http://localhost:6881/rpc",
+                            "method": "api.register",
+                            "params": { "name": "Petstore" },
+                            "errorPolicy": {
+                                "throw": true,
+                                "includeResponse": true
+                            }
+                        },
+                        "idempotencyKey": "${ .apiName }"
+                    }
+                },
+                {
+                    "verify-api": {
+                        "assert": {
+                            "json": {
+                                "$.apiId": { "exists": true },
+                                "$.roles": { "hasLength": { "gte": 1 } }
+                            }
+                        }
+                    }
+                },
+                {
+                    "call-tool": {
+                        "call": "mcp",
+                        "with": {
+                            "session": "gateway",
+                            "tool": "petstore_getPet",
+                            "arguments": { "petId": 1001 }
+                        }
+                    }
+                }
+            ]
+        });
+
+        let workflow: WorkflowDefinition = serde_json::from_value(workflow_json).unwrap();
+        assert!(workflow.use_.unwrap().mcp_sessions.is_some());
+
+        let first = workflow.do_.entries[0].get("ask-authz").unwrap();
+        assert!(matches!(first, TaskDefinition::Ask(_)));
+
+        let second = workflow.do_.entries[1].get("register-api").unwrap();
+        assert!(matches!(
+            second,
+            TaskDefinition::Call(CallTaskDefinition::JsonRpc(_))
+        ));
+
+        let third = workflow.do_.entries[2].get("verify-api").unwrap();
+        assert!(matches!(third, TaskDefinition::Assert(_)));
+
+        let fourth = workflow.do_.entries[3].get("call-tool").unwrap();
+        assert!(matches!(
+            fourth,
+            TaskDefinition::Call(CallTaskDefinition::Mcp(_))
+        ));
     }
 }

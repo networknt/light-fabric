@@ -146,7 +146,9 @@ impl AnthropicProvider {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(300))
             .build()
-            .map_err(|e| anyhow::anyhow!("Failed to build reqwest Client for AnthropicProvider: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to build reqwest Client for AnthropicProvider: {e}")
+            })?;
 
         Ok(Self {
             base_url: base_url
@@ -185,7 +187,9 @@ impl AnthropicProvider {
         Some(native_tools)
     }
 
-    async fn convert_messages(messages: &[ChatMessage]) -> (Option<SystemPrompt>, Vec<NativeMessage>) {
+    async fn convert_messages(
+        messages: &[ChatMessage],
+    ) -> (Option<SystemPrompt>, Vec<NativeMessage>) {
         let mut system_text = None;
         let mut native_messages = Vec::new();
 
@@ -199,21 +203,41 @@ impl AnthropicProvider {
                 "assistant" => {
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&msg.content)
                         && let Some(tool_calls_value) = value.get("tool_calls")
-                        && let Ok(parsed_calls) = serde_json::from_value::<Vec<ProviderToolCall>>(tool_calls_value.clone())
+                        && let Ok(parsed_calls) = serde_json::from_value::<Vec<ProviderToolCall>>(
+                            tool_calls_value.clone(),
+                        )
                     {
                         let mut blocks = Vec::new();
-                        if let Some(text) = value.get("content").and_then(Value::as_str).filter(|t| !t.is_empty()) {
-                            blocks.push(NativeContentOut::Text { text: text.to_string(), cache_control: None });
+                        if let Some(text) = value
+                            .get("content")
+                            .and_then(Value::as_str)
+                            .filter(|t| !t.is_empty())
+                        {
+                            blocks.push(NativeContentOut::Text {
+                                text: text.to_string(),
+                                cache_control: None,
+                            });
                         }
                         for call in parsed_calls {
-                            let input = serde_json::from_str(&call.arguments).unwrap_or_else(|_| serde_json::json!({}));
-                            blocks.push(NativeContentOut::ToolUse { id: call.id, name: call.name, input });
+                            let input = serde_json::from_str(&call.arguments)
+                                .unwrap_or_else(|_| serde_json::json!({}));
+                            blocks.push(NativeContentOut::ToolUse {
+                                id: call.id,
+                                name: call.name,
+                                input,
+                            });
                         }
-                        native_messages.push(NativeMessage { role: "assistant".to_string(), content: blocks });
+                        native_messages.push(NativeMessage {
+                            role: "assistant".to_string(),
+                            content: blocks,
+                        });
                     } else if !msg.content.trim().is_empty() {
                         native_messages.push(NativeMessage {
                             role: "assistant".to_string(),
-                            content: vec![NativeContentOut::Text { text: msg.content.clone(), cache_control: None }],
+                            content: vec![NativeContentOut::Text {
+                                text: msg.content.clone(),
+                                cache_control: None,
+                            }],
                         });
                     }
                 }
@@ -221,7 +245,11 @@ impl AnthropicProvider {
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&msg.content)
                         && let Some(tool_use_id) = value.get("tool_call_id").and_then(Value::as_str)
                     {
-                        let content = value.get("content").and_then(Value::as_str).unwrap_or("").to_string();
+                        let content = value
+                            .get("content")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
                         let tool_msg = NativeMessage {
                             role: "user".to_string(),
                             content: vec![NativeContentOut::ToolResult {
@@ -231,7 +259,11 @@ impl AnthropicProvider {
                             }],
                         };
                         if native_messages.last().is_some_and(|m| m.role == "user") {
-                            native_messages.last_mut().unwrap().content.extend(tool_msg.content);
+                            native_messages
+                                .last_mut()
+                                .unwrap()
+                                .content
+                                .extend(tool_msg.content);
                         } else {
                             native_messages.push(tool_msg);
                         }
@@ -242,7 +274,9 @@ impl AnthropicProvider {
                     let mut content_blocks = Vec::new();
 
                     for img_ref in &image_refs {
-                        if let Some(payload) = crate::multimodal::extract_anthropic_image_payload(img_ref).await {
+                        if let Some(payload) =
+                            crate::multimodal::extract_anthropic_image_payload(img_ref).await
+                        {
                             content_blocks.push(NativeContentOut::Image {
                                 source: ImageSource {
                                     source_type: "base64".to_string(),
@@ -254,15 +288,28 @@ impl AnthropicProvider {
                     }
 
                     if !text.trim().is_empty() {
-                        content_blocks.push(NativeContentOut::Text { text, cache_control: None });
+                        content_blocks.push(NativeContentOut::Text {
+                            text,
+                            cache_control: None,
+                        });
                     } else if content_blocks.is_empty() {
-                        content_blocks.push(NativeContentOut::Text { text: String::new(), cache_control: None });
+                        content_blocks.push(NativeContentOut::Text {
+                            text: String::new(),
+                            cache_control: None,
+                        });
                     }
 
                     if native_messages.last().is_some_and(|m| m.role == "user") {
-                        native_messages.last_mut().unwrap().content.extend(content_blocks);
+                        native_messages
+                            .last_mut()
+                            .unwrap()
+                            .content
+                            .extend(content_blocks);
                     } else {
-                        native_messages.push(NativeMessage { role: "user".to_string(), content: content_blocks });
+                        native_messages.push(NativeMessage {
+                            role: "user".to_string(),
+                            content: content_blocks,
+                        });
                     }
                 }
                 _ => {}
@@ -280,7 +327,8 @@ impl AnthropicProvider {
         if let Some(last_user_msg) = native_messages.iter_mut().rev().find(|m| m.role == "user") {
             if let Some(last_block) = last_user_msg.content.last_mut() {
                 match last_block {
-                    NativeContentOut::Text { cache_control, .. } | NativeContentOut::ToolResult { cache_control, .. } => {
+                    NativeContentOut::Text { cache_control, .. }
+                    | NativeContentOut::ToolResult { cache_control, .. } => {
                         *cache_control = Some(CacheControl::ephemeral());
                     }
                     _ => {}
@@ -299,7 +347,10 @@ impl AnthropicProvider {
         temperature: f64,
         tools: Option<Vec<NativeToolSpec<'_>>>,
     ) -> anyhow::Result<ProviderChatResponse> {
-        let api_key = self.api_key.as_ref().ok_or_else(|| anyhow::anyhow!("Anthropic API key not set."))?;
+        let api_key = self
+            .api_key
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Anthropic API key not set."))?;
 
         let native_request = NativeChatRequest {
             model: model.to_string(),
@@ -311,7 +362,8 @@ impl AnthropicProvider {
             tool_choice: None,
         };
 
-        let response = self.client
+        let response = self
+            .client
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
@@ -338,7 +390,11 @@ impl AnthropicProvider {
 
         for block in native_response.content {
             match block.kind.as_str() {
-                "text" => if let Some(t) = block.text { text_parts.push(t); }
+                "text" => {
+                    if let Some(t) = block.text {
+                        text_parts.push(t);
+                    }
+                }
                 "tool_use" => {
                     let name = block.name.unwrap_or_default();
                     let input = block.input.unwrap_or_else(|| serde_json::json!({}));
@@ -383,7 +439,9 @@ impl Provider for AnthropicProvider {
             messages.push(ChatMessage::system(sys));
         }
         messages.push(ChatMessage::user(message));
-        let resp = self.chat_with_history(&messages, model, temperature).await?;
+        let resp = self
+            .chat_with_history(&messages, model, temperature)
+            .await?;
         Ok(resp)
     }
 
@@ -393,8 +451,18 @@ impl Provider for AnthropicProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let resp = self.chat(ProviderChatRequest { messages, tools: None }, model, temperature).await?;
-        resp.text.ok_or_else(|| anyhow::anyhow!("No text response from Anthropic"))
+        let resp = self
+            .chat(
+                ProviderChatRequest {
+                    messages,
+                    tools: None,
+                },
+                model,
+                temperature,
+            )
+            .await?;
+        resp.text
+            .ok_or_else(|| anyhow::anyhow!("No text response from Anthropic"))
     }
 
     async fn chat(
@@ -405,7 +473,8 @@ impl Provider for AnthropicProvider {
     ) -> anyhow::Result<ProviderChatResponse> {
         let (system, messages) = Self::convert_messages(request.messages).await;
         let tools = Self::convert_tools(request.tools);
-        self.send_request(system, messages, model, temperature, tools).await
+        self.send_request(system, messages, model, temperature, tools)
+            .await
     }
 
     async fn chat_with_tools(
@@ -424,7 +493,8 @@ impl Provider for AnthropicProvider {
                     .iter()
                     .map(|t| {
                         let name = t.get("name").and_then(Value::as_str).unwrap_or("");
-                        let description = t.get("description").and_then(Value::as_str).unwrap_or("");
+                        let description =
+                            t.get("description").and_then(Value::as_str).unwrap_or("");
                         let parameters = t.get("parameters").unwrap_or(&Value::Null);
                         Ok(NativeToolSpec {
                             name,
@@ -436,6 +506,7 @@ impl Provider for AnthropicProvider {
                     .collect::<Result<Vec<_>, anyhow::Error>>()?,
             )
         };
-        self.send_request(system, messages, model, temperature, native_tools).await
+        self.send_request(system, messages, model, temperature, native_tools)
+            .await
     }
 }
