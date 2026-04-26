@@ -38,11 +38,14 @@ fn build_test_config() -> (RuleConfig, Arc<RuleEngine>) {
     let rule_access = Rule {
         rule_id: "rule_access_01".into(),
         rule_desc: Some("Check if user is admin".into()),
+        version: None,
+        author: None,
+        updated_at: None,
         conditions: Some(vec![RuleCondition {
             condition_id: None,
             operator: Some("==".into()),
             operand: Some("role".into()),
-            expected: Some("admin".into()),
+            expected: Some(json!("admin")),
             join_code: None,
         }]),
         actions: Some(vec![RuleAction {
@@ -55,11 +58,14 @@ fn build_test_config() -> (RuleConfig, Arc<RuleEngine>) {
     let rule_bad_access = Rule {
         rule_id: "rule_access_02".into(),
         rule_desc: Some("Check if client is verified".into()),
+        version: None,
+        author: None,
+        updated_at: None,
         conditions: Some(vec![RuleCondition {
             condition_id: None,
             operator: Some("==".into()),
             operand: Some("client_status".into()),
-            expected: Some("verified".into()),
+            expected: Some(json!("verified")),
             join_code: None,
         }]),
         actions: None,
@@ -151,4 +157,102 @@ async fn test_sequential_logic_all() {
         context.get("last_message").unwrap().as_str().unwrap(),
         "Access Granted"
     );
+}
+
+#[tokio::test]
+async fn test_typed_expected_values_and_expanded_operators() {
+    let mut registry = ActionRegistry::new();
+    registry.register("com.networknt.rule.MockAction", Arc::new(MockAction));
+    let engine = RuleEngine::new(Arc::new(registry));
+
+    let rule = Rule {
+        rule_id: "rule_typed_01".into(),
+        rule_desc: Some("Check typed condition operators".into()),
+        version: Some("1.1.0".into()),
+        author: Some("test".into()),
+        updated_at: None,
+        conditions: Some(vec![
+            RuleCondition {
+                condition_id: Some("age".into()),
+                operator: Some(">=".into()),
+                operand: Some("user.age".into()),
+                expected: Some(json!(18)),
+                join_code: None,
+            },
+            RuleCondition {
+                condition_id: Some("active".into()),
+                operator: Some("==".into()),
+                operand: Some("/user/active".into()),
+                expected: Some(json!(true)),
+                join_code: Some("AND".into()),
+            },
+            RuleCondition {
+                condition_id: Some("roles".into()),
+                operator: Some("contains".into()),
+                operand: Some("$.user.roles".into()),
+                expected: Some(json!("admin")),
+                join_code: Some("AND".into()),
+            },
+            RuleCondition {
+                condition_id: Some("email".into()),
+                operator: Some("endsWith".into()),
+                operand: Some("user.email".into()),
+                expected: Some(json!("@lightapi.net")),
+                join_code: Some("AND".into()),
+            },
+            RuleCondition {
+                condition_id: Some("missing".into()),
+                operator: Some("notExists".into()),
+                operand: Some("user.deletedAt".into()),
+                expected: None,
+                join_code: Some("AND".into()),
+            },
+        ]),
+        actions: None,
+    };
+
+    let mut context = json!({
+        "user": {
+            "age": 21,
+            "active": true,
+            "roles": ["admin", "user"],
+            "email": "steve.hu@lightapi.net"
+        }
+    });
+
+    assert!(engine.execute_rule(&rule, &mut context).await.unwrap());
+}
+
+#[tokio::test]
+async fn test_join_code_left_to_right_or() {
+    let registry = ActionRegistry::new();
+    let engine = RuleEngine::new(Arc::new(registry));
+
+    let rule = Rule {
+        rule_id: "rule_join_01".into(),
+        rule_desc: Some("Check left-to-right OR join".into()),
+        version: None,
+        author: None,
+        updated_at: None,
+        conditions: Some(vec![
+            RuleCondition {
+                condition_id: Some("first".into()),
+                operator: Some("==".into()),
+                operand: Some("role".into()),
+                expected: Some(json!("admin")),
+                join_code: None,
+            },
+            RuleCondition {
+                condition_id: Some("second".into()),
+                operator: Some("==".into()),
+                operand: Some("role".into()),
+                expected: Some(json!("operator")),
+                join_code: Some("OR".into()),
+            },
+        ]),
+        actions: None,
+    };
+
+    let mut context = json!({ "role": "operator" });
+    assert!(engine.execute_rule(&rule, &mut context).await.unwrap());
 }

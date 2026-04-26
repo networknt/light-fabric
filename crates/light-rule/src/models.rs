@@ -26,6 +26,9 @@ pub enum EndpointConfig {
 pub struct Rule {
     pub rule_id: String,
     pub rule_desc: Option<String>,
+    pub version: Option<String>,
+    pub author: Option<String>,
+    pub updated_at: Option<String>,
     pub conditions: Option<Vec<RuleCondition>>,
     pub actions: Option<Vec<RuleAction>>,
 }
@@ -37,7 +40,7 @@ pub struct RuleCondition {
     pub condition_id: Option<String>,
     pub operator: Option<String>,
     pub operand: Option<String>,
-    pub expected: Option<String>,
+    pub expected: Option<Value>,
     pub join_code: Option<String>, // AND, OR
 }
 
