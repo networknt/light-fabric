@@ -23,7 +23,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl && \
     groupadd --system gateway && \
     useradd --system --gid gateway --home-dir /app --shell /usr/sbin/nologin gateway && \
-    mkdir -p /app /config && \
+    mkdir -p /app /config /app/config-cache && \
     ln -s /config /app/config && \
     chown -R gateway:gateway /app /config && \
     rm -rf /var/lib/apt/lists/*

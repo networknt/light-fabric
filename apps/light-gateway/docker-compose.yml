@@ -14,9 +14,13 @@ services:
       - "8443:8443"
     volumes:
       - ./config:/config
+      - light-gateway-config-cache:/app/config-cache
     networks:
       - portal-net
 
 networks:
   portal-net:
     driver: bridge
+
+volumes:
+  light-gateway-config-cache:

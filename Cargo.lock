@@ -1827,6 +1827,7 @@ dependencies = [
  "pingora",
  "serde",
  "serde_yaml",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

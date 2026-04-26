@@ -8,14 +8,15 @@ use pingora::http::ResponseHeader;
 use pingora::prelude::{HttpPeer, ProxyHttp, Session};
 use serde::Deserialize;
 use std::net::ToSocketAddrs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-const VALUES_FILE: &str = "values.yml";
 const GATEWAY_FILE: &str = "gateway.yml";
+const CONFIG_DIR: &str = "config";
+const EXTERNAL_CONFIG_DIR: &str = "config-cache";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -171,7 +172,8 @@ async fn main() -> Result<()> {
     init_tracing();
 
     let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp))
-        .with_config_dir("config")
+        .with_config_dir(CONFIG_DIR)
+        .with_external_config_dir(EXTERNAL_CONFIG_DIR)
         .build();
 
     let running = runtime
@@ -192,9 +194,9 @@ async fn main() -> Result<()> {
 }
 
 fn load_gateway_config(config: &RuntimeConfig) -> Result<GatewayConfig, RuntimeError> {
-    let values = load_values(&config.config_dir, &config.external_config_dir)?;
     let password = std::env::var("light_4j_config_password").ok();
-    let loader = ConfigLoader::from_values(values, password.as_deref(), None)?;
+    let loader =
+        ConfigLoader::from_values(config.resolved_values.clone(), password.as_deref(), None)?;
 
     let mut paths = Vec::new();
     let base_path = config.config_dir.join(GATEWAY_FILE);
@@ -213,25 +215,6 @@ fn load_gateway_config(config: &RuntimeConfig) -> Result<GatewayConfig, RuntimeE
     serde_yaml::from_value(merged).map_err(RuntimeError::Yaml)
 }
 
-fn load_values(
-    config_dir: &Path,
-    external_config_dir: &Path,
-) -> Result<std::collections::HashMap<String, serde_yaml::Value>, RuntimeError> {
-    let mut values = std::collections::HashMap::new();
-    for path in [
-        config_dir.join(VALUES_FILE),
-        external_config_dir.join(VALUES_FILE),
-    ] {
-        if path.exists() {
-            let content = std::fs::read_to_string(path)?;
-            let parsed: std::collections::HashMap<String, serde_yaml::Value> =
-                serde_yaml::from_str(&content)?;
-            values.extend(parsed);
-        }
-    }
-    Ok(values)
-}
-
 fn default_health_path() -> String {
     "/health".to_string()
 }
@@ -239,4 +222,95 @@ fn default_health_path() -> String {
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use light_runtime::config::ClientConfig;
+    use light_runtime::{BootstrapConfig, PortalRegistryConfig, ServerConfig, ServiceIdentity};
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    fn runtime_config(
+        config_dir: &TempDir,
+        external_config_dir: &TempDir,
+        resolved_values: HashMap<String, serde_yaml::Value>,
+    ) -> RuntimeConfig {
+        RuntimeConfig {
+            bootstrap: BootstrapConfig::default(),
+            server: ServerConfig::default(),
+            client: None::<ClientConfig>,
+            portal_registry: None::<PortalRegistryConfig>,
+            service_identity: ServiceIdentity::default(),
+            config_dir: config_dir.path().to_path_buf(),
+            external_config_dir: external_config_dir.path().to_path_buf(),
+            resolved_values,
+        }
+    }
+
+    #[test]
+    fn gateway_config_uses_runtime_resolved_values() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        std::fs::write(
+            config_dir.path().join(GATEWAY_FILE),
+            "healthPath: ${gateway.healthPath:/health}\nupstreams: ${gateway.upstreams}\n",
+        )
+        .expect("write gateway config");
+        let values = serde_yaml::from_str(
+            r#"
+gateway.healthPath: /ready
+gateway.upstreams:
+  - address: 127.0.0.1:8081
+    hostHeader: example.com
+"#,
+        )
+        .expect("parse values");
+
+        let config = runtime_config(&config_dir, &external_dir, values);
+        let gateway = load_gateway_config(&config).expect("load gateway config");
+
+        assert_eq!(gateway.health_path, "/ready");
+        assert_eq!(gateway.upstreams.len(), 1);
+        assert_eq!(gateway.upstreams[0].address, "127.0.0.1:8081");
+        assert_eq!(
+            gateway.upstreams[0].host_header.as_deref(),
+            Some("example.com")
+        );
+    }
+
+    #[test]
+    fn external_gateway_config_overlays_base_file() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        std::fs::write(
+            config_dir.path().join(GATEWAY_FILE),
+            "healthPath: /base\nupstreams: ${gateway.upstreams}\n",
+        )
+        .expect("write base gateway config");
+        std::fs::write(
+            external_dir.path().join(GATEWAY_FILE),
+            "healthPath: /external\n",
+        )
+        .expect("write external gateway config");
+        let values = serde_yaml::from_str(
+            r#"
+gateway.upstreams:
+  - address: 127.0.0.1:8081
+"#,
+        )
+        .expect("parse values");
+
+        let config = runtime_config(&config_dir, &external_dir, values);
+        let gateway = load_gateway_config(&config).expect("load gateway config");
+
+        assert_eq!(gateway.health_path, "/external");
+        assert_eq!(gateway.upstreams[0].address, "127.0.0.1:8081");
+    }
+
+    #[test]
+    fn gateway_external_config_dir_is_separate_from_base_config() {
+        assert_ne!(CONFIG_DIR, EXTERNAL_CONFIG_DIR);
+    }
 }

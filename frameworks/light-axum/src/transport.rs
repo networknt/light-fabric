@@ -180,6 +180,7 @@ mod tests {
             service_identity: ServiceIdentity::default(),
             config_dir: PathBuf::from("config"),
             external_config_dir: PathBuf::from("config"),
+            resolved_values: Default::default(),
         }
     }
 
