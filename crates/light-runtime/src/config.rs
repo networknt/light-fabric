@@ -168,6 +168,7 @@ pub struct RuntimeConfig {
     pub service_identity: ServiceIdentity,
     pub config_dir: PathBuf,
     pub external_config_dir: PathBuf,
+    pub resolved_values: HashMap<String, serde_yaml::Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

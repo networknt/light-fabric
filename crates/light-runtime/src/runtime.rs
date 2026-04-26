@@ -361,7 +361,7 @@ where
             remote_result.values_yaml,
         )?;
         let password = std::env::var(CONFIG_PASSWORD_ENV).ok();
-        let loader = ConfigLoader::from_values(values, password.as_deref(), None)?;
+        let loader = ConfigLoader::from_values(values.clone(), password.as_deref(), None)?;
 
         let server = self.load_typed_config::<ServerConfig>(&loader, SERVER_FILE)?;
         let client = match client {
@@ -397,6 +397,7 @@ where
             service_identity,
             config_dir: self.config_dir.clone(),
             external_config_dir,
+            resolved_values: values,
         })
     }
 
@@ -920,6 +921,63 @@ mod tests {
         assert_eq!(values["a"], Value::Number(1.into()));
         assert_eq!(values["b"], Value::String("remote".to_string()));
         assert_eq!(values["c"], Value::Bool(true));
+    }
+
+    #[test]
+    fn runtime_config_exposes_resolved_values() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        fs::write(
+            config_dir.path().join(SERVER_FILE),
+            r#"
+ip: ${server.ip:0.0.0.0}
+httpPort: ${server.httpPort:8080}
+enableHttp: ${server.enableHttp:true}
+httpsPort: ${server.httpsPort:8443}
+enableHttps: ${server.enableHttps:false}
+serviceId: ${server.serviceId:com.networknt.test-1.0.0}
+"#,
+        )
+        .expect("write server config");
+        fs::write(
+            config_dir.path().join(VALUES_FILE),
+            "server.ip: 127.0.0.1\nshared: local\n",
+        )
+        .expect("write local values");
+        fs::write(
+            external_dir.path().join(VALUES_FILE),
+            "shared: external\nexternalOnly: true\n",
+        )
+        .expect("write external values");
+
+        let runtime = LightRuntimeBuilder::new(NoopTransport)
+            .with_config_dir(config_dir.path())
+            .build();
+        let config = runtime
+            .build_runtime_config(
+                BootstrapConfig::default(),
+                None,
+                external_dir.path().to_path_buf(),
+                RemoteBootstrapResult {
+                    values_yaml: Some("shared: remote\nremoteOnly: 42\n".to_string()),
+                    cached_files: Vec::new(),
+                },
+            )
+            .expect("build runtime config");
+
+        assert_eq!(
+            config.resolved_values["server.ip"],
+            Value::String("127.0.0.1".to_string())
+        );
+        assert_eq!(
+            config.resolved_values["shared"],
+            Value::String("remote".to_string())
+        );
+        assert_eq!(config.resolved_values["externalOnly"], Value::Bool(true));
+        assert_eq!(
+            config.resolved_values["remoteOnly"],
+            Value::Number(42.into())
+        );
     }
 
     #[test]

@@ -1,0 +1,14 @@
+ip: ${server.ip:0.0.0.0}
+advertisedAddress: ${server.advertisedAddress:127.0.0.1}
+httpPort: ${server.httpPort:8080}
+enableHttp: ${server.enableHttp:true}
+httpsPort: ${server.httpsPort:8443}
+enableHttps: ${server.enableHttps:false}
+tlsCertPath: ${server.tlsCertPath:}
+tlsKeyPath: ${server.tlsKeyPath:}
+serviceId: ${server.serviceId:com.networknt.light-gateway-1.0.0}
+enableRegistry: ${server.enableRegistry:true}
+startOnRegistryFailure: ${server.startOnRegistryFailure:true}
+dynamicPort: ${server.dynamicPort:false}
+environment: ${server.environment:DEV}
+shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}

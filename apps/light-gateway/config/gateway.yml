@@ -1,0 +1,2 @@
+healthPath: ${gateway.healthPath:/health}
+upstreams: ${gateway.upstreams}

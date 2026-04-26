@@ -1,0 +1,9 @@
+host: ${startup.host:dev.lightapi.net}
+serviceId: ${server.serviceId:com.networknt.light-gateway-1.0.0}
+envTag: ${server.environment:DEV}
+acceptHeader: application/yaml
+timeout: ${startup.timeout:3000}
+connectTimeout: ${startup.connectTimeout:3000}
+configServerUri: ${light-config-server-uri:https://local.localhost}
+authorization: ${light_portal_authorization:}
+bootstrapCaCertPath: ${startup.bootstrapCaCertPath:config/ca.pem}
