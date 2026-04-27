@@ -252,6 +252,14 @@ async fn test_typed_expected_values_and_expanded_operators() {
                 join_code: Some("AND".into()),
             },
             RuleCondition {
+                condition_id: Some("tier-list-json-string".into()),
+                condition_desc: None,
+                operator: Some("inList".into()),
+                operand: Some("user.tier".into()),
+                expected: Some(json!("[\"gold\",\"platinum\"]")),
+                join_code: Some("AND".into()),
+            },
+            RuleCondition {
                 condition_id: Some("name-case".into()),
                 condition_desc: None,
                 operator: Some("containsIgnoreCase".into()),
@@ -277,6 +285,7 @@ async fn test_typed_expected_values_and_expanded_operators() {
             "active": true,
             "name": "Steve Hu Test",
             "status": "active",
+            "tier": "gold",
             "roles": ["admin", "user"],
             "scopes": ["portal.r"],
             "email": "steve.hu@lightapi.net"

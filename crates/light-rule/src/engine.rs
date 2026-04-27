@@ -232,15 +232,9 @@ impl RuleEngine {
     }
 
     fn value_in_list(&self, actual: &Value, expected: &Value) -> bool {
-        match expected {
-            Value::Array(values) => values.iter().any(|value| self.values_equal(actual, value)),
-            Value::String(values) => values
-                .split(',')
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .any(|value| self.values_equal(actual, &Value::String(value.to_string()))),
-            _ => false,
-        }
+        self.expected_values(expected)
+            .iter()
+            .any(|value| self.values_equal(actual, value))
     }
 
     fn value_contains_any(&self, actual: &Value, expected: &Value) -> bool {
@@ -260,12 +254,20 @@ impl RuleEngine {
     fn expected_values(&self, expected: &Value) -> Vec<Value> {
         match expected {
             Value::Array(values) => values.clone(),
-            Value::String(values) => values
-                .split(',')
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(|value| Value::String(value.to_string()))
-                .collect(),
+            Value::String(values) => {
+                let trimmed = values.trim();
+                if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                    if let Ok(Value::Array(values)) = serde_json::from_str::<Value>(trimmed) {
+                        return values;
+                    }
+                }
+                values
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| Value::String(value.to_string()))
+                    .collect()
+            }
             value => vec![value.clone()],
         }
     }
