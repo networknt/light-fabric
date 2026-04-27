@@ -15,7 +15,7 @@ pub trait RuleActionPlugin: Send + Sync {
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
 }
 
-/// A registry that holds mapping from `actionClassName` strings to boxed `RuleActionPlugin` structs.
+/// A registry that holds mapping from runtime-neutral action references to boxed `RuleActionPlugin` structs.
 pub struct ActionRegistry {
     plugins: HashMap<String, Arc<dyn RuleActionPlugin>>,
 }
@@ -28,13 +28,13 @@ impl ActionRegistry {
         }
     }
 
-    /// Register a plugin with its string identifier.
-    pub fn register<S: Into<String>>(&mut self, class_name: S, plugin: Arc<dyn RuleActionPlugin>) {
-        self.plugins.insert(class_name.into(), plugin);
+    /// Register a plugin with its runtime-neutral action reference.
+    pub fn register<S: Into<String>>(&mut self, action_ref: S, plugin: Arc<dyn RuleActionPlugin>) {
+        self.plugins.insert(action_ref.into(), plugin);
     }
 
-    /// Retrieve an action plugin by class name.
-    pub fn get(&self, class_name: &str) -> Option<Arc<dyn RuleActionPlugin>> {
-        self.plugins.get(class_name).cloned()
+    /// Retrieve an action plugin by action reference.
+    pub fn get(&self, action_ref: &str) -> Option<Arc<dyn RuleActionPlugin>> {
+        self.plugins.get(action_ref).cloned()
     }
 }

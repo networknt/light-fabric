@@ -25,7 +25,14 @@ pub enum EndpointConfig {
 #[serde(rename_all = "camelCase")]
 pub struct Rule {
     pub rule_id: String,
+    pub rule_name: String,
+    pub rule_type: String,
+    pub common: String,
+    pub host_id: Option<String>,
     pub rule_desc: Option<String>,
+    pub version: Option<String>,
+    pub author: Option<String>,
+    pub updated_at: Option<String>,
     pub conditions: Option<Vec<RuleCondition>>,
     pub actions: Option<Vec<RuleAction>>,
 }
@@ -35,9 +42,10 @@ pub struct Rule {
 #[serde(rename_all = "camelCase")]
 pub struct RuleCondition {
     pub condition_id: Option<String>,
+    pub condition_desc: Option<String>,
     pub operator: Option<String>,
     pub operand: Option<String>,
-    pub expected: Option<String>,
+    pub expected: Option<Value>,
     pub join_code: Option<String>, // AND, OR
 }
 
@@ -46,6 +54,7 @@ pub struct RuleCondition {
 #[serde(rename_all = "camelCase")]
 pub struct RuleAction {
     pub action_id: Option<String>,
-    pub action_class_name: String,
+    pub action_desc: Option<String>,
+    pub action_ref: String,
     pub action_values: Option<Value>,
 }

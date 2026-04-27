@@ -24,9 +24,12 @@ Managing agent skills as flat Markdown files introduces several scaling challeng
 To solve the limitations of purely text-based skills, we will adopt a hybrid, structured format stored within a database (e.g., PostgreSQL/MongoDB). The architecture uses the right format for the right job:
 
 *   **JSON Schema:** Used strictly for defining parameters, inputs, and tool shapes. Natively supported by OpenAI/Anthropic/Google tool-calling APIs.
-*   **OpenAPI (YAML/JSON):** Used to map external REST APIs to skills.
+*   **LightAPI Description (YAML/JSON):** Used to map endpoint-level API capabilities to skills across REST, JSON-RPC, gRPC, and MCP.
+*   **OpenAPI / OpenRPC / Protobuf:** Referenced by LightAPI where protocol-native specifications already exist.
 *   **Executable Code (Python/JS) / URI:** Stores the actual execution logic or the endpoint reference.
 *   **Markdown:** Retained *only* for the `instructions` or `prompt` fields, as LLMs excel at parsing markdown headers and lists for constraints and persona instructions.
+
+LightAPI is the preferred source format for API-backed skills because it describes endpoint identity, protocol invocation, input schema, request mapping, result shape, examples, and behavior notes in one agent-oriented document. See [LightAPI Description Design](lightapi-description.md) for the endpoint description model.
 
 ### 3.1 Proposed Database Schema Structure
 The centralized Controller will store skills in a structured table/collection. Below is a representation of the skill payload:
@@ -120,13 +123,31 @@ Hierarchy is mapped to agent teams.
 ## 6. Operational Benefits & Security
 By centralizing skills in a database, the platform gains enterprise-grade operational capabilities:
 *   **Dynamic Updates:** API endpoints, instructions, and schemas can be updated in the database without restarting agents.
-*   **Permission-Aware Discovery (RBAC):** By linking `tool_t` directly to `api_endpoint_t`, the Controller ensures that an agent only "discovers" tools that the current user/agent session is authorized to execute based on their roles.
+*   **Permission-Aware Discovery (RBAC):** By linking skills to LightAPI endpoint descriptions and `api_endpoint_t`, the Controller ensures that an agent only "discovers" tools that the current user/agent session is authorized to execute based on their roles.
 *   **A/B Testing:** The Controller can route 50% of an agent's requests to `skill_v1` and 50% to `skill_v2` to measure prompt/tool efficacy.
 *   **Audit Logging:** Every tool injection and execution is logged at the Controller level, establishing a single pane of glass for multi-agent compliance.
 *   **Distilled Memory RAG:** Following the "Hindsight" pattern, raw conversation history (`agent_session_history_t`) is separated from RAG-optimized memory (`session_memory_t`). This prevents the "noisy context" problem while maintaining a perfect audit trail.
 
-## 7. Next Steps
+## 7. LightAPI As Skill Source
+
+API-backed skills should be generated from endpoint-level LightAPI descriptions whenever possible.
+
+The skill registry should store skill metadata, access control, grouping, and agent-facing instructions. The LightAPI description should remain the source of truth for endpoint invocation and verification details.
+
+Recommended flow:
+
+1. Light-Portal creates or imports endpoint-level LightAPI descriptions.
+2. API owners enrich endpoint descriptions with examples, behavior notes, result cases, and visibility.
+3. Approved endpoint descriptions are published as agent skills.
+4. Skill discovery returns lightweight summaries first.
+5. When the agent selects a skill, the registry loads the relevant LightAPI disclosure level.
+6. Execution goes through the workflow service or controller runtime, preserving audit and authorization.
+
+This avoids manually duplicating every API endpoint as a separate hand-written skill while still giving agents strict schemas and progressive disclosure.
+
+## 8. Next Steps
 1. Provision the `agent_skills` table in the core database.
 2. Build the API layer (Controller) to handle `search`, `retrieve`, and `execute` requests from agents.
-3. Migrate existing Markdown-based skills into the structured DB payload (extracting prompts to the `instructions` field and converting parameters to JSON Schema).
-4. Implement Pattern B (Semantic Tool RAG) as the default progressive disclosure mechanism.
+3. Add publishing from LightAPI endpoint descriptions into the skill registry.
+4. Migrate existing Markdown-based skills into the structured DB payload (extracting prompts to the `instructions` field and converting parameters to JSON Schema).
+5. Implement Pattern B (Semantic Tool RAG) as the default progressive disclosure mechanism.
