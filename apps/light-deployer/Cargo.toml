@@ -1,0 +1,29 @@
+[package]
+name = "light-deployer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cluster-local Kubernetes deployer for Light Portal"
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true }
+config-loader = { path = "../../crates/config-loader" }
+futures-util = { workspace = true }
+light-axum = { path = "../../frameworks/light-axum" }
+light-runtime = { path = "../../crates/light-runtime" }
+portal-registry = { path = "../../crates/portal-registry" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+kube = { version = "3.1", features = ["client", "runtime", "rustls-tls"] }
+k8s-openapi = { version = "0.27", features = ["v1_35"] }
+gix = { version = "0.83", features = ["blocking-network-client", "worktree-mutation"] }

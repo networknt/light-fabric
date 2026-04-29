@@ -1,0 +1,3 @@
+portalUrl: ${portalRegistry.portalUrl:https://localhost:8438}
+portalToken: ${light_portal_authorization:}
+controllerDiscoveryToken: ${portalRegistry.controllerDiscoveryToken:}

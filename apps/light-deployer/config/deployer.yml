@@ -1,0 +1,13 @@
+deployerId: ${deployer.deployerId:local-light-deployer}
+clusterId: ${deployer.clusterId:local}
+allowedNamespaces: []
+allowedRepoHosts: []
+allowedRepoPrefixes: []
+allowedImageRegistries: []
+devInsecure: ${deployer.devInsecure:false}
+prune:
+  enabled: ${deployer.prune.enabled:true}
+  maxDeletePercent: ${deployer.prune.maxDeletePercent:30}
+  sensitiveKinds:
+    - PersistentVolumeClaim
+  overrideRequired: ${deployer.prune.overrideRequired:true}

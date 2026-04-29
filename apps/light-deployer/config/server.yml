@@ -1,0 +1,12 @@
+ip: ${server.ip:0.0.0.0}
+advertisedAddress: ${server.advertisedAddress:127.0.0.1}
+httpPort: ${server.httpPort:7088}
+enableHttp: ${server.enableHttp:true}
+httpsPort: ${server.httpsPort:7443}
+enableHttps: ${server.enableHttps:false}
+serviceId: ${server.serviceId:com.networknt.light-deployer-0.1.0}
+enableRegistry: ${server.enableRegistry:false}
+startOnRegistryFailure: ${server.startOnRegistryFailure:false}
+dynamicPort: ${server.dynamicPort:false}
+environment: ${server.environment:DEV}
+shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}

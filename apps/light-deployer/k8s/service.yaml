@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: light-deployer
+  namespace: light-deployer
+spec:
+  selector:
+    app.kubernetes.io/name: light-deployer
+  ports:
+    - name: http
+      port: 7088
+      targetPort: 7088

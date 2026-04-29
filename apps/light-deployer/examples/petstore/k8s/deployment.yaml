@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${name}
+spec:
+  replicas: ${replicas:1}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ${name}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ${name}
+    spec:
+      containers:
+        - name: ${name}
+          image: ${image.repository}:${image.tag:latest}
+          ports:
+            - containerPort: ${containerPort:8080}

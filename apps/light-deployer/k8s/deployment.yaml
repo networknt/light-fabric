@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: light-deployer
+  namespace: light-deployer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: light-deployer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: light-deployer
+    spec:
+      serviceAccountName: light-deployer
+      containers:
+        - name: light-deployer
+          image: networknt/light-deployer:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 7088
+          env:
+            - name: LIGHT_DEPLOYER_KUBE_MODE
+              value: real

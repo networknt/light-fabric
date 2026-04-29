@@ -1,0 +1,25 @@
+{
+  "hostId": "local-host",
+  "instanceId": "petstore-dev",
+  "environment": "dev",
+  "clusterId": "microk8s-local",
+  "namespace": "light-deployer",
+  "action": "render",
+  "values": {
+    "name": "petstore",
+    "replicas": 1,
+    "image": {
+      "repository": "nginx",
+      "tag": "1.27"
+    },
+    "containerPort": 80,
+    "service": {
+      "port": 80
+    }
+  },
+  "template": {
+    "repoUrl": "local",
+    "ref": "main",
+    "path": "k8s"
+  }
+}
