@@ -559,22 +559,11 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let registry_url = to_registry_ws_url(&portal_registry_config.portal_url)?;
-    if !verify_hostname {
-        warn!(
-            "TLS hostname verification is disabled for the portal-registry client; this weakens server identity validation"
-        );
-    }
-    let mut registry_client =
-        PortalRegistryClient::new(&registry_url, registration_params, registry_handler)?;
-    if let Some(ca_cert) = &ca_cert {
-        registry_client = registry_client.with_ca_certificate(ca_cert.clone());
-    }
-    registry_client = registry_client.with_verify_hostname(verify_hostname);
-    let registry = Arc::new(registry_client);
-    let registry_clone = Arc::clone(&registry);
-    tokio::spawn(async move {
-        registry_clone.run().await;
-    });
+    let registry = Arc::new(PortalRegistryClient::new(
+        &registry_url,
+        registration_params,
+        registry_handler,
+    )?);
 
     let state = Arc::new(AgentState {
         provider: OllamaProvider::new(Some(&ollama_config.ollama_url), None)
@@ -582,7 +571,7 @@ async fn main() -> anyhow::Result<()> {
         mcp_client,
         ollama_config,
         memory,
-        registry,
+        registry: Arc::clone(&registry),
         db: pool,
         host_id,
     });
@@ -591,6 +580,7 @@ async fn main() -> anyhow::Result<()> {
 
     let runtime = LightRuntimeBuilder::new(AxumTransport::new(app))
         .with_config_dir("config")
+        .with_registry_client(Arc::clone(&registry))
         .build();
 
     let running = runtime

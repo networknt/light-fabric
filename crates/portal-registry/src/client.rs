@@ -83,13 +83,13 @@ pub trait RegistryHandler: Send + Sync {
 }
 
 pub struct PortalRegistryClient {
-    controller_url: Url,
-    registration_params: ServiceRegistrationParams,
+    controller_url: Mutex<Url>,
+    registration_params: Mutex<ServiceRegistrationParams>,
     handler: Arc<dyn RegistryHandler>,
     outbound_tx: Arc<Mutex<Option<mpsc::Sender<Message>>>>,
     registration_tx: watch::Sender<RegistrationState>,
-    ca_certificate: Option<Vec<u8>>,
-    verify_hostname: bool,
+    ca_certificate: Mutex<Option<Vec<u8>>>,
+    verify_hostname: Mutex<bool>,
     pending_requests: Arc<Mutex<HashMap<String, oneshot::Sender<JsonRpcMessage>>>>,
 }
 
@@ -102,25 +102,52 @@ impl PortalRegistryClient {
         let url = Url::parse(controller_url)?;
         let (registration_tx, _) = watch::channel(RegistrationState::Disconnected);
         Ok(Self {
-            controller_url: url,
-            registration_params,
+            controller_url: Mutex::new(url),
+            registration_params: Mutex::new(registration_params),
             handler,
             outbound_tx: Arc::new(Mutex::new(None)),
             registration_tx,
-            ca_certificate: None,
-            verify_hostname: true,
+            ca_certificate: Mutex::new(None),
+            verify_hostname: Mutex::new(true),
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
     pub fn with_ca_certificate(mut self, ca_cert: Vec<u8>) -> Self {
-        self.ca_certificate = Some(ca_cert);
+        self.ca_certificate = Mutex::new(Some(ca_cert));
         self
     }
 
     pub fn with_verify_hostname(mut self, verify: bool) -> Self {
-        self.verify_hostname = verify;
+        self.verify_hostname = Mutex::new(verify);
         self
+    }
+
+    pub async fn set_registration_params(&self, registration_params: ServiceRegistrationParams) {
+        let mut guard = self.registration_params.lock().await;
+        *guard = registration_params;
+    }
+
+    pub async fn configure_connection(
+        &self,
+        controller_url: &str,
+        ca_certificate: Option<Vec<u8>>,
+        verify_hostname: bool,
+    ) -> anyhow::Result<()> {
+        let url = Url::parse(controller_url)?;
+        {
+            let mut guard = self.controller_url.lock().await;
+            *guard = url;
+        }
+        {
+            let mut guard = self.ca_certificate.lock().await;
+            *guard = ca_certificate;
+        }
+        {
+            let mut guard = self.verify_hostname.lock().await;
+            *guard = verify_hostname;
+        }
+        Ok(())
     }
 
     pub fn subscribe_registration(&self) -> watch::Receiver<RegistrationState> {
@@ -224,17 +251,21 @@ impl PortalRegistryClient {
     }
 
     async fn connect_and_loop(&self) -> anyhow::Result<()> {
-        let connector = if self.controller_url.scheme() == "wss"
-            && (self.ca_certificate.is_some() || !self.verify_hostname)
+        let controller_url = self.controller_url.lock().await.clone();
+        let ca_certificate = self.ca_certificate.lock().await.clone();
+        let verify_hostname = *self.verify_hostname.lock().await;
+
+        let connector = if controller_url.scheme() == "wss"
+            && (ca_certificate.is_some() || !verify_hostname)
         {
-            if !self.verify_hostname && self.ca_certificate.is_none() {
+            if !verify_hostname && ca_certificate.is_none() {
                 return Err(anyhow::anyhow!(
                     "verify_hostname=false requires an explicit CA certificate"
                 ));
             }
 
             let mut root_store = rustls::RootCertStore::empty();
-            if let Some(ca_cert) = &self.ca_certificate {
+            if let Some(ca_cert) = &ca_certificate {
                 let mut reader = std::io::BufReader::new(std::io::Cursor::new(ca_cert));
                 for cert in rustls_pemfile::certs(&mut reader) {
                     root_store.add(cert?)?;
@@ -243,7 +274,7 @@ impl PortalRegistryClient {
 
             let builder = rustls::ClientConfig::builder();
 
-            if !self.verify_hostname {
+            if !verify_hostname {
                 let supported_algs = rustls::crypto::CryptoProvider::get_default()
                     .map(|provider| provider.signature_verification_algorithms)
                     .unwrap_or_else(|| {
@@ -269,13 +300,13 @@ impl PortalRegistryClient {
         };
 
         let (mut ws_stream, _) = tokio_tungstenite::connect_async_tls_with_config(
-            self.controller_url.as_str(),
+            controller_url.as_str(),
             None,
             false,
             connector,
         )
         .await?;
-        info!("Connected to controller at {}", self.controller_url);
+        info!("Connected to controller at {}", controller_url);
 
         // 1. Initial Handshake (service/register)
         self.register(&mut ws_stream).await?;
@@ -364,7 +395,8 @@ impl PortalRegistryClient {
 
     async fn register(&self, ws_stream: &mut WsStream) -> anyhow::Result<()> {
         let registration_id = json!("register-1");
-        let register_params_val = serde_json::to_value(&self.registration_params)?;
+        let register_params = self.registration_params.lock().await.clone();
+        let register_params_val = serde_json::to_value(register_params)?;
         let register_msg = JsonRpcMessage::new_request(
             registration_id.clone(),
             "service/register",

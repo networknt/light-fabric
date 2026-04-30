@@ -84,6 +84,7 @@ where
     modules: Vec<Arc<dyn Module>>,
     registration_timeout: Duration,
     registry_handler: Arc<dyn RegistryHandler>,
+    registry_client: Option<Arc<PortalRegistryClient>>,
 }
 
 impl<T> LightRuntimeBuilder<T>
@@ -98,6 +99,7 @@ where
             modules: Vec::new(),
             registration_timeout: Duration::from_secs(5),
             registry_handler: Arc::new(NoopRegistryHandler),
+            registry_client: None,
         }
     }
 
@@ -126,6 +128,11 @@ where
         self
     }
 
+    pub fn with_registry_client(mut self, client: Arc<PortalRegistryClient>) -> Self {
+        self.registry_client = Some(client);
+        self
+    }
+
     pub fn build(self) -> LightRuntime<T> {
         LightRuntime {
             transport: self.transport,
@@ -134,6 +141,7 @@ where
             modules: self.modules,
             registration_timeout: self.registration_timeout,
             registry_handler: self.registry_handler,
+            registry_client: self.registry_client,
             state: LifecycleState::BootstrapLocal,
         }
     }
@@ -149,6 +157,7 @@ where
     modules: Vec<Arc<dyn Module>>,
     registration_timeout: Duration,
     registry_handler: Arc<dyn RegistryHandler>,
+    registry_client: Option<Arc<PortalRegistryClient>>,
     state: LifecycleState,
 }
 
@@ -488,20 +497,12 @@ where
         }
 
         let registration = registration.build();
-
-        let mut client =
-            PortalRegistryClient::new(&ws_url, registration, Arc::clone(&self.registry_handler))
-                .map_err(|e| {
-                    RuntimeError::Unsupported(format!(
-                        "failed to build portal registry client: {e}"
-                    ))
-                })?;
-
-        if let Some(ca_cert_path) = &runtime_config.bootstrap.bootstrap_ca_cert_path {
-            let ca_cert = fs::read(ca_cert_path)?;
-            client = client.with_ca_certificate(ca_cert);
-        }
-
+        let ca_certificate = runtime_config
+            .bootstrap
+            .bootstrap_ca_cert_path
+            .as_ref()
+            .map(fs::read)
+            .transpose()?;
         let verify_hostname = runtime_config
             .client
             .as_ref()
@@ -512,9 +513,34 @@ where
                 "TLS hostname verification is disabled for the portal-registry client; this weakens server identity validation"
             );
         }
-        client = client.with_verify_hostname(verify_hostname);
 
-        let client = Arc::new(client);
+        let client = if let Some(client) = &self.registry_client {
+            client.set_registration_params(registration).await;
+            client
+                .configure_connection(&ws_url, ca_certificate, verify_hostname)
+                .await
+                .map_err(|e| {
+                    RuntimeError::Unsupported(format!(
+                        "failed to configure portal registry client: {e}"
+                    ))
+                })?;
+            Arc::clone(client)
+        } else {
+            let mut client = PortalRegistryClient::new(
+                &ws_url,
+                registration,
+                Arc::clone(&self.registry_handler),
+            )
+            .map_err(|e| {
+                RuntimeError::Unsupported(format!("failed to build portal registry client: {e}"))
+            })?;
+
+            if let Some(ca_certificate) = ca_certificate {
+                client = client.with_ca_certificate(ca_certificate);
+            }
+            client = client.with_verify_hostname(verify_hostname);
+            Arc::new(client)
+        };
         let mut registration_rx = client.subscribe_registration();
         let task_client = Arc::clone(&client);
         let registration_task = tokio::spawn(async move {
