@@ -217,13 +217,19 @@ impl DeployerService {
                 .run_background(background_request_id, background_request)
                 .await
             {
+                let message = error.to_string();
+                tracing::error!(
+                    request_id = %failure_request_id,
+                    error = %message,
+                    "deployment background task failed"
+                );
                 service
                     .events
                     .publish(DeploymentEvent {
                         request_id: failure_request_id,
                         timestamp: Utc::now(),
                         status: DeploymentStatus::Failed,
-                        message: error.to_string(),
+                        message,
                         resource: None,
                     })
                     .await;

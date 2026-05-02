@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use futures_util::stream;
+use futures_util::{StreamExt, stream};
 use light_axum::{AxumApp, ServerContext};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
@@ -236,6 +236,7 @@ async fn get_tool(Path(tool): Path<String>) -> (StatusCode, Json<JsonValue>) {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct EventsQuery {
+    #[serde(alias = "request_id")]
     request_id: String,
 }
 
@@ -245,8 +246,14 @@ async fn events(
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
     let receiver = state.service.events().subscribe();
     let request_id = query.request_id;
+    let history = state.service.events().history_for(&request_id).await;
 
-    let stream = stream::unfold(
+    let history_stream = stream::iter(history.into_iter().map(|event| {
+        let payload = serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string());
+        Ok(Event::default().event("deployment").data(payload))
+    }));
+
+    let live_stream = stream::unfold(
         (receiver, request_id),
         |(mut receiver, request_id)| async move {
             loop {
@@ -267,7 +274,7 @@ async fn events(
         },
     );
 
-    Sse::new(stream).keep_alive(
+    Sse::new(history_stream.chain(live_stream)).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
             .text("keep-alive"),

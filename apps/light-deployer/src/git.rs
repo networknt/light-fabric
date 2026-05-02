@@ -15,6 +15,10 @@ pub enum TemplateSourceError {
     InvalidPath(String),
     #[error("template repository produced no YAML documents at `{0}`")]
     Empty(String),
+    #[error("local template base directory is required when template.repoUrl is `local`")]
+    MissingLocalBaseDir,
+    #[error("local template path does not exist: {0}")]
+    MissingLocalPath(String),
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +41,7 @@ pub struct LocalTemplateSource {
 #[async_trait::async_trait]
 impl TemplateSource for LocalTemplateSource {
     async fn fetch(&self, template: &TemplateRef) -> Result<TemplateBundle, TemplateSourceError> {
+        let is_local_template = template.repo_url.eq_ignore_ascii_case("local");
         if let Some(base_dir) = &self.base_dir {
             let path = base_dir.join(&template.path);
             if path.exists() {
@@ -46,6 +51,13 @@ impl TemplateSource for LocalTemplateSource {
                     documents,
                 });
             }
+            if is_local_template {
+                return Err(TemplateSourceError::MissingLocalPath(
+                    path.display().to_string(),
+                ));
+            }
+        } else if is_local_template {
+            return Err(TemplateSourceError::MissingLocalBaseDir);
         }
 
         let template = template.clone();
@@ -274,7 +286,10 @@ fn percent_encode_userinfo(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::authenticated_url_with_token;
+    use super::{
+        LocalTemplateSource, TemplateSource, TemplateSourceError, authenticated_url_with_token,
+    };
+    use crate::model::TemplateRef;
 
     #[test]
     fn injects_github_token_with_default_username() {
@@ -310,5 +325,20 @@ mod tests {
             url,
             "https://workspace-user:app%20password@bitbucket.org/acme/petstore.git"
         );
+    }
+
+    #[tokio::test]
+    async fn local_marker_requires_base_dir() {
+        let source = LocalTemplateSource::default();
+        let error = source
+            .fetch(&TemplateRef {
+                repo_url: "local".to_string(),
+                r#ref: "main".to_string(),
+                path: "k8s/light-gateway".to_string(),
+            })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, TemplateSourceError::MissingLocalBaseDir));
     }
 }

@@ -9,6 +9,7 @@ description = "Cluster-local Kubernetes deployer for Light Portal"
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
+base64 = "0.22"
 chrono = { workspace = true }
 config-loader = { path = "../../crates/config-loader" }
 futures-util = { workspace = true }

@@ -1,4 +1,5 @@
 use crate::model::{ResourceAction, ResourceSummary};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use serde_yaml::{Mapping, Value as YamlValue};
@@ -13,6 +14,8 @@ pub enum RenderError {
     MissingValue(String),
     #[error("resource is missing required field `{0}`")]
     MissingResourceField(&'static str),
+    #[error("secret data `{0}` must be base64 encoded")]
+    InvalidSecretData(String),
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +69,7 @@ impl Renderer for AstRenderer {
                     continue;
                 }
                 replace_placeholders(&mut value, values)?;
+                normalize_secret_data(&mut value)?;
                 ensure_namespace(&mut value, namespace);
                 let summary = summarize_resource(&value, ResourceAction::Unchanged)?;
                 let redacted = redact_yaml(&value);
@@ -199,10 +203,41 @@ fn redact_secret_data(value: &YamlValue) -> YamlValue {
     }
 }
 
+fn normalize_secret_data(value: &mut YamlValue) -> Result<(), RenderError> {
+    let YamlValue::Mapping(root) = value else {
+        return Ok(());
+    };
+    let kind = root
+        .get(YamlValue::String("kind".to_string()))
+        .and_then(YamlValue::as_str);
+    if kind != Some("Secret") {
+        return Ok(());
+    }
+
+    let Some(YamlValue::Mapping(data)) = root.get_mut(YamlValue::String("data".to_string()))
+    else {
+        return Ok(());
+    };
+
+    for (key, data_value) in data.iter_mut() {
+        let key = key.as_str().unwrap_or("<unknown>");
+        let Some(encoded) = data_value.as_str() else {
+            return Err(RenderError::InvalidSecretData(key.to_string()));
+        };
+        let normalized = encoded.split_whitespace().collect::<String>();
+        STANDARD
+            .decode(&normalized)
+            .map_err(|_| RenderError::InvalidSecretData(key.to_string()))?;
+        *data_value = YamlValue::String(normalized);
+    }
+
+    Ok(())
+}
+
 fn replace_placeholders(value: &mut YamlValue, values: &JsonValue) -> Result<(), RenderError> {
     match value {
         YamlValue::String(input) => {
-            *input = replace_placeholders_in_string(input, values)?;
+            *value = replace_placeholder_string(input, values)?;
         }
         YamlValue::Sequence(sequence) => {
             for item in sequence {
@@ -217,6 +252,27 @@ fn replace_placeholders(value: &mut YamlValue, values: &JsonValue) -> Result<(),
         _ => {}
     }
     Ok(())
+}
+
+fn replace_placeholder_string(input: &str, values: &JsonValue) -> Result<YamlValue, RenderError> {
+    let rendered = replace_placeholders_in_string(input, values)?;
+    if is_single_placeholder(input) {
+        if let Ok(YamlValue::Number(_)) = serde_yaml::from_str::<YamlValue>(&rendered) {
+            return serde_yaml::from_str(&rendered).map_err(RenderError::InvalidYaml);
+        }
+    }
+    Ok(YamlValue::String(rendered))
+}
+
+fn is_single_placeholder(input: &str) -> bool {
+    if !input.starts_with("${") {
+        return false;
+    }
+    let after_start = &input[2..];
+    let Some(end) = after_start.find('}') else {
+        return false;
+    };
+    end + 3 == input.len()
 }
 
 fn replace_placeholders_in_string(input: &str, values: &JsonValue) -> Result<String, RenderError> {
@@ -385,6 +441,98 @@ spec:
             .render(&templates, &json!({ "name": "petstore" }), "dev")
             .unwrap();
         assert_eq!(rendered.documents[0].summary.name, "petstore");
+        assert!(matches!(
+            rendered.documents[0]
+                .value
+                .get("spec")
+                .and_then(|value| value.get("replicas")),
+            Some(YamlValue::Number(_))
+        ));
+    }
+
+    #[test]
+    fn keeps_non_numeric_placeholder_scalars_as_strings() {
+        let renderer = AstRenderer;
+        let templates = [TemplateDocument {
+            name: "deployment.yaml".into(),
+            content: r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: petstore
+spec:
+  template:
+    spec:
+      containers:
+        - name: petstore
+          env:
+            - name: VERIFY_HOST_NAME
+              value: ${verifyHostName:false}
+"#
+            .into(),
+        }];
+        let rendered = renderer.render(&templates, &json!({}), "dev").unwrap();
+        let value = rendered.documents[0]
+            .value
+            .get("spec")
+            .and_then(|value| value.get("template"))
+            .and_then(|value| value.get("spec"))
+            .and_then(|value| value.get("containers"))
+            .and_then(|value| value.get(0))
+            .and_then(|value| value.get("env"))
+            .and_then(|value| value.get(0))
+            .and_then(|value| value.get("value"));
+
+        assert_eq!(value.and_then(YamlValue::as_str), Some("false"));
+    }
+
+    #[test]
+    fn rejects_invalid_secret_data_base64() {
+        let renderer = AstRenderer;
+        let templates = [TemplateDocument {
+            name: "secret.yaml".into(),
+            content: r#"
+apiVersion: v1
+kind: Secret
+metadata:
+  name: petstore
+data:
+  truststore: ${truststore}
+"#
+            .into(),
+        }];
+        let error = renderer
+            .render(&templates, &json!({ "truststore": "$(base64 -w0 file)" }), "dev")
+            .unwrap_err();
+
+        assert!(matches!(error, RenderError::InvalidSecretData(key) if key == "truststore"));
+    }
+
+    #[test]
+    fn accepts_wrapped_secret_data_base64() {
+        let renderer = AstRenderer;
+        let templates = [TemplateDocument {
+            name: "secret.yaml".into(),
+            content: r#"
+apiVersion: v1
+kind: Secret
+metadata:
+  name: petstore
+data:
+  truststore: ${truststore}
+"#
+            .into(),
+        }];
+        let rendered = renderer
+            .render(&templates, &json!({ "truststore": "cGFz\nc3dv cmQ=" }), "dev")
+            .unwrap();
+
+        assert_eq!(rendered.documents[0].summary.kind, "Secret");
+        let value = rendered.documents[0]
+            .value
+            .get("data")
+            .and_then(|value| value.get("truststore"));
+        assert_eq!(value.and_then(YamlValue::as_str), Some("cGFzc3dvcmQ="));
     }
 
     #[test]
