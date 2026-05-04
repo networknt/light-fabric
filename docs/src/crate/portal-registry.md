@@ -30,7 +30,7 @@ let registration = RegistrationBuilder::new(
     "127.0.0.1",
     8080,
 )
-.with_env("DEV")
+.with_env("dev")
 .with_jwt(token)
 .build();
 ```

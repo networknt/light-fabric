@@ -8,5 +8,5 @@ serviceId: ${server.serviceId:com.networknt.agent.account-1.0.0}
 enableRegistry: ${server.enableRegistry:false}
 startOnRegistryFailure: ${server.startOnRegistryFailure:false}
 dynamicPort: ${server.dynamicPort:false}
-environment: ${server.environment:DEV}
+environment: ${server.environment:dev}
 shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
