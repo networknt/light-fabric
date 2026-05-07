@@ -21,6 +21,7 @@ use crate::config::{
     BootstrapConfig, ClientConfig, PortalRegistryConfig, RemoteBootstrapResult, RuntimeConfig,
     ServerConfig, ServiceIdentity, default_accept_header, default_environment,
 };
+use crate::module_registry::{ModuleRegistry, RuntimeMcpHandler};
 use crate::transport::{BoundTransport, TransportRuntime};
 
 const CONFIG_SERVER_CONFIGS_CONTEXT_ROOT: &str = "/config-server/configs";
@@ -82,6 +83,7 @@ where
     config_dir: PathBuf,
     external_config_dir: Option<PathBuf>,
     modules: Vec<Arc<dyn Module>>,
+    module_registry: Arc<ModuleRegistry>,
     registration_timeout: Duration,
     registry_handler: Arc<dyn RegistryHandler>,
     registry_client: Option<Arc<PortalRegistryClient>>,
@@ -97,6 +99,7 @@ where
             config_dir: PathBuf::from("config"),
             external_config_dir: None,
             modules: Vec::new(),
+            module_registry: Arc::new(ModuleRegistry::new()),
             registration_timeout: Duration::from_secs(5),
             registry_handler: Arc::new(NoopRegistryHandler),
             registry_client: None,
@@ -115,6 +118,11 @@ where
 
     pub fn with_module(mut self, module: Arc<dyn Module>) -> Self {
         self.modules.push(module);
+        self
+    }
+
+    pub fn with_module_registry(mut self, module_registry: Arc<ModuleRegistry>) -> Self {
+        self.module_registry = module_registry;
         self
     }
 
@@ -139,6 +147,7 @@ where
             config_dir: self.config_dir,
             external_config_dir: self.external_config_dir,
             modules: self.modules,
+            module_registry: self.module_registry,
             registration_timeout: self.registration_timeout,
             registry_handler: self.registry_handler,
             registry_client: self.registry_client,
@@ -155,6 +164,7 @@ where
     config_dir: PathBuf,
     external_config_dir: Option<PathBuf>,
     modules: Vec<Arc<dyn Module>>,
+    module_registry: Arc<ModuleRegistry>,
     registration_timeout: Duration,
     registry_handler: Arc<dyn RegistryHandler>,
     registry_client: Option<Arc<PortalRegistryClient>>,
@@ -171,6 +181,7 @@ where
     transport_runtime: T,
     registration_task: Option<JoinHandle<()>>,
     modules: Vec<Arc<dyn Module>>,
+    pub module_registry: Arc<ModuleRegistry>,
 }
 
 impl<T> RunningRuntime<T>
@@ -216,6 +227,8 @@ where
             external_config_dir,
             remote_result,
         )?;
+        self.module_registry
+            .register_runtime_configs(&runtime_config)?;
 
         for module in &self.modules {
             module.on_runtime_built(&runtime_config).await?;
@@ -256,6 +269,7 @@ where
             transport_runtime: self.transport,
             registration_task,
             modules: self.modules,
+            module_registry: self.module_registry,
         })
     }
 
@@ -483,6 +497,11 @@ where
         let portal_url = Url::parse(&portal_registry.portal_url)?;
         let ws_url = to_microservice_ws_url(&portal_url)?;
         let token = portal_token(&portal_registry).ok_or(RuntimeError::MissingPortalToken)?;
+        let registry_handler: Arc<dyn RegistryHandler> = Arc::new(RuntimeMcpHandler::new(
+            Arc::clone(&self.module_registry),
+            runtime_config.clone(),
+            Arc::clone(&self.registry_handler),
+        ));
         let mut registration = RegistrationBuilder::new(
             &runtime_config.service_identity.service_id,
             &runtime_config.service_identity.version,
@@ -516,6 +535,7 @@ where
 
         let client = if let Some(client) = &self.registry_client {
             client.set_registration_params(registration).await;
+            client.set_handler(Arc::clone(&registry_handler)).await;
             client
                 .configure_connection(&ws_url, ca_certificate, verify_hostname)
                 .await
@@ -526,14 +546,13 @@ where
                 })?;
             Arc::clone(client)
         } else {
-            let mut client = PortalRegistryClient::new(
-                &ws_url,
-                registration,
-                Arc::clone(&self.registry_handler),
-            )
-            .map_err(|e| {
-                RuntimeError::Unsupported(format!("failed to build portal registry client: {e}"))
-            })?;
+            let mut client =
+                PortalRegistryClient::new(&ws_url, registration, Arc::clone(&registry_handler))
+                    .map_err(|e| {
+                        RuntimeError::Unsupported(format!(
+                            "failed to build portal registry client: {e}"
+                        ))
+                    })?;
 
             if let Some(ca_certificate) = ca_certificate {
                 client = client.with_ca_certificate(ca_certificate);
@@ -1039,5 +1058,42 @@ serviceId: ${server.serviceId:com.networknt.test-1.0.0}
             runtime.load_bootstrap_config().expect("bootstrap config");
 
         assert_eq!(client_config.map(|c| c.verify_hostname), Some(false));
+    }
+
+    #[tokio::test]
+    async fn start_registers_builtin_runtime_modules() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        fs::write(
+            config_dir.path().join(SERVER_FILE),
+            r#"
+ip: 127.0.0.1
+httpPort: 8080
+enableHttp: true
+httpsPort: 8443
+enableHttps: false
+serviceId: com.networknt.test-1.0.0
+enableRegistry: false
+"#,
+        )
+        .expect("write server config");
+
+        let running = LightRuntimeBuilder::new(NoopTransport)
+            .with_config_dir(config_dir.path())
+            .build()
+            .start()
+            .await
+            .expect("start runtime");
+
+        let module_ids = running
+            .module_registry
+            .module_summaries()
+            .into_iter()
+            .map(|module| module.module_id)
+            .collect::<Vec<_>>();
+
+        assert!(module_ids.contains(&"light-runtime/startup".to_string()));
+        assert!(module_ids.contains(&"light-runtime/server".to_string()));
+
+        running.shutdown().await.expect("shutdown runtime");
     }
 }

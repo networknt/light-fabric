@@ -22,6 +22,7 @@
 - [Agent Engine Pattern](design/agent-engine-pattern.md)
 - [Database Design](design/database-design.md)
 - [Light-Deployer](design/light-deployer.md)
+- [Module Registry](design/module-registry.md)
 
 # Crate
 

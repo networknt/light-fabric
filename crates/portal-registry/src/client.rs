@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, mpsc, oneshot, watch};
+use tokio::sync::{Mutex, RwLock, mpsc, oneshot, watch};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
@@ -85,7 +85,7 @@ pub trait RegistryHandler: Send + Sync {
 pub struct PortalRegistryClient {
     controller_url: Mutex<Url>,
     registration_params: Mutex<ServiceRegistrationParams>,
-    handler: Arc<dyn RegistryHandler>,
+    handler: RwLock<Arc<dyn RegistryHandler>>,
     outbound_tx: Arc<Mutex<Option<mpsc::Sender<Message>>>>,
     registration_tx: watch::Sender<RegistrationState>,
     ca_certificate: Mutex<Option<Vec<u8>>>,
@@ -104,7 +104,7 @@ impl PortalRegistryClient {
         Ok(Self {
             controller_url: Mutex::new(url),
             registration_params: Mutex::new(registration_params),
-            handler,
+            handler: RwLock::new(handler),
             outbound_tx: Arc::new(Mutex::new(None)),
             registration_tx,
             ca_certificate: Mutex::new(None),
@@ -148,6 +148,11 @@ impl PortalRegistryClient {
             *guard = verify_hostname;
         }
         Ok(())
+    }
+
+    pub async fn set_handler(&self, handler: Arc<dyn RegistryHandler>) {
+        let mut guard = self.handler.write().await;
+        *guard = handler;
     }
 
     pub fn subscribe_registration(&self) -> watch::Receiver<RegistrationState> {
@@ -319,7 +324,7 @@ impl PortalRegistryClient {
             *guard = Some(tx.clone());
         }
 
-        let handler = Arc::clone(&self.handler);
+        let handler = self.handler.read().await.clone();
         let outbound_state = Arc::clone(&self.outbound_tx);
         let tx_clone = tx.clone();
         tokio::spawn(async move {
