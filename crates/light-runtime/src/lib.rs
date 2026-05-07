@@ -8,8 +8,9 @@ pub use config::{
     ServiceIdentity,
 };
 pub use module_registry::{
-    MaskSpec, ModuleEntry, ModuleKind, ModuleRegistry, ModuleSummary, ReloadFailed,
-    ReloadModulesResult, ReloadSkipped, ReloadStatus, RuntimeMcpHandler,
+    ConfigManager, MaskSpec, ModuleEntry, ModuleKind, ModuleRegistry, ModuleSummary, ReloadContext,
+    ReloadFailed, ReloadModulesResult, ReloadOutcome, ReloadSkipped, ReloadStatus,
+    ReloadableModule, RuntimeMcpHandler,
 };
 pub use runtime::{
     LifecycleState, LightRuntime, LightRuntimeBuilder, Module, RegistrationPolicy, RunningRuntime,

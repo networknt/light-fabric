@@ -21,7 +21,7 @@ use crate::config::{
     BootstrapConfig, ClientConfig, PortalRegistryConfig, RemoteBootstrapResult, RuntimeConfig,
     ServerConfig, ServiceIdentity, default_accept_header, default_environment,
 };
-use crate::module_registry::{ModuleRegistry, RuntimeMcpHandler};
+use crate::module_registry::{ModuleRegistry, ReloadContext, RuntimeMcpHandler};
 use crate::transport::{BoundTransport, TransportRuntime};
 
 const CONFIG_SERVER_CONFIGS_CONTEXT_ROOT: &str = "/config-server/configs";
@@ -205,6 +205,25 @@ where
     }
 }
 
+impl RuntimeConfig {
+    pub async fn reload_context(&self) -> Result<ReloadContext, RuntimeError> {
+        let remote_result = fetch_remote_bootstrap_if_needed(
+            &self.bootstrap,
+            self.client.as_ref(),
+            &self.external_config_dir,
+        )
+        .await?;
+        let values = load_values_map(
+            &self.config_dir,
+            &self.external_config_dir,
+            remote_result.values_yaml,
+        )?;
+        let mut runtime_config = self.clone();
+        runtime_config.resolved_values = values;
+        Ok(ReloadContext::new(runtime_config))
+    }
+}
+
 impl<T> LightRuntime<T>
 where
     T: TransportRuntime,
@@ -321,54 +340,7 @@ where
         client_config: Option<&ClientConfig>,
         external_config_dir: &Path,
     ) -> Result<RemoteBootstrapResult, RuntimeError> {
-        let Some(config_server_uri) = bootstrap.config_server_uri.as_deref() else {
-            return Ok(RemoteBootstrapResult::default());
-        };
-
-        fs::create_dir_all(external_config_dir)?;
-        let client = build_config_server_client(bootstrap, client_config)?;
-        let query = build_query_params(bootstrap);
-
-        match fetch_remote_values(&client, config_server_uri, &query, bootstrap).await {
-            Ok(values_yaml) => {
-                let values_path = external_config_dir.join(VALUES_FILE);
-                fs::write(&values_path, values_yaml.as_bytes())?;
-
-                let mut result = RemoteBootstrapResult {
-                    values_yaml: Some(values_yaml),
-                    cached_files: vec![values_path],
-                };
-
-                for context_root in [
-                    CONFIG_SERVER_CERTS_CONTEXT_ROOT,
-                    CONFIG_SERVER_FILES_CONTEXT_ROOT,
-                ] {
-                    let files = fetch_remote_files(
-                        &client,
-                        config_server_uri,
-                        context_root,
-                        &query,
-                        bootstrap,
-                        external_config_dir,
-                    )
-                    .await?;
-                    result.cached_files.extend(files);
-                }
-
-                Ok(result)
-            }
-            Err(error) => {
-                if external_config_dir.join(VALUES_FILE).exists() {
-                    warn!(
-                        "remote bootstrap failed; continuing with cached local config: {:?}",
-                        error
-                    );
-                    Ok(RemoteBootstrapResult::default())
-                } else {
-                    Err(error)
-                }
-            }
-        }
+        fetch_remote_bootstrap_if_needed(bootstrap, client_config, external_config_dir).await
     }
 
     fn build_runtime_config(
@@ -598,6 +570,61 @@ where
             runtime_config.service_identity.service_id
         );
         Ok(Some(registration_task))
+    }
+}
+
+async fn fetch_remote_bootstrap_if_needed(
+    bootstrap: &BootstrapConfig,
+    client_config: Option<&ClientConfig>,
+    external_config_dir: &Path,
+) -> Result<RemoteBootstrapResult, RuntimeError> {
+    let Some(config_server_uri) = bootstrap.config_server_uri.as_deref() else {
+        return Ok(RemoteBootstrapResult::default());
+    };
+
+    fs::create_dir_all(external_config_dir)?;
+    let client = build_config_server_client(bootstrap, client_config)?;
+    let query = build_query_params(bootstrap);
+
+    match fetch_remote_values(&client, config_server_uri, &query, bootstrap).await {
+        Ok(values_yaml) => {
+            let values_path = external_config_dir.join(VALUES_FILE);
+            fs::write(&values_path, values_yaml.as_bytes())?;
+
+            let mut result = RemoteBootstrapResult {
+                values_yaml: Some(values_yaml),
+                cached_files: vec![values_path],
+            };
+
+            for context_root in [
+                CONFIG_SERVER_CERTS_CONTEXT_ROOT,
+                CONFIG_SERVER_FILES_CONTEXT_ROOT,
+            ] {
+                let files = fetch_remote_files(
+                    &client,
+                    config_server_uri,
+                    context_root,
+                    &query,
+                    bootstrap,
+                    external_config_dir,
+                )
+                .await?;
+                result.cached_files.extend(files);
+            }
+
+            Ok(result)
+        }
+        Err(error) => {
+            if external_config_dir.join(VALUES_FILE).exists() {
+                warn!(
+                    "remote bootstrap failed; continuing with cached local config: {:?}",
+                    error
+                );
+                Ok(RemoteBootstrapResult::default())
+            } else {
+                Err(error)
+            }
+        }
     }
 }
 
@@ -886,6 +913,8 @@ mod tests {
     use crate::transport::{BoundTransport, ResolvedServerMetadata, TransportRuntime};
     use async_trait::async_trait;
     use tempfile::TempDir;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     struct NoopTransport;
 
@@ -1024,6 +1053,68 @@ serviceId: ${server.serviceId:com.networknt.test-1.0.0}
             config.resolved_values["remoteOnly"],
             Value::Number(42.into())
         );
+    }
+
+    #[tokio::test]
+    async fn reload_context_fetches_remote_values_into_external_cache() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind config server");
+        let addr = listener.local_addr().expect("config server addr");
+        let server = tokio::spawn(async move {
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().await.expect("accept request");
+                let mut buffer = [0_u8; 4096];
+                let bytes = stream.read(&mut buffer).await.expect("read request");
+                let request = String::from_utf8_lossy(&buffer[..bytes]);
+                let (content_type, body) = if request.starts_with("GET /config-server/configs") {
+                    ("application/yaml", "gateway.healthPath: /remote\n")
+                } else {
+                    ("application/json", "{}")
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write response");
+            }
+        });
+
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        let runtime_config = RuntimeConfig {
+            bootstrap: BootstrapConfig {
+                config_server_uri: Some(format!("http://{addr}")),
+                authorization: Some("Bearer token".to_string()),
+                accept_header: default_accept_header(),
+                timeout: crate::config::default_timeout_ms(),
+                connect_timeout: crate::config::default_connect_timeout_ms(),
+                ..BootstrapConfig::default()
+            },
+            server: ServerConfig::default(),
+            client: None,
+            portal_registry: None,
+            service_identity: ServiceIdentity::default(),
+            config_dir: config_dir.path().to_path_buf(),
+            external_config_dir: external_dir.path().to_path_buf(),
+            resolved_values: HashMap::new(),
+            module_registry: Arc::new(ModuleRegistry::new()),
+        };
+
+        let ctx = runtime_config
+            .reload_context()
+            .await
+            .expect("reload context");
+
+        assert_eq!(
+            ctx.runtime_config.resolved_values["gateway.healthPath"],
+            Value::String("/remote".to_string())
+        );
+        assert!(external_dir.path().join(VALUES_FILE).exists());
+        server.await.expect("config server task");
     }
 
     #[test]

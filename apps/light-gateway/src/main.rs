@@ -2,7 +2,10 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
 use light_pingora::{PingoraApp, PingoraTransport};
-use light_runtime::{LightRuntimeBuilder, ModuleKind, RuntimeConfig, RuntimeError};
+use light_runtime::{
+    ConfigManager, LightRuntimeBuilder, ModuleKind, ReloadContext, ReloadOutcome, ReloadableModule,
+    RuntimeConfig, RuntimeError,
+};
 use pingora::http::ResponseHeader;
 use pingora::prelude::{HttpPeer, ProxyHttp, Session};
 use serde::{Deserialize, Serialize};
@@ -13,6 +16,8 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 const GATEWAY_FILE: &str = "gateway.yml";
+const GATEWAY_MODULE_ID: &str = "light-gateway/gateway";
+const GATEWAY_CONFIG_NAME: &str = "gateway";
 const CONFIG_DIR: &str = "config";
 const EXTERNAL_CONFIG_DIR: &str = "config-cache";
 
@@ -48,49 +53,49 @@ impl PingoraApp for GatewayApp {
 }
 
 struct GatewayProxy {
-    upstreams: Arc<Vec<GatewayUpstream>>,
+    config: Arc<ConfigManager<GatewayConfig>>,
     next_upstream: AtomicUsize,
-    health_path: String,
 }
 
 impl GatewayProxy {
     fn from_runtime_config(config: &RuntimeConfig) -> Result<Self, RuntimeError> {
         let gateway_config = load_gateway_config(config)?;
-        if gateway_config.upstreams.is_empty() {
-            return Err(RuntimeError::Unsupported(
-                "gateway.upstreams must contain at least one upstream".to_string(),
-            ));
-        }
-
-        for upstream in &gateway_config.upstreams {
-            upstream
-                .address
-                .to_socket_addrs()
-                .map_err(|e| {
-                    RuntimeError::Unsupported(format!(
-                        "invalid gateway upstream `{}`: {e}",
-                        upstream.address
-                    ))
-                })?
-                .next()
-                .ok_or_else(|| {
-                    RuntimeError::Unsupported(format!(
-                        "gateway upstream `{}` did not resolve to any socket address",
-                        upstream.address
-                    ))
-                })?;
-        }
+        let config_manager = Arc::new(ConfigManager::new(gateway_config));
+        config.module_registry.register_reloader(
+            GATEWAY_MODULE_ID,
+            Arc::new(GatewayReloader {
+                config: Arc::clone(&config_manager),
+            }),
+        );
 
         Ok(Self {
-            upstreams: Arc::new(gateway_config.upstreams),
+            config: config_manager,
             next_upstream: AtomicUsize::new(0),
-            health_path: gateway_config.health_path,
         })
     }
 
-    fn select_upstream(&self) -> &GatewayUpstream {
+    fn select_upstream(&self) -> GatewayUpstream {
+        let config = self.config.load();
         let index = self.next_upstream.fetch_add(1, Ordering::Relaxed);
-        &self.upstreams[index % self.upstreams.len()]
+        config.upstreams[index % config.upstreams.len()].clone()
+    }
+
+    #[cfg(test)]
+    fn current_config(&self) -> Arc<GatewayConfig> {
+        self.config.load()
+    }
+}
+
+struct GatewayReloader {
+    config: Arc<ConfigManager<GatewayConfig>>,
+}
+
+#[async_trait]
+impl ReloadableModule for GatewayReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let gateway_config = load_gateway_config(&ctx.runtime_config)?;
+        self.config.store(gateway_config);
+        Ok(ReloadOutcome::success("gateway.yml reloaded"))
     }
 }
 
@@ -110,7 +115,8 @@ impl ProxyHttp for GatewayProxy {
     where
         Self::CTX: Send + Sync,
     {
-        if session.req_header().uri.path() == self.health_path {
+        let config = self.config.load();
+        if session.req_header().uri.path() == config.health_path {
             let body = Bytes::from_static(b"ok");
             let mut response = ResponseHeader::build(200, Some(2))?;
             response.insert_header("content-type", "text/plain")?;
@@ -192,16 +198,49 @@ async fn main() -> Result<()> {
 }
 
 fn load_gateway_config(config: &RuntimeConfig) -> Result<GatewayConfig, RuntimeError> {
-    config.module_registry.load_registered(
-        config,
-        GATEWAY_FILE,
-        "light-gateway/gateway",
-        "gateway",
+    let gateway_config = config
+        .module_registry
+        .load_config::<GatewayConfig>(config, GATEWAY_FILE)?;
+    validate_gateway_config(&gateway_config)?;
+    config.module_registry.register_loaded_config(
+        GATEWAY_MODULE_ID,
+        GATEWAY_CONFIG_NAME,
         ModuleKind::Application,
+        &gateway_config,
         [],
+        true,
         Some(true),
-        false,
-    )
+        true,
+    )?;
+    Ok(gateway_config)
+}
+
+fn validate_gateway_config(gateway_config: &GatewayConfig) -> Result<(), RuntimeError> {
+    if gateway_config.upstreams.is_empty() {
+        return Err(RuntimeError::Unsupported(
+            "gateway.upstreams must contain at least one upstream".to_string(),
+        ));
+    }
+
+    for upstream in &gateway_config.upstreams {
+        upstream
+            .address
+            .to_socket_addrs()
+            .map_err(|e| {
+                RuntimeError::Unsupported(format!(
+                    "invalid gateway upstream `{}`: {e}",
+                    upstream.address
+                ))
+            })?
+            .next()
+            .ok_or_else(|| {
+                RuntimeError::Unsupported(format!(
+                    "gateway upstream `{}` did not resolve to any socket address",
+                    upstream.address
+                ))
+            })?;
+    }
+    Ok(())
 }
 
 fn default_health_path() -> String {
@@ -275,7 +314,7 @@ gateway.upstreams:
                 .module_registry
                 .module_summaries()
                 .iter()
-                .any(|entry| entry.module_id == "light-gateway/gateway" && !entry.reloadable)
+                .any(|entry| entry.module_id == GATEWAY_MODULE_ID && entry.reloadable)
         );
     }
 
@@ -311,5 +350,60 @@ gateway.upstreams:
     #[test]
     fn gateway_external_config_dir_is_separate_from_base_config() {
         assert_ne!(CONFIG_DIR, EXTERNAL_CONFIG_DIR);
+    }
+
+    #[tokio::test]
+    async fn gateway_reload_swaps_live_proxy_config() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        std::fs::write(
+            config_dir.path().join(GATEWAY_FILE),
+            r#"
+healthPath: /ready
+upstreams:
+  - address: 127.0.0.1:8081
+"#,
+        )
+        .expect("write gateway config");
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+        let proxy = GatewayProxy::from_runtime_config(&config).expect("build proxy");
+
+        assert_eq!(proxy.current_config().health_path, "/ready");
+        assert_eq!(
+            proxy.current_config().upstreams[0].address,
+            "127.0.0.1:8081"
+        );
+
+        std::fs::write(
+            external_dir.path().join(GATEWAY_FILE),
+            r#"
+healthPath: /live
+upstreams:
+  - address: 127.0.0.1:8082
+    hostHeader: live.example
+"#,
+        )
+        .expect("write external gateway config");
+
+        let result = config
+            .module_registry
+            .reload_modules(
+                ReloadContext::new(config.clone()),
+                &[GATEWAY_MODULE_ID.to_string()],
+            )
+            .await;
+
+        assert_eq!(result.reloaded, vec![GATEWAY_MODULE_ID]);
+        assert!(result.skipped.is_empty());
+        assert!(result.failed.is_empty());
+        assert_eq!(proxy.current_config().health_path, "/live");
+        assert_eq!(
+            proxy.current_config().upstreams[0].address,
+            "127.0.0.1:8082"
+        );
+        assert_eq!(
+            proxy.current_config().upstreams[0].host_header.as_deref(),
+            Some("live.example")
+        );
     }
 }

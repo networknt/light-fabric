@@ -8,6 +8,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -105,16 +106,87 @@ pub struct ReloadModulesResult {
     pub failed: Vec<ReloadFailed>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone)]
+pub struct ReloadContext {
+    pub runtime_config: RuntimeConfig,
+}
+
+impl ReloadContext {
+    pub fn new(runtime_config: RuntimeConfig) -> Self {
+        Self { runtime_config }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReloadOutcome {
+    pub message: Option<String>,
+}
+
+impl ReloadOutcome {
+    pub fn success(message: impl Into<String>) -> Self {
+        Self {
+            message: Some(message.into()),
+        }
+    }
+}
+
+#[async_trait]
+pub trait ReloadableModule: Send + Sync {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError>;
+}
+
+pub struct ConfigManager<T> {
+    current: RwLock<Arc<T>>,
+}
+
+impl<T> ConfigManager<T> {
+    pub fn new(config: T) -> Self {
+        Self {
+            current: RwLock::new(Arc::new(config)),
+        }
+    }
+
+    pub fn load(&self) -> Arc<T> {
+        self.current
+            .read()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
+    }
+
+    pub fn store(&self, config: T) -> Arc<T> {
+        let config = Arc::new(config);
+        *self.current.write().unwrap_or_else(|err| err.into_inner()) = Arc::clone(&config);
+        config
+    }
+}
+
+impl<T> fmt::Debug for ConfigManager<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConfigManager").finish_non_exhaustive()
+    }
+}
+
+#[derive(Default)]
 pub struct ModuleRegistry {
     entries: RwLock<BTreeMap<String, ModuleEntry>>,
+    reloaders: RwLock<BTreeMap<String, Arc<dyn ReloadableModule>>>,
     mask_config_properties: RwLock<bool>,
+}
+
+impl fmt::Debug for ModuleRegistry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ModuleRegistry")
+            .field("entries", &self.entries_read().len())
+            .field("reloaders", &self.reloaders_read().len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl ModuleRegistry {
     pub fn new() -> Self {
         Self {
             entries: RwLock::new(BTreeMap::new()),
+            reloaders: RwLock::new(BTreeMap::new()),
             mask_config_properties: RwLock::new(true),
         }
     }
@@ -185,19 +257,26 @@ impl ModuleRegistry {
         ))
     }
 
-    pub fn load_registered<T>(
+    pub fn register_reloader(
+        &self,
+        module_id: impl Into<String>,
+        reloader: Arc<dyn ReloadableModule>,
+    ) {
+        let module_id = module_id.into();
+        self.reloaders_write()
+            .insert(module_id.clone(), Arc::clone(&reloader));
+        if let Some(entry) = self.entries_write().get_mut(&module_id) {
+            entry.reloadable = true;
+        }
+    }
+
+    pub fn load_config<T>(
         &self,
         runtime_config: &RuntimeConfig,
         file_name: &str,
-        module_id: impl Into<String>,
-        config_name: impl Into<String>,
-        kind: ModuleKind,
-        masks: impl IntoIterator<Item = MaskSpec>,
-        enabled: Option<bool>,
-        reloadable: bool,
     ) -> Result<T, RuntimeError>
     where
-        T: DeserializeOwned + Serialize,
+        T: DeserializeOwned,
     {
         let password = std::env::var("light_4j_config_password").ok();
         let loader = ConfigLoader::from_values(
@@ -221,6 +300,24 @@ impl ModuleRegistry {
 
         let merged = loader.load_merged_files(paths.iter().map(PathBuf::as_path))?;
         let parsed = serde_yaml::from_value::<T>(merged)?;
+        Ok(parsed)
+    }
+
+    pub fn load_registered<T>(
+        &self,
+        runtime_config: &RuntimeConfig,
+        file_name: &str,
+        module_id: impl Into<String>,
+        config_name: impl Into<String>,
+        kind: ModuleKind,
+        masks: impl IntoIterator<Item = MaskSpec>,
+        enabled: Option<bool>,
+        reloadable: bool,
+    ) -> Result<T, RuntimeError>
+    where
+        T: DeserializeOwned + Serialize,
+    {
+        let parsed = self.load_config::<T>(runtime_config, file_name)?;
         self.register_loaded_config(
             module_id,
             config_name,
@@ -350,7 +447,11 @@ impl ModuleRegistry {
         })
     }
 
-    pub fn reload_modules(&self, requested_modules: &[String]) -> ReloadModulesResult {
+    pub async fn reload_modules(
+        &self,
+        ctx: ReloadContext,
+        requested_modules: &[String],
+    ) -> ReloadModulesResult {
         let module_ids = self.module_ids();
         let target_modules = if requested_modules.is_empty()
             || requested_modules
@@ -385,22 +486,41 @@ impl ModuleRegistry {
                 continue;
             }
 
-            self.set_last_reload(
-                &module_id,
-                "skipped",
-                Some("reload implementation is not registered".to_string()),
-            );
-            result.skipped.push(ReloadSkipped {
-                module_id,
-                reason: "reloadNotImplemented".to_string(),
-            });
+            let Some(reloader) = self.reloader(&module_id) else {
+                self.set_last_reload(
+                    &module_id,
+                    "skipped",
+                    Some("reload implementation is not registered".to_string()),
+                );
+                result.skipped.push(ReloadSkipped {
+                    module_id,
+                    reason: "reloadNotImplemented".to_string(),
+                });
+                continue;
+            };
+
+            match reloader.reload(ctx.clone()).await {
+                Ok(outcome) => {
+                    self.set_last_reload(&module_id, "success", outcome.message);
+                    result.reloaded.push(module_id.clone());
+                    result.modules.push(module_id);
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    self.set_last_reload(&module_id, "failed", Some(message.clone()));
+                    result.failed.push(ReloadFailed { module_id, message });
+                }
+            }
         }
-        result.modules = result.reloaded.clone();
         result
     }
 
     fn entry(&self, module_id: &str) -> Option<ModuleEntry> {
         self.entries_read().get(module_id).cloned()
+    }
+
+    fn reloader(&self, module_id: &str) -> Option<Arc<dyn ReloadableModule>> {
+        self.reloaders_read().get(module_id).cloned()
     }
 
     fn set_last_reload(&self, module_id: &str, status: &str, message: Option<String>) {
@@ -419,6 +539,16 @@ impl ModuleRegistry {
 
     fn entries_write(&self) -> RwLockWriteGuard<'_, BTreeMap<String, ModuleEntry>> {
         self.entries.write().unwrap_or_else(|err| err.into_inner())
+    }
+
+    fn reloaders_read(&self) -> RwLockReadGuard<'_, BTreeMap<String, Arc<dyn ReloadableModule>>> {
+        self.reloaders.read().unwrap_or_else(|err| err.into_inner())
+    }
+
+    fn reloaders_write(&self) -> RwLockWriteGuard<'_, BTreeMap<String, Arc<dyn ReloadableModule>>> {
+        self.reloaders
+            .write()
+            .unwrap_or_else(|err| err.into_inner())
     }
 
     fn mask_read(&self) -> RwLockReadGuard<'_, bool> {
@@ -474,13 +604,18 @@ impl RegistryHandler for RuntimeMcpHandler {
                     "get_service_info" => self.registry.server_info(&self.config),
                     "get_modules" => json!({ "modules": self.registry.module_ids() }),
                     "reload_modules" => match parse_reload_modules(params.get("arguments")) {
-                        Ok(modules) => serde_json::to_value(self.registry.reload_modules(&modules))
-                            .unwrap_or_else(|error| {
+                        Ok(modules) => {
+                            let result = match self.config.reload_context().await {
+                                Ok(ctx) => self.registry.reload_modules(ctx, &modules).await,
+                                Err(error) => reload_context_failure(&modules, error.to_string()),
+                            };
+                            serde_json::to_value(result).unwrap_or_else(|error| {
                                 json!({
                                     "status": "error",
                                     "message": error.to_string()
                                 })
-                            }),
+                            })
+                        }
                         Err(message) => json!({
                             "status": "error",
                             "message": message
@@ -562,6 +697,29 @@ fn parse_reload_modules(arguments: Option<&JsonValue>) -> Result<Vec<String>, St
 
 fn is_all_marker(module_id: &str) -> bool {
     module_id.eq_ignore_ascii_case("all")
+}
+
+fn reload_context_failure(requested_modules: &[String], message: String) -> ReloadModulesResult {
+    let failed_modules = if requested_modules.is_empty()
+        || requested_modules
+            .first()
+            .is_some_and(|id| requested_modules.len() == 1 && is_all_marker(id))
+    {
+        vec!["ALL".to_string()]
+    } else {
+        requested_modules.to_vec()
+    };
+
+    ReloadModulesResult {
+        failed: failed_modules
+            .into_iter()
+            .map(|module_id| ReloadFailed {
+                module_id,
+                message: message.clone(),
+            })
+            .collect(),
+        ..ReloadModulesResult::default()
+    }
 }
 
 fn mask_config_properties(config: &RuntimeConfig) -> bool {
@@ -805,8 +963,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reload_modules_reports_skipped_and_failed_modules() {
+    struct TestReloader;
+
+    #[async_trait]
+    impl ReloadableModule for TestReloader {
+        async fn reload(&self, _ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+            Ok(ReloadOutcome::success("test reloaded"))
+        }
+    }
+
+    #[tokio::test]
+    async fn reload_modules_reports_success_skipped_and_failed_modules() {
         let registry = ModuleRegistry::new();
         registry.register_config(
             "test/restart-required",
@@ -818,14 +985,31 @@ mod tests {
             Some(true),
             false,
         );
+        registry.register_config(
+            "test/reloadable",
+            "reloadable",
+            ModuleKind::Application,
+            json!({ "enabled": true }),
+            [],
+            true,
+            Some(true),
+            true,
+        );
+        registry.register_reloader("test/reloadable", Arc::new(TestReloader));
 
-        let result = registry.reload_modules(&[
-            "test/restart-required".to_string(),
-            "test/missing".to_string(),
-        ]);
+        let result = registry
+            .reload_modules(
+                ReloadContext::new(runtime_config()),
+                &[
+                    "test/reloadable".to_string(),
+                    "test/restart-required".to_string(),
+                    "test/missing".to_string(),
+                ],
+            )
+            .await;
 
-        assert!(result.modules.is_empty());
-        assert!(result.reloaded.is_empty());
+        assert_eq!(result.modules, vec!["test/reloadable"]);
+        assert_eq!(result.reloaded, vec!["test/reloadable"]);
         assert_eq!(result.skipped[0].module_id, "test/restart-required");
         assert_eq!(result.skipped[0].reason, "requiresRestart");
         assert_eq!(result.failed[0].module_id, "test/missing");
@@ -835,6 +1019,13 @@ mod tests {
                     .last_reload
                     .as_ref()
                     .is_some_and(|status| status.status == "skipped")
+        }));
+        assert!(registry.module_summaries().iter().any(|entry| {
+            entry.module_id == "test/reloadable"
+                && entry
+                    .last_reload
+                    .as_ref()
+                    .is_some_and(|status| status.status == "success")
         }));
     }
 

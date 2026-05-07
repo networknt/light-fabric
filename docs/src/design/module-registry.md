@@ -1,6 +1,7 @@
 # Module Registry
 
-Status: Phase 3 implemented; hot reload remains planned.
+Status: Phase 4 implemented for `light-gateway/gateway`; additional module
+reloaders remain planned.
 
 ## Purpose
 
@@ -40,7 +41,8 @@ application can expose the same control-plane behavior.
   selection.
 - Support control-plane reload requests for one module, several modules, or all
   modules through the `reload_modules` MCP tool. Phase 3 reports
-  non-reloadable modules as skipped; Phase 4 adds real hot reload.
+  non-reloadable modules as skipped. Phase 4 adds real hot reload for
+  `light-gateway/gateway`.
 - Keep the feature transport-neutral by routing management requests through
   `portal-registry`, not through framework-specific REST routes.
 
@@ -157,6 +159,9 @@ attached the registry to `RuntimeConfig` so apps that load after runtime
 bootstrap can register resolved config through the same runtime-owned registry.
 Apps that load before runtime startup can create the registry first, register
 their application configs, and pass that registry into `LightRuntimeBuilder`.
+For modules that must validate typed config before changing the registry
+snapshot, the same loader is also available as `load_config(...)` followed by
+`register_loaded_config(...)` after validation succeeds.
 
 ## Masking
 
@@ -313,8 +318,8 @@ module IDs.
 ```
 
 An omitted `modules` value, an empty array, or `["ALL"]` targets all registered
-modules. Until Phase 4 adds concrete reload implementations, registered modules
-are reported as skipped instead of being marked as reloaded.
+modules. Registered modules without concrete reload implementations are
+reported as skipped instead of being marked as reloaded.
 
 The response should be explicit about what happened:
 
@@ -343,7 +348,7 @@ carry the more explicit Rust result details.
 
 ## Reload Implementation
 
-Add a reload trait for modules that can safely swap runtime config.
+Phase 4 adds a reload trait for modules that can safely swap runtime config.
 
 ```rust
 #[async_trait]
@@ -352,18 +357,17 @@ pub trait ReloadableModule: Send + Sync {
 }
 ```
 
-`ReloadContext` should include:
+`ReloadContext` includes:
 
-- current `RuntimeConfig`
+- a refreshed `RuntimeConfig`
 - updated `resolved_values`
-- `config_dir`
-- `external_config_dir`
-- registered-loader helper
-- optional config-server fetch result
+- the existing `config_dir`
+- the existing `external_config_dir`
+- the shared `ModuleRegistry`
 
 Reload flow:
 
-1. Re-fetch `values.yml`, certs, and files from config server into
+1. Re-fetch `values.yml`, certs, and files from the config server into
    `external_config_dir`.
 2. Rebuild the merged `resolved_values`.
 3. Resolve requested module IDs.
@@ -376,6 +380,11 @@ Reload flow:
 Use `ConfigManager<T>` or another `ArcSwap`-backed holder for modules that need
 hot reload. This avoids locking the request path while still allowing atomic
 config replacement.
+
+Phase 4 implements this with `ConfigManager<T>` in `light-runtime`. It stores an
+`Arc<T>` behind a short-lived `RwLock`, so request handlers clone the current
+config quickly and reloaders replace the entire typed config only after the new
+config has loaded and validated.
 
 ## Reloadability Rules
 
@@ -420,10 +429,11 @@ only for control-plane operations.
 ## Application Integration
 
 `light-gateway` is integrated first because it already loads `gateway.yml` from
-`RuntimeConfig.resolved_values`, `config_dir`, and `external_config_dir`. It now
-uses `RuntimeConfig.module_registry.load_registered(...)`, so the returned
-typed config and the masked registry snapshot are produced from the same
-resolved YAML merge.
+`RuntimeConfig.resolved_values`, `config_dir`, and `external_config_dir`. It
+loads the resolved typed config, validates upstreams, and then stores the
+masked registry snapshot. In Phase 4, `light-gateway/gateway` also registers a
+`ReloadableModule` that reloads and validates `gateway.yml`, updates the masked
+registry snapshot, and swaps the live `GatewayConfig` through `ConfigManager`.
 
 `light-deployer` loads `deployer.yml` before the runtime is started, so it
 creates a `ModuleRegistry` before loading its config, registers the final
@@ -438,7 +448,7 @@ reintroduce duplicate controller registration.
 
 ## Current Registered Modules
 
-Phase 2 registers these modules:
+Phase 4 registers these modules:
 
 | Module ID | Config name | Kind | Reloadable |
 | --- | --- | --- | --- |
@@ -446,15 +456,16 @@ Phase 2 registers these modules:
 | `light-runtime/server` | `server` | core | no |
 | `light-runtime/client` | `client` | core | no |
 | `light-runtime/portal-registry` | `portal-registry` | core | no |
-| `light-gateway/gateway` | `gateway` | application | no |
+| `light-gateway/gateway` | `gateway` | application | yes |
 | `light-deployer/deployer` | `deployer` | application | no |
 | `light-agent/ollama` | `ollama` | application | no |
 | `light-agent/mcp-client` | `mcp-client` | application | no |
 
 The application modules are visible in `get_service_info` once their owning
 application loads them. `get_modules` returns the corresponding module ID
-strings for portal-view selection. Their `reloadable` flag remains false until
-Phase 4 adds atomic config holders and module-specific reload implementations.
+strings for portal-view selection. `light-gateway/gateway` can reload without a
+restart. Other application modules keep `reloadable=false` until their runtime
+state is moved behind swappable holders.
 
 ## Rollout Plan
 
@@ -487,11 +498,12 @@ Phase 4 adds atomic config holders and module-specific reload implementations.
 
 ### Phase 4: Hot Reload
 
-- Add `ReloadableModule`.
-- Add atomic config holders for reloadable app configs.
-- Implement reload for `light-gateway/gateway`.
-- Add reload result tracking in the registry.
-- Add integration tests with a temp config server or mocked remote bootstrap.
+- Implemented: add `ReloadableModule`, `ReloadContext`, and `ReloadOutcome`.
+- Implemented: add `ConfigManager<T>` for swappable typed configs.
+- Implemented: implement reload for `light-gateway/gateway`.
+- Implemented: add reload result tracking in the registry.
+- Implemented: add tests for registry reload results, gateway live config
+  swapping, and config-server-backed reload context refresh.
 
 ## Open Questions
 
@@ -513,6 +525,10 @@ application modules next to Java modules once it calls the MCP tools through
 `portal-registry`.
 
 Phase 3 added the controller-facing `reload_modules` tool and Java-compatible
-module ID lists. The next implementation step is real hot reload one module at
-a time, starting with `light-gateway/gateway` because its current config
-loading path is already close to the target design.
+module ID lists.
+
+Phase 4 added the first real hot reload implementation for
+`light-gateway/gateway`. The next implementation step is to move additional
+application configs, such as `light-deployer/deployer`,
+`light-agent/ollama`, and `light-agent/mcp-client`, behind swappable runtime
+state before marking them reloadable.
