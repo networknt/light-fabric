@@ -1,6 +1,8 @@
+use crate::module_registry::ModuleRegistry;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -169,6 +171,8 @@ pub struct RuntimeConfig {
     pub config_dir: PathBuf,
     pub external_config_dir: PathBuf,
     pub resolved_values: HashMap<String, serde_yaml::Value>,
+    #[serde(skip, default = "default_module_registry")]
+    pub module_registry: Arc<ModuleRegistry>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -208,4 +212,8 @@ pub(crate) fn default_environment() -> String {
 
 pub(crate) fn default_shutdown_graceful_period_ms() -> u64 {
     2_000
+}
+
+pub(crate) fn default_module_registry() -> Arc<ModuleRegistry> {
+    Arc::new(ModuleRegistry::new())
 }

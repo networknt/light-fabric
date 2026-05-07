@@ -166,10 +166,11 @@ fn resolve_advertised_address(
 mod tests {
     use super::resolve_advertised_address;
     use light_runtime::{
-        BootstrapConfig, RuntimeConfig, RuntimeError, ServerConfig, ServiceIdentity,
+        BootstrapConfig, ModuleRegistry, RuntimeConfig, RuntimeError, ServerConfig, ServiceIdentity,
     };
     use std::net::{IpAddr, Ipv4Addr};
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     fn runtime_config() -> RuntimeConfig {
         RuntimeConfig {
@@ -181,6 +182,7 @@ mod tests {
             config_dir: PathBuf::from("config"),
             external_config_dir: PathBuf::from("config"),
             resolved_values: Default::default(),
+            module_registry: Arc::new(ModuleRegistry::new()),
         }
     }
 

@@ -17,6 +17,7 @@ use light_runtime::{
     LightRuntimeBuilder,
     config::{BootstrapConfig, ClientConfig, PortalRegistryConfig, ServerConfig},
 };
+use light_runtime::{ModuleKind, ModuleRegistry};
 use mcp_client::{McpContent, McpGatewayClient};
 use model_provider::{ChatMessage, ChatRequest, ChatResponse, OllamaProvider, Provider, ToolSpec};
 use portal_registry::{PortalRegistryClient, RegistryHandler, ServiceRegistrationParams};
@@ -33,14 +34,14 @@ use uuid::Uuid;
 
 const MAX_SESSION_MESSAGES: usize = 40;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OllamaConfig {
     pub ollama_url: String,
     pub model: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpClientConfig {
     pub gateway_url: String,
@@ -479,9 +480,30 @@ async fn main() -> anyhow::Result<()> {
     let values_path = config_dir.join("values.yml");
     let values_yaml = std::fs::read_to_string(&values_path).unwrap_or_default();
     let loader = ConfigLoader::new(&values_yaml, None, None)?;
+    let module_registry = Arc::new(ModuleRegistry::new());
 
     let ollama_config: OllamaConfig = loader.load_typed([config_dir.join("ollama.yml")])?;
     let mcp_config: McpClientConfig = loader.load_typed([config_dir.join("mcp-client.yml")])?;
+    module_registry.register_loaded_config(
+        "light-agent/ollama",
+        "ollama",
+        ModuleKind::Application,
+        &ollama_config,
+        [],
+        true,
+        Some(true),
+        false,
+    )?;
+    module_registry.register_loaded_config(
+        "light-agent/mcp-client",
+        "mcp-client",
+        ModuleKind::Application,
+        &mcp_config,
+        [],
+        true,
+        Some(true),
+        false,
+    )?;
 
     // Load startup.yml (for bootstrap_ca_cert_path) and client.yml (for verify_hostname).
     // This mirrors how the config-server and controller-rs clients are configured in light-runtime.
@@ -580,6 +602,7 @@ async fn main() -> anyhow::Result<()> {
 
     let runtime = LightRuntimeBuilder::new(AxumTransport::new(app))
         .with_config_dir("config")
+        .with_module_registry(module_registry)
         .with_registry_client(Arc::clone(&registry))
         .build();
 

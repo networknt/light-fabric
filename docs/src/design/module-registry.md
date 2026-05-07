@@ -1,6 +1,6 @@
 # Module Registry
 
-Status: Phase 1 implemented; application registration and hot reload remain
+Status: Phase 2 implemented; controller reload operations and hot reload remain
 planned.
 
 ## Purpose
@@ -151,6 +151,12 @@ The helper should:
 
 This keeps the app code simple and prevents accidental registry entries that
 contain raw secrets.
+
+Phase 2 added this shared registered-loader path in `ModuleRegistry` and
+attached the registry to `RuntimeConfig` so apps that load after runtime
+bootstrap can register resolved config through the same runtime-owned registry.
+Apps that load before runtime startup can create the registry first, register
+their application configs, and pass that registry into `LightRuntimeBuilder`.
 
 ## Masking
 
@@ -391,20 +397,42 @@ only for control-plane operations.
 
 ## Application Integration
 
-`light-gateway` should be the first application integration because it already
-loads `gateway.yml` from `RuntimeConfig.resolved_values`,
-`config_dir`, and `external_config_dir`.
+`light-gateway` is integrated first because it already loads `gateway.yml` from
+`RuntimeConfig.resolved_values`, `config_dir`, and `external_config_dir`. It now
+uses `RuntimeConfig.module_registry.load_registered(...)`, so the returned
+typed config and the masked registry snapshot are produced from the same
+resolved YAML merge.
 
-`light-deployer` currently loads `deployer.yml` before the runtime is started.
-To register and reload it cleanly, move the deployer config load behind the
-runtime context or introduce a pre-runtime registration path that is later
-attached to `RuntimeConfig`.
+`light-deployer` loads `deployer.yml` before the runtime is started, so it
+creates a `ModuleRegistry` before loading its config, registers the final
+env-overridden deployer config, and passes the same registry to
+`LightRuntimeBuilder`.
 
-`light-agent` also loads application configs before runtime startup. It should
-eventually use the registered-loader path for `ollama.yml` and
-`mcp-client.yml`. The existing manual `PortalRegistryClient` setup must stay in
-mind so the registry feature does not reintroduce duplicate controller
-registration.
+`light-agent` also loads application configs before runtime startup. It now
+registers `ollama.yml` and `mcp-client.yml` in the pre-runtime registry and
+passes that registry into `LightRuntimeBuilder`. The existing manual
+`PortalRegistryClient` setup is unchanged so the registry feature does not
+reintroduce duplicate controller registration.
+
+## Current Registered Modules
+
+Phase 2 registers these modules:
+
+| Module ID | Config name | Kind | Reloadable |
+| --- | --- | --- | --- |
+| `light-runtime/startup` | `startup` | core | no |
+| `light-runtime/server` | `server` | core | no |
+| `light-runtime/client` | `client` | core | no |
+| `light-runtime/portal-registry` | `portal-registry` | core | no |
+| `light-gateway/gateway` | `gateway` | application | no |
+| `light-deployer/deployer` | `deployer` | application | no |
+| `light-agent/ollama` | `ollama` | application | no |
+| `light-agent/mcp-client` | `mcp-client` | application | no |
+
+The application modules are visible in `get_service_info` and `get_modules`
+once their owning application loads them. Their `reloadable` flag remains false
+until Phase 4 adds atomic config holders and module-specific reload
+implementations.
 
 ## Rollout Plan
 
@@ -421,10 +449,10 @@ registration.
 
 ### Phase 2: Application Registration
 
-- Convert `light-gateway/gateway` to registered config loading.
-- Convert `light-deployer/deployer`.
-- Convert `light-agent/ollama` and `light-agent/mcp-client`.
-- Add docs showing module IDs and reloadability.
+- Implemented: convert `light-gateway/gateway` to registered config loading.
+- Implemented: convert `light-deployer/deployer`.
+- Implemented: convert `light-agent/ollama` and `light-agent/mcp-client`.
+- Implemented: add docs showing module IDs and reloadability.
 
 ### Phase 3: Controller Operations
 
@@ -453,12 +481,13 @@ registration.
 - Should `server.maskConfigProperties=false` be allowed in production builds, or
   should Rust always mask known dangerous keys?
 
-## Recommended First Cut
+## Implementation Sequence
 
-Implement registry and masked server info first, without hot reload.
+Phase 1 implemented registry and masked server info first, without hot reload.
 
-That delivers immediate control-plane value and gives every Light Fabric
-instance a trustworthy runtime inventory. Once portal-view can display Rust
-modules next to Java modules, add reload one module at a time, starting with
+Phase 2 added application registration, so portal-view can display Rust
+application modules next to Java modules once it calls the MCP tools through
+`portal-registry`. The next implementation step is controller-triggered
+`reload_modules`, followed by reload one module at a time, starting with
 `light-gateway/gateway` because its current config loading path is already close
 to the target design.

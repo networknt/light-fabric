@@ -18,7 +18,7 @@ use crate::kube::{KubeExecutor, KubeRsExecutor, NoopKubeExecutor};
 use crate::policy::Policy;
 use anyhow::Context;
 use light_axum::AxumTransport;
-use light_runtime::LightRuntimeBuilder;
+use light_runtime::{LightRuntimeBuilder, ModuleRegistry};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
@@ -29,7 +29,8 @@ async fn main() -> anyhow::Result<()> {
     init_tracing();
 
     let config_dir = resolve_config_dir();
-    let config = DeployerConfig::load_from_dir(&config_dir)?;
+    let module_registry = Arc::new(ModuleRegistry::new());
+    let config = DeployerConfig::load_from_dir_registered(&config_dir, &module_registry)?;
     let template_base_dir = std::env::var("LIGHT_DEPLOYER_TEMPLATE_BASE_DIR")
         .ok()
         .map(PathBuf::from);
@@ -57,6 +58,7 @@ async fn main() -> anyhow::Result<()> {
     let service = DeployerService::new(policy, template_source, kube, events);
     let app = DeployerApp::new(service);
     let runtime = LightRuntimeBuilder::new(AxumTransport::new(app))
+        .with_module_registry(module_registry)
         .with_config_dir(config_dir)
         .build();
 

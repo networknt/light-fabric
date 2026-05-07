@@ -2,10 +2,13 @@ use crate::config::RuntimeConfig;
 use crate::runtime::RuntimeError;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use config_loader::ConfigLoader;
 use portal_registry::RegistryHandler;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 const MASKED_VALUE: &str = "*";
@@ -78,7 +81,7 @@ pub struct ModuleSummary {
     pub last_reload: Option<ReloadStatus>,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct ModuleRegistry {
     entries: RwLock<BTreeMap<String, ModuleEntry>>,
     mask_config_properties: RwLock<bool>,
@@ -130,6 +133,81 @@ impl ModuleRegistry {
         self.entries_write()
             .insert(entry.module_id.clone(), entry.clone());
         entry
+    }
+
+    pub fn register_loaded_config<T>(
+        &self,
+        module_id: impl Into<String>,
+        config_name: impl Into<String>,
+        kind: ModuleKind,
+        config: &T,
+        masks: impl IntoIterator<Item = MaskSpec>,
+        active: bool,
+        enabled: Option<bool>,
+        reloadable: bool,
+    ) -> Result<ModuleEntry, RuntimeError>
+    where
+        T: Serialize,
+    {
+        Ok(self.register_config(
+            module_id,
+            config_name,
+            kind,
+            serde_json::to_value(config)?,
+            masks,
+            active,
+            enabled,
+            reloadable,
+        ))
+    }
+
+    pub fn load_registered<T>(
+        &self,
+        runtime_config: &RuntimeConfig,
+        file_name: &str,
+        module_id: impl Into<String>,
+        config_name: impl Into<String>,
+        kind: ModuleKind,
+        masks: impl IntoIterator<Item = MaskSpec>,
+        enabled: Option<bool>,
+        reloadable: bool,
+    ) -> Result<T, RuntimeError>
+    where
+        T: DeserializeOwned + Serialize,
+    {
+        let password = std::env::var("light_4j_config_password").ok();
+        let loader = ConfigLoader::from_values(
+            runtime_config.resolved_values.clone(),
+            password.as_deref(),
+            None,
+        )?;
+
+        let mut paths = Vec::new();
+        let base_path = runtime_config.config_dir.join(file_name);
+        if base_path.exists() {
+            paths.push(base_path);
+        }
+        let external_path = runtime_config.external_config_dir.join(file_name);
+        if external_path.exists() && !paths.iter().any(|path| path == &external_path) {
+            paths.push(external_path);
+        }
+        if paths.is_empty() {
+            return Err(RuntimeError::MissingConfig(file_name.to_string()));
+        }
+
+        let merged = loader.load_merged_files(paths.iter().map(PathBuf::as_path))?;
+        let parsed = serde_yaml::from_value::<T>(merged)?;
+        self.register_loaded_config(
+            module_id,
+            config_name,
+            kind,
+            &parsed,
+            masks,
+            true,
+            enabled,
+            reloadable,
+        )?;
+        Ok(parsed)
     }
 
     pub fn register_runtime_configs(&self, config: &RuntimeConfig) -> Result<(), RuntimeError> {
@@ -431,8 +509,10 @@ mod tests {
     use crate::config::{
         BootstrapConfig, ClientConfig, PortalRegistryConfig, ServerConfig, ServiceIdentity,
     };
+    use serde::Deserialize;
     use serde_json::json;
     use std::collections::HashMap;
+    use tempfile::TempDir;
 
     struct DelegateHandler;
 
@@ -469,6 +549,7 @@ mod tests {
             config_dir: "config".into(),
             external_config_dir: "config-cache".into(),
             resolved_values: HashMap::new(),
+            module_registry: Arc::new(ModuleRegistry::new()),
         }
     }
 
@@ -519,6 +600,56 @@ mod tests {
         assert!(!rendered.contains("server-key.pem"));
         assert!(rendered.contains("light-runtime/server"));
         assert!(rendered.contains("portal-registry"));
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct SampleConfig {
+        password: String,
+        public_value: String,
+    }
+
+    #[test]
+    fn load_registered_resolves_and_stores_masked_config() {
+        let registry = ModuleRegistry::new();
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_config_dir = TempDir::new().expect("external config temp dir");
+        std::fs::write(
+            config_dir.path().join("sample.yml"),
+            "password: ${sample.password}\npublicValue: visible\n",
+        )
+        .expect("write sample config");
+        let mut config = runtime_config();
+        config.config_dir = config_dir.path().to_path_buf();
+        config.external_config_dir = external_config_dir.path().to_path_buf();
+        config.resolved_values.insert(
+            "sample.password".to_string(),
+            serde_yaml::Value::String("raw-secret".to_string()),
+        );
+
+        let loaded: SampleConfig = registry
+            .load_registered(
+                &config,
+                "sample.yml",
+                "test/sample",
+                "sample",
+                ModuleKind::Application,
+                [],
+                Some(true),
+                false,
+            )
+            .expect("load registered config");
+
+        assert_eq!(loaded.password, "raw-secret");
+        let rendered = serde_json::to_string(&registry.component_configs()).expect("json");
+        assert!(!rendered.contains("raw-secret"));
+        assert!(rendered.contains("visible"));
+        assert!(
+            registry
+                .module_summaries()
+                .iter()
+                .any(|entry| entry.module_id == "test/sample" && !entry.reloadable)
+        );
     }
 
     #[tokio::test]

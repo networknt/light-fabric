@@ -1,14 +1,12 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
-use config_loader::ConfigLoader;
 use light_pingora::{PingoraApp, PingoraTransport};
-use light_runtime::{LightRuntimeBuilder, RuntimeConfig, RuntimeError};
+use light_runtime::{LightRuntimeBuilder, ModuleKind, RuntimeConfig, RuntimeError};
 use pingora::http::ResponseHeader;
 use pingora::prelude::{HttpPeer, ProxyHttp, Session};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::net::ToSocketAddrs;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::info;
@@ -18,7 +16,7 @@ const GATEWAY_FILE: &str = "gateway.yml";
 const CONFIG_DIR: &str = "config";
 const EXTERNAL_CONFIG_DIR: &str = "config-cache";
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GatewayConfig {
     upstreams: Vec<GatewayUpstream>,
@@ -26,7 +24,7 @@ struct GatewayConfig {
     health_path: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GatewayUpstream {
     address: String,
@@ -194,25 +192,16 @@ async fn main() -> Result<()> {
 }
 
 fn load_gateway_config(config: &RuntimeConfig) -> Result<GatewayConfig, RuntimeError> {
-    let password = std::env::var("light_4j_config_password").ok();
-    let loader =
-        ConfigLoader::from_values(config.resolved_values.clone(), password.as_deref(), None)?;
-
-    let mut paths = Vec::new();
-    let base_path = config.config_dir.join(GATEWAY_FILE);
-    if base_path.exists() {
-        paths.push(base_path);
-    }
-    let external_path = config.external_config_dir.join(GATEWAY_FILE);
-    if external_path.exists() && !paths.iter().any(|path| path == &external_path) {
-        paths.push(external_path);
-    }
-    if paths.is_empty() {
-        return Err(RuntimeError::MissingConfig(GATEWAY_FILE.to_string()));
-    }
-
-    let merged = loader.load_merged_files(paths.iter().map(PathBuf::as_path))?;
-    serde_yaml::from_value(merged).map_err(RuntimeError::Yaml)
+    config.module_registry.load_registered(
+        config,
+        GATEWAY_FILE,
+        "light-gateway/gateway",
+        "gateway",
+        ModuleKind::Application,
+        [],
+        Some(true),
+        false,
+    )
 }
 
 fn default_health_path() -> String {
@@ -228,7 +217,9 @@ fn init_tracing() {
 mod tests {
     use super::*;
     use light_runtime::config::ClientConfig;
-    use light_runtime::{BootstrapConfig, PortalRegistryConfig, ServerConfig, ServiceIdentity};
+    use light_runtime::{
+        BootstrapConfig, ModuleRegistry, PortalRegistryConfig, ServerConfig, ServiceIdentity,
+    };
     use std::collections::HashMap;
     use tempfile::TempDir;
 
@@ -246,6 +237,7 @@ mod tests {
             config_dir: config_dir.path().to_path_buf(),
             external_config_dir: external_config_dir.path().to_path_buf(),
             resolved_values,
+            module_registry: Arc::new(ModuleRegistry::new()),
         }
     }
 
@@ -277,6 +269,13 @@ gateway.upstreams:
         assert_eq!(
             gateway.upstreams[0].host_header.as_deref(),
             Some("example.com")
+        );
+        assert!(
+            config
+                .module_registry
+                .module_summaries()
+                .iter()
+                .any(|entry| entry.module_id == "light-gateway/gateway" && !entry.reloadable)
         );
     }
 

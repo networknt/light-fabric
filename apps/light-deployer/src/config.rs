@@ -1,5 +1,6 @@
 use crate::model::DeploymentAction;
 use config_loader::ConfigLoader;
+use light_runtime::{ModuleKind, ModuleRegistry};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -58,12 +59,22 @@ impl Default for PruneConfig {
 }
 
 impl DeployerConfig {
-    pub fn load_from_dir(config_dir: impl AsRef<Path>) -> anyhow::Result<Self> {
+    pub fn load_from_dir_registered(
+        config_dir: impl AsRef<Path>,
+        registry: &ModuleRegistry,
+    ) -> anyhow::Result<Self> {
+        Self::load_from_dir_with_registry(config_dir, Some(registry))
+    }
+
+    fn load_from_dir_with_registry(
+        config_dir: impl AsRef<Path>,
+        registry: Option<&ModuleRegistry>,
+    ) -> anyhow::Result<Self> {
         let config_dir = config_dir.as_ref();
         let path = std::env::var("LIGHT_DEPLOYER_CONFIG")
             .map(PathBuf::from)
             .unwrap_or_else(|_| config_dir.join("deployer.yml"));
-        if path.exists() {
+        let config = if path.exists() {
             let password = std::env::var("light_4j_config_password")
                 .ok()
                 .filter(|value| !value.trim().is_empty());
@@ -72,12 +83,26 @@ impl DeployerConfig {
             let value = loader.load_merged_files([&path])?;
             let mut config: Self = serde_yaml::from_value(value)?;
             config.apply_env_overrides();
-            Ok(config)
+            config
         } else {
             let mut config = Self::default();
             config.apply_env_overrides();
-            Ok(config)
+            config
+        };
+
+        if let Some(registry) = registry {
+            registry.register_loaded_config(
+                "light-deployer/deployer",
+                "deployer",
+                ModuleKind::Application,
+                &config,
+                [],
+                true,
+                Some(true),
+                false,
+            )?;
         }
+        Ok(config)
     }
 
     fn apply_env_overrides(&mut self) {

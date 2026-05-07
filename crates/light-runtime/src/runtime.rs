@@ -421,6 +421,7 @@ where
             config_dir: self.config_dir.clone(),
             external_config_dir,
             resolved_values: values,
+            module_registry: Arc::clone(&self.module_registry),
         })
     }
 
