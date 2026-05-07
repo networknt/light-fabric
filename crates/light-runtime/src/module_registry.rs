@@ -81,6 +81,30 @@ pub struct ModuleSummary {
     pub last_reload: Option<ReloadStatus>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReloadSkipped {
+    pub module_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReloadFailed {
+    pub module_id: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReloadModulesResult {
+    /// Java-compatible alias consumed by portal-view today.
+    pub modules: Vec<String>,
+    pub reloaded: Vec<String>,
+    pub skipped: Vec<ReloadSkipped>,
+    pub failed: Vec<ReloadFailed>,
+}
+
 #[derive(Debug, Default)]
 pub struct ModuleRegistry {
     entries: RwLock<BTreeMap<String, ModuleEntry>>,
@@ -287,6 +311,10 @@ impl ModuleRegistry {
             .collect()
     }
 
+    pub fn module_ids(&self) -> Vec<String> {
+        self.entries_read().keys().cloned().collect()
+    }
+
     pub fn component_configs(&self) -> BTreeMap<String, JsonValue> {
         self.entries_read()
             .values()
@@ -320,6 +348,69 @@ impl ModuleRegistry {
             "plugins": [],
             "modules": self.module_summaries()
         })
+    }
+
+    pub fn reload_modules(&self, requested_modules: &[String]) -> ReloadModulesResult {
+        let module_ids = self.module_ids();
+        let target_modules = if requested_modules.is_empty()
+            || requested_modules
+                .first()
+                .is_some_and(|id| requested_modules.len() == 1 && is_all_marker(id))
+        {
+            module_ids
+        } else {
+            requested_modules.to_vec()
+        };
+
+        let mut result = ReloadModulesResult::default();
+        for module_id in target_modules {
+            let Some(entry) = self.entry(&module_id) else {
+                result.failed.push(ReloadFailed {
+                    module_id,
+                    message: "module not found".to_string(),
+                });
+                continue;
+            };
+
+            if !entry.reloadable {
+                self.set_last_reload(
+                    &module_id,
+                    "skipped",
+                    Some("module requires restart".to_string()),
+                );
+                result.skipped.push(ReloadSkipped {
+                    module_id,
+                    reason: "requiresRestart".to_string(),
+                });
+                continue;
+            }
+
+            self.set_last_reload(
+                &module_id,
+                "skipped",
+                Some("reload implementation is not registered".to_string()),
+            );
+            result.skipped.push(ReloadSkipped {
+                module_id,
+                reason: "reloadNotImplemented".to_string(),
+            });
+        }
+        result.modules = result.reloaded.clone();
+        result
+    }
+
+    fn entry(&self, module_id: &str) -> Option<ModuleEntry> {
+        self.entries_read().get(module_id).cloned()
+    }
+
+    fn set_last_reload(&self, module_id: &str, status: &str, message: Option<String>) {
+        if let Some(entry) = self.entries_write().get_mut(module_id) {
+            entry.last_reload = Some(ReloadStatus {
+                status: status.to_string(),
+                message,
+                completed_at: Utc::now(),
+            });
+        }
     }
 
     fn entries_read(&self) -> RwLockReadGuard<'_, BTreeMap<String, ModuleEntry>> {
@@ -381,7 +472,20 @@ impl RegistryHandler for RuntimeMcpHandler {
                 };
                 match name {
                     "get_service_info" => self.registry.server_info(&self.config),
-                    "get_modules" => json!({ "modules": self.registry.module_summaries() }),
+                    "get_modules" => json!({ "modules": self.registry.module_ids() }),
+                    "reload_modules" => match parse_reload_modules(params.get("arguments")) {
+                        Ok(modules) => serde_json::to_value(self.registry.reload_modules(&modules))
+                            .unwrap_or_else(|error| {
+                                json!({
+                                    "status": "error",
+                                    "message": error.to_string()
+                                })
+                            }),
+                        Err(message) => json!({
+                            "status": "error",
+                            "message": message
+                        }),
+                    },
                     _ => self.delegate.handle_request(method, params).await,
                 }
             }
@@ -402,13 +506,62 @@ fn runtime_tools() -> JsonValue {
         },
         {
             "name": "get_modules",
-            "description": "Retrieve registered runtime modules and reloadability metadata.",
+            "description": "Retrieve registered runtime module IDs.",
             "inputSchema": {
                 "type": "object",
                 "properties": {}
             }
+        },
+        {
+            "name": "reload_modules",
+            "description": "Reload selected runtime modules, or all modules when omitted. Non-reloadable modules are reported as skipped.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "modules": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    }
+                }
+            }
         }
     ])
+}
+
+fn parse_reload_modules(arguments: Option<&JsonValue>) -> Result<Vec<String>, String> {
+    let Some(arguments) = arguments else {
+        return Ok(Vec::new());
+    };
+    if arguments.is_null() {
+        return Ok(Vec::new());
+    }
+    let Some(modules) = arguments.get("modules") else {
+        return Ok(Vec::new());
+    };
+    if modules.is_null() {
+        return Ok(Vec::new());
+    }
+    let Some(values) = modules.as_array() else {
+        return Err("reload_modules arguments.modules must be an array".to_string());
+    };
+
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    "reload_modules arguments.modules entries must be non-empty strings".to_string()
+                })
+        })
+        .collect()
+}
+
+fn is_all_marker(module_id: &str) -> bool {
+    module_id.eq_ignore_ascii_case("all")
 }
 
 fn mask_config_properties(config: &RuntimeConfig) -> bool {
@@ -652,8 +805,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reload_modules_reports_skipped_and_failed_modules() {
+        let registry = ModuleRegistry::new();
+        registry.register_config(
+            "test/restart-required",
+            "restart-required",
+            ModuleKind::Application,
+            json!({ "enabled": true }),
+            [],
+            true,
+            Some(true),
+            false,
+        );
+
+        let result = registry.reload_modules(&[
+            "test/restart-required".to_string(),
+            "test/missing".to_string(),
+        ]);
+
+        assert!(result.modules.is_empty());
+        assert!(result.reloaded.is_empty());
+        assert_eq!(result.skipped[0].module_id, "test/restart-required");
+        assert_eq!(result.skipped[0].reason, "requiresRestart");
+        assert_eq!(result.failed[0].module_id, "test/missing");
+        assert!(registry.module_summaries().iter().any(|entry| {
+            entry.module_id == "test/restart-required"
+                && entry
+                    .last_reload
+                    .as_ref()
+                    .is_some_and(|status| status.status == "skipped")
+        }));
+    }
+
     #[tokio::test]
-    async fn runtime_mcp_handler_exposes_service_info_and_modules() {
+    async fn runtime_mcp_handler_exposes_management_tools() {
         let registry = Arc::new(ModuleRegistry::new());
         let config = runtime_config();
         registry
@@ -664,6 +850,13 @@ mod tests {
 
         let tools = handler.handle_request("tools/list", json!({})).await;
         assert_eq!(tools["tools"][0]["name"], "get_service_info");
+        assert!(
+            tools["tools"]
+                .as_array()
+                .expect("tools array")
+                .iter()
+                .any(|tool| tool["name"] == "reload_modules")
+        );
 
         let info = handler
             .handle_request(
@@ -679,6 +872,22 @@ mod tests {
             .await;
         assert!(
             modules["modules"]
+                .as_array()
+                .is_some_and(|items| items.iter().all(JsonValue::is_string))
+        );
+
+        let reload = handler
+            .handle_request(
+                "tools/call",
+                json!({
+                    "name": "reload_modules",
+                    "arguments": { "modules": ["ALL"] }
+                }),
+            )
+            .await;
+        assert_eq!(reload["modules"], json!([]));
+        assert!(
+            reload["skipped"]
                 .as_array()
                 .is_some_and(|items| !items.is_empty())
         );

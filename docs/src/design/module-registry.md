@@ -1,7 +1,6 @@
 # Module Registry
 
-Status: Phase 2 implemented; controller reload operations and hot reload remain
-planned.
+Status: Phase 3 implemented; hot reload remains planned.
 
 ## Purpose
 
@@ -39,8 +38,9 @@ application can expose the same control-plane behavior.
   `get_service_info` MCP tool.
 - Expose a module list through the `get_modules` MCP tool for config reload
   selection.
-- Support reloading one module, several modules, or all reloadable modules
-  through the `reload_modules` MCP tool.
+- Support control-plane reload requests for one module, several modules, or all
+  modules through the `reload_modules` MCP tool. Phase 3 reports
+  non-reloadable modules as skipped; Phase 4 adds real hot reload.
 - Keep the feature transport-neutral by routing management requests through
   `portal-registry`, not through framework-specific REST routes.
 
@@ -283,6 +283,21 @@ MCP request from the controller, dispatches it to the local runtime registry,
 and returns the result through the same websocket session. Light Fabric should
 not expose a parallel REST admin surface for this feature.
 
+For compatibility with the existing Java and portal-view workflow,
+`get_modules` returns a string list of module IDs:
+
+```json
+{
+  "modules": [
+    "light-runtime/server",
+    "light-gateway/gateway"
+  ]
+}
+```
+
+The richer module metadata remains available in the `modules` field of
+`get_service_info`.
+
 ## Reload Request
 
 The `reload_modules` tool should accept omitted arguments, `ALL`, or explicit
@@ -297,12 +312,15 @@ module IDs.
 }
 ```
 
-An empty `modules` array or `["ALL"]` means all reloadable modules.
+An omitted `modules` value, an empty array, or `["ALL"]` targets all registered
+modules. Until Phase 4 adds concrete reload implementations, registered modules
+are reported as skipped instead of being marked as reloaded.
 
 The response should be explicit about what happened:
 
 ```json
 {
+  "modules": ["light-gateway/gateway"],
   "reloaded": ["light-gateway/gateway"],
   "skipped": [
     {
@@ -318,6 +336,10 @@ The response should be explicit about what happened:
   ]
 }
 ```
+
+`modules` is a Java-compatible alias for the successfully reloaded module IDs
+and is the field portal-view reads today. `reloaded`, `skipped`, and `failed`
+carry the more explicit Rust result details.
 
 ## Reload Implementation
 
@@ -429,10 +451,10 @@ Phase 2 registers these modules:
 | `light-agent/ollama` | `ollama` | application | no |
 | `light-agent/mcp-client` | `mcp-client` | application | no |
 
-The application modules are visible in `get_service_info` and `get_modules`
-once their owning application loads them. Their `reloadable` flag remains false
-until Phase 4 adds atomic config holders and module-specific reload
-implementations.
+The application modules are visible in `get_service_info` once their owning
+application loads them. `get_modules` returns the corresponding module ID
+strings for portal-view selection. Their `reloadable` flag remains false until
+Phase 4 adds atomic config holders and module-specific reload implementations.
 
 ## Rollout Plan
 
@@ -456,9 +478,12 @@ implementations.
 
 ### Phase 3: Controller Operations
 
-- Add MCP `tools/list` and `tools/call` support for `reload_modules`.
-- Align portal-view calls so Java and Rust instances can be managed with the
-  same control-plane workflow.
+- Implemented: add MCP `tools/list` and `tools/call` support for
+  `reload_modules`.
+- Implemented: align portal-view calls so Java and Rust instances can be
+  managed with the same control-plane workflow.
+- Implemented: return Java-compatible `modules` string lists while preserving
+  detailed `reloaded`, `skipped`, and `failed` reload result fields.
 
 ### Phase 4: Hot Reload
 
@@ -476,8 +501,6 @@ implementations.
   `modules` includes inactive-but-known modules?
 - Should MCP tool execution be enabled whenever `portal-registry` is enabled,
   or guarded by a separate admin-tools flag?
-- Should `reload_modules` use module IDs only, or accept legacy Java-style class
-  names for control-plane compatibility during migration?
 - Should `server.maskConfigProperties=false` be allowed in production builds, or
   should Rust always mask known dangerous keys?
 
@@ -487,7 +510,9 @@ Phase 1 implemented registry and masked server info first, without hot reload.
 
 Phase 2 added application registration, so portal-view can display Rust
 application modules next to Java modules once it calls the MCP tools through
-`portal-registry`. The next implementation step is controller-triggered
-`reload_modules`, followed by reload one module at a time, starting with
-`light-gateway/gateway` because its current config loading path is already close
-to the target design.
+`portal-registry`.
+
+Phase 3 added the controller-facing `reload_modules` tool and Java-compatible
+module ID lists. The next implementation step is real hot reload one module at
+a time, starting with `light-gateway/gateway` because its current config
+loading path is already close to the target design.
