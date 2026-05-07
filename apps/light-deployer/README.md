@@ -19,6 +19,48 @@ The app follows the same runtime pattern as `light-agent`: `light-runtime`
 owns startup, server binding, config loading, and optional portal registry
 registration through `light-axum`.
 
+## Deploy To Kubernetes Cluster
+
+• No code change should be needed for remote checkout. The deployer already does it in light-fabric/apps/light-deployer/src/git.rs:43 when LIGHT_DEPLOYER_TEMPLATE_BASE_DIR is
+  not set and template.repoUrl is not "local".
+
+  Change the deployment flow like this:
+
+  1. Do not set LIGHT_DEPLOYER_TEMPLATE_BASE_DIR in the Kubernetes deployment.
+  2. Do not use template.repoUrl: "local" in deploy requests.
+  3. Use an HTTPS Git URL, real ref, and template path.
+
+  For light-gateway:
+
+  "template": {
+    "repoUrl": "https://github.com/networknt/light-gateway.git",
+    "ref": "main",
+    "path": "k8s/light-gateway"
+  }
+
+  For openapi-petstore:
+
+  "template": {
+    "repoUrl": "https://github.com/networknt/openapi-petstore.git",
+    "ref": "master",
+    "path": "k8s"
+  }
+
+  Use the actual branch/tag/commit that contains the pushed Kubernetes templates.
+
+  For private repos, add a Kubernetes Secret and expose it as:
+
+  - name: LIGHT_DEPLOYER_GIT_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: light-deployer-git
+        key: token
+
+  Use HTTPS URLs, not git@github.com:...; the current implementation supports HTTPS token auth.
+
+  One separate Kubernetes issue: the current sample RBAC only grants access in the light-deployer namespace. If the in-cluster deployer will deploy into light-gateway or
+  openapi-petstore, bind its ServiceAccount into those target namespaces, or use a ClusterRole/ClusterRoleBinding.
+
 ## Deploy To MicroK8s
 
 Build the image from the repository root:
