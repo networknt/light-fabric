@@ -1,8 +1,10 @@
+pub mod cache;
 pub mod config;
 pub mod module_registry;
 pub mod runtime;
 pub mod transport;
 
+pub use cache::{CacheRegistry, ClearCacheOutcome, MokaRuntimeCache, RuntimeCache};
 pub use config::{
     BootstrapConfig, PortalRegistryConfig, RemoteBootstrapResult, RuntimeConfig, ServerConfig,
     ServiceIdentity,

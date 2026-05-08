@@ -17,6 +17,7 @@ use tokio::time::timeout;
 use tracing::{info, warn};
 use url::Url;
 
+use crate::cache::CacheRegistry;
 use crate::config::{
     BootstrapConfig, ClientConfig, PortalRegistryConfig, RemoteBootstrapResult, RuntimeConfig,
     ServerConfig, ServiceIdentity, default_accept_header, default_environment,
@@ -84,6 +85,7 @@ where
     external_config_dir: Option<PathBuf>,
     modules: Vec<Arc<dyn Module>>,
     module_registry: Arc<ModuleRegistry>,
+    cache_registry: Option<Arc<CacheRegistry>>,
     registration_timeout: Duration,
     registry_handler: Arc<dyn RegistryHandler>,
     registry_client: Option<Arc<PortalRegistryClient>>,
@@ -100,6 +102,7 @@ where
             external_config_dir: None,
             modules: Vec::new(),
             module_registry: Arc::new(ModuleRegistry::new()),
+            cache_registry: None,
             registration_timeout: Duration::from_secs(5),
             registry_handler: Arc::new(NoopRegistryHandler),
             registry_client: None,
@@ -126,6 +129,11 @@ where
         self
     }
 
+    pub fn with_cache_registry(mut self, cache_registry: Arc<CacheRegistry>) -> Self {
+        self.cache_registry = Some(cache_registry);
+        self
+    }
+
     pub fn with_registration_timeout(mut self, registration_timeout: Duration) -> Self {
         self.registration_timeout = registration_timeout;
         self
@@ -148,6 +156,7 @@ where
             external_config_dir: self.external_config_dir,
             modules: self.modules,
             module_registry: self.module_registry,
+            cache_registry: self.cache_registry,
             registration_timeout: self.registration_timeout,
             registry_handler: self.registry_handler,
             registry_client: self.registry_client,
@@ -165,6 +174,7 @@ where
     external_config_dir: Option<PathBuf>,
     modules: Vec<Arc<dyn Module>>,
     module_registry: Arc<ModuleRegistry>,
+    cache_registry: Option<Arc<CacheRegistry>>,
     registration_timeout: Duration,
     registry_handler: Arc<dyn RegistryHandler>,
     registry_client: Option<Arc<PortalRegistryClient>>,
@@ -182,6 +192,7 @@ where
     registration_task: Option<JoinHandle<()>>,
     modules: Vec<Arc<dyn Module>>,
     pub module_registry: Arc<ModuleRegistry>,
+    pub cache_registry: Option<Arc<CacheRegistry>>,
 }
 
 impl<T> RunningRuntime<T>
@@ -289,6 +300,7 @@ where
             registration_task,
             modules: self.modules,
             module_registry: self.module_registry,
+            cache_registry: self.cache_registry,
         })
     }
 
@@ -470,11 +482,15 @@ where
         let portal_url = Url::parse(&portal_registry.portal_url)?;
         let ws_url = to_microservice_ws_url(&portal_url)?;
         let token = portal_token(&portal_registry).ok_or(RuntimeError::MissingPortalToken)?;
-        let registry_handler: Arc<dyn RegistryHandler> = Arc::new(RuntimeMcpHandler::new(
+        let mut runtime_handler = RuntimeMcpHandler::new(
             Arc::clone(&self.module_registry),
             runtime_config.clone(),
             Arc::clone(&self.registry_handler),
-        ));
+        );
+        if let Some(cache_registry) = self.cache_registry.as_ref() {
+            runtime_handler = runtime_handler.with_cache_registry(Arc::clone(cache_registry));
+        }
+        let registry_handler: Arc<dyn RegistryHandler> = Arc::new(runtime_handler);
         let mut registration = RegistrationBuilder::new(
             &runtime_config.service_identity.service_id,
             &runtime_config.service_identity.version,

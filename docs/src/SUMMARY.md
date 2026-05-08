@@ -23,6 +23,7 @@
 - [Database Design](design/database-design.md)
 - [Light-Deployer](design/light-deployer.md)
 - [Module Registry](design/module-registry.md)
+- [Cache Control Plane](design/cache-control-plane.md)
 
 # Crate
 

@@ -1,3 +1,4 @@
+use crate::cache::CacheRegistry;
 use crate::config::RuntimeConfig;
 use crate::runtime::RuntimeError;
 use async_trait::async_trait;
@@ -568,6 +569,7 @@ pub struct RuntimeMcpHandler {
     registry: Arc<ModuleRegistry>,
     config: RuntimeConfig,
     delegate: Arc<dyn RegistryHandler>,
+    cache_registry: Option<Arc<CacheRegistry>>,
 }
 
 impl RuntimeMcpHandler {
@@ -580,7 +582,13 @@ impl RuntimeMcpHandler {
             registry,
             config,
             delegate,
+            cache_registry: None,
         }
+    }
+
+    pub fn with_cache_registry(mut self, cache_registry: Arc<CacheRegistry>) -> Self {
+        self.cache_registry = Some(cache_registry);
+        self
     }
 }
 
@@ -603,6 +611,9 @@ impl RegistryHandler for RuntimeMcpHandler {
                 match name {
                     "get_service_info" => self.registry.server_info(&self.config),
                     "get_modules" => json!({ "modules": self.registry.module_ids() }),
+                    "list_caches" => self.list_caches(),
+                    "get_cache_entries" => self.get_cache_entries(params.get("arguments")).await,
+                    "clear_cache" => self.clear_cache(params.get("arguments")).await,
                     "reload_modules" => match parse_reload_modules(params.get("arguments")) {
                         Ok(modules) => {
                             let result = match self.config.reload_context().await {
@@ -625,6 +636,71 @@ impl RegistryHandler for RuntimeMcpHandler {
                 }
             }
             _ => self.delegate.handle_request(method, params).await,
+        }
+    }
+}
+
+impl RuntimeMcpHandler {
+    fn list_caches(&self) -> JsonValue {
+        let Some(cache_registry) = self.cache_registry.as_ref() else {
+            return unsupported_cache_response(None);
+        };
+
+        json!({
+            "supported": true,
+            "status": "success",
+            "caches": cache_registry.names()
+        })
+    }
+
+    async fn get_cache_entries(&self, arguments: Option<&JsonValue>) -> JsonValue {
+        let name = match parse_cache_name(arguments, "get_cache_entries") {
+            Ok(name) => name,
+            Err(message) => {
+                return json!({
+                    "status": "error",
+                    "message": message
+                });
+            }
+        };
+        let Some(cache_registry) = self.cache_registry.as_ref() else {
+            return unsupported_cache_response(Some(&name));
+        };
+
+        match cache_registry.entries_summary(&name).await {
+            Some(entries) => json!({
+                "supported": true,
+                "status": "success",
+                "name": name,
+                "entries": entries
+            }),
+            None => cache_not_found_response(&name),
+        }
+    }
+
+    async fn clear_cache(&self, arguments: Option<&JsonValue>) -> JsonValue {
+        let name = match parse_cache_name(arguments, "clear_cache") {
+            Ok(name) => name,
+            Err(message) => {
+                return json!({
+                    "status": "error",
+                    "message": message
+                });
+            }
+        };
+        let Some(cache_registry) = self.cache_registry.as_ref() else {
+            return unsupported_cache_response(Some(&name));
+        };
+
+        match cache_registry.clear(&name).await {
+            Some(outcome) => json!({
+                "supported": true,
+                "status": "success",
+                "name": name,
+                "beforeSize": outcome.before_size,
+                "afterSize": outcome.after_size
+            }),
+            None => cache_not_found_response(&name),
         }
     }
 }
@@ -659,8 +735,73 @@ fn runtime_tools() -> JsonValue {
                     }
                 }
             }
+        },
+        {
+            "name": "list_caches",
+            "description": "Retrieve available runtime caches.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        },
+        {
+            "name": "get_cache_entries",
+            "description": "Retrieve summarized entries from a named runtime cache.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                    "name": { "type": "string" }
+                }
+            }
+        },
+        {
+            "name": "clear_cache",
+            "description": "Clear all entries from a named runtime cache.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                    "name": { "type": "string" }
+                }
+            }
         }
     ])
+}
+
+fn parse_cache_name(arguments: Option<&JsonValue>, tool_name: &str) -> Result<String, String> {
+    let Some(arguments) = arguments else {
+        return Err(format!("{tool_name} arguments.name is required"));
+    };
+    let Some(name) = arguments.get("name") else {
+        return Err(format!("{tool_name} arguments.name is required"));
+    };
+    name.as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("{tool_name} arguments.name must be a non-empty string"))
+}
+
+fn unsupported_cache_response(name: Option<&str>) -> JsonValue {
+    let mut response = json!({
+        "supported": false,
+        "status": "unsupported",
+        "message": "Cache support is not available on this service."
+    });
+    if let Some(name) = name {
+        response["name"] = JsonValue::String(name.to_string());
+    }
+    response
+}
+
+fn cache_not_found_response(name: &str) -> JsonValue {
+    json!({
+        "supported": true,
+        "status": "not_found",
+        "name": name,
+        "message": format!("Cache {name} was not found.")
+    })
 }
 
 fn parse_reload_modules(arguments: Option<&JsonValue>) -> Result<Vec<String>, String> {
@@ -817,6 +958,7 @@ fn hostname() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::{CacheRegistry, MokaRuntimeCache};
     use crate::config::{
         BootstrapConfig, ClientConfig, PortalRegistryConfig, ServerConfig, ServiceIdentity,
     };
@@ -1048,6 +1190,13 @@ mod tests {
                 .iter()
                 .any(|tool| tool["name"] == "reload_modules")
         );
+        assert!(
+            tools["tools"]
+                .as_array()
+                .expect("tools array")
+                .iter()
+                .any(|tool| tool["name"] == "clear_cache")
+        );
 
         let info = handler
             .handle_request(
@@ -1082,5 +1231,113 @@ mod tests {
                 .as_array()
                 .is_some_and(|items| !items.is_empty())
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_mcp_handler_reports_cache_tools_unsupported_without_registry() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let config = runtime_config();
+        let handler =
+            RuntimeMcpHandler::new(Arc::clone(&registry), config, Arc::new(DelegateHandler));
+
+        let list = handler
+            .handle_request("tools/call", json!({ "name": "list_caches" }))
+            .await;
+        assert_eq!(list["supported"], false);
+        assert_eq!(list["status"], "unsupported");
+
+        let entries = handler
+            .handle_request(
+                "tools/call",
+                json!({
+                    "name": "get_cache_entries",
+                    "arguments": { "name": "reference-data" }
+                }),
+            )
+            .await;
+        assert_eq!(entries["supported"], false);
+        assert_eq!(entries["status"], "unsupported");
+        assert_eq!(entries["name"], "reference-data");
+
+        let clear = handler
+            .handle_request(
+                "tools/call",
+                json!({
+                    "name": "clear_cache",
+                    "arguments": { "name": "reference-data" }
+                }),
+            )
+            .await;
+        assert_eq!(clear["supported"], false);
+        assert_eq!(clear["status"], "unsupported");
+        assert_eq!(clear["name"], "reference-data");
+    }
+
+    #[tokio::test]
+    async fn runtime_mcp_handler_lists_reads_and_clears_registered_moka_cache() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let cache_registry = Arc::new(CacheRegistry::new());
+        let cache: MokaRuntimeCache<String, JsonValue> = MokaRuntimeCache::new(100);
+        cache
+            .insert("alpha".to_string(), json!({ "value": 1 }))
+            .await;
+        cache
+            .insert("beta".to_string(), json!({ "value": 2 }))
+            .await;
+        cache_registry.register("reference-data", cache);
+
+        let handler = RuntimeMcpHandler::new(
+            Arc::clone(&registry),
+            runtime_config(),
+            Arc::new(DelegateHandler),
+        )
+        .with_cache_registry(Arc::clone(&cache_registry));
+
+        let list = handler
+            .handle_request("tools/call", json!({ "name": "list_caches" }))
+            .await;
+        assert_eq!(list["supported"], true);
+        assert_eq!(list["status"], "success");
+        assert_eq!(list["caches"], json!(["reference-data"]));
+
+        let entries = handler
+            .handle_request(
+                "tools/call",
+                json!({
+                    "name": "get_cache_entries",
+                    "arguments": { "name": "reference-data" }
+                }),
+            )
+            .await;
+        assert_eq!(entries["supported"], true);
+        assert_eq!(entries["status"], "success");
+        assert_eq!(entries["entries"]["alpha"]["value"], 1);
+        assert_eq!(entries["entries"]["beta"]["value"], 2);
+
+        let clear = handler
+            .handle_request(
+                "tools/call",
+                json!({
+                    "name": "clear_cache",
+                    "arguments": { "name": "reference-data" }
+                }),
+            )
+            .await;
+        assert_eq!(clear["supported"], true);
+        assert_eq!(clear["status"], "success");
+        assert_eq!(clear["name"], "reference-data");
+        assert_eq!(clear["beforeSize"], 2);
+        assert_eq!(clear["afterSize"], 0);
+
+        let entries_after_clear = handler
+            .handle_request(
+                "tools/call",
+                json!({
+                    "name": "get_cache_entries",
+                    "arguments": { "name": "reference-data" }
+                }),
+            )
+            .await;
+        assert_eq!(entries_after_clear["entries"], json!({}));
     }
 }
