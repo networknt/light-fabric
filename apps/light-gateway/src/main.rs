@@ -2,14 +2,19 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
 use light_pingora::{
-    ActiveHandlerSet, CorrelationConfig, CorrelationState, CorsConfig, CorsRequestOutcome,
-    CorsResponseHeaders, HandlerBuildContext, HandlerMetricsLogLevel, MetricsConfig,
-    MetricsRecorder, PingoraApp, PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerKind,
-    PingoraHandlerRegistry, PingoraTransport, ProxyRoute, ProxyTarget, StaticResolution,
-    StaticResourceSet, apply_correlation_request, apply_correlation_response, apply_cors_response,
-    build_metrics_event, correlation_id_for_upstream, evaluate_cors_request, load_active_handlers,
-    load_correlation_config, load_cors_config, load_metrics_config, load_proxy_route,
-    load_static_resources,
+    ActiveHandlerSet, ApiKeyConfig, AuthPrincipal, BasicAuthConfig, CorrelationConfig,
+    CorrelationState, CorsConfig, CorsRequestOutcome, CorsResponseHeaders, HandlerBuildContext,
+    HandlerMetricsLogLevel, HandlerRejection, HeaderConfig, MetricsConfig, MetricsRecorder,
+    PingoraApp, PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerKind,
+    PingoraHandlerRegistry, PingoraTransport, ProxyRoute, ProxyTarget, RateLimitHeaders,
+    RateLimitRuntime, SecurityRuntime, StaticResolution, StaticResourceSet, UnifiedSecurityConfig,
+    apply_correlation_request, apply_correlation_response, apply_cors_response,
+    apply_header_request, apply_header_response, apply_rate_limit_headers, build_metrics_event,
+    check_rate_limit, correlation_id_for_upstream, evaluate_cors_request, load_active_handlers,
+    load_api_key_config, load_basic_auth_config, load_correlation_config, load_cors_config,
+    load_header_config, load_metrics_config, load_proxy_route, load_rate_limit_runtime,
+    load_security_runtime, load_static_resources, load_unified_security_config, verify_api_key,
+    verify_basic_auth, verify_jwt_request, verify_unified_security,
 };
 use light_runtime::{
     ConfigManager, LightRuntimeBuilder, ReloadContext, ReloadOutcome, ReloadableModule,
@@ -45,6 +50,12 @@ struct GatewayProxy {
     correlation_config: Arc<ConfigManager<Option<CorrelationConfig>>>,
     cors_config: Arc<ConfigManager<Option<CorsConfig>>>,
     metrics_config: Arc<ConfigManager<Option<MetricsConfig>>>,
+    header_config: Arc<ConfigManager<Option<HeaderConfig>>>,
+    api_key_config: Arc<ConfigManager<Option<ApiKeyConfig>>>,
+    basic_auth_config: Arc<ConfigManager<Option<BasicAuthConfig>>>,
+    security_runtime: Arc<ConfigManager<Option<SecurityRuntime>>>,
+    unified_security_config: Arc<ConfigManager<Option<UnifiedSecurityConfig>>>,
+    rate_limit_runtime: Arc<ConfigManager<Option<RateLimitRuntime>>>,
     metrics_recorder: Arc<MetricsRecorder>,
     proxy_route: Arc<ConfigManager<Option<ProxyRoute>>>,
     static_resources: Arc<ConfigManager<StaticResourceSet>>,
@@ -61,12 +72,51 @@ impl GatewayProxy {
         let cors_config = load_cors_config(config, active_handlers.is_handler_active("cors"))?;
         let metrics_config =
             load_metrics_config(config, active_handlers.is_handler_active("metrics"))?;
+        let header_config = load_header_config(
+            config,
+            handler_active(&active_handlers, &["header", "headers"]),
+        )?;
+        let api_key_config = load_api_key_config(
+            config,
+            handler_active(
+                &active_handlers,
+                &["api-key", "apikey", "unified-security", "unified"],
+            ),
+        )?;
+        let basic_auth_config = load_basic_auth_config(
+            config,
+            handler_active(
+                &active_handlers,
+                &["basic-auth", "basic", "unified-security", "unified"],
+            ),
+        )?;
+        let security_runtime = load_security_runtime(
+            config,
+            handler_active(
+                &active_handlers,
+                &["security", "jwt", "unified-security", "unified"],
+            ),
+        )?;
+        let unified_security_config = load_unified_security_config(
+            config,
+            handler_active(&active_handlers, &["unified-security", "unified"]),
+        )?;
+        let rate_limit_runtime = load_rate_limit_runtime(
+            config,
+            handler_active(&active_handlers, &["limit", "rate-limit"]),
+        )?;
         let proxy_route = load_proxy_route(config)?;
         let static_resources = load_static_resources(config)?;
         let active_handlers = Arc::new(ConfigManager::new(active_handlers));
         let correlation_config = Arc::new(ConfigManager::new(correlation_config));
         let cors_config = Arc::new(ConfigManager::new(cors_config));
         let metrics_config = Arc::new(ConfigManager::new(metrics_config));
+        let header_config = Arc::new(ConfigManager::new(header_config));
+        let api_key_config = Arc::new(ConfigManager::new(api_key_config));
+        let basic_auth_config = Arc::new(ConfigManager::new(basic_auth_config));
+        let security_runtime = Arc::new(ConfigManager::new(security_runtime));
+        let unified_security_config = Arc::new(ConfigManager::new(unified_security_config));
+        let rate_limit_runtime = Arc::new(ConfigManager::new(rate_limit_runtime));
         let proxy_route = Arc::new(ConfigManager::new(proxy_route));
         let static_resources = Arc::new(ConfigManager::new(static_resources));
         let metrics_recorder = Arc::new(MetricsRecorder::default());
@@ -78,6 +128,12 @@ impl GatewayProxy {
                 correlation_config: Arc::clone(&correlation_config),
                 cors_config: Arc::clone(&cors_config),
                 metrics_config: Arc::clone(&metrics_config),
+                header_config: Arc::clone(&header_config),
+                api_key_config: Arc::clone(&api_key_config),
+                basic_auth_config: Arc::clone(&basic_auth_config),
+                security_runtime: Arc::clone(&security_runtime),
+                unified_security_config: Arc::clone(&unified_security_config),
+                rate_limit_runtime: Arc::clone(&rate_limit_runtime),
             }),
         );
         config.module_registry.register_reloader(
@@ -102,6 +158,48 @@ impl GatewayProxy {
             }),
         );
         config.module_registry.register_reloader(
+            light_pingora::HEADER_MODULE_ID,
+            Arc::new(HeaderReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                header_config: Arc::clone(&header_config),
+            }),
+        );
+        config.module_registry.register_reloader(
+            light_pingora::APIKEY_MODULE_ID,
+            Arc::new(ApiKeyReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                api_key_config: Arc::clone(&api_key_config),
+            }),
+        );
+        config.module_registry.register_reloader(
+            light_pingora::BASIC_AUTH_MODULE_ID,
+            Arc::new(BasicAuthReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                basic_auth_config: Arc::clone(&basic_auth_config),
+            }),
+        );
+        config.module_registry.register_reloader(
+            light_pingora::SECURITY_MODULE_ID,
+            Arc::new(SecurityReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                security_runtime: Arc::clone(&security_runtime),
+            }),
+        );
+        config.module_registry.register_reloader(
+            light_pingora::UNIFIED_SECURITY_MODULE_ID,
+            Arc::new(UnifiedSecurityReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                unified_security_config: Arc::clone(&unified_security_config),
+            }),
+        );
+        config.module_registry.register_reloader(
+            light_pingora::LIMIT_MODULE_ID,
+            Arc::new(RateLimitReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                rate_limit_runtime: Arc::clone(&rate_limit_runtime),
+            }),
+        );
+        config.module_registry.register_reloader(
             light_pingora::PROXY_MODULE_ID,
             Arc::new(ProxyReloader {
                 proxy_route: Arc::clone(&proxy_route),
@@ -123,6 +221,12 @@ impl GatewayProxy {
             correlation_config,
             cors_config,
             metrics_config,
+            header_config,
+            api_key_config,
+            basic_auth_config,
+            security_runtime,
+            unified_security_config,
+            rate_limit_runtime,
             metrics_recorder,
             proxy_route,
             static_resources,
@@ -229,17 +333,42 @@ impl GatewayProxy {
         cache_control: Option<&str>,
         body: Bytes,
     ) -> pingora::Result<bool> {
+        self.write_bytes_response_with_headers(
+            session,
+            ctx,
+            status,
+            content_type,
+            cache_control,
+            body,
+            &[],
+        )
+        .await
+    }
+
+    async fn write_bytes_response_with_headers(
+        &self,
+        session: &mut Session,
+        ctx: &mut GatewayRequestContext,
+        status: u16,
+        content_type: &str,
+        cache_control: Option<&str>,
+        body: Bytes,
+        extra_headers: &[(String, String)],
+    ) -> pingora::Result<bool> {
         let is_head = session
             .req_header()
             .method
             .as_str()
             .eq_ignore_ascii_case("HEAD");
-        let mut response = ResponseHeader::build(status, Some(8))?;
+        let mut response = ResponseHeader::build(status, Some(8 + extra_headers.len()))?;
         response.insert_header("content-type", content_type)?;
         if let Some(cache_control) = cache_control {
             response.insert_header("cache-control", cache_control)?;
         }
         self.apply_response_headers(&mut response, ctx)?;
+        for (name, value) in extra_headers {
+            response.insert_header(name.to_string(), value.to_string())?;
+        }
         response.set_content_length(body.len())?;
         session
             .write_response_header(Box::new(response), is_head)
@@ -252,6 +381,25 @@ impl GatewayProxy {
         Ok(true)
     }
 
+    async fn write_rejection_response(
+        &self,
+        session: &mut Session,
+        ctx: &mut GatewayRequestContext,
+        rejection: HandlerRejection,
+    ) -> pingora::Result<bool> {
+        let body = Bytes::from(format!("{}: {}", rejection.code, rejection.message));
+        self.write_bytes_response_with_headers(
+            session,
+            ctx,
+            rejection.status,
+            "text/plain; charset=utf-8",
+            None,
+            body,
+            rejection.headers.as_slice(),
+        )
+        .await
+    }
+
     fn apply_response_headers(
         &self,
         response: &mut ResponseHeader,
@@ -260,6 +408,12 @@ impl GatewayProxy {
         apply_correlation_response(response, &ctx.correlation)?;
         if let Some(cors) = ctx.cors.as_ref() {
             apply_cors_response(response, cors)?;
+        }
+        if let Some(header_config) = self.header_config.load().as_ref().as_ref() {
+            apply_header_response(response, header_config, ctx.request_path.as_str())?;
+        }
+        if let Some(rate_limit_headers) = ctx.rate_limit_headers.as_ref() {
+            apply_rate_limit_headers(response, rate_limit_headers)?;
         }
         Ok(())
     }
@@ -361,6 +515,12 @@ struct HandlerReloader {
     correlation_config: Arc<ConfigManager<Option<CorrelationConfig>>>,
     cors_config: Arc<ConfigManager<Option<CorsConfig>>>,
     metrics_config: Arc<ConfigManager<Option<MetricsConfig>>>,
+    header_config: Arc<ConfigManager<Option<HeaderConfig>>>,
+    api_key_config: Arc<ConfigManager<Option<ApiKeyConfig>>>,
+    basic_auth_config: Arc<ConfigManager<Option<BasicAuthConfig>>>,
+    security_runtime: Arc<ConfigManager<Option<SecurityRuntime>>>,
+    unified_security_config: Arc<ConfigManager<Option<UnifiedSecurityConfig>>>,
+    rate_limit_runtime: Arc<ConfigManager<Option<RateLimitRuntime>>>,
 }
 
 #[async_trait]
@@ -380,10 +540,49 @@ impl ReloadableModule for HandlerReloader {
             &ctx.runtime_config,
             active_handlers.is_handler_active("metrics"),
         )?;
+        let header_config = load_header_config(
+            &ctx.runtime_config,
+            handler_active(&active_handlers, &["header", "headers"]),
+        )?;
+        let api_key_config = load_api_key_config(
+            &ctx.runtime_config,
+            handler_active(
+                &active_handlers,
+                &["api-key", "apikey", "unified-security", "unified"],
+            ),
+        )?;
+        let basic_auth_config = load_basic_auth_config(
+            &ctx.runtime_config,
+            handler_active(
+                &active_handlers,
+                &["basic-auth", "basic", "unified-security", "unified"],
+            ),
+        )?;
+        let security_runtime = load_security_runtime(
+            &ctx.runtime_config,
+            handler_active(
+                &active_handlers,
+                &["security", "jwt", "unified-security", "unified"],
+            ),
+        )?;
+        let unified_security_config = load_unified_security_config(
+            &ctx.runtime_config,
+            handler_active(&active_handlers, &["unified-security", "unified"]),
+        )?;
+        let rate_limit_runtime = load_rate_limit_runtime(
+            &ctx.runtime_config,
+            handler_active(&active_handlers, &["limit", "rate-limit"]),
+        )?;
         self.active_handlers.store(active_handlers);
         self.correlation_config.store(correlation_config);
         self.cors_config.store(cors_config);
         self.metrics_config.store(metrics_config);
+        self.header_config.store(header_config);
+        self.api_key_config.store(api_key_config);
+        self.basic_auth_config.store(basic_auth_config);
+        self.security_runtime.store(security_runtime);
+        self.unified_security_config.store(unified_security_config);
+        self.rate_limit_runtime.store(rate_limit_runtime);
         Ok(ReloadOutcome::success("handler.yml reloaded"))
     }
 }
@@ -433,6 +632,111 @@ impl ReloadableModule for MetricsReloader {
     }
 }
 
+struct HeaderReloader {
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    header_config: Arc<ConfigManager<Option<HeaderConfig>>>,
+}
+
+#[async_trait]
+impl ReloadableModule for HeaderReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let active_handlers = self.active_handlers.load();
+        let active = handler_active(&active_handlers, &["header", "headers"]);
+        let config = load_header_config(&ctx.runtime_config, active)?;
+        self.header_config.store(config);
+        Ok(ReloadOutcome::success("header.yml reloaded"))
+    }
+}
+
+struct ApiKeyReloader {
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    api_key_config: Arc<ConfigManager<Option<ApiKeyConfig>>>,
+}
+
+#[async_trait]
+impl ReloadableModule for ApiKeyReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let active_handlers = self.active_handlers.load();
+        let active = handler_active(
+            &active_handlers,
+            &["api-key", "apikey", "unified-security", "unified"],
+        );
+        let config = load_api_key_config(&ctx.runtime_config, active)?;
+        self.api_key_config.store(config);
+        Ok(ReloadOutcome::success("apikey.yml reloaded"))
+    }
+}
+
+struct BasicAuthReloader {
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    basic_auth_config: Arc<ConfigManager<Option<BasicAuthConfig>>>,
+}
+
+#[async_trait]
+impl ReloadableModule for BasicAuthReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let active_handlers = self.active_handlers.load();
+        let active = handler_active(
+            &active_handlers,
+            &["basic-auth", "basic", "unified-security", "unified"],
+        );
+        let config = load_basic_auth_config(&ctx.runtime_config, active)?;
+        self.basic_auth_config.store(config);
+        Ok(ReloadOutcome::success("basic-auth.yml reloaded"))
+    }
+}
+
+struct SecurityReloader {
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    security_runtime: Arc<ConfigManager<Option<SecurityRuntime>>>,
+}
+
+#[async_trait]
+impl ReloadableModule for SecurityReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let active_handlers = self.active_handlers.load();
+        let active = handler_active(
+            &active_handlers,
+            &["security", "jwt", "unified-security", "unified"],
+        );
+        let config = load_security_runtime(&ctx.runtime_config, active)?;
+        self.security_runtime.store(config);
+        Ok(ReloadOutcome::success("security.yml reloaded"))
+    }
+}
+
+struct UnifiedSecurityReloader {
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    unified_security_config: Arc<ConfigManager<Option<UnifiedSecurityConfig>>>,
+}
+
+#[async_trait]
+impl ReloadableModule for UnifiedSecurityReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let active_handlers = self.active_handlers.load();
+        let active = handler_active(&active_handlers, &["unified-security", "unified"]);
+        let config = load_unified_security_config(&ctx.runtime_config, active)?;
+        self.unified_security_config.store(config);
+        Ok(ReloadOutcome::success("unified-security.yml reloaded"))
+    }
+}
+
+struct RateLimitReloader {
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    rate_limit_runtime: Arc<ConfigManager<Option<RateLimitRuntime>>>,
+}
+
+#[async_trait]
+impl ReloadableModule for RateLimitReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let active_handlers = self.active_handlers.load();
+        let active = handler_active(&active_handlers, &["limit", "rate-limit"]);
+        let config = load_rate_limit_runtime(&ctx.runtime_config, active)?;
+        self.rate_limit_runtime.store(config);
+        Ok(ReloadOutcome::success("limit.yml reloaded"))
+    }
+}
+
 struct ProxyReloader {
     proxy_route: Arc<ConfigManager<Option<ProxyRoute>>>,
 }
@@ -479,6 +783,7 @@ impl ProxyHttp for GatewayProxy {
     {
         ctx.begin_request();
         let request_path = session.req_header().uri.path().to_string();
+        ctx.request_path = request_path.clone();
         if request_path == HEALTH_PATH {
             return self.write_text_response(session, ctx, 200, "ok").await;
         }
@@ -539,6 +844,86 @@ impl ProxyHttp for GatewayProxy {
                 }
                 "metrics" => {
                     ctx.metrics_enabled = self.metrics_config.load().as_ref().is_some();
+                }
+                "header" | "headers" => {
+                    if let Some(config) = self.header_config.load().as_ref().as_ref() {
+                        apply_header_request(session, config, &request_path)?;
+                    }
+                }
+                "api-key" | "apikey" => {
+                    if let Some(config) = self.api_key_config.load().as_ref().as_ref() {
+                        if let Err(rejection) = verify_api_key(session, config, &request_path) {
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            return self.write_rejection_response(session, ctx, rejection).await;
+                        }
+                    }
+                }
+                "basic-auth" | "basic" => {
+                    if let Some(config) = self.basic_auth_config.load().as_ref().as_ref() {
+                        if let Err(rejection) = verify_basic_auth(session, config, &request_path) {
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            return self.write_rejection_response(session, ctx, rejection).await;
+                        }
+                    }
+                }
+                "security" | "jwt" => {
+                    if let Some(runtime) = self.security_runtime.load().as_ref().as_ref() {
+                        match verify_jwt_request(session, runtime, &request_path) {
+                            Ok(auth) => {
+                                if auth.is_some() {
+                                    ctx.auth = auth;
+                                }
+                            }
+                            Err(rejection) => {
+                                ctx.record_handler_duration(&handler_id, started.elapsed());
+                                return self
+                                    .write_rejection_response(session, ctx, rejection)
+                                    .await;
+                            }
+                        }
+                    }
+                }
+                "unified-security" | "unified" => {
+                    if let Some(config) = self.unified_security_config.load().as_ref().as_ref() {
+                        let basic_config = self.basic_auth_config.load();
+                        let api_key_config = self.api_key_config.load();
+                        let security_runtime = self.security_runtime.load();
+                        match verify_unified_security(
+                            session,
+                            config,
+                            basic_config.as_ref().as_ref(),
+                            api_key_config.as_ref().as_ref(),
+                            security_runtime.as_ref().as_ref(),
+                            &request_path,
+                        ) {
+                            Ok(auth) => {
+                                if auth.is_some() {
+                                    ctx.auth = auth;
+                                }
+                            }
+                            Err(rejection) => {
+                                ctx.record_handler_duration(&handler_id, started.elapsed());
+                                return self
+                                    .write_rejection_response(session, ctx, rejection)
+                                    .await;
+                            }
+                        }
+                    }
+                }
+                "limit" | "rate-limit" => {
+                    if let Some(runtime) = self.rate_limit_runtime.load().as_ref().as_ref() {
+                        match check_rate_limit(session, runtime, ctx.auth.as_ref(), &request_path) {
+                            Ok(headers) => {
+                                ctx.rate_limit_headers = headers;
+                            }
+                            Err(rejection) => {
+                                ctx.record_handler_duration(&handler_id, started.elapsed());
+                                return self
+                                    .write_rejection_response(session, ctx, rejection)
+                                    .await;
+                            }
+                        }
+                    }
                 }
                 "health" => {
                     ctx.record_handler_duration(&handler_id, started.elapsed());
@@ -672,11 +1057,14 @@ struct GatewayRequestContext {
     rewrite_host_header: bool,
     request_start: Instant,
     handler_ids: Vec<String>,
+    request_path: String,
     endpoint: String,
     method: String,
     path_params: BTreeMap<String, String>,
     correlation: CorrelationState,
     cors: Option<CorsResponseHeaders>,
+    auth: Option<AuthPrincipal>,
+    rate_limit_headers: Option<RateLimitHeaders>,
     metrics_enabled: bool,
     metrics_recorded: bool,
     handler_timings: Vec<HandlerTiming>,
@@ -690,11 +1078,14 @@ impl Default for GatewayRequestContext {
             rewrite_host_header: false,
             request_start: Instant::now(),
             handler_ids: Vec::new(),
+            request_path: String::new(),
             endpoint: String::new(),
             method: String::new(),
             path_params: BTreeMap::new(),
             correlation: CorrelationState::default(),
             cors: None,
+            auth: None,
+            rate_limit_headers: None,
             metrics_enabled: false,
             metrics_recorded: false,
             handler_timings: Vec::new(),
@@ -709,11 +1100,14 @@ impl GatewayRequestContext {
         self.rewrite_host_header = false;
         self.request_start = Instant::now();
         self.handler_ids.clear();
+        self.request_path.clear();
         self.endpoint.clear();
         self.method.clear();
         self.path_params.clear();
         self.correlation = CorrelationState::default();
         self.cors = None;
+        self.auth = None;
+        self.rate_limit_headers = None;
         self.metrics_enabled = false;
         self.metrics_recorded = false;
         self.handler_timings.clear();
@@ -792,6 +1186,10 @@ fn pingora_internal_error(error: RuntimeError) -> Box<Error> {
     Error::because(ErrorType::InternalError, error.to_string(), error)
 }
 
+fn handler_active(active_handlers: &ActiveHandlerSet, ids: &[&str]) -> bool {
+    ids.iter().any(|id| active_handlers.is_handler_active(id))
+}
+
 struct RegisteredGatewayHandler {
     id: &'static str,
 }
@@ -819,7 +1217,11 @@ const GATEWAY_HANDLER_DESCRIPTORS: &[(&str, PingoraHandlerKind)] = &[
     ("security", PingoraHandlerKind::Security),
     ("jwt", PingoraHandlerKind::Security),
     ("api-key", PingoraHandlerKind::Security),
+    ("apikey", PingoraHandlerKind::Security),
     ("basic-auth", PingoraHandlerKind::Security),
+    ("basic", PingoraHandlerKind::Security),
+    ("unified-security", PingoraHandlerKind::Security),
+    ("unified", PingoraHandlerKind::Security),
     ("body", PingoraHandlerKind::Traffic),
     ("audit", PingoraHandlerKind::Observability),
     ("sanitizer", PingoraHandlerKind::Security),

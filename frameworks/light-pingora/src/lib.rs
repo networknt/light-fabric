@@ -1,9 +1,16 @@
+mod apikey;
+mod basic_auth;
+mod config_util;
 mod correlation;
 mod cors;
 mod handler;
+mod header;
 mod metrics;
 mod proxy;
+mod rate_limit;
 mod resource;
+mod security;
+mod unified_security;
 
 use async_trait::async_trait;
 use light_runtime::{
@@ -21,6 +28,14 @@ use std::thread::JoinHandle;
 #[cfg(unix)]
 use tokio::sync::watch;
 
+pub use apikey::{
+    APIKEY_CONFIG_NAME, APIKEY_FILE, APIKEY_MODULE_ID, ApiKeyConfig, ApiKeyRule,
+    load_api_key_config, verify_api_key, verify_required_api_key,
+};
+pub use basic_auth::{
+    BASIC_AUTH_CONFIG_NAME, BASIC_AUTH_FILE, BASIC_AUTH_MODULE_ID, BasicAuthConfig, UserAuth,
+    load_basic_auth_config, verify_basic_auth,
+};
 pub use correlation::{
     CORRELATION_CONFIG_NAME, CORRELATION_FILE, CORRELATION_ID_HEADER, CORRELATION_MODULE_ID,
     CorrelationConfig, CorrelationState, TRACEABILITY_ID_HEADER, apply_correlation_request,
@@ -36,6 +51,10 @@ pub use handler::{
     HandlerPath, PathMatch, PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerFactory,
     PingoraHandlerKind, PingoraHandlerRegistry, ResolvedHandlerChain, load_active_handlers,
 };
+pub use header::{
+    HEADER_CONFIG_NAME, HEADER_FILE, HEADER_MODULE_ID, HeaderConfig, HeaderMutation,
+    HeaderPathPrefixConfig, apply_header_request, apply_header_response, load_header_config,
+};
 pub use metrics::{
     METRICS_CONFIG_NAME, METRICS_FILE, METRICS_MODULE_ID, MetricCounts, MetricsConfig,
     MetricsEvent, MetricsRecorder, build_metrics_event, classify_status, load_metrics_config,
@@ -44,11 +63,24 @@ pub use proxy::{
     PROXY_CONFIG_NAME, PROXY_FILE, PROXY_MODULE_ID, ProxyConfig, ProxyRoute, ProxyTarget,
     load_proxy_route, parse_proxy_targets,
 };
+pub use rate_limit::{
+    LIMIT_CONFIG_NAME, LIMIT_FILE, LIMIT_MODULE_ID, LimitConfig, LimitKey, LimitQuota,
+    RateLimitHeaders, RateLimitRuntime, apply_rate_limit_headers, check_rate_limit,
+    load_rate_limit_runtime,
+};
 pub use resource::{
     PATH_RESOURCE_CONFIG_NAME, PATH_RESOURCE_FILE, PATH_RESOURCE_LEGACY_FILE,
     PATH_RESOURCE_MODULE_ID, PathResourceConfig, StaticFile, StaticResolution, StaticResourceSet,
     StaticSite, VIRTUAL_HOST_CONFIG_NAME, VIRTUAL_HOST_FILE, VIRTUAL_HOST_LEGACY_FILE,
     VIRTUAL_HOST_MODULE_ID, VirtualHost, VirtualHostConfig, load_static_resources,
+};
+pub use security::{
+    AuthPrincipal, HandlerRejection, SECURITY_CONFIG_NAME, SECURITY_FILE, SECURITY_MODULE_ID,
+    SecurityConfig, SecurityJwtConfig, SecurityRuntime, load_security_runtime, verify_jwt_request,
+};
+pub use unified_security::{
+    UNIFIED_SECURITY_CONFIG_NAME, UNIFIED_SECURITY_FILE, UNIFIED_SECURITY_MODULE_ID,
+    UnifiedPathAuth, UnifiedSecurityConfig, load_unified_security_config, verify_unified_security,
 };
 
 pub trait PingoraApp: Send + Sync + 'static {

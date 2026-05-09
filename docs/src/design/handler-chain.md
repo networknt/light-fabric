@@ -1,6 +1,6 @@
 # Handler Chain
 
-Status: Phases 1, 2, and 3 implemented; later phases proposed
+Status: Phases 1, 2, 3, and 4 implemented; later phases proposed
 
 ## Purpose
 
@@ -205,10 +205,13 @@ included and which handlers are active in `handler.yml`. The Rust binary should
 not require a separate `gateway.yml` to duplicate these existing contracts.
 
 Handler-specific files such as `correlation.yml`, `cors.yml`, `metrics.yml`,
-`jwt.yml`, `rate-limit.yml`, and `headers.yml` stay separate. They are loaded
-only when the corresponding handler is active in the resolved path/default
+`header.yml`, `security.yml`, `apikey.yml`, `basic-auth.yml`,
+`unified-security.yml`, and `limit.yml` stay separate. They are loaded only
+when the corresponding handler is active in the resolved path/default
 execution model. Phase 3 implements this active loading for `correlation.yml`,
-`cors.yml`, and `metrics.yml`.
+`cors.yml`, and `metrics.yml`. Phase 4 extends the same active-loading and
+reload model to `header.yml`, `security.yml`, `apikey.yml`,
+`basic-auth.yml`, `unified-security.yml`, and `limit.yml`.
 
 ### Remote Config Source
 
@@ -502,6 +505,114 @@ matched endpoint and correlation ID. `enableJVMMonitor` is parsed for config
 compatibility but is not applicable to Rust. External Influx/APM reporters are
 deferred until the metrics sink decision is made.
 
+### Phase 4 Handler Config
+
+Phase 4 implements the security-oriented Java-compatible handlers that fit the
+Pingora request metadata model.
+
+`header.yml`:
+
+```yaml
+enabled: ${header.enabled:false}
+request:
+  remove: ${header.request.remove:}
+  update: ${header.request.update:}
+response:
+  remove: ${header.response.remove:}
+  update: ${header.response.update:}
+pathPrefixHeader: ${header.pathPrefixHeader:}
+```
+
+The Rust handler applies request header remove/update rules before proxying and
+response header remove/update rules before static or proxied responses are
+sent. Rust intentionally uses longest-prefix selection for `pathPrefixHeader`
+so overlapping prefixes are deterministic.
+
+`apikey.yml`:
+
+```yaml
+enabled: ${apikey.enabled:true}
+hashEnabled: ${apikey.hashEnabled:false}
+pathPrefixAuths: ${apikey.pathPrefixAuths:[]}
+```
+
+The Rust handler follows the Java rule that no matching path prefix means the
+handler passes the request. A matching rule validates the configured header
+against either a plain API key or the Java `iterations:saltHex:hashHex`
+PBKDF2-HMAC-SHA1 hash format.
+
+`basic-auth.yml`:
+
+```yaml
+enabled: ${basic.enabled:false}
+enableAD: ${basic.enableAD:true}
+allowAnonymous: ${basic.allowAnonymous:false}
+allowBearerToken: ${basic.allowBearerToken:false}
+users: ${basic.users:[]}
+```
+
+The Rust handler supports configured local users, anonymous path users, and the
+Java-compatible bearer pass-through mode. LDAP/AD authentication is parsed for
+configuration compatibility but is not implemented in phase 4.
+
+`security.yml`:
+
+```yaml
+enableVerifyJwt: ${security.enableVerifyJwt:true}
+ignoreJwtExpiry: ${security.ignoreJwtExpiry:false}
+enableH2c: ${security.enableH2c:false}
+enableMockJwt: ${security.enableMockJwt:false}
+jwt:
+  certificate: ${security.jwt.certificate:{}}
+  clockSkewInSeconds: ${security.jwt.clockSkewInSeconds:60}
+  keyResolver: ${security.jwt.keyResolver:}
+skipPathPrefixes: ${security.skipPathPrefixes:[]}
+passThroughClaims: ${security.passThroughClaims:{}}
+```
+
+The Rust handler verifies Bearer JWTs with configured PEM certificates, honors
+`kid` when present, supports RSA and EC algorithms handled by the Rust JWT
+library, applies clock skew and optional expiry bypass, caches decoded claims,
+and forwards configured pass-through claims as request headers. Dynamic JWK key
+service bootstrap and SWT/SJWT verification are deferred to the sidecar/router
+phase because they depend on service discovery and token-client behavior.
+
+`unified-security.yml`:
+
+```yaml
+enabled: ${unified-security.enabled:true}
+anonymousPrefixes: ${unified-security.anonymousPrefixes:[]}
+pathPrefixAuths: ${unified-security.pathPrefixAuths:[]}
+```
+
+The Rust handler supports Java-style path-prefix selection across Basic, JWT,
+and API-key authentication. Anonymous prefixes bypass authentication. SWT/SJWT
+rules return a clear not-implemented response until the sidecar token stack is
+added.
+
+`limit.yml`:
+
+```yaml
+enabled: ${limit.enabled:false}
+concurrentRequest: ${limit.concurrentRequest:0}
+queueSize: ${limit.queueSize:0}
+errorCode: ${limit.errorCode:429}
+rateLimit: ${limit.rateLimit:}
+headersAlwaysSet: ${limit.headersAlwaysSet:false}
+key: ${limit.key:server}
+server: ${limit.server:{}}
+address: ${limit.address:{}}
+client: ${limit.client:{}}
+user: ${limit.user:{}}
+```
+
+The Rust handler implements in-memory request rate limiting by server, client
+address, JWT client ID, or JWT user ID. It emits `X-RateLimit-Limit`,
+`X-RateLimit-Remaining`, `X-RateLimit-Reset`, and `Retry-After` when a request
+is rejected, and it can always emit the rate-limit headers when
+`headersAlwaysSet` is enabled. Cluster-wide distributed counters are deferred
+until there is a concrete gateway clustering requirement.
+
 ## Handler Registry
 
 Use explicit registration.
@@ -775,7 +886,12 @@ Suggested module IDs:
 - `light-pingora/correlation`
 - `light-pingora/cors`
 - `light-pingora/metrics`
-- `light-pingora/jwt`
+- `light-pingora/header`
+- `light-pingora/security`
+- `light-pingora/apikey`
+- `light-pingora/basic-auth`
+- `light-pingora/unified-security`
+- `light-pingora/limit`
 
 The module registry should expose:
 
@@ -918,10 +1034,14 @@ Phase 3: Handler chain execution (implemented)
 - log handler duration when `reportHandlerDuration` is enabled
 - defer generic response headers to a handler-specific follow-up
 
-Phase 4: Security and upstream behavior
+Phase 4: Security and request/response policy handlers (implemented)
 
 - implement JWT, API key, basic auth, and rate-limit handlers
-- add upstream header mutation
+- implement the generic header handler for request and response mutation
+- implement unified-security path-prefix selection for Basic, JWT, and API key
+- parse Java-compatible `security.yml`, `apikey.yml`, `basic-auth.yml`,
+  `unified-security.yml`, `header.yml`, and `limit.yml`
+- add JWT pass-through claim request header mutation
 - add path-level chain selection for public SPA and protected API routes
 
 Phase 5: Sidecar router
@@ -936,7 +1056,7 @@ Phase 5: Sidecar router
 Phase 6: Reload and control plane
 
 - add router-specific reload once `router.yml` is implemented
-- extend reload coverage to security and traffic handler configs
+- extend reload coverage to sidecar token, discovery, and router configs
 - expose active capabilities, hosts, paths, handlers, and chains through
   service-info MCP
 - atomically replace resolved handler/resource/proxy models on reload
