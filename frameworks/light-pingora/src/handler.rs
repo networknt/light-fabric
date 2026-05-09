@@ -6,6 +6,7 @@ use std::fmt;
 use std::sync::Arc;
 
 pub const HANDLER_FILE: &str = "handler.yml";
+pub const HANDLER_LEGACY_FILE: &str = "handler.yaml";
 pub const HANDLER_MODULE_ID: &str = "light-pingora/handler";
 pub const HANDLER_CONFIG_NAME: &str = "handler";
 
@@ -93,6 +94,12 @@ pub struct HandlerConfig {
     pub paths: Vec<HandlerPath>,
     #[serde(default)]
     pub default_handlers: Vec<String>,
+    #[serde(default)]
+    pub additional_handlers: Vec<String>,
+    #[serde(default)]
+    pub additional_chains: BTreeMap<String, HandlerChain>,
+    #[serde(default)]
+    pub additional_paths: Vec<HandlerPath>,
 }
 
 impl Default for HandlerConfig {
@@ -106,6 +113,9 @@ impl Default for HandlerConfig {
             chains: BTreeMap::new(),
             paths: Vec::new(),
             default_handlers: Vec::new(),
+            additional_handlers: Vec::new(),
+            additional_chains: BTreeMap::new(),
+            additional_paths: Vec::new(),
         }
     }
 }
@@ -116,6 +126,19 @@ impl HandlerConfig {
             enabled: false,
             ..Self::default()
         }
+    }
+
+    fn apply_additional(&mut self) -> Result<(), RuntimeError> {
+        self.handlers.extend(self.additional_handlers.clone());
+        for (name, chain) in self.additional_chains.clone() {
+            if self.chains.insert(name.clone(), chain).is_some() {
+                return Err(RuntimeError::Unsupported(format!(
+                    "duplicate additional handler chain `{name}` in handler.yml"
+                )));
+            }
+        }
+        self.paths.extend(self.additional_paths.clone());
+        Ok(())
     }
 }
 
@@ -167,6 +190,9 @@ pub struct HandlerModuleConfig {
     pub chains: BTreeMap<String, HandlerChain>,
     pub paths: Vec<HandlerPath>,
     pub default_handlers: Vec<String>,
+    pub additional_handlers: Vec<String>,
+    pub additional_chains: BTreeMap<String, HandlerChain>,
+    pub additional_paths: Vec<HandlerPath>,
     pub active_handlers: Vec<String>,
 }
 
@@ -181,8 +207,34 @@ impl HandlerModuleConfig {
             chains: config.chains.clone(),
             paths: config.paths.clone(),
             default_handlers: config.default_handlers.clone(),
+            additional_handlers: config.additional_handlers.clone(),
+            additional_chains: config.additional_chains.clone(),
+            additional_paths: config.additional_paths.clone(),
             active_handlers,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathMatch {
+    pub path: String,
+    pub method: String,
+    pub params: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedHandlerChain {
+    pub handler_ids: Vec<String>,
+    pub path: Option<PathMatch>,
+    pub default_chain: bool,
+}
+
+impl ResolvedHandlerChain {
+    pub fn endpoint(&self, request_path: &str) -> String {
+        self.path
+            .as_ref()
+            .map(|path| path.path.clone())
+            .unwrap_or_else(|| request_path.to_string())
     }
 }
 
@@ -211,22 +263,47 @@ impl ActiveHandlerSet {
         request_path: &str,
         method: &str,
     ) -> Result<Vec<String>, RuntimeError> {
+        Ok(self
+            .resolve_handler_chain(request_path, method)?
+            .handler_ids)
+    }
+
+    pub fn resolve_handler_chain(
+        &self,
+        request_path: &str,
+        method: &str,
+    ) -> Result<ResolvedHandlerChain, RuntimeError> {
         if !self.config.enabled {
-            return Ok(Vec::new());
+            return Ok(ResolvedHandlerChain {
+                handler_ids: Vec::new(),
+                path: None,
+                default_chain: false,
+            });
         }
 
-        let exec = self
-            .config
-            .paths
-            .iter()
-            .find(|path| handler_path_matches(&self.config, path, request_path, method))
-            .map(|path| path.exec.as_slice())
-            .unwrap_or(self.config.default_handlers.as_slice());
+        let matched = self.config.paths.iter().find_map(|path| {
+            handler_path_match(&self.config, path, request_path, method)
+                .map(|path_match| (path, path_match))
+        });
+
+        let (exec, path, default_chain) = if let Some((handler_path, path_match)) = matched {
+            (handler_path.exec.as_slice(), Some(path_match), false)
+        } else {
+            (self.config.default_handlers.as_slice(), None, true)
+        };
 
         let mut resolved = Vec::new();
         let mut visiting = Vec::new();
         resolve_exec_handlers(exec, &self.config, &mut visiting, &mut resolved)?;
-        Ok(resolved)
+        Ok(ResolvedHandlerChain {
+            handler_ids: resolved,
+            path,
+            default_chain,
+        })
+    }
+
+    pub fn is_handler_active(&self, handler_id: &str) -> bool {
+        self.active_handler_ids.iter().any(|id| id == handler_id)
     }
 }
 
@@ -283,8 +360,9 @@ impl PingoraHandlerRegistry {
     pub fn build_active_handlers(
         &self,
         runtime_config: &RuntimeConfig,
-        config: HandlerConfig,
+        mut config: HandlerConfig,
     ) -> Result<ActiveHandlerSet, RuntimeError> {
+        config.apply_additional()?;
         if !config.enabled {
             return Ok(ActiveHandlerSet {
                 config,
@@ -338,14 +416,7 @@ pub fn load_active_handlers(
     runtime_config: &RuntimeConfig,
     registry: &PingoraHandlerRegistry,
 ) -> Result<ActiveHandlerSet, RuntimeError> {
-    let config = match runtime_config
-        .module_registry
-        .load_config::<HandlerConfig>(runtime_config, HANDLER_FILE)
-    {
-        Ok(config) => config,
-        Err(RuntimeError::MissingConfig(file)) if file == HANDLER_FILE => HandlerConfig::disabled(),
-        Err(error) => return Err(error),
-    };
+    let config = load_handler_config(runtime_config)?;
     let active_handlers = registry.build_active_handlers(runtime_config, config)?;
     let module_config = HandlerModuleConfig::new(
         active_handlers.config(),
@@ -362,6 +433,20 @@ pub fn load_active_handlers(
         false,
     )?;
     Ok(active_handlers)
+}
+
+fn load_handler_config(runtime_config: &RuntimeConfig) -> Result<HandlerConfig, RuntimeError> {
+    for file in [HANDLER_FILE, HANDLER_LEGACY_FILE] {
+        match runtime_config
+            .module_registry
+            .load_config::<HandlerConfig>(runtime_config, file)
+        {
+            Ok(config) => return Ok(config),
+            Err(RuntimeError::MissingConfig(missing)) if missing == file => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(HandlerConfig::disabled())
 }
 
 fn default_enabled() -> bool {
@@ -555,19 +640,26 @@ fn resolve_exec_handlers(
     Ok(())
 }
 
-fn handler_path_matches(
+fn handler_path_match(
     config: &HandlerConfig,
     handler_path: &HandlerPath,
     request_path: &str,
     method: &str,
-) -> bool {
+) -> Option<PathMatch> {
     if !handler_path.method.eq_ignore_ascii_case(method) {
-        return false;
+        return None;
     }
 
-    path_template_matches(&handler_path.path, request_path)
-        || strip_base_path(&config.base_path, request_path)
-            .is_some_and(|path| path_template_matches(&handler_path.path, path))
+    path_template_match(&handler_path.path, request_path)
+        .or_else(|| {
+            strip_base_path(&config.base_path, request_path)
+                .and_then(|path| path_template_match(&handler_path.path, path))
+        })
+        .map(|params| PathMatch {
+            path: handler_path.path.clone(),
+            method: handler_path.method.to_ascii_uppercase(),
+            params,
+        })
 }
 
 fn strip_base_path<'a>(base_path: &str, request_path: &'a str) -> Option<&'a str> {
@@ -583,24 +675,30 @@ fn strip_base_path<'a>(base_path: &str, request_path: &'a str) -> Option<&'a str
         .filter(|path| path.starts_with('/'))
 }
 
-fn path_template_matches(template: &str, request_path: &str) -> bool {
+fn path_template_match(template: &str, request_path: &str) -> Option<BTreeMap<String, String>> {
     if template == request_path {
-        return true;
+        return Some(BTreeMap::new());
     }
 
     let template_segments = path_segments(template);
     let request_segments = path_segments(request_path);
     if template_segments.len() != request_segments.len() {
-        return false;
+        return None;
     }
 
-    template_segments
-        .iter()
-        .zip(request_segments.iter())
-        .all(|(template, request)| {
-            (template.starts_with('{') && template.ends_with('}') && !request.is_empty())
-                || template == request
-        })
+    let mut params = BTreeMap::new();
+    for (template, request) in template_segments.iter().zip(request_segments.iter()) {
+        if template.starts_with('{') && template.ends_with('}') && !request.is_empty() {
+            let name = template.trim_start_matches('{').trim_end_matches('}');
+            if name.is_empty() {
+                return None;
+            }
+            params.insert(name.to_string(), (*request).to_string());
+        } else if template != request {
+            return None;
+        }
+    }
+    Some(params)
 }
 
 fn path_segments(path: &str) -> Vec<&str> {
@@ -679,6 +777,18 @@ mod tests {
                 factory: |ctx| build(ctx, &UNUSED_FACTORY_CALLS, "unused.yml"),
             },
             _ => unreachable!("test descriptor id"),
+        }
+    }
+
+    fn simple_descriptor(id: &'static str) -> PingoraHandlerDescriptor {
+        PingoraHandlerDescriptor {
+            id,
+            kind: PingoraHandlerKind::Application,
+            factory: |ctx| {
+                Ok(Arc::new(TestHandler {
+                    id: Box::leak(ctx.handler_id.to_string().into_boxed_str()),
+                }))
+            },
         }
     }
 
@@ -767,6 +877,62 @@ defaultHandlers:
                 .module_summaries()
                 .iter()
                 .any(|entry| entry.module_id == HANDLER_MODULE_ID && !entry.active)
+        );
+    }
+
+    #[test]
+    fn loads_legacy_handler_yaml_file() {
+        let config_dir = TempDir::new().expect("config dir");
+        std::fs::write(
+            config_dir.path().join(HANDLER_LEGACY_FILE),
+            r#"
+enabled: true
+handlers:
+  - active
+paths: []
+defaultHandlers:
+  - active
+"#,
+        )
+        .expect("write handler.yaml");
+        let runtime = runtime_config(&config_dir);
+        let registry = PingoraHandlerRegistry::new().register(simple_descriptor("active"));
+
+        let active = load_active_handlers(&runtime, &registry).expect("load handler.yaml");
+
+        assert_eq!(active.active_handler_ids(), &["active".to_string()]);
+    }
+
+    #[test]
+    fn applies_additional_handler_config_before_validation() {
+        let config_dir = TempDir::new().expect("config dir");
+        let runtime = runtime_config(&config_dir);
+        let registry = PingoraHandlerRegistry::new().register(simple_descriptor("active"));
+        let config = HandlerConfig {
+            additional_handlers: vec!["active".to_string()],
+            additional_chains: BTreeMap::from([(
+                "api".to_string(),
+                HandlerChain {
+                    exec: vec!["active".to_string()],
+                },
+            )]),
+            additional_paths: vec![HandlerPath {
+                path: "/v1/test".to_string(),
+                method: "GET".to_string(),
+                exec: vec!["api".to_string()],
+            }],
+            ..HandlerConfig::default()
+        };
+
+        let active = registry
+            .build_active_handlers(&runtime, config)
+            .expect("additional config should be effective");
+
+        assert_eq!(
+            active
+                .resolve_handler_ids("/v1/test", "GET")
+                .expect("resolve additional path"),
+            vec!["active".to_string()]
         );
     }
 
@@ -869,6 +1035,13 @@ defaultHandlers:
                 .resolve_handler_ids("/oauth2/AZZRJE52eXu3t1hseacnGQ/token", "POST")
                 .expect("resolve API handlers"),
             vec!["active".to_string()]
+        );
+        let resolved = active
+            .resolve_handler_chain("/oauth2/AZZRJE52eXu3t1hseacnGQ/token", "POST")
+            .expect("resolve API chain");
+        assert_eq!(
+            resolved.path.expect("matched path").params["hostId"],
+            "AZZRJE52eXu3t1hseacnGQ"
         );
         assert_eq!(
             active

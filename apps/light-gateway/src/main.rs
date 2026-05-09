@@ -2,9 +2,13 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
 use light_pingora::{
-    ActiveHandlerSet, HandlerBuildContext, PingoraApp, PingoraHandler, PingoraHandlerDescriptor,
-    PingoraHandlerKind, PingoraHandlerRegistry, PingoraTransport, ProxyRoute, ProxyTarget,
-    StaticResolution, StaticResourceSet, load_active_handlers, load_proxy_route,
+    ActiveHandlerSet, CorrelationConfig, CorrelationState, CorsConfig, CorsRequestOutcome,
+    CorsResponseHeaders, HandlerBuildContext, HandlerMetricsLogLevel, MetricsConfig,
+    MetricsRecorder, PingoraApp, PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerKind,
+    PingoraHandlerRegistry, PingoraTransport, ProxyRoute, ProxyTarget, StaticResolution,
+    StaticResourceSet, apply_correlation_request, apply_correlation_response, apply_cors_response,
+    build_metrics_event, correlation_id_for_upstream, evaluate_cors_request, load_active_handlers,
+    load_correlation_config, load_cors_config, load_metrics_config, load_proxy_route,
     load_static_resources,
 };
 use light_runtime::{
@@ -14,8 +18,10 @@ use light_runtime::{
 use pingora::http::ResponseHeader;
 use pingora::prelude::{HttpPeer, ProxyHttp, Session};
 use pingora::{Error, ErrorType};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -36,24 +42,63 @@ impl PingoraApp for GatewayApp {
 
 struct GatewayProxy {
     active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    correlation_config: Arc<ConfigManager<Option<CorrelationConfig>>>,
+    cors_config: Arc<ConfigManager<Option<CorsConfig>>>,
+    metrics_config: Arc<ConfigManager<Option<MetricsConfig>>>,
+    metrics_recorder: Arc<MetricsRecorder>,
     proxy_route: Arc<ConfigManager<Option<ProxyRoute>>>,
     static_resources: Arc<ConfigManager<StaticResourceSet>>,
     next_upstream: AtomicUsize,
+    server_scheme: String,
+    server_port: u16,
 }
 
 impl GatewayProxy {
     fn from_runtime_config(config: &RuntimeConfig) -> Result<Self, RuntimeError> {
         let active_handlers = load_active_handlers(config, &gateway_handler_registry())?;
+        let correlation_config =
+            load_correlation_config(config, active_handlers.is_handler_active("correlation"))?;
+        let cors_config = load_cors_config(config, active_handlers.is_handler_active("cors"))?;
+        let metrics_config =
+            load_metrics_config(config, active_handlers.is_handler_active("metrics"))?;
         let proxy_route = load_proxy_route(config)?;
         let static_resources = load_static_resources(config)?;
         let active_handlers = Arc::new(ConfigManager::new(active_handlers));
+        let correlation_config = Arc::new(ConfigManager::new(correlation_config));
+        let cors_config = Arc::new(ConfigManager::new(cors_config));
+        let metrics_config = Arc::new(ConfigManager::new(metrics_config));
         let proxy_route = Arc::new(ConfigManager::new(proxy_route));
         let static_resources = Arc::new(ConfigManager::new(static_resources));
+        let metrics_recorder = Arc::new(MetricsRecorder::default());
 
         config.module_registry.register_reloader(
             light_pingora::HANDLER_MODULE_ID,
             Arc::new(HandlerReloader {
                 active_handlers: Arc::clone(&active_handlers),
+                correlation_config: Arc::clone(&correlation_config),
+                cors_config: Arc::clone(&cors_config),
+                metrics_config: Arc::clone(&metrics_config),
+            }),
+        );
+        config.module_registry.register_reloader(
+            light_pingora::CORRELATION_MODULE_ID,
+            Arc::new(CorrelationReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                correlation_config: Arc::clone(&correlation_config),
+            }),
+        );
+        config.module_registry.register_reloader(
+            light_pingora::CORS_MODULE_ID,
+            Arc::new(CorsReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                cors_config: Arc::clone(&cors_config),
+            }),
+        );
+        config.module_registry.register_reloader(
+            light_pingora::METRICS_MODULE_ID,
+            Arc::new(MetricsReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                metrics_config: Arc::clone(&metrics_config),
             }),
         );
         config.module_registry.register_reloader(
@@ -75,9 +120,23 @@ impl GatewayProxy {
 
         Ok(Self {
             active_handlers,
+            correlation_config,
+            cors_config,
+            metrics_config,
+            metrics_recorder,
             proxy_route,
             static_resources,
             next_upstream: AtomicUsize::new(0),
+            server_scheme: if config.server.enable_https {
+                "https".to_string()
+            } else {
+                "http".to_string()
+            },
+            server_port: if config.server.enable_https {
+                config.server.https_port
+            } else {
+                config.server.http_port
+            },
         })
     }
 
@@ -88,6 +147,197 @@ impl GatewayProxy {
         route
             .select(index)
             .map(|target| (target, route.rewrite_host_header()))
+    }
+
+    async fn write_static_resolution(
+        &self,
+        session: &mut Session,
+        ctx: &mut GatewayRequestContext,
+        resolution: StaticResolution,
+    ) -> pingora::Result<bool> {
+        match resolution {
+            StaticResolution::File(file) => {
+                let body = tokio::fs::read(&file.path).await.map_err(|error| {
+                    Error::because(
+                        ErrorType::FileReadError,
+                        format!("failed to read static file `{}`", file.path.display()),
+                        error,
+                    )
+                })?;
+                self.write_bytes_response(
+                    session,
+                    ctx,
+                    200,
+                    file.content_type.as_str(),
+                    Some(file.cache_control.as_str()),
+                    Bytes::from(body),
+                )
+                .await
+            }
+            StaticResolution::Forbidden => {
+                self.write_text_response(session, ctx, 403, "forbidden")
+                    .await
+            }
+            StaticResolution::NotFound => {
+                self.write_text_response(session, ctx, 404, "not found")
+                    .await
+            }
+        }
+    }
+
+    async fn write_empty_response(
+        &self,
+        session: &mut Session,
+        ctx: &mut GatewayRequestContext,
+        status: u16,
+    ) -> pingora::Result<bool> {
+        self.write_bytes_response(
+            session,
+            ctx,
+            status,
+            "text/plain; charset=utf-8",
+            None,
+            Bytes::new(),
+        )
+        .await
+    }
+
+    async fn write_text_response(
+        &self,
+        session: &mut Session,
+        ctx: &mut GatewayRequestContext,
+        status: u16,
+        body: &'static str,
+    ) -> pingora::Result<bool> {
+        self.write_bytes_response(
+            session,
+            ctx,
+            status,
+            "text/plain; charset=utf-8",
+            None,
+            Bytes::from_static(body.as_bytes()),
+        )
+        .await
+    }
+
+    async fn write_bytes_response(
+        &self,
+        session: &mut Session,
+        ctx: &mut GatewayRequestContext,
+        status: u16,
+        content_type: &str,
+        cache_control: Option<&str>,
+        body: Bytes,
+    ) -> pingora::Result<bool> {
+        let is_head = session
+            .req_header()
+            .method
+            .as_str()
+            .eq_ignore_ascii_case("HEAD");
+        let mut response = ResponseHeader::build(status, Some(8))?;
+        response.insert_header("content-type", content_type)?;
+        if let Some(cache_control) = cache_control {
+            response.insert_header("cache-control", cache_control)?;
+        }
+        self.apply_response_headers(&mut response, ctx)?;
+        response.set_content_length(body.len())?;
+        session
+            .write_response_header(Box::new(response), is_head)
+            .await?;
+        if !is_head {
+            session.write_response_body(Some(body), true).await?;
+        }
+        self.record_metrics(ctx, status);
+        self.log_handler_durations(ctx);
+        Ok(true)
+    }
+
+    fn apply_response_headers(
+        &self,
+        response: &mut ResponseHeader,
+        ctx: &GatewayRequestContext,
+    ) -> pingora::Result<()> {
+        apply_correlation_response(response, &ctx.correlation)?;
+        if let Some(cors) = ctx.cors.as_ref() {
+            apply_cors_response(response, cors)?;
+        }
+        Ok(())
+    }
+
+    fn record_metrics(&self, ctx: &mut GatewayRequestContext, status: u16) {
+        if ctx.metrics_recorded || !ctx.metrics_enabled {
+            return;
+        }
+        let Some(config) = self.metrics_config.load().as_ref().as_ref().cloned() else {
+            return;
+        };
+
+        let event = build_metrics_event(
+            ctx.endpoint.as_str(),
+            ctx.method.as_str(),
+            status,
+            ctx.request_start.elapsed(),
+            ctx.correlation.correlation_id.clone(),
+        );
+        let counts = self.metrics_recorder.record(status);
+        ctx.metrics_recorded = true;
+
+        info!(
+            target: "light_pingora::metrics",
+            product = %config.product_name,
+            endpoint = %event.endpoint,
+            method = %event.method,
+            status = event.status,
+            statusClass = event.status_class,
+            durationMs = event.duration_ms,
+            correlationId = ?event.correlation_id,
+            requestCount = counts.request,
+            successCount = counts.success,
+            authErrorCount = counts.auth_error,
+            requestErrorCount = counts.request_error,
+            serverErrorCount = counts.server_error,
+            "request metrics"
+        );
+    }
+
+    fn log_handler_durations(&self, ctx: &mut GatewayRequestContext) {
+        if ctx.handler_timings_logged
+            || ctx.handler_timings.is_empty()
+            || !self.active_handlers.load().config().report_handler_duration
+        {
+            return;
+        }
+
+        let durations = ctx
+            .handler_timings
+            .iter()
+            .map(|timing| format!("{}={}us", timing.handler_id, timing.duration.as_micros()))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        match self
+            .active_handlers
+            .load()
+            .config()
+            .handler_metrics_log_level
+        {
+            HandlerMetricsLogLevel::Trace => {
+                tracing::trace!(target: "light_pingora::handler", %durations, "handler durations")
+            }
+            HandlerMetricsLogLevel::Debug => {
+                tracing::debug!(target: "light_pingora::handler", %durations, "handler durations")
+            }
+            HandlerMetricsLogLevel::Info => {
+                tracing::info!(target: "light_pingora::handler", %durations, "handler durations")
+            }
+            HandlerMetricsLogLevel::Warn => {
+                tracing::warn!(target: "light_pingora::handler", %durations, "handler durations")
+            }
+            HandlerMetricsLogLevel::Error => {
+                tracing::error!(target: "light_pingora::handler", %durations, "handler durations")
+            }
+        }
+        ctx.handler_timings_logged = true;
     }
 
     #[cfg(test)]
@@ -108,6 +358,9 @@ impl GatewayProxy {
 
 struct HandlerReloader {
     active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    correlation_config: Arc<ConfigManager<Option<CorrelationConfig>>>,
+    cors_config: Arc<ConfigManager<Option<CorsConfig>>>,
+    metrics_config: Arc<ConfigManager<Option<MetricsConfig>>>,
 }
 
 #[async_trait]
@@ -115,8 +368,68 @@ impl ReloadableModule for HandlerReloader {
     async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
         let active_handlers =
             load_active_handlers(&ctx.runtime_config, &gateway_handler_registry())?;
+        let correlation_config = load_correlation_config(
+            &ctx.runtime_config,
+            active_handlers.is_handler_active("correlation"),
+        )?;
+        let cors_config = load_cors_config(
+            &ctx.runtime_config,
+            active_handlers.is_handler_active("cors"),
+        )?;
+        let metrics_config = load_metrics_config(
+            &ctx.runtime_config,
+            active_handlers.is_handler_active("metrics"),
+        )?;
         self.active_handlers.store(active_handlers);
+        self.correlation_config.store(correlation_config);
+        self.cors_config.store(cors_config);
+        self.metrics_config.store(metrics_config);
         Ok(ReloadOutcome::success("handler.yml reloaded"))
+    }
+}
+
+struct CorrelationReloader {
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    correlation_config: Arc<ConfigManager<Option<CorrelationConfig>>>,
+}
+
+#[async_trait]
+impl ReloadableModule for CorrelationReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let active = self.active_handlers.load().is_handler_active("correlation");
+        let config = load_correlation_config(&ctx.runtime_config, active)?;
+        self.correlation_config.store(config);
+        Ok(ReloadOutcome::success("correlation.yml reloaded"))
+    }
+}
+
+struct CorsReloader {
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    cors_config: Arc<ConfigManager<Option<CorsConfig>>>,
+}
+
+#[async_trait]
+impl ReloadableModule for CorsReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let active = self.active_handlers.load().is_handler_active("cors");
+        let config = load_cors_config(&ctx.runtime_config, active)?;
+        self.cors_config.store(config);
+        Ok(ReloadOutcome::success("cors.yml reloaded"))
+    }
+}
+
+struct MetricsReloader {
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    metrics_config: Arc<ConfigManager<Option<MetricsConfig>>>,
+}
+
+#[async_trait]
+impl ReloadableModule for MetricsReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let active = self.active_handlers.load().is_handler_active("metrics");
+        let config = load_metrics_config(&ctx.runtime_config, active)?;
+        self.metrics_config.store(config);
+        Ok(ReloadOutcome::success("metrics.yml reloaded"))
     }
 }
 
@@ -164,30 +477,73 @@ impl ProxyHttp for GatewayProxy {
     where
         Self::CTX: Send + Sync,
     {
+        ctx.begin_request();
         let request_path = session.req_header().uri.path().to_string();
         if request_path == HEALTH_PATH {
-            return write_text_response(session, 200, "ok").await;
+            return self.write_text_response(session, ctx, 200, "ok").await;
         }
 
         let method = session.req_header().method.as_str().to_string();
-        let handler_ids = self
+        ctx.method = method.clone();
+        let resolved = self
             .active_handlers
             .load()
-            .resolve_handler_ids(&request_path, &method)
+            .resolve_handler_chain(&request_path, &method)
             .map_err(pingora_internal_error)?;
+        ctx.handler_ids = resolved.handler_ids.clone();
+        ctx.endpoint = resolved.endpoint(&request_path);
+        ctx.path_params = resolved
+            .path
+            .as_ref()
+            .map(|path| path.params.clone())
+            .unwrap_or_default();
 
-        if handler_ids.is_empty() {
+        if ctx.handler_ids.is_empty() {
             if let Some((target, rewrite_host_header)) = self.select_upstream() {
                 ctx.proxy_target = Some(target);
                 ctx.rewrite_host_header = rewrite_host_header;
                 return Ok(false);
             }
-            return write_text_response(session, 404, "not found").await;
+            return self
+                .write_text_response(session, ctx, 404, "not found")
+                .await;
         }
 
-        for handler_id in handler_ids {
+        for handler_id in ctx.handler_ids.clone() {
+            let started = Instant::now();
             match handler_id.as_str() {
-                "health" => return write_text_response(session, 200, "ok").await,
+                "correlation" => {
+                    if let Some(config) = self.correlation_config.load().as_ref().as_ref() {
+                        ctx.correlation = apply_correlation_request(session, config)?;
+                    }
+                }
+                "cors" => {
+                    if let Some(config) = self.cors_config.load().as_ref().as_ref() {
+                        match evaluate_cors_request(
+                            session,
+                            config,
+                            &request_path,
+                            &self.server_scheme,
+                            self.server_port,
+                        ) {
+                            CorsRequestOutcome::Continue(headers) => {
+                                ctx.cors = headers;
+                            }
+                            CorsRequestOutcome::Respond { status, headers } => {
+                                ctx.cors = Some(headers);
+                                ctx.record_handler_duration(&handler_id, started.elapsed());
+                                return self.write_empty_response(session, ctx, status).await;
+                            }
+                        }
+                    }
+                }
+                "metrics" => {
+                    ctx.metrics_enabled = self.metrics_config.load().as_ref().is_some();
+                }
+                "health" => {
+                    ctx.record_handler_duration(&handler_id, started.elapsed());
+                    return self.write_text_response(session, ctx, 200, "ok").await;
+                }
                 "virtual" => {
                     let host_header = session
                         .req_header()
@@ -198,36 +554,47 @@ impl ProxyHttp for GatewayProxy {
                         .static_resources
                         .load()
                         .resolve_virtual_host(host_header, &request_path);
-                    return write_static_resolution(session, resolution).await;
+                    ctx.record_handler_duration(&handler_id, started.elapsed());
+                    return self.write_static_resolution(session, ctx, resolution).await;
                 }
                 "path-resource" | "resource" => {
                     let resolution = self
                         .static_resources
                         .load()
                         .resolve_path_resource(&request_path);
-                    return write_static_resolution(session, resolution).await;
+                    ctx.record_handler_duration(&handler_id, started.elapsed());
+                    return self.write_static_resolution(session, ctx, resolution).await;
                 }
                 "proxy" => {
                     if let Some((target, rewrite_host_header)) = self.select_upstream() {
                         ctx.proxy_target = Some(target);
                         ctx.rewrite_host_header = rewrite_host_header;
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
                         return Ok(false);
                     }
-                    return write_text_response(session, 502, "proxy is not configured").await;
+                    ctx.record_handler_duration(&handler_id, started.elapsed());
+                    return self
+                        .write_text_response(session, ctx, 502, "proxy is not configured")
+                        .await;
                 }
                 "router" => {
-                    return write_text_response(
-                        session,
-                        501,
-                        "router handler is not implemented in phase 2",
-                    )
-                    .await;
+                    ctx.record_handler_duration(&handler_id, started.elapsed());
+                    return self
+                        .write_text_response(
+                            session,
+                            ctx,
+                            501,
+                            "router handler is not implemented in phase 3",
+                        )
+                        .await;
                 }
                 _ => {}
             }
+            ctx.record_handler_duration(&handler_id, started.elapsed());
         }
 
-        write_text_response(session, 404, "not found").await
+        self.write_text_response(session, ctx, 404, "not found")
+            .await
     }
 
     async fn upstream_peer(
@@ -264,14 +631,106 @@ impl ProxyHttp for GatewayProxy {
             }
         }
         upstream_request.insert_header("x-light-gateway", "light-pingora")?;
+        if let Some(correlation_id) = correlation_id_for_upstream(&ctx.correlation) {
+            upstream_request.insert_header(light_pingora::CORRELATION_ID_HEADER, correlation_id)?;
+        }
+        if let Some(traceability_id) = ctx.correlation.traceability_id.as_deref() {
+            upstream_request
+                .insert_header(light_pingora::TRACEABILITY_ID_HEADER, traceability_id)?;
+        }
         Ok(())
+    }
+
+    async fn response_filter(
+        &self,
+        _session: &mut Session,
+        upstream_response: &mut ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> pingora::Result<()>
+    where
+        Self::CTX: Send + Sync,
+    {
+        self.apply_response_headers(upstream_response, ctx)?;
+        self.record_metrics(ctx, upstream_response.status.as_u16());
+        self.log_handler_durations(ctx);
+        Ok(())
+    }
+
+    async fn logging(&self, _session: &mut Session, error: Option<&Error>, ctx: &mut Self::CTX)
+    where
+        Self::CTX: Send + Sync,
+    {
+        if error.is_some() {
+            self.record_metrics(ctx, 500);
+        }
+        self.log_handler_durations(ctx);
     }
 }
 
-#[derive(Default)]
 struct GatewayRequestContext {
     proxy_target: Option<ProxyTarget>,
     rewrite_host_header: bool,
+    request_start: Instant,
+    handler_ids: Vec<String>,
+    endpoint: String,
+    method: String,
+    path_params: BTreeMap<String, String>,
+    correlation: CorrelationState,
+    cors: Option<CorsResponseHeaders>,
+    metrics_enabled: bool,
+    metrics_recorded: bool,
+    handler_timings: Vec<HandlerTiming>,
+    handler_timings_logged: bool,
+}
+
+impl Default for GatewayRequestContext {
+    fn default() -> Self {
+        Self {
+            proxy_target: None,
+            rewrite_host_header: false,
+            request_start: Instant::now(),
+            handler_ids: Vec::new(),
+            endpoint: String::new(),
+            method: String::new(),
+            path_params: BTreeMap::new(),
+            correlation: CorrelationState::default(),
+            cors: None,
+            metrics_enabled: false,
+            metrics_recorded: false,
+            handler_timings: Vec::new(),
+            handler_timings_logged: false,
+        }
+    }
+}
+
+impl GatewayRequestContext {
+    fn begin_request(&mut self) {
+        self.proxy_target = None;
+        self.rewrite_host_header = false;
+        self.request_start = Instant::now();
+        self.handler_ids.clear();
+        self.endpoint.clear();
+        self.method.clear();
+        self.path_params.clear();
+        self.correlation = CorrelationState::default();
+        self.cors = None;
+        self.metrics_enabled = false;
+        self.metrics_recorded = false;
+        self.handler_timings.clear();
+        self.handler_timings_logged = false;
+    }
+
+    fn record_handler_duration(&mut self, handler_id: &str, duration: Duration) {
+        self.handler_timings.push(HandlerTiming {
+            handler_id: handler_id.to_string(),
+            duration,
+        });
+    }
+}
+
+struct HandlerTiming {
+    handler_id: String,
+    duration: Duration,
 }
 
 #[tokio::main]
@@ -298,75 +757,6 @@ async fn main() -> Result<()> {
         .context("failed to shut down light-gateway")?;
 
     Ok(())
-}
-
-async fn write_static_resolution(
-    session: &mut Session,
-    resolution: StaticResolution,
-) -> pingora::Result<bool> {
-    match resolution {
-        StaticResolution::File(file) => {
-            let body = tokio::fs::read(&file.path).await.map_err(|error| {
-                Error::because(
-                    ErrorType::FileReadError,
-                    format!("failed to read static file `{}`", file.path.display()),
-                    error,
-                )
-            })?;
-            write_bytes_response(
-                session,
-                200,
-                file.content_type.as_str(),
-                Some(file.cache_control.as_str()),
-                Bytes::from(body),
-            )
-            .await
-        }
-        StaticResolution::Forbidden => write_text_response(session, 403, "forbidden").await,
-        StaticResolution::NotFound => write_text_response(session, 404, "not found").await,
-    }
-}
-
-async fn write_text_response(
-    session: &mut Session,
-    status: u16,
-    body: &'static str,
-) -> pingora::Result<bool> {
-    write_bytes_response(
-        session,
-        status,
-        "text/plain; charset=utf-8",
-        None,
-        Bytes::from_static(body.as_bytes()),
-    )
-    .await
-}
-
-async fn write_bytes_response(
-    session: &mut Session,
-    status: u16,
-    content_type: &str,
-    cache_control: Option<&str>,
-    body: Bytes,
-) -> pingora::Result<bool> {
-    let is_head = session
-        .req_header()
-        .method
-        .as_str()
-        .eq_ignore_ascii_case("HEAD");
-    let mut response = ResponseHeader::build(status, Some(4))?;
-    response.insert_header("content-type", content_type)?;
-    if let Some(cache_control) = cache_control {
-        response.insert_header("cache-control", cache_control)?;
-    }
-    response.set_content_length(body.len())?;
-    session
-        .write_response_header(Box::new(response), is_head)
-        .await?;
-    if !is_head {
-        session.write_response_body(Some(body), true).await?;
-    }
-    Ok(true)
 }
 
 fn rewrite_upstream_path(

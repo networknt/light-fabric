@@ -7,12 +7,14 @@ license = "Apache-2.0"
 [dependencies]
 light-runtime = { path = "../../crates/light-runtime" }
 async-trait = { workspace = true }
+base64 = "0.22"
 pingora = { version = "0.8.0", features = ["proxy", "rustls"] }
 serde = { workspace = true }
+serde_yaml = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
-serde_yaml = { workspace = true }
 tempfile = "3"

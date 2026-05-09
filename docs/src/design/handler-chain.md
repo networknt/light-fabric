@@ -1,6 +1,6 @@
 # Handler Chain
 
-Status: Phase 1 implemented; later phases proposed
+Status: Phases 1, 2, and 3 implemented; later phases proposed
 
 ## Purpose
 
@@ -153,22 +153,25 @@ Suggested modules:
 frameworks/light-pingora/src/
   lib.rs
   handler.rs
-  handler_config.rs
+  correlation.rs
+  cors.rs
+  metrics.rs
   proxy.rs
-  router.rs
-  path_resource.rs
-  static_files.rs
-  virtual_host.rs
+  resource.rs
+  router.rs          # future
 ```
 
 Responsibilities:
 
 - parse and validate `handler.yml`
+- parse `handler.yaml` as a compatibility fallback
 - parse and validate `proxy.yml`, `router.yml`, `path-resource.yml`, and
   `virtual-host.yml`
 - build explicit handler registry
 - resolve handler chains
 - match handler paths and fallback handlers
+- capture Java-style `{name}` path-template variables
+- load active handler-specific config files
 - serve static SPA content
 - select fixed proxy upstreams from `proxy.yml`
 - select dynamic sidecar/router upstreams from `router.yml` and discovery
@@ -201,9 +204,11 @@ The product profile selected in `light-portal` decides which of these files are
 included and which handlers are active in `handler.yml`. The Rust binary should
 not require a separate `gateway.yml` to duplicate these existing contracts.
 
-Handler-specific files such as `cors.yml`, `jwt.yml`, `rate-limit.yml`, and
-`headers.yml` stay separate. They are loaded only when the corresponding
-handler is active in the resolved path/default execution model.
+Handler-specific files such as `correlation.yml`, `cors.yml`, `metrics.yml`,
+`jwt.yml`, `rate-limit.yml`, and `headers.yml` stay separate. They are loaded
+only when the corresponding handler is active in the resolved path/default
+execution model. Phase 3 implements this active loading for `correlation.yml`,
+`cors.yml`, and `metrics.yml`.
 
 ### Remote Config Source
 
@@ -302,9 +307,16 @@ This keeps the same top-level `handler.yml` contract as the Java framework:
 `enabled`, `reportHandlerDuration`, `handlerMetricsLogLevel`, `basePath`,
 `handlers`, `chains`, `paths`, and `defaultHandlers`.
 
+The Rust implementation also accepts the Java extension fields
+`additionalHandlers`, `additionalChains`, and `additionalPaths`. They are
+merged into the effective handler model before validation.
+
 Unlike Java, the Rust `handlers` list uses stable short handler IDs. It does
 not use fully qualified class names, and it does not need `@alias` because the
 IDs are already short and stable.
+
+`handler.yml` is the preferred Rust file name. `handler.yaml` is accepted as a
+compatibility fallback because some Java modules and templates use that suffix.
 
 ### Fixed Proxy Config
 
@@ -431,6 +443,65 @@ uses `handler.yml`, `router.yml`, path-prefix/token configs, and
 `proxy.yml`. A sidecar uses `handler.yml`, `router.yml`, token/cache config,
 registry/discovery config, and usually no static resource config.
 
+### Phase 3 Handler Config
+
+Phase 3 implements the first three Java-compatible cross-cutting handlers.
+
+`correlation.yml`:
+
+```yaml
+enabled: ${correlation.enabled:true}
+autogenCorrelationID: ${correlation.autogenCorrelationID:true}
+correlationMdcField: ${correlation.correlationMdcField:cId}
+traceabilityMdcField: ${correlation.traceabilityMdcField:tId}
+```
+
+The Rust handler reads `X-Correlation-Id` and `X-Traceability-Id`, generates a
+Java-compatible URL-safe UUID value when correlation is missing, passes the
+correlation ID to the upstream request, and echoes `X-Traceability-Id` on the
+response. It stores the values in the Pingora request context instead of MDC.
+
+`cors.yml`:
+
+```yaml
+enabled: ${cors.enabled:true}
+allowedOrigins: ${cors.allowedOrigins:}
+allowedMethods: ${cors.allowedMethods:}
+pathPrefixAllowed: ${cors.pathPrefixAllowed:}
+```
+
+The Rust handler accepts the same list/string forms as Java, supports
+`pathPrefixAllowed`, short-circuits preflight `OPTIONS`, rejects disallowed
+origins with `403`, and adds the CORS response headers before static or proxied
+responses are sent. Rust intentionally uses longest-prefix selection for
+`pathPrefixAllowed` so overlapping prefixes are deterministic.
+
+`metrics.yml`:
+
+```yaml
+enabled: ${metrics.enabled:true}
+enableJVMMonitor: ${metrics.enableJVMMonitor:false}
+serverProtocol: ${metrics.serverProtocol:http}
+serverHost: ${metrics.serverHost:localhost}
+serverPath: ${metrics.serverPath:/apm/metricFeed}
+serverPort: ${metrics.serverPort:8086}
+serverName: ${metrics.serverName:metrics}
+serverUser: ${metrics.serverUser:admin}
+serverPass: ${metrics.serverPass:admin}
+reportInMinutes: ${metrics.reportInMinutes:1}
+productName: ${metrics.productName:http-sidecar}
+sendScopeClientId: ${metrics.sendScopeClientId:false}
+sendCallerId: ${metrics.sendCallerId:false}
+sendIssuer: ${metrics.sendIssuer:false}
+issuerRegex: ${metrics.issuerRegex:}
+```
+
+Phase 3 parses and registers this config with `serverPass` masked, records
+request counts and status classes in memory, and logs request metrics with the
+matched endpoint and correlation ID. `enableJVMMonitor` is parsed for config
+compatibility but is not applicable to Rust. External Influx/APM reporters are
+deferred until the metrics sink decision is made.
+
 ## Handler Registry
 
 Use explicit registration.
@@ -495,45 +566,24 @@ separate `traceability` handler.
 Use Pingora phases directly. Avoid a generic exchange abstraction until another
 framework needs it.
 
-```rust
-#[async_trait::async_trait]
-pub trait PingoraHandler: Send + Sync {
-    fn id(&self) -> &'static str;
+The current implementation keeps `PingoraHandler` as a descriptor/factory
+surface and executes the built-in phase 3 handlers from `light-gateway`'s
+Pingora lifecycle. This keeps the first implementation straightforward:
 
-    async fn on_request(
-        &self,
-        session: &mut Session,
-        ctx: &mut GatewayRequestContext,
-    ) -> Result<HandlerDecision>;
+- `request_filter` resolves the configured chain and runs request-stage
+  handlers in order.
+- A request-stage handler can continue, short-circuit with a local response, or
+  select a terminal action such as proxy/static/health.
+- `upstream_request_filter` applies upstream request mutations such as
+  generated correlation IDs.
+- `response_filter` applies response-stage headers and records proxied
+  response metrics.
+- Static responses call the same response decoration and metrics code before
+  writing the local response.
 
-    async fn on_upstream_request(
-        &self,
-        session: &mut Session,
-        upstream_request: &mut RequestHeader,
-        ctx: &mut GatewayRequestContext,
-    ) -> Result<()>;
-
-    async fn on_response(
-        &self,
-        session: &mut Session,
-        response: &mut ResponseHeader,
-        ctx: &mut GatewayRequestContext,
-    ) -> Result<()>;
-}
-```
-
-Request handlers return:
-
-```rust
-pub enum HandlerDecision {
-    Continue,
-    Respond(HandlerResponse),
-}
-```
-
-If a handler returns `Respond`, `light-gateway` writes that response and stops
-the chain. This is how auth failures, rate-limit failures, and request
-validation errors short-circuit the proxy.
+Once security/rate-limit handlers are added, this can be lifted into a richer
+trait with request/upstream/response hooks if the duplication becomes real. It
+is intentionally not generalized before the Pingora behavior stabilizes.
 
 Response handlers should run before both static and proxied responses are sent.
 For proxied responses, this maps to Pingora `response_filter`. For static
@@ -546,11 +596,13 @@ The per-request context should carry route decisions across Pingora phases.
 
 ```rust
 pub struct GatewayRequestContext {
-    pub host: Option<Arc<VirtualHost>>,
-    pub path: Option<Arc<ResolvedHandlerPath>>,
-    pub chain: Option<Arc<ResolvedHandlerChain>>,
-    pub upstream: Option<Arc<SelectedUpstream>>,
-    pub attributes: BTreeMap<String, serde_json::Value>,
+    pub upstream: Option<ProxyTarget>,
+    pub endpoint: String,
+    pub method: String,
+    pub path_params: BTreeMap<String, String>,
+    pub correlation: CorrelationState,
+    pub cors: Option<CorsResponseHeaders>,
+    pub metrics_enabled: bool,
 }
 ```
 
@@ -722,6 +774,7 @@ Suggested module IDs:
 - `light-pingora/virtual-host`
 - `light-pingora/correlation`
 - `light-pingora/cors`
+- `light-pingora/metrics`
 - `light-pingora/jwt`
 
 The module registry should expose:
@@ -798,6 +851,11 @@ Unit tests in `light-pingora`:
 - reject unknown handler IDs
 - reject recursive chains
 - resolve path/default handler chains in order
+- parse `handler.yaml` fallback
+- merge `additionalHandlers`, `additionalChains`, and `additionalPaths`
+- capture path-template variables
+- parse CORS list/string and path-prefix config
+- classify metrics status codes
 - normalize host names and strip ports
 - reject duplicate virtual hosts
 - match exact virtual hosts
@@ -827,7 +885,7 @@ Integration tests:
 
 ## Rollout Plan
 
-Phase 1: Product config and active handler model
+Phase 1: Product config and active handler model (implemented)
 
 - keep a single `apps/light-gateway` binary
 - register all built-in handler descriptors explicitly
@@ -836,7 +894,7 @@ Phase 1: Product config and active handler model
 - load config only for active handlers
 - document product profiles managed by `light-portal`
 
-Phase 2: BFF and fixed proxy engine
+Phase 2: BFF and fixed proxy engine (implemented)
 
 - load and register `proxy.yml`, `path-resource.yml`, and `virtual-host.yml`
 - match `handler.yml` paths and fallback handlers in Java-compatible order
@@ -850,10 +908,15 @@ Phase 2: BFF and fixed proxy engine
 - add content type and cache headers
 - add traversal, dotfile, fallback, proxy-host, and virtual-host tests
 
-Phase 3: Handler chain execution
+Phase 3: Handler chain execution (implemented)
 
 - run request and response handlers around static and proxied responses
-- implement correlation, headers, CORS, and metrics
+- implement correlation, CORS, and basic metrics
+- parse `correlation.yml`, `cors.yml`, and `metrics.yml`
+- pass generated correlation IDs upstream
+- apply response headers to both static and proxied responses
+- log handler duration when `reportHandlerDuration` is enabled
+- defer generic response headers to a handler-specific follow-up
 
 Phase 4: Security and upstream behavior
 

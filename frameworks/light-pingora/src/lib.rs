@@ -1,4 +1,7 @@
+mod correlation;
+mod cors;
 mod handler;
+mod metrics;
 mod proxy;
 mod resource;
 
@@ -18,11 +21,24 @@ use std::thread::JoinHandle;
 #[cfg(unix)]
 use tokio::sync::watch;
 
+pub use correlation::{
+    CORRELATION_CONFIG_NAME, CORRELATION_FILE, CORRELATION_ID_HEADER, CORRELATION_MODULE_ID,
+    CorrelationConfig, CorrelationState, TRACEABILITY_ID_HEADER, apply_correlation_request,
+    apply_correlation_response, correlation_id_for_upstream, load_correlation_config,
+};
+pub use cors::{
+    CORS_CONFIG_NAME, CORS_FILE, CORS_MODULE_ID, CorsConfig, CorsRequestOutcome,
+    CorsResponseHeaders, apply_cors_response, evaluate_cors_request, load_cors_config,
+};
 pub use handler::{
-    ActiveHandlerSet, HANDLER_CONFIG_NAME, HANDLER_FILE, HANDLER_MODULE_ID, HandlerBuildContext,
-    HandlerChain, HandlerConfig, HandlerMetricsLogLevel, HandlerModuleConfig, HandlerPath,
-    PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerFactory, PingoraHandlerKind,
-    PingoraHandlerRegistry, load_active_handlers,
+    ActiveHandlerSet, HANDLER_CONFIG_NAME, HANDLER_FILE, HANDLER_LEGACY_FILE, HANDLER_MODULE_ID,
+    HandlerBuildContext, HandlerChain, HandlerConfig, HandlerMetricsLogLevel, HandlerModuleConfig,
+    HandlerPath, PathMatch, PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerFactory,
+    PingoraHandlerKind, PingoraHandlerRegistry, ResolvedHandlerChain, load_active_handlers,
+};
+pub use metrics::{
+    METRICS_CONFIG_NAME, METRICS_FILE, METRICS_MODULE_ID, MetricCounts, MetricsConfig,
+    MetricsEvent, MetricsRecorder, build_metrics_event, classify_status, load_metrics_config,
 };
 pub use proxy::{
     PROXY_CONFIG_NAME, PROXY_FILE, PROXY_MODULE_ID, ProxyConfig, ProxyRoute, ProxyTarget,
