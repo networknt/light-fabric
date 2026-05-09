@@ -1,0 +1,5 @@
+path: ${path-resource.path:}
+base: ${path-resource.base:}
+prefix: ${path-resource.prefix:false}
+transferMinSize: ${path-resource.transferMinSize:10245760}
+directoryListingEnabled: ${path-resource.directoryListingEnabled:false}

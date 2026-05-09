@@ -1,0 +1,12 @@
+enabled: ${proxy.enabled:true}
+http2Enabled: ${proxy.http2Enabled:false}
+hosts: ${proxy.hosts:http://localhost:8080}
+connectionsPerThread: ${proxy.connectionsPerThread:20}
+maxRequestTime: ${proxy.maxRequestTime:1000}
+rewriteHostHeader: ${proxy.rewriteHostHeader:true}
+reuseXForwarded: ${proxy.reuseXForwarded:false}
+maxConnectionRetries: ${proxy.maxConnectionRetries:3}
+maxQueueSize: ${proxy.maxQueueSize:0}
+forwardJwtClaims: ${proxy.forwardJwtClaims:false}
+metricsInjection: ${proxy.metricsInjection:false}
+metricsName: ${proxy.metricsName:proxy-response}

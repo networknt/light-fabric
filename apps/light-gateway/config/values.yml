@@ -1,5 +1,15 @@
-gateway.upstreams:
-  - address: 127.0.0.1:8081
-    tls: false
-    sni: ""
-    hostHeader: localhost
+handler.handlers:
+  - correlation
+  - headers
+  - proxy
+handler.chains:
+  default:
+    exec:
+      - correlation
+      - headers
+      - proxy
+handler.paths: []
+handler.defaultHandlers:
+  - default
+
+proxy.hosts: http://127.0.0.1:8081

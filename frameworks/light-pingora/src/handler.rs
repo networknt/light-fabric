@@ -205,6 +205,29 @@ impl ActiveHandlerSet {
     pub fn handlers(&self) -> &[Arc<dyn PingoraHandler>] {
         &self.handlers
     }
+
+    pub fn resolve_handler_ids(
+        &self,
+        request_path: &str,
+        method: &str,
+    ) -> Result<Vec<String>, RuntimeError> {
+        if !self.config.enabled {
+            return Ok(Vec::new());
+        }
+
+        let exec = self
+            .config
+            .paths
+            .iter()
+            .find(|path| handler_path_matches(&self.config, path, request_path, method))
+            .map(|path| path.exec.as_slice())
+            .unwrap_or(self.config.default_handlers.as_slice());
+
+        let mut resolved = Vec::new();
+        let mut visiting = Vec::new();
+        resolve_exec_handlers(exec, &self.config, &mut visiting, &mut resolved)?;
+        Ok(resolved)
+    }
 }
 
 impl fmt::Debug for ActiveHandlerSet {
@@ -492,6 +515,101 @@ fn collect_exec_item_handlers(
     Ok(())
 }
 
+fn resolve_chain_handlers(
+    chain_name: &str,
+    config: &HandlerConfig,
+    visiting: &mut Vec<String>,
+    resolved: &mut Vec<String>,
+) -> Result<(), RuntimeError> {
+    if visiting.iter().any(|item| item == chain_name) {
+        let mut path = visiting.clone();
+        path.push(chain_name.to_string());
+        return Err(RuntimeError::Unsupported(format!(
+            "recursive handler chain reference: {}",
+            path.join(" -> ")
+        )));
+    }
+
+    let chain = config.chains.get(chain_name).ok_or_else(|| {
+        RuntimeError::Unsupported(format!("unknown handler chain `{chain_name}`"))
+    })?;
+    visiting.push(chain_name.to_string());
+    resolve_exec_handlers(&chain.exec, config, visiting, resolved)?;
+    visiting.pop();
+    Ok(())
+}
+
+fn resolve_exec_handlers(
+    exec: &[String],
+    config: &HandlerConfig,
+    visiting: &mut Vec<String>,
+    resolved: &mut Vec<String>,
+) -> Result<(), RuntimeError> {
+    for item in exec {
+        if config.chains.contains_key(item) {
+            resolve_chain_handlers(item, config, visiting, resolved)?;
+        } else {
+            resolved.push(item.to_string());
+        }
+    }
+    Ok(())
+}
+
+fn handler_path_matches(
+    config: &HandlerConfig,
+    handler_path: &HandlerPath,
+    request_path: &str,
+    method: &str,
+) -> bool {
+    if !handler_path.method.eq_ignore_ascii_case(method) {
+        return false;
+    }
+
+    path_template_matches(&handler_path.path, request_path)
+        || strip_base_path(&config.base_path, request_path)
+            .is_some_and(|path| path_template_matches(&handler_path.path, path))
+}
+
+fn strip_base_path<'a>(base_path: &str, request_path: &'a str) -> Option<&'a str> {
+    if base_path == "/" {
+        return None;
+    }
+    let base_path = base_path.trim_end_matches('/');
+    if request_path == base_path {
+        return Some("/");
+    }
+    request_path
+        .strip_prefix(base_path)
+        .filter(|path| path.starts_with('/'))
+}
+
+fn path_template_matches(template: &str, request_path: &str) -> bool {
+    if template == request_path {
+        return true;
+    }
+
+    let template_segments = path_segments(template);
+    let request_segments = path_segments(request_path);
+    if template_segments.len() != request_segments.len() {
+        return false;
+    }
+
+    template_segments
+        .iter()
+        .zip(request_segments.iter())
+        .all(|(template, request)| {
+            (template.starts_with('{') && template.ends_with('}') && !request.is_empty())
+                || template == request
+        })
+}
+
+fn path_segments(path: &str) -> Vec<&str> {
+    path.trim_matches('/')
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -720,5 +838,68 @@ defaultHandlers:
             .expect_err("alias syntax should fail");
 
         assert!(error.to_string().contains("without @alias"));
+    }
+
+    #[test]
+    fn resolves_handlers_for_exact_template_and_default_paths() {
+        let config = HandlerConfig {
+            handlers: vec!["active".to_string(), "unused".to_string()],
+            chains: BTreeMap::from([(
+                "api".to_string(),
+                HandlerChain {
+                    exec: vec!["active".to_string()],
+                },
+            )]),
+            paths: vec![HandlerPath {
+                path: "/oauth2/{hostId}/token".to_string(),
+                method: "post".to_string(),
+                exec: vec!["api".to_string()],
+            }],
+            default_handlers: vec!["unused".to_string()],
+            ..HandlerConfig::default()
+        };
+        let active = ActiveHandlerSet {
+            config,
+            active_handler_ids: Vec::new(),
+            handlers: Vec::new(),
+        };
+
+        assert_eq!(
+            active
+                .resolve_handler_ids("/oauth2/AZZRJE52eXu3t1hseacnGQ/token", "POST")
+                .expect("resolve API handlers"),
+            vec!["active".to_string()]
+        );
+        assert_eq!(
+            active
+                .resolve_handler_ids("/spa/account/settings", "GET")
+                .expect("resolve default handlers"),
+            vec!["unused".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolves_handler_paths_after_base_path_is_removed() {
+        let active = ActiveHandlerSet {
+            config: HandlerConfig {
+                base_path: "/api".to_string(),
+                paths: vec![HandlerPath {
+                    path: "/v1/test".to_string(),
+                    method: "GET".to_string(),
+                    exec: vec!["active".to_string()],
+                }],
+                default_handlers: vec!["unused".to_string()],
+                ..HandlerConfig::default()
+            },
+            active_handler_ids: Vec::new(),
+            handlers: Vec::new(),
+        };
+
+        assert_eq!(
+            active
+                .resolve_handler_ids("/api/v1/test", "GET")
+                .expect("resolve with base path"),
+            vec!["active".to_string()]
+        );
     }
 }

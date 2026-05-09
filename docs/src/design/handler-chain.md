@@ -16,7 +16,8 @@ The deployment model should use one `light-gateway` binary. Different runtime
 behaviors should come from product-specific configuration managed in
 `light-portal` and delivered by config-server. A BFF deployment, a sidecar
 deployment, and a load-balancer deployment can therefore run the same binary
-with different `handler.yml`, route config, and handler-specific config files.
+with different `handler.yml`, traffic/resource config, and handler-specific
+config files.
 
 The design should preserve the useful part of `light-4j` `handler.yml`: ordered
 configuration of cross-cutting request and response concerns. It should not copy
@@ -35,7 +36,7 @@ configuration.
 - Proxy API, BFF, sidecar, and balancer routes to upstream services.
 - Use stable handler IDs instead of Rust type names.
 - Use explicit handler registration. Do not require `inventory`.
-- Integrate loaded handler and gateway config with `ModuleRegistry`.
+- Integrate loaded handler and traffic/resource config with `ModuleRegistry`.
 - Keep the design compatible with future config reload.
 
 ## Non-Goals
@@ -124,22 +125,22 @@ The Pingora gateway request flow should be:
 
 ```text
 request
-  -> normalize Host header
-  -> match virtual host
-  -> match route by path and method
-  -> select handler chain from handler.yml paths/defaultHandlers
+  -> match handler.yml paths by path and method
+  -> fall back to handler.yml defaultHandlers when no path matches
   -> run request handlers
-  -> serve static file, or proxy upstream, or return error
+  -> proxy fixed upstream, route by service_id/service_url, serve static file,
+     or return error
   -> run response handlers
   -> response
 ```
 
-For static routes, `request_filter` writes the response and returns `Ok(true)`
-so Pingora does not proxy the request.
+For static handlers such as virtual-host or path-resource, `request_filter`
+writes the response and returns `Ok(true)` so Pingora does not proxy the
+request.
 
-For proxy routes, `request_filter` stores the selected route and upstream in
-the per-request context and returns `Ok(false)`. `upstream_peer` and
-`upstream_request_filter` then use that context to connect to the right
+For proxy or router handlers, `request_filter` stores the selected upstream
+decision in the per-request context and returns `Ok(false)`. `upstream_peer`
+and `upstream_request_filter` then use that context to connect to the right
 upstream and set headers.
 
 ## Crate Layout
@@ -153,7 +154,9 @@ frameworks/light-pingora/src/
   lib.rs
   handler.rs
   handler_config.rs
-  gateway.rs
+  proxy.rs
+  router.rs
+  path_resource.rs
   static_files.rs
   virtual_host.rs
 ```
@@ -161,13 +164,15 @@ frameworks/light-pingora/src/
 Responsibilities:
 
 - parse and validate `handler.yml`
-- parse and validate gateway route config
+- parse and validate `proxy.yml`, `router.yml`, `path-resource.yml`, and
+  `virtual-host.yml`
 - build explicit handler registry
 - resolve handler chains
-- match virtual hosts and routes
+- match handler paths and fallback handlers
 - serve static SPA content
-- wrap application `ProxyHttp` implementations when needed
-- expose module-registry entries for active handler and gateway config
+- select fixed proxy upstreams from `proxy.yml`
+- select dynamic sidecar/router upstreams from `router.yml` and discovery
+- expose module-registry entries for active handler and traffic/resource config
 
 This keeps the first implementation close to the Pingora lifecycle and avoids
 premature abstractions for Axum.
@@ -181,9 +186,20 @@ Use `handler.yml` for the Java-compatible handler middleware contract:
 handler declarations, reusable chains, path-to-chain mappings, and fallback
 handlers.
 
-Use `gateway.yml` for product mode, virtual hosts, static roots, routes,
-upstreams, and gateway-family behavior. Keeping one route config name makes
-config-server delivery and product templates easier to reason about.
+Use Java-compatible product-specific config files for traffic and static
+resource behavior:
+
+- `proxy.yml`: fixed inbound reverse proxy targets for gateway, proxy server,
+  balancer, and simple BFF API forwarding.
+- `router.yml`: dynamic outbound routing by `service_id` or `service_url`,
+  mainly for sidecar-style deployments.
+- `path-resource.yml` or `path-resource.yaml`: a single static resource mount.
+- `virtual-host.yml` or `virtual-host.yaml`: host-based static resource mounts
+  for BFF/SPA deployments.
+
+The product profile selected in `light-portal` decides which of these files are
+included and which handlers are active in `handler.yml`. The Rust binary should
+not require a separate `gateway.yml` to duplicate these existing contracts.
 
 Handler-specific files such as `cors.yml`, `jwt.yml`, `rate-limit.yml`, and
 `headers.yml` stay separate. They are loaded only when the corresponding
@@ -193,7 +209,8 @@ handler is active in the resolved path/default execution model.
 
 `light-gateway` starts with enough local bootstrap configuration to contact
 config-server. The existing Light Fabric runtime then resolves local and remote
-configuration before `light-pingora` builds the route set.
+configuration before `light-pingora` builds the runtime handler/resource/proxy
+model.
 
 Startup flow:
 
@@ -202,7 +219,8 @@ Startup flow:
    and authorization
 3. download remote product configuration managed by `light-portal`
 4. merge remote config with local fallback config
-5. load `handler.yml`, `gateway.yml`, and active handler-specific config files
+5. load `handler.yml`, applicable traffic/resource config files, and active
+   handler-specific config files
 6. validate the complete route and handler model
 7. bind Pingora listeners
 8. register the runtime instance with the controller
@@ -210,7 +228,9 @@ Startup flow:
 The remote product config should include:
 
 - `handler.yml`
-- `gateway.yml`
+- `proxy.yml` for fixed inbound proxy profiles
+- `router.yml` for sidecar/router profiles
+- `path-resource.yml` or `virtual-host.yml` for static/BFF profiles
 - active handler config files
 - TLS, trust, or client files required by the runtime
 - optional product-specific static file references or mount paths
@@ -286,67 +306,130 @@ Unlike Java, the Rust `handlers` list uses stable short handler IDs. It does
 not use fully qualified class names, and it does not need `@alias` because the
 IDs are already short and stable.
 
-### Gateway Config
+### Fixed Proxy Config
 
-Example `gateway.yml` for a BFF profile:
+`proxy.yml` should keep the Java inbound reverse-proxy contract. It is used
+when the deployment has a known set of target upstream URIs.
 
 ```yaml
-enabled: true
-mode: bff
-
-virtualHosts:
-  - host: admin.example.com
-    static:
-      root: /opt/light/spa/admin
-      index: /index.html
-      spaFallback: true
-    routes:
-      - pathPrefix: /api/
-        upstream: admin-api
-      - pathPrefix: /oauth/
-        upstream: oauth
-      - pathPrefix: /
-        static: true
-
-  - host: portal.example.com
-    static:
-      root: /opt/light/spa/portal
-      index: /index.html
-      spaFallback: true
-    routes:
-      - pathPrefix: /api/
-        upstream: portal-api
-      - pathPrefix: /
-        static: true
-
-upstreams:
-  admin-api:
-    address: admin-api:8443
-    tls: true
-    sni: admin-api
-    hostHeader: admin-api
-  portal-api:
-    address: portal-api:8443
-    tls: true
-    sni: portal-api
-    hostHeader: portal-api
-  oauth:
-    address: light-oauth:8443
-    tls: true
-    sni: light-oauth
-    hostHeader: light-oauth
+enabled: ${proxy.enabled:true}
+http2Enabled: ${proxy.http2Enabled:false}
+hosts: ${proxy.hosts:http://localhost:8080}
+connectionsPerThread: ${proxy.connectionsPerThread:20}
+maxRequestTime: ${proxy.maxRequestTime:1000}
+rewriteHostHeader: ${proxy.rewriteHostHeader:true}
+reuseXForwarded: ${proxy.reuseXForwarded:false}
+maxConnectionRetries: ${proxy.maxConnectionRetries:3}
+maxQueueSize: ${proxy.maxQueueSize:0}
+forwardJwtClaims: ${proxy.forwardJwtClaims:false}
+metricsInjection: ${proxy.metricsInjection:false}
+metricsName: ${proxy.metricsName:proxy-response}
 ```
 
-`handler.yml` owns middleware chain selection through `paths` and
-`defaultHandlers`. `gateway.yml` owns traffic routing: virtual hosts, static
-roots, proxy route prefixes, and upstreams. Keeping these concerns separate
-preserves the Java handler contract without making gateway routing depend on
-Java handler class names or aliases.
+The Rust implementation should parse `proxy.hosts` as one or more comma
+separated `http://` or `https://` targets and select a target with round-robin
+load balancing. It should preserve `rewriteHostHeader`, `reuseXForwarded`,
+request timeout, retry, and queue settings where Pingora exposes equivalent
+behavior.
 
-Other product personas use the same config file with different sections and
-chains. For example, a sidecar profile may have no static block and may use an
-outbound chain for token/header propagation. A balancer profile may mostly
-define upstream pools, health checks, and a small metrics/correlation chain.
+### Router Config
+
+`router.yml` should keep the Java outbound router contract. This is primarily
+for the sidecar pattern, where earlier handlers resolve `service_id`,
+`service_url`, tokens, and discovery context before the router connects to the
+downstream service.
+
+```yaml
+http2Enabled: ${router.http2Enabled:true}
+httpsEnabled: ${router.httpsEnabled:true}
+maxRequestTime: ${router.maxRequestTime:1000}
+pathPrefixMaxRequestTime: ${router.pathPrefixMaxRequestTime:{}}
+connectionsPerThread: ${router.connectionsPerThread:10}
+softMaxConnectionsPerThread: ${router.softMaxConnectionsPerThread:5}
+maxQueueSize: ${router.maxQueueSize:0}
+rewriteHostHeader: ${router.rewriteHostHeader:true}
+reuseXForwarded: ${router.reuseXForwarded:false}
+maxConnectionRetries: ${router.maxConnectionRetries:3}
+preResolveFQDN2IP: ${router.preResolveFQDN2IP:false}
+hostWhitelist: ${router.hostWhitelist:[]}
+serviceIdQueryParameter: ${router.serviceIdQueryParameter:false}
+urlRewriteRules: ${router.urlRewriteRules:[]}
+methodRewriteRules: ${router.methodRewriteRules:[]}
+queryParamRewriteRules: ${router.queryParamRewriteRules:{}}
+headerRewriteRules: ${router.headerRewriteRules:{}}
+metricsInjection: ${router.metricsInjection:false}
+metricsName: ${router.metricsName:router-response}
+```
+
+The Java router chooses the target from `service_url` first, guarded by
+`hostWhitelist`, or from `service_id` plus optional `env_tag` through service
+discovery. Rust should follow the same model when router support is added.
+Because this depends on sidecar token, cache, and discovery behavior, full
+router execution should be implemented after the fixed proxy and static BFF
+path are stable.
+
+### Static Resource Config
+
+For a single static site, keep `path-resource.yml`:
+
+```yaml
+path: ${path-resource.path:/public}
+base: ${path-resource.base:/opt/light-4j/public}
+prefix: ${path-resource.prefix:true}
+transferMinSize: ${path-resource.transferMinSize:1024}
+directoryListingEnabled: ${path-resource.directoryListingEnabled:false}
+```
+
+For host-based BFF/static sites, keep `virtual-host.yml`:
+
+```yaml
+hosts: ${virtual-host.hosts:[]}
+```
+
+Example config-server values:
+
+```yaml
+virtual-host.hosts:
+  - domain: local.localhost
+    path: /
+    base: /lightapi/dist
+    transferMinSize: 10245760
+    directoryListingEnabled: false
+  - domain: signin.localhost
+    path: /
+    base: /signin/dist
+    transferMinSize: 10245760
+    directoryListingEnabled: false
+```
+
+Rust should preserve the Java `domain`, `path`, `base`, `transferMinSize`, and
+`directoryListingEnabled` fields. It should also add the Rust improvement for
+SPA fallback: when a static virtual host cannot find a requested browser route
+and the path does not look like an asset, it should serve `index.html` from the
+matched static root.
+
+### BFF Wiring Example
+
+The Java BFF config in `portal-config-loc/all-in-lt/light-gateway` uses
+`handler.paths` to send API routes through the `default` chain, which includes
+path-prefix service resolution, token handling, and the router. It then uses:
+
+```yaml
+handler.defaultHandlers:
+  - cors
+  - virtual
+```
+
+That means unmatched browser routes fall through to CORS plus virtual-host
+static serving. Rust should keep this pattern: `handler.yml` decides whether a
+request goes to proxy/router/static handling, based on paths and fallback
+handlers.
+
+Other product personas use different config file combinations. A BFF commonly
+uses `handler.yml`, `router.yml`, path-prefix/token configs, and
+`virtual-host.yml`. A simple proxy or balancer can use `handler.yml` and
+`proxy.yml`. A sidecar uses `handler.yml`, `router.yml`, token/cache config,
+registry/discovery config, and usually no static resource config.
 
 ## Handler Registry
 
@@ -464,9 +547,9 @@ The per-request context should carry route decisions across Pingora phases.
 ```rust
 pub struct GatewayRequestContext {
     pub host: Option<Arc<VirtualHost>>,
-    pub route: Option<Arc<RouteRule>>,
+    pub path: Option<Arc<ResolvedHandlerPath>>,
     pub chain: Option<Arc<ResolvedHandlerChain>>,
-    pub upstream: Option<Arc<Upstream>>,
+    pub upstream: Option<Arc<SelectedUpstream>>,
     pub attributes: BTreeMap<String, serde_json::Value>,
 }
 ```
@@ -474,13 +557,14 @@ pub struct GatewayRequestContext {
 The context is created by `ProxyHttp::new_ctx()` and populated in
 `request_filter`.
 
-`upstream_peer` should only select an upstream after `request_filter` has
-matched a proxy route. If no upstream is selected, the implementation should
-return a clear configuration error rather than silently falling back.
+`upstream_peer` should only select an upstream after a proxy or router handler
+has selected one. If no upstream is selected for a proxied request, the
+implementation should return a clear configuration error rather than silently
+falling back.
 
 ## Virtual Hosts
 
-Virtual-host routing should use the HTTP `Host` header.
+Virtual-host static serving should use the HTTP `Host` header.
 
 Host normalization rules:
 
@@ -504,8 +588,9 @@ Dynamic multi-cert SNI selection can be added later as a transport enhancement.
 
 ## Static SPA Rendering
 
-Static SPA rendering should be part of the Pingora route engine, not a generic
-middleware handler. It is enabled by product config, typically for `mode: bff`.
+Static SPA rendering should be part of the Pingora resource engine, not a
+generic middleware handler. It is enabled by `path-resource.yml` or
+`virtual-host.yml`, typically for BFF profiles.
 
 Rules for the first implementation:
 
@@ -540,20 +625,36 @@ SPA assets become a problem, add streaming file delivery as a focused follow-up.
 Conditional requests with `ETag` or `Last-Modified` are useful but can be a
 second phase. They are not required to make SPA serving work.
 
-## Proxy Routes
+## Proxy And Router Behavior
 
-Proxy routes should select an upstream by route.
+`proxy.yml` selects from configured upstream URIs. This is the simpler inbound
+reverse-proxy case and should be implemented before dynamic sidecar routing.
 
-Matching order:
+Fixed proxy target behavior:
 
-1. virtual host
-2. route path prefix or exact path
-3. method, if configured
-4. first matching route wins
+- parse comma-separated `proxy.hosts`
+- support `http://` and `https://`
+- duplicate a single host internally if retry/load-balancer behavior needs at
+  least two entries
+- select upstream with round-robin
+- apply timeout, retry, queue, and host-forwarding settings where Pingora
+  supports them
 
-The route should store the selected upstream in `GatewayRequestContext`.
+`router.yml` selects from request metadata and discovery. This should be a
+separate follow-up after proxy/static support because the useful sidecar path
+also needs token acquisition, token cache, path-prefix service mapping, direct
+registry or discovery, and host whitelist behavior.
 
-`upstream_peer` creates the `HttpPeer` from that upstream:
+Router target behavior:
+
+- prefer `service_url` when present and allowed by `router.hostWhitelist`
+- otherwise use `service_id` plus optional `env_tag`
+- optionally allow `service_id` from the query string when
+  `serviceIdQueryParameter` is true
+- discover targets through the configured registry/cluster
+- support URL, method, query-parameter, and header rewrite rules
+
+`upstream_peer` creates the `HttpPeer` from the selected upstream:
 
 - address
 - TLS enabled
@@ -572,16 +673,21 @@ Handler-specific upstream mutations should also run from this phase.
 
 ## Chain Resolution
 
-Startup should validate handler and gateway configuration before binding
-listeners.
+Startup should validate handler and selected traffic/resource configuration
+before binding listeners.
 
 Validation rules:
 
 - every handler ID in `handler.yml` must exist in the explicit registry
 - every chain item must resolve to a registered handler or another chain
 - recursive chain references are invalid
-- every route chain must exist
-- every route upstream must exist unless the route is static
+- every `handler.paths` entry must reference existing chains or handlers
+- every `handler.defaultHandlers` entry must reference existing chains or
+  handlers
+- `proxy.yml` hosts must be valid `http://` or `https://` URIs when the proxy
+  handler is active
+- `router.yml` rewrite rules must be parseable when the router handler is
+  active
 - every static virtual host must have a static root
 - static roots must be absolute or resolved relative to a configured base
 - duplicate exact virtual hosts are invalid
@@ -590,27 +696,30 @@ Validation rules:
 The resolved model should be immutable and cheap to read:
 
 ```rust
-pub struct GatewayRouteSet {
+pub struct GatewayRuntimeModel {
     pub virtual_hosts: BTreeMap<String, Arc<VirtualHost>>,
     pub default_host: Option<Arc<VirtualHost>>,
     pub chains: BTreeMap<String, Arc<ResolvedHandlerChain>>,
-    pub upstreams: BTreeMap<String, Arc<Upstream>>,
+    pub proxy_targets: Vec<Arc<ProxyTarget>>,
 }
 ```
 
-Later config reload can swap the whole route set atomically.
+Later config reload can swap the whole runtime model atomically.
 
 ## Runtime Integration
 
 `light-runtime` remains responsible for bootstrap, config loading, lifecycle,
 controller registration, and module registry. `light-pingora` should load its
-Pingora-specific handler and gateway config through the existing runtime config
-loader.
+Pingora-specific handler, traffic, and resource config through the existing
+runtime config loader.
 
 Suggested module IDs:
 
 - `light-pingora/handler`
-- `light-pingora/gateway`
+- `light-pingora/proxy`
+- `light-pingora/router`
+- `light-pingora/path-resource`
+- `light-pingora/virtual-host`
 - `light-pingora/correlation`
 - `light-pingora/cors`
 - `light-pingora/jwt`
@@ -618,17 +727,16 @@ Suggested module IDs:
 The module registry should expose:
 
 - handler config snapshot, masked
-- gateway product mode, virtual host, route, and upstream config snapshot,
-  masked
+- proxy, router, path-resource, and virtual-host config snapshots, masked
 - active handler IDs
 - active chains
 - active virtual hosts
-- active product mode
+- active proxy/router/static capabilities
 - reloadable status
 
 If reload is added, use the existing `ReloadableModule` pattern and replace the
-resolved route set atomically. In-flight requests should keep using the route
-set they already selected.
+resolved runtime model atomically. In-flight requests should keep using the
+handler/resource/proxy model they already selected.
 
 ## Suitable First Handlers
 
@@ -654,8 +762,8 @@ Defer handlers that require deeper body handling:
 
 ## Error Model
 
-Handlers and route selection should return structured errors that render
-consistently.
+Handlers and proxy/resource selection should return structured errors that
+render consistently.
 
 ```rust
 pub struct HandlerError {
@@ -672,7 +780,7 @@ browser. Detailed diagnostics should go to logs with correlation IDs.
 Common gateway errors:
 
 - unknown host: `404`
-- no matching route: `404`
+- no matching handler path or static resource: `404`
 - unsupported method for static route: `405`
 - static file outside root: `403`
 - missing upstream: startup validation error
@@ -689,12 +797,12 @@ Unit tests in `light-pingora`:
 - parse valid `handler.yml`
 - reject unknown handler IDs
 - reject recursive chains
-- resolve route chains in order
+- resolve path/default handler chains in order
 - normalize host names and strip ports
 - reject duplicate virtual hosts
 - match exact virtual hosts
-- match route prefixes in configured order
-- reject route upstream references that do not exist
+- parse and validate `proxy.yml` hosts
+- parse and validate `router.yml` rewrite-rule config
 - prevent static path traversal
 - deny dotfiles by default
 - serve `index.html` for `/`
@@ -708,10 +816,12 @@ Integration tests:
 
 - same binary starts with BFF profile config
 - same binary starts with proxy or balancer profile config
+- BFF profile can route API paths through configured handlers and serve SPA
+  fallback through `defaultHandlers`
 - static SPA route returns `index.html`
 - static asset route returns correct content type and cache header
 - virtual host A and virtual host B serve different roots
-- API route is proxied to the configured upstream
+- API route is proxied to the configured `proxy.yml` upstream
 - auth handler blocks protected API routes
 - public static route does not require auth unless configured
 
@@ -726,43 +836,47 @@ Phase 1: Product config and active handler model
 - load config only for active handlers
 - document product profiles managed by `light-portal`
 
-Phase 2: Pingora gateway route engine
+Phase 2: BFF and fixed proxy engine
 
-- add gateway config model in `light-pingora`
-- support product mode in `gateway.yml`
+- load and register `proxy.yml`, `path-resource.yml`, and `virtual-host.yml`
+- match `handler.yml` paths and fallback handlers in Java-compatible order
+- select fixed proxy upstreams from `proxy.yml`
 - match virtual hosts by `Host`
-- match static and proxy routes
-- validate route and upstream references
-- register gateway config with `ModuleRegistry`
-
-Phase 3: Static SPA serving
+- serve single-site and virtual-host static content
 
 - implement safe static path resolution
 - serve static files from `request_filter`
-- add SPA fallback
+- add Rust SPA fallback improvement
 - add content type and cache headers
-- add traversal, dotfile, and fallback tests
+- add traversal, dotfile, fallback, proxy-host, and virtual-host tests
 
-Phase 4: Handler chain
+Phase 3: Handler chain execution
 
-- parse `handler.yml`
-- add explicit `PingoraHandlerRegistry`
-- resolve chains
 - run request and response handlers around static and proxied responses
 - implement correlation, headers, CORS, and metrics
 
-Phase 5: Security and upstream behavior
+Phase 4: Security and upstream behavior
 
 - implement JWT, API key, basic auth, and rate-limit handlers
 - add upstream header mutation
-- add route-level chain selection for public SPA and protected API routes
+- add path-level chain selection for public SPA and protected API routes
+
+Phase 5: Sidecar router
+
+- load and register `router.yml`
+- implement dynamic target selection by `service_url` or `service_id`
+- enforce `hostWhitelist`
+- integrate path-prefix service mapping, token/cache behavior, and discovery
+- support router URL, method, query-parameter, and header rewrites
+- add sidecar-focused tests
 
 Phase 6: Reload and control plane
 
-- make gateway and handler config reloadable
-- expose active product mode, hosts, routes, handlers, and chains through
+- add router-specific reload once `router.yml` is implemented
+- extend reload coverage to security and traffic handler configs
+- expose active capabilities, hosts, paths, handlers, and chains through
   service-info MCP
-- atomically replace resolved route sets on reload
+- atomically replace resolved handler/resource/proxy models on reload
 
 Phase 7: Advanced transport features
 
@@ -771,15 +885,16 @@ Phase 7: Advanced transport features
 - add wildcard virtual hosts
 - evaluate multi-cert TLS SNI support
 
+## Phase 2 Decisions
+
+- Static roots can be absolute, matching the Java deployment model, or relative
+  to the runtime config directory for local Rust development.
+- SPA fallback applies only to browser routes. Paths that look like assets,
+  such as `/app.js` or `/favicon.ico`, return 404 when the file is missing.
+- Handler path matching supports exact paths and Java/OpenAPI-style `{name}`
+  path-template segments.
+
 ## Open Questions
 
-- Should product mode be a field in `gateway.yml`, inferred from the
-  light-portal product record, or both?
-- Should static roots be absolute only, or resolved relative to the runtime
-  config directory?
-- Should SPA fallback be disabled automatically for paths that look like file
-  assets, such as `/app.js` or `/favicon.ico`?
-- Should route matching support path templates in phase 1, or only exact path
-  and prefix rules?
 - Should static content support `ETag` in the first implementation if portal
   deployments depend on browser cache validation?

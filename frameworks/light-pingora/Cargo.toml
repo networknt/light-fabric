@@ -11,6 +11,7 @@ pingora = { version = "0.8.0", features = ["proxy", "rustls"] }
 serde = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 serde_yaml = { workspace = true }

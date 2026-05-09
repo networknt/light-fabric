@@ -1,4 +1,6 @@
 mod handler;
+mod proxy;
+mod resource;
 
 use async_trait::async_trait;
 use light_runtime::{
@@ -21,6 +23,16 @@ pub use handler::{
     HandlerChain, HandlerConfig, HandlerMetricsLogLevel, HandlerModuleConfig, HandlerPath,
     PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerFactory, PingoraHandlerKind,
     PingoraHandlerRegistry, load_active_handlers,
+};
+pub use proxy::{
+    PROXY_CONFIG_NAME, PROXY_FILE, PROXY_MODULE_ID, ProxyConfig, ProxyRoute, ProxyTarget,
+    load_proxy_route, parse_proxy_targets,
+};
+pub use resource::{
+    PATH_RESOURCE_CONFIG_NAME, PATH_RESOURCE_FILE, PATH_RESOURCE_LEGACY_FILE,
+    PATH_RESOURCE_MODULE_ID, PathResourceConfig, StaticFile, StaticResolution, StaticResourceSet,
+    StaticSite, VIRTUAL_HOST_CONFIG_NAME, VIRTUAL_HOST_FILE, VIRTUAL_HOST_LEGACY_FILE,
+    VIRTUAL_HOST_MODULE_ID, VirtualHost, VirtualHostConfig, load_static_resources,
 };
 
 pub trait PingoraApp: Send + Sync + 'static {
