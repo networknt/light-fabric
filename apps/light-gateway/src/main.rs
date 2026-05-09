@@ -322,7 +322,7 @@ fn gateway_handler_descriptor(
 fn build_registered_gateway_handler(
     ctx: &HandlerBuildContext<'_>,
 ) -> Result<Arc<dyn PingoraHandler>, RuntimeError> {
-    let id = match ctx.declaration.id.as_str() {
+    let id = match ctx.handler_id {
         "correlation" => "correlation",
         "headers" => "headers",
         "metrics" => "metrics",
@@ -462,21 +462,38 @@ upstreams:
         std::fs::write(
             config_dir.path().join("handler.yml"),
             r#"
-enabled: true
-handlers:
-  - id: correlation
-  - id: headers
-  - id: jwt
-chains:
-  api:
-    - correlation
-    - headers
-defaultHandlers:
-  - api
+enabled: ${handler.enabled:true}
+reportHandlerDuration: ${handler.reportHandlerDuration:false}
+handlerMetricsLogLevel: ${handler.handlerMetricsLogLevel:DEBUG}
+basePath: ${handler.basePath:/}
+handlers: ${handler.handlers:[]}
+chains: ${handler.chains:{}}
+paths: ${handler.paths:[]}
+defaultHandlers: ${handler.defaultHandlers:[]}
 "#,
         )
         .expect("write handler config");
-        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+        let values = serde_yaml::from_str(
+            r#"
+handler.handlers:
+  - correlation
+  - headers
+  - jwt
+handler.chains:
+  api:
+    exec:
+      - correlation
+      - headers
+handler.paths:
+  - path: /v1/test
+    method: GET
+    exec:
+      - api
+handler.defaultHandlers: []
+"#,
+        )
+        .expect("parse handler values");
+        let config = runtime_config(&config_dir, &external_dir, values);
 
         let proxy = GatewayProxy::from_runtime_config(&config).expect("build proxy");
 

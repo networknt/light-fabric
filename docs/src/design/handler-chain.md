@@ -127,7 +127,7 @@ request
   -> normalize Host header
   -> match virtual host
   -> match route by path and method
-  -> select handler chain
+  -> select handler chain from handler.yml paths/defaultHandlers
   -> run request handlers
   -> serve static file, or proxy upstream, or return error
   -> run response handlers
@@ -177,7 +177,9 @@ parts after the Pingora implementation has stabilized.
 
 ## Configuration Split
 
-Use `handler.yml` only for handler declarations and ordered chains.
+Use `handler.yml` for the Java-compatible handler middleware contract:
+handler declarations, reusable chains, path-to-chain mappings, and fallback
+handlers.
 
 Use `gateway.yml` for product mode, virtual hosts, static roots, routes,
 upstreams, and gateway-family behavior. Keeping one route config name makes
@@ -185,7 +187,7 @@ config-server delivery and product templates easier to reason about.
 
 Handler-specific files such as `cors.yml`, `jwt.yml`, `rate-limit.yml`, and
 `headers.yml` stay separate. They are loaded only when the corresponding
-handler is active in the resolved chains.
+handler is active in the resolved path/default execution model.
 
 ### Remote Config Source
 
@@ -214,47 +216,75 @@ The remote product config should include:
 - optional product-specific static file references or mount paths
 
 `handler.yml` decides which linked handlers are active. A handler that is
-registered in the binary but not referenced by any resolved chain should not be
-instantiated, should not load its config file, and should never run.
+registered in the binary but not referenced by any configured `paths` entry or
+`defaultHandlers` chain should not be instantiated, should not load its config
+file, and should never run.
 
 ### Handler Config
 
 Example `handler.yml`:
 
 ```yaml
-enabled: true
+enabled: ${handler.enabled:true}
+reportHandlerDuration: ${handler.reportHandlerDuration:false}
+handlerMetricsLogLevel: ${handler.handlerMetricsLogLevel:DEBUG}
+basePath: ${handler.basePath:/}
+handlers: ${handler.handlers:[]}
+chains: ${handler.chains:{}}
+paths: ${handler.paths:[]}
+defaultHandlers: ${handler.defaultHandlers:[]}
+```
 
-handlers:
-  - id: correlation
-  - id: headers
-  - id: metrics
-  - id: cors
-  - id: jwt
-  - id: rate-limit
+The config-server values managed by `light-portal` provide the concrete arrays
+and maps:
 
-chains:
+```yaml
+handler.handlers:
+  - correlation
+  - headers
+  - metrics
+  - cors
+  - jwt
+  - rate-limit
+
+handler.chains:
   spa:
-    - correlation
-    - headers
-    - metrics
-    - cors
+    exec:
+      - correlation
+      - headers
+      - metrics
+      - cors
   api:
-    - correlation
-    - headers
-    - metrics
-    - cors
-    - jwt
-    - rate-limit
+    exec:
+      - correlation
+      - headers
+      - metrics
+      - cors
+      - jwt
+      - rate-limit
   public:
-    - correlation
-    - headers
-    - metrics
+    exec:
+      - correlation
+      - headers
+      - metrics
 
-defaultHandlers:
+handler.paths:
+  - path: /api/
+    method: GET
+    exec:
+      - api
+
+handler.defaultHandlers:
   - public
 ```
 
-Unlike Java, handlers are referenced by stable IDs. They are not class names.
+This keeps the same top-level `handler.yml` contract as the Java framework:
+`enabled`, `reportHandlerDuration`, `handlerMetricsLogLevel`, `basePath`,
+`handlers`, `chains`, `paths`, and `defaultHandlers`.
+
+Unlike Java, the Rust `handlers` list uses stable short handler IDs. It does
+not use fully qualified class names, and it does not need `@alias` because the
+IDs are already short and stable.
 
 ### Gateway Config
 
@@ -266,34 +296,27 @@ mode: bff
 
 virtualHosts:
   - host: admin.example.com
-    defaultChain: spa
     static:
       root: /opt/light/spa/admin
       index: /index.html
       spaFallback: true
     routes:
       - pathPrefix: /api/
-        chain: api
         upstream: admin-api
       - pathPrefix: /oauth/
-        chain: api
         upstream: oauth
       - pathPrefix: /
-        chain: spa
         static: true
 
   - host: portal.example.com
-    defaultChain: spa
     static:
       root: /opt/light/spa/portal
       index: /index.html
       spaFallback: true
     routes:
       - pathPrefix: /api/
-        chain: api
         upstream: portal-api
       - pathPrefix: /
-        chain: spa
         static: true
 
 upstreams:
@@ -314,8 +337,11 @@ upstreams:
     hostHeader: light-oauth
 ```
 
-The route config references chain names from `handler.yml`. This keeps
-middleware ordering separate from host and route mapping.
+`handler.yml` owns middleware chain selection through `paths` and
+`defaultHandlers`. `gateway.yml` owns traffic routing: virtual hosts, static
+roots, proxy route prefixes, and upstreams. Keeping these concerns separate
+preserves the Java handler contract without making gateway routing depend on
+Java handler class names or aliases.
 
 Other product personas use the same config file with different sections and
 chains. For example, a sidecar profile may have no static block and may use an
@@ -347,10 +373,11 @@ Registration only makes a handler available. Activation is controlled by
 Build the active handler set lazily:
 
 1. parse `handler.yml`
-2. resolve all chains
-3. compute the set of referenced handler IDs
-4. instantiate only referenced handlers
-5. load config only for referenced handlers
+2. resolve `paths` and `defaultHandlers`
+3. expand any referenced chains
+4. compute the set of referenced handler IDs
+5. instantiate only referenced handlers
+6. load config only for referenced handlers
 
 This allows one binary to support gateway, sidecar, proxy, balancer, and BFF
 profiles without requiring unused handler config files.
@@ -656,7 +683,7 @@ Common gateway errors:
 
 Unit tests in `light-pingora`:
 
-- build active handler set from referenced chains only
+- build active handler set from referenced `paths` and `defaultHandlers`
 - ignore registered but unreferenced handlers
 - do not require config files for unreferenced handlers
 - parse valid `handler.yml`

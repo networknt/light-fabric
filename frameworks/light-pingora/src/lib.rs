@@ -18,9 +18,9 @@ use tokio::sync::watch;
 
 pub use handler::{
     ActiveHandlerSet, HANDLER_CONFIG_NAME, HANDLER_FILE, HANDLER_MODULE_ID, HandlerBuildContext,
-    HandlerConfig, HandlerDeclaration, HandlerModuleConfig, PingoraHandler,
-    PingoraHandlerDescriptor, PingoraHandlerFactory, PingoraHandlerKind, PingoraHandlerRegistry,
-    load_active_handlers,
+    HandlerChain, HandlerConfig, HandlerMetricsLogLevel, HandlerModuleConfig, HandlerPath,
+    PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerFactory, PingoraHandlerKind,
+    PingoraHandlerRegistry, load_active_handlers,
 };
 
 pub trait PingoraApp: Send + Sync + 'static {

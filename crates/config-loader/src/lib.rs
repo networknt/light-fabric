@@ -15,7 +15,7 @@ use tracing::{error, warn};
 const EXTERNAL_CONFIG_DIR_ENV: &str = "LIGHT_RS_CONFIG_DIR";
 const MAX_EXPANSION_DEPTH: usize = 16;
 static WHOLE_VARIABLE_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\$\{([^}:]+)(?::([^}]*))?\}$").expect("whole variable regex"));
+    LazyLock::new(|| Regex::new(r"^\$\{([^}:]+)(?::(.*))?\}$").expect("whole variable regex"));
 
 #[derive(Error, Debug)]
 pub enum ConfigError {
@@ -371,6 +371,11 @@ impl ConfigLoader {
 
     fn parse_text_scalar(input: &str) -> Value {
         let trimmed = input.trim();
+        if matches!(trimmed.as_bytes().first(), Some(b'[' | b'{')) {
+            if let Ok(value) = serde_yaml::from_str::<Value>(trimmed) {
+                return value;
+            }
+        }
         if trimmed.eq_ignore_ascii_case("true") {
             return Value::Bool(true);
         }
@@ -569,17 +574,27 @@ mod tests {
 
         let mut bool_value = Value::String("${enabled:false}".to_string());
         let mut number_value = Value::String("${port:8081}".to_string());
+        let mut sequence_value = Value::String("${items:[]}".to_string());
+        let mut mapping_value = Value::String("${settings:{}}".to_string());
 
         loader.resolve_value(&mut bool_value).expect("resolve bool");
         loader
             .resolve_value(&mut number_value)
             .expect("resolve number");
+        loader
+            .resolve_value(&mut sequence_value)
+            .expect("resolve sequence");
+        loader
+            .resolve_value(&mut mapping_value)
+            .expect("resolve mapping");
 
         assert_eq!(bool_value, Value::Bool(false));
         assert_eq!(
             number_value,
             serde_yaml::to_value(8081).expect("yaml number")
         );
+        assert_eq!(sequence_value, Value::Sequence(Vec::new()));
+        assert_eq!(mapping_value, Value::Mapping(Mapping::new()));
     }
 
     #[test]

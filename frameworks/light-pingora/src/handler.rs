@@ -27,6 +27,17 @@ pub enum PingoraHandlerKind {
     Plugin,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum HandlerMetricsLogLevel {
+    Trace,
+    #[default]
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
 #[derive(Clone, Copy)]
 pub struct PingoraHandlerDescriptor {
     pub id: &'static str,
@@ -45,12 +56,12 @@ impl fmt::Debug for PingoraHandlerDescriptor {
 
 pub struct HandlerBuildContext<'a> {
     pub runtime_config: &'a RuntimeConfig,
-    pub declaration: &'a HandlerDeclaration,
+    pub handler_id: &'a str,
 }
 
 impl HandlerBuildContext<'_> {
     pub fn config_file<'a>(&'a self, default_file: &'a str) -> &'a str {
-        self.declaration.config.as_deref().unwrap_or(default_file)
+        default_file
     }
 
     pub fn load_config<T>(&self, default_file: &str) -> Result<T, RuntimeError>
@@ -63,47 +74,98 @@ impl HandlerBuildContext<'_> {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HandlerConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     #[serde(default)]
-    pub handlers: Vec<HandlerDeclaration>,
+    pub report_handler_duration: bool,
     #[serde(default)]
-    pub chains: BTreeMap<String, Vec<String>>,
-    #[serde(default, rename = "defaultHandlers")]
+    pub handler_metrics_log_level: HandlerMetricsLogLevel,
+    #[serde(default = "default_base_path")]
+    pub base_path: String,
+    #[serde(default)]
+    pub handlers: Vec<String>,
+    #[serde(default)]
+    pub chains: BTreeMap<String, HandlerChain>,
+    #[serde(default)]
+    pub paths: Vec<HandlerPath>,
+    #[serde(default)]
     pub default_handlers: Vec<String>,
+}
+
+impl Default for HandlerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            report_handler_duration: false,
+            handler_metrics_log_level: HandlerMetricsLogLevel::Debug,
+            base_path: default_base_path(),
+            handlers: Vec::new(),
+            chains: BTreeMap::new(),
+            paths: Vec::new(),
+            default_handlers: Vec::new(),
+        }
+    }
 }
 
 impl HandlerConfig {
     pub fn disabled() -> Self {
         Self {
             enabled: false,
-            handlers: Vec::new(),
-            chains: BTreeMap::new(),
-            default_handlers: Vec::new(),
+            ..Self::default()
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandlerChain {
+    pub exec: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for HandlerChain {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum HandlerChainValue {
+            Exec(Vec<String>),
+            Object {
+                #[serde(default)]
+                exec: Vec<String>,
+            },
+        }
+
+        match HandlerChainValue::deserialize(deserializer)? {
+            HandlerChainValue::Exec(exec) => Ok(Self { exec }),
+            HandlerChainValue::Object { exec } => Ok(Self { exec }),
         }
     }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HandlerDeclaration {
-    pub id: String,
+pub struct HandlerPath {
+    pub path: String,
+    pub method: String,
     #[serde(default)]
-    pub config: Option<String>,
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
+    pub exec: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HandlerModuleConfig {
     pub enabled: bool,
-    pub handlers: Vec<HandlerDeclaration>,
-    pub chains: BTreeMap<String, Vec<String>>,
-    #[serde(rename = "defaultHandlers")]
+    pub report_handler_duration: bool,
+    pub handler_metrics_log_level: HandlerMetricsLogLevel,
+    pub base_path: String,
+    pub handlers: Vec<String>,
+    pub chains: BTreeMap<String, HandlerChain>,
+    pub paths: Vec<HandlerPath>,
     pub default_handlers: Vec<String>,
     pub active_handlers: Vec<String>,
 }
@@ -112,8 +174,12 @@ impl HandlerModuleConfig {
     fn new(config: &HandlerConfig, active_handlers: Vec<String>) -> Self {
         Self {
             enabled: config.enabled,
+            report_handler_duration: config.report_handler_duration,
+            handler_metrics_log_level: config.handler_metrics_log_level,
+            base_path: config.base_path.clone(),
             handlers: config.handlers.clone(),
             chains: config.chains.clone(),
+            paths: config.paths.clone(),
             default_handlers: config.default_handlers.clone(),
             active_handlers,
         }
@@ -204,36 +270,36 @@ impl PingoraHandlerRegistry {
             });
         }
 
-        let declarations = declaration_map(&config)?;
-        for declaration in &config.handlers {
-            if !self.contains(&declaration.id) {
+        validate_handler_config(&config)?;
+        let declared_handlers = declared_handlers(&config)?;
+        for handler_id in &declared_handlers {
+            if !self.contains(handler_id) {
                 return Err(RuntimeError::Unsupported(format!(
-                    "handler `{}` is declared in handler.yml but is not registered in light-gateway",
-                    declaration.id
+                    "handler `{handler_id}` is declared in handler.yml but is not registered in light-gateway"
                 )));
             }
         }
 
-        let referenced = referenced_handlers(&config, &declarations)?;
+        let referenced = referenced_handlers(&config, &declared_handlers)?;
         let mut active_handler_ids = Vec::new();
         let mut handlers = Vec::new();
 
-        for declaration in &config.handlers {
-            if !declaration.enabled || !referenced.contains(&declaration.id) {
+        for handler_id in &config.handlers {
+            let handler_id = handler_id.trim();
+            if !referenced.contains(handler_id) {
                 continue;
             }
-            let descriptor = self.descriptors.get(&declaration.id).ok_or_else(|| {
+            let descriptor = self.descriptors.get(handler_id).ok_or_else(|| {
                 RuntimeError::Unsupported(format!(
-                    "handler `{}` is referenced but is not registered in light-gateway",
-                    declaration.id
+                    "handler `{handler_id}` is referenced but is not registered in light-gateway"
                 ))
             })?;
             let context = HandlerBuildContext {
                 runtime_config,
-                declaration,
+                handler_id,
             };
             let handler = (descriptor.factory)(&context)?;
-            active_handler_ids.push(declaration.id.clone());
+            active_handler_ids.push(handler_id.to_string());
             handlers.push(handler);
         }
 
@@ -279,46 +345,90 @@ fn default_enabled() -> bool {
     true
 }
 
-fn declaration_map(
-    config: &HandlerConfig,
-) -> Result<BTreeMap<String, &HandlerDeclaration>, RuntimeError> {
-    let mut declarations = BTreeMap::new();
-    for declaration in &config.handlers {
-        let id = declaration.id.trim();
-        if id.is_empty() {
+fn default_base_path() -> String {
+    "/".to_string()
+}
+
+fn validate_handler_config(config: &HandlerConfig) -> Result<(), RuntimeError> {
+    if !config.base_path.starts_with('/') {
+        return Err(RuntimeError::Unsupported(format!(
+            "handler.basePath `{}` must start with `/`",
+            config.base_path
+        )));
+    }
+
+    for path in &config.paths {
+        if !path.path.starts_with('/') {
+            return Err(RuntimeError::Unsupported(format!(
+                "handler path `{}` must start with `/`",
+                path.path
+            )));
+        }
+        if !is_http_method(&path.method) {
+            return Err(RuntimeError::Unsupported(format!(
+                "handler path method `{}` is not a supported HTTP method",
+                path.method
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn is_http_method(method: &str) -> bool {
+    matches!(
+        method.to_ascii_uppercase().as_str(),
+        "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "OPTIONS" | "HEAD" | "TRACE" | "CONNECT"
+    )
+}
+
+fn declared_handlers(config: &HandlerConfig) -> Result<BTreeSet<String>, RuntimeError> {
+    let mut handlers = BTreeSet::new();
+    for handler_id in &config.handlers {
+        let handler_id = handler_id.trim();
+        if handler_id.is_empty() {
             return Err(RuntimeError::Unsupported(
                 "handler declaration id must not be empty".to_string(),
             ));
         }
-        if declarations.insert(id.to_string(), declaration).is_some() {
+        if handler_id.contains('@') {
             return Err(RuntimeError::Unsupported(format!(
-                "duplicate handler declaration `{id}` in handler.yml"
+                "handler declaration `{handler_id}` must use a stable Rust handler id without @alias"
+            )));
+        }
+        if !handlers.insert(handler_id.to_string()) {
+            return Err(RuntimeError::Unsupported(format!(
+                "duplicate handler declaration `{handler_id}` in handler.yml"
             )));
         }
     }
-    Ok(declarations)
+    Ok(handlers)
 }
 
 fn referenced_handlers(
     config: &HandlerConfig,
-    declarations: &BTreeMap<String, &HandlerDeclaration>,
+    declared_handlers: &BTreeSet<String>,
 ) -> Result<BTreeSet<String>, RuntimeError> {
     let mut referenced = BTreeSet::new();
     let mut visiting = Vec::new();
 
-    for chain_name in config.chains.keys() {
-        collect_chain_handlers(
-            chain_name,
+    for path in &config.paths {
+        collect_exec_handlers(
+            &path.exec,
             config,
-            declarations,
+            declared_handlers,
             &mut visiting,
             &mut referenced,
         )?;
     }
 
-    for item in &config.default_handlers {
-        collect_exec_item_handlers(item, config, declarations, &mut visiting, &mut referenced)?;
-    }
+    collect_exec_handlers(
+        &config.default_handlers,
+        config,
+        declared_handlers,
+        &mut visiting,
+        &mut referenced,
+    )?;
 
     Ok(referenced)
 }
@@ -326,7 +436,7 @@ fn referenced_handlers(
 fn collect_chain_handlers(
     chain_name: &str,
     config: &HandlerConfig,
-    declarations: &BTreeMap<String, &HandlerDeclaration>,
+    declared_handlers: &BTreeSet<String>,
     visiting: &mut Vec<String>,
     referenced: &mut BTreeSet<String>,
 ) -> Result<(), RuntimeError> {
@@ -339,35 +449,46 @@ fn collect_chain_handlers(
         )));
     }
 
-    let exec = config.chains.get(chain_name).ok_or_else(|| {
+    let chain = config.chains.get(chain_name).ok_or_else(|| {
         RuntimeError::Unsupported(format!("unknown handler chain `{chain_name}`"))
     })?;
     visiting.push(chain_name.to_string());
-    for item in exec {
-        collect_exec_item_handlers(item, config, declarations, visiting, referenced)?;
-    }
+    collect_exec_handlers(&chain.exec, config, declared_handlers, visiting, referenced)?;
     visiting.pop();
+    Ok(())
+}
+
+fn collect_exec_handlers(
+    exec: &[String],
+    config: &HandlerConfig,
+    declared_handlers: &BTreeSet<String>,
+    visiting: &mut Vec<String>,
+    referenced: &mut BTreeSet<String>,
+) -> Result<(), RuntimeError> {
+    for item in exec {
+        collect_exec_item_handlers(item, config, declared_handlers, visiting, referenced)?;
+    }
     Ok(())
 }
 
 fn collect_exec_item_handlers(
     item: &str,
     config: &HandlerConfig,
-    declarations: &BTreeMap<String, &HandlerDeclaration>,
+    declared_handlers: &BTreeSet<String>,
     visiting: &mut Vec<String>,
     referenced: &mut BTreeSet<String>,
 ) -> Result<(), RuntimeError> {
     if config.chains.contains_key(item) {
-        collect_chain_handlers(item, config, declarations, visiting, referenced)?;
+        collect_chain_handlers(item, config, declared_handlers, visiting, referenced)?;
         return Ok(());
     }
 
-    let declaration = declarations.get(item).ok_or_else(|| {
-        RuntimeError::Unsupported(format!("unknown handler or chain `{item}` in handler.yml"))
-    })?;
-    if declaration.enabled {
-        referenced.insert((*item).to_string());
+    if !declared_handlers.contains(item) {
+        return Err(RuntimeError::Unsupported(format!(
+            "unknown handler or chain `{item}` in handler.yml"
+        )));
     }
+    referenced.insert(item.to_string());
     Ok(())
 }
 
@@ -424,7 +545,7 @@ mod tests {
             assert!(!config.name.is_empty());
             counter.fetch_add(1, Ordering::SeqCst);
             Ok(Arc::new(TestHandler {
-                id: Box::leak(ctx.declaration.id.clone().into_boxed_str()),
+                id: Box::leak(ctx.handler_id.to_string().into_boxed_str()),
             }))
         }
 
@@ -444,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn instantiates_only_handlers_referenced_by_chains() {
+    fn instantiates_only_handlers_referenced_by_paths_and_defaults() {
         ACTIVE_FACTORY_CALLS.store(0, Ordering::SeqCst);
         UNUSED_FACTORY_CALLS.store(0, Ordering::SeqCst);
         let config_dir = TempDir::new().expect("config dir");
@@ -452,23 +573,27 @@ mod tests {
             config_dir.path().join(HANDLER_FILE),
             r#"
 enabled: true
+reportHandlerDuration: false
+handlerMetricsLogLevel: DEBUG
+basePath: /
 handlers:
-  - id: active
-    config: custom-active.yml
-  - id: unused
+  - active
+  - unused
 chains:
   api:
-    - active
-defaultHandlers:
-  - api
+    exec:
+      - active
+paths:
+  - path: /v1/test
+    method: GET
+    exec:
+      - api
+defaultHandlers: []
 "#,
         )
         .expect("write handler.yml");
-        std::fs::write(
-            config_dir.path().join("custom-active.yml"),
-            "name: active\n",
-        )
-        .expect("write active handler config");
+        std::fs::write(config_dir.path().join("active.yml"), "name: active\n")
+            .expect("write active handler config");
 
         let runtime = runtime_config(&config_dir);
         let registry = PingoraHandlerRegistry::new()
@@ -490,6 +615,25 @@ defaultHandlers:
     }
 
     #[test]
+    fn supports_legacy_chain_list_syntax() {
+        let config: HandlerConfig = serde_yaml::from_str(
+            r#"
+handlers:
+  - active
+chains:
+  api:
+    - active
+paths: []
+defaultHandlers:
+  - api
+"#,
+        )
+        .expect("parse handler config");
+
+        assert_eq!(config.chains["api"].exec, &["active".to_string()]);
+    }
+
+    #[test]
     fn missing_handler_yml_registers_disabled_handler_module() {
         let config_dir = TempDir::new().expect("config dir");
         let runtime = runtime_config(&config_dir);
@@ -498,6 +642,7 @@ defaultHandlers:
 
         assert!(!active.config().enabled);
         assert!(active.active_handler_ids().is_empty());
+        assert_eq!(active.config().base_path, "/");
         assert!(
             runtime
                 .module_registry
@@ -510,17 +655,23 @@ defaultHandlers:
     #[test]
     fn detects_recursive_chains() {
         let config = HandlerConfig {
-            enabled: true,
-            handlers: vec![HandlerDeclaration {
-                id: "active".to_string(),
-                config: None,
-                enabled: true,
-            }],
+            handlers: vec!["active".to_string()],
             chains: BTreeMap::from([
-                ("a".to_string(), vec!["b".to_string()]),
-                ("b".to_string(), vec!["a".to_string()]),
+                (
+                    "a".to_string(),
+                    HandlerChain {
+                        exec: vec!["b".to_string()],
+                    },
+                ),
+                (
+                    "b".to_string(),
+                    HandlerChain {
+                        exec: vec!["a".to_string()],
+                    },
+                ),
             ]),
-            default_handlers: vec![],
+            default_handlers: vec!["a".to_string()],
+            ..HandlerConfig::default()
         };
         let runtime_dir = TempDir::new().expect("config dir");
         let runtime = runtime_config(&runtime_dir);
@@ -536,14 +687,8 @@ defaultHandlers:
     #[test]
     fn rejects_declared_handler_missing_from_registry() {
         let config = HandlerConfig {
-            enabled: true,
-            handlers: vec![HandlerDeclaration {
-                id: "missing".to_string(),
-                config: None,
-                enabled: true,
-            }],
-            chains: BTreeMap::new(),
-            default_handlers: vec![],
+            handlers: vec!["missing".to_string()],
+            ..HandlerConfig::default()
         };
         let runtime_dir = TempDir::new().expect("config dir");
         let runtime = runtime_config(&runtime_dir);
@@ -558,5 +703,22 @@ defaultHandlers:
                 .to_string()
                 .contains("is declared in handler.yml but is not registered")
         );
+    }
+
+    #[test]
+    fn rejects_java_alias_syntax() {
+        let config = HandlerConfig {
+            handlers: vec!["com.example.ActiveHandler@active".to_string()],
+            ..HandlerConfig::default()
+        };
+        let runtime_dir = TempDir::new().expect("config dir");
+        let runtime = runtime_config(&runtime_dir);
+        let registry = PingoraHandlerRegistry::new();
+
+        let error = registry
+            .build_active_handlers(&runtime, config)
+            .expect_err("alias syntax should fail");
+
+        assert!(error.to_string().contains("without @alias"));
     }
 }

@@ -1,7 +1,12 @@
-enabled: false
+enabled: ${handler.enabled:true}
+reportHandlerDuration: ${handler.reportHandlerDuration:false}
+handlerMetricsLogLevel: ${handler.handlerMetricsLogLevel:DEBUG}
+basePath: ${handler.basePath:/}
 
-handlers: []
+handlers: ${handler.handlers:[]}
 
-chains: {}
+chains: ${handler.chains:{}}
 
-defaultHandlers: []
+paths: ${handler.paths:[]}
+
+defaultHandlers: ${handler.defaultHandlers:[]}
