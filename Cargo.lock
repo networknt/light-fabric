@@ -3262,6 +3262,8 @@ dependencies = [
  "async-trait",
  "light-runtime",
  "pingora",
+ "serde",
+ "tempfile",
  "tokio",
  "tracing",
 ]

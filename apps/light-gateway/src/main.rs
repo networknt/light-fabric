@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
-use light_pingora::{PingoraApp, PingoraTransport};
+use light_pingora::{
+    ActiveHandlerSet, HandlerBuildContext, PingoraApp, PingoraHandler, PingoraHandlerDescriptor,
+    PingoraHandlerKind, PingoraHandlerRegistry, PingoraTransport, load_active_handlers,
+};
 use light_runtime::{
     ConfigManager, LightRuntimeBuilder, ModuleKind, ReloadContext, ReloadOutcome, ReloadableModule,
     RuntimeConfig, RuntimeError,
@@ -54,12 +57,14 @@ impl PingoraApp for GatewayApp {
 
 struct GatewayProxy {
     config: Arc<ConfigManager<GatewayConfig>>,
+    _active_handlers: ActiveHandlerSet,
     next_upstream: AtomicUsize,
 }
 
 impl GatewayProxy {
     fn from_runtime_config(config: &RuntimeConfig) -> Result<Self, RuntimeError> {
         let gateway_config = load_gateway_config(config)?;
+        let active_handlers = load_active_handlers(config, &gateway_handler_registry())?;
         let config_manager = Arc::new(ConfigManager::new(gateway_config));
         config.module_registry.register_reloader(
             GATEWAY_MODULE_ID,
@@ -70,6 +75,7 @@ impl GatewayProxy {
 
         Ok(Self {
             config: config_manager,
+            _active_handlers: active_handlers,
             next_upstream: AtomicUsize::new(0),
         })
     }
@@ -83,6 +89,11 @@ impl GatewayProxy {
     #[cfg(test)]
     fn current_config(&self) -> Arc<GatewayConfig> {
         self.config.load()
+    }
+
+    #[cfg(test)]
+    fn active_handler_ids(&self) -> &[String] {
+        self._active_handlers.active_handler_ids()
     }
 }
 
@@ -247,6 +258,89 @@ fn default_health_path() -> String {
     "/health".to_string()
 }
 
+struct RegisteredGatewayHandler {
+    id: &'static str,
+}
+
+impl PingoraHandler for RegisteredGatewayHandler {
+    fn id(&self) -> &'static str {
+        self.id
+    }
+}
+
+fn gateway_handler_registry() -> PingoraHandlerRegistry {
+    PingoraHandlerRegistry::new()
+        .register(gateway_handler_descriptor(
+            "correlation",
+            PingoraHandlerKind::Observability,
+        ))
+        .register(gateway_handler_descriptor(
+            "headers",
+            PingoraHandlerKind::Traffic,
+        ))
+        .register(gateway_handler_descriptor(
+            "metrics",
+            PingoraHandlerKind::Observability,
+        ))
+        .register(gateway_handler_descriptor(
+            "cors",
+            PingoraHandlerKind::Traffic,
+        ))
+        .register(gateway_handler_descriptor(
+            "jwt",
+            PingoraHandlerKind::Security,
+        ))
+        .register(gateway_handler_descriptor(
+            "api-key",
+            PingoraHandlerKind::Security,
+        ))
+        .register(gateway_handler_descriptor(
+            "basic-auth",
+            PingoraHandlerKind::Security,
+        ))
+        .register(gateway_handler_descriptor(
+            "rate-limit",
+            PingoraHandlerKind::Traffic,
+        ))
+        .register(gateway_handler_descriptor(
+            "request-size-limit",
+            PingoraHandlerKind::Traffic,
+        ))
+}
+
+fn gateway_handler_descriptor(
+    id: &'static str,
+    kind: PingoraHandlerKind,
+) -> PingoraHandlerDescriptor {
+    PingoraHandlerDescriptor {
+        id,
+        kind,
+        factory: build_registered_gateway_handler,
+    }
+}
+
+fn build_registered_gateway_handler(
+    ctx: &HandlerBuildContext<'_>,
+) -> Result<Arc<dyn PingoraHandler>, RuntimeError> {
+    let id = match ctx.declaration.id.as_str() {
+        "correlation" => "correlation",
+        "headers" => "headers",
+        "metrics" => "metrics",
+        "cors" => "cors",
+        "jwt" => "jwt",
+        "api-key" => "api-key",
+        "basic-auth" => "basic-auth",
+        "rate-limit" => "rate-limit",
+        "request-size-limit" => "request-size-limit",
+        other => {
+            return Err(RuntimeError::Unsupported(format!(
+                "handler `{other}` is not registered in light-gateway"
+            )));
+        }
+    };
+    Ok(Arc::new(RegisteredGatewayHandler { id }))
+}
+
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
@@ -350,6 +444,53 @@ gateway.upstreams:
     #[test]
     fn gateway_external_config_dir_is_separate_from_base_config() {
         assert_ne!(CONFIG_DIR, EXTERNAL_CONFIG_DIR);
+    }
+
+    #[test]
+    fn gateway_loads_active_handlers_from_handler_yml() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        std::fs::write(
+            config_dir.path().join(GATEWAY_FILE),
+            r#"
+healthPath: /ready
+upstreams:
+  - address: 127.0.0.1:8081
+"#,
+        )
+        .expect("write gateway config");
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            r#"
+enabled: true
+handlers:
+  - id: correlation
+  - id: headers
+  - id: jwt
+chains:
+  api:
+    - correlation
+    - headers
+defaultHandlers:
+  - api
+"#,
+        )
+        .expect("write handler config");
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+
+        let proxy = GatewayProxy::from_runtime_config(&config).expect("build proxy");
+
+        assert_eq!(
+            proxy.active_handler_ids(),
+            &["correlation".to_string(), "headers".to_string()]
+        );
+        assert!(
+            config
+                .module_registry
+                .module_summaries()
+                .iter()
+                .any(|entry| entry.module_id == light_pingora::HANDLER_MODULE_ID && entry.active)
+        );
     }
 
     #[tokio::test]

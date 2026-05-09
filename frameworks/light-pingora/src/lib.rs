@@ -1,3 +1,5 @@
+mod handler;
+
 use async_trait::async_trait;
 use light_runtime::{
     BoundTransport, ResolvedServerMetadata, RuntimeConfig, RuntimeError, TransportRuntime,
@@ -13,6 +15,13 @@ use std::net::{IpAddr, SocketAddr};
 use std::thread::JoinHandle;
 #[cfg(unix)]
 use tokio::sync::watch;
+
+pub use handler::{
+    ActiveHandlerSet, HANDLER_CONFIG_NAME, HANDLER_FILE, HANDLER_MODULE_ID, HandlerBuildContext,
+    HandlerConfig, HandlerDeclaration, HandlerModuleConfig, PingoraHandler,
+    PingoraHandlerDescriptor, PingoraHandlerFactory, PingoraHandlerKind, PingoraHandlerRegistry,
+    load_active_handlers,
+};
 
 pub trait PingoraApp: Send + Sync + 'static {
     type Proxy: ProxyHttp + Send + Sync + 'static;

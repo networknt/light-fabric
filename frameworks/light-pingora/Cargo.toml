@@ -8,5 +8,9 @@ license = "Apache-2.0"
 light-runtime = { path = "../../crates/light-runtime" }
 async-trait = { workspace = true }
 pingora = { version = "0.8.0", features = ["proxy", "rustls"] }
+serde = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
