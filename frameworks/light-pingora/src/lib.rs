@@ -9,6 +9,7 @@ mod metrics;
 mod proxy;
 mod rate_limit;
 mod resource;
+mod router;
 mod security;
 mod unified_security;
 
@@ -73,6 +74,11 @@ pub use resource::{
     PATH_RESOURCE_MODULE_ID, PathResourceConfig, StaticFile, StaticResolution, StaticResourceSet,
     StaticSite, VIRTUAL_HOST_CONFIG_NAME, VIRTUAL_HOST_FILE, VIRTUAL_HOST_LEGACY_FILE,
     VIRTUAL_HOST_MODULE_ID, VirtualHost, VirtualHostConfig, load_static_resources,
+};
+pub use router::{
+    MethodRewriteRule, QueryHeaderRewriteRule, ROUTER_CONFIG_NAME, ROUTER_FILE, ROUTER_MODULE_ID,
+    RouterConfig, RouterDecision, RouterRoute, UrlRewriteRule, apply_router_upstream_request,
+    load_router_route, select_router_target,
 };
 pub use security::{
     AuthPrincipal, HandlerRejection, SECURITY_CONFIG_NAME, SECURITY_FILE, SECURITY_MODULE_ID,

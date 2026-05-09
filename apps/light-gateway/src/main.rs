@@ -7,14 +7,16 @@ use light_pingora::{
     HandlerMetricsLogLevel, HandlerRejection, HeaderConfig, MetricsConfig, MetricsRecorder,
     PingoraApp, PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerKind,
     PingoraHandlerRegistry, PingoraTransport, ProxyRoute, ProxyTarget, RateLimitHeaders,
-    RateLimitRuntime, SecurityRuntime, StaticResolution, StaticResourceSet, UnifiedSecurityConfig,
-    apply_correlation_request, apply_correlation_response, apply_cors_response,
-    apply_header_request, apply_header_response, apply_rate_limit_headers, build_metrics_event,
-    check_rate_limit, correlation_id_for_upstream, evaluate_cors_request, load_active_handlers,
-    load_api_key_config, load_basic_auth_config, load_correlation_config, load_cors_config,
-    load_header_config, load_metrics_config, load_proxy_route, load_rate_limit_runtime,
-    load_security_runtime, load_static_resources, load_unified_security_config, verify_api_key,
-    verify_basic_auth, verify_jwt_request, verify_unified_security,
+    RateLimitRuntime, RouterDecision, RouterRoute, SecurityRuntime, StaticResolution,
+    StaticResourceSet, UnifiedSecurityConfig, apply_correlation_request,
+    apply_correlation_response, apply_cors_response, apply_header_request, apply_header_response,
+    apply_rate_limit_headers, apply_router_upstream_request, build_metrics_event, check_rate_limit,
+    correlation_id_for_upstream, evaluate_cors_request, load_active_handlers, load_api_key_config,
+    load_basic_auth_config, load_correlation_config, load_cors_config, load_header_config,
+    load_metrics_config, load_proxy_route, load_rate_limit_runtime, load_router_route,
+    load_security_runtime, load_static_resources, load_unified_security_config,
+    select_router_target, verify_api_key, verify_basic_auth, verify_jwt_request,
+    verify_unified_security,
 };
 use light_runtime::{
     ConfigManager, LightRuntimeBuilder, ReloadContext, ReloadOutcome, ReloadableModule,
@@ -58,6 +60,7 @@ struct GatewayProxy {
     rate_limit_runtime: Arc<ConfigManager<Option<RateLimitRuntime>>>,
     metrics_recorder: Arc<MetricsRecorder>,
     proxy_route: Arc<ConfigManager<Option<ProxyRoute>>>,
+    router_route: Arc<ConfigManager<Option<RouterRoute>>>,
     static_resources: Arc<ConfigManager<StaticResourceSet>>,
     next_upstream: AtomicUsize,
     server_scheme: String,
@@ -105,6 +108,7 @@ impl GatewayProxy {
             config,
             handler_active(&active_handlers, &["limit", "rate-limit"]),
         )?;
+        let router_route = load_router_route(config, active_handlers.is_handler_active("router"))?;
         let proxy_route = load_proxy_route(config)?;
         let static_resources = load_static_resources(config)?;
         let active_handlers = Arc::new(ConfigManager::new(active_handlers));
@@ -117,6 +121,7 @@ impl GatewayProxy {
         let security_runtime = Arc::new(ConfigManager::new(security_runtime));
         let unified_security_config = Arc::new(ConfigManager::new(unified_security_config));
         let rate_limit_runtime = Arc::new(ConfigManager::new(rate_limit_runtime));
+        let router_route = Arc::new(ConfigManager::new(router_route));
         let proxy_route = Arc::new(ConfigManager::new(proxy_route));
         let static_resources = Arc::new(ConfigManager::new(static_resources));
         let metrics_recorder = Arc::new(MetricsRecorder::default());
@@ -134,6 +139,7 @@ impl GatewayProxy {
                 security_runtime: Arc::clone(&security_runtime),
                 unified_security_config: Arc::clone(&unified_security_config),
                 rate_limit_runtime: Arc::clone(&rate_limit_runtime),
+                router_route: Arc::clone(&router_route),
             }),
         );
         config.module_registry.register_reloader(
@@ -205,6 +211,13 @@ impl GatewayProxy {
                 proxy_route: Arc::clone(&proxy_route),
             }),
         );
+        config.module_registry.register_reloader(
+            light_pingora::ROUTER_MODULE_ID,
+            Arc::new(RouterReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                router_route: Arc::clone(&router_route),
+            }),
+        );
         let static_reloader: Arc<dyn ReloadableModule> = Arc::new(StaticResourceReloader {
             static_resources: Arc::clone(&static_resources),
         });
@@ -229,6 +242,7 @@ impl GatewayProxy {
             rate_limit_runtime,
             metrics_recorder,
             proxy_route,
+            router_route,
             static_resources,
             next_upstream: AtomicUsize::new(0),
             server_scheme: if config.server.enable_https {
@@ -244,13 +258,17 @@ impl GatewayProxy {
         })
     }
 
-    fn select_upstream(&self) -> Option<(ProxyTarget, bool)> {
+    fn select_upstream(&self) -> Option<(ProxyTarget, bool, bool)> {
         let route = self.proxy_route.load();
         let route = route.as_ref().as_ref()?;
         let index = self.next_upstream.fetch_add(1, Ordering::Relaxed);
-        route
-            .select(index)
-            .map(|target| (target, route.rewrite_host_header()))
+        route.select(index).map(|target| {
+            (
+                target,
+                route.rewrite_host_header(),
+                route.config.reuse_x_forwarded,
+            )
+        })
     }
 
     async fn write_static_resolution(
@@ -500,6 +518,11 @@ impl GatewayProxy {
     }
 
     #[cfg(test)]
+    fn current_router_route(&self) -> Arc<Option<RouterRoute>> {
+        self.router_route.load()
+    }
+
+    #[cfg(test)]
     fn current_static_resources(&self) -> Arc<StaticResourceSet> {
         self.static_resources.load()
     }
@@ -521,6 +544,7 @@ struct HandlerReloader {
     security_runtime: Arc<ConfigManager<Option<SecurityRuntime>>>,
     unified_security_config: Arc<ConfigManager<Option<UnifiedSecurityConfig>>>,
     rate_limit_runtime: Arc<ConfigManager<Option<RateLimitRuntime>>>,
+    router_route: Arc<ConfigManager<Option<RouterRoute>>>,
 }
 
 #[async_trait]
@@ -573,6 +597,10 @@ impl ReloadableModule for HandlerReloader {
             &ctx.runtime_config,
             handler_active(&active_handlers, &["limit", "rate-limit"]),
         )?;
+        let router_route = load_router_route(
+            &ctx.runtime_config,
+            active_handlers.is_handler_active("router"),
+        )?;
         self.active_handlers.store(active_handlers);
         self.correlation_config.store(correlation_config);
         self.cors_config.store(cors_config);
@@ -583,6 +611,7 @@ impl ReloadableModule for HandlerReloader {
         self.security_runtime.store(security_runtime);
         self.unified_security_config.store(unified_security_config);
         self.rate_limit_runtime.store(rate_limit_runtime);
+        self.router_route.store(router_route);
         Ok(ReloadOutcome::success("handler.yml reloaded"))
     }
 }
@@ -750,6 +779,21 @@ impl ReloadableModule for ProxyReloader {
     }
 }
 
+struct RouterReloader {
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    router_route: Arc<ConfigManager<Option<RouterRoute>>>,
+}
+
+#[async_trait]
+impl ReloadableModule for RouterReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let active = self.active_handlers.load().is_handler_active("router");
+        let router_route = load_router_route(&ctx.runtime_config, active)?;
+        self.router_route.store(router_route);
+        Ok(ReloadOutcome::success("router.yml reloaded"))
+    }
+}
+
 struct StaticResourceReloader {
     static_resources: Arc<ConfigManager<StaticResourceSet>>,
 }
@@ -804,9 +848,10 @@ impl ProxyHttp for GatewayProxy {
             .unwrap_or_default();
 
         if ctx.handler_ids.is_empty() {
-            if let Some((target, rewrite_host_header)) = self.select_upstream() {
+            if let Some((target, rewrite_host_header, reuse_x_forwarded)) = self.select_upstream() {
                 ctx.proxy_target = Some(target);
                 ctx.rewrite_host_header = rewrite_host_header;
+                ctx.reuse_x_forwarded = reuse_x_forwarded;
                 return Ok(false);
             }
             return self
@@ -951,9 +996,12 @@ impl ProxyHttp for GatewayProxy {
                     return self.write_static_resolution(session, ctx, resolution).await;
                 }
                 "proxy" => {
-                    if let Some((target, rewrite_host_header)) = self.select_upstream() {
+                    if let Some((target, rewrite_host_header, reuse_x_forwarded)) =
+                        self.select_upstream()
+                    {
                         ctx.proxy_target = Some(target);
                         ctx.rewrite_host_header = rewrite_host_header;
+                        ctx.reuse_x_forwarded = reuse_x_forwarded;
                         ctx.record_handler_duration(&handler_id, started.elapsed());
                         return Ok(false);
                     }
@@ -964,14 +1012,25 @@ impl ProxyHttp for GatewayProxy {
                 }
                 "router" => {
                     ctx.record_handler_duration(&handler_id, started.elapsed());
-                    return self
-                        .write_text_response(
-                            session,
-                            ctx,
-                            501,
-                            "router handler is not implemented in phase 3",
-                        )
-                        .await;
+                    let route = self.router_route.load();
+                    let Some(route) = route.as_ref().as_ref() else {
+                        return self
+                            .write_text_response(session, ctx, 502, "router is not configured")
+                            .await;
+                    };
+                    let index = self.next_upstream.fetch_add(1, Ordering::Relaxed);
+                    match select_router_target(session, route, index) {
+                        Ok(decision) => {
+                            ctx.proxy_target = Some(decision.target.clone());
+                            ctx.rewrite_host_header = route.config.rewrite_host_header;
+                            ctx.reuse_x_forwarded = route.config.reuse_x_forwarded;
+                            ctx.router_decision = Some(decision);
+                            return Ok(false);
+                        }
+                        Err(rejection) => {
+                            return self.write_rejection_response(session, ctx, rejection).await;
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -1003,15 +1062,34 @@ impl ProxyHttp for GatewayProxy {
 
     async fn upstream_request_filter(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         upstream_request: &mut pingora::http::RequestHeader,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()> {
         if let Some(target) = ctx.proxy_target.as_ref() {
             if ctx.rewrite_host_header {
-                upstream_request.insert_header("host", target.host_header.as_str())?;
+                if let Some(original_host) = request_header(session, "host") {
+                    upstream_request.insert_header("x-forwarded-host", original_host)?;
+                }
+                upstream_request.insert_header("host", target.host_header.clone())?;
             }
-            if !target.path_prefix.is_empty() {
+            apply_forwarded_headers(
+                session,
+                upstream_request,
+                ctx.reuse_x_forwarded,
+                self.server_scheme.as_str(),
+                self.server_port,
+            )?;
+            if let Some(decision) = ctx.router_decision.as_ref() {
+                let route = self.router_route.load();
+                let route = route.as_ref().as_ref().ok_or_else(|| {
+                    Error::explain(
+                        ErrorType::InternalError,
+                        "router target selected but router.yml is not loaded",
+                    )
+                })?;
+                apply_router_upstream_request(upstream_request, route, decision, &ctx.endpoint)?;
+            } else if !target.path_prefix.is_empty() {
                 rewrite_upstream_path(upstream_request, &target.path_prefix)?;
             }
         }
@@ -1055,6 +1133,8 @@ impl ProxyHttp for GatewayProxy {
 struct GatewayRequestContext {
     proxy_target: Option<ProxyTarget>,
     rewrite_host_header: bool,
+    reuse_x_forwarded: bool,
+    router_decision: Option<RouterDecision>,
     request_start: Instant,
     handler_ids: Vec<String>,
     request_path: String,
@@ -1076,6 +1156,8 @@ impl Default for GatewayRequestContext {
         Self {
             proxy_target: None,
             rewrite_host_header: false,
+            reuse_x_forwarded: false,
+            router_decision: None,
             request_start: Instant::now(),
             handler_ids: Vec::new(),
             request_path: String::new(),
@@ -1098,6 +1180,8 @@ impl GatewayRequestContext {
     fn begin_request(&mut self) {
         self.proxy_target = None;
         self.rewrite_host_header = false;
+        self.reuse_x_forwarded = false;
+        self.router_decision = None;
         self.request_start = Instant::now();
         self.handler_ids.clear();
         self.request_path.clear();
@@ -1180,6 +1264,94 @@ fn rewrite_upstream_path(
     })?;
     upstream_request.set_uri(uri);
     Ok(())
+}
+
+fn apply_forwarded_headers(
+    session: &Session,
+    upstream_request: &mut pingora::http::RequestHeader,
+    reuse_x_forwarded: bool,
+    server_scheme: &str,
+    server_port: u16,
+) -> pingora::Result<()> {
+    let remote = client_ip(session).unwrap_or_else(|| "unknown".to_string());
+    let forwarded_for = if reuse_x_forwarded {
+        upstream_request
+            .headers
+            .get("x-forwarded-for")
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("{value},{remote}"))
+            .unwrap_or(remote)
+    } else {
+        remote
+    };
+    upstream_request.insert_header("x-forwarded-for", forwarded_for)?;
+
+    if !reuse_x_forwarded || !upstream_request.headers.contains_key("x-forwarded-proto") {
+        upstream_request.insert_header("x-forwarded-proto", server_scheme.to_string())?;
+    }
+    if !reuse_x_forwarded || !upstream_request.headers.contains_key("x-forwarded-port") {
+        upstream_request.insert_header(
+            "x-forwarded-port",
+            host_port(session).unwrap_or(server_port).to_string(),
+        )?;
+    }
+    if !reuse_x_forwarded || !upstream_request.headers.contains_key("x-forwarded-server") {
+        if let Some(host) = request_header(session, "host").and_then(|host| host_name(&host)) {
+            upstream_request.insert_header("x-forwarded-server", host)?;
+        }
+    }
+    Ok(())
+}
+
+fn request_header(session: &Session, name: &str) -> Option<String> {
+    session
+        .req_header()
+        .headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+}
+
+fn client_ip(session: &Session) -> Option<String> {
+    session.as_downstream().client_addr().map(|address| {
+        address
+            .as_inet()
+            .map(|address| address.ip().to_string())
+            .unwrap_or_else(|| address.to_string())
+    })
+}
+
+fn host_port(session: &Session) -> Option<u16> {
+    request_header(session, "host").and_then(|host| {
+        let host = host.split(',').next().unwrap_or(host.as_str()).trim();
+        if host.starts_with('[') {
+            return host
+                .rsplit_once("]:")
+                .and_then(|(_, port)| port.parse::<u16>().ok());
+        }
+        host.rsplit_once(':')
+            .and_then(|(_, port)| port.parse::<u16>().ok())
+    })
+}
+
+fn host_name(host: &str) -> Option<String> {
+    let host = host.split(',').next().unwrap_or(host).trim();
+    if host.is_empty() {
+        return None;
+    }
+    if host.starts_with('[') {
+        return host
+            .strip_prefix('[')
+            .and_then(|value| value.split_once(']'))
+            .map(|(host, _)| host.to_string());
+    }
+    Some(
+        host.rsplit_once(':')
+            .map(|(host, _)| host)
+            .unwrap_or(host)
+            .to_string(),
+    )
 }
 
 fn pingora_internal_error(error: RuntimeError) -> Box<Error> {
@@ -1460,6 +1632,48 @@ hosts:
                 .current_static_resources()
                 .virtual_hosts
                 .contains_key("local.localhost")
+        );
+    }
+
+    #[test]
+    fn gateway_loads_router_only_when_router_handler_is_active() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            r#"
+handlers:
+  - router
+defaultHandlers:
+  - router
+"#,
+        )
+        .expect("write handler config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::ROUTER_FILE),
+            r#"
+serviceTargets:
+  com.networknt.petstore-1.0.0:
+    - https://api.example.com/base
+"#,
+        )
+        .expect("write router config");
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+
+        let proxy = GatewayProxy::from_runtime_config(&config).expect("build proxy");
+
+        let router = proxy.current_router_route();
+        let router = router.as_ref().as_ref().expect("router route");
+        assert_eq!(
+            router.service_targets["com.networknt.petstore-1.0.0"][0].address,
+            "api.example.com:443"
+        );
+        assert!(
+            config
+                .module_registry
+                .module_summaries()
+                .iter()
+                .any(|entry| entry.module_id == light_pingora::ROUTER_MODULE_ID && entry.active)
         );
     }
 

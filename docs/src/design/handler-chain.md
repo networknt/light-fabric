@@ -1,6 +1,6 @@
 # Handler Chain
 
-Status: Phases 1, 2, 3, and 4 implemented; later phases proposed
+Status: Phases 1, 2, 3, 4, and 5 implemented; later phases proposed
 
 ## Purpose
 
@@ -37,7 +37,7 @@ configuration.
 - Use stable handler IDs instead of Rust type names.
 - Use explicit handler registration. Do not require `inventory`.
 - Integrate loaded handler and traffic/resource config with `ModuleRegistry`.
-- Keep the design compatible with future config reload.
+- Keep the design compatible with runtime config reload.
 
 ## Non-Goals
 
@@ -158,7 +158,7 @@ frameworks/light-pingora/src/
   metrics.rs
   proxy.rs
   resource.rs
-  router.rs          # future
+  router.rs
 ```
 
 Responsibilities:
@@ -174,7 +174,7 @@ Responsibilities:
 - load active handler-specific config files
 - serve static SPA content
 - select fixed proxy upstreams from `proxy.yml`
-- select dynamic sidecar/router upstreams from `router.yml` and discovery
+- select dynamic sidecar/router upstreams from `router.yml`
 - expose module-registry entries for active handler and traffic/resource config
 
 This keeps the first implementation close to the Pingora lifecycle and avoids
@@ -378,10 +378,34 @@ metricsName: ${router.metricsName:router-response}
 
 The Java router chooses the target from `service_url` first, guarded by
 `hostWhitelist`, or from `service_id` plus optional `env_tag` through service
-discovery. Rust should follow the same model when router support is added.
-Because this depends on sidecar token, cache, and discovery behavior, full
-router execution should be implemented after the fixed proxy and static BFF
-path are stable.
+discovery.
+
+Phase 5 implements the Pingora router execution path and keeps the Java
+configuration shape. The active `router` handler loads and registers
+`router.yml`, selects direct `service_url` targets after `hostWhitelist`
+validation, supports `serviceIdQueryParameter`, and removes router selection
+headers before forwarding upstream. It also applies Java-style URL, method,
+query-parameter, and header rewrite rules.
+
+Rust adds `serviceTargets` as an interim improvement for `service_id` routing:
+
+```yaml
+serviceTargets:
+  com.networknt.petstore-1.0.0:
+    - http://localhost:8080
+  com.networknt.petstore-1.0.0|dev:
+    - https://petstore-dev.example.com
+```
+
+This lets sidecar-style router flows run before a runtime discovery API is
+available to `light-pingora`. The final discovery-backed path should keep the
+same request contract, replacing the static target lookup with registry or
+cluster discovery.
+
+Sidecar token acquisition, token cache refresh, and path-prefix service mapping
+are not part of phase 5. They should be added as a focused sidecar/control-plane
+phase after the runtime exposes the needed token-client and discovery surfaces
+to the gateway.
 
 ### Static Resource Config
 
@@ -803,10 +827,10 @@ Fixed proxy target behavior:
 - apply timeout, retry, queue, and host-forwarding settings where Pingora
   supports them
 
-`router.yml` selects from request metadata and discovery. This should be a
-separate follow-up after proxy/static support because the useful sidecar path
-also needs token acquisition, token cache, path-prefix service mapping, direct
-registry or discovery, and host whitelist behavior.
+`router.yml` selects from request metadata. Phase 5 implements direct
+`service_url` targets, static `serviceTargets` for `service_id`, host whitelist
+enforcement, and rewrite behavior. Discovery-backed `service_id` resolution is
+the remaining follow-up.
 
 Router target behavior:
 
@@ -814,8 +838,10 @@ Router target behavior:
 - otherwise use `service_id` plus optional `env_tag`
 - optionally allow `service_id` from the query string when
   `serviceIdQueryParameter` is true
-- discover targets through the configured registry/cluster
+- resolve `service_id` from `router.serviceTargets` until registry/cluster
+  discovery is available in the Rust runtime surface
 - support URL, method, query-parameter, and header rewrite rules
+- remove `service_url` and `service_id` headers before forwarding
 
 `upstream_peer` creates the `HttpPeer` from the selected upstream:
 
@@ -867,7 +893,9 @@ pub struct GatewayRuntimeModel {
 }
 ```
 
-Later config reload can swap the whole runtime model atomically.
+Config reload should continue to swap loaded models atomically. In-flight
+requests should keep using the handler/resource/proxy/router model they already
+selected.
 
 ## Runtime Integration
 
@@ -876,7 +904,7 @@ controller registration, and module registry. `light-pingora` should load its
 Pingora-specific handler, traffic, and resource config through the existing
 runtime config loader.
 
-Suggested module IDs:
+Module IDs:
 
 - `light-pingora/handler`
 - `light-pingora/proxy`
@@ -903,9 +931,10 @@ The module registry should expose:
 - active proxy/router/static capabilities
 - reloadable status
 
-If reload is added, use the existing `ReloadableModule` pattern and replace the
-resolved runtime model atomically. In-flight requests should keep using the
-handler/resource/proxy model they already selected.
+The implemented phases use the existing `ReloadableModule` pattern for active
+handler, proxy, router, resource, virtual-host, and handler-specific config
+files. Later sidecar token and discovery modules should use the same atomic
+model replacement behavior.
 
 ## Suitable First Handlers
 
@@ -977,6 +1006,10 @@ Unit tests in `light-pingora`:
 - match exact virtual hosts
 - parse and validate `proxy.yml` hosts
 - parse and validate `router.yml` rewrite-rule config
+- select router targets from direct `service_url`
+- reject direct router targets that do not match `hostWhitelist`
+- select router targets from static `serviceTargets`
+- apply router URL, method, query-parameter, and header rewrites
 - prevent static path traversal
 - deny dotfiles by default
 - serve `index.html` for `/`
@@ -1044,19 +1077,25 @@ Phase 4: Security and request/response policy handlers (implemented)
 - add JWT pass-through claim request header mutation
 - add path-level chain selection for public SPA and protected API routes
 
-Phase 5: Sidecar router
+Phase 5: Sidecar router (implemented)
 
 - load and register `router.yml`
 - implement dynamic target selection by `service_url` or `service_id`
 - enforce `hostWhitelist`
-- integrate path-prefix service mapping, token/cache behavior, and discovery
+- support static `serviceTargets` for `service_id` routing until runtime
+  discovery is available
 - support router URL, method, query-parameter, and header rewrites
+- apply router request mutation in `upstream_request_filter`
+- remove router selection headers before forwarding
+- include router config in the active reload model
 - add sidecar-focused tests
 
-Phase 6: Reload and control plane
+Phase 6: Sidecar discovery, token flow, and control plane
 
-- add router-specific reload once `router.yml` is implemented
-- extend reload coverage to sidecar token, discovery, and router configs
+- integrate path-prefix service mapping, token/cache behavior, and discovery
+- replace static `serviceTargets` lookup with registry/cluster discovery when
+  the runtime exposes the required API
+- extend reload coverage to sidecar token and discovery configs
 - expose active capabilities, hosts, paths, handlers, and chains through
   service-info MCP
 - atomically replace resolved handler/resource/proxy models on reload
