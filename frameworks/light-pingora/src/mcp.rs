@@ -1,5 +1,9 @@
 use crate::config_util::deserialize_typed_list;
-use light_runtime::{ModuleKind, RuntimeConfig, RuntimeError};
+use async_trait::async_trait;
+use light_runtime::{
+    DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, ModuleKind, PortalRegistryClient,
+    RuntimeConfig, RuntimeError,
+};
 use reqwest::header::{ACCEPT, HeaderMap, HeaderName, HeaderValue};
 use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -7,6 +11,7 @@ use serde_json::{Value as JsonValue, json};
 use serde_yaml::Value as YamlValue;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 use url::Url;
 
@@ -207,15 +212,53 @@ pub struct McpHttpResponse {
     pub body: Vec<u8>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct McpRouterRuntime {
     config: McpRouterConfig,
     tools: BTreeMap<String, McpToolConfig>,
     client: reqwest::Client,
+    discovery: Option<Arc<dyn McpDiscoveryResolver>>,
+}
+
+impl fmt::Debug for McpRouterRuntime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("McpRouterRuntime")
+            .field("path", &self.config.path)
+            .field("tool_count", &self.tools.len())
+            .field("discovery", &self.discovery.is_some())
+            .finish()
+    }
+}
+
+#[async_trait]
+pub trait McpDiscoveryResolver: Send + Sync {
+    async fn lookup_discovery(
+        &self,
+        subscription: DiscoverySubscription,
+    ) -> Result<DiscoverySnapshot, String>;
+}
+
+#[async_trait]
+impl McpDiscoveryResolver for PortalRegistryClient {
+    async fn lookup_discovery(
+        &self,
+        subscription: DiscoverySubscription,
+    ) -> Result<DiscoverySnapshot, String> {
+        PortalRegistryClient::lookup_discovery(self, subscription)
+            .await
+            .map_err(|error| error.to_string())
+    }
 }
 
 impl McpRouterRuntime {
     pub fn new(config: McpRouterConfig) -> Result<Self, RuntimeError> {
+        Self::new_with_discovery(config, None)
+    }
+
+    pub fn new_with_discovery(
+        config: McpRouterConfig,
+        discovery: Option<Arc<dyn McpDiscoveryResolver>>,
+    ) -> Result<Self, RuntimeError> {
         validate_config(&config)?;
         let tools = config
             .tools
@@ -232,6 +275,7 @@ impl McpRouterRuntime {
             config,
             tools,
             client,
+            discovery,
         })
     }
 
@@ -413,9 +457,10 @@ impl McpRouterRuntime {
                 self.execute_http_tool(tool, &arguments, agent_headers)
                     .await
             }
-            McpToolType::Mcp => Err(McpExecutionError::execution_failed(
-                "MCP proxy tools are planned for phase 2",
-            )),
+            McpToolType::Mcp => {
+                self.execute_mcp_proxy_tool(tool, &arguments, agent_headers)
+                    .await
+            }
         }
     }
 
@@ -425,7 +470,7 @@ impl McpRouterRuntime {
         arguments: &JsonValue,
         agent_headers: &[(String, String)],
     ) -> Result<JsonValue, McpExecutionError> {
-        let mut url = tool_target_url(tool)?;
+        let mut url = self.tool_target_url(tool).await?;
         if matches!(tool.method, McpHttpMethod::Get | McpHttpMethod::Head) {
             append_query_arguments(&mut url, arguments);
         }
@@ -481,6 +526,109 @@ impl McpRouterRuntime {
             ]
         }))
     }
+
+    async fn execute_mcp_proxy_tool(
+        &self,
+        tool: &McpToolConfig,
+        arguments: &JsonValue,
+        agent_headers: &[(String, String)],
+    ) -> Result<JsonValue, McpExecutionError> {
+        let url = self.tool_target_url(tool).await?;
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": uuid::Uuid::new_v4().to_string(),
+            "method": "tools/call",
+            "params": {
+                "name": tool.name,
+                "arguments": arguments
+            }
+        });
+        let response = self
+            .client
+            .post(url)
+            .headers(outbound_headers(agent_headers)?)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
+        let status = response.status();
+        let body = response
+            .bytes()
+            .await
+            .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
+        if !status.is_success() {
+            return Err(McpExecutionError::execution_failed(format!(
+                "MCP tool `{}` returned HTTP {}: {}",
+                tool.name,
+                status.as_u16(),
+                String::from_utf8_lossy(&body)
+            )));
+        }
+        let message = serde_json::from_slice::<JsonValue>(&body).map_err(|error| {
+            McpExecutionError::execution_failed(format!("invalid MCP backend response: {error}"))
+        })?;
+        if let Some(error) = message.get("error") {
+            let message = error
+                .get("message")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("MCP backend returned an error");
+            return Err(McpExecutionError::execution_failed(message));
+        }
+        message.get("result").cloned().ok_or_else(|| {
+            McpExecutionError::execution_failed("MCP backend response missing result")
+        })
+    }
+
+    async fn tool_target_url(&self, tool: &McpToolConfig) -> Result<Url, McpExecutionError> {
+        let base = self.tool_base_url(tool).await?;
+        Ok(apply_tool_path(base, tool))
+    }
+
+    async fn tool_base_url(&self, tool: &McpToolConfig) -> Result<Url, McpExecutionError> {
+        if let Some(target_host) = tool
+            .target_host
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            return parse_base_url(target_host, &tool.name);
+        }
+
+        let service_id = tool
+            .service_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                McpExecutionError::execution_failed(format!(
+                    "tool `{}` requires targetHost or serviceId",
+                    tool.name
+                ))
+            })?;
+        let discovery = self.discovery.as_ref().ok_or_else(|| {
+            McpExecutionError::execution_failed(format!(
+                "tool `{}` serviceId discovery requires portal registry to be enabled",
+                tool.name
+            ))
+        })?;
+        let snapshot = discovery
+            .lookup_discovery(DiscoverySubscription {
+                service_id: service_id.to_string(),
+                env_tag: tool.env_tag.clone(),
+                protocol: tool.protocol.clone(),
+            })
+            .await
+            .map_err(|error| {
+                McpExecutionError::execution_failed(format!(
+                    "failed to discover MCP tool service `{service_id}`: {error}"
+                ))
+            })?;
+        let node =
+            select_discovery_node(&snapshot.nodes, tool.protocol.as_deref()).ok_or_else(|| {
+                McpExecutionError::execution_failed(format!(
+                    "MCP tool service `{service_id}` has no usable discovery nodes"
+                ))
+            })?;
+        parse_base_url(discovery_node_base_url(node).as_str(), &tool.name)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -530,7 +678,10 @@ pub fn load_mcp_router_runtime(
     if !config.enabled {
         return Ok(None);
     }
-    Ok(Some(McpRouterRuntime::new(config)?))
+    Ok(Some(McpRouterRuntime::new_with_discovery(
+        config,
+        discovery_resolver(runtime_config.registry_client.clone()),
+    )?))
 }
 
 fn load_mcp_router_config(
@@ -574,33 +725,47 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
                 "mcp-router tool `{name}` path must start with `/`"
             )));
         }
+        let has_target_host = tool
+            .target_host
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+        let has_service_id = tool
+            .service_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+        if !has_target_host && !has_service_id {
+            return Err(RuntimeError::Unsupported(format!(
+                "mcp-router tool `{name}` requires targetHost or serviceId"
+            )));
+        }
     }
     Ok(())
 }
 
-fn tool_target_url(tool: &McpToolConfig) -> Result<Url, McpExecutionError> {
-    let base = tool
-        .target_host
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            McpExecutionError::execution_failed(format!(
-                "tool `{}` requires targetHost until discovery is implemented",
-                tool.name
-            ))
-        })?;
-    let mut url = Url::parse(base).map_err(|error| {
+fn discovery_resolver(
+    registry_client: Option<Arc<PortalRegistryClient>>,
+) -> Option<Arc<dyn McpDiscoveryResolver>> {
+    registry_client.map(|client| {
+        let resolver: Arc<dyn McpDiscoveryResolver> = client;
+        resolver
+    })
+}
+
+fn parse_base_url(base: &str, tool_name: &str) -> Result<Url, McpExecutionError> {
+    let url = Url::parse(base).map_err(|error| {
         McpExecutionError::execution_failed(format!(
-            "tool `{}` targetHost `{base}` is invalid: {error}",
-            tool.name
+            "tool `{tool_name}` target `{base}` is invalid: {error}"
         ))
     })?;
     if !matches!(url.scheme(), "http" | "https") {
         return Err(McpExecutionError::execution_failed(format!(
-            "tool `{}` targetHost `{base}` must use http or https",
-            tool.name
+            "tool `{tool_name}` target `{base}` must use http or https"
         )));
     }
+    Ok(url)
+}
+
+fn apply_tool_path(mut url: Url, tool: &McpToolConfig) -> Url {
     let base_path = url.path().trim_end_matches('/');
     let tool_path = tool.path.as_str();
     let combined = if base_path.is_empty() || base_path == "/" {
@@ -611,7 +776,46 @@ fn tool_target_url(tool: &McpToolConfig) -> Result<Url, McpExecutionError> {
         format!("{base_path}{tool_path}")
     };
     url.set_path(combined.as_str());
-    Ok(url)
+    url
+}
+
+fn select_discovery_node<'a>(
+    nodes: &'a [DiscoveryNode],
+    protocol: Option<&str>,
+) -> Option<&'a DiscoveryNode> {
+    let usable = |node: &&DiscoveryNode| {
+        node.connected
+            && node.port != 0
+            && matches!(
+                node.protocol.to_ascii_lowercase().as_str(),
+                "http" | "https"
+            )
+            && protocol.is_none_or(|protocol| node.protocol.eq_ignore_ascii_case(protocol))
+    };
+    nodes
+        .iter()
+        .filter(usable)
+        .find(|node| node.protocol.eq_ignore_ascii_case("https"))
+        .or_else(|| {
+            nodes
+                .iter()
+                .filter(usable)
+                .find(|node| node.protocol.eq_ignore_ascii_case("http"))
+        })
+}
+
+fn discovery_node_base_url(node: &DiscoveryNode) -> String {
+    let host = if node.address.contains(':') && !node.address.starts_with('[') {
+        format!("[{}]", node.address)
+    } else {
+        node.address.clone()
+    };
+    format!(
+        "{}://{}:{}",
+        node.protocol.to_ascii_lowercase(),
+        host,
+        node.port
+    )
 }
 
 fn append_query_arguments(url: &mut Url, arguments: &JsonValue) {
@@ -827,6 +1031,7 @@ impl fmt::Display for McpToolType {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
@@ -943,17 +1148,17 @@ tools:
 
     #[tokio::test]
     async fn tool_call_get_forwards_arguments_and_agent_headers() {
-        let (base, received) = spawn_http_server(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 11\r\n\r\n{\"ok\":true}",
-        )
-        .await;
+        let (base, received) = spawn_http_server(http_json_response(json!({"ok": true}))).await;
         let runtime = runtime_with_tool("weather", "Get weather", base.as_str());
 
         let response = runtime
             .handle_request(McpHttpRequest {
                 method: "POST".to_string(),
                 path: "/mcp".to_string(),
-                headers: vec![accept_json(), ("authorization".to_string(), "Bearer abc".to_string())],
+                headers: vec![
+                    accept_json(),
+                    ("authorization".to_string(), "Bearer abc".to_string()),
+                ],
                 body: br#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"weather","arguments":{"city":"New York","unit":"c"}}}"#.to_vec(),
             })
             .await
@@ -966,6 +1171,122 @@ tools:
         let request = received.await.expect("server request");
         assert!(request.starts_with("GET /weather?city=New+York&unit=c HTTP/1.1"));
         assert!(request.contains("authorization: Bearer abc"));
+    }
+
+    #[tokio::test]
+    async fn tool_call_uses_discovered_service_target() {
+        let (base, received) =
+            spawn_http_server(http_json_response(json!({"forecast": "rain"}))).await;
+        let resolver = Arc::new(FakeDiscovery::new(discovery_snapshot(
+            base.as_str(),
+            "com.networknt.weather-1.0.0",
+            Some("dev"),
+            Some("http"),
+        )));
+        let discovery: Arc<dyn McpDiscoveryResolver> = resolver.clone();
+        let runtime = McpRouterRuntime::new_with_discovery(
+            McpRouterConfig {
+                tools: vec![McpToolConfig {
+                    name: "weather".to_string(),
+                    description: "Get weather".to_string(),
+                    protocol: Some("http".to_string()),
+                    service_id: Some("com.networknt.weather-1.0.0".to_string()),
+                    env_tag: Some("dev".to_string()),
+                    target_host: None,
+                    path: "/weather".to_string(),
+                    method: McpHttpMethod::Get,
+                    endpoint: None,
+                    api_type: McpToolType::Http,
+                    input_schema: default_input_schema(),
+                    tool_metadata: default_object(),
+                }],
+                ..McpRouterConfig::default()
+            },
+            Some(discovery),
+        )
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json()],
+                body: br#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"weather","arguments":{"city":"Toronto"}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["result"]["forecast"], "rain");
+        let request = received.await.expect("server request");
+        assert!(request.starts_with("GET /weather?city=Toronto HTTP/1.1"));
+        let lookups = resolver.lookups.lock().expect("lookup lock");
+        assert_eq!(lookups[0].service_id, "com.networknt.weather-1.0.0");
+        assert_eq!(lookups[0].env_tag.as_deref(), Some("dev"));
+        assert_eq!(lookups[0].protocol.as_deref(), Some("http"));
+    }
+
+    #[tokio::test]
+    async fn mcp_proxy_tool_posts_backend_tools_call_and_forwards_headers() {
+        let backend_result = json!({
+            "jsonrpc": "2.0",
+            "id": "backend",
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "cloudy"
+                    }
+                ]
+            }
+        });
+        let (base, received) = spawn_http_server(http_json_response(backend_result)).await;
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![McpToolConfig {
+                name: "weather".to_string(),
+                description: "Get weather".to_string(),
+                protocol: None,
+                service_id: None,
+                env_tag: None,
+                target_host: Some(base),
+                path: "/mcp".to_string(),
+                method: McpHttpMethod::Post,
+                endpoint: None,
+                api_type: McpToolType::Mcp,
+                input_schema: default_input_schema(),
+                tool_metadata: default_object(),
+            }],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![
+                    accept_json(),
+                    ("authorization".to_string(), "Bearer abc".to_string()),
+                ],
+                body: br#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"weather","arguments":{"city":"Ottawa"}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["result"]["content"][0]["text"], "cloudy");
+        let request = received.await.expect("server request");
+        assert!(request.starts_with("POST /mcp HTTP/1.1"));
+        assert!(request.contains("authorization: Bearer abc"));
+        let body = request.split("\r\n\r\n").nth(1).expect("request body");
+        let backend_call = serde_json::from_str::<JsonValue>(body).expect("backend json");
+        assert_eq!(backend_call["method"], "tools/call");
+        assert_eq!(backend_call["params"]["name"], "weather");
+        assert_eq!(backend_call["params"]["arguments"]["city"], "Ottawa");
     }
 
     #[tokio::test]
@@ -1016,7 +1337,70 @@ tools:
         )
     }
 
-    async fn spawn_http_server(response: &'static str) -> (String, oneshot::Receiver<String>) {
+    fn http_json_response(value: JsonValue) -> String {
+        let body = serde_json::to_string(&value).expect("serialize response");
+        format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+    }
+
+    fn discovery_snapshot(
+        base: &str,
+        service_id: &str,
+        env_tag: Option<&str>,
+        protocol: Option<&str>,
+    ) -> DiscoverySnapshot {
+        let url = Url::parse(base).expect("base url");
+        serde_json::from_value(json!({
+            "serviceId": service_id,
+            "envTag": env_tag,
+            "protocol": protocol,
+            "nodes": [{
+                "runtimeInstanceId": "0195ef10-2f24-7af2-85e9-a8ef54642f40",
+                "serviceId": service_id,
+                "envTag": env_tag,
+                "environment": "dev",
+                "version": "1.0.0",
+                "protocol": protocol.unwrap_or(url.scheme()),
+                "address": url.host_str().expect("host"),
+                "port": url.port_or_known_default().expect("port"),
+                "tags": {},
+                "connectedAt": "2026-01-01T00:00:00Z",
+                "lastSeenAt": "2026-01-01T00:00:01Z",
+                "connected": true
+            }]
+        }))
+        .expect("discovery snapshot")
+    }
+
+    struct FakeDiscovery {
+        snapshot: DiscoverySnapshot,
+        lookups: Mutex<Vec<DiscoverySubscription>>,
+    }
+
+    impl FakeDiscovery {
+        fn new(snapshot: DiscoverySnapshot) -> Self {
+            Self {
+                snapshot,
+                lookups: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl McpDiscoveryResolver for FakeDiscovery {
+        async fn lookup_discovery(
+            &self,
+            subscription: DiscoverySubscription,
+        ) -> Result<DiscoverySnapshot, String> {
+            self.lookups.lock().expect("lookup lock").push(subscription);
+            Ok(self.snapshot.clone())
+        }
+    }
+
+    async fn spawn_http_server(response: String) -> (String, oneshot::Receiver<String>) {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind test server");
@@ -1024,9 +1408,19 @@ tools:
         let (tx, rx) = oneshot::channel();
         tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.expect("accept connection");
-            let mut buffer = vec![0_u8; 4096];
-            let read = stream.read(&mut buffer).await.expect("read request");
-            let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+            let mut buffer = vec![0_u8; 1024];
+            let mut request_bytes = Vec::new();
+            loop {
+                let read = stream.read(&mut buffer).await.expect("read request");
+                if read == 0 {
+                    break;
+                }
+                request_bytes.extend_from_slice(&buffer[..read]);
+                if request_complete(&request_bytes) {
+                    break;
+                }
+            }
+            let request = String::from_utf8_lossy(&request_bytes).to_string();
             let _ = tx.send(request);
             stream
                 .write_all(response.as_bytes())
@@ -1034,5 +1428,20 @@ tools:
                 .expect("write response");
         });
         (format!("http://{address}"), rx)
+    }
+
+    fn request_complete(request: &[u8]) -> bool {
+        let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n") else {
+            return false;
+        };
+        let headers = String::from_utf8_lossy(&request[..header_end]);
+        let body_len = request.len().saturating_sub(header_end + 4);
+        let content_length = headers.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        });
+        content_length.is_none_or(|content_length| body_len >= content_length)
     }
 }

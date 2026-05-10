@@ -2,9 +2,9 @@
 
 ## Status
 
-Phase 1 implemented in `light-pingora` and `light-gateway`. Later phases for
-service discovery, MCP proxy tools, streamed responses, access-control
-execution, response filtering, masking, and tokenization remain pending.
+Phases 1 and 2 implemented in `light-pingora` and `light-gateway`. Later
+phases for streamed responses, access-control execution, response filtering,
+masking, and tokenization remain pending.
 
 ## Purpose
 
@@ -561,6 +561,8 @@ gateway route.
 - Register module status and config with the module registry.
 - Add parser and handler tests.
 
+Status: implemented.
+
 ### Phase 2: Discovery And MCP Proxy
 
 - Resolve `serviceId`, `protocol`, and `envTag` through the existing portal
@@ -568,6 +570,8 @@ gateway route.
 - Implement `apiType: mcp` backend proxy tools.
 - Add reload support with atomic state swap.
 - Add tests with fake discovery and backend MCP responses.
+
+Status: implemented.
 
 ### Phase 3: Streamable HTTP Streaming
 

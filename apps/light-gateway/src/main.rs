@@ -2356,6 +2356,88 @@ tools:
     }
 
     #[tokio::test]
+    async fn gateway_reload_swaps_live_mcp_router_config() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            r#"
+handlers:
+  - mcp
+paths:
+  - path: /mcp
+    method: POST
+    exec:
+      - mcp
+defaultHandlers: []
+"#,
+        )
+        .expect("write handler config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::MCP_ROUTER_FILE),
+            r#"
+enabled: true
+path: /mcp
+tools:
+  - name: weather
+    targetHost: http://127.0.0.1:8080
+    path: /weather
+"#,
+        )
+        .expect("write mcp config");
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+        let proxy = GatewayProxy::from_runtime_config(&config).expect("build proxy");
+
+        assert_eq!(
+            proxy
+                .current_mcp_router()
+                .as_ref()
+                .as_ref()
+                .expect("mcp runtime")
+                .config()
+                .tools[0]
+                .name,
+            "weather"
+        );
+
+        std::fs::write(
+            external_dir.path().join(light_pingora::MCP_ROUTER_FILE),
+            r#"
+enabled: true
+path: /mcp
+tools:
+  - name: forecast
+    targetHost: http://127.0.0.1:8081
+    path: /forecast
+"#,
+        )
+        .expect("write external mcp config");
+
+        let result = config
+            .module_registry
+            .reload_modules(
+                ReloadContext::new(config.clone()),
+                &[light_pingora::MCP_ROUTER_MODULE_ID.to_string()],
+            )
+            .await;
+
+        assert_eq!(result.reloaded, vec![light_pingora::MCP_ROUTER_MODULE_ID]);
+        assert!(result.skipped.is_empty());
+        assert!(result.failed.is_empty());
+        assert_eq!(
+            proxy
+                .current_mcp_router()
+                .as_ref()
+                .as_ref()
+                .expect("mcp runtime")
+                .config()
+                .tools[0]
+                .name,
+            "forecast"
+        );
+    }
+
+    #[tokio::test]
     async fn gateway_reload_swaps_live_proxy_config() {
         let config_dir = TempDir::new().expect("config temp dir");
         let external_dir = TempDir::new().expect("external temp dir");
