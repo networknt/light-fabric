@@ -5,22 +5,23 @@ use light_pingora::{
     ActiveHandlerSet, ApiKeyConfig, AuthPrincipal, BasicAuthConfig, CorrelationConfig,
     CorrelationState, CorsConfig, CorsRequestOutcome, CorsResponseHeaders, HandlerBuildContext,
     HandlerMetricsLogLevel, HandlerRejection, HeaderConfig, MetricsConfig, MetricsRecorder,
-    PingoraApp, PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerKind,
-    PingoraHandlerRegistry, PingoraTransport, ProxyRoute, ProxyTarget, RateLimitHeaders,
-    RateLimitRuntime, RouterDecision, RouterRoute, SecurityRuntime, StaticResolution,
-    StaticResourceSet, UnifiedSecurityConfig, apply_correlation_request,
-    apply_correlation_response, apply_cors_response, apply_header_request, apply_header_response,
-    apply_rate_limit_headers, apply_router_upstream_request, build_metrics_event, check_rate_limit,
-    correlation_id_for_upstream, evaluate_cors_request, load_active_handlers, load_api_key_config,
-    load_basic_auth_config, load_correlation_config, load_cors_config, load_header_config,
-    load_metrics_config, load_proxy_route, load_rate_limit_runtime, load_router_route,
-    load_security_runtime, load_static_resources, load_unified_security_config,
-    select_router_target, verify_api_key, verify_basic_auth, verify_jwt_request,
-    verify_unified_security,
+    PathPrefixServiceConfig, PingoraApp, PingoraHandler, PingoraHandlerDescriptor,
+    PingoraHandlerKind, PingoraHandlerRegistry, PingoraTransport, ProxyRoute, ProxyTarget,
+    RateLimitHeaders, RateLimitRuntime, RouterDecision, RouterRoute, SecurityRuntime,
+    StaticResolution, StaticResourceSet, TokenRuntime, UnifiedSecurityConfig,
+    apply_correlation_request, apply_correlation_response, apply_cors_response,
+    apply_header_request, apply_header_response, apply_path_prefix_service,
+    apply_rate_limit_headers, apply_router_upstream_request, apply_token_request,
+    build_metrics_event, check_rate_limit, correlation_id_for_upstream, evaluate_cors_request,
+    load_active_handlers, load_api_key_config, load_basic_auth_config, load_correlation_config,
+    load_cors_config, load_header_config, load_metrics_config, load_path_prefix_service_config,
+    load_proxy_route, load_rate_limit_runtime, load_router_route, load_security_runtime,
+    load_static_resources, load_token_runtime, load_unified_security_config, select_router_target,
+    verify_api_key, verify_basic_auth, verify_jwt_request, verify_unified_security,
 };
 use light_runtime::{
-    ConfigManager, LightRuntimeBuilder, ReloadContext, ReloadOutcome, ReloadableModule,
-    RuntimeConfig, RuntimeError,
+    CacheRegistry, ConfigManager, LightRuntimeBuilder, ReloadContext, ReloadOutcome,
+    ReloadableModule, RuntimeConfig, RuntimeError,
 };
 use pingora::http::ResponseHeader;
 use pingora::prelude::{HttpPeer, ProxyHttp, Session};
@@ -58,6 +59,8 @@ struct GatewayProxy {
     security_runtime: Arc<ConfigManager<Option<SecurityRuntime>>>,
     unified_security_config: Arc<ConfigManager<Option<UnifiedSecurityConfig>>>,
     rate_limit_runtime: Arc<ConfigManager<Option<RateLimitRuntime>>>,
+    path_prefix_service_config: Arc<ConfigManager<Option<PathPrefixServiceConfig>>>,
+    token_runtime: Arc<ConfigManager<Option<TokenRuntime>>>,
     metrics_recorder: Arc<MetricsRecorder>,
     proxy_route: Arc<ConfigManager<Option<ProxyRoute>>>,
     router_route: Arc<ConfigManager<Option<RouterRoute>>>,
@@ -108,6 +111,14 @@ impl GatewayProxy {
             config,
             handler_active(&active_handlers, &["limit", "rate-limit"]),
         )?;
+        let path_prefix_service_config = load_path_prefix_service_config(
+            config,
+            handler_active(
+                &active_handlers,
+                &["prefix", "path-prefix-service", "pathPrefixService"],
+            ),
+        )?;
+        let token_runtime = load_token_runtime(config, active_handlers.is_handler_active("token"))?;
         let router_route = load_router_route(config, active_handlers.is_handler_active("router"))?;
         let proxy_route = load_proxy_route(config)?;
         let static_resources = load_static_resources(config)?;
@@ -121,6 +132,8 @@ impl GatewayProxy {
         let security_runtime = Arc::new(ConfigManager::new(security_runtime));
         let unified_security_config = Arc::new(ConfigManager::new(unified_security_config));
         let rate_limit_runtime = Arc::new(ConfigManager::new(rate_limit_runtime));
+        let path_prefix_service_config = Arc::new(ConfigManager::new(path_prefix_service_config));
+        let token_runtime = Arc::new(ConfigManager::new(token_runtime));
         let router_route = Arc::new(ConfigManager::new(router_route));
         let proxy_route = Arc::new(ConfigManager::new(proxy_route));
         let static_resources = Arc::new(ConfigManager::new(static_resources));
@@ -139,6 +152,8 @@ impl GatewayProxy {
                 security_runtime: Arc::clone(&security_runtime),
                 unified_security_config: Arc::clone(&unified_security_config),
                 rate_limit_runtime: Arc::clone(&rate_limit_runtime),
+                path_prefix_service_config: Arc::clone(&path_prefix_service_config),
+                token_runtime: Arc::clone(&token_runtime),
                 router_route: Arc::clone(&router_route),
             }),
         );
@@ -206,6 +221,27 @@ impl GatewayProxy {
             }),
         );
         config.module_registry.register_reloader(
+            light_pingora::PATH_PREFIX_SERVICE_MODULE_ID,
+            Arc::new(PathPrefixServiceReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                path_prefix_service_config: Arc::clone(&path_prefix_service_config),
+            }),
+        );
+        config.module_registry.register_reloader(
+            light_pingora::TOKEN_MODULE_ID,
+            Arc::new(TokenReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                token_runtime: Arc::clone(&token_runtime),
+            }),
+        );
+        config.module_registry.register_reloader(
+            light_pingora::CLIENT_TOKEN_MODULE_ID,
+            Arc::new(TokenReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                token_runtime: Arc::clone(&token_runtime),
+            }),
+        );
+        config.module_registry.register_reloader(
             light_pingora::PROXY_MODULE_ID,
             Arc::new(ProxyReloader {
                 proxy_route: Arc::clone(&proxy_route),
@@ -240,6 +276,8 @@ impl GatewayProxy {
             security_runtime,
             unified_security_config,
             rate_limit_runtime,
+            path_prefix_service_config,
+            token_runtime,
             metrics_recorder,
             proxy_route,
             router_route,
@@ -528,6 +566,16 @@ impl GatewayProxy {
     }
 
     #[cfg(test)]
+    fn current_path_prefix_service_config(&self) -> Arc<Option<PathPrefixServiceConfig>> {
+        self.path_prefix_service_config.load()
+    }
+
+    #[cfg(test)]
+    fn current_token_runtime(&self) -> Arc<Option<TokenRuntime>> {
+        self.token_runtime.load()
+    }
+
+    #[cfg(test)]
     fn active_handler_ids(&self) -> Vec<String> {
         self.active_handlers.load().active_handler_ids().to_vec()
     }
@@ -544,6 +592,8 @@ struct HandlerReloader {
     security_runtime: Arc<ConfigManager<Option<SecurityRuntime>>>,
     unified_security_config: Arc<ConfigManager<Option<UnifiedSecurityConfig>>>,
     rate_limit_runtime: Arc<ConfigManager<Option<RateLimitRuntime>>>,
+    path_prefix_service_config: Arc<ConfigManager<Option<PathPrefixServiceConfig>>>,
+    token_runtime: Arc<ConfigManager<Option<TokenRuntime>>>,
     router_route: Arc<ConfigManager<Option<RouterRoute>>>,
 }
 
@@ -597,6 +647,17 @@ impl ReloadableModule for HandlerReloader {
             &ctx.runtime_config,
             handler_active(&active_handlers, &["limit", "rate-limit"]),
         )?;
+        let path_prefix_service_config = load_path_prefix_service_config(
+            &ctx.runtime_config,
+            handler_active(
+                &active_handlers,
+                &["prefix", "path-prefix-service", "pathPrefixService"],
+            ),
+        )?;
+        let token_runtime = load_token_runtime(
+            &ctx.runtime_config,
+            active_handlers.is_handler_active("token"),
+        )?;
         let router_route = load_router_route(
             &ctx.runtime_config,
             active_handlers.is_handler_active("router"),
@@ -611,6 +672,9 @@ impl ReloadableModule for HandlerReloader {
         self.security_runtime.store(security_runtime);
         self.unified_security_config.store(unified_security_config);
         self.rate_limit_runtime.store(rate_limit_runtime);
+        self.path_prefix_service_config
+            .store(path_prefix_service_config);
+        self.token_runtime.store(token_runtime);
         self.router_route.store(router_route);
         Ok(ReloadOutcome::success("handler.yml reloaded"))
     }
@@ -763,6 +827,40 @@ impl ReloadableModule for RateLimitReloader {
         let config = load_rate_limit_runtime(&ctx.runtime_config, active)?;
         self.rate_limit_runtime.store(config);
         Ok(ReloadOutcome::success("limit.yml reloaded"))
+    }
+}
+
+struct PathPrefixServiceReloader {
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    path_prefix_service_config: Arc<ConfigManager<Option<PathPrefixServiceConfig>>>,
+}
+
+#[async_trait]
+impl ReloadableModule for PathPrefixServiceReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let active_handlers = self.active_handlers.load();
+        let active = handler_active(
+            &active_handlers,
+            &["prefix", "path-prefix-service", "pathPrefixService"],
+        );
+        let config = load_path_prefix_service_config(&ctx.runtime_config, active)?;
+        self.path_prefix_service_config.store(config);
+        Ok(ReloadOutcome::success("pathPrefixService.yml reloaded"))
+    }
+}
+
+struct TokenReloader {
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    token_runtime: Arc<ConfigManager<Option<TokenRuntime>>>,
+}
+
+#[async_trait]
+impl ReloadableModule for TokenReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let active = self.active_handlers.load().is_handler_active("token");
+        let runtime = load_token_runtime(&ctx.runtime_config, active)?;
+        self.token_runtime.store(runtime);
+        Ok(ReloadOutcome::success("token/client.yml reloaded"))
     }
 }
 
@@ -968,6 +1066,20 @@ impl ProxyHttp for GatewayProxy {
                                     .await;
                             }
                         }
+                    }
+                }
+                "prefix" | "path-prefix-service" | "pathPrefixService" => {
+                    if let Some(config) = self.path_prefix_service_config.load().as_ref().as_ref() {
+                        apply_path_prefix_service(session, config, &request_path)?;
+                    }
+                }
+                "token" => {
+                    if let Some(runtime) = self.token_runtime.load().as_ref().as_ref()
+                        && let Err(rejection) =
+                            apply_token_request(session, runtime, &request_path).await
+                    {
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                        return self.write_rejection_response(session, ctx, rejection).await;
                     }
                 }
                 "health" => {
@@ -1215,9 +1327,11 @@ struct HandlerTiming {
 async fn main() -> Result<()> {
     init_tracing();
 
+    let cache_registry = Arc::new(CacheRegistry::new());
     let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp))
         .with_config_dir(CONFIG_DIR)
         .with_external_config_dir(EXTERNAL_CONFIG_DIR)
+        .with_cache_registry(cache_registry)
         .build();
 
     let running = runtime
@@ -1404,6 +1518,8 @@ const GATEWAY_HANDLER_DESCRIPTORS: &[(&str, PingoraHandlerKind)] = &[
     ("rate-limit", PingoraHandlerKind::Traffic),
     ("request-size-limit", PingoraHandlerKind::Traffic),
     ("prefix", PingoraHandlerKind::Traffic),
+    ("path-prefix-service", PingoraHandlerKind::Traffic),
+    ("pathPrefixService", PingoraHandlerKind::Traffic),
     ("token", PingoraHandlerKind::Security),
     ("router", PingoraHandlerKind::Traffic),
     ("proxy", PingoraHandlerKind::Traffic),
@@ -1486,6 +1602,7 @@ mod tests {
             external_config_dir: external_config_dir.path().to_path_buf(),
             resolved_values,
             module_registry: Arc::new(ModuleRegistry::new()),
+            cache_registry: None,
         }
     }
 
@@ -1674,6 +1791,108 @@ serviceTargets:
                 .module_summaries()
                 .iter()
                 .any(|entry| entry.module_id == light_pingora::ROUTER_MODULE_ID && entry.active)
+        );
+    }
+
+    #[test]
+    fn gateway_loads_path_prefix_and_token_when_handlers_are_active() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            r#"
+handlers:
+  - prefix
+  - token
+defaultHandlers:
+  - prefix
+  - token
+"#,
+        )
+        .expect("write handler config");
+        std::fs::write(
+            config_dir
+                .path()
+                .join(light_pingora::PATH_PREFIX_SERVICE_FILE),
+            r#"
+enabled: true
+mapping:
+  /v1/pets: com.networknt.petstore-1.0.0
+"#,
+        )
+        .expect("write path prefix service config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::TOKEN_FILE),
+            r#"
+enabled: true
+appliedPathPrefixes:
+  - /v1
+"#,
+        )
+        .expect("write token config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::CLIENT_FILE),
+            r#"
+tls:
+  verifyHostname: false
+oauth:
+  multipleAuthServers: false
+  token:
+    cache:
+      capacity: 4
+    server_url: http://localhost:6882
+    client_credentials:
+      uri: /oauth2/token
+      client_id: client
+      client_secret: secret
+      scope:
+        - petstore.r
+pathPrefixServices:
+  /v1/pets: com.networknt.petstore-1.0.0
+request:
+  connectTimeout: 100
+  timeout: 200
+"#,
+        )
+        .expect("write client config");
+        let mut config = runtime_config(&config_dir, &external_dir, HashMap::new());
+        config.cache_registry = Some(Arc::new(CacheRegistry::new()));
+
+        let proxy = GatewayProxy::from_runtime_config(&config).expect("build proxy");
+
+        assert_eq!(
+            proxy
+                .current_path_prefix_service_config()
+                .as_ref()
+                .as_ref()
+                .expect("path prefix config")
+                .mapping["/v1/pets"],
+            "com.networknt.petstore-1.0.0"
+        );
+        let token_runtime = proxy.current_token_runtime();
+        let token_runtime = token_runtime.as_ref().as_ref().expect("token runtime");
+        assert_eq!(token_runtime.client_config().oauth.token.cache.capacity, 4);
+        assert_eq!(
+            token_runtime
+                .handler_config()
+                .applied_path_prefixes
+                .as_slice(),
+            ["/v1".to_string()]
+        );
+        assert!(
+            config
+                .module_registry
+                .module_summaries()
+                .iter()
+                .any(|entry| entry.module_id == light_pingora::TOKEN_MODULE_ID && entry.active)
+        );
+        assert!(
+            config
+                .cache_registry
+                .as_ref()
+                .expect("cache registry")
+                .names()
+                .contains(&light_pingora::TOKEN_CACHE_NAME.to_string())
         );
     }
 

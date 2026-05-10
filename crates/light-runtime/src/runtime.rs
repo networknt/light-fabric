@@ -406,6 +406,7 @@ where
             external_config_dir,
             resolved_values: values,
             module_registry: Arc::clone(&self.module_registry),
+            cache_registry: self.cache_registry.clone(),
         })
     }
 
@@ -1118,6 +1119,7 @@ serviceId: ${server.serviceId:com.networknt.test-1.0.0}
             external_config_dir: external_dir.path().to_path_buf(),
             resolved_values: HashMap::new(),
             module_registry: Arc::new(ModuleRegistry::new()),
+            cache_registry: None,
         };
 
         let ctx = runtime_config

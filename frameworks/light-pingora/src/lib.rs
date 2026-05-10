@@ -11,6 +11,8 @@ mod rate_limit;
 mod resource;
 mod router;
 mod security;
+mod service;
+mod token;
 mod unified_security;
 
 use async_trait::async_trait;
@@ -83,6 +85,18 @@ pub use router::{
 pub use security::{
     AuthPrincipal, HandlerRejection, SECURITY_CONFIG_NAME, SECURITY_FILE, SECURITY_MODULE_ID,
     SecurityConfig, SecurityJwtConfig, SecurityRuntime, load_security_runtime, verify_jwt_request,
+};
+pub use service::{
+    PATH_PREFIX_SERVICE_CONFIG_NAME, PATH_PREFIX_SERVICE_FILE, PATH_PREFIX_SERVICE_LEGACY_FILE,
+    PATH_PREFIX_SERVICE_MODULE_ID, PathPrefixServiceConfig, apply_path_prefix_service,
+    load_path_prefix_service_config, service_id_for_path,
+};
+pub use token::{
+    CLIENT_FILE, CLIENT_TOKEN_CONFIG_NAME, CLIENT_TOKEN_MODULE_ID, ClientOauthConfig,
+    ClientRequestConfig, ClientTlsConfig, ClientTokenConfig, OAuthClientCredentialsConfig,
+    OAuthTokenCacheConfig, OAuthTokenConfig, SCOPE_TOKEN_HEADER, TOKEN_CACHE_NAME,
+    TOKEN_CONFIG_NAME, TOKEN_FILE, TOKEN_LEGACY_FILE, TOKEN_MODULE_ID, TokenHandlerConfig,
+    TokenRuntime, apply_token_request, load_token_runtime,
 };
 pub use unified_security::{
     UNIFIED_SECURITY_CONFIG_NAME, UNIFIED_SECURITY_FILE, UNIFIED_SECURITY_MODULE_ID,

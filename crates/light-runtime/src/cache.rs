@@ -3,6 +3,7 @@ use moka::future::Cache as MokaCache;
 use serde::Serialize;
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use std::collections::BTreeMap;
+use std::fmt;
 use std::hash::Hash;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -22,6 +23,14 @@ pub struct ClearCacheOutcome {
 #[derive(Default)]
 pub struct CacheRegistry {
     caches: RwLock<BTreeMap<String, Arc<dyn RuntimeCache>>>,
+}
+
+impl fmt::Debug for CacheRegistry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CacheRegistry")
+            .field("caches", &self.names())
+            .finish()
+    }
 }
 
 impl CacheRegistry {

@@ -197,6 +197,103 @@ where
     deserializer.deserialize_any(TypedListVisitor(std::marker::PhantomData))
 }
 
+pub(crate) fn deserialize_optional_u16<'de, D>(deserializer: D) -> Result<Option<u16>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_optional_number(deserializer, "u16", |value| {
+        u16::try_from(value).map_err(|_| format!("value {value} is outside u16 range"))
+    })
+}
+
+pub(crate) fn deserialize_optional_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_optional_number(deserializer, "u64", |value| Ok(value))
+}
+
+fn deserialize_optional_number<'de, D, T, F>(
+    deserializer: D,
+    label: &'static str,
+    convert: F,
+) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    F: Fn(u64) -> Result<T, String>,
+{
+    struct OptionalNumberVisitor<T, F> {
+        label: &'static str,
+        convert: F,
+        _marker: std::marker::PhantomData<T>,
+    }
+
+    impl<'de, T, F> Visitor<'de> for OptionalNumberVisitor<T, F>
+    where
+        F: Fn(u64) -> Result<T, String>,
+    {
+        type Value = Option<T>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(formatter, "an optional {}", self.label)
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: DeError,
+        {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: DeError,
+        {
+            Ok(None)
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: DeError,
+        {
+            let value = value.trim();
+            if value.is_empty() {
+                return Ok(None);
+            }
+            let value = value.parse::<u64>().map_err(E::custom)?;
+            (self.convert)(value).map(Some).map_err(E::custom)
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: DeError,
+        {
+            self.visit_str(value.as_str())
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: DeError,
+        {
+            (self.convert)(value).map(Some).map_err(E::custom)
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+        where
+            E: DeError,
+        {
+            let value = u64::try_from(value).map_err(E::custom)?;
+            (self.convert)(value).map(Some).map_err(E::custom)
+        }
+    }
+
+    deserializer.deserialize_any(OptionalNumberVisitor {
+        label,
+        convert,
+        _marker: std::marker::PhantomData,
+    })
+}
+
 pub(crate) fn parse_string_list(value: &str) -> Vec<String> {
     let value = value.trim();
     if value.is_empty() {

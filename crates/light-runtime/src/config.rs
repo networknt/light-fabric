@@ -1,3 +1,4 @@
+use crate::cache::CacheRegistry;
 use crate::module_registry::ModuleRegistry;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -173,6 +174,8 @@ pub struct RuntimeConfig {
     pub resolved_values: HashMap<String, serde_yaml::Value>,
     #[serde(skip, default = "default_module_registry")]
     pub module_registry: Arc<ModuleRegistry>,
+    #[serde(skip)]
+    pub cache_registry: Option<Arc<CacheRegistry>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

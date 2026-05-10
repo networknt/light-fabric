@@ -183,6 +183,7 @@ mod tests {
             external_config_dir: PathBuf::from("config"),
             resolved_values: Default::default(),
             module_registry: Arc::new(ModuleRegistry::new()),
+            cache_registry: None,
         }
     }
 

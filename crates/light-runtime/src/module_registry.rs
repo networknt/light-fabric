@@ -1003,6 +1003,7 @@ mod tests {
             external_config_dir: "config-cache".into(),
             resolved_values: HashMap::new(),
             module_registry: Arc::new(ModuleRegistry::new()),
+            cache_registry: None,
         }
     }
 

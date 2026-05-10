@@ -1,6 +1,6 @@
 # Handler Chain
 
-Status: Phases 1, 2, 3, 4, and 5 implemented; later phases proposed
+Status: Phases 1, 2, 3, 4, 5, and 6 implemented; discovery and advanced phases proposed
 
 ## Purpose
 
@@ -159,6 +159,8 @@ frameworks/light-pingora/src/
   proxy.rs
   resource.rs
   router.rs
+  service.rs
+  token.rs
 ```
 
 Responsibilities:
@@ -175,6 +177,8 @@ Responsibilities:
 - serve static SPA content
 - select fixed proxy upstreams from `proxy.yml`
 - select dynamic sidecar/router upstreams from `router.yml`
+- resolve sidecar `service_id` values from `pathPrefixService.yml`
+- retrieve and cache OAuth client-credentials tokens from `client.yml`
 - expose module-registry entries for active handler and traffic/resource config
 
 This keeps the first implementation close to the Pingora lifecycle and avoids
@@ -402,10 +406,93 @@ available to `light-pingora`. The final discovery-backed path should keep the
 same request contract, replacing the static target lookup with registry or
 cluster discovery.
 
-Sidecar token acquisition, token cache refresh, and path-prefix service mapping
-are not part of phase 5. They should be added as a focused sidecar/control-plane
-phase after the runtime exposes the needed token-client and discovery surfaces
-to the gateway.
+Phase 6 adds the sidecar path-prefix and token flow. Discovery-backed
+`service_id` resolution is still a proposed follow-up, so phase 6 keeps the
+phase 5 `router.serviceTargets` bridge for service routing.
+
+### Sidecar Path Prefix And Token Config
+
+`pathPrefixService.yml` maps request path prefixes to downstream service IDs.
+The handler writes `service_id` only when the request does not already provide
+one.
+
+```yaml
+enabled: ${pathPrefixService.enabled:true}
+mapping: ${pathPrefixService.mapping:{}}
+```
+
+Rust intentionally selects the longest path-boundary prefix. This avoids map
+iteration ambiguity when prefixes overlap and prevents `/v1/address` from
+matching `/v1/address2`.
+
+`token.yml` gates when the token handler should run:
+
+```yaml
+enabled: ${token.enabled:false}
+appliedPathPrefixes: ${token.appliedPathPrefixes:}
+```
+
+The token handler reads the Java-compatible client credentials section from
+`client.yml`:
+
+```yaml
+tls:
+  verifyHostname: ${client.verifyHostname:true}
+oauth:
+  multipleAuthServers: ${client.multipleAuthServers:false}
+  token:
+    cache:
+      capacity: ${client.tokenCacheCapacity:200}
+    tokenRenewBeforeExpired: ${client.tokenRenewBeforeExpired:60000}
+    server_url: ${client.tokenServerUrl:}
+    serviceId: ${client.tokenServiceId:com.networknt.oauth2-token-1.0.0}
+    proxyHost: ${client.tokenProxyHost:}
+    proxyPort: ${client.tokenProxyPort:}
+    enableHttp2: ${client.tokenEnableHttp2:true}
+    client_credentials:
+      uri: ${client.tokenCcUri:/oauth2/token}
+      client_id: ${client.tokenCcClientId:}
+      client_secret: ${client.tokenCcClientSecret:}
+      scope: ${client.tokenCcScope:}
+      serviceIdAuthServers: ${client.tokenCcServiceIdAuthServers:}
+pathPrefixServices: ${client.pathPrefixServices:}
+request:
+  connectTimeout: ${client.connectTimeout:2000}
+  timeout: ${client.timeout:3000}
+  enableHttp2: ${client.enableHttp2:true}
+```
+
+In single-auth-server mode, the handler uses the configured token server and
+client credentials for all matched paths. In `multipleAuthServers` mode, it
+uses `service_id` or `pathPrefixServices` to select
+`client_credentials.serviceIdAuthServers[service_id]`.
+
+The token request follows the Java request shape:
+
+- `POST` to `server_url + uri`
+- `Content-Type: application/x-www-form-urlencoded`
+- `Accept: application/json`
+- HTTP Basic authentication with `client_id:client_secret`
+- form fields `grant_type=client_credentials` and optional space-joined
+  `scope`
+
+The injected header follows the Java gateway rule:
+
+- if the inbound request has no `Authorization`, inject
+  `Authorization: Bearer <token>`
+- if the inbound request already has `Authorization`, inject
+  `X-Scope-Token: Bearer <token>`
+
+The Rust cache is local to the gateway process and is registered as
+`light-pingora/token-cache` when a runtime cache registry is available. Cache
+summaries expose key and expiry metadata but never expose bearer token values.
+Tokens are refreshed synchronously inside the configured renew-before-expiry
+window. Async background renewal can be added later if blocking refresh latency
+becomes visible.
+
+When `server_url` is not configured, the Rust token handler returns a clear
+configuration error. Discovering the token service from `serviceId` requires a
+runtime discovery API and is part of the discovery follow-up.
 
 ### Static Resource Config
 
@@ -598,8 +685,8 @@ The Rust handler verifies Bearer JWTs with configured PEM certificates, honors
 `kid` when present, supports RSA and EC algorithms handled by the Rust JWT
 library, applies clock skew and optional expiry bypass, caches decoded claims,
 and forwards configured pass-through claims as request headers. Dynamic JWK key
-service bootstrap and SWT/SJWT verification are deferred to the sidecar/router
-phase because they depend on service discovery and token-client behavior.
+service bootstrap and SWT/SJWT verification are deferred until the runtime has
+the discovery and key-service client surface needed by those flows.
 
 `unified-security.yml`:
 
@@ -611,8 +698,8 @@ pathPrefixAuths: ${unified-security.pathPrefixAuths:[]}
 
 The Rust handler supports Java-style path-prefix selection across Basic, JWT,
 and API-key authentication. Anonymous prefixes bypass authentication. SWT/SJWT
-rules return a clear not-implemented response until the sidecar token stack is
-added.
+rules return a clear not-implemented response until the discovery-backed key
+flow is added.
 
 `limit.yml`:
 
@@ -909,6 +996,9 @@ Module IDs:
 - `light-pingora/handler`
 - `light-pingora/proxy`
 - `light-pingora/router`
+- `light-pingora/path-prefix-service`
+- `light-pingora/token`
+- `light-pingora/client-token`
 - `light-pingora/path-resource`
 - `light-pingora/virtual-host`
 - `light-pingora/correlation`
@@ -932,9 +1022,9 @@ The module registry should expose:
 - reloadable status
 
 The implemented phases use the existing `ReloadableModule` pattern for active
-handler, proxy, router, resource, virtual-host, and handler-specific config
-files. Later sidecar token and discovery modules should use the same atomic
-model replacement behavior.
+handler, proxy, router, resource, virtual-host, path-prefix service, token, and
+handler-specific config files. Discovery should use the same atomic model
+replacement behavior when it is added.
 
 ## Suitable First Handlers
 
@@ -1010,6 +1100,10 @@ Unit tests in `light-pingora`:
 - reject direct router targets that do not match `hostWhitelist`
 - select router targets from static `serviceTargets`
 - apply router URL, method, query-parameter, and header rewrites
+- parse `pathPrefixService.yml` and avoid partial-segment path matches
+- parse `token.yml` and the client credentials subset of `client.yml`
+- support single and multiple auth-server token configuration
+- mask token cache summaries and never expose bearer token values
 - prevent static path traversal
 - deny dotfiles by default
 - serve `index.html` for `/`
@@ -1090,17 +1184,30 @@ Phase 5: Sidecar router (implemented)
 - include router config in the active reload model
 - add sidecar-focused tests
 
-Phase 6: Sidecar discovery, token flow, and control plane
+Phase 6: Sidecar path-prefix and token flow (implemented)
 
-- integrate path-prefix service mapping, token/cache behavior, and discovery
+- load and register `pathPrefixService.yml`
+- resolve `service_id` by longest path-boundary prefix
+- load and register `token.yml`
+- load and register the token-related view of `client.yml`
+- support single-auth-server and `multipleAuthServers` client credentials
+- cache tokens locally and expose masked cache summaries through the runtime
+  cache registry
+- inject `Authorization` or `X-Scope-Token` according to inbound request state
+- extend reload coverage to `pathPrefixService.yml`, `token.yml`, and
+  token-related `client.yml`
+- add sidecar token/path-prefix tests
+
+Phase 7: Discovery and control plane
+
 - replace static `serviceTargets` lookup with registry/cluster discovery when
   the runtime exposes the required API
-- extend reload coverage to sidecar token and discovery configs
+- discover token service endpoints from `client.yml` token `serviceId`
 - expose active capabilities, hosts, paths, handlers, and chains through
   service-info MCP
 - atomically replace resolved handler/resource/proxy models on reload
 
-Phase 7: Advanced transport features
+Phase 8: Advanced transport features
 
 - add streaming static-file delivery if large assets require it
 - add conditional requests with `ETag` or `Last-Modified`
