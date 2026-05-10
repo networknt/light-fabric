@@ -3243,6 +3243,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
+ "chrono",
  "config-loader",
  "light-pingora",
  "light-runtime",

@@ -69,6 +69,7 @@ pub struct VirtualHost {
 pub struct StaticResourceSet {
     pub path_resource: Option<StaticSite>,
     pub virtual_hosts: BTreeMap<String, StaticSite>,
+    pub wildcard_virtual_hosts: BTreeMap<String, StaticSite>,
 }
 
 impl StaticResourceSet {
@@ -76,6 +77,7 @@ impl StaticResourceSet {
         Self {
             path_resource: None,
             virtual_hosts: BTreeMap::new(),
+            wildcard_virtual_hosts: BTreeMap::new(),
         }
     }
 
@@ -94,9 +96,15 @@ impl StaticResourceSet {
         let Some(host) = host_header.and_then(normalize_host_header) else {
             return StaticResolution::NotFound;
         };
-        self.virtual_hosts
-            .get(&host)
-            .map(|site| site.resolve(request_path))
+        if let Some(site) = self.virtual_hosts.get(&host) {
+            return site.resolve(request_path);
+        }
+
+        self.wildcard_virtual_hosts
+            .iter()
+            .filter(|(suffix, _)| host.ends_with(suffix.as_str()) && host.len() > suffix.len())
+            .max_by_key(|(suffix, _)| suffix.len())
+            .map(|(_, site)| site.resolve(request_path))
             .unwrap_or(StaticResolution::NotFound)
     }
 }
@@ -122,12 +130,12 @@ impl StaticSite {
 
         let candidate = self.base.join(&relative_path);
         if candidate.is_file() {
-            return StaticResolution::file(candidate);
+            return self.file(candidate);
         }
         if candidate.is_dir() {
             let index = candidate.join("index.html");
             if index.is_file() {
-                return StaticResolution::file(index);
+                return self.file(index);
             }
             return StaticResolution::NotFound;
         }
@@ -135,11 +143,15 @@ impl StaticSite {
         if !looks_like_asset(&relative_path) {
             let index = self.base.join("index.html");
             if index.is_file() {
-                return StaticResolution::file(index);
+                return self.file(index);
             }
         }
 
         StaticResolution::NotFound
+    }
+
+    fn file(&self, path: PathBuf) -> StaticResolution {
+        StaticResolution::file(path, self.transfer_min_size)
     }
 }
 
@@ -151,13 +163,14 @@ pub enum StaticResolution {
 }
 
 impl StaticResolution {
-    fn file(path: PathBuf) -> Self {
+    fn file(path: PathBuf, transfer_min_size: u64) -> Self {
         let content_type = content_type_for_path(&path).to_string();
         let cache_control = cache_control_for_path(&path).to_string();
         Self::File(StaticFile {
             path,
             content_type,
             cache_control,
+            transfer_min_size,
         })
     }
 }
@@ -167,6 +180,7 @@ pub struct StaticFile {
     pub path: PathBuf,
     pub content_type: String,
     pub cache_control: String,
+    pub transfer_min_size: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -182,7 +196,8 @@ pub fn load_static_resources(
     let virtual_hosts = load_virtual_hosts(runtime_config)?;
     Ok(StaticResourceSet {
         path_resource,
-        virtual_hosts,
+        virtual_hosts: virtual_hosts.exact,
+        wildcard_virtual_hosts: virtual_hosts.wildcard,
     })
 }
 
@@ -218,9 +233,12 @@ fn load_path_resource(runtime_config: &RuntimeConfig) -> Result<Option<StaticSit
     Ok(site)
 }
 
-fn load_virtual_hosts(
-    runtime_config: &RuntimeConfig,
-) -> Result<BTreeMap<String, StaticSite>, RuntimeError> {
+struct VirtualHostSites {
+    exact: BTreeMap<String, StaticSite>,
+    wildcard: BTreeMap<String, StaticSite>,
+}
+
+fn load_virtual_hosts(runtime_config: &RuntimeConfig) -> Result<VirtualHostSites, RuntimeError> {
     let Some((_, config)) = load_config_any::<VirtualHostConfig>(
         runtime_config,
         &[VIRTUAL_HOST_FILE, VIRTUAL_HOST_LEGACY_FILE],
@@ -231,24 +249,39 @@ fn load_virtual_hosts(
             VIRTUAL_HOST_MODULE_ID,
             VIRTUAL_HOST_CONFIG_NAME,
         )?;
-        return Ok(BTreeMap::new());
+        return Ok(VirtualHostSites {
+            exact: BTreeMap::new(),
+            wildcard: BTreeMap::new(),
+        });
     };
 
-    let mut hosts = BTreeMap::new();
+    let mut exact = BTreeMap::new();
+    let mut wildcard = BTreeMap::new();
     for host in &config.hosts {
-        let domain = normalize_domain(&host.domain).ok_or_else(|| {
-            RuntimeError::Unsupported("virtual-host.hosts domain must not be empty".to_string())
-        })?;
-        if hosts
-            .insert(
-                domain.clone(),
-                build_virtual_host_site(runtime_config, host)?,
-            )
-            .is_some()
-        {
-            return Err(RuntimeError::Unsupported(format!(
-                "duplicate virtual-host domain `{domain}`"
-            )));
+        match normalize_virtual_host_domain(&host.domain)? {
+            VirtualHostDomain::Exact(domain) => {
+                if exact
+                    .insert(
+                        domain.clone(),
+                        build_virtual_host_site(runtime_config, host)?,
+                    )
+                    .is_some()
+                {
+                    return Err(RuntimeError::Unsupported(format!(
+                        "duplicate virtual-host domain `{domain}`"
+                    )));
+                }
+            }
+            VirtualHostDomain::Wildcard { pattern, suffix } => {
+                if wildcard
+                    .insert(suffix, build_virtual_host_site(runtime_config, host)?)
+                    .is_some()
+                {
+                    return Err(RuntimeError::Unsupported(format!(
+                        "duplicate virtual-host domain `{pattern}`"
+                    )));
+                }
+            }
         }
     }
     runtime_config.module_registry.register_loaded_config(
@@ -257,11 +290,11 @@ fn load_virtual_hosts(
         ModuleKind::Framework,
         &config,
         [],
-        !hosts.is_empty(),
+        !exact.is_empty() || !wildcard.is_empty(),
         Some(!config.hosts.is_empty()),
         true,
     )?;
-    Ok(hosts)
+    Ok(VirtualHostSites { exact, wildcard })
 }
 
 fn load_config_any<T>(
@@ -448,6 +481,38 @@ fn normalize_host_header(header: &str) -> Option<String> {
     normalize_domain(header.split(',').next().unwrap_or(header))
 }
 
+enum VirtualHostDomain {
+    Exact(String),
+    Wildcard { pattern: String, suffix: String },
+}
+
+fn normalize_virtual_host_domain(raw: &str) -> Result<VirtualHostDomain, RuntimeError> {
+    let domain = normalize_domain(raw).ok_or_else(|| {
+        RuntimeError::Unsupported("virtual-host.hosts domain must not be empty".to_string())
+    })?;
+
+    if let Some(base) = domain.strip_prefix("*.") {
+        if base.is_empty() || base.contains('*') {
+            return Err(RuntimeError::Unsupported(format!(
+                "invalid virtual-host wildcard domain `{domain}`"
+            )));
+        }
+        let suffix = format!(".{base}");
+        return Ok(VirtualHostDomain::Wildcard {
+            pattern: domain,
+            suffix,
+        });
+    }
+
+    if domain.contains('*') {
+        return Err(RuntimeError::Unsupported(format!(
+            "invalid virtual-host wildcard domain `{domain}`"
+        )));
+    }
+
+    Ok(VirtualHostDomain::Exact(domain))
+}
+
 fn normalize_domain(raw: &str) -> Option<String> {
     let raw = raw.trim().trim_end_matches('.');
     if raw.is_empty() {
@@ -534,6 +599,68 @@ hosts:
             resources.resolve_virtual_host(Some("local.localhost"), "/assets/missing.js"),
             StaticResolution::NotFound
         );
+    }
+
+    #[test]
+    fn virtual_host_supports_wildcard_domains_with_exact_precedence() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let wildcard_dist = config_dir.path().join("wildcard");
+        let exact_dist = config_dir.path().join("exact");
+        std::fs::create_dir_all(&wildcard_dist).expect("create wildcard dist");
+        std::fs::create_dir_all(&exact_dist).expect("create exact dist");
+        std::fs::write(wildcard_dist.join("index.html"), "wildcard").expect("write wildcard");
+        std::fs::write(exact_dist.join("index.html"), "exact").expect("write exact");
+        std::fs::write(
+            config_dir.path().join(VIRTUAL_HOST_FILE),
+            r#"
+hosts:
+  - domain: "*.example.com"
+    path: /
+    base: wildcard
+  - domain: api.example.com
+    path: /
+    base: exact
+"#,
+        )
+        .expect("write virtual host config");
+        let runtime = runtime_config(&config_dir);
+
+        let resources = load_static_resources(&runtime).expect("load static resources");
+
+        match resources.resolve_virtual_host(Some("cdn.example.com"), "/") {
+            StaticResolution::File(file) => assert_eq!(file.path, wildcard_dist.join("index.html")),
+            other => panic!("expected wildcard host match, got {other:?}"),
+        }
+        match resources.resolve_virtual_host(Some("api.example.com"), "/") {
+            StaticResolution::File(file) => assert_eq!(file.path, exact_dist.join("index.html")),
+            other => panic!("expected exact host match, got {other:?}"),
+        }
+        assert_eq!(
+            resources.resolve_virtual_host(Some("example.com"), "/"),
+            StaticResolution::NotFound
+        );
+    }
+
+    #[test]
+    fn virtual_host_rejects_invalid_wildcard_domains() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let dist = config_dir.path().join("dist");
+        std::fs::create_dir_all(&dist).expect("create dist");
+        std::fs::write(
+            config_dir.path().join(VIRTUAL_HOST_FILE),
+            r#"
+hosts:
+  - domain: "api.*.example.com"
+    path: /
+    base: dist
+"#,
+        )
+        .expect("write virtual host config");
+        let runtime = runtime_config(&config_dir);
+
+        let error = load_static_resources(&runtime).expect_err("invalid wildcard");
+
+        assert!(error.to_string().contains("invalid virtual-host wildcard"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Handler Chain
 
-Status: Phases 1, 2, 3, 4, 5, 6, and 7 implemented; advanced transport phases proposed
+Status: Phases 1, 2, 3, 4, 5, 6, 7, and 8 implemented; further transport phases proposed
 
 ## Purpose
 
@@ -846,7 +846,8 @@ Host normalization rules:
 - strip the port when present
 - reject empty or invalid hosts unless a default virtual host is configured
 - exact host match first
-- optional wildcard match such as `*.example.com` later
+- wildcard match such as `*.example.com` after exact hosts, with the longest
+  matching suffix winning
 
 HTTP host routing is enough for the first implementation.
 
@@ -858,7 +859,13 @@ options are:
 - use a wildcard certificate
 - use one certificate with all required SANs
 
-Dynamic multi-cert SNI selection can be added later as a transport enhancement.
+Phase 8 evaluated dynamic multi-cert SNI selection. The current
+`light-pingora` build uses Pingora's Rustls listener, and Pingora 0.8 Rustls
+TLS settings do not support certificate callbacks. For now the production
+options remain terminating TLS before `light-gateway`, using a wildcard
+certificate, or using one certificate with all required SANs. Native multi-cert
+SNI can be added only after moving to a Pingora TLS backend/version that
+supports server certificate callbacks or certificate resolution through Rustls.
 
 ## Static SPA Rendering
 
@@ -892,12 +899,11 @@ images/fonts with hash      Cache-Control: public, max-age=31536000, immutable
 other assets                Cache-Control: public, max-age=3600
 ```
 
-The first implementation can read a static file into memory and write it with
-`Session::write_response_header` and `Session::write_response_body`. If large
-SPA assets become a problem, add streaming file delivery as a focused follow-up.
-
-Conditional requests with `ETag` or `Last-Modified` are useful but can be a
-second phase. They are not required to make SPA serving work.
+Phase 8 keeps small static files on the simple read-then-write path and streams
+files whose size is greater than or equal to the configured
+`transferMinSize`. Static responses include `ETag` and `Last-Modified`, honor
+`If-None-Match` and `If-Modified-Since`, and return `304` without a response
+body when the browser cache is current.
 
 ## Proxy And Router Behavior
 
@@ -1216,12 +1222,12 @@ Phase 7: Discovery and control plane (implemented)
   `get_service_info`
 - atomically replace resolved handler/resource/proxy models on reload
 
-Phase 8: Advanced transport features
+Phase 8: Advanced transport features (implemented)
 
-- add streaming static-file delivery if large assets require it
-- add conditional requests with `ETag` or `Last-Modified`
-- add wildcard virtual hosts
-- evaluate multi-cert TLS SNI support
+- add streaming static-file delivery for files at or above `transferMinSize`
+- add conditional static requests with `ETag` and `Last-Modified`
+- add wildcard virtual hosts with exact-host precedence
+- evaluate multi-cert TLS SNI support and document the Rustls limitation
 
 ## Phase 2 Decisions
 

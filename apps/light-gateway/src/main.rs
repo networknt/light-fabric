@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use light_pingora::{
     ActiveHandlerSet, ApiKeyConfig, AuthPrincipal, BasicAuthConfig, CorrelationConfig,
     CorrelationState, CorsConfig, CorsRequestOutcome, CorsResponseHeaders, HandlerBuildContext,
@@ -29,7 +30,8 @@ use pingora::{Error, ErrorType};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::io::AsyncReadExt;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -315,24 +317,55 @@ impl GatewayProxy {
         ctx: &mut GatewayRequestContext,
         resolution: StaticResolution,
     ) -> pingora::Result<bool> {
+        if !static_method_allowed(session) {
+            return self
+                .write_bytes_response_with_headers(
+                    session,
+                    ctx,
+                    405,
+                    "text/plain; charset=utf-8",
+                    None,
+                    Bytes::from_static(b"method not allowed"),
+                    &[("allow".to_string(), "GET, HEAD".to_string())],
+                )
+                .await;
+        }
+
         match resolution {
             StaticResolution::File(file) => {
-                let body = tokio::fs::read(&file.path).await.map_err(|error| {
+                let metadata = tokio::fs::metadata(&file.path).await.map_err(|error| {
                     Error::because(
                         ErrorType::FileReadError,
-                        format!("failed to read static file `{}`", file.path.display()),
+                        format!("failed to stat static file `{}`", file.path.display()),
                         error,
                     )
                 })?;
-                self.write_bytes_response(
-                    session,
-                    ctx,
-                    200,
-                    file.content_type.as_str(),
-                    Some(file.cache_control.as_str()),
-                    Bytes::from(body),
-                )
-                .await
+                let validators = static_file_validators(&metadata);
+                if static_request_not_modified(session, &validators) {
+                    return self
+                        .write_static_not_modified(session, ctx, &file, &validators)
+                        .await;
+                }
+                if should_stream_static_file(metadata.len(), file.transfer_min_size) {
+                    self.write_streaming_static_file(session, ctx, &file, &metadata, &validators)
+                        .await
+                } else {
+                    let body = tokio::fs::read(&file.path).await.map_err(|error| {
+                        Error::because(
+                            ErrorType::FileReadError,
+                            format!("failed to read static file `{}`", file.path.display()),
+                            error,
+                        )
+                    })?;
+                    self.write_static_bytes_response(
+                        session,
+                        ctx,
+                        &file,
+                        &validators,
+                        Bytes::from(body),
+                    )
+                    .await
+                }
             }
             StaticResolution::Forbidden => {
                 self.write_text_response(session, ctx, 403, "forbidden")
@@ -343,6 +376,135 @@ impl GatewayProxy {
                     .await
             }
         }
+    }
+
+    async fn write_static_not_modified(
+        &self,
+        session: &mut Session,
+        ctx: &mut GatewayRequestContext,
+        file: &light_pingora::StaticFile,
+        validators: &StaticFileValidators,
+    ) -> pingora::Result<bool> {
+        let mut response = ResponseHeader::build(304, Some(8))?;
+        response.insert_header("cache-control", file.cache_control.as_str())?;
+        insert_static_validators(&mut response, validators)?;
+        self.apply_response_headers(&mut response, ctx)?;
+        session
+            .write_response_header(Box::new(response), true)
+            .await?;
+        self.record_metrics(ctx, 304);
+        self.log_handler_durations(ctx);
+        Ok(true)
+    }
+
+    async fn write_static_bytes_response(
+        &self,
+        session: &mut Session,
+        ctx: &mut GatewayRequestContext,
+        file: &light_pingora::StaticFile,
+        validators: &StaticFileValidators,
+        body: Bytes,
+    ) -> pingora::Result<bool> {
+        let is_head = is_head_request(session);
+        let mut response = self.static_response_header(file, validators, body.len() as u64)?;
+        self.apply_response_headers(&mut response, ctx)?;
+        session
+            .write_response_header(Box::new(response), is_head)
+            .await?;
+        if !is_head {
+            session.write_response_body(Some(body), true).await?;
+        }
+        self.record_metrics(ctx, 200);
+        self.log_handler_durations(ctx);
+        Ok(true)
+    }
+
+    async fn write_streaming_static_file(
+        &self,
+        session: &mut Session,
+        ctx: &mut GatewayRequestContext,
+        file: &light_pingora::StaticFile,
+        metadata: &std::fs::Metadata,
+        validators: &StaticFileValidators,
+    ) -> pingora::Result<bool> {
+        let is_head = is_head_request(session);
+        let content_length = metadata.len();
+        let mut response = self.static_response_header(file, validators, content_length)?;
+        self.apply_response_headers(&mut response, ctx)?;
+        let end_with_header = is_head || content_length == 0;
+        session
+            .write_response_header(Box::new(response), end_with_header)
+            .await?;
+        if end_with_header {
+            self.record_metrics(ctx, 200);
+            self.log_handler_durations(ctx);
+            return Ok(true);
+        }
+
+        let mut file_handle = tokio::fs::File::open(&file.path).await.map_err(|error| {
+            Error::because(
+                ErrorType::FileReadError,
+                format!("failed to open static file `{}`", file.path.display()),
+                error,
+            )
+        })?;
+        let mut buffer = vec![0_u8; 64 * 1024];
+        let mut sent = 0_u64;
+        loop {
+            let remaining = content_length.saturating_sub(sent);
+            if remaining == 0 {
+                break;
+            }
+            let max_read = buffer.len().min(remaining as usize);
+            let read = file_handle
+                .read(&mut buffer[..max_read])
+                .await
+                .map_err(|error| {
+                    Error::because(
+                        ErrorType::FileReadError,
+                        format!("failed to stream static file `{}`", file.path.display()),
+                        error,
+                    )
+                })?;
+            if read == 0 {
+                session
+                    .write_response_body(Some(Bytes::new()), true)
+                    .await?;
+                break;
+            }
+            sent = sent.saturating_add(read as u64);
+            let end = sent >= content_length;
+            session
+                .write_response_body(Some(Bytes::copy_from_slice(&buffer[..read])), end)
+                .await?;
+            if end {
+                break;
+            }
+        }
+
+        self.record_metrics(ctx, 200);
+        self.log_handler_durations(ctx);
+        Ok(true)
+    }
+
+    fn static_response_header(
+        &self,
+        file: &light_pingora::StaticFile,
+        validators: &StaticFileValidators,
+        content_length: u64,
+    ) -> pingora::Result<ResponseHeader> {
+        let content_length = usize::try_from(content_length).map_err(|_| {
+            Error::explain(
+                ErrorType::InternalError,
+                "static file is too large to set content-length",
+            )
+        })?;
+        let mut response = ResponseHeader::build(200, Some(12))?;
+        response.insert_header("content-type", file.content_type.as_str())?;
+        response.insert_header("cache-control", file.cache_control.as_str())?;
+        insert_static_validators(&mut response, validators)?;
+        response.set_content_length(content_length)?;
+        Ok(response)
     }
 
     async fn write_empty_response(
@@ -1427,6 +1589,113 @@ fn request_header(session: &Session, name: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+fn static_method_allowed(session: &Session) -> bool {
+    matches!(
+        session.req_header().method.as_str(),
+        method if method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD")
+    )
+}
+
+fn is_head_request(session: &Session) -> bool {
+    session
+        .req_header()
+        .method
+        .as_str()
+        .eq_ignore_ascii_case("HEAD")
+}
+
+#[derive(Debug, Clone)]
+struct StaticFileValidators {
+    etag: String,
+    last_modified: Option<String>,
+    last_modified_time: Option<SystemTime>,
+}
+
+fn static_file_validators(metadata: &std::fs::Metadata) -> StaticFileValidators {
+    let modified = metadata.modified().ok();
+    StaticFileValidators {
+        etag: static_etag(metadata.len(), modified),
+        last_modified: modified.map(format_http_date),
+        last_modified_time: modified,
+    }
+}
+
+fn static_etag(length: u64, modified: Option<SystemTime>) -> String {
+    let (seconds, nanos) = modified
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| (duration.as_secs(), duration.subsec_nanos()))
+        .unwrap_or((0, 0));
+    format!("W/\"{length:x}-{seconds:x}-{nanos:x}\"")
+}
+
+fn format_http_date(time: SystemTime) -> String {
+    let datetime: DateTime<Utc> = time.into();
+    datetime.format("%a, %d %b %Y %H:%M:%S GMT").to_string()
+}
+
+fn parse_http_date(value: &str) -> Option<SystemTime> {
+    let parsed = DateTime::parse_from_rfc2822(value).ok()?;
+    let utc = parsed.with_timezone(&Utc);
+    let seconds = u64::try_from(utc.timestamp()).ok()?;
+    Some(UNIX_EPOCH + Duration::from_secs(seconds))
+}
+
+fn static_request_not_modified(session: &Session, validators: &StaticFileValidators) -> bool {
+    if let Some(if_none_match) = request_header(session, "if-none-match") {
+        return etag_header_matches(if_none_match.as_str(), validators.etag.as_str());
+    }
+
+    let Some(modified) = validators.last_modified_time else {
+        return false;
+    };
+    request_header(session, "if-modified-since")
+        .as_deref()
+        .and_then(parse_http_date)
+        .is_some_and(|since| same_or_after_http_second(since, modified))
+}
+
+fn etag_header_matches(header: &str, etag: &str) -> bool {
+    header.split(',').any(|candidate| {
+        let candidate = candidate.trim();
+        candidate == "*" || candidate == etag || weak_etag_value(candidate) == weak_etag_value(etag)
+    })
+}
+
+fn weak_etag_value(value: &str) -> &str {
+    value.strip_prefix("W/").unwrap_or(value)
+}
+
+fn same_or_after_http_second(candidate: SystemTime, modified: SystemTime) -> bool {
+    let Some(candidate_seconds) = unix_seconds(candidate) else {
+        return false;
+    };
+    let Some(modified_seconds) = unix_seconds(modified) else {
+        return false;
+    };
+    candidate_seconds >= modified_seconds
+}
+
+fn unix_seconds(time: SystemTime) -> Option<u64> {
+    time.duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs())
+}
+
+fn should_stream_static_file(file_size: u64, transfer_min_size: u64) -> bool {
+    file_size >= transfer_min_size
+}
+
+fn insert_static_validators(
+    response: &mut ResponseHeader,
+    validators: &StaticFileValidators,
+) -> pingora::Result<()> {
+    response.insert_header("etag", validators.etag.as_str())?;
+    if let Some(last_modified) = validators.last_modified.as_deref() {
+        response.insert_header("last-modified", last_modified)?;
+    }
+    Ok(())
+}
+
 fn client_ip(session: &Session) -> Option<String> {
     session.as_downstream().client_addr().map(|address| {
         address
@@ -1751,6 +2020,34 @@ hosts:
                 .virtual_hosts
                 .contains_key("local.localhost")
         );
+    }
+
+    #[test]
+    fn static_file_validators_emit_http_cache_headers() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let file = config_dir.path().join("app.js");
+        std::fs::write(&file, "console.log(1);").expect("write static file");
+        let metadata = std::fs::metadata(&file).expect("metadata");
+
+        let validators = static_file_validators(&metadata);
+
+        assert!(validators.etag.starts_with("W/\""));
+        let last_modified = validators
+            .last_modified
+            .as_deref()
+            .expect("last modified header");
+        assert!(parse_http_date(last_modified).is_some());
+        assert!(etag_header_matches(
+            &format!("\"other\", {}", validators.etag),
+            &validators.etag
+        ));
+    }
+
+    #[test]
+    fn static_file_streaming_uses_transfer_threshold() {
+        assert!(!should_stream_static_file(1024, 2048));
+        assert!(should_stream_static_file(2048, 2048));
+        assert!(should_stream_static_file(1, 0));
     }
 
     #[test]
