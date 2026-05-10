@@ -31,6 +31,7 @@
 - [MSAL Exchange Handler](design/msal-exchange.md)
 - [PII Tokenization](design/pii-tokenization.md)
 - [Token Handler](design/token-handler.md)
+- [Service Discovery](design/service-discovery.md)
 
 # Crate
 
@@ -60,6 +61,7 @@
   - [Run Standalone](product/light-deployer/run-standalone.md)
   - [Run Kubernetes](product/light-deployer/run-kubernetes.md)
 - [Light-Gateway](product/light-gateway.md)
+  - [Light Rule](product/light-gateway/light-rule.md)
 - [Light-Workflow](product/light-workflow.md)
 
 
