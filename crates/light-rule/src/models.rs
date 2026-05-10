@@ -43,8 +43,11 @@ pub struct Rule {
 pub struct RuleCondition {
     pub condition_id: Option<String>,
     pub condition_desc: Option<String>,
+    #[serde(default, alias = "operatorCode")]
     pub operator: Option<String>,
+    #[serde(default, alias = "propertyPath")]
     pub operand: Option<String>,
+    #[serde(default)]
     pub expected: Option<Value>,
     pub join_code: Option<String>, // AND, OR
 }
@@ -55,6 +58,8 @@ pub struct RuleCondition {
 pub struct RuleAction {
     pub action_id: Option<String>,
     pub action_desc: Option<String>,
+    #[serde(default, alias = "actionClassName")]
     pub action_ref: String,
+    #[serde(default)]
     pub action_values: Option<Value>,
 }

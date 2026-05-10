@@ -2,9 +2,10 @@
 
 ## Status
 
-Phases 1, 2, and 3 implemented in `light-pingora` and `light-gateway`. Later
-phases for access-control execution, response filtering, masking, and
-tokenization remain pending.
+Phases 1, 2, 3, and 4 are implemented in `light-pingora` and
+`light-gateway`. The configurable tokenization client remains deferred until
+`light-tokenization` is migrated to `portal-service/apps/portal-service` and
+the protocol is selected.
 
 ## Purpose
 
@@ -116,9 +117,9 @@ The Java tool execution supports two target types:
   `tools/call` request to the configured backend path.
 
 Java also includes rule-based access checks, response filtering, masking, and
-tokenization around tool calls. These should be preserved as phased work, but
-the Rust version should avoid hardcoded service endpoints and should use
-strongly typed configuration.
+tokenization around tool calls. The Rust version now implements access checks,
+response filtering, and schema-driven request masking without hardcoded service
+endpoints. Tokenization is intentionally deferred.
 
 The Rust implementation should map this behavior to MCP Streamable HTTP rather
 than keeping Java's legacy HTTP+SSE transport as the default. Streamable HTTP
@@ -149,6 +150,7 @@ table and runtime state.
 Proposed modules:
 
 ```text
+frameworks/light-pingora/src/access_control.rs
 frameworks/light-pingora/src/mcp.rs
 ```
 
@@ -491,27 +493,36 @@ policy. Invalid origins should fail before tool execution.
 Fine-grained tool authorization should be added after the base router:
 
 - Reuse the existing light-4j `access-control.yml` model as the compatibility
-  contract, and implement the Rust executor with `light-rule`-style internals
-  where that gives a cleaner implementation.
+  contract. `access-control.yml` controls `enabled`, `accessRuleLogic`,
+  `defaultDeny`, and `skipPathPrefixes`; `rule.yml` provides `ruleBodies` and
+  `endpointRules`.
 - Make the access policy endpoint stable. Java uses the tool `endpoint` field,
-  such as `/weather@get`.
+  such as `/weather@get`; when omitted, Rust derives `{path}@{method}`.
 - Include correlation id, caller claims, request headers, tool name, endpoint,
   and arguments in the policy input.
-- Support default deny when policy is enabled and no rule matches.
+- Support default deny when access control is enabled and no `req-acc` rule
+  matches.
+- Provide built-in Rust actions compatible with the Java class names used by
+  current config: `RoleBasedAccessControlAction`,
+  `ResponseColumnFilterAction`, and `ResponseRowFilterAction`.
 
 Response filtering should be implemented as a second policy stage:
 
 - Apply policy after backend execution and before JSON-RPC response emission.
 - Support both `structuredContent` and single text content responses, matching
   Java's behavior.
+- Match endpoint rules exactly first, then Java-style path templates and
+  parent path entries such as `/v1/accounts@get` for
+  `/v1/accounts/123@get`.
 
-Masking and tokenization should be added only after a configurable Rust client
-exists:
+Masking and tokenization handling:
 
 - Preserve Java schema extensions: `x-mask`, `x-mask-pattern`, and
   `x-tokenize`.
 - Parse these extensions from `inputSchema` as `serde_json::Value`.
-- Apply tool-specific masking before global MCP masking.
+- Apply schema-driven `x-mask` request masking before backend tool execution.
+- Keep `x-tokenize` as a future extension point. Do not call a tokenization
+  service until the portal-service tokenization protocol is finalized.
 - Do not hardcode a tokenization service URL. The tokenization client should be
   designed after `light-tokenization` is migrated into
   `portal-service/apps/portal-service`, whether the final protocol is JSON-RPC,
@@ -590,9 +601,13 @@ Status: implemented.
 - Add tool-level authorization using the `access-control.yml` compatibility
   contract.
 - Add response filtering for structured and text MCP results.
-- Add schema-driven masking and tokenization with configurable clients.
-- Add audit and metrics fields for tool name, endpoint, duration, status, and
+- Add schema-driven request masking.
+- Add MCP tool-call log fields for tool name, endpoint, duration, status, and
   policy outcome.
+
+Status: implemented for access control, response filtering, and request
+masking. Tokenization is deferred until the portal-service tokenization client
+is designed.
 
 ## Testing Strategy
 

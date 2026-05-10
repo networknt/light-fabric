@@ -1,3 +1,4 @@
+mod access_control;
 mod apikey;
 mod basic_auth;
 mod config_util;
@@ -32,6 +33,12 @@ use std::thread::JoinHandle;
 #[cfg(unix)]
 use tokio::sync::watch;
 
+pub use access_control::{
+    ACCESS_CONTROL_CONFIG_NAME, ACCESS_CONTROL_FILE, ACCESS_CONTROL_LEGACY_FILE,
+    ACCESS_CONTROL_MODULE_ID, AccessControlConfig, AccessControlRuntime, AccessDecision,
+    RULE_CONFIG_NAME, RULE_FILE, RULE_LEGACY_FILE, RULE_MODULE_ID, RuleFileConfig,
+    load_access_control_runtime,
+};
 pub use apikey::{
     APIKEY_CONFIG_NAME, APIKEY_FILE, APIKEY_MODULE_ID, ApiKeyConfig, ApiKeyRule,
     load_api_key_config, verify_api_key, verify_required_api_key,
@@ -61,8 +68,8 @@ pub use header::{
 };
 pub use mcp::{
     MCP_ROUTER_CONFIG_NAME, MCP_ROUTER_FILE, MCP_ROUTER_LEGACY_FILE, MCP_ROUTER_MODULE_ID,
-    McpDiscoveryResolver, McpHttpMethod, McpHttpRequest, McpHttpResponse, McpRouterConfig,
-    McpRouterRuntime, McpToolConfig, McpToolType, load_mcp_router_runtime,
+    McpDiscoveryResolver, McpHttpMethod, McpHttpRequest, McpHttpResponse, McpRequestContext,
+    McpRouterConfig, McpRouterRuntime, McpToolConfig, McpToolType, load_mcp_router_runtime,
 };
 pub use metrics::{
     METRICS_CONFIG_NAME, METRICS_FILE, METRICS_MODULE_ID, MetricCounts, MetricsConfig,

@@ -3264,6 +3264,7 @@ dependencies = [
  "base64",
  "hex",
  "jsonwebtoken",
+ "light-rule",
  "light-runtime",
  "pbkdf2",
  "pingora",

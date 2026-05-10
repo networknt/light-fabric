@@ -6,20 +6,20 @@ use light_pingora::{
     ActiveHandlerSet, ApiKeyConfig, AuthPrincipal, BasicAuthConfig, CorrelationConfig,
     CorrelationState, CorsConfig, CorsRequestOutcome, CorsResponseHeaders, HandlerBuildContext,
     HandlerMetricsLogLevel, HandlerRejection, HeaderConfig, McpHttpRequest, McpHttpResponse,
-    McpRouterRuntime, MetricsConfig, MetricsRecorder, PathPrefixServiceConfig, PingoraApp,
-    PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerKind, PingoraHandlerRegistry,
-    PingoraTransport, ProxyRoute, ProxyTarget, RateLimitHeaders, RateLimitRuntime, RouterDecision,
-    RouterRoute, SecurityRuntime, StaticResolution, StaticResourceSet, TokenRuntime,
-    UnifiedSecurityConfig, apply_correlation_request, apply_correlation_response,
-    apply_cors_response, apply_header_request, apply_header_response, apply_path_prefix_service,
-    apply_rate_limit_headers, apply_router_upstream_request, apply_token_request,
-    build_metrics_event, check_rate_limit, correlation_id_for_upstream, evaluate_cors_request,
-    load_active_handlers, load_api_key_config, load_basic_auth_config, load_correlation_config,
-    load_cors_config, load_header_config, load_mcp_router_runtime, load_metrics_config,
-    load_path_prefix_service_config, load_proxy_route, load_rate_limit_runtime, load_router_route,
-    load_security_runtime, load_static_resources, load_token_runtime, load_unified_security_config,
-    select_router_target, verify_api_key, verify_basic_auth, verify_jwt_request,
-    verify_unified_security,
+    McpRequestContext, McpRouterRuntime, MetricsConfig, MetricsRecorder, PathPrefixServiceConfig,
+    PingoraApp, PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerKind,
+    PingoraHandlerRegistry, PingoraTransport, ProxyRoute, ProxyTarget, RateLimitHeaders,
+    RateLimitRuntime, RouterDecision, RouterRoute, SecurityRuntime, StaticResolution,
+    StaticResourceSet, TokenRuntime, UnifiedSecurityConfig, apply_correlation_request,
+    apply_correlation_response, apply_cors_response, apply_header_request, apply_header_response,
+    apply_path_prefix_service, apply_rate_limit_headers, apply_router_upstream_request,
+    apply_token_request, build_metrics_event, check_rate_limit, correlation_id_for_upstream,
+    evaluate_cors_request, load_active_handlers, load_api_key_config, load_basic_auth_config,
+    load_correlation_config, load_cors_config, load_header_config, load_mcp_router_runtime,
+    load_metrics_config, load_path_prefix_service_config, load_proxy_route,
+    load_rate_limit_runtime, load_router_route, load_security_runtime, load_static_resources,
+    load_token_runtime, load_unified_security_config, select_router_target, verify_api_key,
+    verify_basic_auth, verify_jwt_request, verify_unified_security,
 };
 use light_runtime::{
     CacheRegistry, ConfigManager, LightRuntimeBuilder, ReloadContext, ReloadOutcome,
@@ -248,13 +248,21 @@ impl GatewayProxy {
                 token_runtime: Arc::clone(&token_runtime),
             }),
         );
+        let mcp_reloader: Arc<dyn ReloadableModule> = Arc::new(McpRouterReloader {
+            active_handlers: Arc::clone(&active_handlers),
+            mcp_router: Arc::clone(&mcp_router),
+        });
         config.module_registry.register_reloader(
             light_pingora::MCP_ROUTER_MODULE_ID,
-            Arc::new(McpRouterReloader {
-                active_handlers: Arc::clone(&active_handlers),
-                mcp_router: Arc::clone(&mcp_router),
-            }),
+            Arc::clone(&mcp_reloader),
         );
+        config.module_registry.register_reloader(
+            light_pingora::ACCESS_CONTROL_MODULE_ID,
+            Arc::clone(&mcp_reloader),
+        );
+        config
+            .module_registry
+            .register_reloader(light_pingora::RULE_MODULE_ID, mcp_reloader);
         config.module_registry.register_reloader(
             light_pingora::PROXY_MODULE_ID,
             Arc::new(ProxyReloader {
@@ -1349,7 +1357,13 @@ impl ProxyHttp for GatewayProxy {
                         body: read_request_body(session).await?,
                     };
                     match runtime
-                        .handle_request(request)
+                        .handle_request_with_context(
+                            request,
+                            McpRequestContext {
+                                auth: ctx.auth.clone(),
+                                correlation_id: ctx.correlation.correlation_id.clone(),
+                            },
+                        )
                         .await
                         .map_err(pingora_internal_error)?
                     {

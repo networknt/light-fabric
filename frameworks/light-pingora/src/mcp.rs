@@ -1,9 +1,12 @@
+use crate::access_control::{AccessControlRuntime, AccessDecision, load_access_control_runtime};
 use crate::config_util::deserialize_typed_list;
+use crate::security::AuthPrincipal;
 use async_trait::async_trait;
 use light_runtime::{
     DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, ModuleKind, PortalRegistryClient,
     RuntimeConfig, RuntimeError,
 };
+use regex::Regex;
 use reqwest::header::{ACCEPT, HeaderMap, HeaderName, HeaderValue};
 use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -12,7 +15,7 @@ use serde_yaml::Value as YamlValue;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use url::Url;
 
 pub const MCP_ROUTER_FILE: &str = "mcp-router.yml";
@@ -214,6 +217,12 @@ pub struct McpHttpResponse {
     pub streamed: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct McpRequestContext {
+    pub auth: Option<AuthPrincipal>,
+    pub correlation_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum McpResponseMode {
     Json,
@@ -226,6 +235,7 @@ pub struct McpRouterRuntime {
     tools: BTreeMap<String, McpToolConfig>,
     client: reqwest::Client,
     discovery: Option<Arc<dyn McpDiscoveryResolver>>,
+    policy: Option<Arc<AccessControlRuntime>>,
 }
 
 impl fmt::Debug for McpRouterRuntime {
@@ -234,6 +244,7 @@ impl fmt::Debug for McpRouterRuntime {
             .field("path", &self.config.path)
             .field("tool_count", &self.tools.len())
             .field("discovery", &self.discovery.is_some())
+            .field("policy", &self.policy.is_some())
             .finish()
     }
 }
@@ -263,9 +274,24 @@ impl McpRouterRuntime {
         Self::new_with_discovery(config, None)
     }
 
+    pub fn new_with_policy(
+        config: McpRouterConfig,
+        policy: Option<Arc<AccessControlRuntime>>,
+    ) -> Result<Self, RuntimeError> {
+        Self::new_with_discovery_and_policy(config, None, policy)
+    }
+
     pub fn new_with_discovery(
         config: McpRouterConfig,
         discovery: Option<Arc<dyn McpDiscoveryResolver>>,
+    ) -> Result<Self, RuntimeError> {
+        Self::new_with_discovery_and_policy(config, discovery, None)
+    }
+
+    pub fn new_with_discovery_and_policy(
+        config: McpRouterConfig,
+        discovery: Option<Arc<dyn McpDiscoveryResolver>>,
+        policy: Option<Arc<AccessControlRuntime>>,
     ) -> Result<Self, RuntimeError> {
         validate_config(&config)?;
         let tools = config
@@ -284,6 +310,7 @@ impl McpRouterRuntime {
             tools,
             client,
             discovery,
+            policy,
         })
     }
 
@@ -299,20 +326,33 @@ impl McpRouterRuntime {
         &self,
         request: McpHttpRequest,
     ) -> Result<Option<McpHttpResponse>, RuntimeError> {
+        self.handle_request_with_context(request, McpRequestContext::default())
+            .await
+    }
+
+    pub async fn handle_request_with_context(
+        &self,
+        request: McpHttpRequest,
+        context: McpRequestContext,
+    ) -> Result<Option<McpHttpResponse>, RuntimeError> {
         if !self.matches_path(request.path.as_str()) {
             return Ok(None);
         }
 
         let method = request.method.to_ascii_uppercase();
         match method.as_str() {
-            "POST" => self.handle_post(request).await.map(Some),
+            "POST" => self.handle_post(request, &context).await.map(Some),
             "GET" => Ok(Some(method_not_allowed_response())),
             "DELETE" => Ok(Some(method_not_allowed_response())),
             _ => Ok(Some(method_not_allowed_response())),
         }
     }
 
-    async fn handle_post(&self, request: McpHttpRequest) -> Result<McpHttpResponse, RuntimeError> {
+    async fn handle_post(
+        &self,
+        request: McpHttpRequest,
+        context: &McpRequestContext,
+    ) -> Result<McpHttpResponse, RuntimeError> {
         let Some(response_mode) = preferred_response_mode(&request.headers) else {
             return json_error_response(
                 406,
@@ -390,7 +430,10 @@ impl McpRouterRuntime {
             "tools/list" => {
                 rpc_result_response(response_mode, 200, id, self.tools_list_result(message))
             }
-            "tools/call" => match self.handle_tool_call(message, &request.headers).await {
+            "tools/call" => match self
+                .handle_tool_call(message, &request.headers, context)
+                .await
+            {
                 Ok(result) => rpc_result_response(response_mode, 200, id, result),
                 Err(error) => rpc_error_response(response_mode, 200, id, error.code, error.message),
             },
@@ -454,6 +497,7 @@ impl McpRouterRuntime {
         &self,
         message: &serde_json::Map<String, JsonValue>,
         agent_headers: &[(String, String)],
+        context: &McpRequestContext,
     ) -> Result<JsonValue, McpExecutionError> {
         let params = message
             .get("params")
@@ -479,17 +523,94 @@ impl McpRouterRuntime {
             code: -32601,
             message: format!("tool `{name}` not found"),
         })?;
+        let endpoint = tool_endpoint(tool);
+        let started = Instant::now();
+        let mut policy_outcome = "not_configured";
 
-        match tool.api_type {
+        if let Some(policy) = self.policy.as_ref() {
+            match policy
+                .authorize_tool(
+                    tool.name.as_str(),
+                    endpoint.as_str(),
+                    agent_headers,
+                    context.auth.as_ref(),
+                    &arguments,
+                    context.correlation_id.as_deref(),
+                )
+                .await
+            {
+                AccessDecision::Allowed => {
+                    policy_outcome = "allowed";
+                }
+                AccessDecision::Denied(message) => {
+                    policy_outcome = "denied";
+                    log_mcp_tool_call(
+                        tool,
+                        endpoint.as_str(),
+                        started,
+                        "denied",
+                        policy_outcome,
+                        context,
+                    );
+                    return Err(McpExecutionError {
+                        code: -32001,
+                        message,
+                    });
+                }
+            }
+        }
+
+        let masked_arguments = mask_tool_arguments(tool, &arguments);
+
+        let execution = match tool.api_type {
             McpToolType::Http => {
-                self.execute_http_tool(tool, &arguments, agent_headers)
+                self.execute_http_tool(tool, &masked_arguments, agent_headers)
                     .await
             }
             McpToolType::Mcp => {
-                self.execute_mcp_proxy_tool(tool, &arguments, agent_headers)
+                self.execute_mcp_proxy_tool(tool, &masked_arguments, agent_headers)
                     .await
             }
-        }
+        };
+        let result = match execution {
+            Ok(result) => result,
+            Err(error) => {
+                log_mcp_tool_call(
+                    tool,
+                    endpoint.as_str(),
+                    started,
+                    "error",
+                    policy_outcome,
+                    context,
+                );
+                return Err(error);
+            }
+        };
+
+        let result = if let Some(policy) = self.policy.as_ref() {
+            policy
+                .filter_mcp_response(
+                    tool.name.as_str(),
+                    endpoint.as_str(),
+                    agent_headers,
+                    context.auth.as_ref(),
+                    &masked_arguments,
+                    context.correlation_id.as_deref(),
+                    result,
+                )
+                .await
+        } else {
+            result
+        };
+        log_mcp_tool_call(
+            tool,
+            endpoint.as_str(),
+            started,
+            "success",
+            policy_outcome,
+            context,
+        );
+        Ok(result)
     }
 
     async fn execute_http_tool(
@@ -706,9 +827,11 @@ pub fn load_mcp_router_runtime(
     if !config.enabled {
         return Ok(None);
     }
-    Ok(Some(McpRouterRuntime::new_with_discovery(
+    let policy = load_access_control_runtime(runtime_config, true)?.map(Arc::new);
+    Ok(Some(McpRouterRuntime::new_with_discovery_and_policy(
         config,
         discovery_resolver(runtime_config.registry_client.clone()),
+        policy,
     )?))
 }
 
@@ -768,6 +891,112 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
         }
     }
     Ok(())
+}
+
+fn tool_endpoint(tool: &McpToolConfig) -> String {
+    tool.endpoint
+        .as_deref()
+        .filter(|endpoint| !endpoint.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            format!(
+                "{}@{}",
+                tool.path,
+                tool.method.as_str().to_ascii_lowercase()
+            )
+        })
+}
+
+fn log_mcp_tool_call(
+    tool: &McpToolConfig,
+    endpoint: &str,
+    started: Instant,
+    status: &str,
+    policy_outcome: &str,
+    context: &McpRequestContext,
+) {
+    tracing::info!(
+        target: "light_pingora::mcp",
+        toolName = %tool.name,
+        endpoint = %endpoint,
+        durationMs = started.elapsed().as_millis(),
+        status = %status,
+        policyOutcome = %policy_outcome,
+        correlationId = ?context.correlation_id,
+        "mcp tool call"
+    );
+}
+
+fn mask_tool_arguments(tool: &McpToolConfig, arguments: &JsonValue) -> JsonValue {
+    let mut masked = arguments.clone();
+    apply_schema_mask(&tool.input_schema, &mut masked);
+    masked
+}
+
+fn apply_schema_mask(schema: &JsonValue, value: &mut JsonValue) {
+    let Some(schema) = schema.as_object() else {
+        return;
+    };
+    if schema
+        .get("x-mask")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false)
+    {
+        mask_json_value(
+            value,
+            schema.get("x-mask-pattern").and_then(JsonValue::as_str),
+        );
+        return;
+    }
+
+    if let Some(properties) = schema.get("properties").and_then(JsonValue::as_object)
+        && let Some(values) = value.as_object_mut()
+    {
+        for (name, property_schema) in properties {
+            if let Some(property_value) = values.get_mut(name) {
+                apply_schema_mask(property_schema, property_value);
+            }
+        }
+    }
+
+    if let Some(items_schema) = schema.get("items")
+        && let Some(values) = value.as_array_mut()
+    {
+        for item in values {
+            apply_schema_mask(items_schema, item);
+        }
+    }
+}
+
+fn mask_json_value(value: &mut JsonValue, pattern: Option<&str>) {
+    match value {
+        JsonValue::String(value) => {
+            *value = mask_string(value, pattern);
+        }
+        JsonValue::Array(values) => {
+            for value in values {
+                mask_json_value(value, pattern);
+            }
+        }
+        JsonValue::Object(values) => {
+            for value in values.values_mut() {
+                mask_json_value(value, pattern);
+            }
+        }
+        JsonValue::Number(_) | JsonValue::Bool(_) | JsonValue::Null => {
+            *value = JsonValue::String("******".to_string());
+        }
+    }
+}
+
+fn mask_string(value: &str, pattern: Option<&str>) -> String {
+    if let Some(pattern) = pattern
+        && let Ok(regex) = Regex::new(pattern)
+        && regex.is_match(value)
+    {
+        return regex.replace_all(value, "******").to_string();
+    }
+    "******".to_string()
 }
 
 fn discovery_resolver(
@@ -1448,6 +1677,135 @@ tools:
     }
 
     #[tokio::test]
+    async fn access_control_default_deny_blocks_unconfigured_tool() {
+        let runtime = McpRouterRuntime::new_with_policy(
+            McpRouterConfig {
+                tools: vec![test_tool(
+                    "weather",
+                    "Get weather",
+                    "http://127.0.0.1:1",
+                    McpHttpMethod::Get,
+                    Some("weather@call"),
+                    default_input_schema(),
+                )],
+                ..McpRouterConfig::default()
+            },
+            Some(Arc::new(crate::access_control::AccessControlRuntime::new(
+                Some(crate::access_control::AccessControlConfig::default()),
+                crate::access_control::RuleFileConfig::default(),
+            ))),
+        )
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json()],
+                body: br#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"weather","arguments":{}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["error"]["code"], -32001);
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("no access control rule")
+        );
+    }
+
+    #[tokio::test]
+    async fn access_control_allows_role_and_masks_schema_marked_arguments() {
+        let (base, received) = spawn_http_server(http_json_response(json!({"ok": true}))).await;
+        let policy = Arc::new(crate::access_control::AccessControlRuntime::new(
+            Some(crate::access_control::AccessControlConfig::default()),
+            serde_yaml::from_str::<crate::access_control::RuleFileConfig>(
+                r#"
+ruleBodies:
+  allow:
+    common: Y
+    ruleId: allow
+    ruleName: Allow MCP reader
+    ruleType: req-acc
+    conditions:
+      - operatorCode: isNotNull
+        propertyPath: auditInfo.subject_claims.ClaimsMap.role
+    actions:
+      - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
+endpointRules:
+  weather@call:
+    req-acc:
+      - allow
+    permission:
+      roles: mcp-reader
+"#,
+            )
+            .expect("rule config"),
+        ));
+        let runtime = McpRouterRuntime::new_with_policy(
+            McpRouterConfig {
+                tools: vec![test_tool(
+                    "weather",
+                    "Get weather",
+                    base.as_str(),
+                    McpHttpMethod::Post,
+                    Some("weather@call"),
+                    json!({
+                        "type": "object",
+                        "properties": {
+                            "ssn": {
+                                "type": "string",
+                                "x-mask": true,
+                                "x-mask-pattern": "^(.*)$"
+                            },
+                            "city": {
+                                "type": "string"
+                            }
+                        }
+                    }),
+                )],
+                ..McpRouterConfig::default()
+            },
+            Some(policy),
+        )
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request_with_context(
+                McpHttpRequest {
+                    method: "POST".to_string(),
+                    path: "/mcp".to_string(),
+                    headers: vec![accept_json()],
+                    body: br#"{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"weather","arguments":{"ssn":"123-45-6789","city":"Toronto"}}}"#.to_vec(),
+                },
+                McpRequestContext {
+                    auth: Some(AuthPrincipal {
+                        role: Some("mcp-reader".to_string()),
+                        claims: json!({"role": "mcp-reader"}),
+                        ..AuthPrincipal::default()
+                    }),
+                    correlation_id: Some("corr-1".to_string()),
+                },
+            )
+            .await
+            .expect("handle")
+            .expect("response");
+
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["result"]["ok"], true);
+        let request = received.await.expect("server request");
+        let body = request.split("\r\n\r\n").nth(1).expect("request body");
+        let arguments = serde_json::from_str::<JsonValue>(body).expect("json request");
+        assert_eq!(arguments["ssn"], "******");
+        assert_eq!(arguments["city"], "Toronto");
+        assert!(!body.contains("123-45-6789"));
+    }
+
+    #[tokio::test]
     async fn malformed_json_returns_parse_error() {
         let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
 
@@ -1469,23 +1827,41 @@ tools:
 
     fn runtime_with_tool(name: &str, description: &str, target_host: &str) -> McpRouterRuntime {
         McpRouterRuntime::new(McpRouterConfig {
-            tools: vec![McpToolConfig {
-                name: name.to_string(),
-                description: description.to_string(),
-                protocol: None,
-                service_id: None,
-                env_tag: None,
-                target_host: Some(target_host.to_string()),
-                path: "/weather".to_string(),
-                method: McpHttpMethod::Get,
-                endpoint: None,
-                api_type: McpToolType::Http,
-                input_schema: default_input_schema(),
-                tool_metadata: default_object(),
-            }],
+            tools: vec![test_tool(
+                name,
+                description,
+                target_host,
+                McpHttpMethod::Get,
+                None,
+                default_input_schema(),
+            )],
             ..McpRouterConfig::default()
         })
         .expect("runtime")
+    }
+
+    fn test_tool(
+        name: &str,
+        description: &str,
+        target_host: &str,
+        method: McpHttpMethod,
+        endpoint: Option<&str>,
+        input_schema: JsonValue,
+    ) -> McpToolConfig {
+        McpToolConfig {
+            name: name.to_string(),
+            description: description.to_string(),
+            protocol: None,
+            service_id: None,
+            env_tag: None,
+            target_host: Some(target_host.to_string()),
+            path: "/weather".to_string(),
+            method,
+            endpoint: endpoint.map(str::to_string),
+            api_type: McpToolType::Http,
+            input_schema,
+            tool_metadata: default_object(),
+        }
     }
 
     fn accept_json() -> (String, String) {

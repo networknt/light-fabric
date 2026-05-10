@@ -6,6 +6,7 @@ license = "Apache-2.0"
 
 [dependencies]
 light-runtime = { path = "../../crates/light-runtime" }
+light-rule = { path = "../../crates/light-rule" }
 async-trait = { workspace = true }
 base64 = "0.22"
 hex = { workspace = true }
