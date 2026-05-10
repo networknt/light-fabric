@@ -25,6 +25,7 @@
 - [Module Registry](design/module-registry.md)
 - [Cache Control Plane](design/cache-control-plane.md)
 - [Handler Chain](design/handler-chain.md)
+- [MCP Router](design/mcp-router.md)
 
 # Crate
 

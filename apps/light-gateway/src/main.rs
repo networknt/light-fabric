@@ -5,20 +5,21 @@ use chrono::{DateTime, Utc};
 use light_pingora::{
     ActiveHandlerSet, ApiKeyConfig, AuthPrincipal, BasicAuthConfig, CorrelationConfig,
     CorrelationState, CorsConfig, CorsRequestOutcome, CorsResponseHeaders, HandlerBuildContext,
-    HandlerMetricsLogLevel, HandlerRejection, HeaderConfig, MetricsConfig, MetricsRecorder,
-    PathPrefixServiceConfig, PingoraApp, PingoraHandler, PingoraHandlerDescriptor,
-    PingoraHandlerKind, PingoraHandlerRegistry, PingoraTransport, ProxyRoute, ProxyTarget,
-    RateLimitHeaders, RateLimitRuntime, RouterDecision, RouterRoute, SecurityRuntime,
-    StaticResolution, StaticResourceSet, TokenRuntime, UnifiedSecurityConfig,
-    apply_correlation_request, apply_correlation_response, apply_cors_response,
-    apply_header_request, apply_header_response, apply_path_prefix_service,
+    HandlerMetricsLogLevel, HandlerRejection, HeaderConfig, McpHttpRequest, McpHttpResponse,
+    McpRouterRuntime, MetricsConfig, MetricsRecorder, PathPrefixServiceConfig, PingoraApp,
+    PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerKind, PingoraHandlerRegistry,
+    PingoraTransport, ProxyRoute, ProxyTarget, RateLimitHeaders, RateLimitRuntime, RouterDecision,
+    RouterRoute, SecurityRuntime, StaticResolution, StaticResourceSet, TokenRuntime,
+    UnifiedSecurityConfig, apply_correlation_request, apply_correlation_response,
+    apply_cors_response, apply_header_request, apply_header_response, apply_path_prefix_service,
     apply_rate_limit_headers, apply_router_upstream_request, apply_token_request,
     build_metrics_event, check_rate_limit, correlation_id_for_upstream, evaluate_cors_request,
     load_active_handlers, load_api_key_config, load_basic_auth_config, load_correlation_config,
-    load_cors_config, load_header_config, load_metrics_config, load_path_prefix_service_config,
-    load_proxy_route, load_rate_limit_runtime, load_router_route, load_security_runtime,
-    load_static_resources, load_token_runtime, load_unified_security_config, select_router_target,
-    verify_api_key, verify_basic_auth, verify_jwt_request, verify_unified_security,
+    load_cors_config, load_header_config, load_mcp_router_runtime, load_metrics_config,
+    load_path_prefix_service_config, load_proxy_route, load_rate_limit_runtime, load_router_route,
+    load_security_runtime, load_static_resources, load_token_runtime, load_unified_security_config,
+    select_router_target, verify_api_key, verify_basic_auth, verify_jwt_request,
+    verify_unified_security,
 };
 use light_runtime::{
     CacheRegistry, ConfigManager, LightRuntimeBuilder, ReloadContext, ReloadOutcome,
@@ -63,6 +64,7 @@ struct GatewayProxy {
     rate_limit_runtime: Arc<ConfigManager<Option<RateLimitRuntime>>>,
     path_prefix_service_config: Arc<ConfigManager<Option<PathPrefixServiceConfig>>>,
     token_runtime: Arc<ConfigManager<Option<TokenRuntime>>>,
+    mcp_router: Arc<ConfigManager<Option<McpRouterRuntime>>>,
     metrics_recorder: Arc<MetricsRecorder>,
     proxy_route: Arc<ConfigManager<Option<ProxyRoute>>>,
     router_route: Arc<ConfigManager<Option<RouterRoute>>>,
@@ -121,6 +123,7 @@ impl GatewayProxy {
             ),
         )?;
         let token_runtime = load_token_runtime(config, active_handlers.is_handler_active("token"))?;
+        let mcp_router = load_mcp_router_runtime(config, active_handlers.is_handler_active("mcp"))?;
         let router_route = load_router_route(config, active_handlers.is_handler_active("router"))?;
         let proxy_route = load_proxy_route(config)?;
         let static_resources = load_static_resources(config)?;
@@ -136,6 +139,7 @@ impl GatewayProxy {
         let rate_limit_runtime = Arc::new(ConfigManager::new(rate_limit_runtime));
         let path_prefix_service_config = Arc::new(ConfigManager::new(path_prefix_service_config));
         let token_runtime = Arc::new(ConfigManager::new(token_runtime));
+        let mcp_router = Arc::new(ConfigManager::new(mcp_router));
         let router_route = Arc::new(ConfigManager::new(router_route));
         let proxy_route = Arc::new(ConfigManager::new(proxy_route));
         let static_resources = Arc::new(ConfigManager::new(static_resources));
@@ -156,6 +160,7 @@ impl GatewayProxy {
                 rate_limit_runtime: Arc::clone(&rate_limit_runtime),
                 path_prefix_service_config: Arc::clone(&path_prefix_service_config),
                 token_runtime: Arc::clone(&token_runtime),
+                mcp_router: Arc::clone(&mcp_router),
                 router_route: Arc::clone(&router_route),
             }),
         );
@@ -244,6 +249,13 @@ impl GatewayProxy {
             }),
         );
         config.module_registry.register_reloader(
+            light_pingora::MCP_ROUTER_MODULE_ID,
+            Arc::new(McpRouterReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                mcp_router: Arc::clone(&mcp_router),
+            }),
+        );
+        config.module_registry.register_reloader(
             light_pingora::PROXY_MODULE_ID,
             Arc::new(ProxyReloader {
                 proxy_route: Arc::clone(&proxy_route),
@@ -280,6 +292,7 @@ impl GatewayProxy {
             rate_limit_runtime,
             path_prefix_service_config,
             token_runtime,
+            mcp_router,
             metrics_recorder,
             proxy_route,
             router_route,
@@ -618,6 +631,24 @@ impl GatewayProxy {
         .await
     }
 
+    async fn write_mcp_response(
+        &self,
+        session: &mut Session,
+        ctx: &mut GatewayRequestContext,
+        response: McpHttpResponse,
+    ) -> pingora::Result<bool> {
+        self.write_bytes_response_with_headers(
+            session,
+            ctx,
+            response.status,
+            response.content_type.as_str(),
+            None,
+            Bytes::from(response.body),
+            response.headers.as_slice(),
+        )
+        .await
+    }
+
     fn apply_response_headers(
         &self,
         response: &mut ResponseHeader,
@@ -738,6 +769,11 @@ impl GatewayProxy {
     }
 
     #[cfg(test)]
+    fn current_mcp_router(&self) -> Arc<Option<McpRouterRuntime>> {
+        self.mcp_router.load()
+    }
+
+    #[cfg(test)]
     fn active_handler_ids(&self) -> Vec<String> {
         self.active_handlers.load().active_handler_ids().to_vec()
     }
@@ -756,6 +792,7 @@ struct HandlerReloader {
     rate_limit_runtime: Arc<ConfigManager<Option<RateLimitRuntime>>>,
     path_prefix_service_config: Arc<ConfigManager<Option<PathPrefixServiceConfig>>>,
     token_runtime: Arc<ConfigManager<Option<TokenRuntime>>>,
+    mcp_router: Arc<ConfigManager<Option<McpRouterRuntime>>>,
     router_route: Arc<ConfigManager<Option<RouterRoute>>>,
 }
 
@@ -820,6 +857,10 @@ impl ReloadableModule for HandlerReloader {
             &ctx.runtime_config,
             active_handlers.is_handler_active("token"),
         )?;
+        let mcp_router = load_mcp_router_runtime(
+            &ctx.runtime_config,
+            active_handlers.is_handler_active("mcp"),
+        )?;
         let router_route = load_router_route(
             &ctx.runtime_config,
             active_handlers.is_handler_active("router"),
@@ -837,6 +878,7 @@ impl ReloadableModule for HandlerReloader {
         self.path_prefix_service_config
             .store(path_prefix_service_config);
         self.token_runtime.store(token_runtime);
+        self.mcp_router.store(mcp_router);
         self.router_route.store(router_route);
         Ok(ReloadOutcome::success("handler.yml reloaded"))
     }
@@ -1014,6 +1056,21 @@ impl ReloadableModule for PathPrefixServiceReloader {
 struct TokenReloader {
     active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
     token_runtime: Arc<ConfigManager<Option<TokenRuntime>>>,
+}
+
+struct McpRouterReloader {
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    mcp_router: Arc<ConfigManager<Option<McpRouterRuntime>>>,
+}
+
+#[async_trait]
+impl ReloadableModule for McpRouterReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let active = self.active_handlers.load().is_handler_active("mcp");
+        let runtime = load_mcp_router_runtime(&ctx.runtime_config, active)?;
+        self.mcp_router.store(runtime);
+        Ok(ReloadOutcome::success("mcp-router.yml reloaded"))
+    }
 }
 
 #[async_trait]
@@ -1242,6 +1299,37 @@ impl ProxyHttp for GatewayProxy {
                     {
                         ctx.record_handler_duration(&handler_id, started.elapsed());
                         return self.write_rejection_response(session, ctx, rejection).await;
+                    }
+                }
+                "mcp" => {
+                    let runtime = self.mcp_router.load();
+                    let Some(runtime) = runtime.as_ref().as_ref() else {
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                        continue;
+                    };
+                    if !runtime.matches_path(&request_path) {
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                        continue;
+                    }
+                    let request = McpHttpRequest {
+                        method: method.clone(),
+                        path: request_path.clone(),
+                        headers: agent_headers(session),
+                        body: read_request_body(session).await?,
+                    };
+                    match runtime
+                        .handle_request(request)
+                        .await
+                        .map_err(pingora_internal_error)?
+                    {
+                        Some(response) => {
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            return self.write_mcp_response(session, ctx, response).await;
+                        }
+                        None => {
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            continue;
+                        }
                     }
                 }
                 "health" => {
@@ -1587,6 +1675,28 @@ fn request_header(session: &Session, name: &str) -> Option<String> {
         .get(name)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string)
+}
+
+fn agent_headers(session: &Session) -> Vec<(String, String)> {
+    session
+        .req_header()
+        .headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+async fn read_request_body(session: &mut Session) -> pingora::Result<Vec<u8>> {
+    let mut body = Vec::new();
+    while let Some(chunk) = session.read_request_body().await? {
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 fn static_method_allowed(session: &Session) -> bool {
@@ -2191,6 +2301,57 @@ request:
                 .expect("cache registry")
                 .names()
                 .contains(&light_pingora::TOKEN_CACHE_NAME.to_string())
+        );
+    }
+
+    #[test]
+    fn gateway_loads_mcp_router_when_mcp_handler_is_active() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            r#"
+handlers:
+  - mcp
+paths:
+  - path: /mcp
+    method: POST
+    exec:
+      - mcp
+defaultHandlers: []
+"#,
+        )
+        .expect("write handler config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::MCP_ROUTER_FILE),
+            r#"
+enabled: true
+path: /mcp
+tools:
+  - name: weather
+    description: Get weather.
+    targetHost: http://127.0.0.1:8080
+    path: /weather
+    method: GET
+"#,
+        )
+        .expect("write mcp config");
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+
+        let proxy = GatewayProxy::from_runtime_config(&config).expect("build proxy");
+
+        let mcp = proxy.current_mcp_router();
+        let mcp = mcp.as_ref().as_ref().expect("mcp runtime");
+        assert!(mcp.matches_path("/mcp"));
+        assert_eq!(mcp.config().tools[0].name, "weather");
+        assert!(
+            config
+                .module_registry
+                .module_summaries()
+                .iter()
+                .any(
+                    |entry| entry.module_id == light_pingora::MCP_ROUTER_MODULE_ID && entry.active
+                )
         );
     }
 

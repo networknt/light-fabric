@@ -5,6 +5,7 @@ mod correlation;
 mod cors;
 mod handler;
 mod header;
+mod mcp;
 mod metrics;
 mod proxy;
 mod rate_limit;
@@ -57,6 +58,11 @@ pub use handler::{
 pub use header::{
     HEADER_CONFIG_NAME, HEADER_FILE, HEADER_MODULE_ID, HeaderConfig, HeaderMutation,
     HeaderPathPrefixConfig, apply_header_request, apply_header_response, load_header_config,
+};
+pub use mcp::{
+    MCP_ROUTER_CONFIG_NAME, MCP_ROUTER_FILE, MCP_ROUTER_LEGACY_FILE, MCP_ROUTER_MODULE_ID,
+    McpHttpMethod, McpHttpRequest, McpHttpResponse, McpRouterConfig, McpRouterRuntime,
+    McpToolConfig, McpToolType, load_mcp_router_runtime,
 };
 pub use metrics::{
     METRICS_CONFIG_NAME, METRICS_FILE, METRICS_MODULE_ID, MetricCounts, MetricsConfig,
