@@ -79,6 +79,7 @@ struct GatewayProxy {
     router_route: Arc<ConfigManager<Option<RouterRoute>>>,
     static_resources: Arc<ConfigManager<StaticResourceSet>>,
     next_upstream: AtomicUsize,
+    upstream_verify_hostname: bool,
     server_scheme: String,
     server_port: u16,
 }
@@ -397,6 +398,8 @@ impl GatewayProxy {
             router_route,
             static_resources,
             next_upstream: AtomicUsize::new(0),
+            upstream_verify_hostname: resolved_bool(config, "client.verifyHostname")
+                .unwrap_or(true),
             server_scheme: if config.server.enable_https {
                 "https".to_string()
             } else {
@@ -1599,7 +1602,7 @@ impl ProxyHttp for GatewayProxy {
                 }
                 "security" | "jwt" => {
                     if let Some(runtime) = self.security_runtime.load().as_ref().as_ref() {
-                        match verify_jwt_request(session, runtime, &request_path) {
+                        match verify_jwt_request(session, runtime, &request_path).await {
                             Ok(auth) => {
                                 if auth.is_some() {
                                     ctx.auth = auth;
@@ -1626,7 +1629,9 @@ impl ProxyHttp for GatewayProxy {
                             api_key_config.as_ref().as_ref(),
                             security_runtime.as_ref().as_ref(),
                             &request_path,
-                        ) {
+                        )
+                        .await
+                        {
                             Ok(auth) => {
                                 if auth.is_some() {
                                     ctx.auth = auth;
@@ -1944,15 +1949,11 @@ impl ProxyHttp for GatewayProxy {
                     return self.write_text_response(session, ctx, 200, "ok").await;
                 }
                 "virtual" => {
-                    let host_header = session
-                        .req_header()
-                        .headers
-                        .get("host")
-                        .and_then(|value| value.to_str().ok());
+                    let host_header = request_header(session, "host");
                     let resolution = self
                         .static_resources
                         .load()
-                        .resolve_virtual_host(host_header, &request_path);
+                        .resolve_virtual_host(host_header.as_deref(), &request_path);
                     ctx.record_handler_duration(&handler_id, started.elapsed());
                     return self.write_static_resolution(session, ctx, resolution).await;
                 }
@@ -2046,6 +2047,9 @@ impl ProxyHttp for GatewayProxy {
             upstream.tls,
             upstream.sni.clone(),
         );
+        if !self.upstream_verify_hostname {
+            peer.options.verify_hostname = false;
+        }
         if ctx.websocket_decision.is_some()
             && let Some(timeout) = websocket_io_timeout(ctx)
         {
@@ -2468,12 +2472,23 @@ fn apply_forwarded_headers(
 }
 
 fn request_header(session: &Session, name: &str) -> Option<String> {
-    session
+    let header = session
         .req_header()
         .headers
         .get(name)
         .and_then(|value| value.to_str().ok())
-        .map(str::to_string)
+        .map(str::to_string);
+    if header.is_some() {
+        return header;
+    }
+    if name.eq_ignore_ascii_case("host") {
+        return session
+            .req_header()
+            .uri
+            .authority()
+            .map(|authority| authority.as_str().to_string());
+    }
+    None
 }
 
 fn agent_headers(session: &Session) -> Vec<(String, String)> {
@@ -2779,6 +2794,14 @@ fn handler_active(active_handlers: &ActiveHandlerSet, ids: &[&str]) -> bool {
     ids.iter().any(|id| active_handlers.is_handler_active(id))
 }
 
+fn resolved_bool(config: &RuntimeConfig, key: &str) -> Option<bool> {
+    match config.resolved_values.get(key)? {
+        serde_yaml::Value::Bool(value) => Some(*value),
+        serde_yaml::Value::String(value) => value.trim().parse::<bool>().ok(),
+        _ => None,
+    }
+}
+
 fn load_websocket_router_runtime_preserving_state(
     runtime_config: &RuntimeConfig,
     active: bool,
@@ -2895,7 +2918,17 @@ fn build_registered_gateway_handler(
 
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    let use_ansi = std::env::var("GATEWAY_LOG_ANSI")
+        .ok()
+        .map(|v| v.trim().to_lowercase())
+        .map(|v| v == "true" || v == "1" || v == "yes" || v == "on");
+
+    let subscriber = tracing_subscriber::fmt().with_env_filter(filter);
+
+    match use_ansi {
+        Some(use_ansi) => subscriber.with_ansi(use_ansi).init(),
+        None => subscriber.init(),
+    }
 }
 
 #[cfg(test)]

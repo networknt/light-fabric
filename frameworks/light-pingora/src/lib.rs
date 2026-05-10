@@ -34,6 +34,7 @@ use pingora::server::configuration::ServerConf;
 #[cfg(unix)]
 use pingora::server::{RunArgs, ShutdownSignal, ShutdownSignalWatch};
 use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
 use std::thread::JoinHandle;
 #[cfg(unix)]
 use tokio::sync::watch;
@@ -210,6 +211,7 @@ where
         let mut server_conf = ServerConf::default();
         server_conf.threads = 1;
         server_conf.daemon = false;
+        server_conf.ca_file = upstream_ca_file(config);
         let shutdown_seconds = config.server.shutdown_graceful_period.div_ceil(1000);
         server_conf.grace_period_seconds = Some(0);
         server_conf.graceful_shutdown_timeout_seconds = Some(shutdown_seconds);
@@ -305,6 +307,24 @@ fn listen_addr(config: &RuntimeConfig, port: u16) -> Result<String, RuntimeError
         .parse()
         .map_err(|e| RuntimeError::Unsupported(format!("invalid bind address: {e}")))?;
     Ok(addr.to_string())
+}
+
+fn upstream_ca_file(config: &RuntimeConfig) -> Option<String> {
+    resolved_string(config, "client.caCertPath")
+        .map(PathBuf::from)
+        .or_else(|| config.bootstrap.bootstrap_ca_cert_path.clone())
+        .filter(|path| path.exists())
+        .map(|path| path.to_string_lossy().to_string())
+}
+
+fn resolved_string(config: &RuntimeConfig, key: &str) -> Option<String> {
+    let value = config.resolved_values.get(key)?;
+    match value {
+        serde_yaml::Value::String(value) if !value.trim().is_empty() => {
+            Some(value.trim().to_string())
+        }
+        _ => None,
+    }
 }
 
 fn resolve_advertised_address(config: &RuntimeConfig) -> Result<String, RuntimeError> {

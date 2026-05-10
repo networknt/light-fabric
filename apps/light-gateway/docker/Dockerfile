@@ -32,6 +32,8 @@ WORKDIR /app
 
 COPY --from=builder --chown=gateway:gateway /usr/src/app/target/release/light-gateway /app/light-gateway
 
+ENV GATEWAY_LOG_ANSI=false
+
 EXPOSE 8080 8443
 
 USER gateway:gateway

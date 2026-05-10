@@ -2,7 +2,9 @@ use crate::config_util::deserialize_string_list;
 use crate::security::{
     AuthPrincipal, HandlerRejection, JwtExpiryMode, SecurityRuntime, verify_jwt_token,
 };
-use crate::token::{CLIENT_FILE, CLIENT_TOKEN_CONFIG_NAME, CLIENT_TOKEN_MODULE_ID};
+use crate::token::{
+    CLIENT_FILE, CLIENT_TOKEN_CONFIG_NAME, CLIENT_TOKEN_MODULE_ID, configure_client_tls,
+};
 use crate::{
     ClientRequestConfig, ClientTlsConfig, ClientTokenConfig, OAuthAuthorizationCodeConfig,
     OAuthRefreshTokenConfig, OAuthTokenConfig, OAuthTokenExchangeConfig,
@@ -138,7 +140,7 @@ impl SpaSessionRuntime {
             .await
     }
 
-    pub fn set_login_cookies(
+    pub async fn set_login_cookies(
         &self,
         response: &TokenGrantResponse,
         csrf: &str,
@@ -148,6 +150,7 @@ impl SpaSessionRuntime {
             response.access_token.as_str(),
             JwtExpiryMode::Ignore,
         )
+        .await
         .map_err(|error| HandlerRejection::new(error.status, "ERR10000", error.message))?;
         let max_age = response
             .expires_in
@@ -175,6 +178,7 @@ impl SpaSessionRuntime {
         if let Some(access_token) = access_token.as_deref() {
             let principal =
                 verify_jwt_token(self.security.as_ref(), access_token, JwtExpiryMode::Ignore)
+                    .await
                     .map_err(|error| {
                         HandlerRejection::new(error.status, "ERR10000", error.message)
                     })?;
@@ -225,8 +229,9 @@ impl SpaSessionRuntime {
                     result.response.access_token.as_str(),
                     JwtExpiryMode::Ignore,
                 )
+                .await
                 .map_err(|error| HandlerRejection::new(error.status, "ERR10000", error.message))?;
-                let (_, headers) = self.set_login_cookies(&result.response, &result.csrf)?;
+                let (_, headers) = self.set_login_cookies(&result.response, &result.csrf).await?;
                 Ok(SpaSessionOutcome::Continue {
                     auth: Some(principal),
                     response_headers: headers,
@@ -858,9 +863,7 @@ fn token_http_client(
     let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_millis(request.connect_timeout))
         .timeout(Duration::from_millis(request.timeout));
-    if !tls.verify_hostname {
-        builder = builder.danger_accept_invalid_hostnames(true);
-    }
+    builder = configure_client_tls(builder, tls)?;
     if !token.enable_http2 {
         builder = builder.http1_only();
     }

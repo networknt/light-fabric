@@ -134,6 +134,7 @@ impl MsalExchangeRuntime {
             microsoft_token.as_str(),
             JwtExpiryMode::Enforce,
         )
+        .await
         .map_err(|error| crate::HandlerRejection::new(error.status, "ERR10000", error.message))?;
 
         let csrf = generate_csrf();
@@ -148,7 +149,10 @@ impl MsalExchangeRuntime {
             .map_err(|error| {
                 crate::HandlerRejection::new(error.status, "ERR11001", error.message)
             })?;
-        let (scopes, headers) = self.session.set_login_cookies(&token, csrf.as_str())?;
+        let (scopes, headers) = self
+            .session
+            .set_login_cookies(&token, csrf.as_str())
+            .await?;
         Ok(MsalExchangeOutcome::Respond(SpaAuthResponse::json(
             200,
             json!({ "scopes": scopes }),

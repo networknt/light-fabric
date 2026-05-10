@@ -323,7 +323,7 @@ pub fn apply_router_upstream_request(
     Ok(())
 }
 
-fn parse_service_targets(
+pub(crate) fn parse_service_targets(
     service_targets: &BTreeMap<String, Vec<String>>,
 ) -> Result<BTreeMap<String, Vec<ProxyTarget>>, RuntimeError> {
     let mut parsed = BTreeMap::new();
@@ -339,7 +339,7 @@ fn parse_service_targets(
     Ok(parsed)
 }
 
-fn parse_router_target(raw_host: &str) -> Result<ProxyTarget, RuntimeError> {
+pub(crate) fn parse_router_target(raw_host: &str) -> Result<ProxyTarget, RuntimeError> {
     let url = Url::parse(raw_host)
         .map_err(|e| RuntimeError::Unsupported(format!("invalid router host `{raw_host}`: {e}")))?;
     let tls = match url.scheme() {

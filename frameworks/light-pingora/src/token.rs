@@ -15,6 +15,7 @@ use pingora::prelude::Session;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use std::collections::{BTreeMap, HashMap};
+use std::fs;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
@@ -121,12 +122,15 @@ impl Default for ClientTokenConfig {
 pub struct ClientTlsConfig {
     #[serde(default = "default_true")]
     pub verify_hostname: bool,
+    #[serde(default)]
+    pub ca_cert_path: Option<String>,
 }
 
 impl Default for ClientTlsConfig {
     fn default() -> Self {
         Self {
             verify_hostname: true,
+            ca_cert_path: None,
         }
     }
 }
@@ -193,6 +197,8 @@ pub struct OAuthTokenConfig {
     pub refresh_token: OAuthRefreshTokenConfig,
     #[serde(default, rename = "token_exchange", alias = "tokenExchange")]
     pub token_exchange: OAuthTokenExchangeConfig,
+    #[serde(default)]
+    pub key: OAuthKeyConfig,
 }
 
 impl Default for OAuthTokenConfig {
@@ -211,6 +217,7 @@ impl Default for OAuthTokenConfig {
             authorization_code: OAuthAuthorizationCodeConfig::default(),
             refresh_token: OAuthRefreshTokenConfig::default(),
             token_exchange: OAuthTokenExchangeConfig::default(),
+            key: OAuthKeyConfig::default(),
         }
     }
 }
@@ -340,6 +347,36 @@ impl Default for OAuthTokenExchangeConfig {
             subject_token_type: None,
             requested_token_type: None,
             audience: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OAuthKeyConfig {
+    #[serde(default, rename = "server_url", alias = "serverUrl")]
+    pub server_url: Option<String>,
+    #[serde(default)]
+    pub service_id: Option<String>,
+    #[serde(default = "default_key_uri")]
+    pub uri: String,
+    #[serde(default, rename = "client_id", alias = "clientId")]
+    pub client_id: Option<String>,
+    #[serde(default, rename = "client_secret", alias = "clientSecret")]
+    pub client_secret: Option<String>,
+    #[serde(default = "default_true")]
+    pub enable_http2: bool,
+}
+
+impl Default for OAuthKeyConfig {
+    fn default() -> Self {
+        Self {
+            server_url: None,
+            service_id: None,
+            uri: default_key_uri(),
+            client_id: None,
+            client_secret: None,
+            enable_http2: true,
         }
     }
 }
@@ -1040,9 +1077,7 @@ fn token_http_client(
     let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_millis(request.connect_timeout))
         .timeout(Duration::from_millis(request.timeout));
-    if !tls.verify_hostname {
-        builder = builder.danger_accept_invalid_hostnames(true);
-    }
+    builder = configure_client_tls(builder, tls)?;
     if !options.enable_http2 {
         builder = builder.http1_only();
     }
@@ -1060,6 +1095,40 @@ fn token_http_client(
     builder.build().map_err(|error| {
         HandlerRejection::new(500, "ERR10056", format!("invalid token client: {error}"))
     })
+}
+
+pub(crate) fn configure_client_tls(
+    mut builder: reqwest::ClientBuilder,
+    tls: &ClientTlsConfig,
+) -> Result<reqwest::ClientBuilder, HandlerRejection> {
+    if let Some(path) = tls
+        .ca_cert_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        let pem = fs::read(path).map_err(|error| {
+            HandlerRejection::new(
+                500,
+                "ERR10056",
+                format!("failed to read client CA certificate `{path}`: {error}"),
+            )
+        })?;
+        let certificates = reqwest::Certificate::from_pem_bundle(&pem).map_err(|error| {
+            HandlerRejection::new(
+                500,
+                "ERR10056",
+                format!("invalid client CA certificate `{path}`: {error}"),
+            )
+        })?;
+        for certificate in certificates {
+            builder = builder.add_root_certificate(certificate);
+        }
+    }
+    if !tls.verify_hostname {
+        builder = builder.danger_accept_invalid_hostnames(true);
+    }
+    Ok(builder)
 }
 
 async fn resolve_token_server_url(
@@ -1331,6 +1400,10 @@ fn default_token_uri() -> String {
     "/oauth2/token".to_string()
 }
 
+fn default_key_uri() -> String {
+    "/oauth2/key".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1345,6 +1418,7 @@ mod tests {
             r#"
 tls:
   verifyHostname: false
+  caCertPath: config/ca.pem
 oauth:
   multipleAuthServers: true
   token:
@@ -1358,6 +1432,12 @@ oauth:
       client_secret: default-secret
       scope: '[ "default.r" ]'
       serviceIdAuthServers: '{"petstore":{"server_url":"https://pet-oauth.example.com","client_id":"pet-client","client_secret":"pet-secret","scope":["pet.r"]}}'
+    key:
+      server_url: https://oauth.example.com
+      uri: /oauth2/keys
+      client_id: key-client
+      client_secret: key-secret
+      enableHttp2: false
 pathPrefixServices: '{"/v1/pets": "petstore"}'
 request:
   connectTimeout: 200
@@ -1367,6 +1447,7 @@ request:
         .expect("parse client token config");
 
         assert!(!config.tls.verify_hostname);
+        assert_eq!(config.tls.ca_cert_path.as_deref(), Some("config/ca.pem"));
         assert!(config.oauth.multiple_auth_servers);
         assert_eq!(config.oauth.token.cache.capacity, 8);
         assert_eq!(
@@ -1382,6 +1463,12 @@ request:
                 .client_id,
             Some("pet-client".to_string())
         );
+        assert_eq!(
+            config.oauth.token.key.server_url.as_deref(),
+            Some("https://oauth.example.com")
+        );
+        assert_eq!(config.oauth.token.key.uri, "/oauth2/keys");
+        assert!(!config.oauth.token.key.enable_http2);
     }
 
     #[test]

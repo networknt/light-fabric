@@ -87,7 +87,7 @@ pub fn load_unified_security_config(
     Ok(config.enabled.then_some(config))
 }
 
-pub fn verify_unified_security(
+pub async fn verify_unified_security(
     session: &mut Session,
     config: &UnifiedSecurityConfig,
     basic_config: Option<&BasicAuthConfig>,
@@ -127,7 +127,7 @@ pub fn verify_unified_security(
                 let runtime = security_runtime.ok_or_else(|| {
                     HandlerRejection::new(500, "ERR10001", "security.yml is not active")
                 })?;
-                return verify_jwt_request(session, runtime, request_path);
+                return verify_jwt_request(session, runtime, request_path).await;
             }
             if rule.sjwt || rule.swt {
                 return Err(HandlerRejection::new(

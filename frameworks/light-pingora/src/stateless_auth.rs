@@ -3,6 +3,7 @@ use crate::spa_auth::{
     SpaAuthResponse, SpaCookieConfig, SpaSessionOutcome, SpaSessionRuntime, generate_csrf,
     load_spa_token_client, query_param, social_scopes,
 };
+use crate::token::configure_client_tls;
 use light_runtime::{MaskSpec, ModuleKind, RuntimeConfig, RuntimeError};
 use pingora::prelude::Session;
 use serde::{Deserialize, Serialize};
@@ -197,7 +198,10 @@ impl StatelessAuthRuntime {
             .session
             .exchange_authorization_code(code.as_str(), csrf.as_str())
             .await?;
-        let (scopes, headers) = self.session.set_login_cookies(&token, csrf.as_str())?;
+        let (scopes, headers) = self
+            .session
+            .set_login_cookies(&token, csrf.as_str())
+            .await?;
         Ok(StatelessAuthOutcome::Respond(self.login_response(
             scopes,
             headers,
@@ -221,7 +225,10 @@ impl StatelessAuthRuntime {
                 csrf.as_str(),
             )
             .await?;
-        let (scopes, headers) = self.session.set_login_cookies(&token, csrf.as_str())?;
+        let (scopes, headers) = self
+            .session
+            .set_login_cookies(&token, csrf.as_str())
+            .await?;
         Ok(StatelessAuthOutcome::Respond(self.login_response(
             scopes,
             headers,
@@ -349,9 +356,7 @@ impl StatelessAuthRuntime {
         let mut builder = reqwest::Client::builder()
             .connect_timeout(Duration::from_millis(config.request.connect_timeout))
             .timeout(Duration::from_millis(config.request.timeout));
-        if !config.tls.verify_hostname {
-            builder = builder.danger_accept_invalid_hostnames(true);
-        }
+        builder = configure_client_tls(builder, &config.tls)?;
         let response = builder
             .build()
             .map_err(|error| {

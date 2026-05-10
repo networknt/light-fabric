@@ -1,15 +1,26 @@
 use crate::config_util::{
     deserialize_string_list, deserialize_string_map, request_header, request_header as header_value,
 };
-use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
-use light_runtime::{MaskSpec, ModuleKind, RuntimeConfig, RuntimeError};
+use crate::token::{
+    CLIENT_FILE, ClientRequestConfig, ClientTlsConfig, ClientTokenConfig, OAuthKeyConfig,
+    configure_client_tls,
+};
+use jsonwebtoken::{
+    Algorithm, DecodingKey, Validation, decode, decode_header,
+    jwk::{Jwk, JwkSet},
+};
+use light_runtime::{
+    DiscoveryNode, DiscoverySubscription, MaskSpec, ModuleKind, PortalRegistryClient,
+    RuntimeConfig, RuntimeError,
+};
 use pingora::prelude::Session;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::RwLock;
 
 pub const SECURITY_FILE: &str = "security.yml";
 pub const SECURITY_MODULE_ID: &str = "light-pingora/security";
@@ -165,32 +176,54 @@ impl Default for SecurityJwtConfig {
 pub struct SecurityRuntime {
     pub config: SecurityConfig,
     certificates: Arc<BTreeMap<String, Vec<u8>>>,
+    jwk_source: Option<Arc<JwkSource>>,
+    jwks: Arc<RwLock<BTreeMap<String, Jwk>>>,
     cache: Arc<Mutex<BTreeMap<String, CachedPrincipal>>>,
 }
 
 impl SecurityRuntime {
     fn new(config: SecurityConfig, runtime_config: &RuntimeConfig) -> Result<Self, RuntimeError> {
         let mut certificates = BTreeMap::new();
-        for (kid, file_name) in &config.jwt.certificate {
-            let file_name = file_name.trim();
-            if file_name.is_empty() {
-                continue;
+        if !config.bootstrap_from_key_service {
+            for (kid, file_name) in &config.jwt.certificate {
+                let file_name = file_name.trim();
+                if file_name.is_empty() {
+                    continue;
+                }
+                let path = resolve_config_file(runtime_config, file_name);
+                let content = std::fs::read(&path).map_err(|error| {
+                    RuntimeError::Unsupported(format!(
+                        "failed to read JWT certificate `{}`: {error}",
+                        path.display()
+                    ))
+                })?;
+                certificates.insert(kid.clone(), content);
             }
-            let path = resolve_config_file(runtime_config, file_name);
-            let content = std::fs::read(&path).map_err(|error| {
-                RuntimeError::Unsupported(format!(
-                    "failed to read JWT certificate `{}`: {error}",
-                    path.display()
-                ))
-            })?;
-            certificates.insert(kid.clone(), content);
         }
+        let jwk_source = load_jwk_source(runtime_config)?;
         Ok(Self {
             config,
             certificates: Arc::new(certificates),
+            jwk_source,
+            jwks: Arc::new(RwLock::new(BTreeMap::new())),
             cache: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
+}
+
+#[derive(Clone)]
+struct JwkSource {
+    key: OAuthKeyConfig,
+    request: ClientRequestConfig,
+    tls: ClientTlsConfig,
+    registry_client: Option<Arc<PortalRegistryClient>>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum JwkResponse {
+    Set(JwkSet),
+    Single(Jwk),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,7 +289,7 @@ pub fn load_security_runtime_from_file(
     )
 }
 
-pub fn verify_jwt_token(
+pub async fn verify_jwt_token(
     runtime: &SecurityRuntime,
     token: &str,
     expiry_mode: JwtExpiryMode,
@@ -273,13 +306,23 @@ pub fn verify_jwt_token(
 
     let header =
         decode_header(token).map_err(|_| HandlerRejection::unauthorized("invalid JWT header"))?;
-    let pem = certificate_for_token(runtime, header.kid.as_deref())
-        .ok_or_else(|| HandlerRejection::unauthorized("JWT key is not configured"))?;
-    let key = decoding_key_for_alg(pem.as_slice(), header.alg)
-        .map_err(|_| HandlerRejection::unauthorized("JWT key cannot verify token algorithm"))?;
+    let key = decoding_key_for_token(runtime, header.kid.as_deref(), header.alg).await?;
     let validation = validation_for_mode(&runtime.config, header.alg, expiry_mode);
-    let decoded = decode::<JsonValue>(token, &key, &validation)
-        .map_err(|_| HandlerRejection::unauthorized("JWT validation failed"))?;
+    let decoded = match decode::<JsonValue>(token, &key, &validation) {
+        Ok(decoded) => decoded,
+        Err(error) if runtime.jwk_source.is_some() => {
+            refresh_jwks(runtime).await?;
+            let key = decoding_key_for_token(runtime, header.kid.as_deref(), header.alg).await?;
+            decode::<JsonValue>(token, &key, &validation).map_err(|_| {
+                tracing::debug!("JWT validation failed after JWKS refresh: {error}");
+                HandlerRejection::unauthorized("JWT validation failed")
+            })?
+        }
+        Err(error) => {
+            tracing::debug!("JWT validation failed: {error}");
+            return Err(HandlerRejection::unauthorized("JWT validation failed"));
+        }
+    };
     validate_issuer_and_audience(&runtime.config, &decoded.claims)?;
     let principal = principal_from_claims(decoded.claims);
     if matches!(expiry_mode, JwtExpiryMode::Enforce) {
@@ -288,7 +331,7 @@ pub fn verify_jwt_token(
     Ok(principal)
 }
 
-pub fn verify_jwt_request(
+pub async fn verify_jwt_request(
     session: &mut Session,
     runtime: &SecurityRuntime,
     request_path: &str,
@@ -324,7 +367,7 @@ pub fn verify_jwt_request(
         return Ok(Some(principal));
     }
 
-    let principal = verify_jwt_token(runtime, token.as_str(), JwtExpiryMode::Enforce)?;
+    let principal = verify_jwt_token(runtime, token.as_str(), JwtExpiryMode::Enforce).await?;
     apply_pass_through_claims(session, config, &principal)?;
     Ok(Some(principal))
 }
@@ -384,6 +427,9 @@ fn claim_audience_matches(claims: &JsonValue, configured: &[&str]) -> bool {
 }
 
 fn certificate_for_token(runtime: &SecurityRuntime, kid: Option<&str>) -> Option<Vec<u8>> {
+    if runtime.config.bootstrap_from_key_service {
+        return None;
+    }
     if let Some(kid) = kid {
         if let Some(certificate) = runtime.certificates.get(kid) {
             return Some(certificate.clone());
@@ -393,6 +439,26 @@ fn certificate_for_token(runtime: &SecurityRuntime, kid: Option<&str>) -> Option
         return runtime.certificates.values().next().cloned();
     }
     None
+}
+
+async fn decoding_key_for_token(
+    runtime: &SecurityRuntime,
+    kid: Option<&str>,
+    algorithm: Algorithm,
+) -> Result<DecodingKey, HandlerRejection> {
+    if runtime.config.bootstrap_from_key_service {
+        if let Some(key) = decoding_key_from_jwk(runtime, kid).await? {
+            return Ok(key);
+        }
+    }
+    if let Some(pem) = certificate_for_token(runtime, kid) {
+        return decoding_key_for_alg(pem.as_slice(), algorithm)
+            .map_err(|_| HandlerRejection::unauthorized("JWT key cannot verify token algorithm"));
+    }
+    if let Some(key) = decoding_key_from_jwk(runtime, kid).await? {
+        return Ok(key);
+    }
+    Err(HandlerRejection::unauthorized("JWT key is not configured"))
 }
 
 fn decoding_key_for_alg(
@@ -409,6 +475,229 @@ fn decoding_key_for_alg(
         Algorithm::ES256 | Algorithm::ES384 => DecodingKey::from_ec_pem(pem),
         _ => DecodingKey::from_rsa_pem(pem),
     }
+}
+
+async fn decoding_key_from_jwk(
+    runtime: &SecurityRuntime,
+    kid: Option<&str>,
+) -> Result<Option<DecodingKey>, HandlerRejection> {
+    let Some(jwk) = jwk_for_token(runtime, kid).await? else {
+        return Ok(None);
+    };
+    DecodingKey::from_jwk(&jwk)
+        .map(Some)
+        .map_err(|_| HandlerRejection::unauthorized("JWK cannot verify token algorithm"))
+}
+
+async fn jwk_for_token(
+    runtime: &SecurityRuntime,
+    kid: Option<&str>,
+) -> Result<Option<Jwk>, HandlerRejection> {
+    if runtime.jwk_source.is_none() {
+        return Ok(None);
+    }
+    if let Some(jwk) = cached_jwk_for_token(runtime, kid).await {
+        return Ok(Some(jwk));
+    }
+    refresh_jwks(runtime).await?;
+    Ok(cached_jwk_for_token(runtime, kid).await)
+}
+
+async fn cached_jwk_for_token(runtime: &SecurityRuntime, kid: Option<&str>) -> Option<Jwk> {
+    let jwks = runtime.jwks.read().await;
+    if let Some(kid) = kid {
+        if let Some(jwk) = jwks.get(kid) {
+            return Some(jwk.clone());
+        }
+    }
+    if jwks.len() == 1 || (kid.is_none() && runtime.config.enable_relaxed_key_validation) {
+        return jwks.values().next().cloned();
+    }
+    None
+}
+
+async fn refresh_jwks(runtime: &SecurityRuntime) -> Result<(), HandlerRejection> {
+    let Some(source) = runtime.jwk_source.as_ref() else {
+        return Ok(());
+    };
+    let server_url = resolve_jwk_server_url(source).await?;
+    let url = jwk_endpoint_url(server_url.as_str(), source.key.uri.as_str())?;
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(Duration::from_millis(source.request.connect_timeout))
+        .timeout(Duration::from_millis(source.request.timeout));
+    builder = configure_client_tls(builder, &source.tls)?;
+    if !source.key.enable_http2 {
+        builder = builder.http1_only();
+    }
+    let client = builder.build().map_err(|error| {
+        HandlerRejection::new(500, "ERR10056", format!("invalid JWK client: {error}"))
+    })?;
+    let mut request = client.get(url.as_str()).header("accept", "application/json");
+    if let (Some(client_id), Some(client_secret)) = (
+        non_empty(source.key.client_id.as_deref()),
+        non_empty(source.key.client_secret.as_deref()),
+    ) {
+        request = request.basic_auth(client_id, Some(client_secret));
+    }
+    let response = request.send().await.map_err(|error| {
+        HandlerRejection::new(502, "ERR10056", format!("failed to request JWKS: {error}"))
+    })?;
+    let status = response.status();
+    let body = response.text().await.map_err(|error| {
+        HandlerRejection::new(502, "ERR10056", format!("failed to read JWKS response: {error}"))
+    })?;
+    if !status.is_success() {
+        return Err(HandlerRejection::new(
+            502,
+            "ERR10056",
+            format!("JWKS endpoint returned {status}: {body}"),
+        ));
+    }
+    let jwks = parse_jwks(body.as_str())?;
+    let mut entries = BTreeMap::new();
+    for jwk in jwks {
+        if let Some(kid) = jwk.common.key_id.clone().filter(|kid| !kid.trim().is_empty()) {
+            entries.insert(kid, jwk);
+        }
+    }
+    if entries.is_empty() {
+        return Err(HandlerRejection::new(
+            502,
+            "ERR10056",
+            "JWKS endpoint did not return any keys with kid",
+        ));
+    }
+    *runtime.jwks.write().await = entries;
+    Ok(())
+}
+
+fn load_jwk_source(runtime_config: &RuntimeConfig) -> Result<Option<Arc<JwkSource>>, RuntimeError> {
+    let client =
+        match runtime_config
+            .module_registry
+            .load_config::<ClientTokenConfig>(runtime_config, CLIENT_FILE)
+        {
+            Ok(config) => config,
+            Err(RuntimeError::MissingConfig(file)) if file == CLIENT_FILE => return Ok(None),
+            Err(error) => return Err(error),
+        };
+    let key = client.oauth.token.key;
+    if non_empty(key.server_url.as_deref()).is_none()
+        && non_empty(key.service_id.as_deref()).is_none()
+    {
+        return Ok(None);
+    }
+    Ok(Some(Arc::new(JwkSource {
+        key,
+        request: client.request,
+        tls: client.tls,
+        registry_client: runtime_config.registry_client.clone(),
+    })))
+}
+
+fn parse_jwks(body: &str) -> Result<Vec<Jwk>, HandlerRejection> {
+    let response = serde_json::from_str::<JwkResponse>(body).map_err(|error| {
+        HandlerRejection::new(502, "ERR10056", format!("invalid JWKS response: {error}"))
+    })?;
+    Ok(match response {
+        JwkResponse::Set(set) => set.keys,
+        JwkResponse::Single(jwk) => vec![jwk],
+    })
+}
+
+async fn resolve_jwk_server_url(source: &JwkSource) -> Result<String, HandlerRejection> {
+    if let Some(server_url) = non_empty(source.key.server_url.as_deref()) {
+        return Ok(server_url.to_string());
+    }
+    let service_id = non_empty(source.key.service_id.as_deref()).ok_or_else(|| {
+        HandlerRejection::new(
+            502,
+            "ERR10056",
+            "client.yml oauth.token.key server_url or serviceId is required",
+        )
+    })?;
+    let registry_client = source.registry_client.as_deref().ok_or_else(|| {
+        HandlerRejection::new(
+            502,
+            "ERR10056",
+            "JWK serviceId discovery requires portal registry to be enabled",
+        )
+    })?;
+    let snapshot = registry_client
+        .lookup_discovery(DiscoverySubscription {
+            service_id: service_id.to_string(),
+            env_tag: None,
+            protocol: None,
+        })
+        .await
+        .map_err(|error| {
+            HandlerRejection::new(
+                502,
+                "ERR10056",
+                format!("failed to discover JWK service `{service_id}`: {error}"),
+            )
+        })?;
+    let node = select_jwk_node(&snapshot.nodes).ok_or_else(|| {
+        HandlerRejection::new(
+            502,
+            "ERR10056",
+            format!("JWK service `{service_id}` has no usable discovery nodes"),
+        )
+    })?;
+    Ok(discovery_node_base_url(node))
+}
+
+fn select_jwk_node(nodes: &[DiscoveryNode]) -> Option<&DiscoveryNode> {
+    nodes
+        .iter()
+        .filter(|node| node.connected && node.port != 0)
+        .find(|node| node.protocol.eq_ignore_ascii_case("https"))
+        .or_else(|| {
+            nodes
+                .iter()
+                .filter(|node| node.connected && node.port != 0)
+                .find(|node| node.protocol.eq_ignore_ascii_case("http"))
+        })
+}
+
+fn discovery_node_base_url(node: &DiscoveryNode) -> String {
+    let host = if node.address.contains(':') && !node.address.starts_with('[') {
+        format!("[{}]", node.address)
+    } else {
+        node.address.clone()
+    };
+    format!(
+        "{}://{}:{}",
+        node.protocol.to_ascii_lowercase(),
+        host,
+        node.port
+    )
+}
+
+fn jwk_endpoint_url(server_url: &str, uri: &str) -> Result<String, HandlerRejection> {
+    let server_url = server_url.trim().trim_end_matches('/');
+    if server_url.is_empty() {
+        return Err(HandlerRejection::new(
+            502,
+            "ERR10056",
+            "JWK server_url is empty",
+        ));
+    }
+    let uri = uri.trim();
+    let uri = if uri.starts_with('/') {
+        uri.to_string()
+    } else {
+        format!("/{uri}")
+    };
+    let url = format!("{server_url}{uri}");
+    url::Url::parse(url.as_str()).map_err(|error| {
+        HandlerRejection::new(
+            502,
+            "ERR10056",
+            format!("invalid JWK endpoint URL `{url}`: {error}"),
+        )
+    })?;
+    Ok(url)
 }
 
 fn bearer_token(session: &Session) -> Option<String> {
@@ -443,6 +732,10 @@ fn claim_string(claims: &JsonValue, name: &str) -> Option<String> {
         return Some(value.to_string());
     }
     None
+}
+
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 fn apply_pass_through_claims(

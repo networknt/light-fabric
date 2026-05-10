@@ -1,5 +1,6 @@
 tls:
   verifyHostname: ${client.verifyHostname:false}
+  caCertPath: ${client.caCertPath:}
 oauth:
   multipleAuthServers: ${client.multipleAuthServers:false}
   token:
@@ -39,6 +40,13 @@ oauth:
       subjectTokenType: ${client.subjectTokenType:}
       requestedTokenType: ${client.requestedTokenType:}
       audience: ${client.tokenExAudience:}
+    key:
+      server_url: ${client.tokenKeyServerUrl:}
+      serviceId: ${client.tokenKeyServiceId:}
+      uri: ${client.tokenKeyUri:/oauth2/key}
+      client_id: ${client.tokenKeyClientId:}
+      client_secret: ${client.tokenKeyClientSecret:}
+      enableHttp2: ${client.tokenKeyEnableHttp2:true}
 pathPrefixServices: ${client.pathPrefixServices:}
 request:
   connectTimeout: ${client.connectTimeout:2000}
