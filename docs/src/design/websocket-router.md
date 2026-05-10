@@ -2,9 +2,11 @@
 
 ## Status
 
-Phase 1 is implemented in `light-pingora`: configuration parsing, Java-compatible
-`pathPrefixService` normalization, route resolution, and upstream URI cleanup.
-Gateway request-flow wiring remains for Phase 2.
+Phases 1 and 2 are implemented. Phase 1 added configuration parsing,
+Java-compatible `pathPrefixService` normalization, route resolution, and
+upstream URI cleanup in `light-pingora`. Phase 2 wired the `websocket` handler
+into `light-gateway` with WebSocket upgrade detection, discovery-based upstream
+selection, request context storage, and upstream header/query cleanup.
 
 ## Purpose
 
@@ -447,6 +449,8 @@ Status: implemented.
 - Add unit tests.
 
 ### Phase 2: Gateway Handler Wiring
+
+Status: implemented.
 
 - Connect the existing `websocket` handler id to the router runtime.
 - Detect WebSocket upgrade requests in the Pingora request flow.

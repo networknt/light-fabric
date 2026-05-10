@@ -1,9 +1,16 @@
-use light_runtime::{ModuleKind, RuntimeConfig, RuntimeError};
+use crate::proxy::ProxyTarget;
+use async_trait::async_trait;
+use light_runtime::{
+    DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, ModuleKind, PortalRegistryClient,
+    RuntimeConfig, RuntimeError,
+};
+use pingora::http::RequestHeader;
 use serde::de::{Error as DeError, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_yaml::Value as YamlValue;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 use url::form_urlencoded;
 
 pub const WEBSOCKET_ROUTER_FILE: &str = "websocket-router.yml";
@@ -108,6 +115,9 @@ pub struct WebSocketRouteDecision {
 pub enum WebSocketRouteError {
     MissingTarget,
     InvalidProtocol(String),
+    DiscoveryUnavailable(String),
+    DiscoveryFailed(String),
+    NoUsableEndpoint(String),
 }
 
 impl fmt::Display for WebSocketRouteError {
@@ -117,22 +127,69 @@ impl fmt::Display for WebSocketRouteError {
             Self::InvalidProtocol(protocol) => {
                 write!(f, "unsupported websocket-router protocol `{protocol}`")
             }
+            Self::DiscoveryUnavailable(service_id) => write!(
+                f,
+                "websocket-router discovery is not available for `{service_id}`"
+            ),
+            Self::DiscoveryFailed(message) => {
+                write!(f, "websocket-router discovery lookup failed: {message}")
+            }
+            Self::NoUsableEndpoint(service_id) => write!(
+                f,
+                "websocket-router service `{service_id}` has no usable endpoints"
+            ),
         }
     }
 }
 
 impl std::error::Error for WebSocketRouteError {}
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub struct WebSocketRouterRuntime {
     config: WebSocketRouterConfig,
+    discovery: Option<Arc<dyn WebSocketDiscoveryResolver>>,
+}
+
+impl fmt::Debug for WebSocketRouterRuntime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WebSocketRouterRuntime")
+            .field("path_prefix_count", &self.config.path_prefix_service.len())
+            .field("discovery", &self.discovery.is_some())
+            .finish()
+    }
+}
+
+#[async_trait]
+pub trait WebSocketDiscoveryResolver: Send + Sync {
+    async fn lookup_discovery(
+        &self,
+        subscription: DiscoverySubscription,
+    ) -> Result<DiscoverySnapshot, String>;
+}
+
+#[async_trait]
+impl WebSocketDiscoveryResolver for PortalRegistryClient {
+    async fn lookup_discovery(
+        &self,
+        subscription: DiscoverySubscription,
+    ) -> Result<DiscoverySnapshot, String> {
+        PortalRegistryClient::lookup_discovery(self, subscription)
+            .await
+            .map_err(|error| error.to_string())
+    }
 }
 
 impl WebSocketRouterRuntime {
     pub fn new(config: WebSocketRouterConfig) -> Result<Self, RuntimeError> {
+        Self::new_with_discovery(config, None)
+    }
+
+    pub fn new_with_discovery(
+        config: WebSocketRouterConfig,
+        discovery: Option<Arc<dyn WebSocketDiscoveryResolver>>,
+    ) -> Result<Self, RuntimeError> {
         validate_config(&config)?;
-        Ok(Self { config })
+        Ok(Self { config, discovery })
     }
 
     pub fn config(&self) -> &WebSocketRouterConfig {
@@ -191,6 +248,41 @@ impl WebSocketRouterRuntime {
             source,
         })
     }
+
+    pub async fn select_target(
+        &self,
+        decision: &WebSocketRouteDecision,
+        index: usize,
+    ) -> Result<ProxyTarget, WebSocketRouteError> {
+        let Some(discovery) = self.discovery.as_ref() else {
+            return Err(WebSocketRouteError::DiscoveryUnavailable(
+                decision.service_id.clone(),
+            ));
+        };
+        let snapshot = discovery
+            .lookup_discovery(DiscoverySubscription {
+                service_id: decision.service_id.clone(),
+                env_tag: decision.env_tag.clone(),
+                protocol: Some(decision.protocol.clone()),
+            })
+            .await
+            .map_err(WebSocketRouteError::DiscoveryFailed)?;
+        let targets = snapshot
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.protocol
+                    .eq_ignore_ascii_case(decision.protocol.as_str())
+            })
+            .filter_map(discovery_node_to_target)
+            .collect::<Vec<_>>();
+        if targets.is_empty() {
+            return Err(WebSocketRouteError::NoUsableEndpoint(
+                decision.service_id.clone(),
+            ));
+        }
+        Ok(targets[index % targets.len()].clone())
+    }
 }
 
 pub fn load_websocket_router_runtime(
@@ -215,7 +307,31 @@ pub fn load_websocket_router_runtime(
         None,
         true,
     )?;
-    Ok(Some(WebSocketRouterRuntime::new(config)?))
+    Ok(Some(WebSocketRouterRuntime::new_with_discovery(
+        config,
+        discovery_resolver(runtime_config.registry_client.clone()),
+    )?))
+}
+
+pub fn apply_websocket_upstream_request(
+    upstream_request: &mut RequestHeader,
+    decision: &WebSocketRouteDecision,
+) -> pingora::Result<()> {
+    let uri = decision.upstream_path_and_query.parse().map_err(|error| {
+        pingora::Error::because(
+            pingora::ErrorType::InvalidHTTPHeader,
+            format!(
+                "invalid websocket upstream URI `{}`",
+                decision.upstream_path_and_query
+            ),
+            error,
+        )
+    })?;
+    upstream_request.set_uri(uri);
+    for header in SERVICE_ID_HEADERS {
+        upstream_request.remove_header(header);
+    }
+    Ok(())
 }
 
 fn load_websocket_router_config(
@@ -232,6 +348,46 @@ fn load_websocket_router_config(
         }
     }
     Ok(None)
+}
+
+fn discovery_resolver(
+    client: Option<Arc<PortalRegistryClient>>,
+) -> Option<Arc<dyn WebSocketDiscoveryResolver>> {
+    client.map(|client| client as Arc<dyn WebSocketDiscoveryResolver>)
+}
+
+fn discovery_node_to_target(node: &DiscoveryNode) -> Option<ProxyTarget> {
+    if node.port == 0 || !node.connected {
+        return None;
+    }
+    let protocol = node.protocol.to_ascii_lowercase();
+    let tls = match protocol.as_str() {
+        "http" => false,
+        "https" => true,
+        _ => return None,
+    };
+    let host = host_for_discovery(&node.address);
+    let address = format!("{host}:{}", node.port);
+    let sni = if tls {
+        node.address.clone()
+    } else {
+        String::new()
+    };
+    Some(ProxyTarget {
+        address: address.clone(),
+        tls,
+        sni,
+        host_header: address,
+        path_prefix: String::new(),
+    })
+}
+
+fn host_for_discovery(host: &str) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -573,10 +729,12 @@ mod tests {
     use super::*;
     use light_runtime::config::ClientConfig;
     use light_runtime::{
-        BootstrapConfig, ModuleRegistry, PortalRegistryConfig, ServerConfig, ServiceIdentity,
+        BootstrapConfig, DiscoverySubscription, ModuleRegistry, PortalRegistryConfig, ServerConfig,
+        ServiceIdentity,
     };
     use std::collections::HashMap;
     use std::sync::Arc;
+    use std::sync::Mutex;
     use tempfile::TempDir;
 
     fn runtime_config(config_dir: &TempDir) -> RuntimeConfig {
@@ -828,6 +986,80 @@ pathPrefixService:
         );
     }
 
+    #[tokio::test]
+    async fn select_target_uses_discovery_protocol_env_and_round_robin_index() {
+        let discovery = Arc::new(FakeDiscovery::new(discovery_snapshot(
+            "com.networknt.llmchat-1.0.0",
+            Some("dev"),
+        )));
+        let runtime = WebSocketRouterRuntime::new_with_discovery(
+            serde_yaml::from_str(
+                r#"
+pathPrefixService:
+  /chat:
+    serviceId: com.networknt.llmchat-1.0.0
+    protocol: https
+    envTag: dev
+"#,
+            )
+            .expect("parse config"),
+            Some(discovery.clone()),
+        )
+        .expect("runtime");
+        let decision = runtime
+            .resolve("/chat/room", None, std::iter::empty::<(&str, &str)>())
+            .expect("resolve");
+
+        let target = runtime
+            .select_target(&decision, 1)
+            .await
+            .expect("select target");
+
+        assert_eq!(target.address, "api2.example.com:9443");
+        assert!(target.tls);
+        assert_eq!(target.sni, "api2.example.com");
+        assert_eq!(
+            discovery.lookups.lock().expect("lookup lock")[0],
+            DiscoverySubscription {
+                service_id: "com.networknt.llmchat-1.0.0".to_string(),
+                env_tag: Some("dev".to_string()),
+                protocol: Some("https".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn apply_upstream_request_strips_routing_headers_and_preserves_handshake_headers() {
+        let decision = WebSocketRouteDecision {
+            service_id: "com.networknt.llmchat-1.0.0".to_string(),
+            protocol: "http".to_string(),
+            env_tag: None,
+            upstream_path_and_query: "/chat/room?room=one".to_string(),
+            source: WebSocketRouteSource::Query,
+        };
+        let mut request =
+            RequestHeader::build("GET", b"/chat/room?service_id=svc&room=one", Some(8))
+                .expect("request");
+        request
+            .insert_header("service_id", "com.networknt.llmchat-1.0.0")
+            .expect("service header");
+        request
+            .insert_header("Sec-WebSocket-Protocol", "chat")
+            .expect("subprotocol header");
+
+        apply_websocket_upstream_request(&mut request, &decision).expect("apply request");
+
+        assert_eq!(
+            request.uri.path_and_query().unwrap().as_str(),
+            "/chat/room?room=one"
+        );
+        assert!(!request.headers.contains_key("service_id"));
+        assert_eq!(
+            request.headers["sec-websocket-protocol"].to_str().unwrap(),
+            "chat"
+        );
+    }
+
     #[test]
     fn loader_accepts_legacy_yaml_file_and_registers_module() {
         let config_dir = TempDir::new().expect("config temp dir");
@@ -856,5 +1088,69 @@ pathPrefixService:
                 .iter()
                 .any(|entry| entry.module_id == WEBSOCKET_ROUTER_MODULE_ID && entry.active)
         );
+    }
+
+    fn discovery_snapshot(service_id: &str, env_tag: Option<&str>) -> DiscoverySnapshot {
+        serde_json::from_value(serde_json::json!({
+            "serviceId": service_id,
+            "envTag": env_tag,
+            "protocol": "https",
+            "nodes": [
+                {
+                    "runtimeInstanceId": "0195ef10-2f24-7af2-85e9-a8ef54642f40",
+                    "serviceId": service_id,
+                    "envTag": env_tag,
+                    "environment": "dev",
+                    "version": "1.0.0",
+                    "protocol": "https",
+                    "address": "api1.example.com",
+                    "port": 9443,
+                    "tags": {},
+                    "connectedAt": "2026-01-01T00:00:00Z",
+                    "lastSeenAt": "2026-01-01T00:00:01Z",
+                    "connected": true
+                },
+                {
+                    "runtimeInstanceId": "0195ef10-2f24-7af2-85e9-a8ef54642f41",
+                    "serviceId": service_id,
+                    "envTag": env_tag,
+                    "environment": "dev",
+                    "version": "1.0.0",
+                    "protocol": "https",
+                    "address": "api2.example.com",
+                    "port": 9443,
+                    "tags": {},
+                    "connectedAt": "2026-01-01T00:00:00Z",
+                    "lastSeenAt": "2026-01-01T00:00:01Z",
+                    "connected": true
+                }
+            ]
+        }))
+        .expect("discovery snapshot")
+    }
+
+    struct FakeDiscovery {
+        snapshot: DiscoverySnapshot,
+        lookups: Mutex<Vec<DiscoverySubscription>>,
+    }
+
+    impl FakeDiscovery {
+        fn new(snapshot: DiscoverySnapshot) -> Self {
+            Self {
+                snapshot,
+                lookups: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl WebSocketDiscoveryResolver for FakeDiscovery {
+        async fn lookup_discovery(
+            &self,
+            subscription: DiscoverySubscription,
+        ) -> Result<DiscoverySnapshot, String> {
+            self.lookups.lock().expect("lookup lock").push(subscription);
+            Ok(self.snapshot.clone())
+        }
     }
 }

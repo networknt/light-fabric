@@ -10,16 +10,18 @@ use light_pingora::{
     PingoraApp, PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerKind,
     PingoraHandlerRegistry, PingoraTransport, ProxyRoute, ProxyTarget, RateLimitHeaders,
     RateLimitRuntime, RouterDecision, RouterRoute, SecurityRuntime, StaticResolution,
-    StaticResourceSet, TokenRuntime, UnifiedSecurityConfig, apply_correlation_request,
+    StaticResourceSet, TokenRuntime, UnifiedSecurityConfig, WebSocketRouteDecision,
+    WebSocketRouteError, WebSocketRouterRuntime, apply_correlation_request,
     apply_correlation_response, apply_cors_response, apply_header_request, apply_header_response,
     apply_path_prefix_service, apply_rate_limit_headers, apply_router_upstream_request,
-    apply_token_request, build_metrics_event, check_rate_limit, correlation_id_for_upstream,
-    evaluate_cors_request, load_active_handlers, load_api_key_config, load_basic_auth_config,
-    load_correlation_config, load_cors_config, load_header_config, load_mcp_router_runtime,
-    load_metrics_config, load_path_prefix_service_config, load_proxy_route,
-    load_rate_limit_runtime, load_router_route, load_security_runtime, load_static_resources,
-    load_token_runtime, load_unified_security_config, select_router_target, verify_api_key,
-    verify_basic_auth, verify_jwt_request, verify_unified_security,
+    apply_token_request, apply_websocket_upstream_request, build_metrics_event, check_rate_limit,
+    correlation_id_for_upstream, evaluate_cors_request, load_active_handlers, load_api_key_config,
+    load_basic_auth_config, load_correlation_config, load_cors_config, load_header_config,
+    load_mcp_router_runtime, load_metrics_config, load_path_prefix_service_config,
+    load_proxy_route, load_rate_limit_runtime, load_router_route, load_security_runtime,
+    load_static_resources, load_token_runtime, load_unified_security_config,
+    load_websocket_router_runtime, select_router_target, verify_api_key, verify_basic_auth,
+    verify_jwt_request, verify_unified_security,
 };
 use light_runtime::{
     CacheRegistry, ConfigManager, LightRuntimeBuilder, ReloadContext, ReloadOutcome,
@@ -65,6 +67,7 @@ struct GatewayProxy {
     path_prefix_service_config: Arc<ConfigManager<Option<PathPrefixServiceConfig>>>,
     token_runtime: Arc<ConfigManager<Option<TokenRuntime>>>,
     mcp_router: Arc<ConfigManager<Option<McpRouterRuntime>>>,
+    websocket_router: Arc<ConfigManager<Option<WebSocketRouterRuntime>>>,
     metrics_recorder: Arc<MetricsRecorder>,
     proxy_route: Arc<ConfigManager<Option<ProxyRoute>>>,
     router_route: Arc<ConfigManager<Option<RouterRoute>>>,
@@ -124,6 +127,8 @@ impl GatewayProxy {
         )?;
         let token_runtime = load_token_runtime(config, active_handlers.is_handler_active("token"))?;
         let mcp_router = load_mcp_router_runtime(config, active_handlers.is_handler_active("mcp"))?;
+        let websocket_router =
+            load_websocket_router_runtime(config, active_handlers.is_handler_active("websocket"))?;
         let router_route = load_router_route(config, active_handlers.is_handler_active("router"))?;
         let proxy_route = load_proxy_route(config)?;
         let static_resources = load_static_resources(config)?;
@@ -140,6 +145,7 @@ impl GatewayProxy {
         let path_prefix_service_config = Arc::new(ConfigManager::new(path_prefix_service_config));
         let token_runtime = Arc::new(ConfigManager::new(token_runtime));
         let mcp_router = Arc::new(ConfigManager::new(mcp_router));
+        let websocket_router = Arc::new(ConfigManager::new(websocket_router));
         let router_route = Arc::new(ConfigManager::new(router_route));
         let proxy_route = Arc::new(ConfigManager::new(proxy_route));
         let static_resources = Arc::new(ConfigManager::new(static_resources));
@@ -161,6 +167,7 @@ impl GatewayProxy {
                 path_prefix_service_config: Arc::clone(&path_prefix_service_config),
                 token_runtime: Arc::clone(&token_runtime),
                 mcp_router: Arc::clone(&mcp_router),
+                websocket_router: Arc::clone(&websocket_router),
                 router_route: Arc::clone(&router_route),
             }),
         );
@@ -264,6 +271,13 @@ impl GatewayProxy {
             .module_registry
             .register_reloader(light_pingora::RULE_MODULE_ID, mcp_reloader);
         config.module_registry.register_reloader(
+            light_pingora::WEBSOCKET_ROUTER_MODULE_ID,
+            Arc::new(WebSocketRouterReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                websocket_router: Arc::clone(&websocket_router),
+            }),
+        );
+        config.module_registry.register_reloader(
             light_pingora::PROXY_MODULE_ID,
             Arc::new(ProxyReloader {
                 proxy_route: Arc::clone(&proxy_route),
@@ -301,6 +315,7 @@ impl GatewayProxy {
             path_prefix_service_config,
             token_runtime,
             mcp_router,
+            websocket_router,
             metrics_recorder,
             proxy_route,
             router_route,
@@ -563,6 +578,24 @@ impl GatewayProxy {
         .await
     }
 
+    async fn write_string_response(
+        &self,
+        session: &mut Session,
+        ctx: &mut GatewayRequestContext,
+        status: u16,
+        body: String,
+    ) -> pingora::Result<bool> {
+        self.write_bytes_response(
+            session,
+            ctx,
+            status,
+            "text/plain; charset=utf-8",
+            None,
+            Bytes::from(body),
+        )
+        .await
+    }
+
     async fn write_bytes_response(
         &self,
         session: &mut Session,
@@ -813,6 +846,11 @@ impl GatewayProxy {
     }
 
     #[cfg(test)]
+    fn current_websocket_router(&self) -> Arc<Option<WebSocketRouterRuntime>> {
+        self.websocket_router.load()
+    }
+
+    #[cfg(test)]
     fn active_handler_ids(&self) -> Vec<String> {
         self.active_handlers.load().active_handler_ids().to_vec()
     }
@@ -832,6 +870,7 @@ struct HandlerReloader {
     path_prefix_service_config: Arc<ConfigManager<Option<PathPrefixServiceConfig>>>,
     token_runtime: Arc<ConfigManager<Option<TokenRuntime>>>,
     mcp_router: Arc<ConfigManager<Option<McpRouterRuntime>>>,
+    websocket_router: Arc<ConfigManager<Option<WebSocketRouterRuntime>>>,
     router_route: Arc<ConfigManager<Option<RouterRoute>>>,
 }
 
@@ -900,6 +939,10 @@ impl ReloadableModule for HandlerReloader {
             &ctx.runtime_config,
             active_handlers.is_handler_active("mcp"),
         )?;
+        let websocket_router = load_websocket_router_runtime(
+            &ctx.runtime_config,
+            active_handlers.is_handler_active("websocket"),
+        )?;
         let router_route = load_router_route(
             &ctx.runtime_config,
             active_handlers.is_handler_active("router"),
@@ -918,6 +961,7 @@ impl ReloadableModule for HandlerReloader {
             .store(path_prefix_service_config);
         self.token_runtime.store(token_runtime);
         self.mcp_router.store(mcp_router);
+        self.websocket_router.store(websocket_router);
         self.router_route.store(router_route);
         Ok(ReloadOutcome::success("handler.yml reloaded"))
     }
@@ -1109,6 +1153,21 @@ impl ReloadableModule for McpRouterReloader {
         let runtime = load_mcp_router_runtime(&ctx.runtime_config, active)?;
         self.mcp_router.store(runtime);
         Ok(ReloadOutcome::success("mcp-router.yml reloaded"))
+    }
+}
+
+struct WebSocketRouterReloader {
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    websocket_router: Arc<ConfigManager<Option<WebSocketRouterRuntime>>>,
+}
+
+#[async_trait]
+impl ReloadableModule for WebSocketRouterReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let active = self.active_handlers.load().is_handler_active("websocket");
+        let runtime = load_websocket_router_runtime(&ctx.runtime_config, active)?;
+        self.websocket_router.store(runtime);
+        Ok(ReloadOutcome::success("websocket-router.yml reloaded"))
     }
 }
 
@@ -1340,6 +1399,65 @@ impl ProxyHttp for GatewayProxy {
                         return self.write_rejection_response(session, ctx, rejection).await;
                     }
                 }
+                "websocket" => {
+                    let runtime = self.websocket_router.load();
+                    let Some(runtime) = runtime.as_ref().as_ref() else {
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                        return self
+                            .write_text_response(
+                                session,
+                                ctx,
+                                502,
+                                "websocket router is not configured",
+                            )
+                            .await;
+                    };
+                    if !is_websocket_upgrade(session) {
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                        return self
+                            .write_text_response(session, ctx, 426, "upgrade required")
+                            .await;
+                    }
+                    let decision = match runtime.resolve(
+                        &request_path,
+                        session.req_header().uri.query(),
+                        agent_headers(session),
+                    ) {
+                        Ok(decision) => decision,
+                        Err(error) => {
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            return self
+                                .write_string_response(
+                                    session,
+                                    ctx,
+                                    websocket_route_status(&error),
+                                    error.to_string(),
+                                )
+                                .await;
+                        }
+                    };
+                    let index = self.next_upstream.fetch_add(1, Ordering::Relaxed);
+                    match runtime.select_target(&decision, index).await {
+                        Ok(target) => {
+                            ctx.proxy_target = Some(target);
+                            ctx.rewrite_host_header = true;
+                            ctx.websocket_decision = Some(decision);
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            return Ok(false);
+                        }
+                        Err(error) => {
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            return self
+                                .write_string_response(
+                                    session,
+                                    ctx,
+                                    websocket_route_status(&error),
+                                    error.to_string(),
+                                )
+                                .await;
+                        }
+                    }
+                }
                 "mcp" => {
                     let runtime = self.mcp_router.load();
                     let Some(runtime) = runtime.as_ref().as_ref() else {
@@ -1487,7 +1605,9 @@ impl ProxyHttp for GatewayProxy {
                 self.server_scheme.as_str(),
                 self.server_port,
             )?;
-            if let Some(decision) = ctx.router_decision.as_ref() {
+            if let Some(decision) = ctx.websocket_decision.as_ref() {
+                apply_websocket_upstream_request(upstream_request, decision)?;
+            } else if let Some(decision) = ctx.router_decision.as_ref() {
                 let route = self.router_route.load();
                 let route = route.as_ref().as_ref().ok_or_else(|| {
                     Error::explain(
@@ -1542,6 +1662,7 @@ struct GatewayRequestContext {
     rewrite_host_header: bool,
     reuse_x_forwarded: bool,
     router_decision: Option<RouterDecision>,
+    websocket_decision: Option<WebSocketRouteDecision>,
     request_start: Instant,
     handler_ids: Vec<String>,
     request_path: String,
@@ -1565,6 +1686,7 @@ impl Default for GatewayRequestContext {
             rewrite_host_header: false,
             reuse_x_forwarded: false,
             router_decision: None,
+            websocket_decision: None,
             request_start: Instant::now(),
             handler_ids: Vec::new(),
             request_path: String::new(),
@@ -1589,6 +1711,7 @@ impl GatewayRequestContext {
         self.rewrite_host_header = false;
         self.reuse_x_forwarded = false;
         self.router_decision = None;
+        self.websocket_decision = None;
         self.request_start = Instant::now();
         self.handler_ids.clear();
         self.request_path.clear();
@@ -1757,6 +1880,43 @@ fn is_head_request(session: &Session) -> bool {
         .method
         .as_str()
         .eq_ignore_ascii_case("HEAD")
+}
+
+fn is_websocket_upgrade(session: &Session) -> bool {
+    session
+        .req_header()
+        .method
+        .as_str()
+        .eq_ignore_ascii_case("GET")
+        && header_contains_token(session, "connection", "upgrade")
+        && header_contains_token(session, "upgrade", "websocket")
+        && request_header(session, "sec-websocket-key")
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn header_contains_token(session: &Session, name: &str, token: &str) -> bool {
+    session
+        .req_header()
+        .headers
+        .get_all(name)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .any(|value| {
+            value
+                .split(',')
+                .any(|part| part.trim().eq_ignore_ascii_case(token))
+        })
+}
+
+fn websocket_route_status(error: &WebSocketRouteError) -> u16 {
+    match error {
+        WebSocketRouteError::MissingTarget => 403,
+        WebSocketRouteError::InvalidProtocol(_) => 400,
+        WebSocketRouteError::DiscoveryUnavailable(_)
+        | WebSocketRouteError::DiscoveryFailed(_)
+        | WebSocketRouteError::NoUsableEndpoint(_) => 502,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2400,6 +2560,58 @@ tools:
         );
     }
 
+    #[test]
+    fn gateway_loads_websocket_router_when_websocket_handler_is_active() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            r#"
+handlers:
+  - websocket
+paths:
+  - path: /chat
+    method: GET
+    exec:
+      - websocket
+defaultHandlers: []
+"#,
+        )
+        .expect("write handler config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::WEBSOCKET_ROUTER_FILE),
+            r#"
+defaultProtocol: https
+defaultEnvTag: dev
+pathPrefixService:
+  /chat:
+    serviceId: com.networknt.llmchat-1.0.0
+    protocol: http
+"#,
+        )
+        .expect("write websocket config");
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+
+        let proxy = GatewayProxy::from_runtime_config(&config).expect("build proxy");
+
+        let websocket = proxy.current_websocket_router();
+        let websocket = websocket.as_ref().as_ref().expect("websocket runtime");
+        assert_eq!(
+            websocket.config().path_prefix_service["/chat"].service_id,
+            "com.networknt.llmchat-1.0.0"
+        );
+        assert!(
+            config
+                .module_registry
+                .module_summaries()
+                .iter()
+                .any(
+                    |entry| entry.module_id == light_pingora::WEBSOCKET_ROUTER_MODULE_ID
+                        && entry.active
+                )
+        );
+    }
+
     #[tokio::test]
     async fn gateway_reload_swaps_live_mcp_router_config() {
         let config_dir = TempDir::new().expect("config temp dir");
@@ -2479,6 +2691,85 @@ tools:
                 .tools[0]
                 .name,
             "forecast"
+        );
+    }
+
+    #[tokio::test]
+    async fn gateway_reload_swaps_live_websocket_router_config() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            r#"
+handlers:
+  - websocket
+paths:
+  - path: /chat
+    method: GET
+    exec:
+      - websocket
+defaultHandlers: []
+"#,
+        )
+        .expect("write handler config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::WEBSOCKET_ROUTER_FILE),
+            r#"
+pathPrefixService:
+  /chat: com.networknt.llmchat-1.0.0
+"#,
+        )
+        .expect("write websocket config");
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+        let proxy = GatewayProxy::from_runtime_config(&config).expect("build proxy");
+
+        assert_eq!(
+            proxy
+                .current_websocket_router()
+                .as_ref()
+                .as_ref()
+                .expect("websocket runtime")
+                .config()
+                .path_prefix_service["/chat"]
+                .service_id,
+            "com.networknt.llmchat-1.0.0"
+        );
+
+        std::fs::write(
+            external_dir
+                .path()
+                .join(light_pingora::WEBSOCKET_ROUTER_FILE),
+            r#"
+pathPrefixService:
+  /chat: com.networknt.chat-v2-1.0.0
+"#,
+        )
+        .expect("write external websocket config");
+
+        let result = config
+            .module_registry
+            .reload_modules(
+                ReloadContext::new(config.clone()),
+                &[light_pingora::WEBSOCKET_ROUTER_MODULE_ID.to_string()],
+            )
+            .await;
+
+        assert_eq!(
+            result.reloaded,
+            vec![light_pingora::WEBSOCKET_ROUTER_MODULE_ID]
+        );
+        assert!(result.skipped.is_empty());
+        assert!(result.failed.is_empty());
+        assert_eq!(
+            proxy
+                .current_websocket_router()
+                .as_ref()
+                .as_ref()
+                .expect("websocket runtime")
+                .config()
+                .path_prefix_service["/chat"]
+                .service_id,
+            "com.networknt.chat-v2-1.0.0"
         );
     }
 
