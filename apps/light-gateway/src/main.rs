@@ -3,18 +3,19 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use light_pingora::{
-    ActiveHandlerSet, ApiKeyConfig, AuthPrincipal, BasicAuthConfig, CorrelationConfig,
-    CorrelationState, CorsConfig, CorsRequestOutcome, CorsResponseHeaders, HandlerBuildContext,
-    HandlerMetricsLogLevel, HandlerRejection, HeaderConfig, McpHttpRequest, McpHttpResponse,
-    McpRequestContext, McpRouterRuntime, MetricsConfig, MetricsRecorder, PathPrefixServiceConfig,
-    PingoraApp, PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerKind,
-    PingoraHandlerRegistry, PingoraTransport, ProxyRoute, ProxyTarget, RateLimitHeaders,
-    RateLimitRuntime, RouterDecision, RouterRoute, SecurityRuntime, StaticResolution,
-    StaticResourceSet, TokenRuntime, UnifiedSecurityConfig, WebSocketRouteDecision,
-    WebSocketRouteError, WebSocketRouterRuntime, apply_correlation_request,
-    apply_correlation_response, apply_cors_response, apply_header_request, apply_header_response,
-    apply_path_prefix_service, apply_rate_limit_headers, apply_router_upstream_request,
-    apply_token_request, apply_websocket_upstream_request, build_metrics_event, check_rate_limit,
+    AccessDecision, ActiveHandlerSet, ApiKeyConfig, AuthPrincipal, BasicAuthConfig,
+    CorrelationConfig, CorrelationState, CorsConfig, CorsRequestOutcome, CorsResponseHeaders,
+    HandlerBuildContext, HandlerMetricsLogLevel, HandlerRejection, HeaderConfig, McpHttpRequest,
+    McpHttpResponse, McpRequestContext, McpRouterRuntime, MetricsConfig, MetricsRecorder,
+    PathPrefixServiceConfig, PingoraApp, PingoraHandler, PingoraHandlerDescriptor,
+    PingoraHandlerKind, PingoraHandlerRegistry, PingoraTransport, ProxyRoute, ProxyTarget,
+    RateLimitHeaders, RateLimitRuntime, RouterDecision, RouterRoute, SecurityRuntime,
+    StaticResolution, StaticResourceSet, TokenRuntime, UnifiedSecurityConfig,
+    WebSocketConnectionPermit, WebSocketRouteDecision, WebSocketRouteError, WebSocketRouterRuntime,
+    apply_correlation_request, apply_correlation_response, apply_cors_response,
+    apply_header_request, apply_header_response, apply_path_prefix_service,
+    apply_rate_limit_headers, apply_router_upstream_request, apply_token_request,
+    apply_websocket_upstream_request, build_metrics_event, check_rate_limit,
     correlation_id_for_upstream, evaluate_cors_request, load_active_handlers, load_api_key_config,
     load_basic_auth_config, load_correlation_config, load_cors_config, load_header_config,
     load_mcp_router_runtime, load_metrics_config, load_path_prefix_service_config,
@@ -264,19 +265,24 @@ impl GatewayProxy {
             Arc::clone(&mcp_reloader),
         );
         config.module_registry.register_reloader(
-            light_pingora::ACCESS_CONTROL_MODULE_ID,
-            Arc::clone(&mcp_reloader),
-        );
-        config
-            .module_registry
-            .register_reloader(light_pingora::RULE_MODULE_ID, mcp_reloader);
-        config.module_registry.register_reloader(
             light_pingora::WEBSOCKET_ROUTER_MODULE_ID,
             Arc::new(WebSocketRouterReloader {
                 active_handlers: Arc::clone(&active_handlers),
                 websocket_router: Arc::clone(&websocket_router),
             }),
         );
+        let access_control_reloader: Arc<dyn ReloadableModule> = Arc::new(AccessControlReloader {
+            active_handlers: Arc::clone(&active_handlers),
+            mcp_router: Arc::clone(&mcp_router),
+            websocket_router: Arc::clone(&websocket_router),
+        });
+        config.module_registry.register_reloader(
+            light_pingora::ACCESS_CONTROL_MODULE_ID,
+            Arc::clone(&access_control_reloader),
+        );
+        config
+            .module_registry
+            .register_reloader(light_pingora::RULE_MODULE_ID, access_control_reloader);
         config.module_registry.register_reloader(
             light_pingora::PROXY_MODULE_ID,
             Arc::new(ProxyReloader {
@@ -939,9 +945,10 @@ impl ReloadableModule for HandlerReloader {
             &ctx.runtime_config,
             active_handlers.is_handler_active("mcp"),
         )?;
-        let websocket_router = load_websocket_router_runtime(
+        let websocket_router = load_websocket_router_runtime_preserving_state(
             &ctx.runtime_config,
             active_handlers.is_handler_active("websocket"),
+            &self.websocket_router,
         )?;
         let router_route = load_router_route(
             &ctx.runtime_config,
@@ -1165,9 +1172,38 @@ struct WebSocketRouterReloader {
 impl ReloadableModule for WebSocketRouterReloader {
     async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
         let active = self.active_handlers.load().is_handler_active("websocket");
-        let runtime = load_websocket_router_runtime(&ctx.runtime_config, active)?;
+        let runtime = load_websocket_router_runtime_preserving_state(
+            &ctx.runtime_config,
+            active,
+            &self.websocket_router,
+        )?;
         self.websocket_router.store(runtime);
         Ok(ReloadOutcome::success("websocket-router.yml reloaded"))
+    }
+}
+
+struct AccessControlReloader {
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    mcp_router: Arc<ConfigManager<Option<McpRouterRuntime>>>,
+    websocket_router: Arc<ConfigManager<Option<WebSocketRouterRuntime>>>,
+}
+
+#[async_trait]
+impl ReloadableModule for AccessControlReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let active_handlers = self.active_handlers.load();
+        let mcp_router = load_mcp_router_runtime(
+            &ctx.runtime_config,
+            active_handlers.is_handler_active("mcp"),
+        )?;
+        let websocket_router = load_websocket_router_runtime_preserving_state(
+            &ctx.runtime_config,
+            active_handlers.is_handler_active("websocket"),
+            &self.websocket_router,
+        )?;
+        self.mcp_router.store(mcp_router);
+        self.websocket_router.store(websocket_router);
+        Ok(ReloadOutcome::success("access-control/rule.yml reloaded"))
     }
 }
 
@@ -1418,10 +1454,13 @@ impl ProxyHttp for GatewayProxy {
                             .write_text_response(session, ctx, 426, "upgrade required")
                             .await;
                     }
+                    let headers = agent_headers(session);
                     let decision = match runtime.resolve(
                         &request_path,
                         session.req_header().uri.query(),
-                        agent_headers(session),
+                        headers
+                            .iter()
+                            .map(|(name, value)| (name.as_str(), value.as_str())),
                     ) {
                         Ok(decision) => decision,
                         Err(error) => {
@@ -1436,11 +1475,62 @@ impl ProxyHttp for GatewayProxy {
                                 .await;
                         }
                     };
+                    match runtime
+                        .authorize(
+                            &decision,
+                            ctx.endpoint.as_str(),
+                            &headers,
+                            ctx.auth.as_ref(),
+                            ctx.correlation.correlation_id.as_deref(),
+                        )
+                        .await
+                    {
+                        AccessDecision::Allowed => {}
+                        AccessDecision::Denied(message) => {
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            return self.write_string_response(session, ctx, 403, message).await;
+                        }
+                    }
+                    if let Err(error) = runtime.check_upgrade_rate() {
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                        return self
+                            .write_string_response(
+                                session,
+                                ctx,
+                                websocket_route_status(&error),
+                                error.to_string(),
+                            )
+                            .await;
+                    }
                     let index = self.next_upstream.fetch_add(1, Ordering::Relaxed);
                     match runtime.select_target(&decision, index).await {
                         Ok(target) => {
+                            let permit = match runtime.acquire_connection() {
+                                Ok(permit) => permit,
+                                Err(error) => {
+                                    ctx.record_handler_duration(&handler_id, started.elapsed());
+                                    return self
+                                        .write_string_response(
+                                            session,
+                                            ctx,
+                                            websocket_route_status(&error),
+                                            error.to_string(),
+                                        )
+                                        .await;
+                                }
+                            };
                             ctx.proxy_target = Some(target);
                             ctx.rewrite_host_header = true;
+                            ctx.websocket_preserve_routing_headers =
+                                runtime.config().preserve_routing_headers;
+                            ctx.websocket_idle_timeout = runtime.idle_timeout();
+                            ctx.websocket_max_connection_duration =
+                                runtime.max_connection_duration();
+                            ctx.websocket_permit = Some(permit);
+                            if let Some(timeout) = websocket_io_timeout(ctx) {
+                                session.as_downstream_mut().set_read_timeout(Some(timeout));
+                                session.as_downstream_mut().set_write_timeout(Some(timeout));
+                            }
                             ctx.websocket_decision = Some(decision);
                             ctx.record_handler_duration(&handler_id, started.elapsed());
                             return Ok(false);
@@ -1578,11 +1668,18 @@ impl ProxyHttp for GatewayProxy {
             )
         })?;
         info!("proxying request to {}", upstream.address);
-        Ok(Box::new(HttpPeer::new(
+        let mut peer = HttpPeer::new(
             upstream.address.as_str(),
             upstream.tls,
             upstream.sni.clone(),
-        )))
+        );
+        if ctx.websocket_decision.is_some()
+            && let Some(timeout) = websocket_io_timeout(ctx)
+        {
+            peer.options.read_timeout = Some(timeout);
+            peer.options.write_timeout = Some(timeout);
+        }
+        Ok(Box::new(peer))
     }
 
     async fn upstream_request_filter(
@@ -1606,7 +1703,11 @@ impl ProxyHttp for GatewayProxy {
                 self.server_port,
             )?;
             if let Some(decision) = ctx.websocket_decision.as_ref() {
-                apply_websocket_upstream_request(upstream_request, decision)?;
+                apply_websocket_upstream_request(
+                    upstream_request,
+                    decision,
+                    ctx.websocket_preserve_routing_headers,
+                )?;
             } else if let Some(decision) = ctx.router_decision.as_ref() {
                 let route = self.router_route.load();
                 let route = route.as_ref().as_ref().ok_or_else(|| {
@@ -1629,6 +1730,59 @@ impl ProxyHttp for GatewayProxy {
                 .insert_header(light_pingora::TRACEABILITY_ID_HEADER, traceability_id)?;
         }
         Ok(())
+    }
+
+    async fn connected_to_upstream(
+        &self,
+        _session: &mut Session,
+        _reused: bool,
+        _peer: &HttpPeer,
+        #[cfg(unix)] _fd: std::os::unix::io::RawFd,
+        #[cfg(windows)] _sock: std::os::windows::io::RawSocket,
+        _digest: Option<&pingora::protocols::Digest>,
+        ctx: &mut Self::CTX,
+    ) -> pingora::Result<()>
+    where
+        Self::CTX: Send + Sync,
+    {
+        if ctx.websocket_decision.is_some() {
+            let now = Instant::now();
+            ctx.websocket_connected_at = Some(now);
+            ctx.websocket_last_activity = Some(now);
+        }
+        Ok(())
+    }
+
+    async fn request_body_filter(
+        &self,
+        session: &mut Session,
+        body: &mut Option<Bytes>,
+        _end_of_stream: bool,
+        ctx: &mut Self::CTX,
+    ) -> pingora::Result<()>
+    where
+        Self::CTX: Send + Sync,
+    {
+        if ctx.websocket_decision.is_some() && session.was_upgraded() {
+            enforce_websocket_tunnel_limits(ctx, body)?;
+        }
+        Ok(())
+    }
+
+    fn response_body_filter(
+        &self,
+        session: &mut Session,
+        body: &mut Option<Bytes>,
+        _end_of_stream: bool,
+        ctx: &mut Self::CTX,
+    ) -> pingora::Result<Option<Duration>>
+    where
+        Self::CTX: Send + Sync,
+    {
+        if ctx.websocket_decision.is_some() && session.was_upgraded() {
+            enforce_websocket_tunnel_limits(ctx, body)?;
+        }
+        Ok(None)
     }
 
     async fn response_filter(
@@ -1663,6 +1817,12 @@ struct GatewayRequestContext {
     reuse_x_forwarded: bool,
     router_decision: Option<RouterDecision>,
     websocket_decision: Option<WebSocketRouteDecision>,
+    websocket_permit: Option<WebSocketConnectionPermit>,
+    websocket_preserve_routing_headers: bool,
+    websocket_idle_timeout: Option<Duration>,
+    websocket_max_connection_duration: Option<Duration>,
+    websocket_connected_at: Option<Instant>,
+    websocket_last_activity: Option<Instant>,
     request_start: Instant,
     handler_ids: Vec<String>,
     request_path: String,
@@ -1687,6 +1847,12 @@ impl Default for GatewayRequestContext {
             reuse_x_forwarded: false,
             router_decision: None,
             websocket_decision: None,
+            websocket_permit: None,
+            websocket_preserve_routing_headers: false,
+            websocket_idle_timeout: None,
+            websocket_max_connection_duration: None,
+            websocket_connected_at: None,
+            websocket_last_activity: None,
             request_start: Instant::now(),
             handler_ids: Vec::new(),
             request_path: String::new(),
@@ -1712,6 +1878,12 @@ impl GatewayRequestContext {
         self.reuse_x_forwarded = false;
         self.router_decision = None;
         self.websocket_decision = None;
+        self.websocket_permit = None;
+        self.websocket_preserve_routing_headers = false;
+        self.websocket_idle_timeout = None;
+        self.websocket_max_connection_duration = None;
+        self.websocket_connected_at = None;
+        self.websocket_last_activity = None;
         self.request_start = Instant::now();
         self.handler_ids.clear();
         self.request_path.clear();
@@ -1913,10 +2085,53 @@ fn websocket_route_status(error: &WebSocketRouteError) -> u16 {
     match error {
         WebSocketRouteError::MissingTarget => 403,
         WebSocketRouteError::InvalidProtocol(_) => 400,
+        WebSocketRouteError::UpgradeRateExceeded(_) => 429,
+        WebSocketRouteError::TooManyActiveConnections(_) => 503,
         WebSocketRouteError::DiscoveryUnavailable(_)
         | WebSocketRouteError::DiscoveryFailed(_)
         | WebSocketRouteError::NoUsableEndpoint(_) => 502,
     }
+}
+
+fn websocket_io_timeout(ctx: &GatewayRequestContext) -> Option<Duration> {
+    match (
+        ctx.websocket_idle_timeout,
+        ctx.websocket_max_connection_duration,
+    ) {
+        (Some(idle), Some(max_duration)) => Some(idle.min(max_duration)),
+        (Some(idle), None) => Some(idle),
+        (None, Some(max_duration)) => Some(max_duration),
+        (None, None) => None,
+    }
+}
+
+fn enforce_websocket_tunnel_limits(
+    ctx: &mut GatewayRequestContext,
+    body: &Option<Bytes>,
+) -> pingora::Result<()> {
+    let now = Instant::now();
+    if let Some(max_duration) = ctx.websocket_max_connection_duration {
+        let started = ctx.websocket_connected_at.unwrap_or(ctx.request_start);
+        if now.duration_since(started) > max_duration {
+            return Err(Error::explain(
+                ErrorType::ReadTimedout,
+                "websocket connection exceeded max duration",
+            ));
+        }
+    }
+    if let Some(idle_timeout) = ctx.websocket_idle_timeout
+        && let Some(last_activity) = ctx.websocket_last_activity
+        && now.duration_since(last_activity) > idle_timeout
+    {
+        return Err(Error::explain(
+            ErrorType::ReadTimedout,
+            "websocket connection exceeded idle timeout",
+        ));
+    }
+    if body.as_ref().is_some_and(|body| !body.is_empty()) {
+        ctx.websocket_last_activity = Some(now);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -2058,6 +2273,21 @@ fn pingora_internal_error(error: RuntimeError) -> Box<Error> {
 
 fn handler_active(active_handlers: &ActiveHandlerSet, ids: &[&str]) -> bool {
     ids.iter().any(|id| active_handlers.is_handler_active(id))
+}
+
+fn load_websocket_router_runtime_preserving_state(
+    runtime_config: &RuntimeConfig,
+    active: bool,
+    current: &ConfigManager<Option<WebSocketRouterRuntime>>,
+) -> Result<Option<WebSocketRouterRuntime>, RuntimeError> {
+    let previous = current.load();
+    let mut runtime = load_websocket_router_runtime(runtime_config, active)?;
+    if let Some(runtime) = runtime.as_mut()
+        && let Some(previous) = previous.as_ref().as_ref()
+    {
+        runtime.preserve_state_from(previous);
+    }
+    Ok(runtime)
 }
 
 struct RegisteredGatewayHandler {

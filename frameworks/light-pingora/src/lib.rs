@@ -118,9 +118,10 @@ pub use unified_security::{
 };
 pub use websocket::{
     WEBSOCKET_ROUTER_CONFIG_NAME, WEBSOCKET_ROUTER_FILE, WEBSOCKET_ROUTER_LEGACY_FILE,
-    WEBSOCKET_ROUTER_MODULE_ID, WebSocketDiscoveryResolver, WebSocketRouteDecision,
-    WebSocketRouteError, WebSocketRouteSource, WebSocketRouterConfig, WebSocketRouterRuntime,
-    WebSocketServiceTarget, apply_websocket_upstream_request, load_websocket_router_runtime,
+    WEBSOCKET_ROUTER_MODULE_ID, WebSocketConnectionPermit, WebSocketDiscoveryResolver,
+    WebSocketRouteDecision, WebSocketRouteError, WebSocketRouteSource, WebSocketRouterConfig,
+    WebSocketRouterRuntime, WebSocketServiceTarget, apply_websocket_upstream_request,
+    load_websocket_router_runtime,
 };
 
 pub trait PingoraApp: Send + Sync + 'static {

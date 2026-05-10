@@ -82,11 +82,21 @@ Java configuration includes `enabled`, but the Rust target config removes it:
 defaultProtocol: ${websocket-router.defaultProtocol:http}
 defaultEnvTag: ${websocket-router.defaultEnvTag:}
 pathPrefixService: ${websocket-router.pathPrefixService:}
+preserveRoutingHeaders: ${websocket-router.preserveRoutingHeaders:false}
+idleTimeoutMs: ${websocket-router.idleTimeoutMs:}
+maxConnectionDurationMs: ${websocket-router.maxConnectionDurationMs:}
+maxActiveConnections: ${websocket-router.maxActiveConnections:}
+maxUpgradeRequestsPerSecond: ${websocket-router.maxUpgradeRequestsPerSecond:}
 ```
 
 The Java `enabled` field is intentionally not carried forward. In Rust, the
 handler chain is the activation contract. Removing `websocket` from a path or
 default chain disables WebSocket routing for that path.
+
+Production controls are optional. Blank or zero values disable the matching
+control. `preserveRoutingHeaders` defaults to `false`, so routing-only
+`Service-Id`, `service_id`, and `serviceId` headers are stripped before the
+upstream handshake unless a backend explicitly needs them.
 
 `pathPrefixService` accepts three forms:
 
@@ -472,6 +482,8 @@ Status: implemented.
 
 ### Phase 4: Production Controls
 
+Status: implemented.
+
 - Add optional idle timeout and max connection duration.
 - Add WebSocket-specific limit controls for both upgrade/request rate and
   active upgraded connection count.
@@ -479,6 +491,24 @@ Status: implemented.
   them.
 - Add access-control integration once the same access-control model is shared
   across REST, JSON-RPC, MCP, and WebSocket routes.
+
+Implementation notes:
+
+- `maxUpgradeRequestsPerSecond` gates accepted upgrade attempts before
+  discovery lookup.
+- `maxActiveConnections` tracks proxied upgraded sessions with a permit that is
+  released when Pingora finishes the request context. The active counter is
+  preserved across router and policy reloads.
+- `idleTimeoutMs` is applied to downstream and upstream tunnel IO. Pingora's
+  body-filter hooks also check idle age when either side sends tunneled data.
+- `maxConnectionDurationMs` is checked by the tunnel body filters and is also
+  used as an IO timeout when it is the only timeout configured. A connection
+  that continuously exchanges frames is closed on the next tunneled body chunk
+  after the duration is exceeded.
+- WebSocket access-control uses the shared `access-control.yml` and `rule.yml`
+  model. The rule context uses tool name `websocket`, endpoint from
+  `handler.yml`, and tool arguments containing `serviceId`, `protocol`,
+  `envTag`, `upstreamPathAndQuery`, and route `source`.
 
 ## Open Questions
 

@@ -1,4 +1,7 @@
+use crate::access_control::{AccessControlRuntime, AccessDecision, load_access_control_runtime};
+use crate::config_util::deserialize_optional_u64;
 use crate::proxy::ProxyTarget;
+use crate::security::AuthPrincipal;
 use async_trait::async_trait;
 use light_runtime::{
     DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, ModuleKind, PortalRegistryClient,
@@ -7,10 +10,14 @@ use light_runtime::{
 use pingora::http::RequestHeader;
 use serde::de::{Error as DeError, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::json;
 use serde_yaml::Value as YamlValue;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use url::form_urlencoded;
 
 pub const WEBSOCKET_ROUTER_FILE: &str = "websocket-router.yml";
@@ -32,6 +39,16 @@ pub struct WebSocketRouterConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_env_tag: Option<String>,
     pub path_prefix_service: BTreeMap<String, WebSocketServiceTarget>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub preserve_routing_headers: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_connection_duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_active_connections: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_upgrade_requests_per_second: Option<usize>,
 }
 
 impl Default for WebSocketRouterConfig {
@@ -40,6 +57,11 @@ impl Default for WebSocketRouterConfig {
             default_protocol: DEFAULT_PROTOCOL.to_string(),
             default_env_tag: None,
             path_prefix_service: BTreeMap::new(),
+            preserve_routing_headers: false,
+            idle_timeout_ms: None,
+            max_connection_duration_ms: None,
+            max_active_connections: None,
+            max_upgrade_requests_per_second: None,
         }
     }
 }
@@ -58,6 +80,16 @@ impl<'de> Deserialize<'de> for WebSocketRouterConfig {
             default_env_tag: Option<String>,
             #[serde(default, deserialize_with = "deserialize_path_prefix_service")]
             path_prefix_service: BTreeMap<String, RawWebSocketServiceTarget>,
+            #[serde(default)]
+            preserve_routing_headers: bool,
+            #[serde(default, deserialize_with = "deserialize_optional_u64")]
+            idle_timeout_ms: Option<u64>,
+            #[serde(default, deserialize_with = "deserialize_optional_u64")]
+            max_connection_duration_ms: Option<u64>,
+            #[serde(default, deserialize_with = "deserialize_optional_u64")]
+            max_active_connections: Option<u64>,
+            #[serde(default, deserialize_with = "deserialize_optional_u64")]
+            max_upgrade_requests_per_second: Option<u64>,
         }
 
         let raw = RawConfig::deserialize(deserializer)?;
@@ -82,6 +114,24 @@ impl<'de> Deserialize<'de> for WebSocketRouterConfig {
             default_protocol,
             default_env_tag,
             path_prefix_service,
+            preserve_routing_headers: raw.preserve_routing_headers,
+            idle_timeout_ms: normalize_optional_millis("idleTimeoutMs", raw.idle_timeout_ms)
+                .map_err(D::Error::custom)?,
+            max_connection_duration_ms: normalize_optional_millis(
+                "maxConnectionDurationMs",
+                raw.max_connection_duration_ms,
+            )
+            .map_err(D::Error::custom)?,
+            max_active_connections: normalize_optional_usize(
+                "maxActiveConnections",
+                raw.max_active_connections,
+            )
+            .map_err(D::Error::custom)?,
+            max_upgrade_requests_per_second: normalize_optional_usize(
+                "maxUpgradeRequestsPerSecond",
+                raw.max_upgrade_requests_per_second,
+            )
+            .map_err(D::Error::custom)?,
         })
     }
 }
@@ -118,6 +168,8 @@ pub enum WebSocketRouteError {
     DiscoveryUnavailable(String),
     DiscoveryFailed(String),
     NoUsableEndpoint(String),
+    UpgradeRateExceeded(usize),
+    TooManyActiveConnections(usize),
 }
 
 impl fmt::Display for WebSocketRouteError {
@@ -138,6 +190,14 @@ impl fmt::Display for WebSocketRouteError {
                 f,
                 "websocket-router service `{service_id}` has no usable endpoints"
             ),
+            Self::UpgradeRateExceeded(limit) => write!(
+                f,
+                "websocket-router upgrade request rate limit exceeded: {limit}/second"
+            ),
+            Self::TooManyActiveConnections(limit) => write!(
+                f,
+                "websocket-router active connection limit exceeded: {limit}"
+            ),
         }
     }
 }
@@ -148,6 +208,8 @@ impl std::error::Error for WebSocketRouteError {}
 pub struct WebSocketRouterRuntime {
     config: WebSocketRouterConfig,
     discovery: Option<Arc<dyn WebSocketDiscoveryResolver>>,
+    policy: Option<Arc<AccessControlRuntime>>,
+    state: Arc<WebSocketRuntimeState>,
 }
 
 impl fmt::Debug for WebSocketRouterRuntime {
@@ -155,7 +217,53 @@ impl fmt::Debug for WebSocketRouterRuntime {
         f.debug_struct("WebSocketRouterRuntime")
             .field("path_prefix_count", &self.config.path_prefix_service.len())
             .field("discovery", &self.discovery.is_some())
+            .field("policy", &self.policy.is_some())
+            .field(
+                "active_connections",
+                &self.state.active_connections.load(Ordering::Relaxed),
+            )
             .finish()
+    }
+}
+
+struct WebSocketRuntimeState {
+    active_connections: AtomicUsize,
+    upgrade_window: Mutex<UpgradeRateWindow>,
+}
+
+impl Default for WebSocketRuntimeState {
+    fn default() -> Self {
+        Self {
+            active_connections: AtomicUsize::new(0),
+            upgrade_window: Mutex::new(UpgradeRateWindow::default()),
+        }
+    }
+}
+
+#[derive(Default)]
+struct UpgradeRateWindow {
+    second: u64,
+    count: usize,
+}
+
+pub struct WebSocketConnectionPermit {
+    state: Arc<WebSocketRuntimeState>,
+}
+
+impl fmt::Debug for WebSocketConnectionPermit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WebSocketConnectionPermit").finish()
+    }
+}
+
+impl Drop for WebSocketConnectionPermit {
+    fn drop(&mut self) {
+        self.state
+            .active_connections
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current.checked_sub(1)
+            })
+            .ok();
     }
 }
 
@@ -188,12 +296,130 @@ impl WebSocketRouterRuntime {
         config: WebSocketRouterConfig,
         discovery: Option<Arc<dyn WebSocketDiscoveryResolver>>,
     ) -> Result<Self, RuntimeError> {
+        Self::new_with_discovery_and_policy(config, discovery, None)
+    }
+
+    pub fn new_with_policy(
+        config: WebSocketRouterConfig,
+        policy: Option<Arc<AccessControlRuntime>>,
+    ) -> Result<Self, RuntimeError> {
+        Self::new_with_discovery_and_policy(config, None, policy)
+    }
+
+    pub fn new_with_discovery_and_policy(
+        config: WebSocketRouterConfig,
+        discovery: Option<Arc<dyn WebSocketDiscoveryResolver>>,
+        policy: Option<Arc<AccessControlRuntime>>,
+    ) -> Result<Self, RuntimeError> {
         validate_config(&config)?;
-        Ok(Self { config, discovery })
+        Ok(Self {
+            config,
+            discovery,
+            policy,
+            state: Arc::new(WebSocketRuntimeState::default()),
+        })
     }
 
     pub fn config(&self) -> &WebSocketRouterConfig {
         &self.config
+    }
+
+    pub fn idle_timeout(&self) -> Option<Duration> {
+        self.config.idle_timeout_ms.map(Duration::from_millis)
+    }
+
+    pub fn max_connection_duration(&self) -> Option<Duration> {
+        self.config
+            .max_connection_duration_ms
+            .map(Duration::from_millis)
+    }
+
+    pub fn active_connection_count(&self) -> usize {
+        self.state.active_connections.load(Ordering::Acquire)
+    }
+
+    pub fn preserve_state_from(&mut self, previous: &Self) {
+        self.state = Arc::clone(&previous.state);
+    }
+
+    pub fn check_upgrade_rate(&self) -> Result<(), WebSocketRouteError> {
+        let Some(limit) = self.config.max_upgrade_requests_per_second else {
+            return Ok(());
+        };
+        let now = current_epoch_second();
+        let mut window = self
+            .state
+            .upgrade_window
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if window.second != now {
+            window.second = now;
+            window.count = 0;
+        }
+        if window.count >= limit {
+            return Err(WebSocketRouteError::UpgradeRateExceeded(limit));
+        }
+        window.count += 1;
+        Ok(())
+    }
+
+    pub fn acquire_connection(&self) -> Result<WebSocketConnectionPermit, WebSocketRouteError> {
+        if let Some(limit) = self.config.max_active_connections {
+            loop {
+                let current = self.state.active_connections.load(Ordering::Acquire);
+                if current >= limit {
+                    return Err(WebSocketRouteError::TooManyActiveConnections(limit));
+                }
+                if self
+                    .state
+                    .active_connections
+                    .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    break;
+                }
+            }
+        } else {
+            self.state.active_connections.fetch_add(1, Ordering::AcqRel);
+        }
+        Ok(WebSocketConnectionPermit {
+            state: Arc::clone(&self.state),
+        })
+    }
+
+    pub fn try_accept_upgrade(&self) -> Result<WebSocketConnectionPermit, WebSocketRouteError> {
+        self.check_upgrade_rate()?;
+        self.acquire_connection()
+    }
+
+    pub async fn authorize(
+        &self,
+        decision: &WebSocketRouteDecision,
+        endpoint: &str,
+        headers: &[(String, String)],
+        auth: Option<&AuthPrincipal>,
+        correlation_id: Option<&str>,
+    ) -> AccessDecision {
+        let Some(policy) = self.policy.as_ref() else {
+            return AccessDecision::Allowed;
+        };
+        let arguments = json!({
+            "serviceId": decision.service_id.as_str(),
+            "protocol": decision.protocol.as_str(),
+            "envTag": decision.env_tag.as_deref(),
+            "upstreamPathAndQuery": decision.upstream_path_and_query.as_str(),
+            "source": websocket_route_source(decision.source),
+        });
+        policy
+            .authorize_tool(
+                "websocket",
+                endpoint,
+                headers,
+                auth,
+                &arguments,
+                correlation_id,
+            )
+            .await
     }
 
     pub fn resolve<I, K, V>(
@@ -307,15 +533,18 @@ pub fn load_websocket_router_runtime(
         None,
         true,
     )?;
-    Ok(Some(WebSocketRouterRuntime::new_with_discovery(
+    let policy = load_access_control_runtime(runtime_config, true)?.map(Arc::new);
+    Ok(Some(WebSocketRouterRuntime::new_with_discovery_and_policy(
         config,
         discovery_resolver(runtime_config.registry_client.clone()),
+        policy,
     )?))
 }
 
 pub fn apply_websocket_upstream_request(
     upstream_request: &mut RequestHeader,
     decision: &WebSocketRouteDecision,
+    preserve_routing_headers: bool,
 ) -> pingora::Result<()> {
     let uri = decision.upstream_path_and_query.parse().map_err(|error| {
         pingora::Error::because(
@@ -328,8 +557,10 @@ pub fn apply_websocket_upstream_request(
         )
     })?;
     upstream_request.set_uri(uri);
-    for header in SERVICE_ID_HEADERS {
-        upstream_request.remove_header(header);
+    if !preserve_routing_headers {
+        for header in SERVICE_ID_HEADERS {
+            upstream_request.remove_header(header);
+        }
     }
     Ok(())
 }
@@ -587,8 +818,25 @@ fn validate_config(config: &WebSocketRouterConfig) -> Result<(), RuntimeError> {
     Ok(())
 }
 
+fn normalize_optional_millis(_field: &str, value: Option<u64>) -> Result<Option<u64>, String> {
+    Ok(value.filter(|value| *value > 0))
+}
+
+fn normalize_optional_usize(field: &str, value: Option<u64>) -> Result<Option<usize>, String> {
+    let Some(value) = value.filter(|value| *value > 0) else {
+        return Ok(None);
+    };
+    usize::try_from(value)
+        .map(Some)
+        .map_err(|_| format!("websocket-router {field} is outside usize range"))
+}
+
 fn default_protocol() -> String {
     DEFAULT_PROTOCOL.to_string()
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn normalize_protocol(protocol: &str) -> Result<String, String> {
@@ -724,6 +972,21 @@ fn path_matches_prefix(path: &str, prefix: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
+fn current_epoch_second() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+}
+
+fn websocket_route_source(source: WebSocketRouteSource) -> &'static str {
+    match source {
+        WebSocketRouteSource::Header => "header",
+        WebSocketRouteSource::Query => "query",
+        WebSocketRouteSource::PathPrefix => "pathPrefix",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -827,6 +1090,28 @@ pathPrefixService: /chat = com.networknt.llmchat-1.0.0 & /events=com.networknt.e
             config.path_prefix_service["/events"].env_tag.as_deref(),
             Some("dev")
         );
+    }
+
+    #[test]
+    fn config_accepts_production_controls_as_numbers_or_strings() {
+        let config: WebSocketRouterConfig = serde_yaml::from_str(
+            r#"
+preserveRoutingHeaders: true
+idleTimeoutMs: "30000"
+maxConnectionDurationMs: 3600000
+maxActiveConnections: "10"
+maxUpgradeRequestsPerSecond: 5
+pathPrefixService:
+  /chat: com.networknt.llmchat-1.0.0
+"#,
+        )
+        .expect("parse config");
+
+        assert!(config.preserve_routing_headers);
+        assert_eq!(config.idle_timeout_ms, Some(30_000));
+        assert_eq!(config.max_connection_duration_ms, Some(3_600_000));
+        assert_eq!(config.max_active_connections, Some(10));
+        assert_eq!(config.max_upgrade_requests_per_second, Some(5));
     }
 
     #[test]
@@ -986,6 +1271,106 @@ pathPrefixService:
         );
     }
 
+    #[test]
+    fn production_controls_limit_upgrade_rate_and_active_connections() {
+        let runtime = WebSocketRouterRuntime::new(
+            serde_yaml::from_str(
+                r#"
+maxActiveConnections: 1
+maxUpgradeRequestsPerSecond: 1
+pathPrefixService:
+  /chat: chat-service
+"#,
+            )
+            .expect("parse config"),
+        )
+        .expect("runtime");
+
+        runtime.check_upgrade_rate().expect("first upgrade");
+        assert_eq!(
+            runtime.check_upgrade_rate().expect_err("second upgrade"),
+            WebSocketRouteError::UpgradeRateExceeded(1)
+        );
+
+        let permit = runtime.acquire_connection().expect("first connection");
+        assert_eq!(runtime.active_connection_count(), 1);
+        assert_eq!(
+            runtime.acquire_connection().expect_err("second connection"),
+            WebSocketRouteError::TooManyActiveConnections(1)
+        );
+        drop(permit);
+        assert_eq!(runtime.active_connection_count(), 0);
+    }
+
+    #[test]
+    fn runtime_state_can_be_preserved_across_reload() {
+        let runtime = WebSocketRouterRuntime::new(
+            serde_yaml::from_str(
+                r#"
+maxActiveConnections: 5
+pathPrefixService:
+  /chat: chat-service
+"#,
+            )
+            .expect("parse config"),
+        )
+        .expect("runtime");
+        let permit = runtime.acquire_connection().expect("connection");
+        let mut reloaded = WebSocketRouterRuntime::new(
+            serde_yaml::from_str(
+                r#"
+maxActiveConnections: 10
+pathPrefixService:
+  /chat: chat-service-v2
+"#,
+            )
+            .expect("parse config"),
+        )
+        .expect("runtime");
+
+        reloaded.preserve_state_from(&runtime);
+
+        assert_eq!(reloaded.active_connection_count(), 1);
+        drop(permit);
+        assert_eq!(reloaded.active_connection_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn authorize_delegates_to_access_control_policy() {
+        let policy = Arc::new(crate::access_control::AccessControlRuntime::new(
+            Some(crate::access_control::AccessControlConfig {
+                enabled: true,
+                access_rule_logic: "any".to_string(),
+                default_deny: true,
+                skip_path_prefixes: Vec::new(),
+            }),
+            crate::access_control::RuleFileConfig::default(),
+        ));
+        let runtime = WebSocketRouterRuntime::new_with_policy(
+            serde_yaml::from_str(
+                r#"
+pathPrefixService:
+  /chat: chat-service
+"#,
+            )
+            .expect("parse config"),
+            Some(policy),
+        )
+        .expect("runtime");
+        let decision = runtime
+            .resolve("/chat/room", None, std::iter::empty::<(&str, &str)>())
+            .expect("resolve");
+
+        let decision = runtime.authorize(&decision, "/chat", &[], None, None).await;
+
+        assert_eq!(
+            decision,
+            AccessDecision::Denied(
+                "Access denied: no access control rule defined for /chat".into()
+            )
+        );
+    }
+
     #[tokio::test]
     async fn select_target_uses_discovery_protocol_env_and_round_robin_index() {
         let discovery = Arc::new(FakeDiscovery::new(discovery_snapshot(
@@ -1047,7 +1432,7 @@ pathPrefixService:
             .insert_header("Sec-WebSocket-Protocol", "chat")
             .expect("subprotocol header");
 
-        apply_websocket_upstream_request(&mut request, &decision).expect("apply request");
+        apply_websocket_upstream_request(&mut request, &decision, false).expect("apply request");
 
         assert_eq!(
             request.uri.path_and_query().unwrap().as_str(),
@@ -1057,6 +1442,28 @@ pathPrefixService:
         assert_eq!(
             request.headers["sec-websocket-protocol"].to_str().unwrap(),
             "chat"
+        );
+    }
+
+    #[test]
+    fn apply_upstream_request_can_preserve_routing_headers() {
+        let decision = WebSocketRouteDecision {
+            service_id: "com.networknt.llmchat-1.0.0".to_string(),
+            protocol: "http".to_string(),
+            env_tag: None,
+            upstream_path_and_query: "/chat/room".to_string(),
+            source: WebSocketRouteSource::Header,
+        };
+        let mut request = RequestHeader::build("GET", b"/chat/room", Some(8)).expect("request");
+        request
+            .insert_header("service_id", "com.networknt.llmchat-1.0.0")
+            .expect("service header");
+
+        apply_websocket_upstream_request(&mut request, &decision, true).expect("apply request");
+
+        assert_eq!(
+            request.headers["service_id"].to_str().unwrap(),
+            "com.networknt.llmchat-1.0.0"
         );
     }
 
