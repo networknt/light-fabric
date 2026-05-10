@@ -101,6 +101,10 @@ pub struct SecurityConfig {
     pub bootstrap_from_key_service: bool,
     #[serde(default)]
     pub provider_id: String,
+    #[serde(default)]
+    pub issuer: String,
+    #[serde(default, deserialize_with = "deserialize_string_list")]
+    pub audience: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_string_list")]
     pub skip_path_prefixes: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_string_map")]
@@ -128,6 +132,8 @@ impl Default for SecurityConfig {
             jwt_cache_full_size: default_jwt_cache_full_size(),
             bootstrap_from_key_service: false,
             provider_id: String::new(),
+            issuer: String::new(),
+            audience: Vec::new(),
             skip_path_prefixes: Vec::new(),
             pass_through_claims: BTreeMap::new(),
         }
@@ -187,6 +193,12 @@ impl SecurityRuntime {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JwtExpiryMode {
+    Enforce,
+    Ignore,
+}
+
 #[derive(Clone)]
 struct CachedPrincipal {
     principal: AuthPrincipal,
@@ -197,24 +209,38 @@ pub fn load_security_runtime(
     runtime_config: &RuntimeConfig,
     active: bool,
 ) -> Result<Option<SecurityRuntime>, RuntimeError> {
+    load_security_runtime_from_file(
+        runtime_config,
+        active,
+        SECURITY_FILE,
+        SECURITY_MODULE_ID,
+        SECURITY_CONFIG_NAME,
+    )
+}
+
+pub fn load_security_runtime_from_file(
+    runtime_config: &RuntimeConfig,
+    active: bool,
+    file_name: &str,
+    module_id: &str,
+    config_name: &str,
+) -> Result<Option<SecurityRuntime>, RuntimeError> {
     if !active {
         return Ok(None);
     }
 
     let config = match runtime_config
         .module_registry
-        .load_config::<SecurityConfig>(runtime_config, SECURITY_FILE)
+        .load_config::<SecurityConfig>(runtime_config, file_name)
     {
         Ok(config) => config,
-        Err(RuntimeError::MissingConfig(file)) if file == SECURITY_FILE => {
-            SecurityConfig::default()
-        }
+        Err(RuntimeError::MissingConfig(file)) if file == file_name => SecurityConfig::default(),
         Err(error) => return Err(error),
     };
 
     runtime_config.module_registry.register_loaded_config(
-        SECURITY_MODULE_ID,
-        SECURITY_CONFIG_NAME,
+        module_id,
+        config_name,
         ModuleKind::Framework,
         &config,
         [MaskSpec::key("swtClientSecretHeader")],
@@ -228,6 +254,38 @@ pub fn load_security_runtime(
             .then(|| SecurityRuntime::new(config, runtime_config))
             .transpose()?,
     )
+}
+
+pub fn verify_jwt_token(
+    runtime: &SecurityRuntime,
+    token: &str,
+    expiry_mode: JwtExpiryMode,
+) -> Result<AuthPrincipal, HandlerRejection> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Err(HandlerRejection::unauthorized("missing bearer token"));
+    }
+    if matches!(expiry_mode, JwtExpiryMode::Enforce)
+        && let Some(principal) = cached_principal(runtime, token)
+    {
+        return Ok(principal);
+    }
+
+    let header =
+        decode_header(token).map_err(|_| HandlerRejection::unauthorized("invalid JWT header"))?;
+    let pem = certificate_for_token(runtime, header.kid.as_deref())
+        .ok_or_else(|| HandlerRejection::unauthorized("JWT key is not configured"))?;
+    let key = decoding_key_for_alg(pem.as_slice(), header.alg)
+        .map_err(|_| HandlerRejection::unauthorized("JWT key cannot verify token algorithm"))?;
+    let validation = validation_for_mode(&runtime.config, header.alg, expiry_mode);
+    let decoded = decode::<JsonValue>(token, &key, &validation)
+        .map_err(|_| HandlerRejection::unauthorized("JWT validation failed"))?;
+    validate_issuer_and_audience(&runtime.config, &decoded.claims)?;
+    let principal = principal_from_claims(decoded.claims);
+    if matches!(expiry_mode, JwtExpiryMode::Enforce) {
+        cache_principal(runtime, token.to_string(), &principal);
+    }
+    Ok(principal)
 }
 
 pub fn verify_jwt_request(
@@ -266,30 +324,63 @@ pub fn verify_jwt_request(
         return Ok(Some(principal));
     }
 
-    let header = decode_header(token.as_str())
-        .map_err(|_| HandlerRejection::unauthorized("invalid JWT header"))?;
-    let pem = certificate_for_token(runtime, header.kid.as_deref())
-        .ok_or_else(|| HandlerRejection::unauthorized("JWT key is not configured"))?;
-    let key = decoding_key_for_alg(pem.as_slice(), header.alg)
-        .map_err(|_| HandlerRejection::unauthorized("JWT key cannot verify token algorithm"))?;
-    let validation = validation_for(config, header.alg);
-    let decoded = decode::<JsonValue>(token.as_str(), &key, &validation)
-        .map_err(|_| HandlerRejection::unauthorized("JWT validation failed"))?;
-    let principal = principal_from_claims(decoded.claims);
+    let principal = verify_jwt_token(runtime, token.as_str(), JwtExpiryMode::Enforce)?;
     apply_pass_through_claims(session, config, &principal)?;
-    cache_principal(runtime, token, &principal);
     Ok(Some(principal))
 }
 
-fn validation_for(config: &SecurityConfig, algorithm: Algorithm) -> Validation {
+fn validation_for_mode(
+    config: &SecurityConfig,
+    algorithm: Algorithm,
+    expiry_mode: JwtExpiryMode,
+) -> Validation {
     let mut validation = Validation::new(algorithm);
     validation.leeway = config.jwt.clock_skew_in_seconds;
     validation.validate_aud = false;
-    if config.ignore_jwt_expiry {
+    if config.ignore_jwt_expiry || matches!(expiry_mode, JwtExpiryMode::Ignore) {
         validation.validate_exp = false;
         validation.required_spec_claims.clear();
     }
     validation
+}
+
+fn validate_issuer_and_audience(
+    config: &SecurityConfig,
+    claims: &JsonValue,
+) -> Result<(), HandlerRejection> {
+    let issuer = config.issuer.trim();
+    if !issuer.is_empty() && claim_string(claims, "iss").as_deref() != Some(issuer) {
+        return Err(HandlerRejection::unauthorized(
+            "JWT issuer validation failed",
+        ));
+    }
+
+    if !config.audience.is_empty() {
+        let configured = config
+            .audience
+            .iter()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if !configured.is_empty() && !claim_audience_matches(claims, &configured) {
+            return Err(HandlerRejection::unauthorized(
+                "JWT audience validation failed",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn claim_audience_matches(claims: &JsonValue, configured: &[&str]) -> bool {
+    match claims.get("aud") {
+        Some(JsonValue::String(value)) => configured.iter().any(|expected| value == expected),
+        Some(JsonValue::Array(values)) => values.iter().any(|value| {
+            value
+                .as_str()
+                .is_some_and(|audience| configured.iter().any(|expected| audience == *expected))
+        }),
+        _ => false,
+    }
 }
 
 fn certificate_for_token(runtime: &SecurityRuntime, kid: Option<&str>) -> Option<Vec<u8>> {

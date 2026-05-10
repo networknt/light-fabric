@@ -8,12 +8,15 @@ mod handler;
 mod header;
 mod mcp;
 mod metrics;
+mod msal_exchange;
 mod proxy;
 mod rate_limit;
 mod resource;
 mod router;
 mod security;
 mod service;
+mod spa_auth;
+mod stateless_auth;
 mod token;
 mod unified_security;
 mod websocket;
@@ -76,6 +79,12 @@ pub use metrics::{
     METRICS_CONFIG_NAME, METRICS_FILE, METRICS_MODULE_ID, MetricCounts, MetricsConfig,
     MetricsEvent, MetricsRecorder, build_metrics_event, classify_status, load_metrics_config,
 };
+pub use msal_exchange::{
+    MSAL_EXCHANGE_CONFIG_NAME, MSAL_EXCHANGE_FILE, MSAL_EXCHANGE_LEGACY_FILE,
+    MSAL_EXCHANGE_MODULE_ID, MsalExchangeConfig, MsalExchangeOutcome, MsalExchangeRuntime,
+    SECURITY_MSAL_CONFIG_NAME, SECURITY_MSAL_FILE, SECURITY_MSAL_MODULE_ID,
+    load_msal_exchange_runtime,
+};
 pub use proxy::{
     PROXY_CONFIG_NAME, PROXY_FILE, PROXY_MODULE_ID, ProxyConfig, ProxyRoute, ProxyTarget,
     load_proxy_route, parse_proxy_targets,
@@ -97,20 +106,33 @@ pub use router::{
     load_router_route, select_router_target,
 };
 pub use security::{
-    AuthPrincipal, HandlerRejection, SECURITY_CONFIG_NAME, SECURITY_FILE, SECURITY_MODULE_ID,
-    SecurityConfig, SecurityJwtConfig, SecurityRuntime, load_security_runtime, verify_jwt_request,
+    AuthPrincipal, HandlerRejection, JwtExpiryMode, SECURITY_CONFIG_NAME, SECURITY_FILE,
+    SECURITY_MODULE_ID, SecurityConfig, SecurityJwtConfig, SecurityRuntime, load_security_runtime,
+    load_security_runtime_from_file, verify_jwt_request, verify_jwt_token,
 };
 pub use service::{
     PATH_PREFIX_SERVICE_CONFIG_NAME, PATH_PREFIX_SERVICE_FILE, PATH_PREFIX_SERVICE_LEGACY_FILE,
     PATH_PREFIX_SERVICE_MODULE_ID, PathPrefixServiceConfig, apply_path_prefix_service,
     load_path_prefix_service_config, service_id_for_path,
 };
+pub use spa_auth::{
+    ACCESS_TOKEN_COOKIE, CSRF_COOKIE, CookieSameSite, EID_COOKIE, EMAIL_COOKIE, HOST_COOKIE,
+    REFRESH_TOKEN_COOKIE, ROLES_COOKIE, SpaAuthResponse, SpaCookieConfig, SpaSessionOutcome,
+    SpaSessionRuntime, SpaTokenClient, TokenGrantResponse, USER_ID_COOKIE, USER_TYPE_COOKIE,
+    generate_csrf, load_spa_token_client, merge_extra_response_headers,
+};
+pub use stateless_auth::{
+    STATELESS_AUTH_CONFIG_NAME, STATELESS_AUTH_FILE, STATELESS_AUTH_LEGACY_FILE,
+    STATELESS_AUTH_MODULE_ID, StatelessAuthConfig, StatelessAuthOutcome, StatelessAuthRuntime,
+    load_stateless_auth_runtime,
+};
 pub use token::{
     CLIENT_FILE, CLIENT_TOKEN_CONFIG_NAME, CLIENT_TOKEN_MODULE_ID, ClientOauthConfig,
-    ClientRequestConfig, ClientTlsConfig, ClientTokenConfig, OAuthClientCredentialsConfig,
-    OAuthTokenCacheConfig, OAuthTokenConfig, SCOPE_TOKEN_HEADER, TOKEN_CACHE_NAME,
-    TOKEN_CONFIG_NAME, TOKEN_FILE, TOKEN_LEGACY_FILE, TOKEN_MODULE_ID, TokenHandlerConfig,
-    TokenRuntime, apply_token_request, load_token_runtime,
+    ClientRequestConfig, ClientTlsConfig, ClientTokenConfig, OAuthAuthorizationCodeConfig,
+    OAuthClientCredentialsConfig, OAuthRefreshTokenConfig, OAuthTokenCacheConfig, OAuthTokenConfig,
+    OAuthTokenExchangeConfig, SCOPE_TOKEN_HEADER, TOKEN_CACHE_NAME, TOKEN_CONFIG_NAME, TOKEN_FILE,
+    TOKEN_LEGACY_FILE, TOKEN_MODULE_ID, TokenHandlerConfig, TokenRuntime, apply_token_request,
+    load_token_runtime,
 };
 pub use unified_security::{
     UNIFIED_SECURITY_CONFIG_NAME, UNIFIED_SECURITY_FILE, UNIFIED_SECURITY_MODULE_ID,

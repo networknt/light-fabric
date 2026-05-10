@@ -7,22 +7,23 @@ use light_pingora::{
     CorrelationConfig, CorrelationState, CorsConfig, CorsRequestOutcome, CorsResponseHeaders,
     HandlerBuildContext, HandlerMetricsLogLevel, HandlerRejection, HeaderConfig, McpHttpRequest,
     McpHttpResponse, McpRequestContext, McpRouterRuntime, MetricsConfig, MetricsRecorder,
-    PathPrefixServiceConfig, PingoraApp, PingoraHandler, PingoraHandlerDescriptor,
-    PingoraHandlerKind, PingoraHandlerRegistry, PingoraTransport, ProxyRoute, ProxyTarget,
-    RateLimitHeaders, RateLimitRuntime, RouterDecision, RouterRoute, SecurityRuntime,
-    StaticResolution, StaticResourceSet, TokenRuntime, UnifiedSecurityConfig,
-    WebSocketConnectionPermit, WebSocketRouteDecision, WebSocketRouteError, WebSocketRouterRuntime,
-    apply_correlation_request, apply_correlation_response, apply_cors_response,
-    apply_header_request, apply_header_response, apply_path_prefix_service,
-    apply_rate_limit_headers, apply_router_upstream_request, apply_token_request,
-    apply_websocket_upstream_request, build_metrics_event, check_rate_limit,
+    MsalExchangeOutcome, MsalExchangeRuntime, PathPrefixServiceConfig, PingoraApp, PingoraHandler,
+    PingoraHandlerDescriptor, PingoraHandlerKind, PingoraHandlerRegistry, PingoraTransport,
+    ProxyRoute, ProxyTarget, RateLimitHeaders, RateLimitRuntime, RouterDecision, RouterRoute,
+    SecurityRuntime, SpaAuthResponse, StatelessAuthOutcome, StatelessAuthRuntime, StaticResolution,
+    StaticResourceSet, TokenRuntime, UnifiedSecurityConfig, WebSocketConnectionPermit,
+    WebSocketRouteDecision, WebSocketRouteError, WebSocketRouterRuntime, apply_correlation_request,
+    apply_correlation_response, apply_cors_response, apply_header_request, apply_header_response,
+    apply_path_prefix_service, apply_rate_limit_headers, apply_router_upstream_request,
+    apply_token_request, apply_websocket_upstream_request, build_metrics_event, check_rate_limit,
     correlation_id_for_upstream, evaluate_cors_request, load_active_handlers, load_api_key_config,
     load_basic_auth_config, load_correlation_config, load_cors_config, load_header_config,
-    load_mcp_router_runtime, load_metrics_config, load_path_prefix_service_config,
-    load_proxy_route, load_rate_limit_runtime, load_router_route, load_security_runtime,
-    load_static_resources, load_token_runtime, load_unified_security_config,
-    load_websocket_router_runtime, select_router_target, verify_api_key, verify_basic_auth,
-    verify_jwt_request, verify_unified_security,
+    load_mcp_router_runtime, load_metrics_config, load_msal_exchange_runtime,
+    load_path_prefix_service_config, load_proxy_route, load_rate_limit_runtime, load_router_route,
+    load_security_runtime, load_stateless_auth_runtime, load_static_resources, load_token_runtime,
+    load_unified_security_config, load_websocket_router_runtime, merge_extra_response_headers,
+    select_router_target, verify_api_key, verify_basic_auth, verify_jwt_request,
+    verify_unified_security,
 };
 use light_runtime::{
     CacheRegistry, ConfigManager, LightRuntimeBuilder, ReloadContext, ReloadOutcome,
@@ -67,6 +68,8 @@ struct GatewayProxy {
     rate_limit_runtime: Arc<ConfigManager<Option<RateLimitRuntime>>>,
     path_prefix_service_config: Arc<ConfigManager<Option<PathPrefixServiceConfig>>>,
     token_runtime: Arc<ConfigManager<Option<TokenRuntime>>>,
+    stateless_auth: Arc<ConfigManager<Option<StatelessAuthRuntime>>>,
+    msal_exchange: Arc<ConfigManager<Option<MsalExchangeRuntime>>>,
     mcp_router: Arc<ConfigManager<Option<McpRouterRuntime>>>,
     websocket_router: Arc<ConfigManager<Option<WebSocketRouterRuntime>>>,
     metrics_recorder: Arc<MetricsRecorder>,
@@ -127,6 +130,15 @@ impl GatewayProxy {
             ),
         )?;
         let token_runtime = load_token_runtime(config, active_handlers.is_handler_active("token"))?;
+        let stateless_auth = load_stateless_auth_runtime(
+            config,
+            handler_active(
+                &active_handlers,
+                &["stateless", "google", "facebook", "github"],
+            ),
+        )?;
+        let msal_exchange =
+            load_msal_exchange_runtime(config, active_handlers.is_handler_active("msal-exchange"))?;
         let mcp_router = load_mcp_router_runtime(config, active_handlers.is_handler_active("mcp"))?;
         let websocket_router =
             load_websocket_router_runtime(config, active_handlers.is_handler_active("websocket"))?;
@@ -145,6 +157,8 @@ impl GatewayProxy {
         let rate_limit_runtime = Arc::new(ConfigManager::new(rate_limit_runtime));
         let path_prefix_service_config = Arc::new(ConfigManager::new(path_prefix_service_config));
         let token_runtime = Arc::new(ConfigManager::new(token_runtime));
+        let stateless_auth = Arc::new(ConfigManager::new(stateless_auth));
+        let msal_exchange = Arc::new(ConfigManager::new(msal_exchange));
         let mcp_router = Arc::new(ConfigManager::new(mcp_router));
         let websocket_router = Arc::new(ConfigManager::new(websocket_router));
         let router_route = Arc::new(ConfigManager::new(router_route));
@@ -167,6 +181,8 @@ impl GatewayProxy {
                 rate_limit_runtime: Arc::clone(&rate_limit_runtime),
                 path_prefix_service_config: Arc::clone(&path_prefix_service_config),
                 token_runtime: Arc::clone(&token_runtime),
+                stateless_auth: Arc::clone(&stateless_auth),
+                msal_exchange: Arc::clone(&msal_exchange),
                 mcp_router: Arc::clone(&mcp_router),
                 websocket_router: Arc::clone(&websocket_router),
                 router_route: Arc::clone(&router_route),
@@ -219,6 +235,8 @@ impl GatewayProxy {
             Arc::new(SecurityReloader {
                 active_handlers: Arc::clone(&active_handlers),
                 security_runtime: Arc::clone(&security_runtime),
+                stateless_auth: Arc::clone(&stateless_auth),
+                msal_exchange: Arc::clone(&msal_exchange),
             }),
         );
         config.module_registry.register_reloader(
@@ -247,6 +265,8 @@ impl GatewayProxy {
             Arc::new(TokenReloader {
                 active_handlers: Arc::clone(&active_handlers),
                 token_runtime: Arc::clone(&token_runtime),
+                stateless_auth: Arc::clone(&stateless_auth),
+                msal_exchange: Arc::clone(&msal_exchange),
             }),
         );
         config.module_registry.register_reloader(
@@ -254,6 +274,29 @@ impl GatewayProxy {
             Arc::new(TokenReloader {
                 active_handlers: Arc::clone(&active_handlers),
                 token_runtime: Arc::clone(&token_runtime),
+                stateless_auth: Arc::clone(&stateless_auth),
+                msal_exchange: Arc::clone(&msal_exchange),
+            }),
+        );
+        config.module_registry.register_reloader(
+            light_pingora::STATELESS_AUTH_MODULE_ID,
+            Arc::new(StatelessAuthReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                stateless_auth: Arc::clone(&stateless_auth),
+            }),
+        );
+        config.module_registry.register_reloader(
+            light_pingora::MSAL_EXCHANGE_MODULE_ID,
+            Arc::new(MsalExchangeReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                msal_exchange: Arc::clone(&msal_exchange),
+            }),
+        );
+        config.module_registry.register_reloader(
+            light_pingora::SECURITY_MSAL_MODULE_ID,
+            Arc::new(MsalExchangeReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                msal_exchange: Arc::clone(&msal_exchange),
             }),
         );
         let mcp_reloader: Arc<dyn ReloadableModule> = Arc::new(McpRouterReloader {
@@ -320,6 +363,8 @@ impl GatewayProxy {
             rate_limit_runtime,
             path_prefix_service_config,
             token_runtime,
+            stateless_auth,
+            msal_exchange,
             mcp_router,
             websocket_router,
             metrics_recorder,
@@ -645,7 +690,7 @@ impl GatewayProxy {
         }
         self.apply_response_headers(&mut response, ctx)?;
         for (name, value) in extra_headers {
-            response.insert_header(name.to_string(), value.to_string())?;
+            response.append_header(name.to_string(), value.to_string())?;
         }
         response.set_content_length(body.len())?;
         session
@@ -674,6 +719,24 @@ impl GatewayProxy {
             None,
             body,
             rejection.headers.as_slice(),
+        )
+        .await
+    }
+
+    async fn write_spa_auth_response(
+        &self,
+        session: &mut Session,
+        ctx: &mut GatewayRequestContext,
+        response: SpaAuthResponse,
+    ) -> pingora::Result<bool> {
+        self.write_bytes_response_with_headers(
+            session,
+            ctx,
+            response.status,
+            response.content_type.as_str(),
+            None,
+            Bytes::from(response.body),
+            response.headers.as_slice(),
         )
         .await
     }
@@ -711,7 +774,7 @@ impl GatewayProxy {
         header.insert_header("content-type", response.content_type.as_str())?;
         self.apply_response_headers(&mut header, ctx)?;
         for (name, value) in &response.headers {
-            header.insert_header(name.to_string(), value.to_string())?;
+            header.append_header(name.to_string(), value.to_string())?;
         }
         let end_with_header = response.body.is_empty();
         session
@@ -741,6 +804,9 @@ impl GatewayProxy {
         }
         if let Some(rate_limit_headers) = ctx.rate_limit_headers.as_ref() {
             apply_rate_limit_headers(response, rate_limit_headers)?;
+        }
+        for (name, value) in &ctx.extra_response_headers {
+            response.append_header(name.to_string(), value.to_string())?;
         }
         Ok(())
     }
@@ -847,6 +913,16 @@ impl GatewayProxy {
     }
 
     #[cfg(test)]
+    fn current_stateless_auth(&self) -> Arc<Option<StatelessAuthRuntime>> {
+        self.stateless_auth.load()
+    }
+
+    #[cfg(test)]
+    fn current_msal_exchange(&self) -> Arc<Option<MsalExchangeRuntime>> {
+        self.msal_exchange.load()
+    }
+
+    #[cfg(test)]
     fn current_mcp_router(&self) -> Arc<Option<McpRouterRuntime>> {
         self.mcp_router.load()
     }
@@ -875,6 +951,8 @@ struct HandlerReloader {
     rate_limit_runtime: Arc<ConfigManager<Option<RateLimitRuntime>>>,
     path_prefix_service_config: Arc<ConfigManager<Option<PathPrefixServiceConfig>>>,
     token_runtime: Arc<ConfigManager<Option<TokenRuntime>>>,
+    stateless_auth: Arc<ConfigManager<Option<StatelessAuthRuntime>>>,
+    msal_exchange: Arc<ConfigManager<Option<MsalExchangeRuntime>>>,
     mcp_router: Arc<ConfigManager<Option<McpRouterRuntime>>>,
     websocket_router: Arc<ConfigManager<Option<WebSocketRouterRuntime>>>,
     router_route: Arc<ConfigManager<Option<RouterRoute>>>,
@@ -941,6 +1019,17 @@ impl ReloadableModule for HandlerReloader {
             &ctx.runtime_config,
             active_handlers.is_handler_active("token"),
         )?;
+        let stateless_auth = load_stateless_auth_runtime(
+            &ctx.runtime_config,
+            handler_active(
+                &active_handlers,
+                &["stateless", "google", "facebook", "github"],
+            ),
+        )?;
+        let msal_exchange = load_msal_exchange_runtime(
+            &ctx.runtime_config,
+            active_handlers.is_handler_active("msal-exchange"),
+        )?;
         let mcp_router = load_mcp_router_runtime(
             &ctx.runtime_config,
             active_handlers.is_handler_active("mcp"),
@@ -967,6 +1056,8 @@ impl ReloadableModule for HandlerReloader {
         self.path_prefix_service_config
             .store(path_prefix_service_config);
         self.token_runtime.store(token_runtime);
+        self.stateless_auth.store(stateless_auth);
+        self.msal_exchange.store(msal_exchange);
         self.mcp_router.store(mcp_router);
         self.websocket_router.store(websocket_router);
         self.router_route.store(router_route);
@@ -1076,6 +1167,8 @@ impl ReloadableModule for BasicAuthReloader {
 struct SecurityReloader {
     active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
     security_runtime: Arc<ConfigManager<Option<SecurityRuntime>>>,
+    stateless_auth: Arc<ConfigManager<Option<StatelessAuthRuntime>>>,
+    msal_exchange: Arc<ConfigManager<Option<MsalExchangeRuntime>>>,
 }
 
 #[async_trait]
@@ -1087,7 +1180,20 @@ impl ReloadableModule for SecurityReloader {
             &["security", "jwt", "unified-security", "unified"],
         );
         let config = load_security_runtime(&ctx.runtime_config, active)?;
+        let stateless_auth = load_stateless_auth_runtime(
+            &ctx.runtime_config,
+            handler_active(
+                &active_handlers,
+                &["stateless", "google", "facebook", "github"],
+            ),
+        )?;
+        let msal_exchange = load_msal_exchange_runtime(
+            &ctx.runtime_config,
+            active_handlers.is_handler_active("msal-exchange"),
+        )?;
         self.security_runtime.store(config);
+        self.stateless_auth.store(stateless_auth);
+        self.msal_exchange.store(msal_exchange);
         Ok(ReloadOutcome::success("security.yml reloaded"))
     }
 }
@@ -1146,6 +1252,45 @@ impl ReloadableModule for PathPrefixServiceReloader {
 struct TokenReloader {
     active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
     token_runtime: Arc<ConfigManager<Option<TokenRuntime>>>,
+    stateless_auth: Arc<ConfigManager<Option<StatelessAuthRuntime>>>,
+    msal_exchange: Arc<ConfigManager<Option<MsalExchangeRuntime>>>,
+}
+
+struct StatelessAuthReloader {
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    stateless_auth: Arc<ConfigManager<Option<StatelessAuthRuntime>>>,
+}
+
+#[async_trait]
+impl ReloadableModule for StatelessAuthReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let active_handlers = self.active_handlers.load();
+        let active = handler_active(
+            &active_handlers,
+            &["stateless", "google", "facebook", "github"],
+        );
+        let runtime = load_stateless_auth_runtime(&ctx.runtime_config, active)?;
+        self.stateless_auth.store(runtime);
+        Ok(ReloadOutcome::success("statelessAuth.yml reloaded"))
+    }
+}
+
+struct MsalExchangeReloader {
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    msal_exchange: Arc<ConfigManager<Option<MsalExchangeRuntime>>>,
+}
+
+#[async_trait]
+impl ReloadableModule for MsalExchangeReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let active = self
+            .active_handlers
+            .load()
+            .is_handler_active("msal-exchange");
+        let runtime = load_msal_exchange_runtime(&ctx.runtime_config, active)?;
+        self.msal_exchange.store(runtime);
+        Ok(ReloadOutcome::success("msal-exchange.yml reloaded"))
+    }
 }
 
 struct McpRouterReloader {
@@ -1210,9 +1355,23 @@ impl ReloadableModule for AccessControlReloader {
 #[async_trait]
 impl ReloadableModule for TokenReloader {
     async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
-        let active = self.active_handlers.load().is_handler_active("token");
+        let active_handlers = self.active_handlers.load();
+        let active = active_handlers.is_handler_active("token");
         let runtime = load_token_runtime(&ctx.runtime_config, active)?;
+        let stateless_auth = load_stateless_auth_runtime(
+            &ctx.runtime_config,
+            handler_active(
+                &active_handlers,
+                &["stateless", "google", "facebook", "github"],
+            ),
+        )?;
+        let msal_exchange = load_msal_exchange_runtime(
+            &ctx.runtime_config,
+            active_handlers.is_handler_active("msal-exchange"),
+        )?;
         self.token_runtime.store(runtime);
+        self.stateless_auth.store(stateless_auth);
+        self.msal_exchange.store(msal_exchange);
         Ok(ReloadOutcome::success("token/client.yml reloaded"))
     }
 }
@@ -1433,6 +1592,68 @@ impl ProxyHttp for GatewayProxy {
                     {
                         ctx.record_handler_duration(&handler_id, started.elapsed());
                         return self.write_rejection_response(session, ctx, rejection).await;
+                    }
+                }
+                "stateless" | "google" | "facebook" | "github" => {
+                    let runtime = self.stateless_auth.load();
+                    let Some(runtime) = runtime.as_ref().as_ref() else {
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                        continue;
+                    };
+                    match runtime.handle_request(session, handler_id.as_str()).await {
+                        Err(rejection) => {
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            return self.write_rejection_response(session, ctx, rejection).await;
+                        }
+                        Ok(outcome) => match outcome {
+                            StatelessAuthOutcome::Continue {
+                                auth,
+                                response_headers,
+                            } => {
+                                if auth.is_some() {
+                                    ctx.auth = auth;
+                                }
+                                merge_extra_response_headers(
+                                    &mut ctx.extra_response_headers,
+                                    response_headers,
+                                );
+                            }
+                            StatelessAuthOutcome::Respond(response) => {
+                                ctx.record_handler_duration(&handler_id, started.elapsed());
+                                return self.write_spa_auth_response(session, ctx, response).await;
+                            }
+                        },
+                    }
+                }
+                "msal-exchange" => {
+                    let runtime = self.msal_exchange.load();
+                    let Some(runtime) = runtime.as_ref().as_ref() else {
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                        continue;
+                    };
+                    match runtime.handle_request(session).await {
+                        Err(rejection) => {
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            return self.write_rejection_response(session, ctx, rejection).await;
+                        }
+                        Ok(outcome) => match outcome {
+                            MsalExchangeOutcome::Continue {
+                                auth,
+                                response_headers,
+                            } => {
+                                if auth.is_some() {
+                                    ctx.auth = auth;
+                                }
+                                merge_extra_response_headers(
+                                    &mut ctx.extra_response_headers,
+                                    response_headers,
+                                );
+                            }
+                            MsalExchangeOutcome::Respond(response) => {
+                                ctx.record_handler_duration(&handler_id, started.elapsed());
+                                return self.write_spa_auth_response(session, ctx, response).await;
+                            }
+                        },
                     }
                 }
                 "websocket" => {
@@ -1833,6 +2054,7 @@ struct GatewayRequestContext {
     cors: Option<CorsResponseHeaders>,
     auth: Option<AuthPrincipal>,
     rate_limit_headers: Option<RateLimitHeaders>,
+    extra_response_headers: Vec<(String, String)>,
     metrics_enabled: bool,
     metrics_recorded: bool,
     handler_timings: Vec<HandlerTiming>,
@@ -1863,6 +2085,7 @@ impl Default for GatewayRequestContext {
             cors: None,
             auth: None,
             rate_limit_headers: None,
+            extra_response_headers: Vec::new(),
             metrics_enabled: false,
             metrics_recorded: false,
             handler_timings: Vec::new(),
@@ -1894,6 +2117,7 @@ impl GatewayRequestContext {
         self.cors = None;
         self.auth = None;
         self.rate_limit_headers = None;
+        self.extra_response_headers.clear();
         self.metrics_enabled = false;
         self.metrics_recorded = false;
         self.handler_timings.clear();
@@ -2364,6 +2588,7 @@ const GATEWAY_HANDLER_DESCRIPTORS: &[(&str, PingoraHandlerKind)] = &[
     ("google", PingoraHandlerKind::Security),
     ("facebook", PingoraHandlerKind::Security),
     ("github", PingoraHandlerKind::Security),
+    ("msal-exchange", PingoraHandlerKind::Security),
     ("websocket", PingoraHandlerKind::Traffic),
     ("mcp", PingoraHandlerKind::Application),
 ];
@@ -2986,6 +3211,147 @@ request:
                 .expect("cache registry")
                 .names()
                 .contains(&light_pingora::TOKEN_CACHE_NAME.to_string())
+        );
+    }
+
+    #[test]
+    fn gateway_loads_stateless_auth_when_stateless_handler_is_active() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            r#"
+handlers:
+  - stateless
+defaultHandlers:
+  - stateless
+"#,
+        )
+        .expect("write handler config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::STATELESS_AUTH_FILE),
+            r#"
+enabled: true
+authPath: /authorization
+logoutPath: /logout
+cookieDomain: localhost
+cookieSecure: true
+"#,
+        )
+        .expect("write stateless config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::CLIENT_FILE),
+            r#"
+tls:
+  verifyHostname: false
+oauth:
+  token:
+    server_url: http://localhost:6882
+    authorization_code:
+      uri: /oauth2/token
+      client_id: ac-client
+      client_secret: ac-secret
+    refresh_token:
+      uri: /oauth2/token
+      client_id: rt-client
+      client_secret: rt-secret
+"#,
+        )
+        .expect("write client config");
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+
+        let proxy = GatewayProxy::from_runtime_config(&config).expect("build proxy");
+
+        let stateless = proxy.current_stateless_auth();
+        let stateless = stateless.as_ref().as_ref().expect("stateless runtime");
+        assert_eq!(stateless.config().auth_path, "/authorization");
+        assert!(
+            config
+                .module_registry
+                .module_summaries()
+                .iter()
+                .any(|entry| {
+                    entry.module_id == light_pingora::STATELESS_AUTH_MODULE_ID && entry.active
+                })
+        );
+    }
+
+    #[test]
+    fn gateway_loads_msal_exchange_when_handler_is_active() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            r#"
+handlers:
+  - msal-exchange
+paths:
+  - path: /auth/ms/exchange
+    method: POST
+    exec:
+      - msal-exchange
+defaultHandlers:
+  - msal-exchange
+"#,
+        )
+        .expect("write handler config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::MSAL_EXCHANGE_FILE),
+            r#"
+enabled: true
+exchangePath: /auth/ms/exchange
+logoutPath: /auth/ms/logout
+subjectTokenType: urn:ietf:params:oauth:token-type:jwt
+"#,
+        )
+        .expect("write msal config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::SECURITY_MSAL_FILE),
+            r#"
+enableVerifyJwt: true
+issuer: https://login.microsoftonline.com/tenant/v2.0
+audience: spa-client
+"#,
+        )
+        .expect("write security-msal config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::CLIENT_FILE),
+            r#"
+tls:
+  verifyHostname: false
+oauth:
+  token:
+    server_url: http://localhost:6882
+    refresh_token:
+      uri: /oauth2/token
+      client_id: rt-client
+      client_secret: rt-secret
+    token_exchange:
+      uri: /oauth2/token
+      client_id: ex-client
+      client_secret: ex-secret
+"#,
+        )
+        .expect("write client config");
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+
+        let proxy = GatewayProxy::from_runtime_config(&config).expect("build proxy");
+
+        let msal = proxy.current_msal_exchange();
+        let msal = msal.as_ref().as_ref().expect("msal runtime");
+        assert_eq!(msal.config().exchange_path, "/auth/ms/exchange");
+        assert_eq!(
+            msal.config().subject_token_type.as_deref(),
+            Some("urn:ietf:params:oauth:token-type:jwt")
+        );
+        assert!(
+            config
+                .module_registry
+                .module_summaries()
+                .iter()
+                .any(|entry| {
+                    entry.module_id == light_pingora::MSAL_EXCHANGE_MODULE_ID && entry.active
+                })
         );
     }
 

@@ -144,6 +144,12 @@ pub struct OAuthTokenConfig {
     pub enable_http2: bool,
     #[serde(default, rename = "client_credentials", alias = "clientCredentials")]
     pub client_credentials: OAuthClientCredentialsConfig,
+    #[serde(default, rename = "authorization_code", alias = "authorizationCode")]
+    pub authorization_code: OAuthAuthorizationCodeConfig,
+    #[serde(default, rename = "refresh_token", alias = "refreshToken")]
+    pub refresh_token: OAuthRefreshTokenConfig,
+    #[serde(default, rename = "token_exchange", alias = "tokenExchange")]
+    pub token_exchange: OAuthTokenExchangeConfig,
 }
 
 impl Default for OAuthTokenConfig {
@@ -159,6 +165,9 @@ impl Default for OAuthTokenConfig {
             proxy_port: None,
             enable_http2: true,
             client_credentials: OAuthClientCredentialsConfig::default(),
+            authorization_code: OAuthAuthorizationCodeConfig::default(),
+            refresh_token: OAuthRefreshTokenConfig::default(),
+            token_exchange: OAuthTokenExchangeConfig::default(),
         }
     }
 }
@@ -201,6 +210,93 @@ impl Default for OAuthClientCredentialsConfig {
             client_secret: String::new(),
             scope: Vec::new(),
             service_id_auth_servers: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OAuthAuthorizationCodeConfig {
+    #[serde(default = "default_token_uri")]
+    pub uri: String,
+    #[serde(default, rename = "client_id", alias = "clientId")]
+    pub client_id: String,
+    #[serde(default, rename = "client_secret", alias = "clientSecret")]
+    pub client_secret: String,
+    #[serde(default, rename = "redirect_uri", alias = "redirectUri")]
+    pub redirect_uri: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_string_list")]
+    pub scope: Vec<String>,
+}
+
+impl Default for OAuthAuthorizationCodeConfig {
+    fn default() -> Self {
+        Self {
+            uri: default_token_uri(),
+            client_id: String::new(),
+            client_secret: String::new(),
+            redirect_uri: None,
+            scope: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OAuthRefreshTokenConfig {
+    #[serde(default = "default_token_uri")]
+    pub uri: String,
+    #[serde(default, rename = "client_id", alias = "clientId")]
+    pub client_id: String,
+    #[serde(default, rename = "client_secret", alias = "clientSecret")]
+    pub client_secret: String,
+    #[serde(default, deserialize_with = "deserialize_string_list")]
+    pub scope: Vec<String>,
+}
+
+impl Default for OAuthRefreshTokenConfig {
+    fn default() -> Self {
+        Self {
+            uri: default_token_uri(),
+            client_id: String::new(),
+            client_secret: String::new(),
+            scope: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OAuthTokenExchangeConfig {
+    #[serde(default = "default_token_uri")]
+    pub uri: String,
+    #[serde(default, rename = "client_id", alias = "clientId")]
+    pub client_id: String,
+    #[serde(default, rename = "client_secret", alias = "clientSecret")]
+    pub client_secret: String,
+    #[serde(default, deserialize_with = "deserialize_string_list")]
+    pub scope: Vec<String>,
+    #[serde(default, alias = "subject_token")]
+    pub subject_token: Option<String>,
+    #[serde(default, alias = "subject_token_type")]
+    pub subject_token_type: Option<String>,
+    #[serde(default, alias = "requested_token_type")]
+    pub requested_token_type: Option<String>,
+    #[serde(default)]
+    pub audience: Option<String>,
+}
+
+impl Default for OAuthTokenExchangeConfig {
+    fn default() -> Self {
+        Self {
+            uri: default_token_uri(),
+            client_id: String::new(),
+            client_secret: String::new(),
+            scope: Vec::new(),
+            subject_token: None,
+            subject_token_type: None,
+            requested_token_type: None,
+            audience: None,
         }
     }
 }

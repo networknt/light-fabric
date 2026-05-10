@@ -1,0 +1,15 @@
+enabled: ${msal-exchange.enabled:true}
+exchangePath: ${msal-exchange.exchangePath:/auth/ms/exchange}
+logoutPath: ${msal-exchange.logoutPath:/auth/ms/logout}
+cookieDomain: ${msal-exchange.cookieDomain:localhost}
+cookiePath: ${msal-exchange.cookiePath:/}
+cookieSecure: ${msal-exchange.cookieSecure:false}
+sessionTimeout: ${msal-exchange.sessionTimeout:3600}
+rememberMeTimeout: ${msal-exchange.rememberMeTimeout:604800}
+renewBeforeSeconds: ${msal-exchange.renewBeforeSeconds:90}
+refreshSingleFlightWaitMs: ${msal-exchange.refreshSingleFlightWaitMs:5000}
+refreshSingleFlightCacheMs: ${msal-exchange.refreshSingleFlightCacheMs:3000}
+refreshSingleFlightMaxEntries: ${msal-exchange.refreshSingleFlightMaxEntries:10000}
+cookieSameSite: ${msal-exchange.cookieSameSite:None}
+cookieTimeoutUri: ${msal-exchange.cookieTimeoutUri:/}
+subjectTokenType: ${msal-exchange.subjectTokenType:}

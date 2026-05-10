@@ -1,1 +1,47 @@
-verifyHostname: ${client.verifyHostname:false}
+tls:
+  verifyHostname: ${client.verifyHostname:false}
+oauth:
+  multipleAuthServers: ${client.multipleAuthServers:false}
+  token:
+    cache:
+      capacity: ${client.tokenCacheCapacity:200}
+    tokenRenewBeforeExpired: ${client.tokenRenewBeforeExpired:60000}
+    expiredRefreshRetryDelay: ${client.expiredRefreshRetryDelay:2000}
+    earlyRefreshRetryDelay: ${client.earlyRefreshRetryDelay:30000}
+    server_url: ${client.tokenServerUrl:}
+    serviceId: ${client.tokenServiceId:}
+    proxyHost: ${client.tokenProxyHost:}
+    proxyPort: ${client.tokenProxyPort:}
+    enableHttp2: ${client.tokenEnableHttp2:true}
+    client_credentials:
+      uri: ${client.tokenCcUri:/oauth2/token}
+      client_id: ${client.tokenCcClientId:}
+      client_secret: ${client.tokenCcClientSecret:}
+      scope: ${client.tokenCcScope:}
+      serviceIdAuthServers: ${client.tokenCcServiceIdAuthServers:}
+    authorization_code:
+      uri: ${client.tokenAcUri:/oauth2/token}
+      client_id: ${client.tokenAcClientId:}
+      client_secret: ${client.tokenAcClientSecret:}
+      redirect_uri: ${client.tokenAcRedirectUri:}
+      scope: ${client.tokenAcScope:}
+    refresh_token:
+      uri: ${client.tokenRtUri:/oauth2/token}
+      client_id: ${client.tokenRtClientId:}
+      client_secret: ${client.tokenRtClientSecret:}
+      scope: ${client.tokenRtScope:}
+    token_exchange:
+      uri: ${client.tokenExUri:/oauth2/token}
+      client_id: ${client.tokenExClientId:}
+      client_secret: ${client.tokenExClientSecret:}
+      scope: ${client.tokenExScope:}
+      subjectToken: ${client.subjectToken:}
+      subjectTokenType: ${client.subjectTokenType:}
+      requestedTokenType: ${client.requestedTokenType:}
+      audience: ${client.tokenExAudience:}
+pathPrefixServices: ${client.pathPrefixServices:}
+request:
+  connectTimeout: ${client.connectTimeout:2000}
+  timeout: ${client.timeout:4000}
+  injectCallerId: ${client.injectCallerId:false}
+  enableHttp2: ${client.requestEnableHttp2:true}
