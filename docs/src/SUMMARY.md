@@ -29,6 +29,7 @@
 - [WebSocket Router](design/websocket-router.md)
 - [Stateless Auth Handler](design/stateless-auth.md)
 - [MSAL Exchange Handler](design/msal-exchange.md)
+- [PII Tokenization](design/pii-tokenization.md)
 
 # Crate
 

@@ -1,0 +1,24 @@
+database:
+  url: ${pii-tokenization.database.url:${database.url:}}
+  maxConnections: ${pii-tokenization.database.maxConnections:8}
+  minConnections: ${pii-tokenization.database.minConnections:1}
+  connectTimeoutMs: ${pii-tokenization.database.connectTimeoutMs:2000}
+
+hostIdClaim: ${pii-tokenization.hostIdClaim:host_id}
+maxBodySize: ${pii-tokenization.maxBodySize:1048576}
+
+crypto:
+  algorithm: ${pii-tokenization.crypto.algorithm:AES-256-GCM}
+  keyId: ${pii-tokenization.crypto.keyId:default}
+  valueEncryptionKeyEnv: ${pii-tokenization.crypto.valueEncryptionKeyEnv:PII_TOKENIZATION_VALUE_ENCRYPTION_KEY}
+  valueHashKeyEnv: ${pii-tokenization.crypto.valueHashKeyEnv:PII_TOKENIZATION_VALUE_HASH_KEY}
+  valueEncryptionKey: ${pii-tokenization.crypto.valueEncryptionKey:}
+  valueHashKey: ${pii-tokenization.crypto.valueHashKey:}
+
+cache:
+  enabled: ${pii-tokenization.cache.enabled:true}
+  maxEntries: ${pii-tokenization.cache.maxEntries:10000}
+  ttlSeconds: ${pii-tokenization.cache.ttlSeconds:86400}
+  cacheCleartext: ${pii-tokenization.cache.cacheCleartext:true}
+
+rules: ${pii-tokenization.rules:[]}

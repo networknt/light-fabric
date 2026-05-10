@@ -9,6 +9,7 @@ mod header;
 mod mcp;
 mod metrics;
 mod msal_exchange;
+mod pii_tokenization;
 mod proxy;
 mod rate_limit;
 mod resource;
@@ -84,6 +85,12 @@ pub use msal_exchange::{
     MSAL_EXCHANGE_MODULE_ID, MsalExchangeConfig, MsalExchangeOutcome, MsalExchangeRuntime,
     SECURITY_MSAL_CONFIG_NAME, SECURITY_MSAL_FILE, SECURITY_MSAL_MODULE_ID,
     load_msal_exchange_runtime,
+};
+pub use pii_tokenization::{
+    PII_TOKENIZATION_CACHE_NAME, PII_TOKENIZATION_CONFIG_NAME, PII_TOKENIZATION_FILE,
+    PII_TOKENIZATION_LEGACY_FILE, PII_TOKENIZATION_MODULE_ID, PiiDatabaseConfig, PiiFieldRule,
+    PiiTokenCacheConfig, PiiTokenCryptoConfig, PiiTokenizationConfig, PiiTokenizationRule,
+    PiiTokenizationRuntime, TokenScheme, load_pii_tokenization_runtime,
 };
 pub use proxy::{
     PROXY_CONFIG_NAME, PROXY_FILE, PROXY_MODULE_ID, ProxyConfig, ProxyRoute, ProxyTarget,

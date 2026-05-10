@@ -7,23 +7,24 @@ use light_pingora::{
     CorrelationConfig, CorrelationState, CorsConfig, CorsRequestOutcome, CorsResponseHeaders,
     HandlerBuildContext, HandlerMetricsLogLevel, HandlerRejection, HeaderConfig, McpHttpRequest,
     McpHttpResponse, McpRequestContext, McpRouterRuntime, MetricsConfig, MetricsRecorder,
-    MsalExchangeOutcome, MsalExchangeRuntime, PathPrefixServiceConfig, PingoraApp, PingoraHandler,
-    PingoraHandlerDescriptor, PingoraHandlerKind, PingoraHandlerRegistry, PingoraTransport,
-    ProxyRoute, ProxyTarget, RateLimitHeaders, RateLimitRuntime, RouterDecision, RouterRoute,
-    SecurityRuntime, SpaAuthResponse, StatelessAuthOutcome, StatelessAuthRuntime, StaticResolution,
-    StaticResourceSet, TokenRuntime, UnifiedSecurityConfig, WebSocketConnectionPermit,
-    WebSocketRouteDecision, WebSocketRouteError, WebSocketRouterRuntime, apply_correlation_request,
-    apply_correlation_response, apply_cors_response, apply_header_request, apply_header_response,
-    apply_path_prefix_service, apply_rate_limit_headers, apply_router_upstream_request,
-    apply_token_request, apply_websocket_upstream_request, build_metrics_event, check_rate_limit,
+    MsalExchangeOutcome, MsalExchangeRuntime, PathPrefixServiceConfig, PiiTokenizationRuntime,
+    PingoraApp, PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerKind,
+    PingoraHandlerRegistry, PingoraTransport, ProxyRoute, ProxyTarget, RateLimitHeaders,
+    RateLimitRuntime, RouterDecision, RouterRoute, SecurityRuntime, SpaAuthResponse,
+    StatelessAuthOutcome, StatelessAuthRuntime, StaticResolution, StaticResourceSet, TokenRuntime,
+    UnifiedSecurityConfig, WebSocketConnectionPermit, WebSocketRouteDecision, WebSocketRouteError,
+    WebSocketRouterRuntime, apply_correlation_request, apply_correlation_response,
+    apply_cors_response, apply_header_request, apply_header_response, apply_path_prefix_service,
+    apply_rate_limit_headers, apply_router_upstream_request, apply_token_request,
+    apply_websocket_upstream_request, build_metrics_event, check_rate_limit,
     correlation_id_for_upstream, evaluate_cors_request, load_active_handlers, load_api_key_config,
     load_basic_auth_config, load_correlation_config, load_cors_config, load_header_config,
     load_mcp_router_runtime, load_metrics_config, load_msal_exchange_runtime,
-    load_path_prefix_service_config, load_proxy_route, load_rate_limit_runtime, load_router_route,
-    load_security_runtime, load_stateless_auth_runtime, load_static_resources, load_token_runtime,
-    load_unified_security_config, load_websocket_router_runtime, merge_extra_response_headers,
-    select_router_target, verify_api_key, verify_basic_auth, verify_jwt_request,
-    verify_unified_security,
+    load_path_prefix_service_config, load_pii_tokenization_runtime, load_proxy_route,
+    load_rate_limit_runtime, load_router_route, load_security_runtime, load_stateless_auth_runtime,
+    load_static_resources, load_token_runtime, load_unified_security_config,
+    load_websocket_router_runtime, merge_extra_response_headers, select_router_target,
+    verify_api_key, verify_basic_auth, verify_jwt_request, verify_unified_security,
 };
 use light_runtime::{
     CacheRegistry, ConfigManager, LightRuntimeBuilder, ReloadContext, ReloadOutcome,
@@ -70,6 +71,7 @@ struct GatewayProxy {
     token_runtime: Arc<ConfigManager<Option<TokenRuntime>>>,
     stateless_auth: Arc<ConfigManager<Option<StatelessAuthRuntime>>>,
     msal_exchange: Arc<ConfigManager<Option<MsalExchangeRuntime>>>,
+    pii_tokenization: Arc<ConfigManager<Option<PiiTokenizationRuntime>>>,
     mcp_router: Arc<ConfigManager<Option<McpRouterRuntime>>>,
     websocket_router: Arc<ConfigManager<Option<WebSocketRouterRuntime>>>,
     metrics_recorder: Arc<MetricsRecorder>,
@@ -139,6 +141,10 @@ impl GatewayProxy {
         )?;
         let msal_exchange =
             load_msal_exchange_runtime(config, active_handlers.is_handler_active("msal-exchange"))?;
+        let pii_tokenization = load_pii_tokenization_runtime(
+            config,
+            handler_active(&active_handlers, &["tokenize", "detokenize"]),
+        )?;
         let mcp_router = load_mcp_router_runtime(config, active_handlers.is_handler_active("mcp"))?;
         let websocket_router =
             load_websocket_router_runtime(config, active_handlers.is_handler_active("websocket"))?;
@@ -159,6 +165,7 @@ impl GatewayProxy {
         let token_runtime = Arc::new(ConfigManager::new(token_runtime));
         let stateless_auth = Arc::new(ConfigManager::new(stateless_auth));
         let msal_exchange = Arc::new(ConfigManager::new(msal_exchange));
+        let pii_tokenization = Arc::new(ConfigManager::new(pii_tokenization));
         let mcp_router = Arc::new(ConfigManager::new(mcp_router));
         let websocket_router = Arc::new(ConfigManager::new(websocket_router));
         let router_route = Arc::new(ConfigManager::new(router_route));
@@ -183,6 +190,7 @@ impl GatewayProxy {
                 token_runtime: Arc::clone(&token_runtime),
                 stateless_auth: Arc::clone(&stateless_auth),
                 msal_exchange: Arc::clone(&msal_exchange),
+                pii_tokenization: Arc::clone(&pii_tokenization),
                 mcp_router: Arc::clone(&mcp_router),
                 websocket_router: Arc::clone(&websocket_router),
                 router_route: Arc::clone(&router_route),
@@ -299,6 +307,13 @@ impl GatewayProxy {
                 msal_exchange: Arc::clone(&msal_exchange),
             }),
         );
+        config.module_registry.register_reloader(
+            light_pingora::PII_TOKENIZATION_MODULE_ID,
+            Arc::new(PiiTokenizationReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                pii_tokenization: Arc::clone(&pii_tokenization),
+            }),
+        );
         let mcp_reloader: Arc<dyn ReloadableModule> = Arc::new(McpRouterReloader {
             active_handlers: Arc::clone(&active_handlers),
             mcp_router: Arc::clone(&mcp_router),
@@ -365,6 +380,7 @@ impl GatewayProxy {
             token_runtime,
             stateless_auth,
             msal_exchange,
+            pii_tokenization,
             mcp_router,
             websocket_router,
             metrics_recorder,
@@ -887,6 +903,34 @@ impl GatewayProxy {
         ctx.handler_timings_logged = true;
     }
 
+    fn prepare_response_handlers(
+        &self,
+        ctx: &mut GatewayRequestContext,
+        handler_ids: &[String],
+        request_path: &str,
+        method: &str,
+    ) -> Result<(), HandlerRejection> {
+        for handler_id in handler_ids {
+            let started = Instant::now();
+            if handler_id.as_str() == "detokenize" {
+                let runtime = self.pii_tokenization.load();
+                let Some(runtime) = runtime.as_ref().as_ref() else {
+                    return Err(HandlerRejection::new(
+                        502,
+                        "ERR13021",
+                        "pii tokenization is not configured",
+                    ));
+                };
+                if runtime.has_response_rules(request_path, method) {
+                    runtime.validate_auth(ctx.auth.as_ref())?;
+                    ctx.detokenize_active = true;
+                }
+                ctx.record_handler_duration(handler_id, started.elapsed());
+            }
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     fn current_proxy_route(&self) -> Arc<Option<ProxyRoute>> {
         self.proxy_route.load()
@@ -953,6 +997,7 @@ struct HandlerReloader {
     token_runtime: Arc<ConfigManager<Option<TokenRuntime>>>,
     stateless_auth: Arc<ConfigManager<Option<StatelessAuthRuntime>>>,
     msal_exchange: Arc<ConfigManager<Option<MsalExchangeRuntime>>>,
+    pii_tokenization: Arc<ConfigManager<Option<PiiTokenizationRuntime>>>,
     mcp_router: Arc<ConfigManager<Option<McpRouterRuntime>>>,
     websocket_router: Arc<ConfigManager<Option<WebSocketRouterRuntime>>>,
     router_route: Arc<ConfigManager<Option<RouterRoute>>>,
@@ -1030,6 +1075,10 @@ impl ReloadableModule for HandlerReloader {
             &ctx.runtime_config,
             active_handlers.is_handler_active("msal-exchange"),
         )?;
+        let pii_tokenization = load_pii_tokenization_runtime(
+            &ctx.runtime_config,
+            handler_active(&active_handlers, &["tokenize", "detokenize"]),
+        )?;
         let mcp_router = load_mcp_router_runtime(
             &ctx.runtime_config,
             active_handlers.is_handler_active("mcp"),
@@ -1058,6 +1107,7 @@ impl ReloadableModule for HandlerReloader {
         self.token_runtime.store(token_runtime);
         self.stateless_auth.store(stateless_auth);
         self.msal_exchange.store(msal_exchange);
+        self.pii_tokenization.store(pii_tokenization);
         self.mcp_router.store(mcp_router);
         self.websocket_router.store(websocket_router);
         self.router_route.store(router_route);
@@ -1293,6 +1343,22 @@ impl ReloadableModule for MsalExchangeReloader {
     }
 }
 
+struct PiiTokenizationReloader {
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    pii_tokenization: Arc<ConfigManager<Option<PiiTokenizationRuntime>>>,
+}
+
+#[async_trait]
+impl ReloadableModule for PiiTokenizationReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let active_handlers = self.active_handlers.load();
+        let active = handler_active(&active_handlers, &["tokenize", "detokenize"]);
+        let runtime = load_pii_tokenization_runtime(&ctx.runtime_config, active)?;
+        self.pii_tokenization.store(runtime);
+        Ok(ReloadOutcome::success("pii-tokenization.yml reloaded"))
+    }
+}
+
 struct McpRouterReloader {
     active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
     mcp_router: Arc<ConfigManager<Option<McpRouterRuntime>>>,
@@ -1469,7 +1535,8 @@ impl ProxyHttp for GatewayProxy {
                 .await;
         }
 
-        for handler_id in ctx.handler_ids.clone() {
+        let handler_ids = ctx.handler_ids.clone();
+        for (handler_index, handler_id) in handler_ids.clone().into_iter().enumerate() {
             let started = Instant::now();
             match handler_id.as_str() {
                 "correlation" => {
@@ -1592,6 +1659,63 @@ impl ProxyHttp for GatewayProxy {
                     {
                         ctx.record_handler_duration(&handler_id, started.elapsed());
                         return self.write_rejection_response(session, ctx, rejection).await;
+                    }
+                }
+                "tokenize" => {
+                    let runtime = self.pii_tokenization.load();
+                    let Some(runtime) = runtime.as_ref().as_ref() else {
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                        return self
+                            .write_text_response(
+                                session,
+                                ctx,
+                                502,
+                                "pii tokenization is not configured",
+                            )
+                            .await;
+                    };
+                    if runtime.has_request_rules(&request_path, &method) {
+                        if let Err(rejection) = runtime.validate_auth(ctx.auth.as_ref()) {
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            return self.write_rejection_response(session, ctx, rejection).await;
+                        }
+                        if request_header(session, "content-encoding").is_some() {
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            return self
+                                .write_rejection_response(
+                                    session,
+                                    ctx,
+                                    HandlerRejection::new(
+                                        415,
+                                        "ERR13017",
+                                        "tokenize handler does not support encoded request bodies",
+                                    ),
+                                )
+                                .await;
+                        }
+                        session.req_header_mut().remove_header("content-length");
+                        ctx.tokenize_active = true;
+                    }
+                }
+                "detokenize" => {
+                    let runtime = self.pii_tokenization.load();
+                    let Some(runtime) = runtime.as_ref().as_ref() else {
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                        return self
+                            .write_text_response(
+                                session,
+                                ctx,
+                                502,
+                                "pii tokenization is not configured",
+                            )
+                            .await;
+                    };
+                    if runtime.has_response_rules(&request_path, &method) {
+                        if let Err(rejection) = runtime.validate_auth(ctx.auth.as_ref()) {
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            return self.write_rejection_response(session, ctx, rejection).await;
+                        }
+                        ctx.detokenize_active = true;
                     }
                 }
                 "stateless" | "google" | "facebook" | "github" => {
@@ -1838,6 +1962,15 @@ impl ProxyHttp for GatewayProxy {
                         ctx.proxy_target = Some(target);
                         ctx.rewrite_host_header = rewrite_host_header;
                         ctx.reuse_x_forwarded = reuse_x_forwarded;
+                        if let Err(rejection) = self.prepare_response_handlers(
+                            ctx,
+                            &handler_ids[handler_index + 1..],
+                            &request_path,
+                            &method,
+                        ) {
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            return self.write_rejection_response(session, ctx, rejection).await;
+                        }
                         ctx.record_handler_duration(&handler_id, started.elapsed());
                         return Ok(false);
                     }
@@ -1861,6 +1994,16 @@ impl ProxyHttp for GatewayProxy {
                             ctx.rewrite_host_header = route.config.rewrite_host_header;
                             ctx.reuse_x_forwarded = route.config.reuse_x_forwarded;
                             ctx.router_decision = Some(decision);
+                            if let Err(rejection) = self.prepare_response_handlers(
+                                ctx,
+                                &handler_ids[handler_index + 1..],
+                                &request_path,
+                                &method,
+                            ) {
+                                return self
+                                    .write_rejection_response(session, ctx, rejection)
+                                    .await;
+                            }
                             return Ok(false);
                         }
                         Err(rejection) => {
@@ -1978,7 +2121,7 @@ impl ProxyHttp for GatewayProxy {
         &self,
         session: &mut Session,
         body: &mut Option<Bytes>,
-        _end_of_stream: bool,
+        end_of_stream: bool,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()>
     where
@@ -1987,6 +2130,36 @@ impl ProxyHttp for GatewayProxy {
         if ctx.websocket_decision.is_some() && session.was_upgraded() {
             enforce_websocket_tunnel_limits(ctx, body)?;
         }
+        if ctx.tokenize_active {
+            let runtime = self.pii_tokenization.load();
+            let Some(runtime) = runtime.as_ref().as_ref() else {
+                return Err(Error::explain(
+                    ErrorType::InternalError,
+                    "pii tokenization is not configured",
+                ));
+            };
+            buffer_body_chunk(
+                &mut ctx.tokenize_request_body,
+                body,
+                runtime.max_body_size(),
+                "request",
+            )?;
+            if end_of_stream {
+                let input = std::mem::take(&mut ctx.tokenize_request_body);
+                let transformed = runtime
+                    .tokenize_request_body(
+                        ctx.auth.as_ref(),
+                        ctx.request_path.as_str(),
+                        ctx.method.as_str(),
+                        input.as_slice(),
+                    )
+                    .await
+                    .map_err(handler_rejection_error)?;
+                *body = Some(Bytes::from(transformed));
+            } else {
+                *body = None;
+            }
+        }
         Ok(())
     }
 
@@ -1994,7 +2167,7 @@ impl ProxyHttp for GatewayProxy {
         &self,
         session: &mut Session,
         body: &mut Option<Bytes>,
-        _end_of_stream: bool,
+        end_of_stream: bool,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<Option<Duration>>
     where
@@ -2002,6 +2175,35 @@ impl ProxyHttp for GatewayProxy {
     {
         if ctx.websocket_decision.is_some() && session.was_upgraded() {
             enforce_websocket_tunnel_limits(ctx, body)?;
+        }
+        if ctx.detokenize_active {
+            let runtime = self.pii_tokenization.load();
+            let Some(runtime) = runtime.as_ref().as_ref() else {
+                return Err(Error::explain(
+                    ErrorType::InternalError,
+                    "pii tokenization is not configured",
+                ));
+            };
+            buffer_body_chunk(
+                &mut ctx.detokenize_response_body,
+                body,
+                runtime.max_body_size(),
+                "response",
+            )?;
+            if end_of_stream {
+                let input = std::mem::take(&mut ctx.detokenize_response_body);
+                let transformed = block_on_detokenize_response(
+                    runtime,
+                    ctx.auth.as_ref(),
+                    ctx.request_path.as_str(),
+                    ctx.method.as_str(),
+                    input.as_slice(),
+                )
+                .map_err(handler_rejection_error)?;
+                *body = Some(Bytes::from(transformed));
+            } else {
+                *body = None;
+            }
         }
         Ok(None)
     }
@@ -2015,6 +2217,18 @@ impl ProxyHttp for GatewayProxy {
     where
         Self::CTX: Send + Sync,
     {
+        if ctx.detokenize_active {
+            if upstream_response.headers.get("content-encoding").is_some() {
+                return Err(handler_rejection_error(HandlerRejection::new(
+                    415,
+                    "ERR13018",
+                    "detokenize handler does not support encoded response bodies",
+                )));
+            }
+            upstream_response.remove_header("content-length");
+            upstream_response.remove_header("etag");
+            upstream_response.remove_header("last-modified");
+        }
         self.apply_response_headers(upstream_response, ctx)?;
         self.record_metrics(ctx, upstream_response.status.as_u16());
         self.log_handler_durations(ctx);
@@ -2053,6 +2267,10 @@ struct GatewayRequestContext {
     correlation: CorrelationState,
     cors: Option<CorsResponseHeaders>,
     auth: Option<AuthPrincipal>,
+    tokenize_active: bool,
+    detokenize_active: bool,
+    tokenize_request_body: Vec<u8>,
+    detokenize_response_body: Vec<u8>,
     rate_limit_headers: Option<RateLimitHeaders>,
     extra_response_headers: Vec<(String, String)>,
     metrics_enabled: bool,
@@ -2084,6 +2302,10 @@ impl Default for GatewayRequestContext {
             correlation: CorrelationState::default(),
             cors: None,
             auth: None,
+            tokenize_active: false,
+            detokenize_active: false,
+            tokenize_request_body: Vec::new(),
+            detokenize_response_body: Vec::new(),
             rate_limit_headers: None,
             extra_response_headers: Vec::new(),
             metrics_enabled: false,
@@ -2116,6 +2338,10 @@ impl GatewayRequestContext {
         self.correlation = CorrelationState::default();
         self.cors = None;
         self.auth = None;
+        self.tokenize_active = false;
+        self.detokenize_active = false;
+        self.tokenize_request_body.clear();
+        self.detokenize_response_body.clear();
         self.rate_limit_headers = None;
         self.extra_response_headers.clear();
         self.metrics_enabled = false;
@@ -2358,6 +2584,44 @@ fn enforce_websocket_tunnel_limits(
     Ok(())
 }
 
+fn buffer_body_chunk(
+    buffer: &mut Vec<u8>,
+    body: &mut Option<Bytes>,
+    max_body_size: usize,
+    label: &str,
+) -> pingora::Result<()> {
+    if let Some(chunk) = body.take() {
+        if buffer.len().saturating_add(chunk.len()) > max_body_size {
+            return Err(handler_rejection_error(HandlerRejection::new(
+                413,
+                "ERR13019",
+                format!("PII tokenization {label} body exceeds maxBodySize"),
+            )));
+        }
+        buffer.extend_from_slice(&chunk);
+    }
+    Ok(())
+}
+
+fn block_on_detokenize_response(
+    runtime: &PiiTokenizationRuntime,
+    auth: Option<&AuthPrincipal>,
+    path: &str,
+    method: &str,
+    body: &[u8],
+) -> Result<Vec<u8>, HandlerRejection> {
+    let future = runtime.detokenize_response_body(auth, path, method, body);
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(future))
+    } else {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| HandlerRejection::new(500, "ERR13020", "failed to create runtime"))?
+            .block_on(future)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct StaticFileValidators {
     etag: String,
@@ -2495,6 +2759,13 @@ fn pingora_internal_error(error: RuntimeError) -> Box<Error> {
     Error::because(ErrorType::InternalError, error.to_string(), error)
 }
 
+fn handler_rejection_error(rejection: HandlerRejection) -> Box<Error> {
+    Error::explain(
+        ErrorType::InternalError,
+        format!("{}: {}", rejection.code, rejection.message),
+    )
+}
+
 fn handler_active(active_handlers: &ActiveHandlerSet, ids: &[&str]) -> bool {
     ids.iter().any(|id| active_handlers.is_handler_active(id))
 }
@@ -2559,6 +2830,8 @@ const GATEWAY_HANDLER_DESCRIPTORS: &[(&str, PingoraHandlerKind)] = &[
     ("path-prefix-service", PingoraHandlerKind::Traffic),
     ("pathPrefixService", PingoraHandlerKind::Traffic),
     ("token", PingoraHandlerKind::Security),
+    ("tokenize", PingoraHandlerKind::Traffic),
+    ("detokenize", PingoraHandlerKind::Traffic),
     ("router", PingoraHandlerKind::Traffic),
     ("proxy", PingoraHandlerKind::Traffic),
     ("proxyServerInfo", PingoraHandlerKind::Application),

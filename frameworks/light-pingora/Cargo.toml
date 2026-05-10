@@ -9,16 +9,21 @@ light-runtime = { path = "../../crates/light-runtime" }
 light-rule = { path = "../../crates/light-rule" }
 async-trait = { workspace = true }
 base64 = "0.22"
+hmac = { workspace = true }
 hex = { workspace = true }
 jsonwebtoken = "9.3"
 pbkdf2 = "0.12"
 pingora = { version = "0.8.0", features = ["proxy", "rustls"] }
+rand = "0.8"
 regex = "1"
 reqwest = { workspace = true }
+ring = "0.17"
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 sha1 = "0.10"
+sha2 = { workspace = true }
+sqlx = { version = "0.8", features = ["chrono", "json", "postgres", "runtime-tokio-rustls", "uuid"] }
 subtle = "2.6"
 tokio = { workspace = true }
 tracing = { workspace = true }
