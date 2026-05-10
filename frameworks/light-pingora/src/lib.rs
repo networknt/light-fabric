@@ -137,9 +137,10 @@ pub use token::{
     CLIENT_FILE, CLIENT_TOKEN_CONFIG_NAME, CLIENT_TOKEN_MODULE_ID, ClientOauthConfig,
     ClientRequestConfig, ClientTlsConfig, ClientTokenConfig, OAuthAuthorizationCodeConfig,
     OAuthClientCredentialsConfig, OAuthRefreshTokenConfig, OAuthTokenCacheConfig, OAuthTokenConfig,
-    OAuthTokenExchangeConfig, SCOPE_TOKEN_HEADER, TOKEN_CACHE_NAME, TOKEN_CONFIG_NAME, TOKEN_FILE,
-    TOKEN_LEGACY_FILE, TOKEN_MODULE_ID, TokenHandlerConfig, TokenRuntime, apply_token_request,
-    load_token_runtime,
+    OAuthTokenExchangeConfig, SCOPE_TOKEN_HEADER, SIDECAR_CONFIG_NAME, SIDECAR_FILE,
+    SIDECAR_LEGACY_FILE, SIDECAR_MODULE_ID, SidecarTrafficConfig, TOKEN_CACHE_NAME,
+    TOKEN_CONFIG_NAME, TOKEN_FILE, TOKEN_LEGACY_FILE, TOKEN_MODULE_ID, TokenHandlerConfig,
+    TokenRuntime, apply_token_request, load_token_runtime,
 };
 pub use unified_security::{
     UNIFIED_SECURITY_CONFIG_NAME, UNIFIED_SECURITY_FILE, UNIFIED_SECURITY_MODULE_ID,

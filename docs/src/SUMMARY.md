@@ -30,6 +30,7 @@
 - [Stateless Auth Handler](design/stateless-auth.md)
 - [MSAL Exchange Handler](design/msal-exchange.md)
 - [PII Tokenization](design/pii-tokenization.md)
+- [Token Handler](design/token-handler.md)
 
 # Crate
 

@@ -287,6 +287,15 @@ impl GatewayProxy {
             }),
         );
         config.module_registry.register_reloader(
+            light_pingora::SIDECAR_MODULE_ID,
+            Arc::new(TokenReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                token_runtime: Arc::clone(&token_runtime),
+                stateless_auth: Arc::clone(&stateless_auth),
+                msal_exchange: Arc::clone(&msal_exchange),
+            }),
+        );
+        config.module_registry.register_reloader(
             light_pingora::STATELESS_AUTH_MODULE_ID,
             Arc::new(StatelessAuthReloader {
                 active_handlers: Arc::clone(&active_handlers),
@@ -1438,7 +1447,7 @@ impl ReloadableModule for TokenReloader {
         self.token_runtime.store(runtime);
         self.stateless_auth.store(stateless_auth);
         self.msal_exchange.store(msal_exchange);
-        Ok(ReloadOutcome::success("token/client.yml reloaded"))
+        Ok(ReloadOutcome::success("token/client/sidecar.yml reloaded"))
     }
 }
 

@@ -17,12 +17,17 @@ use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::Mutex;
 
 pub const TOKEN_FILE: &str = "token.yml";
 pub const TOKEN_LEGACY_FILE: &str = "token.yaml";
 pub const TOKEN_MODULE_ID: &str = "light-pingora/token";
 pub const TOKEN_CONFIG_NAME: &str = "token";
 pub const TOKEN_CACHE_NAME: &str = "light-pingora/token-cache";
+pub const SIDECAR_FILE: &str = "sidecar.yml";
+pub const SIDECAR_LEGACY_FILE: &str = "sidecar.yaml";
+pub const SIDECAR_MODULE_ID: &str = "light-pingora/sidecar";
+pub const SIDECAR_CONFIG_NAME: &str = "sidecar";
 pub const CLIENT_FILE: &str = "client.yml";
 pub const CLIENT_TOKEN_MODULE_ID: &str = "light-pingora/client-token";
 pub const CLIENT_TOKEN_CONFIG_NAME: &str = "client-token";
@@ -30,6 +35,9 @@ pub const SCOPE_TOKEN_HEADER: &str = "X-Scope-Token";
 
 const AUTHORIZATION_HEADER: &str = "authorization";
 const SERVICE_ID_HEADER: &str = "service_id";
+const SERVICE_URL_HEADER: &str = "service_url";
+const SIDECAR_MODE_HEADER: &str = "header";
+const SIDECAR_MODE_PROTOCOL: &str = "protocol";
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +53,41 @@ impl Default for TokenHandlerConfig {
         Self {
             enabled: false,
             applied_path_prefixes: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SidecarTrafficConfig {
+    #[serde(default = "default_sidecar_indicator")]
+    pub egress_ingress_indicator: String,
+}
+
+impl Default for SidecarTrafficConfig {
+    fn default() -> Self {
+        Self {
+            egress_ingress_indicator: default_sidecar_indicator(),
+        }
+    }
+}
+
+impl SidecarTrafficConfig {
+    fn allows_token(
+        &self,
+        service_id: Option<&str>,
+        service_url: Option<&str>,
+        request_is_http: bool,
+    ) -> bool {
+        match self
+            .egress_ingress_indicator
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            SIDECAR_MODE_HEADER => has_non_blank(service_id) || has_non_blank(service_url),
+            SIDECAR_MODE_PROTOCOL => request_is_http,
+            _ => false,
         }
     }
 }
@@ -333,6 +376,7 @@ pub struct AuthServerConfig {
 #[derive(Clone)]
 pub struct TokenRuntime {
     handler: TokenHandlerConfig,
+    sidecar: SidecarTrafficConfig,
     client: ClientTokenConfig,
     cache: Arc<TokenCache>,
     registry_client: Option<Arc<PortalRegistryClient>>,
@@ -341,12 +385,14 @@ pub struct TokenRuntime {
 impl TokenRuntime {
     fn new(
         handler: TokenHandlerConfig,
+        sidecar: SidecarTrafficConfig,
         client: ClientTokenConfig,
         registry_client: Option<Arc<PortalRegistryClient>>,
     ) -> Self {
         let capacity = client.oauth.token.cache.capacity;
         Self {
             handler,
+            sidecar,
             client,
             cache: Arc::new(TokenCache::new(capacity)),
             registry_client,
@@ -361,6 +407,10 @@ impl TokenRuntime {
         &self.client
     }
 
+    pub fn sidecar_config(&self) -> &SidecarTrafficConfig {
+        &self.sidecar
+    }
+
     pub fn cache(&self) -> Arc<TokenCache> {
         Arc::clone(&self.cache)
     }
@@ -372,27 +422,79 @@ impl TokenRuntime {
     ) -> Result<String, HandlerRejection> {
         let options = self.resolve_request_options(request_path, service_id)?;
         let key = TokenCacheKey::new(options.cache_service_id.clone(), options.scope.clone());
+        let entry = self.cache.get_or_insert_empty(key).await;
+        let mut cached = entry.lock().await;
         let now = now_millis();
-        if let Some(cached) = self.cache.get(&key).await
-            && !cached.needs_refresh(now, options.token_renew_before_expired)
-        {
-            return Ok(cached.token);
+
+        if let Some(token) = cached.token.clone() {
+            if !cached.needs_refresh(now, options.token_renew_before_expired) {
+                return Ok(token);
+            }
+            if !cached.is_expired(now) {
+                self.maybe_start_early_refresh(&mut cached, Arc::clone(&entry), options, now);
+                return Ok(token);
+            }
         }
 
+        if now < cached.expired_retry_timeout {
+            return Err(client_credentials_token_not_available());
+        }
+
+        cached.renewing = true;
         let fetched = fetch_client_credentials_token(
             &options,
             &self.client.request,
             &self.client.tls,
             self.registry_client.as_deref(),
         )
-        .await?;
-        let cached = CachedToken {
-            token: fetched.access_token.clone(),
-            expires_at_millis: fetched.expires_at_millis,
-            scope: fetched.scope,
-        };
-        self.cache.insert(key, cached).await;
-        Ok(fetched.access_token)
+        .await;
+        match fetched {
+            Ok(fetched) => {
+                let token = fetched.access_token.clone();
+                cached.update(fetched);
+                Ok(token)
+            }
+            Err(error) => {
+                cached.renewing = false;
+                cached.expired_retry_timeout =
+                    now_millis().saturating_add(options.expired_refresh_retry_delay);
+                Err(error)
+            }
+        }
+    }
+
+    fn maybe_start_early_refresh(
+        &self,
+        cached: &mut CachedToken,
+        entry: Arc<Mutex<CachedToken>>,
+        options: TokenRequestOptions,
+        now: u64,
+    ) {
+        if cached.renewing || now < cached.early_retry_timeout {
+            return;
+        }
+
+        cached.renewing = true;
+        cached.early_retry_timeout = now.saturating_add(options.early_refresh_retry_delay);
+        let request = self.client.request.clone();
+        let tls = self.client.tls.clone();
+        let registry_client = self.registry_client.clone();
+        tokio::spawn(async move {
+            let fetched = fetch_client_credentials_token(
+                &options,
+                &request,
+                &tls,
+                registry_client.as_deref(),
+            )
+            .await;
+            let mut cached = entry.lock().await;
+            match fetched {
+                Ok(fetched) => cached.update(fetched),
+                Err(_) => {
+                    cached.renewing = false;
+                }
+            }
+        });
     }
 
     fn resolve_request_options(
@@ -475,6 +577,34 @@ pub fn load_token_runtime(
         return Ok(None);
     }
 
+    let sidecar = match runtime_config
+        .module_registry
+        .load_config::<SidecarTrafficConfig>(runtime_config, SIDECAR_FILE)
+    {
+        Ok(config) => config,
+        Err(RuntimeError::MissingConfig(file)) if file == SIDECAR_FILE => match runtime_config
+            .module_registry
+            .load_config::<SidecarTrafficConfig>(runtime_config, SIDECAR_LEGACY_FILE)
+        {
+            Ok(config) => config,
+            Err(RuntimeError::MissingConfig(file)) if file == SIDECAR_LEGACY_FILE => {
+                SidecarTrafficConfig::default()
+            }
+            Err(error) => return Err(error),
+        },
+        Err(error) => return Err(error),
+    };
+    runtime_config.module_registry.register_loaded_config(
+        SIDECAR_MODULE_ID,
+        SIDECAR_CONFIG_NAME,
+        ModuleKind::Framework,
+        &sidecar,
+        [],
+        true,
+        Some(true),
+        true,
+    )?;
+
     let client = runtime_config
         .module_registry
         .load_config::<ClientTokenConfig>(runtime_config, CLIENT_FILE)?;
@@ -495,7 +625,12 @@ pub fn load_token_runtime(
         true,
     )?;
 
-    let runtime = TokenRuntime::new(handler, client, runtime_config.registry_client.clone());
+    let runtime = TokenRuntime::new(
+        handler,
+        sidecar,
+        client,
+        runtime_config.registry_client.clone(),
+    );
     if let Some(cache_registry) = runtime_config.cache_registry.as_ref() {
         let cache: Arc<dyn RuntimeCache> = runtime.cache();
         cache_registry.register_arc(TOKEN_CACHE_NAME, cache);
@@ -513,6 +648,14 @@ pub async fn apply_token_request(
     }
 
     let service_id = request_header(session, SERVICE_ID_HEADER);
+    let service_url = request_header(session, SERVICE_URL_HEADER);
+    if !runtime.sidecar.allows_token(
+        service_id.as_deref(),
+        service_url.as_deref(),
+        session_request_is_http(session),
+    ) {
+        return Ok(());
+    }
     let token = runtime
         .get_client_credentials_token(request_path, service_id)
         .await?;
@@ -546,22 +689,51 @@ impl TokenCacheKey {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct CachedToken {
-    token: String,
+    token: Option<String>,
     expires_at_millis: u64,
     scope: Option<String>,
+    renewing: bool,
+    expired_retry_timeout: u64,
+    early_retry_timeout: u64,
 }
 
 impl CachedToken {
+    fn empty() -> Self {
+        Self {
+            token: None,
+            expires_at_millis: 0,
+            scope: None,
+            renewing: false,
+            expired_retry_timeout: 0,
+            early_retry_timeout: 0,
+        }
+    }
+
+    fn update(&mut self, fetched: FetchedToken) {
+        self.token = Some(fetched.access_token);
+        self.expires_at_millis = fetched.expires_at_millis;
+        self.scope = fetched.scope;
+        self.renewing = false;
+        self.expired_retry_timeout = 0;
+    }
+
     fn needs_refresh(&self, now_millis: u64, renew_before_millis: u64) -> bool {
+        if self.token.is_none() {
+            return true;
+        }
         self.expires_at_millis.saturating_sub(renew_before_millis) <= now_millis
+    }
+
+    fn is_expired(&self, now_millis: u64) -> bool {
+        self.token.is_none() || self.expires_at_millis <= now_millis
     }
 }
 
 pub struct TokenCache {
     capacity: usize,
-    entries: tokio::sync::Mutex<BTreeMap<TokenCacheKey, CachedToken>>,
+    entries: Mutex<BTreeMap<TokenCacheKey, Arc<Mutex<CachedToken>>>>,
 }
 
 impl TokenCache {
@@ -572,10 +744,27 @@ impl TokenCache {
         }
     }
 
-    async fn get(&self, key: &TokenCacheKey) -> Option<CachedToken> {
-        self.entries.lock().await.get(key).cloned()
+    async fn get_or_insert_empty(&self, key: TokenCacheKey) -> Arc<Mutex<CachedToken>> {
+        if self.capacity == 0 {
+            return Arc::new(Mutex::new(CachedToken::empty()));
+        }
+
+        let mut entries = self.entries.lock().await;
+        if let Some(entry) = entries.get(&key) {
+            return Arc::clone(entry);
+        }
+
+        if entries.len() >= self.capacity
+            && let Some(evict_key) = evict_key(&entries)
+        {
+            entries.remove(&evict_key);
+        }
+        let entry = Arc::new(Mutex::new(CachedToken::empty()));
+        entries.insert(key, Arc::clone(&entry));
+        entry
     }
 
+    #[cfg(test)]
     async fn insert(&self, key: TokenCacheKey, value: CachedToken) {
         if self.capacity == 0 {
             return;
@@ -583,14 +772,11 @@ impl TokenCache {
         let mut entries = self.entries.lock().await;
         if !entries.contains_key(&key)
             && entries.len() >= self.capacity
-            && let Some(evict_key) = entries
-                .iter()
-                .min_by_key(|(_, cached)| cached.expires_at_millis)
-                .map(|(key, _)| key.clone())
+            && let Some(evict_key) = evict_key(&entries)
         {
             entries.remove(&evict_key);
         }
-        entries.insert(key, value);
+        entries.insert(key, Arc::new(Mutex::new(value)));
     }
 }
 
@@ -601,14 +787,22 @@ impl RuntimeCache for TokenCache {
     }
 
     async fn entries_summary(&self) -> JsonValue {
-        let entries = self.entries.lock().await;
+        let entries = self
+            .entries
+            .lock()
+            .await
+            .iter()
+            .map(|(key, token)| (key.clone(), Arc::clone(token)))
+            .collect::<Vec<_>>();
         let mut summary = JsonMap::new();
-        for (key, token) in entries.iter() {
+        for (key, token) in entries {
+            let token = token.lock().await;
             summary.insert(
-                cache_key_to_string(key),
+                cache_key_to_string(&key),
                 json!({
                     "expiresAtMillis": token.expires_at_millis,
                     "scope": token.scope,
+                    "renewing": token.renewing,
                 }),
             );
         }
@@ -632,6 +826,8 @@ struct TokenRequestOptions {
     proxy_port: Option<u16>,
     enable_http2: bool,
     token_renew_before_expired: u64,
+    expired_refresh_retry_delay: u64,
+    early_refresh_retry_delay: u64,
     cache_service_id: Option<String>,
 }
 
@@ -783,6 +979,12 @@ fn merged_options(
         token_renew_before_expired: auth_server
             .and_then(|auth| auth.token_renew_before_expired)
             .unwrap_or(token.token_renew_before_expired),
+        expired_refresh_retry_delay: auth_server
+            .and_then(|auth| auth.expired_refresh_retry_delay)
+            .unwrap_or(token.expired_refresh_retry_delay),
+        early_refresh_retry_delay: auth_server
+            .and_then(|auth| auth.early_refresh_retry_delay)
+            .unwrap_or(token.early_refresh_retry_delay),
         cache_service_id: cache_service_id.and_then(non_empty),
     })
 }
@@ -1059,8 +1261,46 @@ fn string_extra(extra: &HashMap<String, JsonValue>, key: &str) -> Option<String>
         .map(str::to_string)
 }
 
+fn session_request_is_http(session: &Session) -> bool {
+    session
+        .as_downstream()
+        .digest()
+        .and_then(|digest| digest.ssl_digest.as_ref())
+        .is_none()
+}
+
+fn has_non_blank(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !value.trim().is_empty())
+}
+
+fn evict_key(entries: &BTreeMap<TokenCacheKey, Arc<Mutex<CachedToken>>>) -> Option<TokenCacheKey> {
+    entries
+        .iter()
+        .filter_map(|(key, entry)| {
+            entry
+                .try_lock()
+                .ok()
+                .map(|token| (token.expires_at_millis, key.clone()))
+        })
+        .min_by_key(|(expires_at_millis, _)| *expires_at_millis)
+        .map(|(_, key)| key)
+        .or_else(|| entries.keys().next().cloned())
+}
+
+fn client_credentials_token_not_available() -> HandlerRejection {
+    HandlerRejection::new(
+        408,
+        "ERR10009",
+        "Could not get client credentials token in client module",
+    )
+}
+
 fn default_true() -> bool {
     true
+}
+
+fn default_sidecar_indicator() -> String {
+    SIDECAR_MODE_HEADER.to_string()
 }
 
 fn default_cache_capacity() -> usize {
@@ -1094,6 +1334,10 @@ fn default_token_uri() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::time::{Duration as TokioDuration, sleep};
 
     #[test]
     fn client_token_config_accepts_single_and_multiple_auth_server_shapes() {
@@ -1138,6 +1382,25 @@ request:
                 .client_id,
             Some("pet-client".to_string())
         );
+    }
+
+    #[test]
+    fn sidecar_config_defaults_to_header_mode_and_supports_protocol_mode() {
+        let config = SidecarTrafficConfig::default();
+
+        assert!(config.allows_token(Some("service"), None, false));
+        assert!(config.allows_token(None, Some("http://api.example.com"), false));
+        assert!(!config.allows_token(None, None, false));
+
+        let config: SidecarTrafficConfig = serde_yaml::from_str(
+            r#"
+egressIngressIndicator: protocol
+"#,
+        )
+        .expect("parse sidecar config");
+
+        assert!(config.allows_token(None, None, true));
+        assert!(!config.allows_token(Some("service"), None, false));
     }
 
     #[test]
@@ -1186,9 +1449,12 @@ request:
                     scope: None,
                 },
                 CachedToken {
-                    token: "secret-a".to_string(),
+                    token: Some("secret-a".to_string()),
                     expires_at_millis: 200,
                     scope: None,
+                    renewing: false,
+                    expired_retry_timeout: 0,
+                    early_retry_timeout: 0,
                 },
             )
             .await;
@@ -1199,9 +1465,12 @@ request:
                     scope: Some("pet.r".to_string()),
                 },
                 CachedToken {
-                    token: "secret-b".to_string(),
+                    token: Some("secret-b".to_string()),
                     expires_at_millis: 300,
                     scope: Some("pet.r".to_string()),
+                    renewing: false,
+                    expired_retry_timeout: 0,
+                    early_retry_timeout: 0,
                 },
             )
             .await;
@@ -1212,5 +1481,164 @@ request:
         assert!(summary_text.contains("expiresAtMillis"));
         assert!(summary_text.contains("pet.r"));
         assert!(!summary_text.contains("secret"));
+    }
+
+    #[tokio::test]
+    async fn expired_token_refresh_is_synchronized_for_same_cache_key() {
+        let server = MockTokenServer::start(TokioDuration::from_millis(100)).await;
+        let runtime = Arc::new(test_runtime(server.url("/oauth2/token"), 60_000));
+        let mut tasks = Vec::new();
+
+        for _ in 0..8 {
+            let runtime = Arc::clone(&runtime);
+            tasks.push(tokio::spawn(async move {
+                runtime
+                    .get_client_credentials_token("/v1/pets", Some("petstore".to_string()))
+                    .await
+            }));
+        }
+
+        for task in tasks {
+            assert_eq!(task.await.expect("task").expect("token"), "token-1");
+        }
+        sleep(TokioDuration::from_millis(50)).await;
+        assert_eq!(server.request_count(), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn early_refresh_returns_current_token_and_runs_once_in_background() {
+        let server = MockTokenServer::start(TokioDuration::from_millis(25)).await;
+        let runtime = Arc::new(test_runtime(server.url("/oauth2/token"), 60_000));
+        let key = TokenCacheKey::new(Some("petstore".to_string()), vec!["pet.r".to_string()]);
+        runtime
+            .cache
+            .insert(
+                key.clone(),
+                CachedToken {
+                    token: Some("old-token".to_string()),
+                    expires_at_millis: now_millis().saturating_add(30_000),
+                    scope: Some("pet.r".to_string()),
+                    renewing: false,
+                    expired_retry_timeout: 0,
+                    early_retry_timeout: 0,
+                },
+            )
+            .await;
+
+        let mut tasks = Vec::new();
+        for _ in 0..5 {
+            let runtime = Arc::clone(&runtime);
+            tasks.push(tokio::spawn(async move {
+                runtime
+                    .get_client_credentials_token("/v1/pets", Some("petstore".to_string()))
+                    .await
+            }));
+        }
+
+        for task in tasks {
+            assert_eq!(task.await.expect("task").expect("token"), "old-token");
+        }
+
+        let entry = runtime.cache.get_or_insert_empty(key).await;
+        for _ in 0..20 {
+            if server.request_count() == 1 && entry.lock().await.token.as_deref() == Some("token-1")
+            {
+                break;
+            }
+            sleep(TokioDuration::from_millis(20)).await;
+        }
+        assert_eq!(server.request_count(), 1);
+        let cached = entry.lock().await;
+        assert_eq!(cached.token.as_deref(), Some("token-1"));
+        assert!(!cached.renewing);
+        server.abort();
+    }
+
+    fn test_runtime(server_url: String, token_renew_before_expired: u64) -> TokenRuntime {
+        TokenRuntime::new(
+            TokenHandlerConfig {
+                enabled: true,
+                applied_path_prefixes: vec!["/".to_string()],
+            },
+            SidecarTrafficConfig::default(),
+            ClientTokenConfig {
+                oauth: ClientOauthConfig {
+                    multiple_auth_servers: false,
+                    token: OAuthTokenConfig {
+                        server_url: Some(server_url),
+                        token_renew_before_expired,
+                        client_credentials: OAuthClientCredentialsConfig {
+                            uri: "/oauth2/token".to_string(),
+                            client_id: "client".to_string(),
+                            client_secret: "secret".to_string(),
+                            scope: vec!["pet.r".to_string()],
+                            service_id_auth_servers: BTreeMap::new(),
+                        },
+                        ..OAuthTokenConfig::default()
+                    },
+                },
+                ..ClientTokenConfig::default()
+            },
+            None,
+        )
+    }
+
+    struct MockTokenServer {
+        address: std::net::SocketAddr,
+        count: Arc<AtomicUsize>,
+        handle: tokio::task::JoinHandle<()>,
+    }
+
+    impl MockTokenServer {
+        async fn start(delay: TokioDuration) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind token server");
+            let address = listener.local_addr().expect("token server address");
+            let count = Arc::new(AtomicUsize::new(0));
+            let handle_count = Arc::clone(&count);
+            let handle = tokio::spawn(async move {
+                loop {
+                    let Ok((mut socket, _)) = listener.accept().await else {
+                        break;
+                    };
+                    let count = Arc::clone(&handle_count);
+                    tokio::spawn(async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        let mut buffer = [0u8; 2048];
+                        let _ = socket.read(&mut buffer).await;
+                        sleep(delay).await;
+                        let token_number = count.load(Ordering::SeqCst);
+                        let body = format!(
+                            r#"{{"access_token":"token-{token_number}","expires_in":300,"scope":"pet.r"}}"#
+                        );
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = socket.write_all(response.as_bytes()).await;
+                    });
+                }
+            });
+            Self {
+                address,
+                count,
+                handle,
+            }
+        }
+
+        fn url(&self, _path: &str) -> String {
+            format!("http://{}", self.address)
+        }
+
+        fn request_count(&self) -> usize {
+            self.count.load(Ordering::SeqCst)
+        }
+
+        fn abort(self) {
+            self.handle.abort();
+        }
     }
 }

@@ -1,0 +1,4 @@
+# Light http sidecar configuration.
+# Used by the token handler to distinguish outbound router traffic from inbound
+# proxy traffic.
+egressIngressIndicator: ${sidecar.egressIngressIndicator:header}
