@@ -24,6 +24,7 @@ const DEFAULT_MCP_PATH: &str = "/mcp";
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
 const TOOL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const JSON_CONTENT_TYPE: &str = "application/json";
+const EVENT_STREAM_CONTENT_TYPE: &str = "text/event-stream";
 const TEXT_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -210,6 +211,13 @@ pub struct McpHttpResponse {
     pub content_type: String,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    pub streamed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpResponseMode {
+    Json,
+    EventStream,
 }
 
 #[derive(Clone)]
@@ -305,18 +313,19 @@ impl McpRouterRuntime {
     }
 
     async fn handle_post(&self, request: McpHttpRequest) -> Result<McpHttpResponse, RuntimeError> {
-        if !accepts_json_response(&request.headers) {
+        let Some(response_mode) = preferred_response_mode(&request.headers) else {
             return json_error_response(
                 406,
                 JsonValue::Null,
                 -32600,
-                "Accept header must allow application/json",
+                "Accept header must allow application/json or text/event-stream",
             );
-        }
+        };
         if let Some(version) = first_header(&request.headers, "mcp-protocol-version")
             && !protocol_version_supported(version.as_str())
         {
-            return json_error_response(
+            return rpc_error_response(
+                response_mode,
                 400,
                 JsonValue::Null,
                 -32600,
@@ -327,7 +336,8 @@ impl McpRouterRuntime {
         let payload = match serde_json::from_slice::<JsonValue>(&request.body) {
             Ok(payload) => payload,
             Err(error) => {
-                return json_error_response(
+                return rpc_error_response(
+                    response_mode,
                     400,
                     JsonValue::Null,
                     -32700,
@@ -336,7 +346,8 @@ impl McpRouterRuntime {
             }
         };
         if payload.is_array() {
-            return json_error_response(
+            return rpc_error_response(
+                response_mode,
                 400,
                 JsonValue::Null,
                 -32600,
@@ -344,7 +355,13 @@ impl McpRouterRuntime {
             );
         }
         let Some(message) = payload.as_object() else {
-            return json_error_response(400, JsonValue::Null, -32600, "invalid JSON-RPC request");
+            return rpc_error_response(
+                response_mode,
+                400,
+                JsonValue::Null,
+                -32600,
+                "invalid JSON-RPC request",
+            );
         };
         let id = message.get("id").cloned();
         let method = message.get("method").and_then(JsonValue::as_str);
@@ -356,7 +373,8 @@ impl McpRouterRuntime {
             return Ok(accepted_response());
         }
         if message.get("jsonrpc").and_then(JsonValue::as_str) != Some("2.0") {
-            return json_error_response(
+            return rpc_error_response(
+                response_mode,
                 200,
                 id.unwrap_or(JsonValue::Null),
                 -32600,
@@ -366,13 +384,23 @@ impl McpRouterRuntime {
 
         let id = id.unwrap_or(JsonValue::Null);
         match method {
-            "initialize" => json_result_response(200, id, self.initialize_result(message)),
-            "tools/list" => json_result_response(200, id, self.tools_list_result(message)),
+            "initialize" => {
+                rpc_result_response(response_mode, 200, id, self.initialize_result(message))
+            }
+            "tools/list" => {
+                rpc_result_response(response_mode, 200, id, self.tools_list_result(message))
+            }
             "tools/call" => match self.handle_tool_call(message, &request.headers).await {
-                Ok(result) => json_result_response(200, id, result),
-                Err(error) => json_error_response(200, id, error.code, error.message),
+                Ok(result) => rpc_result_response(response_mode, 200, id, result),
+                Err(error) => rpc_error_response(response_mode, 200, id, error.code, error.message),
             },
-            _ => json_error_response(200, id, -32601, format!("method `{method}` not found")),
+            _ => rpc_error_response(
+                response_mode,
+                200,
+                id,
+                -32601,
+                format!("method `{method}` not found"),
+            ),
         }
     }
 
@@ -877,21 +905,28 @@ fn should_regenerate_header(name: &str) -> bool {
     )
 }
 
-fn accepts_json_response(headers: &[(String, String)]) -> bool {
+fn preferred_response_mode(headers: &[(String, String)]) -> Option<McpResponseMode> {
     let accepts = headers
         .iter()
         .filter(|(name, _)| name.eq_ignore_ascii_case(ACCEPT.as_str()))
         .map(|(_, value)| value.as_str())
         .collect::<Vec<_>>();
     if accepts.is_empty() {
-        return true;
+        return Some(McpResponseMode::Json);
     }
-    accepts.iter().any(|value| {
-        value.split(',').any(|item| {
+    for value in accepts {
+        for item in value.split(',') {
             let media_type = item.split(';').next().unwrap_or_default().trim();
-            matches!(media_type, "*/*" | "application/*" | "application/json")
-        })
-    })
+            match media_type {
+                "application/json" | "application/*" | "*/*" => {
+                    return Some(McpResponseMode::Json);
+                }
+                "text/event-stream" | "text/*" => return Some(McpResponseMode::EventStream),
+                _ => {}
+            }
+        }
+    }
+    None
 }
 
 fn first_header(headers: &[(String, String)], name: &str) -> Option<String> {
@@ -911,6 +946,7 @@ fn accepted_response() -> McpHttpResponse {
         content_type: JSON_CONTENT_TYPE.to_string(),
         headers: protocol_headers(),
         body: Vec::new(),
+        streamed: false,
     }
 }
 
@@ -918,17 +954,20 @@ fn method_not_allowed_response() -> McpHttpResponse {
     McpHttpResponse {
         status: 405,
         content_type: TEXT_CONTENT_TYPE.to_string(),
-        headers: vec![("allow".to_string(), "POST, GET".to_string())],
+        headers: vec![("allow".to_string(), "POST".to_string())],
         body: b"method not allowed".to_vec(),
+        streamed: false,
     }
 }
 
-fn json_result_response(
+fn rpc_result_response(
+    mode: McpResponseMode,
     status: u16,
     id: JsonValue,
     result: JsonValue,
 ) -> Result<McpHttpResponse, RuntimeError> {
-    json_body_response(
+    rpc_body_response(
+        mode,
         status,
         json!({
             "jsonrpc": "2.0",
@@ -938,13 +977,15 @@ fn json_result_response(
     )
 }
 
-fn json_error_response(
+fn rpc_error_response(
+    mode: McpResponseMode,
     status: u16,
     id: JsonValue,
     code: i64,
     message: impl Into<String>,
 ) -> Result<McpHttpResponse, RuntimeError> {
-    json_body_response(
+    rpc_body_response(
+        mode,
         status,
         json!({
             "jsonrpc": "2.0",
@@ -957,6 +998,26 @@ fn json_error_response(
     )
 }
 
+fn json_error_response(
+    status: u16,
+    id: JsonValue,
+    code: i64,
+    message: impl Into<String>,
+) -> Result<McpHttpResponse, RuntimeError> {
+    rpc_error_response(McpResponseMode::Json, status, id, code, message)
+}
+
+fn rpc_body_response(
+    mode: McpResponseMode,
+    status: u16,
+    body: JsonValue,
+) -> Result<McpHttpResponse, RuntimeError> {
+    match mode {
+        McpResponseMode::Json => json_body_response(status, body),
+        McpResponseMode::EventStream => event_stream_response(status, body),
+    }
+}
+
 fn json_body_response(status: u16, body: JsonValue) -> Result<McpHttpResponse, RuntimeError> {
     let body = serde_json::to_vec(&body)?;
     Ok(McpHttpResponse {
@@ -964,6 +1025,17 @@ fn json_body_response(status: u16, body: JsonValue) -> Result<McpHttpResponse, R
         content_type: JSON_CONTENT_TYPE.to_string(),
         headers: protocol_headers(),
         body,
+        streamed: false,
+    })
+}
+
+fn event_stream_response(status: u16, body: JsonValue) -> Result<McpHttpResponse, RuntimeError> {
+    Ok(McpHttpResponse {
+        status,
+        content_type: EVENT_STREAM_CONTENT_TYPE.to_string(),
+        headers: event_stream_headers(),
+        body: sse_message_body(&body)?,
+        streamed: true,
     })
 }
 
@@ -972,6 +1044,24 @@ fn protocol_headers() -> Vec<(String, String)> {
         "mcp-protocol-version".to_string(),
         DEFAULT_PROTOCOL_VERSION.to_string(),
     )]
+}
+
+fn event_stream_headers() -> Vec<(String, String)> {
+    let mut headers = protocol_headers();
+    headers.push(("cache-control".to_string(), "no-cache".to_string()));
+    headers
+}
+
+fn sse_message_body(body: &JsonValue) -> Result<Vec<u8>, RuntimeError> {
+    let serialized = serde_json::to_string(body)?;
+    let mut event = String::from("event: message\n");
+    for line in serialized.lines() {
+        event.push_str("data: ");
+        event.push_str(line);
+        event.push('\n');
+    }
+    event.push('\n');
+    Ok(event.into_bytes())
 }
 
 fn deserialize_json_value<'de, D>(deserializer: D) -> Result<JsonValue, D::Error>
@@ -1147,6 +1237,50 @@ tools:
     }
 
     #[tokio::test]
+    async fn post_rejects_unacceptable_accept_header() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![("accept".to_string(), "text/html".to_string())],
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 406);
+        assert!(!response.streamed);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["error"]["code"], -32600);
+    }
+
+    #[tokio::test]
+    async fn get_stream_returns_405_until_enabled() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "GET".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_sse()],
+                body: Vec::new(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 405);
+        assert!(!response.streamed);
+        assert_eq!(
+            response.headers,
+            vec![("allow".to_string(), "POST".to_string())]
+        );
+    }
+
+    #[tokio::test]
     async fn tool_call_get_forwards_arguments_and_agent_headers() {
         let (base, received) = spawn_http_server(http_json_response(json!({"ok": true}))).await;
         let runtime = runtime_with_tool("weather", "Get weather", base.as_str());
@@ -1171,6 +1305,30 @@ tools:
         let request = received.await.expect("server request");
         assert!(request.starts_with("GET /weather?city=New+York&unit=c HTTP/1.1"));
         assert!(request.contains("authorization: Bearer abc"));
+    }
+
+    #[tokio::test]
+    async fn post_can_return_streamed_event_response() {
+        let (base, _received) = spawn_http_server(http_json_response(json!({"ok": true}))).await;
+        let runtime = runtime_with_tool("weather", "Get weather", base.as_str());
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_sse()],
+                body: br#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"weather","arguments":{"city":"New York"}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.content_type, "text/event-stream");
+        assert!(response.streamed);
+        let event = sse_json(&response.body);
+        assert_eq!(event["id"], 10);
+        assert_eq!(event["result"]["ok"], true);
     }
 
     #[tokio::test]
@@ -1335,6 +1493,24 @@ tools:
             "accept".to_string(),
             "application/json, text/event-stream".to_string(),
         )
+    }
+
+    fn accept_sse() -> (String, String) {
+        (
+            "accept".to_string(),
+            "text/event-stream, application/json".to_string(),
+        )
+    }
+
+    fn sse_json(body: &[u8]) -> JsonValue {
+        let event = String::from_utf8(body.to_vec()).expect("sse utf8");
+        assert!(event.starts_with("event: message\n"));
+        let data = event
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        serde_json::from_str(&data).expect("sse json")
     }
 
     fn http_json_response(value: JsonValue) -> String {

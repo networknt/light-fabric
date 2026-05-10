@@ -637,6 +637,11 @@ impl GatewayProxy {
         ctx: &mut GatewayRequestContext,
         response: McpHttpResponse,
     ) -> pingora::Result<bool> {
+        if response.streamed {
+            return self
+                .write_streaming_mcp_response(session, ctx, response)
+                .await;
+        }
         self.write_bytes_response_with_headers(
             session,
             ctx,
@@ -647,6 +652,32 @@ impl GatewayProxy {
             response.headers.as_slice(),
         )
         .await
+    }
+
+    async fn write_streaming_mcp_response(
+        &self,
+        session: &mut Session,
+        ctx: &mut GatewayRequestContext,
+        response: McpHttpResponse,
+    ) -> pingora::Result<bool> {
+        let mut header = ResponseHeader::build(response.status, Some(8 + response.headers.len()))?;
+        header.insert_header("content-type", response.content_type.as_str())?;
+        self.apply_response_headers(&mut header, ctx)?;
+        for (name, value) in &response.headers {
+            header.insert_header(name.to_string(), value.to_string())?;
+        }
+        let end_with_header = response.body.is_empty();
+        session
+            .write_response_header(Box::new(header), end_with_header)
+            .await?;
+        if !end_with_header {
+            session
+                .write_response_body(Some(Bytes::from(response.body)), true)
+                .await?;
+        }
+        self.record_metrics(ctx, response.status);
+        self.log_handler_durations(ctx);
+        Ok(true)
     }
 
     fn apply_response_headers(

@@ -2,9 +2,9 @@
 
 ## Status
 
-Phases 1 and 2 implemented in `light-pingora` and `light-gateway`. Later
-phases for streamed responses, access-control execution, response filtering,
-masking, and tokenization remain pending.
+Phases 1, 2, and 3 implemented in `light-pingora` and `light-gateway`. Later
+phases for access-control execution, response filtering, masking, and
+tokenization remain pending.
 
 ## Purpose
 
@@ -582,6 +582,8 @@ Status: implemented.
   the router stateless and return `405` for standalone GET streams.
 - Add tests for content negotiation, `202 Accepted` notifications, streamed
   POST responses, and optional GET behavior.
+
+Status: implemented.
 
 ### Phase 4: Policy, Filtering, Masking
 
