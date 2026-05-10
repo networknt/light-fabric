@@ -16,6 +16,7 @@ mod security;
 mod service;
 mod token;
 mod unified_security;
+mod websocket;
 
 use async_trait::async_trait;
 use light_runtime::{
@@ -114,6 +115,12 @@ pub use token::{
 pub use unified_security::{
     UNIFIED_SECURITY_CONFIG_NAME, UNIFIED_SECURITY_FILE, UNIFIED_SECURITY_MODULE_ID,
     UnifiedPathAuth, UnifiedSecurityConfig, load_unified_security_config, verify_unified_security,
+};
+pub use websocket::{
+    WEBSOCKET_ROUTER_CONFIG_NAME, WEBSOCKET_ROUTER_FILE, WEBSOCKET_ROUTER_LEGACY_FILE,
+    WEBSOCKET_ROUTER_MODULE_ID, WebSocketRouteDecision, WebSocketRouteError, WebSocketRouteSource,
+    WebSocketRouterConfig, WebSocketRouterRuntime, WebSocketServiceTarget,
+    load_websocket_router_runtime,
 };
 
 pub trait PingoraApp: Send + Sync + 'static {

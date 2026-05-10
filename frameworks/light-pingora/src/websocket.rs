@@ -1,0 +1,860 @@
+use light_runtime::{ModuleKind, RuntimeConfig, RuntimeError};
+use serde::de::{Error as DeError, MapAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_yaml::Value as YamlValue;
+use std::collections::BTreeMap;
+use std::fmt;
+use url::form_urlencoded;
+
+pub const WEBSOCKET_ROUTER_FILE: &str = "websocket-router.yml";
+pub const WEBSOCKET_ROUTER_LEGACY_FILE: &str = "websocket-router.yaml";
+pub const WEBSOCKET_ROUTER_MODULE_ID: &str = "light-pingora/websocket-router";
+pub const WEBSOCKET_ROUTER_CONFIG_NAME: &str = "websocket-router";
+
+const DEFAULT_PROTOCOL: &str = "http";
+const SERVICE_ID_HEADERS: [&str; 3] = ["Service-Id", "service_id", "serviceId"];
+const SERVICE_ID_QUERY_PARAMS: [&str; 2] = ["service_id", "serviceId"];
+const ENV_TAG_QUERY_PARAMS: [&str; 2] = ["env_tag", "envTag"];
+const PROTOCOL_QUERY_PARAM: &str = "protocol";
+const ROUTER_QUERY_PARAMS: [&str; 5] = ["protocol", "service_id", "serviceId", "env_tag", "envTag"];
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSocketRouterConfig {
+    pub default_protocol: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_env_tag: Option<String>,
+    pub path_prefix_service: BTreeMap<String, WebSocketServiceTarget>,
+}
+
+impl Default for WebSocketRouterConfig {
+    fn default() -> Self {
+        Self {
+            default_protocol: DEFAULT_PROTOCOL.to_string(),
+            default_env_tag: None,
+            path_prefix_service: BTreeMap::new(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for WebSocketRouterConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RawConfig {
+            #[serde(default = "default_protocol")]
+            default_protocol: String,
+            #[serde(default)]
+            default_env_tag: Option<String>,
+            #[serde(default, deserialize_with = "deserialize_path_prefix_service")]
+            path_prefix_service: BTreeMap<String, RawWebSocketServiceTarget>,
+        }
+
+        let raw = RawConfig::deserialize(deserializer)?;
+        let default_protocol =
+            normalize_protocol(raw.default_protocol.as_str()).map_err(D::Error::custom)?;
+        let default_env_tag = normalize_optional(raw.default_env_tag);
+        let mut path_prefix_service = BTreeMap::new();
+
+        for (prefix, target) in raw.path_prefix_service {
+            let prefix = normalize_prefix(prefix.as_str()).map_err(D::Error::custom)?;
+            let target = target
+                .normalize(default_protocol.as_str(), default_env_tag.as_deref())
+                .map_err(D::Error::custom)?;
+            if path_prefix_service.insert(prefix.clone(), target).is_some() {
+                return Err(D::Error::custom(format!(
+                    "duplicate websocket-router pathPrefixService prefix `{prefix}`"
+                )));
+            }
+        }
+
+        Ok(Self {
+            default_protocol,
+            default_env_tag,
+            path_prefix_service,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSocketServiceTarget {
+    pub service_id: String,
+    pub protocol: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env_tag: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebSocketRouteSource {
+    Header,
+    Query,
+    PathPrefix,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebSocketRouteDecision {
+    pub service_id: String,
+    pub protocol: String,
+    pub env_tag: Option<String>,
+    pub upstream_path_and_query: String,
+    pub source: WebSocketRouteSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WebSocketRouteError {
+    MissingTarget,
+    InvalidProtocol(String),
+}
+
+impl fmt::Display for WebSocketRouteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingTarget => f.write_str("websocket-router target is not configured"),
+            Self::InvalidProtocol(protocol) => {
+                write!(f, "unsupported websocket-router protocol `{protocol}`")
+            }
+        }
+    }
+}
+
+impl std::error::Error for WebSocketRouteError {}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSocketRouterRuntime {
+    config: WebSocketRouterConfig,
+}
+
+impl WebSocketRouterRuntime {
+    pub fn new(config: WebSocketRouterConfig) -> Result<Self, RuntimeError> {
+        validate_config(&config)?;
+        Ok(Self { config })
+    }
+
+    pub fn config(&self) -> &WebSocketRouterConfig {
+        &self.config
+    }
+
+    pub fn resolve<I, K, V>(
+        &self,
+        path: &str,
+        query: Option<&str>,
+        headers: I,
+    ) -> Result<WebSocketRouteDecision, WebSocketRouteError>
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: AsRef<str>,
+        V: AsRef<str>,
+    {
+        let headers = headers
+            .into_iter()
+            .map(|(name, value)| (name.as_ref().to_string(), value.as_ref().to_string()))
+            .collect::<Vec<_>>();
+        let (request_path, path_query) = split_path_query(path);
+        let query = query.or(path_query);
+        let mut protocol = self.config.default_protocol.clone();
+        let mut env_tag = self.config.default_env_tag.clone();
+
+        let (service_id, source) = if let Some(service_id) =
+            first_non_blank_header(&headers, &SERVICE_ID_HEADERS)
+        {
+            (service_id, WebSocketRouteSource::Header)
+        } else if let Some(service_id) = first_non_blank_query(query, &SERVICE_ID_QUERY_PARAMS) {
+            (service_id, WebSocketRouteSource::Query)
+        } else if let Some(target) =
+            best_path_prefix(&self.config.path_prefix_service, request_path)
+        {
+            protocol = target.protocol.clone();
+            env_tag = target.env_tag.clone();
+            (target.service_id.clone(), WebSocketRouteSource::PathPrefix)
+        } else {
+            return Err(WebSocketRouteError::MissingTarget);
+        };
+
+        if let Some(requested_protocol) = first_non_blank_query(query, &[PROTOCOL_QUERY_PARAM]) {
+            protocol = normalize_protocol(requested_protocol.as_str())
+                .map_err(|_| WebSocketRouteError::InvalidProtocol(requested_protocol))?;
+        }
+        if let Some(requested_env_tag) = first_non_blank_query(query, &ENV_TAG_QUERY_PARAMS) {
+            env_tag = Some(requested_env_tag);
+        }
+
+        Ok(WebSocketRouteDecision {
+            service_id,
+            protocol,
+            env_tag,
+            upstream_path_and_query: clean_path_and_query(request_path, query),
+            source,
+        })
+    }
+}
+
+pub fn load_websocket_router_runtime(
+    runtime_config: &RuntimeConfig,
+    active: bool,
+) -> Result<Option<WebSocketRouterRuntime>, RuntimeError> {
+    if !active {
+        return Ok(None);
+    }
+
+    let config = match load_websocket_router_config(runtime_config)? {
+        Some(config) => config,
+        None => WebSocketRouterConfig::default(),
+    };
+    runtime_config.module_registry.register_loaded_config(
+        WEBSOCKET_ROUTER_MODULE_ID,
+        WEBSOCKET_ROUTER_CONFIG_NAME,
+        ModuleKind::Framework,
+        &config,
+        [],
+        true,
+        None,
+        true,
+    )?;
+    Ok(Some(WebSocketRouterRuntime::new(config)?))
+}
+
+fn load_websocket_router_config(
+    runtime_config: &RuntimeConfig,
+) -> Result<Option<WebSocketRouterConfig>, RuntimeError> {
+    for file in [WEBSOCKET_ROUTER_FILE, WEBSOCKET_ROUTER_LEGACY_FILE] {
+        match runtime_config
+            .module_registry
+            .load_config::<WebSocketRouterConfig>(runtime_config, file)
+        {
+            Ok(config) => return Ok(Some(config)),
+            Err(RuntimeError::MissingConfig(missing)) if missing == file => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(None)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RawWebSocketServiceTarget {
+    ServiceId(String),
+    Target {
+        service_id: String,
+        protocol: Option<String>,
+        env_tag: Option<String>,
+    },
+}
+
+impl RawWebSocketServiceTarget {
+    fn normalize(
+        self,
+        default_protocol: &str,
+        default_env_tag: Option<&str>,
+    ) -> Result<WebSocketServiceTarget, String> {
+        match self {
+            Self::ServiceId(service_id) => {
+                let service_id = normalize_required("serviceId", service_id.as_str())?;
+                Ok(WebSocketServiceTarget {
+                    service_id,
+                    protocol: default_protocol.to_string(),
+                    env_tag: default_env_tag.map(str::to_string),
+                })
+            }
+            Self::Target {
+                service_id,
+                protocol,
+                env_tag,
+            } => {
+                let service_id = normalize_required("serviceId", service_id.as_str())?;
+                let protocol = protocol
+                    .as_deref()
+                    .map(normalize_protocol)
+                    .transpose()?
+                    .unwrap_or_else(|| default_protocol.to_string());
+                let env_tag =
+                    normalize_optional(env_tag).or_else(|| default_env_tag.map(str::to_string));
+                Ok(WebSocketServiceTarget {
+                    service_id,
+                    protocol,
+                    env_tag,
+                })
+            }
+        }
+    }
+}
+
+fn deserialize_path_prefix_service<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, RawWebSocketServiceTarget>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct PathPrefixServiceVisitor;
+
+    impl<'de> Visitor<'de> for PathPrefixServiceVisitor {
+        type Value = BTreeMap<String, RawWebSocketServiceTarget>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a pathPrefixService map, JSON/YAML map string, or key=value list")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: DeError,
+        {
+            parse_path_prefix_service_str(value).map_err(E::custom)
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: DeError,
+        {
+            self.visit_str(value.as_str())
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            let mut values = BTreeMap::new();
+            while let Some((key, value)) = map.next_entry::<String, YamlValue>()? {
+                values.insert(
+                    key,
+                    parse_path_prefix_service_value(value).map_err(A::Error::custom)?,
+                );
+            }
+            Ok(values)
+        }
+    }
+
+    deserializer.deserialize_any(PathPrefixServiceVisitor)
+}
+
+fn parse_path_prefix_service_str(
+    value: &str,
+) -> Result<BTreeMap<String, RawWebSocketServiceTarget>, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    if value.starts_with('{') {
+        let value = serde_yaml::from_str::<YamlValue>(value).map_err(|error| error.to_string())?;
+        return parse_path_prefix_service_map(value);
+    }
+
+    let mut values = BTreeMap::new();
+    for entry in value.split('&') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let (prefix, service_id) = entry
+            .split_once('=')
+            .ok_or_else(|| format!("invalid pathPrefixService entry `{entry}`"))?;
+        let prefix = prefix.trim();
+        if prefix.is_empty() {
+            return Err("pathPrefixService prefix must not be empty".to_string());
+        }
+        values.insert(
+            prefix.to_string(),
+            RawWebSocketServiceTarget::ServiceId(service_id.trim().to_string()),
+        );
+    }
+    Ok(values)
+}
+
+fn parse_path_prefix_service_map(
+    value: YamlValue,
+) -> Result<BTreeMap<String, RawWebSocketServiceTarget>, String> {
+    match value {
+        YamlValue::Mapping(map) => {
+            let mut values = BTreeMap::new();
+            for (key, value) in map {
+                let key = key
+                    .as_str()
+                    .ok_or_else(|| "pathPrefixService key must be a string".to_string())?
+                    .to_string();
+                values.insert(key, parse_path_prefix_service_value(value)?);
+            }
+            Ok(values)
+        }
+        YamlValue::Null => Ok(BTreeMap::new()),
+        other => Err(format!("expected pathPrefixService map, got {other:?}")),
+    }
+}
+
+fn parse_path_prefix_service_value(value: YamlValue) -> Result<RawWebSocketServiceTarget, String> {
+    match value {
+        YamlValue::String(value) => Ok(RawWebSocketServiceTarget::ServiceId(value)),
+        YamlValue::Mapping(map) => {
+            let mut service_id = None;
+            let mut protocol = None;
+            let mut env_tag = None;
+            for (key, value) in map {
+                let key = key
+                    .as_str()
+                    .ok_or_else(|| "pathPrefixService entry key must be a string".to_string())?;
+                let value = match value {
+                    YamlValue::Null => None,
+                    YamlValue::String(value) => Some(value),
+                    other => {
+                        return Err(format!(
+                            "pathPrefixService entry `{key}` must be a string, got {other:?}"
+                        ));
+                    }
+                };
+                match key {
+                    "serviceId" | "service_id" => service_id = value,
+                    "protocol" => protocol = value,
+                    "envTag" | "env_tag" => env_tag = value,
+                    _ => {}
+                }
+            }
+            Ok(RawWebSocketServiceTarget::Target {
+                service_id: service_id.unwrap_or_default(),
+                protocol,
+                env_tag,
+            })
+        }
+        YamlValue::Null => Err("pathPrefixService entry must not be null".to_string()),
+        other => Err(format!("unsupported pathPrefixService entry: {other:?}")),
+    }
+}
+
+fn validate_config(config: &WebSocketRouterConfig) -> Result<(), RuntimeError> {
+    normalize_protocol(config.default_protocol.as_str()).map_err(RuntimeError::Unsupported)?;
+    for (prefix, target) in &config.path_prefix_service {
+        normalize_prefix(prefix.as_str()).map_err(RuntimeError::Unsupported)?;
+        normalize_required("serviceId", target.service_id.as_str())
+            .map_err(RuntimeError::Unsupported)?;
+        normalize_protocol(target.protocol.as_str()).map_err(RuntimeError::Unsupported)?;
+    }
+    Ok(())
+}
+
+fn default_protocol() -> String {
+    DEFAULT_PROTOCOL.to_string()
+}
+
+fn normalize_protocol(protocol: &str) -> Result<String, String> {
+    let protocol = protocol.trim().to_ascii_lowercase();
+    match protocol.as_str() {
+        "http" | "https" => Ok(protocol),
+        _ => Err(format!(
+            "websocket-router protocol must be `http` or `https`, got `{protocol}`"
+        )),
+    }
+}
+
+fn normalize_required(field: &str, value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!("websocket-router {field} must not be empty"));
+    }
+    Ok(value.to_string())
+}
+
+fn normalize_optional(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_prefix(prefix: &str) -> Result<String, String> {
+    let prefix = prefix.trim();
+    if prefix.is_empty() {
+        return Err("websocket-router pathPrefixService prefix must not be empty".to_string());
+    }
+    if prefix == "/" {
+        return Ok("/".to_string());
+    }
+    let prefix = prefix.trim_end_matches('/');
+    let prefix = if prefix.starts_with('/') {
+        prefix.to_string()
+    } else {
+        format!("/{prefix}")
+    };
+    Ok(prefix)
+}
+
+fn split_path_query(path: &str) -> (&str, Option<&str>) {
+    path.split_once('?')
+        .map_or((path, None), |(path, query)| (path, Some(query)))
+}
+
+fn clean_path_and_query(path: &str, query: Option<&str>) -> String {
+    let Some(query) = strip_router_query(query) else {
+        return path.to_string();
+    };
+    if query.is_empty() {
+        path.to_string()
+    } else {
+        format!("{path}?{query}")
+    }
+}
+
+fn strip_router_query(query: Option<&str>) -> Option<String> {
+    let query = query?;
+    let kept = query
+        .split('&')
+        .filter(|segment| {
+            let name = segment.split_once('=').map_or(*segment, |(name, _)| name);
+            !ROUTER_QUERY_PARAMS.contains(&name)
+        })
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    Some(kept.join("&"))
+}
+
+fn first_non_blank_header(headers: &[(String, String)], names: &[&str]) -> Option<String> {
+    for name in names {
+        if let Some(value) = headers
+            .iter()
+            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.trim())
+            .filter(|value| !value.is_empty())
+        {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn first_non_blank_query(query: Option<&str>, names: &[&str]) -> Option<String> {
+    let query = query?;
+    for name in names {
+        if let Some(value) = form_urlencoded::parse(query.as_bytes())
+            .find(|(candidate, value)| candidate == *name && !value.trim().is_empty())
+            .map(|(_, value)| value.trim().to_string())
+        {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn best_path_prefix<'a>(
+    mapping: &'a BTreeMap<String, WebSocketServiceTarget>,
+    request_path: &str,
+) -> Option<&'a WebSocketServiceTarget> {
+    let request_path = normalize_request_path(request_path);
+    mapping
+        .iter()
+        .filter_map(|(prefix, target)| {
+            path_matches_prefix(request_path.as_str(), prefix.as_str())
+                .then_some((prefix.len(), target))
+        })
+        .max_by_key(|(len, _)| *len)
+        .map(|(_, target)| target)
+}
+
+fn normalize_request_path(path: &str) -> String {
+    let path = path.trim();
+    if path.is_empty() {
+        "/".to_string()
+    } else if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    }
+}
+
+fn path_matches_prefix(path: &str, prefix: &str) -> bool {
+    if prefix == "/" {
+        return true;
+    }
+    path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use light_runtime::config::ClientConfig;
+    use light_runtime::{
+        BootstrapConfig, ModuleRegistry, PortalRegistryConfig, ServerConfig, ServiceIdentity,
+    };
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    fn runtime_config(config_dir: &TempDir) -> RuntimeConfig {
+        RuntimeConfig {
+            bootstrap: BootstrapConfig::default(),
+            server: ServerConfig::default(),
+            client: None::<ClientConfig>,
+            portal_registry: None::<PortalRegistryConfig>,
+            service_identity: ServiceIdentity::default(),
+            config_dir: config_dir.path().to_path_buf(),
+            external_config_dir: config_dir.path().join("external"),
+            resolved_values: HashMap::new(),
+            module_registry: Arc::new(ModuleRegistry::new()),
+            cache_registry: None,
+            registry_client: None,
+        }
+    }
+
+    #[test]
+    fn config_accepts_yaml_object_path_prefix_service() {
+        let config: WebSocketRouterConfig = serde_yaml::from_str(
+            r#"
+defaultProtocol: https
+defaultEnvTag: dev
+pathPrefixService:
+  /chat:
+    serviceId: com.networknt.llmchat-1.0.0
+    protocol: http
+    envTag: sit
+"#,
+        )
+        .expect("parse config");
+
+        let target = &config.path_prefix_service["/chat"];
+        assert_eq!(config.default_protocol, "https");
+        assert_eq!(config.default_env_tag.as_deref(), Some("dev"));
+        assert_eq!(target.service_id, "com.networknt.llmchat-1.0.0");
+        assert_eq!(target.protocol, "http");
+        assert_eq!(target.env_tag.as_deref(), Some("sit"));
+    }
+
+    #[test]
+    fn config_accepts_string_service_id_entries() {
+        let config: WebSocketRouterConfig = serde_yaml::from_str(
+            r#"
+defaultProtocol: https
+defaultEnvTag: dev
+pathPrefixService:
+  /chat: com.networknt.llmchat-1.0.0
+"#,
+        )
+        .expect("parse config");
+
+        let target = &config.path_prefix_service["/chat"];
+        assert_eq!(target.service_id, "com.networknt.llmchat-1.0.0");
+        assert_eq!(target.protocol, "https");
+        assert_eq!(target.env_tag.as_deref(), Some("dev"));
+    }
+
+    #[test]
+    fn config_accepts_json_string_path_prefix_service() {
+        let config: WebSocketRouterConfig = serde_yaml::from_str(
+            r#"
+pathPrefixService: '{"/chat":{"serviceId":"com.networknt.llmchat-1.0.0","protocol":"http","envTag":"dev"}}'
+"#,
+        )
+        .expect("parse config");
+
+        let target = &config.path_prefix_service["/chat"];
+        assert_eq!(target.service_id, "com.networknt.llmchat-1.0.0");
+        assert_eq!(target.protocol, "http");
+        assert_eq!(target.env_tag.as_deref(), Some("dev"));
+    }
+
+    #[test]
+    fn config_accepts_legacy_key_value_string_path_prefix_service() {
+        let config: WebSocketRouterConfig = serde_yaml::from_str(
+            r#"
+defaultEnvTag: dev
+pathPrefixService: /chat = com.networknt.llmchat-1.0.0 & /events=com.networknt.events-1.0.0
+"#,
+        )
+        .expect("parse config");
+
+        assert_eq!(
+            config.path_prefix_service["/chat"].service_id,
+            "com.networknt.llmchat-1.0.0"
+        );
+        assert_eq!(
+            config.path_prefix_service["/events"].env_tag.as_deref(),
+            Some("dev")
+        );
+    }
+
+    #[test]
+    fn config_rejects_invalid_entries() {
+        let error = serde_yaml::from_str::<WebSocketRouterConfig>(
+            r#"
+pathPrefixService:
+  /chat:
+    protocol: http
+"#,
+        )
+        .expect_err("missing serviceId should fail");
+
+        assert!(error.to_string().contains("serviceId"));
+
+        let error = serde_yaml::from_str::<WebSocketRouterConfig>(
+            r#"
+defaultProtocol: ftp
+"#,
+        )
+        .expect_err("invalid protocol should fail");
+
+        assert!(error.to_string().contains("protocol"));
+    }
+
+    #[test]
+    fn route_resolution_priority_is_header_query_then_path_prefix() {
+        let runtime = WebSocketRouterRuntime::new(
+            serde_yaml::from_str(
+                r#"
+defaultProtocol: http
+pathPrefixService:
+  /chat: path-service
+"#,
+            )
+            .expect("parse config"),
+        )
+        .expect("runtime");
+
+        let decision = runtime
+            .resolve(
+                "/chat/room",
+                Some("service_id=query-service"),
+                [("service_id", "header-service")],
+            )
+            .expect("resolve header");
+        assert_eq!(decision.service_id, "header-service");
+        assert_eq!(decision.source, WebSocketRouteSource::Header);
+
+        let decision = runtime
+            .resolve(
+                "/chat/room",
+                Some("serviceId=query-service"),
+                std::iter::empty::<(&str, &str)>(),
+            )
+            .expect("resolve query");
+        assert_eq!(decision.service_id, "query-service");
+        assert_eq!(decision.source, WebSocketRouteSource::Query);
+
+        let decision = runtime
+            .resolve("/chat/room", None, std::iter::empty::<(&str, &str)>())
+            .expect("resolve prefix");
+        assert_eq!(decision.service_id, "path-service");
+        assert_eq!(decision.source, WebSocketRouteSource::PathPrefix);
+    }
+
+    #[test]
+    fn route_resolution_uses_longest_boundary_prefix() {
+        let runtime = WebSocketRouterRuntime::new(
+            serde_yaml::from_str(
+                r#"
+pathPrefixService:
+  /: root-service
+  /chat: chat-service
+  /chat/private: private-service
+"#,
+            )
+            .expect("parse config"),
+        )
+        .expect("runtime");
+
+        let decision = runtime
+            .resolve(
+                "/chat/private/room",
+                None,
+                std::iter::empty::<(&str, &str)>(),
+            )
+            .expect("resolve private");
+        assert_eq!(decision.service_id, "private-service");
+
+        let decision = runtime
+            .resolve("/chatty", None, std::iter::empty::<(&str, &str)>())
+            .expect("resolve root");
+        assert_eq!(decision.service_id, "root-service");
+    }
+
+    #[test]
+    fn query_overrides_protocol_and_env_tag_and_router_params_are_stripped() {
+        let runtime = WebSocketRouterRuntime::new(
+            serde_yaml::from_str(
+                r#"
+defaultProtocol: http
+pathPrefixService:
+  /chat:
+    serviceId: path-service
+    envTag: dev
+"#,
+            )
+            .expect("parse config"),
+        )
+        .expect("runtime");
+
+        let decision = runtime
+            .resolve(
+                "/chat/room",
+                Some("service_id=query-service&protocol=https&env_tag=prod&room=one"),
+                std::iter::empty::<(&str, &str)>(),
+            )
+            .expect("resolve query");
+
+        assert_eq!(decision.service_id, "query-service");
+        assert_eq!(decision.protocol, "https");
+        assert_eq!(decision.env_tag.as_deref(), Some("prod"));
+        assert_eq!(decision.upstream_path_and_query, "/chat/room?room=one");
+    }
+
+    #[test]
+    fn missing_target_and_bad_protocol_are_errors() {
+        let runtime =
+            WebSocketRouterRuntime::new(WebSocketRouterConfig::default()).expect("runtime");
+        assert_eq!(
+            runtime
+                .resolve("/chat", None, std::iter::empty::<(&str, &str)>())
+                .expect_err("missing target"),
+            WebSocketRouteError::MissingTarget
+        );
+
+        let runtime = WebSocketRouterRuntime::new(
+            serde_yaml::from_str(
+                r#"
+pathPrefixService:
+  /chat: path-service
+"#,
+            )
+            .expect("parse config"),
+        )
+        .expect("runtime");
+        assert_eq!(
+            runtime
+                .resolve(
+                    "/chat",
+                    Some("protocol=ftp"),
+                    std::iter::empty::<(&str, &str)>(),
+                )
+                .expect_err("bad protocol"),
+            WebSocketRouteError::InvalidProtocol("ftp".to_string())
+        );
+    }
+
+    #[test]
+    fn loader_accepts_legacy_yaml_file_and_registers_module() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        std::fs::write(
+            config_dir.path().join(WEBSOCKET_ROUTER_LEGACY_FILE),
+            r#"
+pathPrefixService:
+  /chat: com.networknt.llmchat-1.0.0
+"#,
+        )
+        .expect("write config");
+        let runtime = runtime_config(&config_dir);
+
+        let router = load_websocket_router_runtime(&runtime, true)
+            .expect("load runtime")
+            .expect("router runtime");
+
+        assert_eq!(
+            router.config().path_prefix_service["/chat"].service_id,
+            "com.networknt.llmchat-1.0.0"
+        );
+        assert!(
+            runtime
+                .module_registry
+                .module_summaries()
+                .iter()
+                .any(|entry| entry.module_id == WEBSOCKET_ROUTER_MODULE_ID && entry.active)
+        );
+    }
+}

@@ -26,6 +26,7 @@
 - [Cache Control Plane](design/cache-control-plane.md)
 - [Handler Chain](design/handler-chain.md)
 - [MCP Router](design/mcp-router.md)
+- [WebSocket Router](design/websocket-router.md)
 
 # Crate
 
