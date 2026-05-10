@@ -1,6 +1,6 @@
 # Handler Chain
 
-Status: Phases 1, 2, 3, 4, 5, and 6 implemented; discovery and advanced phases proposed
+Status: Phases 1, 2, 3, 4, 5, 6, and 7 implemented; advanced transport phases proposed
 
 ## Purpose
 
@@ -401,14 +401,12 @@ serviceTargets:
     - https://petstore-dev.example.com
 ```
 
-This lets sidecar-style router flows run before a runtime discovery API is
-available to `light-pingora`. The final discovery-backed path should keep the
-same request contract, replacing the static target lookup with registry or
-cluster discovery.
+This lets sidecar-style router flows run in local/static deployments and acts
+as the fallback when controller discovery is unavailable.
 
-Phase 6 adds the sidecar path-prefix and token flow. Discovery-backed
-`service_id` resolution is still a proposed follow-up, so phase 6 keeps the
-phase 5 `router.serviceTargets` bridge for service routing.
+Phase 6 adds the sidecar path-prefix and token flow. Phase 7 adds
+controller-backed `service_id` discovery while keeping the same request
+contract and the same static fallback.
 
 ### Sidecar Path Prefix And Token Config
 
@@ -490,9 +488,11 @@ Tokens are refreshed synchronously inside the configured renew-before-expiry
 window. Async background renewal can be added later if blocking refresh latency
 becomes visible.
 
-When `server_url` is not configured, the Rust token handler returns a clear
-configuration error. Discovering the token service from `serviceId` requires a
-runtime discovery API and is part of the discovery follow-up.
+When `server_url` is not configured, phase 7 discovers the token service from
+`serviceId` through the runtime portal-registry client. This requires
+`server.enableRegistry` and a live controller registration. A disconnected
+registry client returns a clear configuration/runtime error instead of silently
+falling back to an unknown token endpoint.
 
 ### Static Resource Config
 
@@ -916,8 +916,9 @@ Fixed proxy target behavior:
 
 `router.yml` selects from request metadata. Phase 5 implements direct
 `service_url` targets, static `serviceTargets` for `service_id`, host whitelist
-enforcement, and rewrite behavior. Discovery-backed `service_id` resolution is
-the remaining follow-up.
+enforcement, and rewrite behavior. Phase 7 adds controller-backed
+`service_id` lookup through the runtime portal-registry client and keeps static
+`serviceTargets` as a local fallback.
 
 Router target behavior:
 
@@ -925,8 +926,10 @@ Router target behavior:
 - otherwise use `service_id` plus optional `env_tag`
 - optionally allow `service_id` from the query string when
   `serviceIdQueryParameter` is true
-- resolve `service_id` from `router.serviceTargets` until registry/cluster
-  discovery is available in the Rust runtime surface
+- resolve `service_id` from controller discovery when the portal-registry
+  client is connected
+- fall back to `router.serviceTargets` for local/static deployments or
+  controller lookup failures
 - support URL, method, query-parameter, and header rewrite rules
 - remove `service_url` and `service_id` headers before forwarding
 
@@ -1023,8 +1026,10 @@ The module registry should expose:
 
 The implemented phases use the existing `ReloadableModule` pattern for active
 handler, proxy, router, resource, virtual-host, path-prefix service, token, and
-handler-specific config files. Discovery should use the same atomic model
-replacement behavior when it is added.
+handler-specific config files. Phase 7 exposes a `capabilities` summary from
+`get_service_info`, including active modules, traffic capabilities, active
+handlers, chain names, path mappings, default handlers, virtual hosts, and
+path-resource config.
 
 ## Suitable First Handlers
 
@@ -1098,12 +1103,14 @@ Unit tests in `light-pingora`:
 - parse and validate `router.yml` rewrite-rule config
 - select router targets from direct `service_url`
 - reject direct router targets that do not match `hostWhitelist`
-- select router targets from static `serviceTargets`
+- select router targets from controller discovery and static `serviceTargets`
 - apply router URL, method, query-parameter, and header rewrites
 - parse `pathPrefixService.yml` and avoid partial-segment path matches
 - parse `token.yml` and the client credentials subset of `client.yml`
 - support single and multiple auth-server token configuration
+- discover token service endpoints from `client.yml` token `serviceId`
 - mask token cache summaries and never expose bearer token values
+- expose gateway capabilities in `get_service_info`
 - prevent static path traversal
 - deny dotfiles by default
 - serve `index.html` for `/`
@@ -1198,13 +1205,15 @@ Phase 6: Sidecar path-prefix and token flow (implemented)
   token-related `client.yml`
 - add sidecar token/path-prefix tests
 
-Phase 7: Discovery and control plane
+Phase 7: Discovery and control plane (implemented)
 
-- replace static `serviceTargets` lookup with registry/cluster discovery when
-  the runtime exposes the required API
+- expose the runtime portal-registry client to framework transports
+- add `discovery/lookup` support to the portal-registry client
+- resolve router `service_id` targets through controller discovery
+- keep static `router.serviceTargets` as a fallback for local/static profiles
 - discover token service endpoints from `client.yml` token `serviceId`
 - expose active capabilities, hosts, paths, handlers, and chains through
-  service-info MCP
+  `get_service_info`
 - atomically replace resolved handler/resource/proxy models on reload
 
 Phase 8: Advanced transport features

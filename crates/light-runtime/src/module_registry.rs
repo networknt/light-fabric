@@ -442,9 +442,66 @@ impl ModuleRegistry {
             },
             "security": {},
             "component": self.component_configs(),
+            "capabilities": self.capability_summary(),
             "plugin": {},
             "plugins": [],
             "modules": self.module_summaries()
+        })
+    }
+
+    fn capability_summary(&self) -> JsonValue {
+        let entries = self.entries_read();
+        let active_modules = entries
+            .values()
+            .filter(|entry| entry.active)
+            .map(|entry| entry.module_id.clone())
+            .collect::<Vec<_>>();
+        let handler_config = entries
+            .get("light-pingora/handler")
+            .filter(|entry| entry.active)
+            .map(|entry| &entry.config);
+        let chains = handler_config
+            .and_then(|config| config.get("chains"))
+            .and_then(JsonValue::as_object)
+            .map(|chains| chains.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        json!({
+            "activeModules": active_modules,
+            "traffic": {
+                "proxy": active_module(&entries, "light-pingora/proxy"),
+                "router": active_module(&entries, "light-pingora/router"),
+                "pathPrefixService": active_module(&entries, "light-pingora/path-prefix-service"),
+                "token": active_module(&entries, "light-pingora/token"),
+                "pathResource": active_module(&entries, "light-pingora/path-resource"),
+                "virtualHost": active_module(&entries, "light-pingora/virtual-host")
+            },
+            "handlers": {
+                "active": handler_config
+                    .and_then(|config| config.get("activeHandlers"))
+                    .cloned()
+                    .unwrap_or_else(|| json!([])),
+                "chains": chains,
+                "paths": handler_config
+                    .and_then(|config| config.get("paths"))
+                    .cloned()
+                    .unwrap_or_else(|| json!([])),
+                "defaultHandlers": handler_config
+                    .and_then(|config| config.get("defaultHandlers"))
+                    .cloned()
+                    .unwrap_or_else(|| json!([]))
+            },
+            "hosts": entries
+                .get("light-pingora/virtual-host")
+                .filter(|entry| entry.active)
+                .and_then(|entry| entry.config.get("hosts"))
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+            "pathResource": entries
+                .get("light-pingora/path-resource")
+                .filter(|entry| entry.active)
+                .map(|entry| entry.config.clone())
+                .unwrap_or_else(|| json!(null))
         })
     }
 
@@ -840,6 +897,10 @@ fn is_all_marker(module_id: &str) -> bool {
     module_id.eq_ignore_ascii_case("all")
 }
 
+fn active_module(entries: &BTreeMap<String, ModuleEntry>, module_id: &str) -> bool {
+    entries.get(module_id).is_some_and(|entry| entry.active)
+}
+
 fn reload_context_failure(requested_modules: &[String], message: String) -> ReloadModulesResult {
     let failed_modules = if requested_modules.is_empty()
         || requested_modules
@@ -1004,6 +1065,7 @@ mod tests {
             resolved_values: HashMap::new(),
             module_registry: Arc::new(ModuleRegistry::new()),
             cache_registry: None,
+            registry_client: None,
         }
     }
 
@@ -1054,6 +1116,67 @@ mod tests {
         assert!(!rendered.contains("server-key.pem"));
         assert!(rendered.contains("light-runtime/server"));
         assert!(rendered.contains("portal-registry"));
+    }
+
+    #[test]
+    fn server_info_exposes_gateway_capability_summary() {
+        let registry = ModuleRegistry::new();
+        let config = runtime_config();
+
+        registry.register_config(
+            "light-pingora/handler",
+            "handler",
+            ModuleKind::Framework,
+            json!({
+                "activeHandlers": ["correlation", "router"],
+                "chains": {
+                    "api": { "exec": ["correlation", "router"] }
+                },
+                "paths": [{
+                    "path": "/v1/pets",
+                    "method": "GET",
+                    "exec": ["api"]
+                }],
+                "defaultHandlers": ["virtual"]
+            }),
+            [],
+            true,
+            Some(true),
+            true,
+        );
+        registry.register_config(
+            "light-pingora/router",
+            "router",
+            ModuleKind::Framework,
+            json!({}),
+            [],
+            true,
+            Some(true),
+            true,
+        );
+        registry.register_config(
+            "light-pingora/virtual-host",
+            "virtual-host",
+            ModuleKind::Framework,
+            json!({ "hosts": [{ "domain": "local.test", "path": "/" }] }),
+            [],
+            true,
+            Some(true),
+            true,
+        );
+
+        let info = registry.server_info(&config);
+
+        assert_eq!(info["capabilities"]["traffic"]["router"], true);
+        assert_eq!(
+            info["capabilities"]["handlers"]["active"],
+            json!(["correlation", "router"])
+        );
+        assert_eq!(info["capabilities"]["handlers"]["chains"], json!(["api"]));
+        assert_eq!(
+            info["capabilities"]["hosts"][0]["domain"],
+            json!("local.test")
+        );
     }
 
     #[derive(Debug, Deserialize, Serialize)]

@@ -1,10 +1,13 @@
 use crate::protocol::{
-    JsonRpcMessage, RegistrationResponse, ServiceMetadataUpdate, ServiceRegistrationParams,
-    SkillSearchRequest, SkillSearchResponse,
+    DiscoverySnapshot, DiscoverySubscription, JsonRpcMessage, RegistrationResponse,
+    ServiceMetadataUpdate, ServiceRegistrationParams, SkillSearchRequest, SkillSearchResponse,
 };
 use futures_util::{SinkExt, StreamExt};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::json;
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -91,6 +94,22 @@ pub struct PortalRegistryClient {
     ca_certificate: Mutex<Option<Vec<u8>>>,
     verify_hostname: Mutex<bool>,
     pending_requests: Arc<Mutex<HashMap<String, oneshot::Sender<JsonRpcMessage>>>>,
+}
+
+impl fmt::Debug for PortalRegistryClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PortalRegistryClient")
+            .field(
+                "connected",
+                &self
+                    .outbound_tx
+                    .try_lock()
+                    .ok()
+                    .and_then(|tx| tx.as_ref().map(|_| true))
+                    .unwrap_or(false),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl PortalRegistryClient {
@@ -182,12 +201,34 @@ impl PortalRegistryClient {
         query: String,
         limit: Option<i32>,
     ) -> anyhow::Result<SkillSearchResponse> {
-        let id = Uuid::new_v4().to_string();
-        let payload = JsonRpcMessage::new_request(
-            json!(id),
+        self.send_request(
             "skill/search",
-            serde_json::to_value(SkillSearchRequest { query, limit })?,
-        );
+            SkillSearchRequest { query, limit },
+            Duration::from_secs(10),
+        )
+        .await
+    }
+
+    pub async fn lookup_discovery(
+        &self,
+        subscription: DiscoverySubscription,
+    ) -> anyhow::Result<DiscoverySnapshot> {
+        self.send_request("discovery/lookup", subscription, Duration::from_secs(5))
+            .await
+    }
+
+    async fn send_request<P, R>(
+        &self,
+        method: &str,
+        params: P,
+        request_timeout: Duration,
+    ) -> anyhow::Result<R>
+    where
+        P: Serialize,
+        R: DeserializeOwned,
+    {
+        let id = Uuid::new_v4().to_string();
+        let payload = JsonRpcMessage::new_request(json!(id), method, serde_json::to_value(params)?);
 
         let (tx, rx) = oneshot::channel::<JsonRpcMessage>();
         {
@@ -210,28 +251,28 @@ impl PortalRegistryClient {
         };
         if outbound.send(message).await.is_err() {
             self.pending_requests.lock().await.remove(&id);
-            return Err(anyhow::anyhow!("failed to send search request"));
+            return Err(anyhow::anyhow!("failed to send {method} request"));
         }
 
-        let response = match timeout(Duration::from_secs(10), rx).await {
+        let response = match timeout(request_timeout, rx).await {
             Ok(Ok(response)) => response,
             Ok(Err(_)) => {
                 self.pending_requests.lock().await.remove(&id);
-                return Err(anyhow::anyhow!("skill search response channel closed"));
+                return Err(anyhow::anyhow!("{method} response channel closed"));
             }
             Err(_) => {
                 self.pending_requests.lock().await.remove(&id);
-                return Err(anyhow::anyhow!("skill search timed out"));
+                return Err(anyhow::anyhow!("{method} timed out"));
             }
         };
 
         if let Some(error) = response.error {
-            return Err(anyhow::anyhow!("Skill search failed: {}", error.message));
+            return Err(anyhow::anyhow!("{method} failed: {}", error.message));
         }
 
         let result = response
             .result
-            .ok_or_else(|| anyhow::anyhow!("no result in skill search response"))?;
+            .ok_or_else(|| anyhow::anyhow!("no result in {method} response"))?;
         Ok(serde_json::from_value(result)?)
     }
 
@@ -582,6 +623,137 @@ mod tests {
         assert_eq!(update["params"]["protocol"], "http");
 
         client_task.await.expect("join wrapper task");
+    }
+
+    #[tokio::test]
+    async fn discovery_lookup_uses_registered_microservice_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let (lookup_tx, lookup_rx) = oneshot::channel();
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept connection");
+            let mut ws = accept_async(stream).await.expect("accept websocket");
+
+            let register = ws
+                .next()
+                .await
+                .expect("register message")
+                .expect("valid register frame")
+                .into_text()
+                .expect("register text");
+            let register_json = serde_json::from_str::<Value>(&register).expect("register json");
+            assert_eq!(register_json["method"], "service/register");
+
+            ws.send(Message::Text(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": "register-1",
+                    "result": {
+                        "runtimeInstanceId": "0195ef10-2f24-7af2-85e9-a8ef54642f39",
+                        "status": "registered"
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .expect("send ack");
+
+            let lookup = ws
+                .next()
+                .await
+                .expect("lookup message")
+                .expect("valid lookup frame")
+                .into_text()
+                .expect("lookup text");
+            let lookup_json = serde_json::from_str::<Value>(&lookup).expect("lookup json");
+            lookup_tx
+                .send(lookup_json.clone())
+                .expect("send lookup payload");
+
+            ws.send(Message::Text(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": lookup_json["id"],
+                    "result": {
+                        "serviceId": "user-service",
+                        "envTag": "prod",
+                        "protocol": "https",
+                        "nodes": [{
+                            "runtimeInstanceId": "0195ef10-2f24-7af2-85e9-a8ef54642f40",
+                            "serviceId": "user-service",
+                            "envTag": "prod",
+                            "environment": "prod",
+                            "version": "1.0.0",
+                            "protocol": "https",
+                            "address": "10.20.30.40",
+                            "port": 8443,
+                            "tags": { "zone": "a" },
+                            "connectedAt": "2026-01-01T00:00:00Z",
+                            "lastSeenAt": "2026-01-01T00:00:01Z",
+                            "connected": true
+                        }]
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .expect("send lookup response");
+            ws.close(None).await.expect("close websocket");
+        });
+
+        let client = Arc::new(
+            PortalRegistryClient::new(
+                &format!("ws://{addr}"),
+                ServiceRegistrationParams {
+                    service_id: "subscriber-service".to_string(),
+                    version: "1.0.0".to_string(),
+                    protocol: "https".to_string(),
+                    address: "127.0.0.1".to_string(),
+                    port: 8443,
+                    tags: HashMap::new(),
+                    env_tag: Some("prod".to_string()),
+                    jwt: "token".to_string(),
+                },
+                Arc::new(NoopHandler),
+            )
+            .expect("build client"),
+        );
+        let mut registration_rx = client.subscribe_registration();
+        let task_client = Arc::clone(&client);
+        let run = tokio::spawn(async move { task_client.connect_and_loop().await });
+        while !matches!(
+            registration_rx.borrow().clone(),
+            RegistrationState::Registered { .. }
+        ) {
+            registration_rx
+                .changed()
+                .await
+                .expect("registration change");
+        }
+
+        let snapshot = client
+            .lookup_discovery(DiscoverySubscription {
+                service_id: "user-service".to_string(),
+                env_tag: Some("prod".to_string()),
+                protocol: Some("https".to_string()),
+            })
+            .await
+            .expect("lookup discovery");
+
+        let lookup = lookup_rx.await.expect("receive lookup");
+        assert_eq!(lookup["method"], "discovery/lookup");
+        assert_eq!(lookup["params"]["serviceId"], "user-service");
+        assert_eq!(lookup["params"]["envTag"], "prod");
+        assert_eq!(lookup["params"]["protocol"], "https");
+        assert_eq!(snapshot.nodes[0].address, "10.20.30.40");
+        assert_eq!(snapshot.nodes[0].port, 8443);
+
+        run.await.expect("join client task").expect("client loop");
     }
 
     #[tokio::test]

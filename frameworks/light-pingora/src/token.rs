@@ -7,7 +7,10 @@ use crate::service::service_id_for_path;
 use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
-use light_runtime::{MaskSpec, ModuleKind, RuntimeCache, RuntimeConfig, RuntimeError};
+use light_runtime::{
+    DiscoveryNode, DiscoverySubscription, MaskSpec, ModuleKind, PortalRegistryClient, RuntimeCache,
+    RuntimeConfig, RuntimeError,
+};
 use pingora::prelude::Session;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
@@ -236,15 +239,21 @@ pub struct TokenRuntime {
     handler: TokenHandlerConfig,
     client: ClientTokenConfig,
     cache: Arc<TokenCache>,
+    registry_client: Option<Arc<PortalRegistryClient>>,
 }
 
 impl TokenRuntime {
-    fn new(handler: TokenHandlerConfig, client: ClientTokenConfig) -> Self {
+    fn new(
+        handler: TokenHandlerConfig,
+        client: ClientTokenConfig,
+        registry_client: Option<Arc<PortalRegistryClient>>,
+    ) -> Self {
         let capacity = client.oauth.token.cache.capacity;
         Self {
             handler,
             client,
             cache: Arc::new(TokenCache::new(capacity)),
+            registry_client,
         }
     }
 
@@ -274,9 +283,13 @@ impl TokenRuntime {
             return Ok(cached.token);
         }
 
-        let fetched =
-            fetch_client_credentials_token(&options, &self.client.request, &self.client.tls)
-                .await?;
+        let fetched = fetch_client_credentials_token(
+            &options,
+            &self.client.request,
+            &self.client.tls,
+            self.registry_client.as_deref(),
+        )
+        .await?;
         let cached = CachedToken {
             token: fetched.access_token.clone(),
             expires_at_millis: fetched.expires_at_millis,
@@ -386,7 +399,7 @@ pub fn load_token_runtime(
         true,
     )?;
 
-    let runtime = TokenRuntime::new(handler, client);
+    let runtime = TokenRuntime::new(handler, client, runtime_config.registry_client.clone());
     if let Some(cache_registry) = runtime_config.cache_registry.as_ref() {
         let cache: Arc<dyn RuntimeCache> = runtime.cache();
         cache_registry.register_arc(TOKEN_CACHE_NAME, cache);
@@ -513,7 +526,8 @@ impl RuntimeCache for TokenCache {
 
 #[derive(Debug, Clone)]
 struct TokenRequestOptions {
-    server_url: String,
+    server_url: Option<String>,
+    token_service_id: Option<String>,
     uri: String,
     client_id: String,
     client_secret: String,
@@ -548,8 +562,10 @@ async fn fetch_client_credentials_token(
     options: &TokenRequestOptions,
     request: &ClientRequestConfig,
     tls: &ClientTlsConfig,
+    registry_client: Option<&PortalRegistryClient>,
 ) -> Result<FetchedToken, HandlerRejection> {
-    let url = token_endpoint_url(options.server_url.as_str(), options.uri.as_str())?;
+    let server_url = resolve_token_server_url(options, registry_client).await?;
+    let url = token_endpoint_url(server_url.as_str(), options.uri.as_str())?;
     let client = token_http_client(options, request, tls)?;
     let response = client
         .post(url)
@@ -622,14 +638,11 @@ fn merged_options(
     let server_url = auth_server
         .and_then(|auth| auth.server_url.clone())
         .or_else(|| token.server_url.clone())
-        .and_then(non_empty)
-        .ok_or_else(|| {
-            HandlerRejection::new(
-                502,
-                "ERR10056",
-                "client.yml oauth.token.server_url is required until discovery is available",
-            )
-        })?;
+        .and_then(non_empty);
+    let token_service_id = auth_server
+        .and_then(|auth| auth.service_id.clone())
+        .or_else(|| token.service_id.clone())
+        .and_then(non_empty);
     let uri = auth_server
         .and_then(|auth| auth.uri.clone())
         .filter(|value| !value.trim().is_empty())
@@ -656,6 +669,7 @@ fn merged_options(
 
     Ok(TokenRequestOptions {
         server_url,
+        token_service_id,
         uri,
         client_id,
         client_secret,
@@ -748,6 +762,78 @@ fn token_http_client(
     builder.build().map_err(|error| {
         HandlerRejection::new(500, "ERR10056", format!("invalid token client: {error}"))
     })
+}
+
+async fn resolve_token_server_url(
+    options: &TokenRequestOptions,
+    registry_client: Option<&PortalRegistryClient>,
+) -> Result<String, HandlerRejection> {
+    if let Some(server_url) = options.server_url.as_ref() {
+        return Ok(server_url.clone());
+    }
+    let service_id = options.token_service_id.as_deref().ok_or_else(|| {
+        HandlerRejection::new(
+            502,
+            "ERR10056",
+            "client.yml oauth.token.server_url or oauth.token.serviceId is required",
+        )
+    })?;
+    let registry_client = registry_client.ok_or_else(|| {
+        HandlerRejection::new(
+            502,
+            "ERR10056",
+            "token serviceId discovery requires portal registry to be enabled",
+        )
+    })?;
+    let snapshot = registry_client
+        .lookup_discovery(DiscoverySubscription {
+            service_id: service_id.to_string(),
+            env_tag: None,
+            protocol: None,
+        })
+        .await
+        .map_err(|error| {
+            HandlerRejection::new(
+                502,
+                "ERR10056",
+                format!("failed to discover token service `{service_id}`: {error}"),
+            )
+        })?;
+    let node = select_token_node(&snapshot.nodes).ok_or_else(|| {
+        HandlerRejection::new(
+            502,
+            "ERR10056",
+            format!("token service `{service_id}` has no usable discovery nodes"),
+        )
+    })?;
+    Ok(discovery_node_base_url(node))
+}
+
+fn select_token_node(nodes: &[DiscoveryNode]) -> Option<&DiscoveryNode> {
+    nodes
+        .iter()
+        .filter(|node| node.connected && node.port != 0)
+        .find(|node| node.protocol.eq_ignore_ascii_case("https"))
+        .or_else(|| {
+            nodes
+                .iter()
+                .filter(|node| node.connected && node.port != 0)
+                .find(|node| node.protocol.eq_ignore_ascii_case("http"))
+        })
+}
+
+fn discovery_node_base_url(node: &DiscoveryNode) -> String {
+    let host = if node.address.contains(':') && !node.address.starts_with('[') {
+        format!("[{}]", node.address)
+    } else {
+        node.address.clone()
+    };
+    format!(
+        "{}://{}:{}",
+        node.protocol.to_ascii_lowercase(),
+        host,
+        node.port
+    )
 }
 
 fn token_endpoint_url(server_url: &str, uri: &str) -> Result<String, HandlerRejection> {

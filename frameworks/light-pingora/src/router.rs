@@ -3,7 +3,10 @@ use crate::config_util::{
 };
 use crate::proxy::ProxyTarget;
 use crate::security::HandlerRejection;
-use light_runtime::{ModuleKind, RuntimeConfig, RuntimeError};
+use light_runtime::{
+    DiscoveryNode, DiscoverySubscription, ModuleKind, PortalRegistryClient, RuntimeConfig,
+    RuntimeError,
+};
 use pingora::http::RequestHeader;
 use pingora::prelude::Session;
 use regex::Regex;
@@ -11,6 +14,7 @@ use serde::de::{Error as DeError, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_yaml::Value as YamlValue;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use url::{Host, Url, form_urlencoded};
 
 pub const ROUTER_FILE: &str = "router.yml";
@@ -126,6 +130,8 @@ pub struct QueryHeaderRewriteRule {
 pub struct RouterRoute {
     pub config: RouterConfig,
     pub service_targets: BTreeMap<String, Vec<ProxyTarget>>,
+    #[serde(skip_serializing)]
+    pub registry_client: Option<Arc<PortalRegistryClient>>,
 }
 
 #[derive(Debug, Clone)]
@@ -166,10 +172,11 @@ pub fn load_router_route(
     Ok(Some(RouterRoute {
         config,
         service_targets,
+        registry_client: runtime_config.registry_client.clone(),
     }))
 }
 
-pub fn select_router_target(
+pub async fn select_router_target(
     session: &Session,
     route: &RouterRoute,
     index: usize,
@@ -214,17 +221,27 @@ pub fn select_router_target(
         .filter(|value| !value.trim().is_empty())
         .map(|env_tag| format!("{service_id}|{env_tag}"))
         .unwrap_or_else(|| service_id.to_string());
+    let discovery_error = match discovery_targets(route, service_id, env_tag.as_deref()).await {
+        Ok(Some(targets)) if !targets.is_empty() => {
+            return Ok(RouterDecision {
+                target: targets[index % targets.len()].clone(),
+                remove_service_id_query,
+            });
+        }
+        Ok(_) => None,
+        Err(error) => Some(error),
+    };
     let targets = route.service_targets.get(&key).or_else(|| {
         env_tag
             .as_deref()
             .and_then(|_| route.service_targets.get(service_id))
     });
     let targets = targets.ok_or_else(|| {
-        HandlerRejection::new(
-            502,
-            "ERR10080",
-            format!("router service target `{key}` is not configured"),
-        )
+        let message = discovery_error.map_or_else(
+            || format!("router service target `{key}` is not configured"),
+            |error| format!("router discovery lookup failed for `{key}`: {error}"),
+        );
+        HandlerRejection::new(502, "ERR10080", message)
     })?;
     if targets.is_empty() {
         return Err(HandlerRejection::new(
@@ -237,6 +254,57 @@ pub fn select_router_target(
     Ok(RouterDecision {
         target: targets[index % targets.len()].clone(),
         remove_service_id_query,
+    })
+}
+
+async fn discovery_targets(
+    route: &RouterRoute,
+    service_id: &str,
+    env_tag: Option<&str>,
+) -> Result<Option<Vec<ProxyTarget>>, String> {
+    let Some(client) = route.registry_client.as_ref() else {
+        return Ok(None);
+    };
+    let snapshot = client
+        .lookup_discovery(DiscoverySubscription {
+            service_id: service_id.to_string(),
+            env_tag: env_tag.map(str::to_string),
+            protocol: None,
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    let targets = snapshot
+        .nodes
+        .iter()
+        .filter(|node| route.config.https_enabled || !node.protocol.eq_ignore_ascii_case("https"))
+        .filter_map(discovery_node_to_target)
+        .collect::<Vec<_>>();
+    Ok(Some(targets))
+}
+
+fn discovery_node_to_target(node: &DiscoveryNode) -> Option<ProxyTarget> {
+    if node.port == 0 || !node.connected {
+        return None;
+    }
+    let protocol = node.protocol.to_ascii_lowercase();
+    let tls = match protocol.as_str() {
+        "http" => false,
+        "https" => true,
+        _ => return None,
+    };
+    let host = host_for_discovery(&node.address);
+    let address = format!("{host}:{}", node.port);
+    let sni = if tls {
+        node.address.clone()
+    } else {
+        String::new()
+    };
+    Some(ProxyTarget {
+        address: address.clone(),
+        tls,
+        sni,
+        host_header: address,
+        path_prefix: String::new(),
     })
 }
 
@@ -873,6 +941,14 @@ fn host_for_authority(host: Host<&str>) -> String {
     }
 }
 
+fn host_for_discovery(host: &str) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
+}
+
 fn normalize_path_prefix(path: &str) -> String {
     let path = path.trim_end_matches('/');
     if path.is_empty() {
@@ -929,6 +1005,7 @@ mod tests {
             resolved_values: HashMap::new(),
             module_registry: Arc::new(ModuleRegistry::new()),
             cache_registry: None,
+            registry_client: None,
         }
     }
 
@@ -1017,6 +1094,7 @@ queryParamRewriteRules:
             )
             .expect("parse router config"),
             service_targets: BTreeMap::new(),
+            registry_client: None,
         };
         let decision = RouterDecision {
             target: parse_router_target("https://api.example.com/base").expect("target"),

@@ -272,6 +272,7 @@ mod tests {
             resolved_values: HashMap::new(),
             module_registry: Arc::new(ModuleRegistry::new()),
             cache_registry: None,
+            registry_client: None,
         }
     }
 

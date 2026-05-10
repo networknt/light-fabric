@@ -1,5 +1,6 @@
 use crate::cache::CacheRegistry;
 use crate::module_registry::ModuleRegistry;
+use portal_registry::PortalRegistryClient;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -176,6 +177,8 @@ pub struct RuntimeConfig {
     pub module_registry: Arc<ModuleRegistry>,
     #[serde(skip)]
     pub cache_registry: Option<Arc<CacheRegistry>>,
+    #[serde(skip)]
+    pub registry_client: Option<Arc<PortalRegistryClient>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

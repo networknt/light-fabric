@@ -184,6 +184,7 @@ mod tests {
             resolved_values: Default::default(),
             module_registry: Arc::new(ModuleRegistry::new()),
             cache_registry: None,
+            registry_client: None,
         }
     }
 

@@ -1131,7 +1131,7 @@ impl ProxyHttp for GatewayProxy {
                             .await;
                     };
                     let index = self.next_upstream.fetch_add(1, Ordering::Relaxed);
-                    match select_router_target(session, route, index) {
+                    match select_router_target(session, route, index).await {
                         Ok(decision) => {
                             ctx.proxy_target = Some(decision.target.clone());
                             ctx.rewrite_host_header = route.config.rewrite_host_header;
@@ -1603,6 +1603,7 @@ mod tests {
             resolved_values,
             module_registry: Arc::new(ModuleRegistry::new()),
             cache_registry: None,
+            registry_client: None,
         }
     }
 

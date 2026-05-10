@@ -14,6 +14,9 @@ pub use module_registry::{
     ReloadFailed, ReloadModulesResult, ReloadOutcome, ReloadSkipped, ReloadStatus,
     ReloadableModule, RuntimeMcpHandler,
 };
+pub use portal_registry::{
+    DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, PortalRegistryClient,
+};
 pub use runtime::{
     LifecycleState, LightRuntime, LightRuntimeBuilder, Module, RegistrationPolicy, RunningRuntime,
     RuntimeError,

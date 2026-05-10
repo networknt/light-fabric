@@ -395,6 +395,13 @@ where
             env_tag,
             tags: HashMap::new(),
         };
+        let registry_client = self.build_registry_client_for_runtime(
+            &bootstrap,
+            &server,
+            &client,
+            &portal_registry,
+            &service_identity,
+        )?;
 
         Ok(RuntimeConfig {
             bootstrap,
@@ -407,7 +414,66 @@ where
             resolved_values: values,
             module_registry: Arc::clone(&self.module_registry),
             cache_registry: self.cache_registry.clone(),
+            registry_client,
         })
+    }
+
+    fn build_registry_client_for_runtime(
+        &self,
+        bootstrap: &BootstrapConfig,
+        server: &ServerConfig,
+        client_config: &Option<ClientConfig>,
+        portal_registry: &Option<PortalRegistryConfig>,
+        service_identity: &ServiceIdentity,
+    ) -> Result<Option<Arc<PortalRegistryClient>>, RuntimeError> {
+        if !server.enable_registry {
+            return Ok(self.registry_client.clone());
+        }
+        if let Some(client) = &self.registry_client {
+            return Ok(Some(Arc::clone(client)));
+        }
+
+        let Some(portal_registry) = portal_registry.as_ref() else {
+            return Ok(None);
+        };
+        let portal_url = Url::parse(&portal_registry.portal_url)?;
+        let ws_url = to_microservice_ws_url(&portal_url)?;
+        let token = portal_token(portal_registry).ok_or(RuntimeError::MissingPortalToken)?;
+        let mut registration = RegistrationBuilder::new(
+            &service_identity.service_id,
+            &service_identity.version,
+            "http",
+            server
+                .advertised_address
+                .as_deref()
+                .unwrap_or(server.ip.as_str()),
+            0,
+        )
+        .with_jwt(&token);
+        if let Some(env_tag) = service_identity.env_tag.as_deref() {
+            registration = registration.with_env(env_tag);
+        }
+        let mut client =
+            PortalRegistryClient::new(&ws_url, registration.build(), Arc::new(NoopRegistryHandler))
+                .map_err(|e| {
+                    RuntimeError::Unsupported(format!(
+                        "failed to build portal registry client: {e}"
+                    ))
+                })?;
+        if let Some(ca_certificate) = bootstrap
+            .bootstrap_ca_cert_path
+            .as_ref()
+            .map(fs::read)
+            .transpose()?
+        {
+            client = client.with_ca_certificate(ca_certificate);
+        }
+        let verify_hostname = client_config
+            .as_ref()
+            .map(|config| config.verify_hostname)
+            .unwrap_or(true);
+        client = client.with_verify_hostname(verify_hostname);
+        Ok(Some(Arc::new(client)))
     }
 
     fn load_typed_config<V>(
@@ -523,7 +589,11 @@ where
             );
         }
 
-        let client = if let Some(client) = &self.registry_client {
+        let shared_registry_client = runtime_config
+            .registry_client
+            .as_ref()
+            .or(self.registry_client.as_ref());
+        let client = if let Some(client) = shared_registry_client {
             client.set_registration_params(registration).await;
             client.set_handler(Arc::clone(&registry_handler)).await;
             client
@@ -1120,6 +1190,7 @@ serviceId: ${server.serviceId:com.networknt.test-1.0.0}
             resolved_values: HashMap::new(),
             module_registry: Arc::new(ModuleRegistry::new()),
             cache_registry: None,
+            registry_client: None,
         };
 
         let ctx = runtime_config

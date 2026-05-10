@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -81,6 +82,52 @@ pub struct ServiceMetadataUpdate {
     pub port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoverySubscription {
+    #[serde(rename = "serviceId")]
+    pub service_id: String,
+    #[serde(rename = "envTag", skip_serializing_if = "Option::is_none")]
+    pub env_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryNode {
+    #[serde(rename = "runtimeInstanceId")]
+    pub runtime_instance_id: Uuid,
+    #[serde(rename = "serviceId")]
+    pub service_id: String,
+    #[serde(rename = "envTag", default)]
+    pub env_tag: Option<String>,
+    pub environment: String,
+    pub version: String,
+    pub protocol: String,
+    pub address: String,
+    pub port: u16,
+    #[serde(default)]
+    pub tags: HashMap<String, String>,
+    #[serde(rename = "connectedAt")]
+    pub connected_at: DateTime<Utc>,
+    #[serde(rename = "lastSeenAt")]
+    pub last_seen_at: DateTime<Utc>,
+    pub connected: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoverySnapshot {
+    #[serde(rename = "serviceId")]
+    pub service_id: String,
+    #[serde(rename = "envTag", default)]
+    pub env_tag: Option<String>,
+    #[serde(default)]
+    pub protocol: Option<String>,
+    pub nodes: Vec<DiscoveryNode>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
