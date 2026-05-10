@@ -2164,12 +2164,28 @@ fn init_tracing() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::{SinkExt, StreamExt};
     use light_runtime::config::ClientConfig;
     use light_runtime::{
         BootstrapConfig, ModuleRegistry, PortalRegistryConfig, ServerConfig, ServiceIdentity,
     };
+    use portal_registry::{
+        PortalRegistryClient, RegistrationState, RegistryHandler, ServiceRegistrationParams,
+    };
+    use serde_json::{Value as JsonValue, json};
     use std::collections::HashMap;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::oneshot;
+    use tokio::time::{Duration as TokioDuration, sleep, timeout};
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::handshake::server::{
+        Request as WsServerRequest, Response as WsServerResponse,
+    };
+    use tokio_tungstenite::tungstenite::http::HeaderValue;
+    use tokio_tungstenite::tungstenite::protocol::Message;
+    use tokio_tungstenite::{accept_async, accept_hdr_async, connect_async};
 
     fn runtime_config(
         config_dir: &TempDir,
@@ -2189,6 +2205,240 @@ mod tests {
             cache_registry: None,
             registry_client: None,
         }
+    }
+
+    #[derive(Debug, Clone)]
+    struct ObservedBackendHandshake {
+        path_and_query: String,
+        authorization: Option<String>,
+        agent_header: Option<String>,
+        service_id_header: Option<String>,
+        subprotocol: Option<String>,
+    }
+
+    struct NoopRegistryHandler;
+
+    #[async_trait]
+    impl RegistryHandler for NoopRegistryHandler {}
+
+    async fn spawn_websocket_echo_backend() -> (
+        std::net::SocketAddr,
+        Arc<Mutex<Option<ObservedBackendHandshake>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind echo backend");
+        let address = listener.local_addr().expect("echo backend address");
+        let observed = Arc::new(Mutex::new(None));
+        let observed_for_task = Arc::clone(&observed);
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept echo connection");
+            let observed_for_callback = Arc::clone(&observed_for_task);
+            let callback = move |request: &WsServerRequest, mut response: WsServerResponse| {
+                let subprotocol = header_value(request, "sec-websocket-protocol");
+                *observed_for_callback.lock().expect("observed lock") =
+                    Some(ObservedBackendHandshake {
+                        path_and_query: request
+                            .uri()
+                            .path_and_query()
+                            .map(|value| value.as_str().to_string())
+                            .unwrap_or_else(|| request.uri().path().to_string()),
+                        authorization: header_value(request, "authorization"),
+                        agent_header: header_value(request, "x-agent-test"),
+                        service_id_header: header_value(request, "service_id")
+                            .or_else(|| header_value(request, "serviceId"))
+                            .or_else(|| header_value(request, "Service-Id")),
+                        subprotocol: subprotocol.clone(),
+                    });
+                if subprotocol
+                    .as_deref()
+                    .is_some_and(|value| websocket_protocol_contains(value, "chat.v1"))
+                {
+                    response.headers_mut().insert(
+                        "sec-websocket-protocol",
+                        HeaderValue::from_static("chat.v1"),
+                    );
+                }
+                Ok(response)
+            };
+            let mut websocket = accept_hdr_async(stream, callback)
+                .await
+                .expect("accept echo websocket");
+            while let Some(message) = websocket.next().await {
+                match message.expect("echo websocket message") {
+                    Message::Text(text) => {
+                        websocket
+                            .send(Message::Text(format!("echo:{text}").into()))
+                            .await
+                            .expect("send text echo");
+                    }
+                    Message::Binary(bytes) => {
+                        websocket
+                            .send(Message::Binary(bytes))
+                            .await
+                            .expect("send binary echo");
+                    }
+                    Message::Close(_) => {
+                        break;
+                    }
+                    Message::Ping(bytes) => {
+                        websocket
+                            .send(Message::Pong(bytes))
+                            .await
+                            .expect("send pong");
+                    }
+                    Message::Pong(_) | Message::Frame(_) => {}
+                }
+            }
+        });
+        (address, observed, task)
+    }
+
+    async fn spawn_fake_registry(
+        backend_address: std::net::SocketAddr,
+    ) -> (
+        String,
+        oneshot::Receiver<JsonValue>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake registry");
+        let address = listener.local_addr().expect("registry address");
+        let (lookup_tx, lookup_rx) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept registry connection");
+            let mut websocket = accept_async(stream)
+                .await
+                .expect("accept registry websocket");
+
+            let register = websocket
+                .next()
+                .await
+                .expect("registry register message")
+                .expect("valid registry register frame")
+                .into_text()
+                .expect("register text");
+            let register_json =
+                serde_json::from_str::<JsonValue>(&register).expect("register json");
+            assert_eq!(register_json["method"], "service/register");
+            websocket
+                .send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": register_json["id"],
+                        "result": {
+                            "runtimeInstanceId": "0195ef10-2f24-7af2-85e9-a8ef54642f39",
+                            "status": "registered"
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .expect("send register ack");
+
+            let mut lookup_tx = Some(lookup_tx);
+            while let Some(message) = websocket.next().await {
+                let message = message.expect("valid registry frame");
+                let Message::Text(text) = message else {
+                    continue;
+                };
+                let lookup_json =
+                    serde_json::from_str::<JsonValue>(&text).expect("registry request json");
+                if lookup_json["method"] != "discovery/lookup" {
+                    continue;
+                }
+                if let Some(sender) = lookup_tx.take() {
+                    let _ = sender.send(lookup_json.clone());
+                }
+                websocket
+                    .send(Message::Text(
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": lookup_json["id"],
+                            "result": {
+                                "serviceId": lookup_json["params"]["serviceId"],
+                                "envTag": lookup_json["params"]["envTag"],
+                                "protocol": lookup_json["params"]["protocol"],
+                                "nodes": [{
+                                    "runtimeInstanceId": "0195ef10-2f24-7af2-85e9-a8ef54642f40",
+                                    "serviceId": lookup_json["params"]["serviceId"],
+                                    "envTag": lookup_json["params"]["envTag"],
+                                    "environment": "dev",
+                                    "version": "1.0.0",
+                                    "protocol": "http",
+                                    "address": backend_address.ip().to_string(),
+                                    "port": backend_address.port(),
+                                    "tags": {},
+                                    "connectedAt": "2026-01-01T00:00:00Z",
+                                    "lastSeenAt": "2026-01-01T00:00:01Z",
+                                    "connected": true
+                                }]
+                            }
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .expect("send discovery response");
+            }
+        });
+        (format!("ws://{address}"), lookup_rx, task)
+    }
+
+    async fn wait_for_registry_registration(
+        receiver: &mut tokio::sync::watch::Receiver<RegistrationState>,
+    ) {
+        timeout(TokioDuration::from_secs(5), async {
+            loop {
+                if matches!(
+                    receiver.borrow().clone(),
+                    RegistrationState::Registered { .. }
+                ) {
+                    break;
+                }
+                receiver.changed().await.expect("registration state change");
+            }
+        })
+        .await
+        .expect("registry registration");
+    }
+
+    async fn wait_for_tcp(address: std::net::SocketAddr) {
+        timeout(TokioDuration::from_secs(5), async {
+            loop {
+                if TcpStream::connect(address).await.is_ok() {
+                    break;
+                }
+                sleep(TokioDuration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("tcp listener ready");
+    }
+
+    fn free_tcp_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("bind free port")
+            .local_addr()
+            .expect("free port address")
+            .port()
+    }
+
+    fn header_value(request: &WsServerRequest, name: &str) -> Option<String> {
+        request
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+    }
+
+    fn websocket_protocol_contains(header: &str, expected: &str) -> bool {
+        header
+            .split(',')
+            .any(|value| value.trim().eq_ignore_ascii_case(expected))
     }
 
     #[test]
@@ -2771,6 +3021,206 @@ pathPrefixService:
                 .service_id,
             "com.networknt.chat-v2-1.0.0"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn websocket_gateway_proxies_text_binary_close_subprotocol_and_headers() {
+        let (backend_address, observed_backend, backend_task) =
+            spawn_websocket_echo_backend().await;
+        let (registry_url, lookup_rx, registry_task) = spawn_fake_registry(backend_address).await;
+        let registry_client = Arc::new(
+            PortalRegistryClient::new(
+                registry_url.as_str(),
+                ServiceRegistrationParams {
+                    service_id: "light-gateway-test".to_string(),
+                    version: "1.0.0".to_string(),
+                    protocol: "http".to_string(),
+                    address: "127.0.0.1".to_string(),
+                    port: 0,
+                    tags: HashMap::new(),
+                    env_tag: Some("dev".to_string()),
+                    jwt: "test-token".to_string(),
+                },
+                Arc::new(NoopRegistryHandler),
+            )
+            .expect("build registry client"),
+        );
+        let mut registration_rx = registry_client.subscribe_registration();
+        let registry_client_task = tokio::spawn({
+            let registry_client = Arc::clone(&registry_client);
+            async move { registry_client.run().await }
+        });
+        wait_for_registry_registration(&mut registration_rx).await;
+
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        let gateway_port = free_tcp_port();
+        let gateway_address = format!("127.0.0.1:{gateway_port}")
+            .parse::<std::net::SocketAddr>()
+            .expect("gateway address");
+        std::fs::write(
+            config_dir.path().join("server.yml"),
+            format!(
+                r#"
+ip: 127.0.0.1
+advertisedAddress: 127.0.0.1
+httpPort: {gateway_port}
+enableHttp: true
+httpsPort: 8443
+enableHttps: false
+serviceId: com.networknt.light-gateway-1.0.0
+enableRegistry: false
+startOnRegistryFailure: true
+dynamicPort: false
+environment: dev
+shutdownGracefulPeriod: 100
+"#
+            ),
+        )
+        .expect("write server config");
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            r#"
+handlers:
+  - websocket
+paths:
+  - path: /chat
+    method: GET
+    exec:
+      - websocket
+defaultHandlers: []
+"#,
+        )
+        .expect("write handler config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::WEBSOCKET_ROUTER_FILE),
+            r#"
+defaultProtocol: http
+defaultEnvTag: dev
+pathPrefixService:
+  /chat:
+    serviceId: com.networknt.llmchat-1.0.0
+    protocol: http
+    envTag: dev
+"#,
+        )
+        .expect("write websocket config");
+
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp))
+            .with_config_dir(config_dir.path())
+            .with_external_config_dir(external_dir.path())
+            .with_registry_client(Arc::clone(&registry_client))
+            .build();
+        let running = runtime.start().await.expect("start gateway");
+        wait_for_tcp(gateway_address).await;
+
+        let mut request = format!(
+            "ws://127.0.0.1:{gateway_port}/chat?service_id=com.networknt.llmchat-1.0.0&protocol=http&env_tag=dev&room=one"
+        )
+        .into_client_request()
+        .expect("websocket client request");
+        request.headers_mut().insert(
+            "sec-websocket-protocol",
+            HeaderValue::from_static("chat.v1"),
+        );
+        request.headers_mut().insert(
+            "authorization",
+            HeaderValue::from_static("Bearer agent-token"),
+        );
+        request
+            .headers_mut()
+            .insert("x-agent-test", HeaderValue::from_static("present"));
+        request.headers_mut().insert(
+            "service_id",
+            HeaderValue::from_static("com.networknt.llmchat-1.0.0"),
+        );
+
+        let (mut websocket, response) =
+            timeout(TokioDuration::from_secs(5), connect_async(request))
+                .await
+                .expect("connect timeout")
+                .expect("connect through gateway");
+        assert_eq!(
+            response
+                .headers()
+                .get("sec-websocket-protocol")
+                .and_then(|value| value.to_str().ok()),
+            Some("chat.v1")
+        );
+
+        let lookup = timeout(TokioDuration::from_secs(5), lookup_rx)
+            .await
+            .expect("lookup timeout")
+            .expect("lookup payload");
+        assert_eq!(lookup["method"], "discovery/lookup");
+        assert_eq!(lookup["params"]["serviceId"], "com.networknt.llmchat-1.0.0");
+        assert_eq!(lookup["params"]["envTag"], "dev");
+        assert_eq!(lookup["params"]["protocol"], "http");
+
+        let observed = observed_backend
+            .lock()
+            .expect("observed backend lock")
+            .clone()
+            .expect("backend handshake observed");
+        assert_eq!(observed.path_and_query, "/chat?room=one");
+        assert_eq!(
+            observed.authorization.as_deref(),
+            Some("Bearer agent-token")
+        );
+        assert_eq!(observed.agent_header.as_deref(), Some("present"));
+        assert_eq!(observed.service_id_header, None);
+        assert!(
+            observed
+                .subprotocol
+                .as_deref()
+                .is_some_and(|value| websocket_protocol_contains(value, "chat.v1"))
+        );
+
+        websocket
+            .send(Message::Text("hello".into()))
+            .await
+            .expect("send text");
+        let text = timeout(TokioDuration::from_secs(5), websocket.next())
+            .await
+            .expect("text timeout")
+            .expect("text frame")
+            .expect("valid text frame")
+            .into_text()
+            .expect("text payload");
+        assert_eq!(text, "echo:hello");
+
+        websocket
+            .send(Message::Binary(vec![1_u8, 2, 3, 4].into()))
+            .await
+            .expect("send binary");
+        let binary = timeout(TokioDuration::from_secs(5), websocket.next())
+            .await
+            .expect("binary timeout")
+            .expect("binary frame")
+            .expect("valid binary frame")
+            .into_data();
+        assert_eq!(binary.as_slice(), &[1_u8, 2, 3, 4]);
+
+        websocket.close(None).await.expect("close websocket");
+        timeout(TokioDuration::from_secs(5), async {
+            while let Some(message) = websocket.next().await {
+                match message {
+                    Ok(Message::Close(_)) => break,
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+        })
+        .await
+        .expect("close timeout");
+        timeout(TokioDuration::from_secs(5), backend_task)
+            .await
+            .expect("backend close timeout")
+            .expect("backend task");
+
+        running.shutdown().await.expect("shutdown gateway");
+        registry_client_task.abort();
+        registry_task.abort();
     }
 
     #[tokio::test]

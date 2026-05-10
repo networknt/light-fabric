@@ -2,11 +2,13 @@
 
 ## Status
 
-Phases 1 and 2 are implemented. Phase 1 added configuration parsing,
+Phases 1, 2, and 3 are implemented. Phase 1 added configuration parsing,
 Java-compatible `pathPrefixService` normalization, route resolution, and
 upstream URI cleanup in `light-pingora`. Phase 2 wired the `websocket` handler
 into `light-gateway` with WebSocket upgrade detection, discovery-based upstream
-selection, request context storage, and upstream header/query cleanup.
+selection, request context storage, and upstream header/query cleanup. Phase 3
+added a real gateway-to-backend WebSocket integration test for text, binary,
+close, subprotocol, and header behavior.
 
 ## Purpose
 
@@ -460,6 +462,8 @@ Status: implemented.
   `upstream_request_filter`.
 
 ### Phase 3: WebSocket Integration Tests
+
+Status: implemented.
 
 - Add a local test WebSocket echo service.
 - Verify text, binary, close, subprotocol, and header behavior through
