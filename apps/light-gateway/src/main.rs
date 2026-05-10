@@ -2223,7 +2223,7 @@ impl ProxyHttp for GatewayProxy {
 
     async fn response_filter(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         upstream_response: &mut ResponseHeader,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()>
@@ -2241,6 +2241,16 @@ impl ProxyHttp for GatewayProxy {
             upstream_response.remove_header("content-length");
             upstream_response.remove_header("etag");
             upstream_response.remove_header("last-modified");
+        }
+        if ctx.websocket_decision.is_some()
+            && upstream_response.status.as_u16() == 101
+            && upstream_response
+                .headers
+                .get("sec-websocket-protocol")
+                .is_none()
+            && let Some(protocol) = selected_websocket_protocol(session)
+        {
+            upstream_response.insert_header("Sec-WebSocket-Protocol", protocol)?;
         }
         self.apply_response_headers(upstream_response, ctx)?;
         self.record_metrics(ctx, upstream_response.status.as_u16());
@@ -2489,6 +2499,20 @@ fn request_header(session: &Session, name: &str) -> Option<String> {
             .map(|authority| authority.as_str().to_string());
     }
     None
+}
+
+fn selected_websocket_protocol(session: &Session) -> Option<String> {
+    request_header(session, "Sec-WebSocket-Protocol")
+        .as_deref()
+        .and_then(first_websocket_protocol)
+}
+
+fn first_websocket_protocol(value: &str) -> Option<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .find(|protocol| !protocol.is_empty())
+        .map(str::to_string)
 }
 
 fn agent_headers(session: &Session) -> Vec<(String, String)> {
