@@ -1,5 +1,6 @@
 use crate::cache::CacheRegistry;
 use crate::module_registry::ModuleRegistry;
+pub use light_client::ClientConfig;
 use portal_registry::PortalRegistryClient;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -148,25 +149,6 @@ impl std::fmt::Debug for PortalRegistryConfig {
 pub struct DirectRegistryConfig {
     #[serde(default)]
     pub direct_urls: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClientConfig {
-    #[serde(default = "default_verify_hostname")]
-    pub verify_hostname: bool,
-}
-
-impl Default for ClientConfig {
-    fn default() -> Self {
-        Self {
-            verify_hostname: default_verify_hostname(),
-        }
-    }
-}
-
-pub(crate) fn default_verify_hostname() -> bool {
-    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

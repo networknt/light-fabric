@@ -1,1 +1,2 @@
-verifyHostname: ${client.verifyHostname:false}
+tls:
+  verifyHostname: ${client.verifyHostname:false}

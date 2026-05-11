@@ -481,7 +481,7 @@ where
         }
         let verify_hostname = client_config
             .as_ref()
-            .map(|config| config.verify_hostname)
+            .map(|config| config.tls.verify_hostname)
             .unwrap_or(true);
         client = client.with_verify_hostname(verify_hostname);
         Ok(Some(Arc::new(client)))
@@ -613,7 +613,7 @@ where
         let verify_hostname = runtime_config
             .client
             .as_ref()
-            .map(|c| c.verify_hostname)
+            .map(|c| c.tls.verify_hostname)
             .unwrap_or(true);
         if !verify_hostname {
             warn!(
@@ -793,7 +793,7 @@ fn build_config_server_client(
         .timeout(Duration::from_millis(bootstrap.timeout));
 
     if let Some(client) = client_config {
-        if !client.verify_hostname {
+        if !client.tls.verify_hostname {
             warn!(
                 "TLS hostname verification is disabled for the config-server client; this weakens server identity validation"
             );
@@ -1357,7 +1357,52 @@ direct-registry.directUrls:
         let (_bootstrap, client_config) =
             runtime.load_bootstrap_config().expect("bootstrap config");
 
-        assert_eq!(client_config.map(|c| c.verify_hostname), Some(false));
+        assert_eq!(client_config.map(|c| c.tls.verify_hostname), Some(false));
+    }
+
+    #[test]
+    fn load_bootstrap_config_reads_nested_client_tls_config() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        fs::write(
+            config_dir.path().join(CLIENT_FILE),
+            r#"
+tls:
+  verifyHostname: false
+"#,
+        )
+        .expect("write client config");
+
+        let runtime = LightRuntimeBuilder::new(NoopTransport)
+            .with_config_dir(config_dir.path())
+            .build();
+
+        let (_bootstrap, client_config) =
+            runtime.load_bootstrap_config().expect("bootstrap config");
+
+        assert_eq!(client_config.map(|c| c.tls.verify_hostname), Some(false));
+    }
+
+    #[test]
+    fn load_bootstrap_config_prefers_nested_client_tls_config() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        fs::write(
+            config_dir.path().join(CLIENT_FILE),
+            r#"
+verifyHostname: false
+tls:
+  verifyHostname: true
+"#,
+        )
+        .expect("write client config");
+
+        let runtime = LightRuntimeBuilder::new(NoopTransport)
+            .with_config_dir(config_dir.path())
+            .build();
+
+        let (_bootstrap, client_config) =
+            runtime.load_bootstrap_config().expect("bootstrap config");
+
+        assert_eq!(client_config.map(|c| c.tls.verify_hostname), Some(true));
     }
 
     #[tokio::test]

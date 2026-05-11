@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 config-loader = { path = "../config-loader" }
+light-client = { path = "../light-client" }
 portal-registry = { path = "../portal-registry" }
 serde = { workspace = true }
 serde_json = { workspace = true }

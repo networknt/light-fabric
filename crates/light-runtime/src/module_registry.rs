@@ -1046,6 +1046,9 @@ mod tests {
     impl RegistryHandler for DelegateHandler {}
 
     fn runtime_config() -> RuntimeConfig {
+        let mut client_config = ClientConfig::default();
+        client_config.tls.verify_hostname = false;
+
         RuntimeConfig {
             bootstrap: BootstrapConfig {
                 authorization: Some("Bearer startup-secret".to_string()),
@@ -1058,9 +1061,7 @@ mod tests {
                 tls_key_path: Some("server-key.pem".into()),
                 ..ServerConfig::default()
             },
-            client: Some(ClientConfig {
-                verify_hostname: false,
-            }),
+            client: Some(client_config),
             portal_registry: Some(PortalRegistryConfig {
                 portal_url: "https://localhost:8438".to_string(),
                 portal_token: "portal-secret".to_string(),

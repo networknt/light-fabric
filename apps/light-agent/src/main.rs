@@ -587,7 +587,7 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|path| std::fs::read(path).ok());
     let verify_hostname: bool = client_config
         .as_ref()
-        .map(|c| c.verify_hostname)
+        .map(|c| c.tls.verify_hostname)
         .unwrap_or(true);
     if !verify_hostname {
         warn!(
