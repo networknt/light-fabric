@@ -3,13 +3,15 @@ use crate::config_util::{
 };
 use crate::direct_registry::direct_registry_match;
 use crate::token::{
-    CLIENT_FILE, ClientRequestConfig, ClientTlsConfig, OAuthKeyConfig, load_client_config,
+    CLIENT_FILE, ClientRequestConfig, ClientTlsConfig, ClientTokenConfig, load_client_config,
 };
 use jsonwebtoken::{
     Algorithm, DecodingKey, Validation, decode, decode_header,
     jwk::{Jwk, JwkSet},
 };
-use light_client::{ClientFactory, EndpointOptions};
+use light_client::{
+    ClientFactory, EndpointOptions, OAuthProviderError, OAuthProviderResolver, ResolvedKeyProvider,
+};
 use light_runtime::{
     DirectRegistryConfig, DiscoveryNode, DiscoverySubscription, MaskSpec, ModuleKind,
     PortalRegistryClient, RuntimeConfig, RuntimeError,
@@ -28,6 +30,7 @@ pub const SECURITY_MODULE_ID: &str = "light-pingora/security";
 pub const SECURITY_CONFIG_NAME: &str = "security";
 
 const AUTHORIZATION: &str = "authorization";
+const SERVICE_ID_HEADER: &str = "service_id";
 const WWW_AUTHENTICATE: &str = "www-authenticate";
 const SCOPE_TOKEN: &str = "X-Scope-Token";
 
@@ -214,7 +217,7 @@ impl SecurityRuntime {
 
 #[derive(Clone)]
 struct JwkSource {
-    key: OAuthKeyConfig,
+    client: ClientTokenConfig,
     request: ClientRequestConfig,
     tls: ClientTlsConfig,
     direct_registry: DirectRegistryConfig,
@@ -296,11 +299,21 @@ pub async fn verify_jwt_token(
     token: &str,
     expiry_mode: JwtExpiryMode,
 ) -> Result<AuthPrincipal, HandlerRejection> {
+    verify_jwt_token_for_service(runtime, token, expiry_mode, None).await
+}
+
+async fn verify_jwt_token_for_service(
+    runtime: &SecurityRuntime,
+    token: &str,
+    expiry_mode: JwtExpiryMode,
+    service_id: Option<&str>,
+) -> Result<AuthPrincipal, HandlerRejection> {
     let token = token.trim();
     if token.is_empty() {
         return Err(HandlerRejection::unauthorized("missing bearer token"));
     }
-    if matches!(expiry_mode, JwtExpiryMode::Enforce)
+    if service_id.is_none()
+        && matches!(expiry_mode, JwtExpiryMode::Enforce)
         && let Some(principal) = cached_principal(runtime, token)
     {
         return Ok(principal);
@@ -308,13 +321,16 @@ pub async fn verify_jwt_token(
 
     let header =
         decode_header(token).map_err(|_| HandlerRejection::unauthorized("invalid JWT header"))?;
-    let key = decoding_key_for_token(runtime, header.kid.as_deref(), header.alg).await?;
+    let key =
+        decoding_key_for_token(runtime, header.kid.as_deref(), header.alg, service_id).await?;
     let validation = validation_for_mode(&runtime.config, header.alg, expiry_mode);
     let decoded = match decode::<JsonValue>(token, &key, &validation) {
         Ok(decoded) => decoded,
         Err(error) if runtime.jwk_source.is_some() => {
-            refresh_jwks(runtime).await?;
-            let key = decoding_key_for_token(runtime, header.kid.as_deref(), header.alg).await?;
+            refresh_jwks_for_service(runtime, service_id).await?;
+            let key =
+                decoding_key_for_token(runtime, header.kid.as_deref(), header.alg, service_id)
+                    .await?;
             decode::<JsonValue>(token, &key, &validation).map_err(|_| {
                 tracing::debug!("JWT validation failed after JWKS refresh: {error}");
                 HandlerRejection::unauthorized("JWT validation failed")
@@ -326,8 +342,9 @@ pub async fn verify_jwt_token(
         }
     };
     validate_issuer_and_audience(&runtime.config, &decoded.claims)?;
+    validate_client_key_audience(runtime, service_id, &decoded.claims)?;
     let principal = principal_from_claims(decoded.claims);
-    if matches!(expiry_mode, JwtExpiryMode::Enforce) {
+    if service_id.is_none() && matches!(expiry_mode, JwtExpiryMode::Enforce) {
         cache_principal(runtime, token.to_string(), &principal);
     }
     Ok(principal)
@@ -363,13 +380,22 @@ pub async fn verify_jwt_request(
             .flatten()
     });
     let token = token.ok_or_else(|| HandlerRejection::unauthorized("missing bearer token"))?;
+    let jwk_service_id = jwk_service_id_for_request(runtime, session, request_path);
 
-    if let Some(principal) = cached_principal(runtime, token.as_str()) {
+    if jwk_service_id.is_none()
+        && let Some(principal) = cached_principal(runtime, token.as_str())
+    {
         apply_pass_through_claims(session, config, &principal)?;
         return Ok(Some(principal));
     }
 
-    let principal = verify_jwt_token(runtime, token.as_str(), JwtExpiryMode::Enforce).await?;
+    let principal = verify_jwt_token_for_service(
+        runtime,
+        token.as_str(),
+        JwtExpiryMode::Enforce,
+        jwk_service_id.as_deref(),
+    )
+    .await?;
     apply_pass_through_claims(session, config, &principal)?;
     Ok(Some(principal))
 }
@@ -428,6 +454,42 @@ fn claim_audience_matches(claims: &JsonValue, configured: &[&str]) -> bool {
     }
 }
 
+fn jwk_service_id_for_request(
+    runtime: &SecurityRuntime,
+    session: &Session,
+    request_path: &str,
+) -> Option<String> {
+    let source = runtime.jwk_source.as_ref()?;
+    let explicit = request_header(session, SERVICE_ID_HEADER);
+    OAuthProviderResolver::new(&source.client)
+        .service_id_for_request(explicit.as_deref(), request_path)
+}
+
+fn validate_client_key_audience(
+    runtime: &SecurityRuntime,
+    service_id: Option<&str>,
+    claims: &JsonValue,
+) -> Result<(), HandlerRejection> {
+    let Some(source) = runtime.jwk_source.as_ref() else {
+        return Ok(());
+    };
+    let provider = match OAuthProviderResolver::new(&source.client).key_provider(service_id) {
+        Ok(provider) => provider,
+        Err(OAuthProviderError::MissingServiceId { .. })
+        | Err(OAuthProviderError::MissingProvider { .. }) => return Ok(()),
+        Err(error) => return Err(jwk_provider_error(error)),
+    };
+    let Some(audience) = non_empty(provider.audience.as_deref()) else {
+        return Ok(());
+    };
+    if !claim_audience_matches(claims, &[audience]) {
+        return Err(HandlerRejection::unauthorized(
+            "JWT audience validation failed",
+        ));
+    }
+    Ok(())
+}
+
 fn certificate_for_token(runtime: &SecurityRuntime, kid: Option<&str>) -> Option<Vec<u8>> {
     if runtime.config.bootstrap_from_key_service {
         return None;
@@ -447,9 +509,10 @@ async fn decoding_key_for_token(
     runtime: &SecurityRuntime,
     kid: Option<&str>,
     algorithm: Algorithm,
+    service_id: Option<&str>,
 ) -> Result<DecodingKey, HandlerRejection> {
     if runtime.config.bootstrap_from_key_service {
-        if let Some(key) = decoding_key_from_jwk(runtime, kid).await? {
+        if let Some(key) = decoding_key_from_jwk(runtime, kid, service_id).await? {
             return Ok(key);
         }
     }
@@ -457,7 +520,7 @@ async fn decoding_key_for_token(
         return decoding_key_for_alg(pem.as_slice(), algorithm)
             .map_err(|_| HandlerRejection::unauthorized("JWT key cannot verify token algorithm"));
     }
-    if let Some(key) = decoding_key_from_jwk(runtime, kid).await? {
+    if let Some(key) = decoding_key_from_jwk(runtime, kid, service_id).await? {
         return Ok(key);
     }
     Err(HandlerRejection::unauthorized("JWT key is not configured"))
@@ -482,8 +545,9 @@ fn decoding_key_for_alg(
 async fn decoding_key_from_jwk(
     runtime: &SecurityRuntime,
     kid: Option<&str>,
+    service_id: Option<&str>,
 ) -> Result<Option<DecodingKey>, HandlerRejection> {
-    let Some(jwk) = jwk_for_token(runtime, kid).await? else {
+    let Some(jwk) = jwk_for_token(runtime, kid, service_id).await? else {
         return Ok(None);
     };
     DecodingKey::from_jwk(&jwk)
@@ -494,23 +558,56 @@ async fn decoding_key_from_jwk(
 async fn jwk_for_token(
     runtime: &SecurityRuntime,
     kid: Option<&str>,
+    service_id: Option<&str>,
 ) -> Result<Option<Jwk>, HandlerRejection> {
     if runtime.jwk_source.is_none() {
         return Ok(None);
     }
-    if let Some(jwk) = cached_jwk_for_token(runtime, kid).await {
+    if let Some(jwk) = cached_jwk_for_token(runtime, kid, service_id).await {
         return Ok(Some(jwk));
     }
-    refresh_jwks(runtime).await?;
-    Ok(cached_jwk_for_token(runtime, kid).await)
+    refresh_jwks_for_service(runtime, service_id).await?;
+    Ok(cached_jwk_for_token(runtime, kid, service_id).await)
 }
 
-async fn cached_jwk_for_token(runtime: &SecurityRuntime, kid: Option<&str>) -> Option<Jwk> {
+async fn cached_jwk_for_token(
+    runtime: &SecurityRuntime,
+    kid: Option<&str>,
+    service_id: Option<&str>,
+) -> Option<Jwk> {
     let jwks = runtime.jwks.read().await;
     if let Some(kid) = kid {
+        if let Some(service_id) = service_id.and_then(|value| non_empty(Some(value))) {
+            if let Some(jwk) = jwks.get(jwk_cache_key(kid, Some(service_id)).as_str()) {
+                return Some(jwk.clone());
+            }
+        }
         if let Some(jwk) = jwks.get(kid) {
             return Some(jwk.clone());
         }
+        if service_id.is_none() {
+            let suffix = format!(":{kid}");
+            let mut matched = jwks
+                .iter()
+                .filter(|(key, _)| key.ends_with(suffix.as_str()));
+            if let Some((_, jwk)) = matched.next()
+                && matched.next().is_none()
+            {
+                return Some(jwk.clone());
+            }
+        }
+    }
+    if let Some(service_id) = service_id.and_then(|value| non_empty(Some(value))) {
+        let prefix = format!("{service_id}:");
+        let mut matched = jwks
+            .iter()
+            .filter(|(key, _)| key.starts_with(prefix.as_str()));
+        if let Some((_, jwk)) = matched.next()
+            && matched.next().is_none()
+        {
+            return Some(jwk.clone());
+        }
+        return None;
     }
     if jwks.len() == 1 || (kid.is_none() && runtime.config.enable_relaxed_key_validation) {
         return jwks.values().next().cloned();
@@ -518,15 +615,61 @@ async fn cached_jwk_for_token(runtime: &SecurityRuntime, kid: Option<&str>) -> O
     None
 }
 
-async fn refresh_jwks(runtime: &SecurityRuntime) -> Result<(), HandlerRejection> {
+async fn refresh_jwks_for_service(
+    runtime: &SecurityRuntime,
+    service_id: Option<&str>,
+) -> Result<(), HandlerRejection> {
     let Some(source) = runtime.jwk_source.as_ref() else {
         return Ok(());
     };
-    let server_url = resolve_jwk_server_url(source).await?;
-    let url = jwk_endpoint_url(server_url.as_str(), source.key.uri.as_str())?;
+    let providers = key_providers_for_service(source, service_id)?;
+    let mut entries = BTreeMap::new();
+    for provider in providers {
+        entries.extend(fetch_jwks_for_provider(source, &provider).await?);
+    }
+    if entries.is_empty() {
+        return Err(HandlerRejection::new(
+            502,
+            "ERR10056",
+            "JWKS endpoint did not return any keys with kid",
+        ));
+    }
+    let mut cached = runtime.jwks.write().await;
+    if let Some(service_id) = service_id.and_then(|value| non_empty(Some(value))) {
+        let prefix = format!("{service_id}:");
+        cached.retain(|key, _| !key.starts_with(prefix.as_str()));
+        cached.extend(entries);
+    } else {
+        *cached = entries;
+    }
+    Ok(())
+}
+
+fn key_providers_for_service(
+    source: &JwkSource,
+    service_id: Option<&str>,
+) -> Result<Vec<ResolvedKeyProvider>, HandlerRejection> {
+    let resolver = OAuthProviderResolver::new(&source.client);
+    match service_id.and_then(|value| non_empty(Some(value))) {
+        Some(service_id) => resolver
+            .key_provider(Some(service_id))
+            .map(|provider| vec![provider])
+            .map_err(jwk_provider_error),
+        None => resolver.key_providers().map_err(jwk_provider_error),
+    }
+}
+
+async fn fetch_jwks_for_provider(
+    source: &JwkSource,
+    provider: &ResolvedKeyProvider,
+) -> Result<BTreeMap<String, Jwk>, HandlerRejection> {
+    let server_url = resolve_jwk_server_url(source, provider).await?;
+    let url = jwk_endpoint_url(server_url.as_str(), provider.uri.as_str())?;
     let client = ClientFactory::from_parts(source.request.clone(), source.tls.clone())
         .reqwest_client(EndpointOptions {
-            enable_http2: Some(source.key.enable_http2),
+            proxy_host: provider.proxy_host.clone(),
+            proxy_port: provider.proxy_port,
+            enable_http2: Some(provider.enable_http2),
             ..EndpointOptions::default()
         })
         .map_err(|error| {
@@ -536,8 +679,8 @@ async fn refresh_jwks(runtime: &SecurityRuntime) -> Result<(), HandlerRejection>
         .get(url.as_str())
         .header("accept", "application/json");
     if let (Some(client_id), Some(client_secret)) = (
-        non_empty(Some(source.key.client_id.as_str())),
-        non_empty(Some(source.key.client_secret.as_str())),
+        non_empty(Some(provider.client_id.as_str())),
+        non_empty(Some(provider.client_secret.as_str())),
     ) {
         request = request.basic_auth(client_id, Some(client_secret));
     }
@@ -568,18 +711,24 @@ async fn refresh_jwks(runtime: &SecurityRuntime) -> Result<(), HandlerRejection>
             .clone()
             .filter(|kid| !kid.trim().is_empty())
         {
-            entries.insert(kid, jwk);
+            entries.insert(
+                jwk_cache_key(kid.as_str(), provider.cache_service_id.as_deref()),
+                jwk,
+            );
         }
     }
-    if entries.is_empty() {
-        return Err(HandlerRejection::new(
-            502,
-            "ERR10056",
-            "JWKS endpoint did not return any keys with kid",
-        ));
-    }
-    *runtime.jwks.write().await = entries;
-    Ok(())
+    Ok(entries)
+}
+
+fn jwk_cache_key(kid: &str, service_id: Option<&str>) -> String {
+    service_id
+        .and_then(|value| non_empty(Some(value)))
+        .map(|service_id| format!("{service_id}:{kid}"))
+        .unwrap_or_else(|| kid.to_string())
+}
+
+fn jwk_provider_error(error: OAuthProviderError) -> HandlerRejection {
+    HandlerRejection::new(500, "ERR10056", error.to_string())
 }
 
 fn load_jwk_source(runtime_config: &RuntimeConfig) -> Result<Option<Arc<JwkSource>>, RuntimeError> {
@@ -588,16 +737,14 @@ fn load_jwk_source(runtime_config: &RuntimeConfig) -> Result<Option<Arc<JwkSourc
         Err(RuntimeError::MissingConfig(file)) if file == CLIENT_FILE => return Ok(None),
         Err(error) => return Err(error),
     };
-    let key = client.oauth.token.key;
-    if non_empty(key.server_url.as_deref()).is_none()
-        && non_empty(key.service_id.as_deref()).is_none()
-    {
+    let resolver = OAuthProviderResolver::new(&client);
+    if !resolver.has_key_providers() {
         return Ok(None);
     }
     Ok(Some(Arc::new(JwkSource {
-        key,
-        request: client.request,
-        tls: client.tls,
+        request: client.request.clone(),
+        tls: client.tls.clone(),
+        client,
         direct_registry: runtime_config.direct_registry.clone(),
         registry_client: runtime_config.registry_client.clone(),
     })))
@@ -613,11 +760,14 @@ fn parse_jwks(body: &str) -> Result<Vec<Jwk>, HandlerRejection> {
     })
 }
 
-async fn resolve_jwk_server_url(source: &JwkSource) -> Result<String, HandlerRejection> {
-    if let Some(server_url) = non_empty(source.key.server_url.as_deref()) {
+async fn resolve_jwk_server_url(
+    source: &JwkSource,
+    provider: &ResolvedKeyProvider,
+) -> Result<String, HandlerRejection> {
+    if let Some(server_url) = non_empty(provider.server_url.as_deref()) {
         return Ok(server_url.to_string());
     }
-    let service_id = non_empty(source.key.service_id.as_deref()).ok_or_else(|| {
+    let service_id = non_empty(provider.key_service_id.as_deref()).ok_or_else(|| {
         HandlerRejection::new(
             502,
             "ERR10056",
@@ -884,6 +1034,7 @@ fn default_clock_skew_seconds() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use light_client::AuthServerConfig;
 
     #[test]
     fn security_config_accepts_java_style_maps_and_lists() {
@@ -913,5 +1064,82 @@ passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
         assert_eq!(principal.client_id.as_deref(), Some("client"));
         assert_eq!(principal.user_id.as_deref(), Some("user"));
         assert_eq!(principal.email.as_deref(), Some("user@example.com"));
+    }
+
+    #[test]
+    fn key_provider_selection_uses_service_id_auth_servers() {
+        let mut client = ClientTokenConfig::default();
+        client.oauth.multiple_auth_servers = true;
+        client.oauth.token.key.server_url = Some("https://global-oauth".to_string());
+        client.oauth.token.key.service_id_auth_servers.insert(
+            "orders".to_string(),
+            AuthServerConfig {
+                server_url: Some("https://orders-oauth".to_string()),
+                audience: Some("orders-api".to_string()),
+                ..AuthServerConfig::default()
+            },
+        );
+        let source = test_jwk_source(client);
+
+        let providers = key_providers_for_service(&source, Some("orders")).expect("providers");
+
+        assert_eq!(providers.len(), 1);
+        assert_eq!(
+            providers[0].server_url.as_deref(),
+            Some("https://orders-oauth")
+        );
+        assert_eq!(providers[0].audience.as_deref(), Some("orders-api"));
+        assert_eq!(providers[0].cache_service_id.as_deref(), Some("orders"));
+    }
+
+    #[test]
+    fn client_key_audience_uses_service_provider_audience() {
+        let mut client = ClientTokenConfig::default();
+        client.oauth.multiple_auth_servers = true;
+        client.oauth.token.key.service_id_auth_servers.insert(
+            "orders".to_string(),
+            AuthServerConfig {
+                server_url: Some("https://orders-oauth".to_string()),
+                audience: Some("orders-api".to_string()),
+                ..AuthServerConfig::default()
+            },
+        );
+        let runtime = test_runtime_with_client(client);
+
+        validate_client_key_audience(
+            &runtime,
+            Some("orders"),
+            &serde_json::json!({ "aud": "orders-api" }),
+        )
+        .expect("audience matches");
+        let error = validate_client_key_audience(
+            &runtime,
+            Some("orders"),
+            &serde_json::json!({ "aud": "other-api" }),
+        )
+        .expect_err("audience mismatch");
+
+        assert_eq!(error.status, 401);
+        assert_eq!(error.code, "ERR10002");
+    }
+
+    fn test_runtime_with_client(client: ClientTokenConfig) -> SecurityRuntime {
+        SecurityRuntime {
+            config: SecurityConfig::default(),
+            certificates: Arc::new(BTreeMap::new()),
+            jwk_source: Some(Arc::new(test_jwk_source(client))),
+            jwks: Arc::new(RwLock::new(BTreeMap::new())),
+            cache: Arc::new(Mutex::new(BTreeMap::new())),
+        }
+    }
+
+    fn test_jwk_source(client: ClientTokenConfig) -> JwkSource {
+        JwkSource {
+            request: client.request.clone(),
+            tls: client.tls.clone(),
+            client,
+            direct_registry: DirectRegistryConfig::default(),
+            registry_client: None,
+        }
     }
 }

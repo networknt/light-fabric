@@ -1,18 +1,20 @@
 use crate::config_util::{deserialize_string_list, request_header};
 use crate::direct_registry::direct_registry_match;
 use crate::security::HandlerRejection;
-use crate::service::service_id_for_path;
 use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 pub use light_client::{
-    AuthServerConfig, ClientConfig as ClientTokenConfig, ClientOauthConfig, ClientRequestConfig,
-    ClientTlsConfig, OAuthClientCredentialsConfig, OAuthKeyConfig,
+    ClientConfig as ClientTokenConfig, ClientOauthConfig, ClientRequestConfig, ClientTlsConfig,
+    OAuthClientCredentialsConfig,
     OAuthTokenAuthorizationCodeConfig as OAuthAuthorizationCodeConfig, OAuthTokenCacheConfig,
     OAuthTokenConfig, OAuthTokenExchangeConfig,
     OAuthTokenRefreshTokenConfig as OAuthRefreshTokenConfig,
 };
-use light_client::{ClientFactory, EndpointOptions};
+use light_client::{
+    ClientFactory, EndpointOptions, OAuthProviderError, OAuthProviderResolver,
+    ResolvedClientCredentialsProvider,
+};
 use light_runtime::{
     CLIENT_CONFIG_NAME, CLIENT_MODULE_ID, DirectRegistryConfig, DiscoveryNode,
     DiscoverySubscription, ModuleKind, PortalRegistryClient, RuntimeCache, RuntimeConfig,
@@ -234,37 +236,19 @@ impl TokenRuntime {
         request_path: &str,
         service_id: Option<String>,
     ) -> Result<TokenRequestOptions, HandlerRejection> {
-        let token = &self.client.oauth.token;
-        let base = &token.client_credentials;
-        let service_id = service_id
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| service_id_for_path(&self.client.path_prefix_services, request_path));
-
-        if self.client.oauth.multiple_auth_servers {
-            let service_id = service_id.ok_or_else(|| {
-                HandlerRejection::new(
-                    500,
-                    "ERR10074",
-                    "client.yml multipleAuthServers requires service_id or pathPrefixServices",
-                )
-            })?;
-            let auth_server = base
-                .service_id_auth_servers
-                .get(service_id.as_str())
-                .ok_or_else(|| {
-                    HandlerRejection::new(
-                        500,
-                        "ERR10075",
-                        format!(
-                            "client.yml client_credentials.serviceIdAuthServers is missing `{service_id}`"
-                        ),
-                    )
-                })?;
-            return merged_options(token, base, Some(auth_server), Some(service_id));
+        let resolver = OAuthProviderResolver::new(&self.client);
+        let service_id = resolver.service_id_for_request(service_id.as_deref(), request_path);
+        let provider = resolver
+            .client_credentials_provider(service_id.as_deref())
+            .map_err(token_provider_error)?;
+        if provider.client_id.trim().is_empty() || provider.client_secret.trim().is_empty() {
+            return Err(HandlerRejection::new(
+                500,
+                "ERR10074",
+                "client.yml client_credentials client_id and client_secret are required",
+            ));
         }
-
-        let service_id = service_id.or_else(|| token.service_id.clone());
-        merged_options(token, base, None, service_id)
+        Ok(provider.into())
     }
 }
 
@@ -569,6 +553,26 @@ struct TokenRequestOptions {
     cache_service_id: Option<String>,
 }
 
+impl From<ResolvedClientCredentialsProvider> for TokenRequestOptions {
+    fn from(provider: ResolvedClientCredentialsProvider) -> Self {
+        Self {
+            server_url: provider.server_url,
+            token_service_id: provider.token_service_id,
+            uri: provider.uri,
+            client_id: provider.client_id,
+            client_secret: provider.client_secret,
+            scope: provider.scope,
+            proxy_host: provider.proxy_host,
+            proxy_port: provider.proxy_port,
+            enable_http2: provider.enable_http2,
+            token_renew_before_expired: provider.token_renew_before_expired,
+            expired_refresh_retry_delay: provider.expired_refresh_retry_delay,
+            early_refresh_retry_delay: provider.early_refresh_retry_delay,
+            cache_service_id: provider.cache_service_id,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct FetchedToken {
     access_token: String,
@@ -660,79 +664,31 @@ async fn fetch_client_credentials_token(
     })
 }
 
-fn merged_options(
-    token: &OAuthTokenConfig,
-    base: &OAuthClientCredentialsConfig,
-    auth_server: Option<&AuthServerConfig>,
-    cache_service_id: Option<String>,
-) -> Result<TokenRequestOptions, HandlerRejection> {
-    let server_url = auth_server
-        .and_then(|auth| auth.server_url.clone())
-        .or_else(|| token.server_url.clone())
-        .and_then(non_empty);
-    let token_service_id = auth_server
-        .and_then(|auth| auth.service_id.clone())
-        .or_else(|| token.service_id.clone())
-        .and_then(non_empty);
-    let uri = auth_server
-        .and_then(|auth| auth.uri.clone())
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| base.uri.clone());
-    let client_id = auth_server
-        .and_then(|auth| auth.client_id.clone())
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| base.client_id.clone());
-    let client_secret = auth_server
-        .and_then(|auth| auth.client_secret.clone())
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| base.client_secret.clone());
-    if client_id.trim().is_empty() || client_secret.trim().is_empty() {
-        return Err(HandlerRejection::new(
-            500,
-            "ERR10074",
-            "client.yml client_credentials client_id and client_secret are required",
-        ));
-    }
-    let scope = auth_server
-        .filter(|auth| !auth.scope.is_empty())
-        .map(|auth| auth.scope.clone())
-        .unwrap_or_else(|| base.scope.clone());
-
-    Ok(TokenRequestOptions {
-        server_url,
-        token_service_id,
-        uri,
-        client_id,
-        client_secret,
-        scope,
-        proxy_host: auth_server
-            .and_then(|auth| auth.proxy_host.clone())
-            .or_else(|| token.proxy_host.clone())
-            .and_then(non_empty),
-        proxy_port: auth_server
-            .and_then(|auth| auth.proxy_port)
-            .or(token.proxy_port),
-        enable_http2: auth_server
-            .and_then(|auth| auth.enable_http2)
-            .unwrap_or(token.enable_http2),
-        token_renew_before_expired: auth_server
-            .and_then(|auth| auth.token_renew_before_expired)
-            .unwrap_or(token.token_renew_before_expired),
-        expired_refresh_retry_delay: auth_server
-            .and_then(|auth| auth.expired_refresh_retry_delay)
-            .unwrap_or(token.expired_refresh_retry_delay),
-        early_refresh_retry_delay: auth_server
-            .and_then(|auth| auth.early_refresh_retry_delay)
-            .unwrap_or(token.early_refresh_retry_delay),
-        cache_service_id: cache_service_id.and_then(non_empty),
-    })
-}
-
 fn applies_to_path(config: &TokenHandlerConfig, request_path: &str) -> bool {
     config
         .applied_path_prefixes
         .iter()
         .any(|prefix| path_matches_prefix(request_path, prefix))
+}
+
+fn token_provider_error(error: OAuthProviderError) -> HandlerRejection {
+    match error {
+        OAuthProviderError::MissingServiceId { .. } => HandlerRejection::new(
+            500,
+            "ERR10074",
+            "client.yml multipleAuthServers requires service_id or pathPrefixServices",
+        ),
+        OAuthProviderError::MissingServiceProvider { service_id, .. } => HandlerRejection::new(
+            500,
+            "ERR10075",
+            format!("client.yml client_credentials.serviceIdAuthServers is missing `{service_id}`"),
+        ),
+        OAuthProviderError::MissingProvider { section } => HandlerRejection::new(
+            500,
+            "ERR10075",
+            format!("client.yml {section} has no configured providers"),
+        ),
+    }
 }
 
 fn path_matches_prefix(path: &str, prefix: &str) -> bool {
