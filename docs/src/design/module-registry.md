@@ -115,7 +115,7 @@ Example module IDs:
 
 - `light-runtime/startup`
 - `light-runtime/server`
-- `light-runtime/client`
+- `light-client/client`
 - `light-runtime/portal-registry`
 - `light-gateway/gateway`
 - `light-deployer/deployer`
@@ -454,7 +454,7 @@ Phase 4 registers these modules:
 | --- | --- | --- | --- |
 | `light-runtime/startup` | `startup` | core | no |
 | `light-runtime/server` | `server` | core | no |
-| `light-runtime/client` | `client` | core | no |
+| `light-client/client` | `client` | core | no |
 | `light-runtime/portal-registry` | `portal-registry` | core | no |
 | `light-gateway/gateway` | `gateway` | application | yes |
 | `light-deployer/deployer` | `deployer` | application | no |

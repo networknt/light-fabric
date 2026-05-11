@@ -10,9 +10,9 @@ pub use config::{
     RuntimeConfig, ServerConfig, ServiceIdentity,
 };
 pub use module_registry::{
-    ConfigManager, MaskSpec, ModuleEntry, ModuleKind, ModuleRegistry, ModuleSummary, ReloadContext,
-    ReloadFailed, ReloadModulesResult, ReloadOutcome, ReloadSkipped, ReloadStatus,
-    ReloadableModule, RuntimeMcpHandler,
+    CLIENT_CONFIG_NAME, CLIENT_MODULE_ID, ConfigManager, MaskSpec, ModuleEntry, ModuleKind,
+    ModuleRegistry, ModuleSummary, ReloadContext, ReloadFailed, ReloadModulesResult, ReloadOutcome,
+    ReloadSkipped, ReloadStatus, ReloadableModule, RuntimeMcpHandler, client_config_masks,
 };
 pub use portal_registry::{
     DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, PortalRegistryClient,

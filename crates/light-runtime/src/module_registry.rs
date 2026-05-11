@@ -14,6 +14,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 const MASKED_VALUE: &str = "*";
+pub const CLIENT_MODULE_ID: &str = "light-client/client";
+pub const CLIENT_CONFIG_NAME: &str = "client";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -359,11 +361,11 @@ impl ModuleRegistry {
 
         if let Some(client) = &config.client {
             self.register_config(
-                "light-runtime/client",
-                "client",
+                CLIENT_MODULE_ID,
+                CLIENT_CONFIG_NAME,
                 ModuleKind::Core,
                 serde_json::to_value(client)?,
-                [],
+                client_config_masks(),
                 true,
                 Some(true),
                 false,
@@ -974,6 +976,25 @@ fn default_masks() -> Vec<MaskSpec> {
     .collect()
 }
 
+pub fn client_config_masks() -> Vec<MaskSpec> {
+    [
+        "client_secret",
+        "clientSecret",
+        "trustStorePass",
+        "keyStorePass",
+        "keyPass",
+        "defaultCertPassword",
+        "subjectToken",
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "authorization",
+    ]
+    .into_iter()
+    .map(MaskSpec::key)
+    .collect()
+}
+
 fn apply_masks(value: &mut JsonValue, masks: &[MaskSpec]) {
     for mask in masks {
         match mask {
@@ -1048,6 +1069,7 @@ mod tests {
     fn runtime_config() -> RuntimeConfig {
         let mut client_config = ClientConfig::default();
         client_config.tls.verify_hostname = false;
+        client_config.oauth.token.client_credentials.client_secret = "client-secret".to_string();
 
         RuntimeConfig {
             bootstrap: BootstrapConfig {
@@ -1127,8 +1149,10 @@ mod tests {
         assert!(!rendered.contains("startup-secret"));
         assert!(!rendered.contains("portal-secret"));
         assert!(!rendered.contains("discovery-secret"));
+        assert!(!rendered.contains("client-secret"));
         assert!(!rendered.contains("server-key.pem"));
         assert!(rendered.contains("light-runtime/server"));
+        assert!(rendered.contains(CLIENT_MODULE_ID));
         assert!(rendered.contains("portal-registry"));
     }
 

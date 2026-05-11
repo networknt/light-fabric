@@ -5,6 +5,7 @@ edition.workspace = true
 license = "Apache-2.0"
 
 [dependencies]
+light-client = { path = "../../crates/light-client" }
 light-runtime = { path = "../../crates/light-runtime" }
 light-rule = { path = "../../crates/light-rule" }
 async-trait = { workspace = true }

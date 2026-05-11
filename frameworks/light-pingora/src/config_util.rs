@@ -197,15 +197,6 @@ where
     deserializer.deserialize_any(TypedListVisitor(std::marker::PhantomData))
 }
 
-pub(crate) fn deserialize_optional_u16<'de, D>(deserializer: D) -> Result<Option<u16>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_optional_number(deserializer, "u16", |value| {
-        u16::try_from(value).map_err(|_| format!("value {value} is outside u16 range"))
-    })
-}
-
 pub(crate) fn deserialize_optional_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
 where
     D: Deserializer<'de>,

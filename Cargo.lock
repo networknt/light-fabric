@@ -3212,6 +3212,7 @@ dependencies = [
 name = "light-client"
 version = "0.1.0"
 dependencies = [
+ "reqwest",
  "serde",
  "serde_yaml",
  "tracing",
@@ -3278,6 +3279,7 @@ dependencies = [
  "hex",
  "hmac",
  "jsonwebtoken",
+ "light-client",
  "light-rule",
  "light-runtime",
  "pbkdf2",

@@ -1,24 +1,29 @@
-use crate::config_util::{
-    deserialize_optional_u16, deserialize_optional_u64, deserialize_string_list,
-    deserialize_string_map, deserialize_typed_map, request_header,
-};
+use crate::config_util::{deserialize_string_list, request_header};
 use crate::direct_registry::direct_registry_match;
 use crate::security::HandlerRejection;
 use crate::service::service_id_for_path;
 use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
+pub use light_client::{
+    AuthServerConfig, ClientConfig as ClientTokenConfig, ClientOauthConfig, ClientRequestConfig,
+    ClientTlsConfig, OAuthClientCredentialsConfig, OAuthKeyConfig,
+    OAuthTokenAuthorizationCodeConfig as OAuthAuthorizationCodeConfig, OAuthTokenCacheConfig,
+    OAuthTokenConfig, OAuthTokenExchangeConfig,
+    OAuthTokenRefreshTokenConfig as OAuthRefreshTokenConfig,
+};
+use light_client::{ClientFactory, EndpointOptions};
 use light_runtime::{
-    DirectRegistryConfig, DiscoveryNode, DiscoverySubscription, MaskSpec, ModuleKind,
-    PortalRegistryClient, RuntimeCache, RuntimeConfig, RuntimeError,
+    CLIENT_CONFIG_NAME, CLIENT_MODULE_ID, DirectRegistryConfig, DiscoveryNode,
+    DiscoverySubscription, ModuleKind, PortalRegistryClient, RuntimeCache, RuntimeConfig,
+    RuntimeError, client_config_masks,
 };
 use pingora::prelude::Session;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use std::collections::{BTreeMap, HashMap};
-use std::fs;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
 pub const TOKEN_FILE: &str = "token.yml";
@@ -31,8 +36,8 @@ pub const SIDECAR_LEGACY_FILE: &str = "sidecar.yaml";
 pub const SIDECAR_MODULE_ID: &str = "light-pingora/sidecar";
 pub const SIDECAR_CONFIG_NAME: &str = "sidecar";
 pub const CLIENT_FILE: &str = "client.yml";
-pub const CLIENT_TOKEN_MODULE_ID: &str = "light-pingora/client-token";
-pub const CLIENT_TOKEN_CONFIG_NAME: &str = "client-token";
+pub const CLIENT_TOKEN_MODULE_ID: &str = CLIENT_MODULE_ID;
+pub const CLIENT_TOKEN_CONFIG_NAME: &str = CLIENT_CONFIG_NAME;
 pub const SCOPE_TOKEN_HEADER: &str = "X-Scope-Token";
 
 const AUTHORIZATION_HEADER: &str = "authorization";
@@ -92,323 +97,6 @@ impl SidecarTrafficConfig {
             _ => false,
         }
     }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ClientTokenConfig {
-    #[serde(default)]
-    pub tls: ClientTlsConfig,
-    #[serde(default)]
-    pub oauth: ClientOauthConfig,
-    #[serde(default, deserialize_with = "deserialize_string_map")]
-    pub path_prefix_services: BTreeMap<String, String>,
-    #[serde(default)]
-    pub request: ClientRequestConfig,
-}
-
-impl Default for ClientTokenConfig {
-    fn default() -> Self {
-        Self {
-            tls: ClientTlsConfig::default(),
-            oauth: ClientOauthConfig::default(),
-            path_prefix_services: BTreeMap::new(),
-            request: ClientRequestConfig::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ClientTlsConfig {
-    #[serde(default = "default_true")]
-    pub verify_hostname: bool,
-    #[serde(default)]
-    pub ca_cert_path: Option<String>,
-}
-
-impl Default for ClientTlsConfig {
-    fn default() -> Self {
-        Self {
-            verify_hostname: true,
-            ca_cert_path: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ClientRequestConfig {
-    #[serde(default = "default_connect_timeout")]
-    pub connect_timeout: u64,
-    #[serde(default = "default_timeout")]
-    pub timeout: u64,
-    #[serde(default)]
-    pub inject_caller_id: bool,
-    #[serde(default = "default_true")]
-    pub enable_http2: bool,
-}
-
-impl Default for ClientRequestConfig {
-    fn default() -> Self {
-        Self {
-            connect_timeout: default_connect_timeout(),
-            timeout: default_timeout(),
-            inject_caller_id: false,
-            enable_http2: true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ClientOauthConfig {
-    #[serde(default)]
-    pub multiple_auth_servers: bool,
-    #[serde(default)]
-    pub token: OAuthTokenConfig,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct OAuthTokenConfig {
-    #[serde(default)]
-    pub cache: OAuthTokenCacheConfig,
-    #[serde(default = "default_token_renew_before_expired")]
-    pub token_renew_before_expired: u64,
-    #[serde(default = "default_expired_refresh_retry_delay")]
-    pub expired_refresh_retry_delay: u64,
-    #[serde(default = "default_early_refresh_retry_delay")]
-    pub early_refresh_retry_delay: u64,
-    #[serde(default, rename = "server_url", alias = "serverUrl")]
-    pub server_url: Option<String>,
-    #[serde(default)]
-    pub service_id: Option<String>,
-    #[serde(default)]
-    pub proxy_host: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_u16")]
-    pub proxy_port: Option<u16>,
-    #[serde(default = "default_true")]
-    pub enable_http2: bool,
-    #[serde(default, rename = "client_credentials", alias = "clientCredentials")]
-    pub client_credentials: OAuthClientCredentialsConfig,
-    #[serde(default, rename = "authorization_code", alias = "authorizationCode")]
-    pub authorization_code: OAuthAuthorizationCodeConfig,
-    #[serde(default, rename = "refresh_token", alias = "refreshToken")]
-    pub refresh_token: OAuthRefreshTokenConfig,
-    #[serde(default, rename = "token_exchange", alias = "tokenExchange")]
-    pub token_exchange: OAuthTokenExchangeConfig,
-    #[serde(default)]
-    pub key: OAuthKeyConfig,
-}
-
-impl Default for OAuthTokenConfig {
-    fn default() -> Self {
-        Self {
-            cache: OAuthTokenCacheConfig::default(),
-            token_renew_before_expired: default_token_renew_before_expired(),
-            expired_refresh_retry_delay: default_expired_refresh_retry_delay(),
-            early_refresh_retry_delay: default_early_refresh_retry_delay(),
-            server_url: None,
-            service_id: None,
-            proxy_host: None,
-            proxy_port: None,
-            enable_http2: true,
-            client_credentials: OAuthClientCredentialsConfig::default(),
-            authorization_code: OAuthAuthorizationCodeConfig::default(),
-            refresh_token: OAuthRefreshTokenConfig::default(),
-            token_exchange: OAuthTokenExchangeConfig::default(),
-            key: OAuthKeyConfig::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct OAuthTokenCacheConfig {
-    #[serde(default = "default_cache_capacity")]
-    pub capacity: usize,
-}
-
-impl Default for OAuthTokenCacheConfig {
-    fn default() -> Self {
-        Self {
-            capacity: default_cache_capacity(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct OAuthClientCredentialsConfig {
-    #[serde(default = "default_token_uri")]
-    pub uri: String,
-    #[serde(default, rename = "client_id", alias = "clientId")]
-    pub client_id: String,
-    #[serde(default, rename = "client_secret", alias = "clientSecret")]
-    pub client_secret: String,
-    #[serde(default, deserialize_with = "deserialize_string_list")]
-    pub scope: Vec<String>,
-    #[serde(default, deserialize_with = "deserialize_typed_map")]
-    pub service_id_auth_servers: BTreeMap<String, AuthServerConfig>,
-}
-
-impl Default for OAuthClientCredentialsConfig {
-    fn default() -> Self {
-        Self {
-            uri: default_token_uri(),
-            client_id: String::new(),
-            client_secret: String::new(),
-            scope: Vec::new(),
-            service_id_auth_servers: BTreeMap::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct OAuthAuthorizationCodeConfig {
-    #[serde(default = "default_token_uri")]
-    pub uri: String,
-    #[serde(default, rename = "client_id", alias = "clientId")]
-    pub client_id: String,
-    #[serde(default, rename = "client_secret", alias = "clientSecret")]
-    pub client_secret: String,
-    #[serde(default, rename = "redirect_uri", alias = "redirectUri")]
-    pub redirect_uri: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_string_list")]
-    pub scope: Vec<String>,
-}
-
-impl Default for OAuthAuthorizationCodeConfig {
-    fn default() -> Self {
-        Self {
-            uri: default_token_uri(),
-            client_id: String::new(),
-            client_secret: String::new(),
-            redirect_uri: None,
-            scope: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct OAuthRefreshTokenConfig {
-    #[serde(default = "default_token_uri")]
-    pub uri: String,
-    #[serde(default, rename = "client_id", alias = "clientId")]
-    pub client_id: String,
-    #[serde(default, rename = "client_secret", alias = "clientSecret")]
-    pub client_secret: String,
-    #[serde(default, deserialize_with = "deserialize_string_list")]
-    pub scope: Vec<String>,
-}
-
-impl Default for OAuthRefreshTokenConfig {
-    fn default() -> Self {
-        Self {
-            uri: default_token_uri(),
-            client_id: String::new(),
-            client_secret: String::new(),
-            scope: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct OAuthTokenExchangeConfig {
-    #[serde(default = "default_token_uri")]
-    pub uri: String,
-    #[serde(default, rename = "client_id", alias = "clientId")]
-    pub client_id: String,
-    #[serde(default, rename = "client_secret", alias = "clientSecret")]
-    pub client_secret: String,
-    #[serde(default, deserialize_with = "deserialize_string_list")]
-    pub scope: Vec<String>,
-    #[serde(default, alias = "subject_token")]
-    pub subject_token: Option<String>,
-    #[serde(default, alias = "subject_token_type")]
-    pub subject_token_type: Option<String>,
-    #[serde(default, alias = "requested_token_type")]
-    pub requested_token_type: Option<String>,
-    #[serde(default)]
-    pub audience: Option<String>,
-}
-
-impl Default for OAuthTokenExchangeConfig {
-    fn default() -> Self {
-        Self {
-            uri: default_token_uri(),
-            client_id: String::new(),
-            client_secret: String::new(),
-            scope: Vec::new(),
-            subject_token: None,
-            subject_token_type: None,
-            requested_token_type: None,
-            audience: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct OAuthKeyConfig {
-    #[serde(default, rename = "server_url", alias = "serverUrl")]
-    pub server_url: Option<String>,
-    #[serde(default)]
-    pub service_id: Option<String>,
-    #[serde(default = "default_key_uri")]
-    pub uri: String,
-    #[serde(default, rename = "client_id", alias = "clientId")]
-    pub client_id: Option<String>,
-    #[serde(default, rename = "client_secret", alias = "clientSecret")]
-    pub client_secret: Option<String>,
-    #[serde(default = "default_true")]
-    pub enable_http2: bool,
-}
-
-impl Default for OAuthKeyConfig {
-    fn default() -> Self {
-        Self {
-            server_url: None,
-            service_id: None,
-            uri: default_key_uri(),
-            client_id: None,
-            client_secret: None,
-            enable_http2: true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct AuthServerConfig {
-    #[serde(default, rename = "server_url", alias = "serverUrl")]
-    pub server_url: Option<String>,
-    #[serde(default)]
-    pub service_id: Option<String>,
-    #[serde(default)]
-    pub uri: Option<String>,
-    #[serde(default, rename = "client_id", alias = "clientId")]
-    pub client_id: Option<String>,
-    #[serde(default, rename = "client_secret", alias = "clientSecret")]
-    pub client_secret: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_string_list")]
-    pub scope: Vec<String>,
-    #[serde(default)]
-    pub proxy_host: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_u16")]
-    pub proxy_port: Option<u16>,
-    #[serde(default)]
-    pub enable_http2: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_optional_u64")]
-    pub token_renew_before_expired: Option<u64>,
-    #[serde(default, deserialize_with = "deserialize_optional_u64")]
-    pub expired_refresh_retry_delay: Option<u64>,
-    #[serde(default, deserialize_with = "deserialize_optional_u64")]
-    pub early_refresh_retry_delay: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -649,25 +337,7 @@ pub fn load_token_runtime(
         true,
     )?;
 
-    let client = runtime_config
-        .module_registry
-        .load_config::<ClientTokenConfig>(runtime_config, CLIENT_FILE)?;
-    runtime_config.module_registry.register_loaded_config(
-        CLIENT_TOKEN_MODULE_ID,
-        CLIENT_TOKEN_CONFIG_NAME,
-        ModuleKind::Framework,
-        &client,
-        [
-            MaskSpec::key("client_secret"),
-            MaskSpec::key("clientSecret"),
-            MaskSpec::key("trustStorePass"),
-            MaskSpec::key("keyStorePass"),
-            MaskSpec::key("keyPass"),
-        ],
-        true,
-        Some(true),
-        true,
-    )?;
+    let client = load_client_config(runtime_config)?;
 
     let runtime = TokenRuntime::new(
         handler,
@@ -681,6 +351,29 @@ pub fn load_token_runtime(
         cache_registry.register_arc(TOKEN_CACHE_NAME, cache);
     }
     Ok(Some(runtime))
+}
+
+pub(crate) fn load_client_config(
+    runtime_config: &RuntimeConfig,
+) -> Result<ClientTokenConfig, RuntimeError> {
+    if let Some(client) = runtime_config.client.as_ref() {
+        return Ok(client.clone());
+    }
+
+    let client = runtime_config
+        .module_registry
+        .load_config::<ClientTokenConfig>(runtime_config, CLIENT_FILE)?;
+    runtime_config.module_registry.register_loaded_config(
+        CLIENT_TOKEN_MODULE_ID,
+        CLIENT_TOKEN_CONFIG_NAME,
+        ModuleKind::Core,
+        &client,
+        client_config_masks(),
+        true,
+        Some(true),
+        true,
+    )?;
+    Ok(client)
 }
 
 pub async fn apply_token_request(
@@ -1083,61 +776,16 @@ fn token_http_client(
     request: &ClientRequestConfig,
     tls: &ClientTlsConfig,
 ) -> Result<reqwest::Client, HandlerRejection> {
-    let mut builder = reqwest::Client::builder()
-        .connect_timeout(Duration::from_millis(request.connect_timeout))
-        .timeout(Duration::from_millis(request.timeout));
-    builder = configure_client_tls(builder, tls)?;
-    if !options.enable_http2 {
-        builder = builder.http1_only();
-    }
-    if let Some(proxy_host) = options.proxy_host.as_deref() {
-        let proxy_url = format!(
-            "http://{}:{}",
-            proxy_host,
-            options.proxy_port.unwrap_or(443)
-        );
-        let proxy = reqwest::Proxy::all(proxy_url.as_str()).map_err(|error| {
-            HandlerRejection::new(500, "ERR10056", format!("invalid token proxy: {error}"))
-        })?;
-        builder = builder.proxy(proxy);
-    }
-    builder.build().map_err(|error| {
-        HandlerRejection::new(500, "ERR10056", format!("invalid token client: {error}"))
-    })
-}
-
-pub(crate) fn configure_client_tls(
-    mut builder: reqwest::ClientBuilder,
-    tls: &ClientTlsConfig,
-) -> Result<reqwest::ClientBuilder, HandlerRejection> {
-    if let Some(path) = tls
-        .ca_cert_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-    {
-        let pem = fs::read(path).map_err(|error| {
-            HandlerRejection::new(
-                500,
-                "ERR10056",
-                format!("failed to read client CA certificate `{path}`: {error}"),
-            )
-        })?;
-        let certificates = reqwest::Certificate::from_pem_bundle(&pem).map_err(|error| {
-            HandlerRejection::new(
-                500,
-                "ERR10056",
-                format!("invalid client CA certificate `{path}`: {error}"),
-            )
-        })?;
-        for certificate in certificates {
-            builder = builder.add_root_certificate(certificate);
-        }
-    }
-    if !tls.verify_hostname {
-        builder = builder.danger_accept_invalid_hostnames(true);
-    }
-    Ok(builder)
+    ClientFactory::from_parts(request.clone(), tls.clone())
+        .reqwest_client(EndpointOptions {
+            proxy_host: options.proxy_host.clone(),
+            proxy_port: options.proxy_port,
+            enable_http2: Some(options.enable_http2),
+            ..EndpointOptions::default()
+        })
+        .map_err(|error| {
+            HandlerRejection::new(500, "ERR10056", format!("invalid token client: {error}"))
+        })
 }
 
 async fn resolve_token_server_url(
@@ -1377,44 +1025,8 @@ fn client_credentials_token_not_available() -> HandlerRejection {
     )
 }
 
-fn default_true() -> bool {
-    true
-}
-
 fn default_sidecar_indicator() -> String {
     SIDECAR_MODE_HEADER.to_string()
-}
-
-fn default_cache_capacity() -> usize {
-    200
-}
-
-fn default_token_renew_before_expired() -> u64 {
-    60_000
-}
-
-fn default_expired_refresh_retry_delay() -> u64 {
-    2_000
-}
-
-fn default_early_refresh_retry_delay() -> u64 {
-    4_000
-}
-
-fn default_connect_timeout() -> u64 {
-    2_000
-}
-
-fn default_timeout() -> u64 {
-    3_000
-}
-
-fn default_token_uri() -> String {
-    "/oauth2/token".to_string()
-}
-
-fn default_key_uri() -> String {
-    "/oauth2/key".to_string()
 }
 
 #[cfg(test)]
@@ -1460,7 +1072,10 @@ request:
         .expect("parse client token config");
 
         assert!(!config.tls.verify_hostname);
-        assert_eq!(config.tls.ca_cert_path.as_deref(), Some("config/ca.pem"));
+        assert_eq!(
+            config.tls.ca_cert_path.as_deref(),
+            Some(std::path::Path::new("config/ca.pem"))
+        );
         assert!(config.oauth.multiple_auth_servers);
         assert_eq!(config.oauth.token.cache.capacity, 8);
         assert_eq!(
@@ -1708,6 +1323,7 @@ egressIngressIndicator: protocol
                         },
                         ..OAuthTokenConfig::default()
                     },
+                    ..ClientOauthConfig::default()
                 },
                 ..ClientTokenConfig::default()
             },

@@ -35,17 +35,15 @@ use pingora::prelude::{HttpPeer, ProxyHttp, Session};
 use pingora::{Error, ErrorType};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
-use tracing::{info, warn};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 const CONFIG_DIR: &str = "config";
 const EXTERNAL_CONFIG_DIR: &str = "config-cache";
 const HEALTH_PATH: &str = "/health";
-const DEPRECATED_CLIENT_VERIFY_HOSTNAME_VALUE_KEY: &str = "client.verifyHostname";
-static CLIENT_VERIFY_HOSTNAME_DEPRECATION_WARNED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone)]
 struct GatewayApp;
@@ -2820,21 +2818,11 @@ fn handler_active(active_handlers: &ActiveHandlerSet, ids: &[&str]) -> bool {
 }
 
 fn upstream_verify_hostname(config: &RuntimeConfig) -> bool {
-    let value = resolved_bool(config, DEPRECATED_CLIENT_VERIFY_HOSTNAME_VALUE_KEY);
-    if value.is_some() && !CLIENT_VERIFY_HOSTNAME_DEPRECATION_WARNED.swap(true, Ordering::Relaxed) {
-        warn!(
-            "`client.verifyHostname` from resolved values is deprecated for light-gateway upstream TLS hostname verification; this path will be replaced by `runtime_config.client.tls.verify_hostname` through the shared light-client configuration"
-        );
-    }
-    value.unwrap_or(true)
-}
-
-fn resolved_bool(config: &RuntimeConfig, key: &str) -> Option<bool> {
-    match config.resolved_values.get(key)? {
-        serde_yaml::Value::Bool(value) => Some(*value),
-        serde_yaml::Value::String(value) => value.trim().parse::<bool>().ok(),
-        _ => None,
-    }
+    config
+        .client
+        .as_ref()
+        .map(|client| client.tls.verify_hostname)
+        .unwrap_or(true)
 }
 
 fn load_websocket_router_runtime_preserving_state(
@@ -2998,10 +2986,21 @@ mod tests {
         external_config_dir: &TempDir,
         resolved_values: HashMap<String, serde_yaml::Value>,
     ) -> RuntimeConfig {
+        let client = [
+            external_config_dir.path().join(light_pingora::CLIENT_FILE),
+            config_dir.path().join(light_pingora::CLIENT_FILE),
+        ]
+        .into_iter()
+        .find_map(|path| {
+            std::fs::read_to_string(path)
+                .ok()
+                .and_then(|content| serde_yaml::from_str::<ClientConfig>(&content).ok())
+        });
+
         RuntimeConfig {
             bootstrap: BootstrapConfig::default(),
             server: ServerConfig::default(),
-            client: None::<ClientConfig>,
+            client,
             portal_registry: None::<PortalRegistryConfig>,
             direct_registry: DirectRegistryConfig::default(),
             service_identity: ServiceIdentity::default(),

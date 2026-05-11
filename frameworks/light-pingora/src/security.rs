@@ -3,13 +3,13 @@ use crate::config_util::{
 };
 use crate::direct_registry::direct_registry_match;
 use crate::token::{
-    CLIENT_FILE, ClientRequestConfig, ClientTlsConfig, ClientTokenConfig, OAuthKeyConfig,
-    configure_client_tls,
+    CLIENT_FILE, ClientRequestConfig, ClientTlsConfig, OAuthKeyConfig, load_client_config,
 };
 use jsonwebtoken::{
     Algorithm, DecodingKey, Validation, decode, decode_header,
     jwk::{Jwk, JwkSet},
 };
+use light_client::{ClientFactory, EndpointOptions};
 use light_runtime::{
     DirectRegistryConfig, DiscoveryNode, DiscoverySubscription, MaskSpec, ModuleKind,
     PortalRegistryClient, RuntimeConfig, RuntimeError,
@@ -20,7 +20,7 @@ use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
 pub const SECURITY_FILE: &str = "security.yml";
@@ -524,22 +524,20 @@ async fn refresh_jwks(runtime: &SecurityRuntime) -> Result<(), HandlerRejection>
     };
     let server_url = resolve_jwk_server_url(source).await?;
     let url = jwk_endpoint_url(server_url.as_str(), source.key.uri.as_str())?;
-    let mut builder = reqwest::Client::builder()
-        .connect_timeout(Duration::from_millis(source.request.connect_timeout))
-        .timeout(Duration::from_millis(source.request.timeout));
-    builder = configure_client_tls(builder, &source.tls)?;
-    if !source.key.enable_http2 {
-        builder = builder.http1_only();
-    }
-    let client = builder.build().map_err(|error| {
-        HandlerRejection::new(500, "ERR10056", format!("invalid JWK client: {error}"))
-    })?;
+    let client = ClientFactory::from_parts(source.request.clone(), source.tls.clone())
+        .reqwest_client(EndpointOptions {
+            enable_http2: Some(source.key.enable_http2),
+            ..EndpointOptions::default()
+        })
+        .map_err(|error| {
+            HandlerRejection::new(500, "ERR10056", format!("invalid JWK client: {error}"))
+        })?;
     let mut request = client
         .get(url.as_str())
         .header("accept", "application/json");
     if let (Some(client_id), Some(client_secret)) = (
-        non_empty(source.key.client_id.as_deref()),
-        non_empty(source.key.client_secret.as_deref()),
+        non_empty(Some(source.key.client_id.as_str())),
+        non_empty(Some(source.key.client_secret.as_str())),
     ) {
         request = request.basic_auth(client_id, Some(client_secret));
     }
@@ -585,10 +583,7 @@ async fn refresh_jwks(runtime: &SecurityRuntime) -> Result<(), HandlerRejection>
 }
 
 fn load_jwk_source(runtime_config: &RuntimeConfig) -> Result<Option<Arc<JwkSource>>, RuntimeError> {
-    let client = match runtime_config
-        .module_registry
-        .load_config::<ClientTokenConfig>(runtime_config, CLIENT_FILE)
-    {
+    let client = match load_client_config(runtime_config) {
         Ok(config) => config,
         Err(RuntimeError::MissingConfig(file)) if file == CLIENT_FILE => return Ok(None),
         Err(error) => return Err(error),

@@ -103,18 +103,18 @@ formats. If those Java-only fields appear in a Rust `client.yml`, they can be
 ignored because config-server should control which fields it injects for Rust
 services.
 
-## Current Rust Gaps
+## Initial Rust Gaps
 
-Today, the Rust implementation has three separate interpretations of client
-configuration:
+At the start of this migration, the Rust implementation had three separate
+interpretations of client configuration:
 
 | Area | Current behavior | Problem |
 | --- | --- | --- |
-| `light-runtime` config-server and portal-registry clients | Reads `ClientConfig { verify_hostname }` from top-level `client.yml` | Does not understand the Java nested `tls.verifyHostname` shape |
-| `light-pingora` token, security JWKS, stateless auth, and MSAL exchange | Reads `ClientTokenConfig` with `tls`, `oauth`, `pathPrefixServices`, and `request` | Closer to Java, but it is framework-local and does not drive runtime clients |
-| `light-gateway` upstream proxy | Reads the resolved flat value `client.verifyHostname` directly from `values.yml` | Bypasses typed `client.yml` and can disagree with other modules |
+| `light-runtime` config-server and portal-registry clients | Read `ClientConfig { verify_hostname }` from top-level `client.yml` | Did not understand the Java nested `tls.verifyHostname` shape |
+| `light-pingora` token, security JWKS, stateless auth, and MSAL exchange | Read `ClientTokenConfig` with `tls`, `oauth`, `pathPrefixServices`, and `request` | Was closer to Java, but framework-local and did not drive runtime clients |
+| `light-gateway` upstream proxy | Read the resolved flat value `client.verifyHostname` directly from `values.yml` | Bypassed typed `client.yml` and could disagree with other modules |
 
-Current Rust support is also partial compared with Java:
+Initial Rust support was also partial compared with Java:
 
 | Java capability | Rust status |
 | --- | --- |

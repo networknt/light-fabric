@@ -1007,7 +1007,7 @@ Module IDs:
 - `light-pingora/router`
 - `light-pingora/path-prefix-service`
 - `light-pingora/token`
-- `light-pingora/client-token`
+- `light-client/client`
 - `light-pingora/path-resource`
 - `light-pingora/virtual-host`
 - `light-pingora/correlation`

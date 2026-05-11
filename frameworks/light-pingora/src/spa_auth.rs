@@ -3,25 +3,24 @@ use crate::direct_registry::direct_registry_match;
 use crate::security::{
     AuthPrincipal, HandlerRejection, JwtExpiryMode, SecurityRuntime, verify_jwt_token,
 };
-use crate::token::{
-    CLIENT_FILE, CLIENT_TOKEN_CONFIG_NAME, CLIENT_TOKEN_MODULE_ID, configure_client_tls,
-};
+use crate::token::load_client_config;
 use crate::{
     ClientRequestConfig, ClientTlsConfig, ClientTokenConfig, OAuthAuthorizationCodeConfig,
     OAuthRefreshTokenConfig, OAuthTokenConfig, OAuthTokenExchangeConfig,
 };
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use light_client::{ClientFactory, EndpointOptions};
 use light_runtime::{
-    DirectRegistryConfig, DiscoveryNode, DiscoverySubscription, MaskSpec, ModuleKind,
-    PortalRegistryClient, RuntimeConfig, RuntimeError,
+    DirectRegistryConfig, DiscoveryNode, DiscoverySubscription, PortalRegistryClient,
+    RuntimeConfig, RuntimeError,
 };
 use pingora::prelude::Session;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -510,25 +509,7 @@ impl RefreshSingleFlight {
 pub fn load_spa_token_client(
     runtime_config: &RuntimeConfig,
 ) -> Result<SpaTokenClient, RuntimeError> {
-    let client = runtime_config
-        .module_registry
-        .load_config::<ClientTokenConfig>(runtime_config, CLIENT_FILE)?;
-    runtime_config.module_registry.register_loaded_config(
-        CLIENT_TOKEN_MODULE_ID,
-        CLIENT_TOKEN_CONFIG_NAME,
-        ModuleKind::Framework,
-        &client,
-        [
-            MaskSpec::key("client_secret"),
-            MaskSpec::key("clientSecret"),
-            MaskSpec::key("trustStorePass"),
-            MaskSpec::key("keyStorePass"),
-            MaskSpec::key("keyPass"),
-        ],
-        true,
-        Some(true),
-        true,
-    )?;
+    let client = load_client_config(runtime_config)?;
     Ok(SpaTokenClient::new_with_direct_registry(
         client,
         runtime_config.direct_registry.clone(),
@@ -879,27 +860,16 @@ fn token_http_client(
     request: &ClientRequestConfig,
     tls: &ClientTlsConfig,
 ) -> Result<reqwest::Client, HandlerRejection> {
-    let mut builder = reqwest::Client::builder()
-        .connect_timeout(Duration::from_millis(request.connect_timeout))
-        .timeout(Duration::from_millis(request.timeout));
-    builder = configure_client_tls(builder, tls)?;
-    if !token.enable_http2 {
-        builder = builder.http1_only();
-    }
-    if let Some(proxy_host) = token
-        .proxy_host
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    {
-        let proxy_url = format!("http://{}:{}", proxy_host, token.proxy_port.unwrap_or(443));
-        let proxy = reqwest::Proxy::all(proxy_url.as_str()).map_err(|error| {
-            HandlerRejection::new(500, "ERR10056", format!("invalid token proxy: {error}"))
-        })?;
-        builder = builder.proxy(proxy);
-    }
-    builder.build().map_err(|error| {
-        HandlerRejection::new(500, "ERR10056", format!("invalid token client: {error}"))
-    })
+    ClientFactory::from_parts(request.clone(), tls.clone())
+        .reqwest_client(EndpointOptions {
+            proxy_host: token.proxy_host.clone(),
+            proxy_port: token.proxy_port,
+            enable_http2: Some(token.enable_http2),
+            ..EndpointOptions::default()
+        })
+        .map_err(|error| {
+            HandlerRejection::new(500, "ERR10056", format!("invalid token client: {error}"))
+        })
 }
 
 async fn resolve_token_server_url(

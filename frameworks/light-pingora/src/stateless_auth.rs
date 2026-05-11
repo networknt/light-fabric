@@ -3,13 +3,12 @@ use crate::spa_auth::{
     SpaAuthResponse, SpaCookieConfig, SpaSessionOutcome, SpaSessionRuntime, generate_csrf,
     load_spa_token_client, query_param, social_scopes,
 };
-use crate::token::configure_client_tls;
+use light_client::{ClientFactory, EndpointOptions};
 use light_runtime::{MaskSpec, ModuleKind, RuntimeConfig, RuntimeError};
 use pingora::prelude::Session;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use serde_json::json;
-use std::time::Duration;
 
 pub const STATELESS_AUTH_FILE: &str = "statelessAuth.yml";
 pub const STATELESS_AUTH_LEGACY_FILE: &str = "statelessAuth.yaml";
@@ -353,12 +352,11 @@ impl StatelessAuthRuntime {
         for (name, value) in extra_form {
             form.push((*name, (*value).to_string()));
         }
-        let mut builder = reqwest::Client::builder()
-            .connect_timeout(Duration::from_millis(config.request.connect_timeout))
-            .timeout(Duration::from_millis(config.request.timeout));
-        builder = configure_client_tls(builder, &config.tls)?;
-        let response = builder
-            .build()
+        let response = ClientFactory::from_config(config)
+            .reqwest_client(EndpointOptions {
+                enable_http2: Some(self.config.enable_http2),
+                ..EndpointOptions::default()
+            })
             .map_err(|error| {
                 crate::HandlerRejection::new(
                     500,
