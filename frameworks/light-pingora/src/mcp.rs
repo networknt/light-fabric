@@ -51,7 +51,7 @@ impl Default for McpRouterConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpToolConfig {
     pub name: String,
@@ -73,18 +73,77 @@ pub struct McpToolConfig {
     pub endpoint: Option<String>,
     #[serde(default, alias = "apiType")]
     pub api_type: McpToolType,
-    #[serde(
-        default = "default_input_schema",
-        alias = "inputSchema",
-        deserialize_with = "deserialize_json_value"
-    )]
+    #[serde(default = "default_input_schema", alias = "inputSchema")]
     pub input_schema: JsonValue,
+    #[serde(skip)]
+    pub input_schema_configured: bool,
     #[serde(
         default = "default_object",
         alias = "toolMetadata",
         deserialize_with = "deserialize_json_value"
     )]
     pub tool_metadata: JsonValue,
+}
+
+impl<'de> Deserialize<'de> for McpToolConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RawMcpToolConfig {
+            name: String,
+            #[serde(default)]
+            description: String,
+            #[serde(default)]
+            protocol: Option<String>,
+            #[serde(default, alias = "serviceId")]
+            service_id: Option<String>,
+            #[serde(default, alias = "envTag")]
+            env_tag: Option<String>,
+            #[serde(default, alias = "targetHost")]
+            target_host: Option<String>,
+            #[serde(default)]
+            path: String,
+            #[serde(default)]
+            method: McpHttpMethod,
+            #[serde(default)]
+            endpoint: Option<String>,
+            #[serde(default, alias = "apiType")]
+            api_type: McpToolType,
+            #[serde(
+                default,
+                alias = "inputSchema",
+                deserialize_with = "deserialize_optional_json_value"
+            )]
+            input_schema: Option<JsonValue>,
+            #[serde(
+                default = "default_object",
+                alias = "toolMetadata",
+                deserialize_with = "deserialize_json_value"
+            )]
+            tool_metadata: JsonValue,
+        }
+
+        let raw = RawMcpToolConfig::deserialize(deserializer)?;
+        let input_schema_configured = raw.input_schema.is_some();
+        Ok(Self {
+            name: raw.name,
+            description: raw.description,
+            protocol: raw.protocol,
+            service_id: raw.service_id,
+            env_tag: raw.env_tag,
+            target_host: raw.target_host,
+            path: raw.path,
+            method: raw.method,
+            endpoint: raw.endpoint,
+            api_type: raw.api_type,
+            input_schema: raw.input_schema.unwrap_or_else(default_input_schema),
+            input_schema_configured,
+            tool_metadata: raw.tool_metadata,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -97,6 +156,7 @@ pub enum McpHttpMethod {
     Delete,
     Head,
     Options,
+    Call,
 }
 
 impl McpHttpMethod {
@@ -109,6 +169,7 @@ impl McpHttpMethod {
             Self::Delete => "DELETE",
             Self::Head => "HEAD",
             Self::Options => "OPTIONS",
+            Self::Call => "CALL",
         }
     }
 
@@ -121,6 +182,7 @@ impl McpHttpMethod {
             Self::Delete => reqwest::Method::DELETE,
             Self::Head => reqwest::Method::HEAD,
             Self::Options => reqwest::Method::OPTIONS,
+            Self::Call => reqwest::Method::POST,
         }
     }
 
@@ -152,6 +214,7 @@ impl<'de> Deserialize<'de> for McpHttpMethod {
             "DELETE" => Ok(Self::Delete),
             "HEAD" => Ok(Self::Head),
             "OPTIONS" => Ok(Self::Options),
+            "CALL" => Ok(Self::Call),
             method => Err(D::Error::custom(format!(
                 "unsupported MCP tool HTTP method `{method}`"
             ))),
@@ -191,7 +254,7 @@ impl<'de> Deserialize<'de> for McpToolType {
     {
         let value = String::deserialize(deserializer)?;
         match value.trim().to_ascii_lowercase().as_str() {
-            "" | "http" | "rest" => Ok(Self::Http),
+            "" | "http" | "rest" | "openapi" => Ok(Self::Http),
             "mcp" => Ok(Self::Mcp),
             api_type => Err(D::Error::custom(format!(
                 "unsupported MCP tool apiType `{api_type}`"
@@ -619,16 +682,28 @@ impl McpRouterRuntime {
         arguments: &JsonValue,
         agent_headers: &[(String, String)],
     ) -> Result<JsonValue, McpExecutionError> {
+        let method = effective_http_method(tool);
+        self.execute_http_tool_with_method(tool, arguments, agent_headers, method)
+            .await
+    }
+
+    async fn execute_http_tool_with_method(
+        &self,
+        tool: &McpToolConfig,
+        arguments: &JsonValue,
+        agent_headers: &[(String, String)],
+        method: McpHttpMethod,
+    ) -> Result<JsonValue, McpExecutionError> {
         let mut url = self.tool_target_url(tool).await?;
-        if matches!(tool.method, McpHttpMethod::Get | McpHttpMethod::Head) {
+        if matches!(method, McpHttpMethod::Get | McpHttpMethod::Head) {
             append_query_arguments(&mut url, arguments);
         }
 
         let mut request = self
             .client
-            .request(tool.method.as_reqwest(), url)
+            .request(method.as_reqwest(), url)
             .headers(outbound_headers(agent_headers)?);
-        if tool.method.sends_json_body() {
+        if method.sends_json_body() {
             request = request.json(arguments);
         }
         let response = request
@@ -682,6 +757,15 @@ impl McpRouterRuntime {
         arguments: &JsonValue,
         agent_headers: &[(String, String)],
     ) -> Result<JsonValue, McpExecutionError> {
+        let method = effective_http_method(tool);
+        if matches!(tool.method, McpHttpMethod::Call)
+            && matches!(method, McpHttpMethod::Get | McpHttpMethod::Head)
+        {
+            return self
+                .execute_http_tool_with_method(tool, arguments, agent_headers, method)
+                .await;
+        }
+
         let url = self.tool_target_url(tool).await?;
         let request = json!({
             "jsonrpc": "2.0",
@@ -907,6 +991,14 @@ fn tool_endpoint(tool: &McpToolConfig) -> String {
         })
 }
 
+fn effective_http_method(tool: &McpToolConfig) -> McpHttpMethod {
+    match tool.method {
+        McpHttpMethod::Call if tool.input_schema_configured => McpHttpMethod::Post,
+        McpHttpMethod::Call => McpHttpMethod::Get,
+        method => method,
+    }
+}
+
 fn log_mcp_tool_call(
     tool: &McpToolConfig,
     endpoint: &str,
@@ -1079,6 +1171,9 @@ fn append_query_arguments(url: &mut Url, arguments: &JsonValue) {
     let Some(arguments) = arguments.as_object() else {
         return;
     };
+    if arguments.is_empty() {
+        return;
+    }
     let mut query = url.query_pairs_mut();
     for (key, value) in arguments {
         if value.is_null() {
@@ -1301,6 +1396,14 @@ where
     yaml_value_to_json(value).map_err(D::Error::custom)
 }
 
+fn deserialize_optional_json_value<'de, D>(deserializer: D) -> Result<Option<JsonValue>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = YamlValue::deserialize(deserializer)?;
+    yaml_value_to_json(value).map(Some).map_err(D::Error::custom)
+}
+
 fn yaml_value_to_json(value: YamlValue) -> Result<JsonValue, String> {
     match value {
         YamlValue::String(value) => {
@@ -1369,6 +1472,7 @@ tools: '[{"name":"weather","description":"Weather","targetHost":"http://127.0.0.
         assert_eq!(config.tools.len(), 1);
         assert_eq!(config.tools[0].name, "weather");
         assert_eq!(config.tools[0].input_schema["type"], "object");
+        assert!(config.tools[0].input_schema_configured);
 
         let config = serde_yaml::from_str::<McpRouterConfig>(
             r#"
@@ -1385,6 +1489,28 @@ tools:
 
         assert_eq!(config.tools[0].method, McpHttpMethod::Post);
         assert_eq!(config.tools[0].api_type, McpToolType::Http);
+
+        let config = serde_yaml::from_str::<McpRouterConfig>(
+            r#"
+tools:
+  - name: echo
+    targetHost: http://127.0.0.1:8080
+    path: /mcp
+    method: call
+    apiType: mcp
+  - name: pet
+    targetHost: http://127.0.0.1:8081
+    path: /pet
+    method: get
+    apiType: openapi
+"#,
+        )
+        .expect("parse config");
+
+        assert_eq!(config.tools[0].method, McpHttpMethod::Call);
+        assert_eq!(config.tools[0].api_type, McpToolType::Mcp);
+        assert!(!config.tools[0].input_schema_configured);
+        assert_eq!(config.tools[1].api_type, McpToolType::Http);
     }
 
     #[test]
@@ -1585,6 +1711,7 @@ tools:
                     endpoint: None,
                     api_type: McpToolType::Http,
                     input_schema: default_input_schema(),
+                    input_schema_configured: true,
                     tool_metadata: default_object(),
                 }],
                 ..McpRouterConfig::default()
@@ -1643,6 +1770,7 @@ tools:
                 endpoint: None,
                 api_type: McpToolType::Mcp,
                 input_schema: default_input_schema(),
+                input_schema_configured: true,
                 tool_metadata: default_object(),
             }],
             ..McpRouterConfig::default()
@@ -1674,6 +1802,110 @@ tools:
         assert_eq!(backend_call["method"], "tools/call");
         assert_eq!(backend_call["params"]["name"], "weather");
         assert_eq!(backend_call["params"]["arguments"]["city"], "Ottawa");
+    }
+
+    #[tokio::test]
+    async fn mcp_proxy_call_with_input_schema_posts_backend_tools_call() {
+        let backend_result = json!({
+            "jsonrpc": "2.0",
+            "id": "backend",
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "cloudy"
+                    }
+                ]
+            }
+        });
+        let (base, received) = spawn_http_server(http_json_response(backend_result)).await;
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![McpToolConfig {
+                name: "weather".to_string(),
+                description: "Get weather".to_string(),
+                protocol: None,
+                service_id: None,
+                env_tag: None,
+                target_host: Some(base),
+                path: "/mcp".to_string(),
+                method: McpHttpMethod::Call,
+                endpoint: None,
+                api_type: McpToolType::Mcp,
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "city": {
+                            "type": "string"
+                        }
+                    }
+                }),
+                input_schema_configured: true,
+                tool_metadata: default_object(),
+            }],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json()],
+                body: br#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"weather","arguments":{"city":"Ottawa"}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        let request = received.await.expect("server request");
+        assert!(request.starts_with("POST /mcp HTTP/1.1"));
+        let body = request.split("\r\n\r\n").nth(1).expect("request body");
+        let backend_call = serde_json::from_str::<JsonValue>(body).expect("backend json");
+        assert_eq!(backend_call["method"], "tools/call");
+        assert_eq!(backend_call["params"]["name"], "weather");
+        assert_eq!(backend_call["params"]["arguments"]["city"], "Ottawa");
+    }
+
+    #[tokio::test]
+    async fn mcp_proxy_call_without_input_schema_uses_http_get() {
+        let (base, received) = spawn_http_server(http_json_response(json!({"ok": true}))).await;
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![McpToolConfig {
+                name: "serverInfo".to_string(),
+                description: "Get server info".to_string(),
+                protocol: None,
+                service_id: None,
+                env_tag: None,
+                target_host: Some(base),
+                path: "/mcp".to_string(),
+                method: McpHttpMethod::Call,
+                endpoint: None,
+                api_type: McpToolType::Mcp,
+                input_schema: default_input_schema(),
+                input_schema_configured: false,
+                tool_metadata: default_object(),
+            }],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json()],
+                body: br#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"serverInfo","arguments":{}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["result"]["ok"], true);
+        let request = received.await.expect("server request");
+        assert!(request.starts_with("GET /mcp HTTP/1.1"));
     }
 
     #[tokio::test]
@@ -1860,6 +2092,7 @@ endpointRules:
             endpoint: endpoint.map(str::to_string),
             api_type: McpToolType::Http,
             input_schema,
+            input_schema_configured: true,
             tool_metadata: default_object(),
         }
     }
