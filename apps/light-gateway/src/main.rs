@@ -2961,7 +2961,8 @@ mod tests {
     use futures_util::{SinkExt, StreamExt};
     use light_runtime::config::ClientConfig;
     use light_runtime::{
-        BootstrapConfig, ModuleRegistry, PortalRegistryConfig, ServerConfig, ServiceIdentity,
+        BootstrapConfig, DirectRegistryConfig, ModuleRegistry, PortalRegistryConfig, ServerConfig,
+        ServiceIdentity,
     };
     use portal_registry::{
         PortalRegistryClient, RegistrationState, RegistryHandler, ServiceRegistrationParams,
@@ -2991,6 +2992,7 @@ mod tests {
             server: ServerConfig::default(),
             client: None::<ClientConfig>,
             portal_registry: None::<PortalRegistryConfig>,
+            direct_registry: DirectRegistryConfig::default(),
             service_identity: ServiceIdentity::default(),
             config_dir: config_dir.path().to_path_buf(),
             external_config_dir: external_config_dir.path().to_path_buf(),

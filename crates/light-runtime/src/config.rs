@@ -2,7 +2,7 @@ use crate::cache::CacheRegistry;
 use crate::module_registry::ModuleRegistry;
 use portal_registry::PortalRegistryClient;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -143,6 +143,13 @@ impl std::fmt::Debug for PortalRegistryConfig {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectRegistryConfig {
+    #[serde(default)]
+    pub direct_urls: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientConfig {
@@ -169,6 +176,7 @@ pub struct RuntimeConfig {
     pub server: ServerConfig,
     pub client: Option<ClientConfig>,
     pub portal_registry: Option<PortalRegistryConfig>,
+    pub direct_registry: DirectRegistryConfig,
     pub service_identity: ServiceIdentity,
     pub config_dir: PathBuf,
     pub external_config_dir: PathBuf,

@@ -386,6 +386,17 @@ impl ModuleRegistry {
             );
         }
 
+        self.register_config(
+            "light-runtime/direct-registry",
+            "direct-registry",
+            ModuleKind::Core,
+            serde_json::to_value(&config.direct_registry)?,
+            [],
+            true,
+            Some(!config.direct_registry.direct_urls.is_empty()),
+            false,
+        );
+
         Ok(())
     }
 
@@ -1021,7 +1032,8 @@ mod tests {
     use super::*;
     use crate::cache::{CacheRegistry, MokaRuntimeCache};
     use crate::config::{
-        BootstrapConfig, ClientConfig, PortalRegistryConfig, ServerConfig, ServiceIdentity,
+        BootstrapConfig, ClientConfig, DirectRegistryConfig, PortalRegistryConfig, ServerConfig,
+        ServiceIdentity,
     };
     use serde::Deserialize;
     use serde_json::json;
@@ -1054,6 +1066,7 @@ mod tests {
                 portal_token: "portal-secret".to_string(),
                 controller_discovery_token: "discovery-secret".to_string(),
             }),
+            direct_registry: DirectRegistryConfig::default(),
             service_identity: ServiceIdentity {
                 service_id: "com.networknt.test-1.0.0".to_string(),
                 version: "1.0.0".to_string(),

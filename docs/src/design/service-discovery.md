@@ -196,19 +196,21 @@ Resolution order:
 
 1. `service_url` request routing, when configured and present.
 2. `service_id` from query/header/path-prefix logic.
-3. Controller discovery with `serviceId` and optional `envTag`.
-4. Static `router.serviceTargets` fallback.
+3. `direct-registry.directUrls` using `serviceId|envTag`, then `serviceId`.
+4. Controller discovery with `serviceId` and optional `envTag`.
+5. Legacy static `router.serviceTargets` fallback.
 
-If discovery returns usable nodes, discovery wins over static targets. If
-discovery fails and a static target exists, the static target can still be used.
-If no static target exists, the request fails with a 502.
+Direct registry is the standard static service map. `router.serviceTargets`
+remains a deprecated compatibility fallback for old Rust gateway configs. New
+product configs should not maintain both maps.
 
 ### WebSocket Router
 
 The `websocket` handler resolves the target service from header, query, or
-`pathPrefixService`. It passes `serviceId`, optional `envTag`, and protocol to
-discovery. Connected `http` and `https` nodes are converted to upstream WebSocket
-targets and Pingora handles the upgrade proxying.
+`pathPrefixService`. It checks `direct-registry.directUrls` first, then passes
+`serviceId`, optional `envTag`, and protocol to discovery. Connected `http` and
+`https` nodes are converted to upstream WebSocket targets and Pingora handles
+the upgrade proxying.
 
 ### MCP Router
 
@@ -218,10 +220,12 @@ The `mcp` handler can route tools by direct `targetHost` or discovered
 Resolution order:
 
 1. Tool `targetHost`.
-2. Tool `serviceId` through controller discovery.
+2. `direct-registry.directUrls` using `serviceId|envTag`, then `serviceId`.
+3. Tool `serviceId` through controller discovery.
 
-When a tool uses `serviceId`, portal registry must be enabled. The tool can
-also specify `envTag` and `protocol` to constrain lookup.
+When a tool uses `serviceId`, portal registry is only required if no direct URL
+mapping exists. The tool can also specify `envTag` and `protocol` to constrain
+direct URL and discovery lookup.
 
 ### Token Handler
 
@@ -231,7 +235,8 @@ The `token` handler can resolve the OAuth token server by direct
 Resolution order:
 
 1. Direct token server URL.
-2. Token server `serviceId` through controller discovery.
+2. `direct-registry.directUrls` using token server `serviceId`.
+3. Token server `serviceId` through controller discovery.
 
 The selected node prefers `https` and then falls back to `http`. If discovery is
 required and portal registry is not enabled, token injection fails explicitly.
@@ -242,7 +247,8 @@ The stateless SPA auth and MSAL exchange token clients use the same token-server
 resolution model as the token handler:
 
 1. Direct token server URL.
-2. Token server `serviceId` through controller discovery.
+2. `direct-registry.directUrls` using token server `serviceId`.
+3. Token server `serviceId` through controller discovery.
 
 This keeps BFF deployments independent from fixed OAuth hostnames when the token
 service is registered with the controller.
@@ -250,16 +256,16 @@ service is registered with the controller.
 ## Direct URLs And Fallbacks
 
 Discovery should not override an explicit direct URL selected by a handler.
-Direct URLs are operator intent and should remain authoritative.
+Direct URLs are operator intent and should remain authoritative. The standard
+shared direct URL map is `direct-registry.directUrls`.
 
 Static fallback is handler-specific:
 
-- `router.serviceTargets` can fall back when discovery is unavailable or empty.
-- MCP tools with only `serviceId` have no static fallback unless `targetHost` is
-  configured.
-- Token and SPA auth discovery have no static fallback unless `server_url` is
-  configured.
-- WebSocket routing depends on discovery when no direct target is configured.
+- `direct-registry.directUrls` is checked before controller discovery.
+- `router.serviceTargets` is deprecated and only remains as a legacy router
+  fallback.
+- MCP, token, SPA auth, JWK, and WebSocket service-id routing can use
+  `direct-registry.directUrls` without per-handler duplicate maps.
 
 This keeps failure behavior predictable. Product configs that require dynamic
 discovery should fail requests loudly when the controller connection is down
@@ -328,8 +334,17 @@ A product that needs controller-backed discovery should include:
 
 - `server.yml` with `enableRegistry: true`
 - `portal-registry.yml` with `portalUrl` and a valid portal token source
+- `direct-registry.yml` or `values.yml` entries under
+  `direct-registry.directUrls` for transition services that are not registered
+  in the controller yet
 - handler-specific config that uses `serviceId` instead of direct host URLs
 - `handler.yml` chains that include the relevant handler IDs
+
+For local Docker Compose, the Rust gateway must not keep the default
+`https://localhost:8438` controller URL because `localhost` is the gateway
+container. Use `portalRegistry.portalUrl: https://controller:8438`, pass
+`LIGHT_PORTAL_AUTHORIZATION`, and keep static transition mappings in
+`direct-registry.directUrls`.
 
 The same binary can therefore run as:
 

@@ -2,14 +2,15 @@ use crate::config_util::{
     deserialize_optional_u16, deserialize_optional_u64, deserialize_string_list,
     deserialize_string_map, deserialize_typed_map, request_header,
 };
+use crate::direct_registry::direct_registry_match;
 use crate::security::HandlerRejection;
 use crate::service::service_id_for_path;
 use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use light_runtime::{
-    DiscoveryNode, DiscoverySubscription, MaskSpec, ModuleKind, PortalRegistryClient, RuntimeCache,
-    RuntimeConfig, RuntimeError,
+    DirectRegistryConfig, DiscoveryNode, DiscoverySubscription, MaskSpec, ModuleKind,
+    PortalRegistryClient, RuntimeCache, RuntimeConfig, RuntimeError,
 };
 use pingora::prelude::Session;
 use serde::{Deserialize, Serialize};
@@ -416,6 +417,7 @@ pub struct TokenRuntime {
     sidecar: SidecarTrafficConfig,
     client: ClientTokenConfig,
     cache: Arc<TokenCache>,
+    direct_registry: DirectRegistryConfig,
     registry_client: Option<Arc<PortalRegistryClient>>,
 }
 
@@ -424,6 +426,7 @@ impl TokenRuntime {
         handler: TokenHandlerConfig,
         sidecar: SidecarTrafficConfig,
         client: ClientTokenConfig,
+        direct_registry: DirectRegistryConfig,
         registry_client: Option<Arc<PortalRegistryClient>>,
     ) -> Self {
         let capacity = client.oauth.token.cache.capacity;
@@ -432,6 +435,7 @@ impl TokenRuntime {
             sidecar,
             client,
             cache: Arc::new(TokenCache::new(capacity)),
+            direct_registry,
             registry_client,
         }
     }
@@ -482,6 +486,7 @@ impl TokenRuntime {
             &options,
             &self.client.request,
             &self.client.tls,
+            &self.direct_registry,
             self.registry_client.as_deref(),
         )
         .await;
@@ -515,12 +520,14 @@ impl TokenRuntime {
         cached.early_retry_timeout = now.saturating_add(options.early_refresh_retry_delay);
         let request = self.client.request.clone();
         let tls = self.client.tls.clone();
+        let direct_registry = self.direct_registry.clone();
         let registry_client = self.registry_client.clone();
         tokio::spawn(async move {
             let fetched = fetch_client_credentials_token(
                 &options,
                 &request,
                 &tls,
+                &direct_registry,
                 registry_client.as_deref(),
             )
             .await;
@@ -666,6 +673,7 @@ pub fn load_token_runtime(
         handler,
         sidecar,
         client,
+        runtime_config.direct_registry.clone(),
         runtime_config.registry_client.clone(),
     );
     if let Some(cache_registry) = runtime_config.cache_registry.as_ref() {
@@ -891,9 +899,10 @@ async fn fetch_client_credentials_token(
     options: &TokenRequestOptions,
     request: &ClientRequestConfig,
     tls: &ClientTlsConfig,
+    direct_registry: &DirectRegistryConfig,
     registry_client: Option<&PortalRegistryClient>,
 ) -> Result<FetchedToken, HandlerRejection> {
-    let server_url = resolve_token_server_url(options, registry_client).await?;
+    let server_url = resolve_token_server_url(options, direct_registry, registry_client).await?;
     let url = token_endpoint_url(server_url.as_str(), options.uri.as_str())?;
     let client = token_http_client(options, request, tls)?;
     let response = client
@@ -1133,6 +1142,7 @@ pub(crate) fn configure_client_tls(
 
 async fn resolve_token_server_url(
     options: &TokenRequestOptions,
+    direct_registry: &DirectRegistryConfig,
     registry_client: Option<&PortalRegistryClient>,
 ) -> Result<String, HandlerRejection> {
     if let Some(server_url) = options.server_url.as_ref() {
@@ -1145,6 +1155,9 @@ async fn resolve_token_server_url(
             "client.yml oauth.token.server_url or oauth.token.serviceId is required",
         )
     })?;
+    if let Some(matched) = direct_registry_match(direct_registry, service_id, None) {
+        return Ok(matched.url.trim().to_string());
+    }
     let registry_client = registry_client.ok_or_else(|| {
         HandlerRejection::new(
             502,
@@ -1642,6 +1655,37 @@ egressIngressIndicator: protocol
         server.abort();
     }
 
+    #[tokio::test]
+    async fn token_service_id_uses_direct_registry_without_portal_registry() {
+        let options = TokenRequestOptions {
+            server_url: None,
+            token_service_id: Some("com.networknt.light-oauth-1.0.0".to_string()),
+            uri: "/oauth2/token".to_string(),
+            client_id: "client".to_string(),
+            client_secret: "secret".to_string(),
+            scope: vec!["portal.r".to_string()],
+            proxy_host: None,
+            proxy_port: None,
+            enable_http2: true,
+            token_renew_before_expired: 60_000,
+            expired_refresh_retry_delay: 1_000,
+            early_refresh_retry_delay: 1_000,
+            cache_service_id: None,
+        };
+        let direct_registry = DirectRegistryConfig {
+            direct_urls: BTreeMap::from([(
+                "com.networknt.light-oauth-1.0.0".to_string(),
+                "https://light-oauth:6881".to_string(),
+            )]),
+        };
+
+        let server_url = resolve_token_server_url(&options, &direct_registry, None)
+            .await
+            .expect("server url");
+
+        assert_eq!(server_url, "https://light-oauth:6881");
+    }
+
     fn test_runtime(server_url: String, token_renew_before_expired: u64) -> TokenRuntime {
         TokenRuntime::new(
             TokenHandlerConfig {
@@ -1667,6 +1711,7 @@ egressIngressIndicator: protocol
                 },
                 ..ClientTokenConfig::default()
             },
+            DirectRegistryConfig::default(),
             None,
         )
     }

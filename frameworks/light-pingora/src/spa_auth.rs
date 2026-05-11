@@ -1,4 +1,5 @@
 use crate::config_util::deserialize_string_list;
+use crate::direct_registry::direct_registry_match;
 use crate::security::{
     AuthPrincipal, HandlerRejection, JwtExpiryMode, SecurityRuntime, verify_jwt_token,
 };
@@ -12,8 +13,8 @@ use crate::{
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use light_runtime::{
-    DiscoveryNode, DiscoverySubscription, MaskSpec, ModuleKind, PortalRegistryClient,
-    RuntimeConfig, RuntimeError,
+    DirectRegistryConfig, DiscoveryNode, DiscoverySubscription, MaskSpec, ModuleKind,
+    PortalRegistryClient, RuntimeConfig, RuntimeError,
 };
 use pingora::prelude::Session;
 use serde::{Deserialize, Serialize};
@@ -231,7 +232,9 @@ impl SpaSessionRuntime {
                 )
                 .await
                 .map_err(|error| HandlerRejection::new(error.status, "ERR10000", error.message))?;
-                let (_, headers) = self.set_login_cookies(&result.response, &result.csrf).await?;
+                let (_, headers) = self
+                    .set_login_cookies(&result.response, &result.csrf)
+                    .await?;
                 Ok(SpaSessionOutcome::Continue {
                     auth: Some(principal),
                     response_headers: headers,
@@ -283,6 +286,7 @@ impl SpaAuthResponse {
 #[derive(Clone)]
 pub struct SpaTokenClient {
     config: ClientTokenConfig,
+    direct_registry: DirectRegistryConfig,
     registry_client: Option<Arc<PortalRegistryClient>>,
 }
 
@@ -291,8 +295,17 @@ impl SpaTokenClient {
         config: ClientTokenConfig,
         registry_client: Option<Arc<PortalRegistryClient>>,
     ) -> Self {
+        Self::new_with_direct_registry(config, DirectRegistryConfig::default(), registry_client)
+    }
+
+    pub fn new_with_direct_registry(
+        config: ClientTokenConfig,
+        direct_registry: DirectRegistryConfig,
+        registry_client: Option<Arc<PortalRegistryClient>>,
+    ) -> Self {
         Self {
             config,
+            direct_registry,
             registry_client,
         }
     }
@@ -375,7 +388,12 @@ impl SpaTokenClient {
                 format!("client.yml {grant_label} client_id and client_secret are required"),
             ));
         }
-        let server_url = resolve_token_server_url(token, self.registry_client.as_deref()).await?;
+        let server_url = resolve_token_server_url(
+            token,
+            &self.direct_registry,
+            self.registry_client.as_deref(),
+        )
+        .await?;
         let url = token_endpoint_url(server_url.as_str(), uri)?;
         let client = token_http_client(token, &self.config.request, &self.config.tls)?;
         let response = client
@@ -511,8 +529,9 @@ pub fn load_spa_token_client(
         Some(true),
         true,
     )?;
-    Ok(SpaTokenClient::new(
+    Ok(SpaTokenClient::new_with_direct_registry(
         client,
+        runtime_config.direct_registry.clone(),
         runtime_config.registry_client.clone(),
     ))
 }
@@ -885,6 +904,7 @@ fn token_http_client(
 
 async fn resolve_token_server_url(
     token: &OAuthTokenConfig,
+    direct_registry: &DirectRegistryConfig,
     registry_client: Option<&PortalRegistryClient>,
 ) -> Result<String, HandlerRejection> {
     if let Some(server_url) = token
@@ -901,6 +921,9 @@ async fn resolve_token_server_url(
             "client.yml oauth.token.server_url or oauth.token.serviceId is required",
         )
     })?;
+    if let Some(matched) = direct_registry_match(direct_registry, service_id, None) {
+        return Ok(matched.url.trim().to_string());
+    }
     let registry_client = registry_client.ok_or_else(|| {
         HandlerRejection::new(
             502,

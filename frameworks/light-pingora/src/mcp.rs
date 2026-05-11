@@ -1,10 +1,11 @@
 use crate::access_control::{AccessControlRuntime, AccessDecision, load_access_control_runtime};
 use crate::config_util::deserialize_typed_list;
+use crate::direct_registry::{direct_registry_match, validate_direct_registry_protocol};
 use crate::security::AuthPrincipal;
 use async_trait::async_trait;
 use light_runtime::{
-    DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, ModuleKind, PortalRegistryClient,
-    RuntimeConfig, RuntimeError,
+    DirectRegistryConfig, DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, ModuleKind,
+    PortalRegistryClient, RuntimeConfig, RuntimeError,
 };
 use regex::Regex;
 use reqwest::header::{ACCEPT, HeaderMap, HeaderName, HeaderValue};
@@ -297,6 +298,7 @@ pub struct McpRouterRuntime {
     config: McpRouterConfig,
     tools: BTreeMap<String, McpToolConfig>,
     client: reqwest::Client,
+    direct_registry: DirectRegistryConfig,
     discovery: Option<Arc<dyn McpDiscoveryResolver>>,
     policy: Option<Arc<AccessControlRuntime>>,
 }
@@ -306,6 +308,10 @@ impl fmt::Debug for McpRouterRuntime {
         f.debug_struct("McpRouterRuntime")
             .field("path", &self.config.path)
             .field("tool_count", &self.tools.len())
+            .field(
+                "direct_registry_entries",
+                &self.direct_registry.direct_urls.len(),
+            )
             .field("discovery", &self.discovery.is_some())
             .field("policy", &self.policy.is_some())
             .finish()
@@ -356,6 +362,20 @@ impl McpRouterRuntime {
         discovery: Option<Arc<dyn McpDiscoveryResolver>>,
         policy: Option<Arc<AccessControlRuntime>>,
     ) -> Result<Self, RuntimeError> {
+        Self::new_with_discovery_policy_and_direct_registry(
+            config,
+            discovery,
+            policy,
+            DirectRegistryConfig::default(),
+        )
+    }
+
+    pub fn new_with_discovery_policy_and_direct_registry(
+        config: McpRouterConfig,
+        discovery: Option<Arc<dyn McpDiscoveryResolver>>,
+        policy: Option<Arc<AccessControlRuntime>>,
+        direct_registry: DirectRegistryConfig,
+    ) -> Result<Self, RuntimeError> {
         validate_config(&config)?;
         let tools = config
             .tools
@@ -372,6 +392,7 @@ impl McpRouterRuntime {
             config,
             tools,
             client,
+            direct_registry,
             discovery,
             policy,
         })
@@ -836,6 +857,13 @@ impl McpRouterRuntime {
                     tool.name
                 ))
             })?;
+        if let Some(matched) =
+            direct_registry_match(&self.direct_registry, service_id, tool.env_tag.as_deref())
+        {
+            validate_direct_registry_protocol(matched, tool.protocol.as_deref())
+                .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
+            return parse_base_url(matched.url.trim(), &tool.name);
+        }
         let discovery = self.discovery.as_ref().ok_or_else(|| {
             McpExecutionError::execution_failed(format!(
                 "tool `{}` serviceId discovery requires portal registry to be enabled",
@@ -912,11 +940,14 @@ pub fn load_mcp_router_runtime(
         return Ok(None);
     }
     let policy = load_access_control_runtime(runtime_config, true)?.map(Arc::new);
-    Ok(Some(McpRouterRuntime::new_with_discovery_and_policy(
-        config,
-        discovery_resolver(runtime_config.registry_client.clone()),
-        policy,
-    )?))
+    Ok(Some(
+        McpRouterRuntime::new_with_discovery_policy_and_direct_registry(
+            config,
+            discovery_resolver(runtime_config.registry_client.clone()),
+            policy,
+            runtime_config.direct_registry.clone(),
+        )?,
+    ))
 }
 
 fn load_mcp_router_config(
@@ -1401,7 +1432,9 @@ where
     D: Deserializer<'de>,
 {
     let value = YamlValue::deserialize(deserializer)?;
-    yaml_value_to_json(value).map(Some).map_err(D::Error::custom)
+    yaml_value_to_json(value)
+        .map(Some)
+        .map_err(D::Error::custom)
 }
 
 fn yaml_value_to_json(value: YamlValue) -> Result<JsonValue, String> {
@@ -1740,6 +1773,66 @@ tools:
         assert_eq!(lookups[0].service_id, "com.networknt.weather-1.0.0");
         assert_eq!(lookups[0].env_tag.as_deref(), Some("dev"));
         assert_eq!(lookups[0].protocol.as_deref(), Some("http"));
+    }
+
+    #[tokio::test]
+    async fn tool_call_uses_direct_registry_before_discovery() {
+        let (base, received) =
+            spawn_http_server(http_json_response(json!({"forecast": "clear"}))).await;
+        let resolver = Arc::new(FakeDiscovery::new(discovery_snapshot(
+            "http://127.0.0.1:9",
+            "com.networknt.weather-1.0.0",
+            Some("dev"),
+            Some("http"),
+        )));
+        let discovery: Arc<dyn McpDiscoveryResolver> = resolver.clone();
+        let runtime = McpRouterRuntime::new_with_discovery_policy_and_direct_registry(
+            McpRouterConfig {
+                tools: vec![McpToolConfig {
+                    name: "weather".to_string(),
+                    description: "Get weather".to_string(),
+                    protocol: Some("http".to_string()),
+                    service_id: Some("com.networknt.weather-1.0.0".to_string()),
+                    env_tag: Some("dev".to_string()),
+                    target_host: None,
+                    path: "/weather".to_string(),
+                    method: McpHttpMethod::Get,
+                    endpoint: None,
+                    api_type: McpToolType::Http,
+                    input_schema: default_input_schema(),
+                    input_schema_configured: true,
+                    tool_metadata: default_object(),
+                }],
+                ..McpRouterConfig::default()
+            },
+            Some(discovery),
+            None,
+            DirectRegistryConfig {
+                direct_urls: BTreeMap::from([(
+                    "com.networknt.weather-1.0.0|dev".to_string(),
+                    base.clone(),
+                )]),
+            },
+        )
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json()],
+                body: br#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"weather","arguments":{"city":"Toronto"}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["result"]["forecast"], "clear");
+        let request = received.await.expect("server request");
+        assert!(request.starts_with("GET /weather?city=Toronto HTTP/1.1"));
+        assert!(resolver.lookups.lock().expect("lookup lock").is_empty());
     }
 
     #[tokio::test]

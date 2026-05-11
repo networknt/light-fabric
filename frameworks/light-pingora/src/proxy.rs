@@ -254,7 +254,8 @@ mod tests {
     use super::*;
     use light_runtime::config::ClientConfig;
     use light_runtime::{
-        BootstrapConfig, ModuleRegistry, PortalRegistryConfig, ServerConfig, ServiceIdentity,
+        BootstrapConfig, DirectRegistryConfig, ModuleRegistry, PortalRegistryConfig, ServerConfig,
+        ServiceIdentity,
     };
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -266,6 +267,7 @@ mod tests {
             server: ServerConfig::default(),
             client: None::<ClientConfig>,
             portal_registry: None::<PortalRegistryConfig>,
+            direct_registry: DirectRegistryConfig::default(),
             service_identity: ServiceIdentity::default(),
             config_dir: config_dir.path().to_path_buf(),
             external_config_dir: config_dir.path().join("external"),

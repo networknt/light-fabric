@@ -1,6 +1,7 @@
 use crate::config_util::{
     deserialize_string_list, deserialize_string_map, request_header, request_header as header_value,
 };
+use crate::direct_registry::direct_registry_match;
 use crate::token::{
     CLIENT_FILE, ClientRequestConfig, ClientTlsConfig, ClientTokenConfig, OAuthKeyConfig,
     configure_client_tls,
@@ -10,8 +11,8 @@ use jsonwebtoken::{
     jwk::{Jwk, JwkSet},
 };
 use light_runtime::{
-    DiscoveryNode, DiscoverySubscription, MaskSpec, ModuleKind, PortalRegistryClient,
-    RuntimeConfig, RuntimeError,
+    DirectRegistryConfig, DiscoveryNode, DiscoverySubscription, MaskSpec, ModuleKind,
+    PortalRegistryClient, RuntimeConfig, RuntimeError,
 };
 use pingora::prelude::Session;
 use serde::{Deserialize, Serialize};
@@ -216,6 +217,7 @@ struct JwkSource {
     key: OAuthKeyConfig,
     request: ClientRequestConfig,
     tls: ClientTlsConfig,
+    direct_registry: DirectRegistryConfig,
     registry_client: Option<Arc<PortalRegistryClient>>,
 }
 
@@ -532,7 +534,9 @@ async fn refresh_jwks(runtime: &SecurityRuntime) -> Result<(), HandlerRejection>
     let client = builder.build().map_err(|error| {
         HandlerRejection::new(500, "ERR10056", format!("invalid JWK client: {error}"))
     })?;
-    let mut request = client.get(url.as_str()).header("accept", "application/json");
+    let mut request = client
+        .get(url.as_str())
+        .header("accept", "application/json");
     if let (Some(client_id), Some(client_secret)) = (
         non_empty(source.key.client_id.as_deref()),
         non_empty(source.key.client_secret.as_deref()),
@@ -544,7 +548,11 @@ async fn refresh_jwks(runtime: &SecurityRuntime) -> Result<(), HandlerRejection>
     })?;
     let status = response.status();
     let body = response.text().await.map_err(|error| {
-        HandlerRejection::new(502, "ERR10056", format!("failed to read JWKS response: {error}"))
+        HandlerRejection::new(
+            502,
+            "ERR10056",
+            format!("failed to read JWKS response: {error}"),
+        )
     })?;
     if !status.is_success() {
         return Err(HandlerRejection::new(
@@ -556,7 +564,12 @@ async fn refresh_jwks(runtime: &SecurityRuntime) -> Result<(), HandlerRejection>
     let jwks = parse_jwks(body.as_str())?;
     let mut entries = BTreeMap::new();
     for jwk in jwks {
-        if let Some(kid) = jwk.common.key_id.clone().filter(|kid| !kid.trim().is_empty()) {
+        if let Some(kid) = jwk
+            .common
+            .key_id
+            .clone()
+            .filter(|kid| !kid.trim().is_empty())
+        {
             entries.insert(kid, jwk);
         }
     }
@@ -572,15 +585,14 @@ async fn refresh_jwks(runtime: &SecurityRuntime) -> Result<(), HandlerRejection>
 }
 
 fn load_jwk_source(runtime_config: &RuntimeConfig) -> Result<Option<Arc<JwkSource>>, RuntimeError> {
-    let client =
-        match runtime_config
-            .module_registry
-            .load_config::<ClientTokenConfig>(runtime_config, CLIENT_FILE)
-        {
-            Ok(config) => config,
-            Err(RuntimeError::MissingConfig(file)) if file == CLIENT_FILE => return Ok(None),
-            Err(error) => return Err(error),
-        };
+    let client = match runtime_config
+        .module_registry
+        .load_config::<ClientTokenConfig>(runtime_config, CLIENT_FILE)
+    {
+        Ok(config) => config,
+        Err(RuntimeError::MissingConfig(file)) if file == CLIENT_FILE => return Ok(None),
+        Err(error) => return Err(error),
+    };
     let key = client.oauth.token.key;
     if non_empty(key.server_url.as_deref()).is_none()
         && non_empty(key.service_id.as_deref()).is_none()
@@ -591,6 +603,7 @@ fn load_jwk_source(runtime_config: &RuntimeConfig) -> Result<Option<Arc<JwkSourc
         key,
         request: client.request,
         tls: client.tls,
+        direct_registry: runtime_config.direct_registry.clone(),
         registry_client: runtime_config.registry_client.clone(),
     })))
 }
@@ -616,6 +629,9 @@ async fn resolve_jwk_server_url(source: &JwkSource) -> Result<String, HandlerRej
             "client.yml oauth.token.key server_url or serviceId is required",
         )
     })?;
+    if let Some(matched) = direct_registry_match(&source.direct_registry, service_id, None) {
+        return Ok(matched.url.trim().to_string());
+    }
     let registry_client = source.registry_client.as_deref().ok_or_else(|| {
         HandlerRejection::new(
             502,

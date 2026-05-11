@@ -214,8 +214,7 @@ fn normalize_secret_data(value: &mut YamlValue) -> Result<(), RenderError> {
         return Ok(());
     }
 
-    let Some(YamlValue::Mapping(data)) = root.get_mut(YamlValue::String("data".to_string()))
-    else {
+    let Some(YamlValue::Mapping(data)) = root.get_mut(YamlValue::String("data".to_string())) else {
         return Ok(());
     };
 
@@ -502,7 +501,11 @@ data:
             .into(),
         }];
         let error = renderer
-            .render(&templates, &json!({ "truststore": "$(base64 -w0 file)" }), "dev")
+            .render(
+                &templates,
+                &json!({ "truststore": "$(base64 -w0 file)" }),
+                "dev",
+            )
             .unwrap_err();
 
         assert!(matches!(error, RenderError::InvalidSecretData(key) if key == "truststore"));
@@ -524,7 +527,11 @@ data:
             .into(),
         }];
         let rendered = renderer
-            .render(&templates, &json!({ "truststore": "cGFz\nc3dv cmQ=" }), "dev")
+            .render(
+                &templates,
+                &json!({ "truststore": "cGFz\nc3dv cmQ=" }),
+                "dev",
+            )
             .unwrap();
 
         assert_eq!(rendered.documents[0].summary.kind, "Secret");

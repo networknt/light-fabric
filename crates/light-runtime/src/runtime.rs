@@ -6,7 +6,7 @@ use portal_registry::{
 };
 use serde::de::DeserializeOwned;
 use serde_yaml::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,8 +19,9 @@ use url::Url;
 
 use crate::cache::CacheRegistry;
 use crate::config::{
-    BootstrapConfig, ClientConfig, PortalRegistryConfig, RemoteBootstrapResult, RuntimeConfig,
-    ServerConfig, ServiceIdentity, default_accept_header, default_environment,
+    BootstrapConfig, ClientConfig, DirectRegistryConfig, PortalRegistryConfig,
+    RemoteBootstrapResult, RuntimeConfig, ServerConfig, ServiceIdentity, default_accept_header,
+    default_environment,
 };
 use crate::module_registry::{ModuleRegistry, ReloadContext, RuntimeMcpHandler};
 use crate::transport::{BoundTransport, TransportRuntime};
@@ -33,6 +34,8 @@ const VALUES_FILE: &str = "values.yml";
 const CLIENT_FILE: &str = "client.yml";
 const SERVER_FILE: &str = "server.yml";
 const PORTAL_REGISTRY_FILE: &str = "portal-registry.yml";
+const DIRECT_REGISTRY_FILE: &str = "direct-registry.yml";
+const DIRECT_REGISTRY_DIRECT_URLS_KEY: &str = "direct-registry.directUrls";
 const CONFIG_PASSWORD_ENV: &str = "light_4j_config_password";
 const LIGHT_ENV_ENV: &str = "light-env";
 const CONFIG_SERVER_URI_ENV: &str = "light-config-server-uri";
@@ -230,6 +233,12 @@ impl RuntimeConfig {
             remote_result.values_yaml,
         )?;
         let mut runtime_config = self.clone();
+        if let Some(value) = values.get(DIRECT_REGISTRY_DIRECT_URLS_KEY) {
+            runtime_config.direct_registry = DirectRegistryConfig {
+                direct_urls: parse_direct_registry_urls_value(value)?,
+            };
+        }
+        validate_direct_registry_config(&runtime_config.direct_registry)?;
         runtime_config.resolved_values = values;
         Ok(ReloadContext::new(runtime_config))
     }
@@ -377,6 +386,7 @@ where
         };
         let portal_registry =
             self.try_load_typed_config::<PortalRegistryConfig>(&loader, PORTAL_REGISTRY_FILE)?;
+        let direct_registry = self.load_direct_registry_config(&loader, &values)?;
         let env_tag = bootstrap
             .env_tag
             .clone()
@@ -408,6 +418,7 @@ where
             server,
             client,
             portal_registry,
+            direct_registry,
             service_identity,
             config_dir: self.config_dir.clone(),
             external_config_dir,
@@ -474,6 +485,27 @@ where
             .unwrap_or(true);
         client = client.with_verify_hostname(verify_hostname);
         Ok(Some(Arc::new(client)))
+    }
+
+    fn load_direct_registry_config(
+        &self,
+        loader: &ConfigLoader,
+        values: &HashMap<String, Value>,
+    ) -> Result<DirectRegistryConfig, RuntimeError> {
+        let config = match self
+            .try_load_typed_config::<DirectRegistryConfig>(loader, DIRECT_REGISTRY_FILE)?
+        {
+            Some(config) => config,
+            None => DirectRegistryConfig {
+                direct_urls: values
+                    .get(DIRECT_REGISTRY_DIRECT_URLS_KEY)
+                    .map(parse_direct_registry_urls_value)
+                    .transpose()?
+                    .unwrap_or_default(),
+            },
+        };
+        validate_direct_registry_config(&config)?;
+        Ok(config)
     }
 
     fn load_typed_config<V>(
@@ -931,6 +963,74 @@ fn load_values_map(
     Ok(values)
 }
 
+fn parse_direct_registry_urls_value(
+    value: &Value,
+) -> Result<BTreeMap<String, String>, RuntimeError> {
+    match value {
+        Value::Null => Ok(BTreeMap::new()),
+        Value::String(raw) => {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                return Ok(BTreeMap::new());
+            }
+            let parsed = serde_yaml::from_str::<Value>(raw)?;
+            parse_direct_registry_urls_value(&parsed)
+        }
+        Value::Mapping(map) => {
+            let mut entries = BTreeMap::new();
+            for (key, value) in map {
+                let key = key.as_str().ok_or_else(|| {
+                    RuntimeError::Unsupported(
+                        "direct-registry.directUrls keys must be strings".to_string(),
+                    )
+                })?;
+                let value = value.as_str().ok_or_else(|| {
+                    RuntimeError::Unsupported(format!(
+                        "direct-registry.directUrls `{key}` value must be a string"
+                    ))
+                })?;
+                entries.insert(key.to_string(), value.to_string());
+            }
+            Ok(entries)
+        }
+        other => Err(RuntimeError::Unsupported(format!(
+            "unsupported direct-registry.directUrls value: {other:?}"
+        ))),
+    }
+}
+
+fn validate_direct_registry_config(config: &DirectRegistryConfig) -> Result<(), RuntimeError> {
+    for (key, url) in &config.direct_urls {
+        if key.trim().is_empty() {
+            return Err(RuntimeError::Unsupported(
+                "direct-registry.directUrls keys must not be empty".to_string(),
+            ));
+        }
+        let url = url.trim();
+        if url.is_empty() {
+            return Err(RuntimeError::Unsupported(format!(
+                "direct-registry.directUrls `{key}` value must not be empty"
+            )));
+        }
+        let parsed = Url::parse(url).map_err(|error| {
+            RuntimeError::Unsupported(format!(
+                "direct-registry.directUrls `{key}` value `{url}` is invalid: {error}"
+            ))
+        })?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(RuntimeError::Unsupported(format!(
+                "direct-registry.directUrls `{key}` value `{url}` must use http or https"
+            )));
+        }
+        if parsed.host().is_none() {
+            return Err(RuntimeError::Unsupported(format!(
+                "direct-registry.directUrls `{key}` value `{url}` is missing a host"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn derive_service_version(service_id: &str) -> String {
     service_id
         .rsplit_once('-')
@@ -1103,7 +1203,12 @@ serviceId: ${server.serviceId:com.networknt.test-1.0.0}
         .expect("write server config");
         fs::write(
             config_dir.path().join(VALUES_FILE),
-            "server.ip: 127.0.0.1\nshared: local\n",
+            r#"
+server.ip: 127.0.0.1
+shared: local
+direct-registry.directUrls:
+  com.networknt.petstore-1.0.0: https://petstore:9443
+"#,
         )
         .expect("write local values");
         fs::write(
@@ -1139,6 +1244,10 @@ serviceId: ${server.serviceId:com.networknt.test-1.0.0}
         assert_eq!(
             config.resolved_values["remoteOnly"],
             Value::Number(42.into())
+        );
+        assert_eq!(
+            config.direct_registry.direct_urls["com.networknt.petstore-1.0.0"],
+            "https://petstore:9443"
         );
     }
 
@@ -1184,6 +1293,12 @@ serviceId: ${server.serviceId:com.networknt.test-1.0.0}
             server: ServerConfig::default(),
             client: None,
             portal_registry: None,
+            direct_registry: DirectRegistryConfig {
+                direct_urls: BTreeMap::from([(
+                    "com.networknt.controller-1.0.0".to_string(),
+                    "https://controller:8438".to_string(),
+                )]),
+            },
             service_identity: ServiceIdentity::default(),
             config_dir: config_dir.path().to_path_buf(),
             external_config_dir: external_dir.path().to_path_buf(),
@@ -1201,6 +1316,10 @@ serviceId: ${server.serviceId:com.networknt.test-1.0.0}
         assert_eq!(
             ctx.runtime_config.resolved_values["gateway.healthPath"],
             Value::String("/remote".to_string())
+        );
+        assert_eq!(
+            ctx.runtime_config.direct_registry.direct_urls["com.networknt.controller-1.0.0"],
+            "https://controller:8438"
         );
         assert!(external_dir.path().join(VALUES_FILE).exists());
         server.await.expect("config server task");

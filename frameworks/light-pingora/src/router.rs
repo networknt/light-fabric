@@ -1,11 +1,12 @@
 use crate::config_util::{
     deserialize_string_list, deserialize_typed_map, parse_string_list, request_header,
 };
+use crate::direct_registry::direct_registry_target;
 use crate::proxy::ProxyTarget;
 use crate::security::HandlerRejection;
 use light_runtime::{
-    DiscoveryNode, DiscoverySubscription, ModuleKind, PortalRegistryClient, RuntimeConfig,
-    RuntimeError,
+    DirectRegistryConfig, DiscoveryNode, DiscoverySubscription, ModuleKind, PortalRegistryClient,
+    RuntimeConfig, RuntimeError,
 };
 use pingora::http::RequestHeader;
 use pingora::prelude::Session;
@@ -129,6 +130,7 @@ pub struct QueryHeaderRewriteRule {
 #[serde(rename_all = "camelCase")]
 pub struct RouterRoute {
     pub config: RouterConfig,
+    pub direct_registry: DirectRegistryConfig,
     pub service_targets: BTreeMap<String, Vec<ProxyTarget>>,
     #[serde(skip_serializing)]
     pub registry_client: Option<Arc<PortalRegistryClient>>,
@@ -171,6 +173,7 @@ pub fn load_router_route(
 
     Ok(Some(RouterRoute {
         config,
+        direct_registry: runtime_config.direct_registry.clone(),
         service_targets,
         registry_client: runtime_config.registry_client.clone(),
     }))
@@ -221,6 +224,22 @@ pub async fn select_router_target(
         .filter(|value| !value.trim().is_empty())
         .map(|env_tag| format!("{service_id}|{env_tag}"))
         .unwrap_or_else(|| service_id.to_string());
+    match direct_registry_target(&route.direct_registry, service_id, env_tag.as_deref(), None) {
+        Ok(Some(target)) => {
+            return Ok(RouterDecision {
+                target,
+                remove_service_id_query,
+            });
+        }
+        Ok(None) => {}
+        Err(error) => {
+            return Err(HandlerRejection::new(
+                502,
+                "ERR10080",
+                format!("router direct registry lookup failed for `{key}`: {error}"),
+            ));
+        }
+    }
     let discovery_error = match discovery_targets(route, service_id, env_tag.as_deref()).await {
         Ok(Some(targets)) if !targets.is_empty() => {
             return Ok(RouterDecision {
@@ -987,7 +1006,8 @@ mod tests {
     use super::*;
     use light_runtime::config::ClientConfig;
     use light_runtime::{
-        BootstrapConfig, ModuleRegistry, PortalRegistryConfig, ServerConfig, ServiceIdentity,
+        BootstrapConfig, DirectRegistryConfig, ModuleRegistry, PortalRegistryConfig, ServerConfig,
+        ServiceIdentity,
     };
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -999,6 +1019,7 @@ mod tests {
             server: ServerConfig::default(),
             client: None::<ClientConfig>,
             portal_registry: None::<PortalRegistryConfig>,
+            direct_registry: DirectRegistryConfig::default(),
             service_identity: ServiceIdentity::default(),
             config_dir: config_dir.path().to_path_buf(),
             external_config_dir: config_dir.path().join("external"),
@@ -1093,6 +1114,7 @@ queryParamRewriteRules:
 "#,
             )
             .expect("parse router config"),
+            direct_registry: DirectRegistryConfig::default(),
             service_targets: BTreeMap::new(),
             registry_client: None,
         };

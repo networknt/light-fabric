@@ -166,7 +166,8 @@ fn resolve_advertised_address(
 mod tests {
     use super::resolve_advertised_address;
     use light_runtime::{
-        BootstrapConfig, ModuleRegistry, RuntimeConfig, RuntimeError, ServerConfig, ServiceIdentity,
+        BootstrapConfig, DirectRegistryConfig, ModuleRegistry, RuntimeConfig, RuntimeError,
+        ServerConfig, ServiceIdentity,
     };
     use std::net::{IpAddr, Ipv4Addr};
     use std::path::PathBuf;
@@ -178,6 +179,7 @@ mod tests {
             server: ServerConfig::default(),
             client: None,
             portal_registry: None,
+            direct_registry: DirectRegistryConfig::default(),
             service_identity: ServiceIdentity::default(),
             config_dir: PathBuf::from("config"),
             external_config_dir: PathBuf::from("config"),

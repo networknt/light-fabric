@@ -6,8 +6,8 @@ pub mod transport;
 
 pub use cache::{CacheRegistry, ClearCacheOutcome, MokaRuntimeCache, RuntimeCache};
 pub use config::{
-    BootstrapConfig, PortalRegistryConfig, RemoteBootstrapResult, RuntimeConfig, ServerConfig,
-    ServiceIdentity,
+    BootstrapConfig, DirectRegistryConfig, PortalRegistryConfig, RemoteBootstrapResult,
+    RuntimeConfig, ServerConfig, ServiceIdentity,
 };
 pub use module_registry::{
     ConfigManager, MaskSpec, ModuleEntry, ModuleKind, ModuleRegistry, ModuleSummary, ReloadContext,

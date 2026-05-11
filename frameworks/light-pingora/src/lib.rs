@@ -4,6 +4,7 @@ mod basic_auth;
 mod config_util;
 mod correlation;
 mod cors;
+mod direct_registry;
 mod handler;
 mod header;
 mod mcp;
