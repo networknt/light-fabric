@@ -205,11 +205,32 @@ async fn handle_socket(
     // 1. Load or Initialize Session
     let session_uuid = Uuid::parse_str(&current_session_id).unwrap_or_else(|_| Uuid::new_v4());
     let bank_id = session_uuid; // Using session as bank for simplicity
+    if let Err(e) =
+        ensure_session_memory_bank(&state.db, state.host_id, bank_id, &current_session_id).await
+    {
+        error!("Failed to initialize session memory bank: {}", e);
+        match serde_json::to_string(&ServerMessage::Error {
+            message: "Failed to initialize session memory".to_string(),
+        }) {
+            Ok(payload) => {
+                let _ = sender.send(Message::Text(payload.into())).await;
+            }
+            Err(serialize_err) => {
+                error!(
+                    "Failed to serialize session initialization error: {}",
+                    serialize_err
+                );
+            }
+        }
+        return;
+    }
 
     let mut history = match sqlx::query(
-        "SELECT messages FROM agent_session_history_t WHERE host_id = $1 AND session_id = $2",
+        "SELECT messages FROM agent_session_history_t
+         WHERE host_id = $1 AND bank_id = $2 AND session_id = $3",
     )
     .bind(state.host_id)
+    .bind(bank_id)
     .bind(session_uuid)
     .fetch_optional(&state.db)
     .await
@@ -218,7 +239,14 @@ async fn handle_socket(
             let messages: serde_json::Value = row.get("messages");
             serde_json::from_value::<Vec<ChatMessage>>(messages).unwrap_or_default()
         }
-        _ => Vec::new(),
+        Ok(None) => Vec::new(),
+        Err(e) => {
+            warn!(
+                "Failed to load session history for host_id={}, bank_id={}, session_id={}: {}",
+                state.host_id, bank_id, session_uuid, e
+            );
+            Vec::new()
+        }
     };
 
     while let Some(Ok(msg)) = receiver.next().await {
@@ -263,18 +291,23 @@ async fn handle_socket(
 
                         match serde_json::to_value(&history) {
                             Ok(history_payload) => {
-                                let _ = sqlx::query(
-                                    "INSERT INTO agent_session_history_t (host_id, session_id, bank_id, messages)
+                                if let Err(e) = sqlx::query(
+                                    "INSERT INTO agent_session_history_t
+                                    (host_id, bank_id, session_id, messages)
                                     VALUES ($1, $2, $3, $4)
-                                    ON CONFLICT (host_id, session_id) 
-                                    DO UPDATE SET messages = $4, update_ts = CURRENT_TIMESTAMP"
+                                    ON CONFLICT (host_id, bank_id, session_id)
+                                    DO UPDATE SET messages = EXCLUDED.messages,
+                                                  update_ts = CURRENT_TIMESTAMP",
                                 )
                                 .bind(state.host_id)
-                                .bind(session_uuid)
                                 .bind(bank_id)
+                                .bind(session_uuid)
                                 .bind(history_payload)
                                 .execute(&state.db)
-                                .await;
+                                .await
+                                {
+                                    warn!("Failed to persist session history: {}", e);
+                                }
                             }
                             Err(e) => {
                                 error!("Failed to serialize session history: {}", e);
@@ -311,6 +344,27 @@ async fn handle_socket(
             }
         }
     }
+}
+
+async fn ensure_session_memory_bank(
+    db: &PgPool,
+    host_id: Uuid,
+    bank_id: Uuid,
+    session_id: &str,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO agent_memory_bank_t (host_id, bank_id, bank_name)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (host_id, bank_id) DO NOTHING",
+    )
+    .bind(host_id)
+    .bind(bank_id)
+    .bind(format!("session-{session_id}"))
+    .execute(db)
+    .await
+    .context("failed to create session memory bank")?;
+
+    Ok(())
 }
 
 async fn run_agent_loop(
