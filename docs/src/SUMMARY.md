@@ -24,6 +24,7 @@
 - [Light-Deployer](design/light-deployer.md)
 - [Module Registry](design/module-registry.md)
 - [Cache Control Plane](design/cache-control-plane.md)
+- [Client Configuration](design/client-configuration.md)
 - [Handler Chain](design/handler-chain.md)
 - [MCP Router](design/mcp-router.md)
 - [WebSocket Router](design/websocket-router.md)

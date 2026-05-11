@@ -35,15 +35,17 @@ use pingora::prelude::{HttpPeer, ProxyHttp, Session};
 use pingora::{Error, ErrorType};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 const CONFIG_DIR: &str = "config";
 const EXTERNAL_CONFIG_DIR: &str = "config-cache";
 const HEALTH_PATH: &str = "/health";
+const DEPRECATED_CLIENT_VERIFY_HOSTNAME_VALUE_KEY: &str = "client.verifyHostname";
+static CLIENT_VERIFY_HOSTNAME_DEPRECATION_WARNED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone)]
 struct GatewayApp;
@@ -398,8 +400,7 @@ impl GatewayProxy {
             router_route,
             static_resources,
             next_upstream: AtomicUsize::new(0),
-            upstream_verify_hostname: resolved_bool(config, "client.verifyHostname")
-                .unwrap_or(true),
+            upstream_verify_hostname: upstream_verify_hostname(config),
             server_scheme: if config.server.enable_https {
                 "https".to_string()
             } else {
@@ -2816,6 +2817,16 @@ fn handler_rejection_error(rejection: HandlerRejection) -> Box<Error> {
 
 fn handler_active(active_handlers: &ActiveHandlerSet, ids: &[&str]) -> bool {
     ids.iter().any(|id| active_handlers.is_handler_active(id))
+}
+
+fn upstream_verify_hostname(config: &RuntimeConfig) -> bool {
+    let value = resolved_bool(config, DEPRECATED_CLIENT_VERIFY_HOSTNAME_VALUE_KEY);
+    if value.is_some() && !CLIENT_VERIFY_HOSTNAME_DEPRECATION_WARNED.swap(true, Ordering::Relaxed) {
+        warn!(
+            "`client.verifyHostname` from resolved values is deprecated for light-gateway upstream TLS hostname verification; this path will be replaced by `runtime_config.client.tls.verify_hostname` through the shared light-client configuration"
+        );
+    }
+    value.unwrap_or(true)
 }
 
 fn resolved_bool(config: &RuntimeConfig, key: &str) -> Option<bool> {
