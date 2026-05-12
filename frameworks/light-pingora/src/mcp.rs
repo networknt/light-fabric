@@ -2,7 +2,9 @@ use crate::access_control::{AccessControlRuntime, AccessDecision, load_access_co
 use crate::config_util::deserialize_typed_list;
 use crate::direct_registry::{direct_registry_match, validate_direct_registry_protocol};
 use crate::security::AuthPrincipal;
+use crate::token::{CLIENT_FILE, load_client_config};
 use async_trait::async_trait;
+use light_client::{ClientConfig, ClientFactory, EndpointOptions};
 use light_runtime::{
     DirectRegistryConfig, DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, ModuleKind,
     PortalRegistryClient, RuntimeConfig, RuntimeError,
@@ -14,9 +16,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Value as JsonValue, json};
 use serde_yaml::Value as YamlValue;
 use std::collections::{BTreeMap, BTreeSet};
+use std::error::Error as StdError;
 use std::fmt;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use url::Url;
 
 pub const MCP_ROUTER_FILE: &str = "mcp-router.yml";
@@ -26,7 +29,6 @@ pub const MCP_ROUTER_CONFIG_NAME: &str = "mcp-router";
 
 const DEFAULT_MCP_PATH: &str = "/mcp";
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
-const TOOL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const JSON_CONTENT_TYPE: &str = "application/json";
 const EVENT_STREAM_CONTENT_TYPE: &str = "text/event-stream";
 const TEXT_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
@@ -376,15 +378,30 @@ impl McpRouterRuntime {
         policy: Option<Arc<AccessControlRuntime>>,
         direct_registry: DirectRegistryConfig,
     ) -> Result<Self, RuntimeError> {
+        Self::new_with_discovery_policy_direct_registry_and_client_config(
+            config,
+            discovery,
+            policy,
+            direct_registry,
+            ClientConfig::default(),
+        )
+    }
+
+    fn new_with_discovery_policy_direct_registry_and_client_config(
+        config: McpRouterConfig,
+        discovery: Option<Arc<dyn McpDiscoveryResolver>>,
+        policy: Option<Arc<AccessControlRuntime>>,
+        direct_registry: DirectRegistryConfig,
+        client_config: ClientConfig,
+    ) -> Result<Self, RuntimeError> {
         validate_config(&config)?;
         let tools = config
             .tools
             .iter()
             .map(|tool| (tool.name.clone(), tool.clone()))
             .collect::<BTreeMap<_, _>>();
-        let client = reqwest::Client::builder()
-            .timeout(TOOL_REQUEST_TIMEOUT)
-            .build()
+        let client = ClientFactory::from_config(&client_config)
+            .reqwest_client(EndpointOptions::default())
             .map_err(|error| {
                 RuntimeError::Unsupported(format!("invalid MCP HTTP client: {error}"))
             })?;
@@ -720,17 +737,27 @@ impl McpRouterRuntime {
             append_query_arguments(&mut url, arguments);
         }
 
+        let request_url = url.to_string();
+        let request_method = method.as_reqwest();
         let mut request = self
             .client
-            .request(method.as_reqwest(), url)
+            .request(request_method.clone(), url)
             .headers(outbound_headers(agent_headers)?);
         if method.sends_json_body() {
             request = request.json(arguments);
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
+        let response = request.send().await.map_err(|error| {
+            let detail = error_chain(&error);
+            tracing::warn!(
+                target: "light_pingora::mcp",
+                toolName = %tool.name,
+                method = %request_method,
+                url = %request_url,
+                error = %detail,
+                "mcp backend request failed"
+            );
+            McpExecutionError::execution_failed(detail)
+        })?;
         let status = response.status();
         let content_type = response
             .headers()
@@ -940,12 +967,18 @@ pub fn load_mcp_router_runtime(
         return Ok(None);
     }
     let policy = load_access_control_runtime(runtime_config, true)?.map(Arc::new);
+    let client_config = match load_client_config(runtime_config) {
+        Ok(client) => client,
+        Err(RuntimeError::MissingConfig(file)) if file == CLIENT_FILE => ClientConfig::default(),
+        Err(error) => return Err(error),
+    };
     Ok(Some(
-        McpRouterRuntime::new_with_discovery_policy_and_direct_registry(
+        McpRouterRuntime::new_with_discovery_policy_direct_registry_and_client_config(
             config,
             discovery_resolver(runtime_config.registry_client.clone()),
             policy,
             runtime_config.direct_registry.clone(),
+            client_config,
         )?,
     ))
 }
@@ -1048,6 +1081,17 @@ fn log_mcp_tool_call(
         correlationId = ?context.correlation_id,
         "mcp tool call"
     );
+}
+
+fn error_chain(error: &(dyn StdError + 'static)) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(error) = source {
+        message.push_str(": ");
+        message.push_str(&error.to_string());
+        source = error.source();
+    }
+    message
 }
 
 fn mask_tool_arguments(tool: &McpToolConfig, arguments: &JsonValue) -> JsonValue {
@@ -1563,6 +1607,29 @@ tools:
 
         let error = McpRouterRuntime::new(config).expect_err("duplicate tool name");
         assert!(error.to_string().contains("duplicate mcp-router tool"));
+    }
+
+    #[test]
+    fn runtime_uses_client_tls_config_for_backend_client() {
+        let client_config = ClientConfig {
+            tls: light_client::ClientTlsConfig {
+                ca_cert_path: Some(std::path::PathBuf::from("/missing/ca.pem")),
+                ..light_client::ClientTlsConfig::default()
+            },
+            ..ClientConfig::default()
+        };
+
+        let error = McpRouterRuntime::new_with_discovery_policy_direct_registry_and_client_config(
+            McpRouterConfig::default(),
+            None,
+            None,
+            DirectRegistryConfig::default(),
+            client_config,
+        )
+        .expect_err("invalid CA path should fail client build");
+
+        assert!(error.to_string().contains("invalid MCP HTTP client"));
+        assert!(error.to_string().contains("/missing/ca.pem"));
     }
 
     #[tokio::test]
