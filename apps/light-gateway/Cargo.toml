@@ -13,6 +13,7 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 pingora = { version = "0.8.0", features = ["proxy", "rustls"] }
+rustls-pemfile = "2.2"
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 tokio = { workspace = true }

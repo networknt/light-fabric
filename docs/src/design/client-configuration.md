@@ -114,9 +114,9 @@ interpretations of client configuration:
 | `light-pingora` token, security JWKS, stateless auth, and MSAL exchange | Read `ClientTokenConfig` with `tls`, `oauth`, `pathPrefixServices`, and `request` | Was closer to Java, but framework-local and did not drive runtime clients |
 | `light-gateway` upstream proxy | Read the resolved flat value `client.verifyHostname` directly from `values.yml` | Bypassed typed `client.yml` and could disagree with other modules |
 
-Initial Rust support was also partial compared with Java:
+Before this design, Rust support was also partial compared with Java:
 
-| Java capability | Rust status |
+| Java capability | Initial Rust status |
 | --- | --- |
 | `tls.verifyHostname` | Supported by Pingora token/SPAs, not by runtime controller/config-server clients |
 | CA trust | Supported through Rust `caCertPath`; Java truststore fields are not modeled |
@@ -528,7 +528,7 @@ All modules should consume the same shared config:
 | `light-pingora/token` | `oauth.token.client_credentials`, token cache settings, provider resolver |
 | `light-pingora/stateless-auth` | `authorization_code`, `refresh_token`, token client |
 | `light-pingora/msal-exchange` | `token_exchange`, token client |
-| `light-gateway/proxy` | `tls.verifyHostname`, request timeout and pool settings where Pingora supports them |
+| `light-gateway/proxy` | `tls.verifyHostname`, PEM mTLS, request timeout, retry, circuit breaker, and pool settings where Pingora supports them |
 | `light-agent` | controller/MCP outbound clients |
 | `light-deployer` | controller/MCP/outbound clients as needed |
 
@@ -659,11 +659,11 @@ config and mask later.
 
 ### Phase 4: Java Feature Completion
 
-- Add sign client support.
-- Add deref client support.
-- Add mTLS support using Rust-native PEM files.
-- Add retries, circuit breaker, and pool behavior where the Rust transport
-  supports them.
+- Implemented sign client support in `light-client`.
+- Implemented deref client support in `light-client`.
+- Implemented Rust-native PEM mTLS for reqwest clients and Pingora upstreams.
+- Implemented retry, circuit breaker, and pool behavior where the Rust
+  transport supports them.
 
 ## Open Questions
 

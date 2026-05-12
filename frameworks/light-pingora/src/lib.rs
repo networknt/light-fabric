@@ -212,6 +212,7 @@ where
         let mut server_conf = ServerConf::default();
         server_conf.threads = 1;
         server_conf.daemon = false;
+        apply_client_request_config(config, &mut server_conf);
         server_conf.ca_file = upstream_ca_file(config);
         let shutdown_seconds = config.server.shutdown_graceful_period.div_ceil(1000);
         server_conf.grace_period_seconds = Some(0);
@@ -311,11 +312,22 @@ fn listen_addr(config: &RuntimeConfig, port: u16) -> Result<String, RuntimeError
 }
 
 fn upstream_ca_file(config: &RuntimeConfig) -> Option<String> {
-    resolved_string(config, "client.caCertPath")
-        .map(PathBuf::from)
+    config
+        .client
+        .as_ref()
+        .and_then(|client| client.tls.ca_cert_path.clone())
+        .or_else(|| resolved_string(config, "client.caCertPath").map(PathBuf::from))
         .or_else(|| config.bootstrap.bootstrap_ca_cert_path.clone())
         .filter(|path| path.exists())
         .map(|path| path.to_string_lossy().to_string())
+}
+
+fn apply_client_request_config(config: &RuntimeConfig, server_conf: &mut ServerConf) {
+    let Some(client) = config.client.as_ref() else {
+        return;
+    };
+    server_conf.upstream_keepalive_pool_size = client.request.connection_pool_size as usize;
+    server_conf.max_retries = client.request.max_request_retry as usize;
 }
 
 fn resolved_string(config: &RuntimeConfig, key: &str) -> Option<String> {

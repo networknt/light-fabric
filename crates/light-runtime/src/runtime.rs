@@ -788,27 +788,26 @@ fn build_config_server_client(
     bootstrap: &BootstrapConfig,
     client_config: Option<&ClientConfig>,
 ) -> Result<reqwest::Client, RuntimeError> {
-    let mut client_builder = reqwest::Client::builder()
-        .connect_timeout(Duration::from_millis(bootstrap.connect_timeout))
-        .timeout(Duration::from_millis(bootstrap.timeout));
+    let mut request = client_config
+        .map(|client| client.request.clone())
+        .unwrap_or_default();
+    request.connect_timeout = bootstrap.connect_timeout;
+    request.timeout = bootstrap.timeout;
 
-    if let Some(client) = client_config {
-        if !client.tls.verify_hostname {
-            warn!(
-                "TLS hostname verification is disabled for the config-server client; this weakens server identity validation"
-            );
-            client_builder = client_builder.danger_accept_invalid_hostnames(true);
-        }
+    let mut tls = client_config
+        .map(|client| client.tls.clone())
+        .unwrap_or_default();
+    if tls.ca_cert_path.is_none() {
+        tls.ca_cert_path = bootstrap.bootstrap_ca_cert_path.clone();
+    }
+    if !tls.verify_hostname {
+        warn!(
+            "TLS hostname verification is disabled for the config-server client; this weakens server identity validation"
+        );
     }
 
-    if let Some(ca_cert_path) = &bootstrap.bootstrap_ca_cert_path {
-        let cert = fs::read(ca_cert_path)?;
-        let ca = reqwest::Certificate::from_pem(&cert)
-            .map_err(|e| RuntimeError::Unsupported(format!("invalid bootstrap CA cert: {e}")))?;
-        client_builder = client_builder.add_root_certificate(ca);
-    }
-
-    client_builder.build().map_err(RuntimeError::Http)
+    light_client::build_reqwest_client(&request, &tls, light_client::EndpointOptions::default())
+        .map_err(|e| RuntimeError::Unsupported(e.to_string()))
 }
 
 fn build_query_params(bootstrap: &BootstrapConfig) -> Vec<(String, String)> {

@@ -1,4 +1,4 @@
-use crate::config::{ClientConfig, ClientRequestConfig, ClientTlsConfig};
+use crate::config::{ClientConfig, ClientRequestConfig, ClientTlsConfig, TlsVersion};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -50,6 +50,23 @@ impl ClientFactory {
 
 #[derive(Debug)]
 pub enum ClientBuildError {
+    ClientIdentityIncomplete {
+        cert_path: Option<PathBuf>,
+        key_path: Option<PathBuf>,
+    },
+    ClientCertRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    ClientKeyRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    ClientIdentityParse {
+        cert_path: PathBuf,
+        key_path: PathBuf,
+        source: reqwest::Error,
+    },
     CaRead {
         path: PathBuf,
         source: std::io::Error,
@@ -68,6 +85,42 @@ pub enum ClientBuildError {
 impl fmt::Display for ClientBuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ClientIdentityIncomplete {
+                cert_path,
+                key_path,
+            } => {
+                write!(
+                    f,
+                    "client TLS identity requires both clientCertPath and clientKeyPath; got cert={:?}, key={:?}",
+                    cert_path, key_path
+                )
+            }
+            Self::ClientCertRead { path, source } => {
+                write!(
+                    f,
+                    "failed to read client TLS certificate `{}`: {source}",
+                    path.display()
+                )
+            }
+            Self::ClientKeyRead { path, source } => {
+                write!(
+                    f,
+                    "failed to read client TLS key `{}`: {source}",
+                    path.display()
+                )
+            }
+            Self::ClientIdentityParse {
+                cert_path,
+                key_path,
+                source,
+            } => {
+                write!(
+                    f,
+                    "invalid client TLS identity cert=`{}` key=`{}`: {source}",
+                    cert_path.display(),
+                    key_path.display()
+                )
+            }
             Self::CaRead { path, source } => {
                 write!(
                     f,
@@ -93,6 +146,10 @@ impl fmt::Display for ClientBuildError {
 impl std::error::Error for ClientBuildError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::ClientIdentityIncomplete { .. } => None,
+            Self::ClientCertRead { source, .. } => Some(source),
+            Self::ClientKeyRead { source, .. } => Some(source),
+            Self::ClientIdentityParse { source, .. } => Some(source),
             Self::CaRead { source, .. } => Some(source),
             Self::CaParse { source, .. } => Some(source),
             Self::Proxy { source, .. } => Some(source),
@@ -115,6 +172,15 @@ pub fn build_reqwest_client(
         .timeout(Duration::from_millis(
             options.timeout_ms.unwrap_or(request.timeout),
         ));
+
+    if request.connection_expire_time == 0 {
+        builder = builder.pool_idle_timeout(None);
+    } else {
+        builder = builder.pool_idle_timeout(Duration::from_millis(request.connection_expire_time));
+    }
+    if request.max_connection_num_per_host > 0 {
+        builder = builder.pool_max_idle_per_host(request.max_connection_num_per_host as usize);
+    }
 
     builder = configure_reqwest_tls(builder, tls)?;
 
@@ -173,5 +239,85 @@ fn configure_reqwest_tls(
         builder = builder.danger_accept_invalid_hostnames(true);
     }
 
+    if let Some(tls_version) = tls.tls_version {
+        builder = builder.min_tls_version(match tls_version {
+            TlsVersion::TlsV1_2 => reqwest::tls::Version::TLS_1_2,
+            TlsVersion::TlsV1_3 => reqwest::tls::Version::TLS_1_3,
+        });
+    }
+
+    let client_cert_path = tls
+        .client_cert_path
+        .as_ref()
+        .filter(|path| !path.as_os_str().is_empty());
+    let client_key_path = tls
+        .client_key_path
+        .as_ref()
+        .filter(|path| !path.as_os_str().is_empty());
+    match (client_cert_path, client_key_path) {
+        (Some(cert_path), Some(key_path)) => {
+            let mut identity_pem =
+                std::fs::read(cert_path).map_err(|source| ClientBuildError::ClientCertRead {
+                    path: cert_path.clone(),
+                    source,
+                })?;
+            if !identity_pem.ends_with(b"\n") {
+                identity_pem.push(b'\n');
+            }
+            let key_pem =
+                std::fs::read(key_path).map_err(|source| ClientBuildError::ClientKeyRead {
+                    path: key_path.clone(),
+                    source,
+                })?;
+            identity_pem.extend_from_slice(&key_pem);
+            let identity = reqwest::Identity::from_pem(&identity_pem).map_err(|source| {
+                ClientBuildError::ClientIdentityParse {
+                    cert_path: cert_path.clone(),
+                    key_path: key_path.clone(),
+                    source,
+                }
+            })?;
+            builder = builder.identity(identity);
+        }
+        (Some(cert_path), None) => {
+            return Err(ClientBuildError::ClientIdentityIncomplete {
+                cert_path: Some(cert_path.clone()),
+                key_path: None,
+            });
+        }
+        (None, Some(key_path)) => {
+            return Err(ClientBuildError::ClientIdentityIncomplete {
+                cert_path: None,
+                key_path: Some(key_path.clone()),
+            });
+        }
+        (None, None) => {}
+    }
+
     Ok(builder)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mtls_requires_cert_and_key() {
+        let tls = ClientTlsConfig {
+            client_cert_path: Some(PathBuf::from("client.pem")),
+            ..ClientTlsConfig::default()
+        };
+
+        let error = build_reqwest_client(
+            &ClientRequestConfig::default(),
+            &tls,
+            EndpointOptions::default(),
+        )
+        .expect_err("client identity should require both files");
+
+        assert!(matches!(
+            error,
+            ClientBuildError::ClientIdentityIncomplete { .. }
+        ));
+    }
 }

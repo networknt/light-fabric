@@ -32,10 +32,12 @@ use light_runtime::{
 };
 use pingora::http::ResponseHeader;
 use pingora::prelude::{HttpPeer, ProxyHttp, Session};
+use pingora::utils::tls::CertKey;
 use pingora::{Error, ErrorType};
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::io::BufReader;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
 use tracing::info;
@@ -80,6 +82,12 @@ struct GatewayProxy {
     static_resources: Arc<ConfigManager<StaticResourceSet>>,
     next_upstream: AtomicUsize,
     upstream_verify_hostname: bool,
+    upstream_client_cert_key: Option<Arc<CertKey>>,
+    upstream_connect_timeout: Option<Duration>,
+    upstream_request_timeout: Option<Duration>,
+    upstream_circuit_error_threshold: u32,
+    upstream_circuit_reset_timeout: Duration,
+    upstream_circuits: Mutex<BTreeMap<String, UpstreamCircuitState>>,
     server_scheme: String,
     server_port: u16,
 }
@@ -375,6 +383,9 @@ impl GatewayProxy {
             .module_registry
             .register_reloader(light_pingora::VIRTUAL_HOST_MODULE_ID, static_reloader);
 
+        let (upstream_circuit_error_threshold, upstream_circuit_reset_timeout) =
+            upstream_circuit_config(config);
+
         Ok(Self {
             active_handlers,
             correlation_config,
@@ -399,6 +410,12 @@ impl GatewayProxy {
             static_resources,
             next_upstream: AtomicUsize::new(0),
             upstream_verify_hostname: upstream_verify_hostname(config),
+            upstream_client_cert_key: upstream_client_cert_key(config)?,
+            upstream_connect_timeout: upstream_connect_timeout(config),
+            upstream_request_timeout: upstream_request_timeout(config),
+            upstream_circuit_error_threshold,
+            upstream_circuit_reset_timeout,
+            upstream_circuits: Mutex::new(BTreeMap::new()),
             server_scheme: if config.server.enable_https {
                 "https".to_string()
             } else {
@@ -415,14 +432,86 @@ impl GatewayProxy {
     fn select_upstream(&self) -> Option<(ProxyTarget, bool, bool)> {
         let route = self.proxy_route.load();
         let route = route.as_ref().as_ref()?;
-        let index = self.next_upstream.fetch_add(1, Ordering::Relaxed);
-        route.select(index).map(|target| {
+        let mut first_open_target = None;
+        for _ in 0..route.targets.len() {
+            let index = self.next_upstream.fetch_add(1, Ordering::Relaxed);
+            let Some(target) = route.select(index) else {
+                continue;
+            };
+            if self.is_upstream_circuit_open(&target) {
+                first_open_target.get_or_insert(target);
+                continue;
+            }
+            return Some((
+                target,
+                route.rewrite_host_header(),
+                route.config.reuse_x_forwarded,
+            ));
+        }
+        first_open_target.map(|target| {
             (
                 target,
                 route.rewrite_host_header(),
                 route.config.reuse_x_forwarded,
             )
         })
+    }
+
+    fn is_upstream_circuit_open(&self, target: &ProxyTarget) -> bool {
+        if self.upstream_circuit_error_threshold == 0 {
+            return false;
+        }
+        let key = upstream_circuit_key(target);
+        let mut circuits = self
+            .upstream_circuits
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(state) = circuits.get_mut(&key) else {
+            return false;
+        };
+        let Some(opened_at) = state.opened_at else {
+            return false;
+        };
+        if opened_at.elapsed() < self.upstream_circuit_reset_timeout {
+            return true;
+        }
+        state.failures = 0;
+        state.opened_at = None;
+        false
+    }
+
+    fn record_upstream_success(&self, ctx: &GatewayRequestContext) {
+        if self.upstream_circuit_error_threshold == 0 {
+            return;
+        }
+        let Some(target) = ctx.proxy_target.as_ref() else {
+            return;
+        };
+        let key = upstream_circuit_key(target);
+        let mut circuits = self
+            .upstream_circuits
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        circuits.remove(&key);
+    }
+
+    fn record_upstream_failure(&self, ctx: &GatewayRequestContext) {
+        if self.upstream_circuit_error_threshold == 0 {
+            return;
+        }
+        let Some(target) = ctx.proxy_target.as_ref() else {
+            return;
+        };
+        let key = upstream_circuit_key(target);
+        let mut circuits = self
+            .upstream_circuits
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let state = circuits.entry(key).or_default();
+        state.failures = state.failures.saturating_add(1);
+        if state.failures >= self.upstream_circuit_error_threshold {
+            state.opened_at = Some(Instant::now());
+        }
     }
 
     async fn write_static_resolution(
@@ -2040,14 +2129,43 @@ impl ProxyHttp for GatewayProxy {
                 "no proxy target selected by handler chain",
             )
         })?;
+        if self.is_upstream_circuit_open(upstream) {
+            return Err(Error::explain(
+                ErrorType::HTTPStatus(503),
+                format!("upstream circuit is open for {}", upstream.address),
+            ));
+        }
         info!("proxying request to {}", upstream.address);
-        let mut peer = HttpPeer::new(
-            upstream.address.as_str(),
-            upstream.tls,
-            upstream.sni.clone(),
-        );
+        let mut peer = if upstream.tls {
+            if let Some(cert_key) = self.upstream_client_cert_key.as_ref() {
+                HttpPeer::new_mtls(
+                    upstream.address.as_str(),
+                    upstream.sni.clone(),
+                    Arc::clone(cert_key),
+                )
+            } else {
+                HttpPeer::new(
+                    upstream.address.as_str(),
+                    upstream.tls,
+                    upstream.sni.clone(),
+                )
+            }
+        } else {
+            HttpPeer::new(
+                upstream.address.as_str(),
+                upstream.tls,
+                upstream.sni.clone(),
+            )
+        };
         if !self.upstream_verify_hostname {
             peer.options.verify_hostname = false;
+        }
+        if let Some(timeout) = self.upstream_connect_timeout {
+            peer.options.connection_timeout = Some(timeout);
+        }
+        if let Some(timeout) = self.upstream_request_timeout {
+            peer.options.read_timeout = Some(timeout);
+            peer.options.write_timeout = Some(timeout);
         }
         if ctx.websocket_decision.is_some()
             && let Some(timeout) = websocket_io_timeout(ctx)
@@ -2252,9 +2370,25 @@ impl ProxyHttp for GatewayProxy {
             upstream_response.insert_header("Sec-WebSocket-Protocol", protocol)?;
         }
         self.apply_response_headers(upstream_response, ctx)?;
+        if upstream_response.status.as_u16() >= 500 {
+            self.record_upstream_failure(ctx);
+        } else {
+            self.record_upstream_success(ctx);
+        }
         self.record_metrics(ctx, upstream_response.status.as_u16());
         self.log_handler_durations(ctx);
         Ok(())
+    }
+
+    fn fail_to_connect(
+        &self,
+        _session: &mut Session,
+        _peer: &HttpPeer,
+        ctx: &mut Self::CTX,
+        e: Box<Error>,
+    ) -> Box<Error> {
+        self.record_upstream_failure(ctx);
+        e
     }
 
     async fn logging(&self, _session: &mut Session, error: Option<&Error>, ctx: &mut Self::CTX)
@@ -2266,6 +2400,12 @@ impl ProxyHttp for GatewayProxy {
         }
         self.log_handler_durations(ctx);
     }
+}
+
+#[derive(Debug, Default)]
+struct UpstreamCircuitState {
+    failures: u32,
+    opened_at: Option<Instant>,
 }
 
 struct GatewayRequestContext {
@@ -2823,6 +2963,100 @@ fn upstream_verify_hostname(config: &RuntimeConfig) -> bool {
         .as_ref()
         .map(|client| client.tls.verify_hostname)
         .unwrap_or(true)
+}
+
+fn upstream_connect_timeout(config: &RuntimeConfig) -> Option<Duration> {
+    config
+        .client
+        .as_ref()
+        .and_then(|client| duration_from_millis(client.request.connect_timeout))
+}
+
+fn upstream_request_timeout(config: &RuntimeConfig) -> Option<Duration> {
+    config
+        .client
+        .as_ref()
+        .and_then(|client| duration_from_millis(client.request.timeout))
+}
+
+fn duration_from_millis(value: u64) -> Option<Duration> {
+    (value > 0).then(|| Duration::from_millis(value))
+}
+
+fn upstream_circuit_config(config: &RuntimeConfig) -> (u32, Duration) {
+    config
+        .client
+        .as_ref()
+        .map(|client| {
+            (
+                client.request.error_threshold,
+                Duration::from_millis(client.request.reset_timeout),
+            )
+        })
+        .unwrap_or((0, Duration::ZERO))
+}
+
+fn upstream_circuit_key(target: &ProxyTarget) -> String {
+    target.address.clone()
+}
+
+fn upstream_client_cert_key(config: &RuntimeConfig) -> Result<Option<Arc<CertKey>>, RuntimeError> {
+    let Some(client) = config.client.as_ref() else {
+        return Ok(None);
+    };
+    let client_cert_path = client
+        .tls
+        .client_cert_path
+        .as_ref()
+        .filter(|path| !path.as_os_str().is_empty());
+    let client_key_path = client
+        .tls
+        .client_key_path
+        .as_ref()
+        .filter(|path| !path.as_os_str().is_empty());
+
+    let (Some(client_cert_path), Some(client_key_path)) = (client_cert_path, client_key_path)
+    else {
+        if client_cert_path.is_some() || client_key_path.is_some() {
+            return Err(RuntimeError::Unsupported(
+                "client TLS identity requires both tls.clientCertPath and tls.clientKeyPath"
+                    .to_string(),
+            ));
+        }
+        return Ok(None);
+    };
+
+    let cert_file = std::fs::File::open(client_cert_path)?;
+    let mut cert_reader = BufReader::new(cert_file);
+    let certificates = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|certificate| certificate.as_ref().to_vec())
+        .collect::<Vec<_>>();
+    if certificates.is_empty() {
+        return Err(RuntimeError::Unsupported(format!(
+            "client TLS certificate `{}` contains no certificates",
+            client_cert_path.display()
+        )));
+    }
+
+    let key_file = std::fs::File::open(client_key_path)?;
+    let mut key_reader = BufReader::new(key_file);
+    let Some(key) = rustls_pemfile::private_key(&mut key_reader)? else {
+        return Err(RuntimeError::Unsupported(format!(
+            "client TLS key `{}` contains no private key",
+            client_key_path.display()
+        )));
+    };
+    let key = key.secret_der().to_vec();
+    let cert_key = std::panic::catch_unwind(|| CertKey::new(certificates, key)).map_err(|_| {
+        RuntimeError::Unsupported(format!(
+            "invalid client TLS identity cert=`{}` key=`{}`",
+            client_cert_path.display(),
+            client_key_path.display()
+        ))
+    })?;
+    Ok(Some(Arc::new(cert_key)))
 }
 
 fn load_websocket_router_runtime_preserving_state(

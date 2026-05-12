@@ -8,6 +8,9 @@ use std::fmt;
 pub enum OAuthProviderSection {
     ClientCredentials,
     Key,
+    Sign,
+    SignKey,
+    Deref,
 }
 
 impl OAuthProviderSection {
@@ -15,6 +18,9 @@ impl OAuthProviderSection {
         match self {
             Self::ClientCredentials => "oauth.token.client_credentials.serviceIdAuthServers",
             Self::Key => "oauth.token.key.serviceIdAuthServers",
+            Self::Sign => "oauth.sign",
+            Self::SignKey => "oauth.sign.key",
+            Self::Deref => "oauth.deref",
         }
     }
 }
@@ -89,6 +95,42 @@ pub struct ResolvedKeyProvider {
     pub enable_http2: bool,
     pub audience: Option<String>,
     pub cache_service_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSignProvider {
+    pub server_url: Option<String>,
+    pub sign_service_id: Option<String>,
+    pub uri: String,
+    pub timeout: u64,
+    pub client_id: String,
+    pub client_secret: String,
+    pub proxy_host: Option<String>,
+    pub proxy_port: Option<u16>,
+    pub enable_http2: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSignKeyProvider {
+    pub server_url: Option<String>,
+    pub key_service_id: Option<String>,
+    pub uri: String,
+    pub client_id: String,
+    pub client_secret: String,
+    pub enable_http2: bool,
+    pub audience: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedDerefProvider {
+    pub server_url: Option<String>,
+    pub deref_service_id: Option<String>,
+    pub uri: String,
+    pub client_id: String,
+    pub client_secret: String,
+    pub proxy_host: Option<String>,
+    pub proxy_port: Option<u16>,
+    pub enable_http2: bool,
 }
 
 pub struct OAuthProviderResolver<'a> {
@@ -211,6 +253,79 @@ impl<'a> OAuthProviderResolver<'a> {
     pub fn has_key_providers(&self) -> bool {
         let key = &self.client.oauth.token.key;
         !key.service_id_auth_servers.is_empty() || key_provider_is_configured(key, None)
+    }
+
+    pub fn sign_provider(&self) -> Result<ResolvedSignProvider, OAuthProviderError> {
+        let sign = &self.client.oauth.sign;
+        if non_empty_str_option(sign.server_url.as_deref())
+            .or_else(|| non_empty_str_option(sign.service_id.as_deref()))
+            .is_none()
+        {
+            return Err(OAuthProviderError::MissingProvider {
+                section: OAuthProviderSection::Sign,
+            });
+        }
+
+        Ok(ResolvedSignProvider {
+            server_url: non_empty_option(sign.server_url.clone()),
+            sign_service_id: non_empty_option(sign.service_id.clone()),
+            uri: sign.uri.clone(),
+            timeout: sign.timeout,
+            client_id: sign.client_id.clone(),
+            client_secret: sign.client_secret.clone(),
+            proxy_host: non_empty_option(sign.proxy_host.clone()),
+            proxy_port: sign.proxy_port,
+            enable_http2: sign.enable_http2,
+        })
+    }
+
+    pub fn sign_key_provider(&self) -> Result<ResolvedSignKeyProvider, OAuthProviderError> {
+        let sign = &self.client.oauth.sign;
+        let key = &sign.key;
+        let server_url = non_empty_option(key.server_url.clone())
+            .or_else(|| non_empty_option(sign.server_url.clone()));
+        let key_service_id = non_empty_option(key.service_id.clone())
+            .or_else(|| non_empty_option(sign.service_id.clone()));
+        if server_url.is_none() && key_service_id.is_none() {
+            return Err(OAuthProviderError::MissingProvider {
+                section: OAuthProviderSection::SignKey,
+            });
+        }
+
+        Ok(ResolvedSignKeyProvider {
+            server_url,
+            key_service_id,
+            uri: key.uri.clone(),
+            client_id: non_empty_string(key.client_id.clone())
+                .unwrap_or_else(|| sign.client_id.clone()),
+            client_secret: non_empty_string(key.client_secret.clone())
+                .unwrap_or_else(|| sign.client_secret.clone()),
+            enable_http2: key.enable_http2,
+            audience: non_empty_option(key.audience.clone()),
+        })
+    }
+
+    pub fn deref_provider(&self) -> Result<ResolvedDerefProvider, OAuthProviderError> {
+        let deref = &self.client.oauth.deref;
+        if non_empty_str_option(deref.server_url.as_deref())
+            .or_else(|| non_empty_str_option(deref.service_id.as_deref()))
+            .is_none()
+        {
+            return Err(OAuthProviderError::MissingProvider {
+                section: OAuthProviderSection::Deref,
+            });
+        }
+
+        Ok(ResolvedDerefProvider {
+            server_url: non_empty_option(deref.server_url.clone()),
+            deref_service_id: non_empty_option(deref.service_id.clone()),
+            uri: deref.uri.clone(),
+            client_id: deref.client_id.clone(),
+            client_secret: deref.client_secret.clone(),
+            proxy_host: non_empty_option(deref.proxy_host.clone()),
+            proxy_port: deref.proxy_port,
+            enable_http2: deref.enable_http2,
+        })
     }
 
     pub fn client_credentials_multi_provider(&self) -> bool {
@@ -487,5 +602,52 @@ mod tests {
         assert_eq!(provider.uri, "/oauth2/key");
         assert_eq!(provider.audience.as_deref(), Some("pet-audience"));
         assert_eq!(provider.cache_service_id.as_deref(), Some("petstore"));
+    }
+
+    #[test]
+    fn sign_and_sign_key_providers_inherit_sign_defaults() {
+        let mut client = ClientConfig::default();
+        client.oauth.sign.server_url = Some("https://oauth".to_string());
+        client.oauth.sign.service_id = Some("oauth-service".to_string());
+        client.oauth.sign.uri = "/oauth2/signing".to_string();
+        client.oauth.sign.timeout = 1500;
+        client.oauth.sign.client_id = "sign-client".to_string();
+        client.oauth.sign.client_secret = "sign-secret".to_string();
+        client.oauth.sign.key.uri = "/oauth2/key".to_string();
+        client.oauth.sign.key.audience = Some("petstore".to_string());
+
+        let resolver = OAuthProviderResolver::new(&client);
+        let sign = resolver.sign_provider().expect("sign provider");
+        let key = resolver.sign_key_provider().expect("sign key provider");
+
+        assert_eq!(sign.server_url.as_deref(), Some("https://oauth"));
+        assert_eq!(sign.sign_service_id.as_deref(), Some("oauth-service"));
+        assert_eq!(sign.uri, "/oauth2/signing");
+        assert_eq!(sign.timeout, 1500);
+        assert_eq!(key.server_url.as_deref(), Some("https://oauth"));
+        assert_eq!(key.key_service_id.as_deref(), Some("oauth-service"));
+        assert_eq!(key.client_id, "sign-client");
+        assert_eq!(key.client_secret, "sign-secret");
+        assert_eq!(key.audience.as_deref(), Some("petstore"));
+    }
+
+    #[test]
+    fn deref_provider_resolves_direct_endpoint() {
+        let mut client = ClientConfig::default();
+        client.oauth.deref.server_url = Some("https://oauth".to_string());
+        client.oauth.deref.service_id = Some("oauth-service".to_string());
+        client.oauth.deref.uri = "/oauth2/deref".to_string();
+        client.oauth.deref.client_id = "deref-client".to_string();
+        client.oauth.deref.client_secret = "deref-secret".to_string();
+
+        let provider = OAuthProviderResolver::new(&client)
+            .deref_provider()
+            .expect("deref provider");
+
+        assert_eq!(provider.server_url.as_deref(), Some("https://oauth"));
+        assert_eq!(provider.deref_service_id.as_deref(), Some("oauth-service"));
+        assert_eq!(provider.uri, "/oauth2/deref");
+        assert_eq!(provider.client_id, "deref-client");
+        assert_eq!(provider.client_secret, "deref-secret");
     }
 }
