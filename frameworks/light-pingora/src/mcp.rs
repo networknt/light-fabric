@@ -620,7 +620,7 @@ impl McpRouterRuntime {
                 "tools/call params.arguments must be an object",
             ));
         }
-        let tool = self.tools.get(name).ok_or_else(|| McpExecutionError {
+        let tool = self.get_tool(name).ok_or_else(|| McpExecutionError {
             code: -32601,
             message: format!("tool `{name}` not found"),
         })?;
@@ -910,6 +910,35 @@ impl McpRouterRuntime {
             })?;
         parse_base_url(discovery_node_base_url(node).as_str(), &tool.name)
     }
+
+    fn get_tool(&self, requested_name: &str) -> Option<&McpToolConfig> {
+        if let Some(tool) = self.tools.get(requested_name) {
+            return Some(tool);
+        }
+
+        let requested_key = tool_name_alias_key(requested_name);
+        if requested_key.is_empty() {
+            return None;
+        }
+
+        let mut matched = None;
+        for tool in self.tools.values() {
+            if tool_name_alias_key(tool.name.as_str()) == requested_key {
+                if matched.is_some() {
+                    return None;
+                }
+                matched = Some(tool);
+            }
+        }
+        matched
+    }
+}
+
+fn tool_name_alias_key(name: &str) -> String {
+    name.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn mcp_text_result(text: impl Into<String>) -> JsonValue {
@@ -1778,6 +1807,72 @@ tools:
         let request = received.await.expect("server request");
         assert!(request.starts_with("GET /weather?city=New+York&unit=c HTTP/1.1"));
         assert!(request.contains("authorization: Bearer abc"));
+    }
+
+    #[tokio::test]
+    async fn tool_call_resolves_non_exact_tool_name_alias() {
+        let pets = json!([{"id": 1, "name": "catten", "tag": "cat"}]);
+        let (base, received) = spawn_http_server(http_json_response(pets.clone())).await;
+        let runtime = runtime_with_tool("listPets", "List pets", base.as_str());
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json()],
+                body: br#"{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"list_pets","arguments":{"limit":1}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_mcp_json_result(&body["result"], pets);
+        let request = received.await.expect("server request");
+        assert!(request.starts_with("GET /weather?limit=1 HTTP/1.1"));
+    }
+
+    #[tokio::test]
+    async fn tool_call_rejects_ambiguous_tool_name_alias() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![
+                test_tool(
+                    "listPets",
+                    "List pets",
+                    "http://127.0.0.1:1",
+                    McpHttpMethod::Get,
+                    None,
+                    default_input_schema(),
+                ),
+                test_tool(
+                    "list_pets",
+                    "List pets",
+                    "http://127.0.0.1:1",
+                    McpHttpMethod::Get,
+                    None,
+                    default_input_schema(),
+                ),
+            ],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json()],
+                body: br#"{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"list-pets","arguments":{}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["error"]["code"], -32601);
+        assert_eq!(body["error"]["message"], "tool `list-pets` not found");
     }
 
     #[tokio::test]
