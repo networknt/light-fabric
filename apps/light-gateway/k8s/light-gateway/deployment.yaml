@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${name:ai-microgateway-rust}
+  namespace: ${namespace:light-gateway}
+  labels:
+    app.kubernetes.io/name: ${name:ai-microgateway-rust}
+    app.kubernetes.io/component: micro-gateway
+    app.kubernetes.io/part-of: lightapi
+spec:
+  replicas: ${replicas:1}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ${name:ai-microgateway-rust}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ${name:ai-microgateway-rust}
+        app.kubernetes.io/component: micro-gateway
+        app.kubernetes.io/part-of: lightapi
+    spec:
+      securityContext:
+        fsGroup: ${podSecurity.fsGroup:999}
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: light-gateway
+          image: ${image.repository:networknt/light-gateway}:${image.tag:rust-local}
+          imagePullPolicy: ${image.pullPolicy:IfNotPresent}
+          env:
+            - name: LIGHT_PORTAL_AUTHORIZATION
+              valueFrom:
+                secretKeyRef:
+                  name: ${name:ai-microgateway-rust}-bootstrap
+                  key: light-portal-authorization
+            - name: light_4j_config_password
+              valueFrom:
+                secretKeyRef:
+                  name: ${name:ai-microgateway-rust}-bootstrap
+                  key: light-4j-config-password
+                  optional: true
+            - name: RUST_LOG
+              value: ${rustLog:info}
+          ports:
+            - name: http
+              containerPort: ${ports.http:8080}
+              protocol: TCP
+            - name: https
+              containerPort: ${ports.https:8443}
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: ${probes.path:/health}
+              port: http
+            initialDelaySeconds: ${probes.readinessInitialDelaySeconds:5}
+            periodSeconds: ${probes.readinessPeriodSeconds:10}
+          livenessProbe:
+            httpGet:
+              path: ${probes.path:/health}
+              port: http
+            initialDelaySeconds: ${probes.livenessInitialDelaySeconds:30}
+            periodSeconds: ${probes.livenessPeriodSeconds:30}
+          resources:
+            requests:
+              cpu: ${resources.requests.cpu:100m}
+              memory: ${resources.requests.memory:128Mi}
+            limits:
+              cpu: ${resources.limits.cpu:1000m}
+              memory: ${resources.limits.memory:512Mi}
+          volumeMounts:
+            - name: bootstrap-config
+              mountPath: /config
+              readOnly: true
+            - name: config-cache
+              mountPath: /app/config-cache
+      volumes:
+        - name: bootstrap-config
+          projected:
+            sources:
+              - configMap:
+                  name: ${name:ai-microgateway-rust}-config
+              - secret:
+                  name: ${name:ai-microgateway-rust}-bootstrap
+                  items:
+                    - key: ca.pem
+                      path: ca.pem
+        - name: config-cache
+          emptyDir: {}

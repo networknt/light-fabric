@@ -63,6 +63,8 @@
   - [Run Kubernetes](product/light-deployer/run-kubernetes.md)
 - [Light-Gateway](product/light-gateway.md)
   - [Light Rule](product/light-gateway/light-rule.md)
+  - [Deploy Native](product/light-gateway/deploy-native.md)
+  - [Deploy Kubernetes](product/light-gateway/deploy-kubernetes.md)
 - [Light-Workflow](product/light-workflow.md)
 
 

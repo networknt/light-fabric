@@ -1,0 +1,46 @@
+{
+  "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+  "instanceId": "ai-microgateway-rust-dev",
+  "environment": "dev",
+  "clusterId": "local",
+  "namespace": "light-gateway",
+  "action": "render",
+  "values": {
+    "namespace": "light-gateway",
+    "name": "ai-microgateway-rust",
+    "image": {
+      "repository": "networknt/light-gateway",
+      "tag": "rust-local",
+      "pullPolicy": "IfNotPresent"
+    },
+    "startup": {
+      "host": "dev.lightapi.net",
+      "serviceId": "com.networknt.ai.gateway-1.0.0",
+      "envTag": "dev"
+    },
+    "server": {
+      "advertisedAddress": "ai-microgateway-rust.light-gateway",
+      "enableHttp": true,
+      "enableHttps": false,
+      "startOnRegistryFailure": true
+    },
+    "configServer": {
+      "uri": "https://192.168.5.85:8435"
+    },
+    "portalRegistry": {
+      "portalUrl": "https://controller:8438"
+    },
+    "client": {
+      "verifyHostname": false
+    },
+    "light4jConfigPassword": "DEV",
+    "lightPortalAuthorization": "Bearer <token>",
+    "bootstrapCaPemBase64": "<base64-ca-pem>",
+    "rustLog": "info"
+  },
+  "template": {
+    "repoUrl": "local",
+    "ref": "main",
+    "path": "apps/light-gateway/k8s/light-gateway"
+  }
+}
