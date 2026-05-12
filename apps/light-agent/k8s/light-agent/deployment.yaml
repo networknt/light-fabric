@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${name:light-agent-account}
+  namespace: ${namespace:light-agent}
+  labels:
+    app.kubernetes.io/name: ${name:light-agent-account}
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/part-of: lightapi
+spec:
+  replicas: ${replicas:1}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ${name:light-agent-account}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ${name:light-agent-account}
+        app.kubernetes.io/component: agent
+        app.kubernetes.io/part-of: lightapi
+    spec:
+      securityContext:
+        fsGroup: ${podSecurity.fsGroup:999}
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: light-agent
+          image: ${image.repository:networknt/light-agent}:${image.tag:agent-local}
+          imagePullPolicy: ${image.pullPolicy:IfNotPresent}
+          env:
+            - name: LIGHT_PORTAL_AUTHORIZATION
+              valueFrom:
+                secretKeyRef:
+                  name: ${name:light-agent-account}-secret
+                  key: light-portal-authorization
+            - name: light_4j_config_password
+              valueFrom:
+                secretKeyRef:
+                  name: ${name:light-agent-account}-secret
+                  key: light-4j-config-password
+                  optional: true
+            - name: LIGHT_AGENT_HOST_ID
+              valueFrom:
+                secretKeyRef:
+                  name: ${name:light-agent-account}-secret
+                  key: light-agent-host-id
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ${name:light-agent-account}-secret
+                  key: database-url
+            - name: RUST_LOG
+              value: ${rustLog:info}
+            - name: AGENT_LOG_ANSI
+              value: "${agentLogAnsi:false}"
+          ports:
+            - name: http
+              containerPort: ${ports.http:8083}
+              protocol: TCP
+            - name: https
+              containerPort: ${ports.https:8443}
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: ${probes.path:/health}
+              port: http
+            initialDelaySeconds: ${probes.readinessInitialDelaySeconds:5}
+            periodSeconds: ${probes.readinessPeriodSeconds:10}
+          livenessProbe:
+            httpGet:
+              path: ${probes.path:/health}
+              port: http
+            initialDelaySeconds: ${probes.livenessInitialDelaySeconds:30}
+            periodSeconds: ${probes.livenessPeriodSeconds:30}
+          resources:
+            requests:
+              cpu: ${resources.requests.cpu:100m}
+              memory: ${resources.requests.memory:256Mi}
+            limits:
+              cpu: ${resources.limits.cpu:1000m}
+              memory: ${resources.limits.memory:768Mi}
+          volumeMounts:
+            - name: bootstrap-config
+              mountPath: /config
+              readOnly: true
+            - name: config-cache
+              mountPath: /app/config-cache
+            - name: public
+              mountPath: /app/public
+              readOnly: true
+      volumes:
+        - name: bootstrap-config
+          projected:
+            sources:
+              - configMap:
+                  name: ${name:light-agent-account}-config
+              - secret:
+                  name: ${name:light-agent-account}-secret
+                  items:
+                    - key: ca.pem
+                      path: ca.pem
+        - name: config-cache
+          emptyDir: {}
+        - name: public
+          configMap:
+            name: ${name:light-agent-account}-public

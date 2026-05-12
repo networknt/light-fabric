@@ -556,8 +556,13 @@ does not directly set arbitrary authorization headers.
 
 ## Deploy Through Light-Deployer
 
-If these manifests are packaged as a light-deployer template, use the same
-template rules as `light-gateway`.
+The repo template lives at:
+
+```text
+apps/light-agent/k8s/light-agent
+```
+
+Use the same template rules as `light-gateway`.
 
 When `light-deployer` runs outside the cluster and has
 `LIGHT_DEPLOYER_TEMPLATE_BASE_DIR` set, `repoUrl: "local"` can point to local

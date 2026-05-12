@@ -1,0 +1,61 @@
+{
+  "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+  "instanceId": "light-agent-account-dev",
+  "environment": "dev",
+  "clusterId": "local",
+  "namespace": "light-agent",
+  "action": "render",
+  "values": {
+    "namespace": "light-agent",
+    "name": "light-agent-account",
+    "image": {
+      "repository": "networknt/light-agent",
+      "tag": "agent-local",
+      "pullPolicy": "IfNotPresent"
+    },
+    "startup": {
+      "host": "dev.lightapi.net",
+      "serviceId": "com.networknt.agent.account-1.0.0",
+      "envTag": "dev"
+    },
+    "server": {
+      "advertisedAddress": "light-agent-account.light-agent",
+      "enableHttp": true,
+      "enableHttps": false,
+      "enableRegistry": true,
+      "startOnRegistryFailure": true
+    },
+    "configServer": {
+      "uri": "https://192.168.5.85:8435"
+    },
+    "portalRegistry": {
+      "portalUrl": "https://controller:8438"
+    },
+    "client": {
+      "verifyHostname": false
+    },
+    "mcpClient": {
+      "gatewayUrl": "https://ai-microgateway.light-gateway:8443",
+      "path": "/mcp",
+      "timeoutMs": 5000
+    },
+    "ollama": {
+      "ollamaUrl": "http://192.168.5.85:11434",
+      "model": "llama3.1:8b"
+    },
+    "database": {
+      "url": "postgres://postgres:<password>@192.168.5.85:5432/configserver"
+    },
+    "lightAgentHostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+    "light4jConfigPassword": "DEV",
+    "lightPortalAuthorization": "Bearer <token>",
+    "bootstrapCaPemBase64": "<base64-ca-pem>",
+    "rustLog": "info",
+    "agentLogAnsi": false
+  },
+  "template": {
+    "repoUrl": "local",
+    "ref": "main",
+    "path": "apps/light-agent/k8s/light-agent"
+  }
+}

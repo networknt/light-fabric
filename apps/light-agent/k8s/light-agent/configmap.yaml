@@ -1,0 +1,77 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${name:light-agent-account}-config
+  namespace: ${namespace:light-agent}
+  labels:
+    app.kubernetes.io/name: ${name:light-agent-account}
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/part-of: lightapi
+data:
+  values.yml: |
+    startup.host: ${startup.host:dev.lightapi.net}
+    startup.timeout: ${startup.timeout:3000}
+    startup.connectTimeout: ${startup.connectTimeout:3000}
+    startup.bootstrapCaCertPath: config/ca.pem
+    startup.externalConfigDir: /app/config-cache
+    light-config-server-uri: ${configServer.uri:https://light-config-server:8435}
+
+    server.serviceId: ${startup.serviceId:com.networknt.agent.account-1.0.0}
+    server.environment: ${startup.envTag:dev}
+    server.ip: 0.0.0.0
+    server.advertisedAddress: ${server.advertisedAddress:light-agent-account.light-agent}
+    server.httpPort: ${ports.http:8083}
+    server.enableHttp: ${server.enableHttp:true}
+    server.httpsPort: ${ports.https:8443}
+    server.enableHttps: ${server.enableHttps:false}
+    server.enableRegistry: ${server.enableRegistry:true}
+    server.startOnRegistryFailure: ${server.startOnRegistryFailure:true}
+
+    portalRegistry.portalUrl: ${portalRegistry.portalUrl:https://controller:8438}
+
+    client.verifyHostname: ${client.verifyHostname:false}
+
+    mcp-client.gatewayUrl: ${mcpClient.gatewayUrl:https://ai-microgateway.light-gateway:8443}
+    mcp-client.path: ${mcpClient.path:/mcp}
+    mcp-client.timeoutMs: ${mcpClient.timeoutMs:5000}
+
+    ollama.ollamaUrl: ${ollama.ollamaUrl:http://ollama:11434}
+    ollama.model: ${ollama.model:llama3.1:8b}
+  startup.yml: |
+    host: ${startup.host:dev.lightapi.net}
+    serviceId: ${startup.serviceId:com.networknt.agent.account-1.0.0}
+    envTag: ${startup.envTag:dev}
+    acceptHeader: application/yaml
+    timeout: ${startup.timeout:3000}
+    connectTimeout: ${startup.connectTimeout:3000}
+    configServerUri: ${configServer.uri:https://light-config-server:8435}
+    authorization: "${light_portal_authorization:}"
+    bootstrapCaCertPath: ${startup.bootstrapCaCertPath:config/ca.pem}
+    externalConfigDir: ${startup.externalConfigDir:/app/config-cache}
+  server.yml: |
+    ip: ${server.ip:0.0.0.0}
+    advertisedAddress: ${server.advertisedAddress:127.0.0.1}
+    httpPort: ${server.httpPort:8083}
+    enableHttp: ${server.enableHttp:true}
+    httpsPort: ${server.httpsPort:8443}
+    enableHttps: ${server.enableHttps:false}
+    serviceId: ${startup.serviceId:com.networknt.agent.account-1.0.0}
+    enableRegistry: ${server.enableRegistry:true}
+    startOnRegistryFailure: ${server.startOnRegistryFailure:true}
+    dynamicPort: ${server.dynamicPort:false}
+    environment: ${startup.envTag:dev}
+    shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
+  portal-registry.yml: |
+    portalUrl: ${portalRegistry.portalUrl:https://localhost:8438}
+    portalToken: "${light_portal_authorization:}"
+    controllerDiscoveryToken: ${portalRegistry.controllerDiscoveryToken:}
+  client.yml: |
+    tls:
+      verifyHostname: ${client.verifyHostname:false}
+  mcp-client.yml: |
+    gatewayUrl: ${mcpClient.gatewayUrl:https://ai-microgateway.light-gateway:8443}
+    path: ${mcpClient.path:/mcp}
+    timeoutMs: ${mcpClient.timeoutMs:5000}
+  ollama.yml: |
+    ollamaUrl: ${ollama.ollamaUrl:http://ollama:11434}
+    model: ${ollama.model:llama3.1:8b}
