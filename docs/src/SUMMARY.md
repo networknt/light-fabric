@@ -56,6 +56,8 @@
 # Product
 
 - [Light-Agent](product/light-agent.md)
+  - [Deploy Native](product/light-agent/deploy-native.md)
+  - [Deploy Kubernetes](product/light-agent/deploy-kubernetes.md)
 - [Light-Deployer](product/light-deployer.md)
   - [Build Local](product/light-deployer/build-local.md)
   - [Prepare Config](product/light-deployer/prepare-config.md)
