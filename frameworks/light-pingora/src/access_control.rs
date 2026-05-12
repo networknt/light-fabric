@@ -5,6 +5,7 @@ use light_rule::{ActionRegistry, EndpointConfig, Rule, RuleActionPlugin, RuleEng
 use light_runtime::{ModuleKind, RuntimeConfig, RuntimeError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
+use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::Arc;
@@ -291,6 +292,12 @@ pub fn load_access_control_runtime(
         runtime_config,
         &[ACCESS_CONTROL_FILE, ACCESS_CONTROL_LEGACY_FILE],
     )?;
+    let access = match access {
+        Some(config) => Some(config),
+        None => {
+            load_values_config::<AccessControlConfig>(runtime_config, ACCESS_CONTROL_CONFIG_NAME)?
+        }
+    };
     if let Some((_, config)) = &access {
         runtime_config.module_registry.register_loaded_config(
             ACCESS_CONTROL_MODULE_ID,
@@ -304,7 +311,11 @@ pub fn load_access_control_runtime(
         )?;
     }
 
-    let rules = load_config_any::<RuleFileConfig>(runtime_config, &[RULE_FILE, RULE_LEGACY_FILE])?;
+    let rules =
+        match load_config_any::<RuleFileConfig>(runtime_config, &[RULE_FILE, RULE_LEGACY_FILE])? {
+            Some(config) => Some(config),
+            None => load_values_config::<RuleFileConfig>(runtime_config, RULE_CONFIG_NAME)?,
+        };
     if let Some((_, config)) = &rules {
         runtime_config.module_registry.register_loaded_config(
             RULE_MODULE_ID,
@@ -318,8 +329,13 @@ pub fn load_access_control_runtime(
         )?;
     }
 
-    let access_config = access.map(|(_, config)| config);
+    let mut access_config = access.map(|(_, config)| config);
     let rule_config = rules.map(|(_, config)| config).unwrap_or_default();
+    if access_config.is_none()
+        && (!rule_config.rule_bodies.is_empty() || !rule_config.endpoint_rules.is_empty())
+    {
+        access_config = Some(AccessControlConfig::default());
+    }
     if access_config.is_none()
         && rule_config.rule_bodies.is_empty()
         && rule_config.endpoint_rules.is_empty()
@@ -328,6 +344,40 @@ pub fn load_access_control_runtime(
     }
 
     Ok(Some(AccessControlRuntime::new(access_config, rule_config)))
+}
+
+fn load_values_config<T>(
+    runtime_config: &RuntimeConfig,
+    config_name: &str,
+) -> Result<Option<(String, T)>, RuntimeError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let Some(value) = values_config_value(runtime_config, config_name) else {
+        return Ok(None);
+    };
+    let config = serde_yaml::from_value::<T>(value)?;
+    Ok(Some((format!("values.yml:{config_name}"), config)))
+}
+
+fn values_config_value(runtime_config: &RuntimeConfig, config_name: &str) -> Option<YamlValue> {
+    if let Some(value) = runtime_config.resolved_values.get(config_name) {
+        return Some(value.clone());
+    }
+
+    let prefix = format!("{config_name}.");
+    let mut config = YamlMapping::new();
+    for (key, value) in &runtime_config.resolved_values {
+        let Some(field_name) = key.strip_prefix(prefix.as_str()) else {
+            continue;
+        };
+        if field_name.is_empty() {
+            continue;
+        }
+        config.insert(YamlValue::String(field_name.to_string()), value.clone());
+    }
+
+    (!config.is_empty()).then_some(YamlValue::Mapping(config))
 }
 
 fn load_config_any<T>(
@@ -597,6 +647,7 @@ impl FilterTarget {
                 if let JsonValue::Object(map) = &mut result {
                     map.insert("structuredContent".to_string(), filtered);
                 }
+                update_text_content(&mut result, filtered_body);
                 result
             }
             FilterTargetKind::Text(index) => {
@@ -611,6 +662,18 @@ impl FilterTarget {
                 result
             }
         }
+    }
+}
+
+fn update_text_content(result: &mut JsonValue, text: String) {
+    if let Some(item) = result
+        .get_mut("content")
+        .and_then(JsonValue::as_array_mut)
+        .and_then(|content| content.get_mut(0))
+        .and_then(JsonValue::as_object_mut)
+        && item.get("type").and_then(JsonValue::as_str) == Some("text")
+    {
+        item.insert("text".to_string(), JsonValue::String(text));
     }
 }
 
@@ -908,6 +971,11 @@ fn default_access_rule_logic() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use light_runtime::{
+        BootstrapConfig, DirectRegistryConfig, ModuleRegistry, PortalRegistryConfig, ServerConfig,
+        ServiceIdentity, config::ClientConfig,
+    };
+    use tempfile::TempDir;
 
     fn auth(role: &str) -> AuthPrincipal {
         AuthPrincipal {
@@ -955,6 +1023,100 @@ endpointRules:
         )
     }
 
+    fn runtime_config_with_values(values: HashMap<String, YamlValue>) -> (TempDir, RuntimeConfig) {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let runtime_config = RuntimeConfig {
+            bootstrap: BootstrapConfig::default(),
+            server: ServerConfig::default(),
+            client: None::<ClientConfig>,
+            portal_registry: None::<PortalRegistryConfig>,
+            direct_registry: DirectRegistryConfig::default(),
+            service_identity: ServiceIdentity::default(),
+            config_dir: config_dir.path().to_path_buf(),
+            external_config_dir: config_dir.path().join("external"),
+            resolved_values: values,
+            module_registry: Arc::new(ModuleRegistry::new()),
+            cache_registry: None,
+            registry_client: None,
+        };
+        (config_dir, runtime_config)
+    }
+
+    #[tokio::test]
+    async fn load_access_control_runtime_reads_rules_from_values_without_rule_file() {
+        let mut values = HashMap::new();
+        values.insert("access-control.enabled".to_string(), YamlValue::Bool(true));
+        values.insert(
+            "access-control.accessRuleLogic".to_string(),
+            YamlValue::String("any".to_string()),
+        );
+        values.insert(
+            "rule.ruleBodies".to_string(),
+            serde_yaml::from_str(
+                r#"
+allow-account-role:
+  common: Y
+  ruleId: allow-account-role
+  ruleName: Allow account role
+  ruleType: req-acc
+  conditions:
+    - operatorCode: isNotNull
+      propertyPath: auditInfo.subject_claims.ClaimsMap.role
+  actions:
+    - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
+"#,
+            )
+            .expect("rule bodies"),
+        );
+        values.insert(
+            "rule.endpointRules".to_string(),
+            serde_yaml::from_str(
+                r#"
+/v1/accounts@get:
+  req-acc:
+    - allow-account-role
+  permission:
+    roles: account-manager teller
+"#,
+            )
+            .expect("endpoint rules"),
+        );
+
+        let (_config_dir, runtime_config) = runtime_config_with_values(values);
+        let policy = load_access_control_runtime(&runtime_config, true)
+            .expect("load policy")
+            .expect("policy");
+
+        assert_eq!(
+            policy
+                .authorize_tool(
+                    "getAccounts",
+                    "/v1/accounts@get",
+                    &[],
+                    Some(&auth("account-manager")),
+                    &json!({}),
+                    None,
+                )
+                .await,
+            AccessDecision::Allowed
+        );
+        assert_eq!(
+            policy
+                .authorize_tool(
+                    "getAccounts",
+                    "/v1/accounts@get",
+                    &[],
+                    Some(&auth("user")),
+                    &json!({}),
+                    None,
+                )
+                .await,
+            AccessDecision::Denied(
+                "Access denied by access control rule for /v1/accounts@get".to_string()
+            )
+        );
+    }
+
     #[tokio::test]
     async fn response_column_filter_keeps_allowed_fields_in_structured_content() {
         let policy = policy_for_filter(
@@ -977,6 +1139,12 @@ endpointRules:
                 &json!({}),
                 None,
                 json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "[{\"id\":1,\"secret\":\"x\"}]"
+                        }
+                    ],
                     "structuredContent": [
                         {
                             "id": 1,
@@ -989,6 +1157,10 @@ endpointRules:
 
         assert_eq!(result["structuredContent"][0]["id"], 1);
         assert!(result["structuredContent"][0].get("secret").is_none());
+        assert_eq!(
+            result["content"][0]["text"],
+            JsonValue::String("[{\"id\":1}]".to_string())
+        );
     }
 
     #[tokio::test]

@@ -777,26 +777,19 @@ impl McpRouterRuntime {
             )));
         }
         if body.is_empty() {
-            return Ok(json!({ "result": "success" }));
+            return Ok(mcp_text_result("success"));
         }
         if content_type
             .as_deref()
             .is_some_and(|value| value.to_ascii_lowercase().contains("json"))
             && let Ok(value) = serde_json::from_slice::<JsonValue>(&body)
         {
-            return Ok(value);
+            return Ok(mcp_json_result(value));
         }
         if let Ok(value) = serde_json::from_slice::<JsonValue>(&body) {
-            return Ok(value);
+            return Ok(mcp_json_result(value));
         }
-        Ok(json!({
-            "content": [
-                {
-                    "type": "text",
-                    "text": String::from_utf8_lossy(&body)
-                }
-            ]
-        }))
+        Ok(mcp_text_result(String::from_utf8_lossy(&body).to_string()))
     }
 
     async fn execute_mcp_proxy_tool(
@@ -917,6 +910,30 @@ impl McpRouterRuntime {
             })?;
         parse_base_url(discovery_node_base_url(node).as_str(), &tool.name)
     }
+}
+
+fn mcp_text_result(text: impl Into<String>) -> JsonValue {
+    json!({
+        "content": [
+            {
+                "type": "text",
+                "text": text.into()
+            }
+        ]
+    })
+}
+
+fn mcp_json_result(value: JsonValue) -> JsonValue {
+    let text = serde_json::to_string(&value).unwrap_or_else(|_| value.to_string());
+    json!({
+        "content": [
+            {
+                "type": "text",
+                "text": text
+            }
+        ],
+        "structuredContent": value
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -1737,7 +1754,8 @@ tools:
 
     #[tokio::test]
     async fn tool_call_get_forwards_arguments_and_agent_headers() {
-        let (base, received) = spawn_http_server(http_json_response(json!({"ok": true}))).await;
+        let pets = json!([{"id": 1, "name": "catten", "tag": "cat"}]);
+        let (base, received) = spawn_http_server(http_json_response(pets.clone())).await;
         let runtime = runtime_with_tool("weather", "Get weather", base.as_str());
 
         let response = runtime
@@ -1756,7 +1774,7 @@ tools:
 
         assert_eq!(response.status, 200);
         let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
-        assert_eq!(body["result"]["ok"], true);
+        assert_mcp_json_result(&body["result"], pets);
         let request = received.await.expect("server request");
         assert!(request.starts_with("GET /weather?city=New+York&unit=c HTTP/1.1"));
         assert!(request.contains("authorization: Bearer abc"));
@@ -1783,7 +1801,7 @@ tools:
         assert!(response.streamed);
         let event = sse_json(&response.body);
         assert_eq!(event["id"], 10);
-        assert_eq!(event["result"]["ok"], true);
+        assert_mcp_json_result(&event["result"], json!({"ok": true}));
     }
 
     #[tokio::test]
@@ -1833,7 +1851,7 @@ tools:
 
         assert_eq!(response.status, 200);
         let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
-        assert_eq!(body["result"]["forecast"], "rain");
+        assert_mcp_json_result(&body["result"], json!({"forecast": "rain"}));
         let request = received.await.expect("server request");
         assert!(request.starts_with("GET /weather?city=Toronto HTTP/1.1"));
         let lookups = resolver.lookups.lock().expect("lookup lock");
@@ -1896,7 +1914,7 @@ tools:
 
         assert_eq!(response.status, 200);
         let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
-        assert_eq!(body["result"]["forecast"], "clear");
+        assert_mcp_json_result(&body["result"], json!({"forecast": "clear"}));
         let request = received.await.expect("server request");
         assert!(request.starts_with("GET /weather?city=Toronto HTTP/1.1"));
         assert!(resolver.lookups.lock().expect("lookup lock").is_empty());
@@ -2063,7 +2081,7 @@ tools:
 
         assert_eq!(response.status, 200);
         let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
-        assert_eq!(body["result"]["ok"], true);
+        assert_mcp_json_result(&body["result"], json!({"ok": true}));
         let request = received.await.expect("server request");
         assert!(request.starts_with("GET /mcp HTTP/1.1"));
     }
@@ -2188,7 +2206,7 @@ endpointRules:
             .expect("response");
 
         let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
-        assert_eq!(body["result"]["ok"], true);
+        assert_mcp_json_result(&body["result"], json!({"ok": true}));
         let request = received.await.expect("server request");
         let body = request.split("\r\n\r\n").nth(1).expect("request body");
         let arguments = serde_json::from_str::<JsonValue>(body).expect("json request");
@@ -2280,6 +2298,14 @@ endpointRules:
             .collect::<Vec<_>>()
             .join("\n");
         serde_json::from_str(&data).expect("sse json")
+    }
+
+    fn assert_mcp_json_result(result: &JsonValue, expected: JsonValue) {
+        assert_eq!(result["structuredContent"], expected);
+        assert_eq!(result["content"][0]["type"], "text");
+        let text = result["content"][0]["text"].as_str().expect("text content");
+        let parsed = serde_json::from_str::<JsonValue>(text).expect("json text content");
+        assert_eq!(parsed, expected);
     }
 
     fn http_json_response(value: JsonValue) -> String {

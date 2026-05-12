@@ -183,6 +183,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn call_tool_parses_content_result() {
+        let response = http_response(
+            "HTTP/1.1 200 OK",
+            "application/json",
+            "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"[{\\\"id\\\":1}]\"}],\"structuredContent\":[{\"id\":1}]}}",
+        );
+        let (url, captured) = spawn_test_server(response).await;
+        let client = McpGatewayClient::new(&url).unwrap();
+
+        let result = client
+            .call_tool(None, "listPets", serde_json::json!({"limit": 1}))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error);
+        assert_eq!(result.content.len(), 1);
+        match &result.content[0] {
+            crate::protocol::McpContent::Text { text } => {
+                assert_eq!(text, "[{\"id\":1}]");
+            }
+            _ => panic!("expected text content"),
+        }
+
+        let request = captured.lock().await.clone();
+        let body = request.split("\r\n\r\n").nth(1).unwrap();
+        let json: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(json["method"], "tools/call");
+        assert_eq!(json["params"]["name"], "listPets");
+        assert_eq!(json["params"]["arguments"]["limit"], 1);
+    }
+
+    #[tokio::test]
     async fn returns_http_errors() {
         let response = http_response("HTTP/1.1 502 Bad Gateway", "text/plain", "bad gateway");
         let (url, _) = spawn_test_server(response).await;
