@@ -84,7 +84,6 @@ struct GatewayProxy {
     upstream_verify_hostname: bool,
     upstream_client_cert_key: Option<Arc<CertKey>>,
     upstream_connect_timeout: Option<Duration>,
-    upstream_request_timeout: Option<Duration>,
     upstream_circuit_error_threshold: u32,
     upstream_circuit_reset_timeout: Duration,
     upstream_circuits: Mutex<BTreeMap<String, UpstreamCircuitState>>,
@@ -412,7 +411,6 @@ impl GatewayProxy {
             upstream_verify_hostname: upstream_verify_hostname(config),
             upstream_client_cert_key: upstream_client_cert_key(config)?,
             upstream_connect_timeout: upstream_connect_timeout(config),
-            upstream_request_timeout: upstream_request_timeout(config),
             upstream_circuit_error_threshold,
             upstream_circuit_reset_timeout,
             upstream_circuits: Mutex::new(BTreeMap::new()),
@@ -2163,10 +2161,6 @@ impl ProxyHttp for GatewayProxy {
         if let Some(timeout) = self.upstream_connect_timeout {
             peer.options.connection_timeout = Some(timeout);
         }
-        if let Some(timeout) = self.upstream_request_timeout {
-            peer.options.read_timeout = Some(timeout);
-            peer.options.write_timeout = Some(timeout);
-        }
         if ctx.websocket_decision.is_some()
             && let Some(timeout) = websocket_io_timeout(ctx)
         {
@@ -2970,13 +2964,6 @@ fn upstream_connect_timeout(config: &RuntimeConfig) -> Option<Duration> {
         .client
         .as_ref()
         .and_then(|client| duration_from_millis(client.request.connect_timeout))
-}
-
-fn upstream_request_timeout(config: &RuntimeConfig) -> Option<Duration> {
-    config
-        .client
-        .as_ref()
-        .and_then(|client| duration_from_millis(client.request.timeout))
 }
 
 fn duration_from_millis(value: u64) -> Option<Duration> {
