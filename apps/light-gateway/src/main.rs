@@ -1972,10 +1972,9 @@ impl ProxyHttp for GatewayProxy {
                             ctx.websocket_max_connection_duration =
                                 runtime.max_connection_duration();
                             ctx.websocket_permit = Some(permit);
-                            if let Some(timeout) = websocket_io_timeout(ctx) {
-                                session.as_downstream_mut().set_read_timeout(Some(timeout));
-                                session.as_downstream_mut().set_write_timeout(Some(timeout));
-                            }
+                            let timeout = websocket_io_timeout(ctx);
+                            session.as_downstream_mut().set_read_timeout(timeout);
+                            session.as_downstream_mut().set_write_timeout(timeout);
                             ctx.websocket_decision = Some(decision);
                             ctx.record_handler_duration(&handler_id, started.elapsed());
                             return Ok(false);

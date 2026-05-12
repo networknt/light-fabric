@@ -28,6 +28,7 @@ pub const WEBSOCKET_ROUTER_MODULE_ID: &str = "light-pingora/websocket-router";
 pub const WEBSOCKET_ROUTER_CONFIG_NAME: &str = "websocket-router";
 
 const DEFAULT_PROTOCOL: &str = "http";
+const DEFAULT_IDLE_TIMEOUT_MS: u64 = 3_600_000;
 const SERVICE_ID_HEADERS: [&str; 3] = ["Service-Id", "service_id", "serviceId"];
 const SERVICE_ID_QUERY_PARAMS: [&str; 2] = ["service_id", "serviceId"];
 const ENV_TAG_QUERY_PARAMS: [&str; 2] = ["env_tag", "envTag"];
@@ -60,7 +61,7 @@ impl Default for WebSocketRouterConfig {
             default_env_tag: None,
             path_prefix_service: BTreeMap::new(),
             preserve_routing_headers: false,
-            idle_timeout_ms: None,
+            idle_timeout_ms: Some(DEFAULT_IDLE_TIMEOUT_MS),
             max_connection_duration_ms: None,
             max_active_connections: None,
             max_upgrade_requests_per_second: None,
@@ -84,7 +85,10 @@ impl<'de> Deserialize<'de> for WebSocketRouterConfig {
             path_prefix_service: BTreeMap<String, RawWebSocketServiceTarget>,
             #[serde(default)]
             preserve_routing_headers: bool,
-            #[serde(default, deserialize_with = "deserialize_optional_u64")]
+            #[serde(
+                default = "default_idle_timeout_ms",
+                deserialize_with = "deserialize_optional_u64"
+            )]
             idle_timeout_ms: Option<u64>,
             #[serde(default, deserialize_with = "deserialize_optional_u64")]
             max_connection_duration_ms: Option<u64>,
@@ -952,6 +956,10 @@ fn default_protocol() -> String {
     DEFAULT_PROTOCOL.to_string()
 }
 
+fn default_idle_timeout_ms() -> Option<u64> {
+    Some(DEFAULT_IDLE_TIMEOUT_MS)
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -1188,6 +1196,13 @@ pathPrefixService: '{"/chat":{"serviceId":"com.networknt.llmchat-1.0.0","protoco
         assert_eq!(target.service_id, "com.networknt.llmchat-1.0.0");
         assert_eq!(target.protocol, "http");
         assert_eq!(target.env_tag.as_deref(), Some("dev"));
+    }
+
+    #[test]
+    fn config_defaults_idle_timeout_to_one_hour() {
+        let config: WebSocketRouterConfig = serde_yaml::from_str("{}").expect("parse config");
+
+        assert_eq!(config.idle_timeout_ms, Some(DEFAULT_IDLE_TIMEOUT_MS));
     }
 
     #[test]

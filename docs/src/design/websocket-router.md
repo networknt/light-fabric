@@ -83,7 +83,7 @@ defaultProtocol: ${websocket-router.defaultProtocol:http}
 defaultEnvTag: ${websocket-router.defaultEnvTag:}
 pathPrefixService: ${websocket-router.pathPrefixService:}
 preserveRoutingHeaders: ${websocket-router.preserveRoutingHeaders:false}
-idleTimeoutMs: ${websocket-router.idleTimeoutMs:}
+idleTimeoutMs: ${websocket-router.idleTimeoutMs:3600000}
 maxConnectionDurationMs: ${websocket-router.maxConnectionDurationMs:}
 maxActiveConnections: ${websocket-router.maxActiveConnections:}
 maxUpgradeRequestsPerSecond: ${websocket-router.maxUpgradeRequestsPerSecond:}
@@ -93,8 +93,9 @@ The Java `enabled` field is intentionally not carried forward. In Rust, the
 handler chain is the activation contract. Removing `websocket` from a path or
 default chain disables WebSocket routing for that path.
 
-Production controls are optional. Blank or zero values disable the matching
-control. `preserveRoutingHeaders` defaults to `false`, so routing-only
+Production controls are optional. `idleTimeoutMs` defaults to one hour; blank
+or zero values disable the matching control. `preserveRoutingHeaders` defaults
+to `false`, so routing-only
 `Service-Id`, `service_id`, and `serviceId` headers are stripped before the
 upstream handshake unless a backend explicitly needs them.
 
