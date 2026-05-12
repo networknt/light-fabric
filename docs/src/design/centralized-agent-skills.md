@@ -32,7 +32,7 @@ To solve the limitations of purely text-based skills, we will adopt a hybrid, st
 LightAPI is the preferred source format for API-backed skills because it describes endpoint identity, protocol invocation, input schema, request mapping, result shape, examples, and behavior notes in one agent-oriented document. See [LightAPI Description Design](lightapi-description.md) for the endpoint description model.
 
 ### 3.1 Proposed Database Schema Structure
-The centralized Controller will store skills in a structured table/collection. Below is a representation of the skill payload:
+Light Portal stores skills in structured catalog tables. Below is a representation of the skill payload:
 
 ```json
 {
@@ -80,26 +80,26 @@ Dumping 500 JSON schemas into an LLM's context window will cause system failure.
 Because JSON Schema does not have built-in folders, hierarchy and categorization are enforced via the platform's global entity management system:
 1.  **Namespacing:** Tool names follow a strict convention: `[domain]_[subdomain]_[action]` (e.g., `aws_rds_provision`).
 2.  **Tags & Categories:** Instead of hardcoded columns, the registry utilizes the `entity_tag_t` and `entity_category_t` tables (with `entity_type = 'skill'`). This allows for unlimited flat tagging and deep hierarchical folder structures that are consistent across the entire portal.
-3.  **Discovery API:** The Controller's discovery service filters by these tags/categories to scoped skill sets for specific agent personas.
+3.  **Discovery API:** Portal-query filters by these tags/categories to scoped skill sets for specific agent personas. Agents cache the effective catalog locally and reload it when runtime cache-management invalidation is triggered.
 
 ### 4.2 Progressive Disclosure Patterns
-Agents will no longer load all skills at startup. Instead, the Controller will mediate access using one (or a combination) of the following patterns:
+Agents should not load every executable tool into the LLM context. Instead, they should load their assigned skill/tool catalog from the portal API, cache it locally, and use one of the following progressive disclosure patterns:
 
 #### Pattern A: Meta-Tools (Dynamic Injection)
 The agent is booted with only two "meta-tools" designed for discovery.
-1.  `search_skills(query)`: Agent searches the DB. The Controller returns *lightweight summaries* (Name + Description only, no heavy schemas).
-2.  `load_skill_schema(skill_name)`: Once the agent identifies the correct tool, it calls this. The Controller dynamically injects the heavy JSON schema into the context for the next turn.
+1.  Local catalog search: Agent searches its cached assigned skills. The cache contains lightweight summaries and mapped tool names.
+2.  Schema loading: Once the agent identifies the correct tool, it loads the schema from the local catalog cache or refreshes the cache from portal-query.
 
 #### Pattern B: Semantic Tool RAG (Zero-Shot Discovery)
 For highly complex systems with thousands of skills:
 1.  Tool descriptions are embedded into a Vector Database (e.g., `pgvector`).
-2.  When the user prompts the system (e.g., "Reset my AWS password"), the Controller intercepts the prompt, performs a semantic search, and retrieves the Top-3 most relevant JSON Schemas.
+2.  When the user prompts the system (e.g., "Reset my AWS password"), portal-query or the agent's local cache performs semantic search and retrieves the Top-3 most relevant JSON Schemas.
 3.  The agent boots with *only* those 3 tools in its context. 
 
 #### Pattern C: Multi-Agent Orchestration (Supervisor / Worker)
 Hierarchy is mapped to agent teams.
 1.  A **Supervisor Agent** holds routing tools (e.g., `delegate_to_finance`, `delegate_to_devops`).
-2.  When `delegate_to_devops` is triggered, the Controller spins up a **DevOps Worker Agent**, loading only the specific DevOps JSON schemas into its context.
+2.  When `delegate_to_devops` is triggered, the supervisor routes to a **DevOps Worker Agent**, loading only the specific DevOps JSON schemas into its context.
 
 ---
 
@@ -108,24 +108,24 @@ Hierarchy is mapped to agent teams.
 **User:** *"I need to provision a new database for the marketing team."*
 
 1.  **Turn 1: Discovery**
-    *   *Agent Context:* Possesses only `search_skills(query)`.
-    *   *Agent Action:* Calls `search_skills(query="provision database")`.
+    *   *Agent Context:* Has a local cache of assigned skill summaries.
+    *   *Agent Action:* Searches the local cache for `provision database`.
 2.  **Turn 2: High-Level Awareness**
-    *   *Controller Response:* Returns token-efficient summaries from the DB: 
+    *   *Local Cache Result:* Returns token-efficient summaries from the portal catalog:
         `[{"name": "aws_rds_provision", "description": "Creates AWS RDS DB"}, {"name": "mongo_atlas_create", "description": "Creates Mongo cluster"}]`
-    *   *Agent Action:* Decides AWS is needed. Calls `load_skill_schema("aws_rds_provision")`.
+    *   *Agent Action:* Decides AWS is needed and loads the cached schema for `aws_rds_provision`.
 3.  **Turn 3: Strict Execution**
-    *   *Controller Response:* Injects the full JSON schema (requiring `instance_type`, `storage_gb`).
-    *   *Agent Action:* Understands parameters and safely executes `aws_rds_provision` via the Controller's execution engine.
+    *   *Agent Catalog:* Provides the full JSON schema (requiring `instance_type`, `storage_gb`).
+    *   *Agent Action:* Understands parameters and safely executes `aws_rds_provision` through the gateway `tools/call` path.
 
 ---
 
 ## 6. Operational Benefits & Security
 By centralizing skills in a database, the platform gains enterprise-grade operational capabilities:
 *   **Dynamic Updates:** API endpoints, instructions, and schemas can be updated in the database without restarting agents.
-*   **Permission-Aware Discovery (RBAC):** By linking skills to LightAPI endpoint descriptions and `api_endpoint_t`, the Controller ensures that an agent only "discovers" tools that the current user/agent session is authorized to execute based on their roles.
-*   **A/B Testing:** The Controller can route 50% of an agent's requests to `skill_v1` and 50% to `skill_v2` to measure prompt/tool efficacy.
-*   **Audit Logging:** Every tool injection and execution is logged at the Controller level, establishing a single pane of glass for multi-agent compliance.
+*   **Permission-Aware Discovery (RBAC):** By linking skills to LightAPI endpoint descriptions and `api_endpoint_t`, portal-query can limit catalog disclosure to the current agent or tenant, while runtime gateway policy still authorizes execution.
+*   **A/B Testing:** Portal catalog metadata can route 50% of an agent's requests to `skill_v1` and 50% to `skill_v2` to measure prompt/tool efficacy.
+*   **Audit Logging:** Catalog disclosure and gateway execution can be logged separately, preserving a compliance trail without moving tool execution into the registry.
 *   **Distilled Memory RAG:** Following the "Hindsight" pattern, raw conversation history (`agent_session_history_t`) is separated from RAG-optimized memory (`session_memory_t`). This prevents the "noisy context" problem while maintaining a perfect audit trail.
 
 ## 7. LightAPI As Skill Source
@@ -139,15 +139,15 @@ Recommended flow:
 1. Light-Portal creates or imports endpoint-level LightAPI descriptions.
 2. API owners enrich endpoint descriptions with examples, behavior notes, result cases, and visibility.
 3. Approved endpoint descriptions are published as agent skills.
-4. Skill discovery returns lightweight summaries first.
-5. When the agent selects a skill, the registry loads the relevant LightAPI disclosure level.
-6. Execution goes through the workflow service or controller runtime, preserving audit and authorization.
+4. The agent loads assigned skill summaries from portal-query and caches them locally.
+5. When the agent selects a skill, it loads the relevant LightAPI disclosure level from the local cache or refreshes from portal-query.
+6. Execution goes through the gateway `tools/call` path, preserving runtime policy and downstream authorization.
 
 This avoids manually duplicating every API endpoint as a separate hand-written skill while still giving agents strict schemas and progressive disclosure.
 
 ## 8. Next Steps
 1. Provision the `agent_skills` table in the core database.
-2. Build the API layer (Controller) to handle `search`, `retrieve`, and `execute` requests from agents.
+2. Build the portal-query API layer to handle catalog retrieval from agents.
 3. Add publishing from LightAPI endpoint descriptions into the skill registry.
 4. Migrate existing Markdown-based skills into the structured DB payload (extracting prompts to the `instructions` field and converting parameters to JSON Schema).
 5. Implement Pattern B (Semantic Tool RAG) as the default progressive disclosure mechanism.

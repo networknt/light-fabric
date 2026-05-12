@@ -110,7 +110,6 @@ struct AgentState {
     provider: OllamaProvider,
     mcp_client: McpGatewayClient,
     memory: Arc<dyn HindsightMemory>,
-    registry: Arc<PortalRegistryClient>,
     db: PgPool,
     host_id: Uuid,
 }
@@ -397,32 +396,17 @@ async fn run_agent_loop(
         }
     }
 
-    // 2. Discover Skills (Dynamic Tooling - Pattern B)
-    let search_results = state
-        .registry
-        .search_skills(user_prompt.to_string(), Some(10))
-        .await
-        .unwrap_or_else(|e| {
-            warn!("Skill search failed: {}", e);
-            portal_registry::SkillSearchResponse { skills: vec![] }
-        });
-
-    let mut tool_specs: Vec<ToolSpec> = search_results
-        .skills
-        .into_iter()
-        .map(|s| ToolSpec {
-            name: s.tool_name,
-            description: s.description,
-            parameters: s.input_schema,
-        })
-        .collect();
-
-    // Still include MCP tools for now
+    // 2. Discover executable tools from the gateway. Portal catalog caching is
+    // added in a later phase; the direct gateway path remains the baseline.
+    let mut tool_specs: Vec<ToolSpec> = Vec::new();
     let mcp_tools = state
         .mcp_client
         .list_tools(authorization)
         .await
-        .unwrap_or_default();
+        .unwrap_or_else(|e| {
+            warn!("Gateway tools/list failed: {}", e);
+            Vec::new()
+        });
     for t in mcp_tools {
         tool_specs.push(ToolSpec {
             name: t.name,
@@ -647,7 +631,6 @@ async fn main() -> anyhow::Result<()> {
         mcp_client,
         ollama_config,
         memory,
-        registry: Arc::clone(&registry),
         db: pool,
         host_id,
     });

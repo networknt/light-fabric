@@ -1,6 +1,6 @@
 use crate::protocol::{
     DiscoverySnapshot, DiscoverySubscription, JsonRpcMessage, RegistrationResponse,
-    ServiceMetadataUpdate, ServiceRegistrationParams, SkillSearchRequest, SkillSearchResponse,
+    ServiceMetadataUpdate, ServiceRegistrationParams,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
@@ -194,19 +194,6 @@ impl PortalRegistryClient {
         tx.send(message)
             .await
             .map_err(|_| anyhow::anyhow!("registry client connection is closed"))
-    }
-
-    pub async fn search_skills(
-        &self,
-        query: String,
-        limit: Option<i32>,
-    ) -> anyhow::Result<SkillSearchResponse> {
-        self.send_request(
-            "skill/search",
-            SkillSearchRequest { query, limit },
-            Duration::from_secs(10),
-        )
-        .await
     }
 
     pub async fn lookup_discovery(

@@ -4,9 +4,9 @@
 Portal or Light Controller.
 
 It uses a JSON-RPC style WebSocket protocol for service registration, metadata
-updates, and skill search. Runtime services normally use this through
-`light-runtime`, but applications can also use the client directly when they
-need custom registry behavior.
+updates, discovery, and cache-management control. Runtime services normally use
+this through `light-runtime`, but applications can also use the client directly
+when they need custom registry behavior.
 
 ## Main Types
 
@@ -16,7 +16,6 @@ need custom registry behavior.
 - `RegistrationBuilder`: helper for constructing registration parameters.
 - `ServiceRegistrationParams`: service identity and advertised endpoint.
 - `ServiceMetadataUpdate`: metadata update payload.
-- `SkillSearchRequest`, `SkillSearchResponse`: skill discovery messages.
 
 ## Usage
 

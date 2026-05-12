@@ -4,7 +4,7 @@ pub mod protocol;
 pub use client::{PortalRegistryClient, RegistrationState, RegistryHandler};
 pub use protocol::{
     DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, JsonRpcMessage, RegistrationResponse,
-    ServiceMetadataUpdate, ServiceRegistrationParams, SkillSearchRequest, SkillSearchResponse,
+    ServiceMetadataUpdate, ServiceRegistrationParams,
 };
 
 use std::collections::HashMap;
