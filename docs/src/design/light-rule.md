@@ -1,5 +1,7 @@
 # Light-Rule Design
 
+[rule-specification](https://github.com/agentic-workflow/rule-specification)
+
 Light-Rule is the local YAML rule engine used by Light-Fabric services and workflows for deterministic business checks, transformations, authorization decisions, and workflow assertions.
 
 It complements agentic workflow by keeping critical decisions explicit, repeatable, and auditable. Agents can propose or select rules, but the rule engine executes the deterministic logic.

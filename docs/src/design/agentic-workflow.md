@@ -1,5 +1,7 @@
 # Agentic Workflow Design
 
+[Hybrid Agentic Workflow Specification](https://github.com/agentic-workflow/workflow-specification)
+
 Agentic Workflow in Light-Fabric implements a hybrid orchestration model for enterprise business processes. The workflow is deterministic, auditable, and stateful, while selected steps can be executed by agents, API calls, rule engine checks, or humans.
 
 The design goal is not to replace enterprise process control with an open-ended agent loop. The goal is to let agents work inside a managed process that has clear state, clear ownership, repeatable execution, and human approval where needed.
