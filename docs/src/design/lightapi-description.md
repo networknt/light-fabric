@@ -1,5 +1,7 @@
 # LightAPI Description Design
 
+[lightapi-description-specification](https://github.com/agentic-workflow/lightapi-description-specification)
+
 LightAPI Description is the endpoint capability specification used by Light-Fabric agents, workflows, live tests, and portal API administration.
 
 It describes how an API endpoint is discovered, invoked, explained, and verified. It is intentionally separate from the Agentic Workflow Specification. Workflow describes process orchestration. LightAPI describes endpoint capability.
