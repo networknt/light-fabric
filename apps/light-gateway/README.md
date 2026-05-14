@@ -19,3 +19,44 @@ Run with the local compose file:
 cd apps/light-gateway
 docker compose up --build
 ```
+
+## Native Binary
+
+Build the gateway binary from the `light-fabric` workspace:
+
+```bash
+cargo build --release -p light-gateway
+```
+
+Start it from this app directory with bootstrap and controller registration
+settings supplied by environment or an env file:
+
+```bash
+cd apps/light-gateway
+LIGHT_PORTAL_AUTHORIZATION="Bearer <token>" \
+LIGHT_CONFIG_SERVER_URI="https://localhost:8435" \
+LIGHT_GATEWAY_SERVICE_ID="com.networknt.light-gateway-1.0.0" \
+LIGHT_GATEWAY_ENV="dev" \
+STARTUP_BOOTSTRAPCACERTPATH="config/ca.pem" \
+STARTUP_HOST="dev.lightapi.net" \
+PORTAL_REGISTRY_URL="https://localhost:8438" \
+SERVER_ADVERTISED_ADDRESS="127.0.0.1" \
+./run.sh
+```
+
+Do not leave a blank line inside the continued command. A blank line after a
+trailing `\` ends the first shell command, so `./run.sh` will not receive the
+earlier environment variables.
+
+For repeated local runs, keep the token in an ignored env file:
+
+```bash
+cp light-gateway.env.example light-gateway.env
+$EDITOR light-gateway.env
+./run.sh
+```
+
+The launcher runs `target/release/light-gateway` by default, keeps the working
+directory at `apps/light-gateway`, loads `config/`, writes downloaded
+config-server files to `config-cache/`, and registers `server.advertisedAddress`
+with controller.

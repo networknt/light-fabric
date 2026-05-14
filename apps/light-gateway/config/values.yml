@@ -1,3 +1,6 @@
+startup.bootstrapCaCertPath: config/ca.pem
+client.caCertPath: config/ca.pem
+
 handler.handlers:
   - correlation
   - headers

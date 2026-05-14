@@ -794,12 +794,7 @@ fn build_config_server_client(
     request.connect_timeout = bootstrap.connect_timeout;
     request.timeout = bootstrap.timeout;
 
-    let mut tls = client_config
-        .map(|client| client.tls.clone())
-        .unwrap_or_default();
-    if tls.ca_cert_path.is_none() {
-        tls.ca_cert_path = bootstrap.bootstrap_ca_cert_path.clone();
-    }
+    let tls = config_server_tls_config(bootstrap, client_config);
     if !tls.verify_hostname {
         warn!(
             "TLS hostname verification is disabled for the config-server client; this weakens server identity validation"
@@ -808,6 +803,23 @@ fn build_config_server_client(
 
     light_client::build_reqwest_client(&request, &tls, light_client::EndpointOptions::default())
         .map_err(|e| RuntimeError::Unsupported(e.to_string()))
+}
+
+fn config_server_tls_config(
+    bootstrap: &BootstrapConfig,
+    client_config: Option<&ClientConfig>,
+) -> light_client::ClientTlsConfig {
+    let mut tls = client_config
+        .map(|client| client.tls.clone())
+        .unwrap_or_default();
+    if tls
+        .ca_cert_path
+        .as_ref()
+        .map_or(true, |path| path.as_os_str().is_empty())
+    {
+        tls.ca_cert_path = bootstrap.bootstrap_ca_cert_path.clone();
+    }
+    tls
 }
 
 fn build_query_params(bootstrap: &BootstrapConfig) -> Vec<(String, String)> {
@@ -1402,6 +1414,22 @@ tls:
             runtime.load_bootstrap_config().expect("bootstrap config");
 
         assert_eq!(client_config.map(|c| c.tls.verify_hostname), Some(true));
+    }
+
+    #[test]
+    fn config_server_tls_falls_back_to_bootstrap_ca_when_client_ca_is_empty() {
+        let bootstrap = BootstrapConfig {
+            bootstrap_ca_cert_path: Some(PathBuf::from("config/ca.pem")),
+            ..BootstrapConfig::default()
+        };
+        let mut client_config = ClientConfig::default();
+        client_config.tls.ca_cert_path = Some(PathBuf::new());
+        client_config.tls.verify_hostname = false;
+
+        let tls = config_server_tls_config(&bootstrap, Some(&client_config));
+
+        assert_eq!(tls.ca_cert_path, Some(PathBuf::from("config/ca.pem")));
+        assert!(!tls.verify_hostname);
     }
 
     #[tokio::test]
