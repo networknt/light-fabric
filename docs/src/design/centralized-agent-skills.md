@@ -153,11 +153,50 @@ Recommended flow:
 
 This avoids manually duplicating every API endpoint as a separate hand-written skill while still giving agents strict schemas and progressive disclosure.
 
-## 8. Next Steps
+## 8. Workflow-Backed Skills
+
+Some skills need more than instructions and a curated tool set. A skill that
+must orchestrate several tools, wait for human approval, retry failed steps,
+run assertions, or preserve a durable audit trail should be backed by
+`light-workflow`.
+
+The boundary should stay clear:
+
+| Layer | Responsibility |
+| --- | --- |
+| Skill | Discovery metadata, taxonomy, instructions, allowed tools, and agent guidance. |
+| Workflow | Ordered execution, branching, retries, assertions, human tasks, durable state, and audit events. |
+| Gateway | Runtime tool execution through `tools/list` and `tools/call`. |
+
+Workflow backing should be optional. Simple skills can stay as instructions plus
+tool mappings. Durable or regulated processes should link to workflow
+definitions and let `light-workflow` own execution.
+
+Recommended storage:
+
+1. Keep `wf_definition_t.definition` as the canonical workflow YAML.
+2. Keep `skill_t.content_markdown` as the LLM-facing skill instruction body.
+3. Add `skill_workflow_t` to link skills to workflow definitions with a role
+   such as `primary`, `validation`, `remediation`, or `test`.
+4. Treat `skill_tool_t` as the allowed tool set for a workflow-backed skill.
+   Validation should flag workflow tool-call steps that are not linked to the
+   skill.
+
+The Portal Skill Workspace should embed a generic Workflow Editor instead of
+creating a skill-specific workflow runtime. The editor provides YAML editing,
+step preview, reference lookup, validation, and test runs. Skill authoring
+provides the surrounding context: skill metadata, taxonomy, allowed tools,
+effective prompt preview, and workflow link configuration.
+
+## 9. Next Steps
 1. Complete phase 3 by adding category and tag assignment to existing skill create/update forms, backed by `entity_category_t` and `entity_tag_t` with `entity_type = 'skill'`.
 2. Save skill taxonomy through a composite skill command so the skill row and selected taxonomy associations are emitted from the same user action.
-3. Move the richer authoring workspace, effective prompt preview, `skill_tool_t.config` formalization, and "create skill from LightAPI/tool" flows to phase 3.5.
-4. Build the portal-query API layer to handle catalog retrieval from agents.
-5. Add publishing from LightAPI endpoint descriptions into the skill registry.
-6. Migrate existing file-based skills into structured catalog payloads, keeping instructions in Markdown and converting parameters to JSON Schema.
-7. Implement Pattern B (Semantic Tool RAG) after indexed catalog fields and embeddings are ready for production search.
+3. Move the richer authoring workspace, effective prompt preview, `skill_tool_t.config` formalization, workflow-backed skills, and "create skill from LightAPI/tool" flows to phase 3.5.
+4. Build the generic Workflow Editor for YAML editing, parsed step preview, catalog references, validation, and workflow test runs.
+5. Complete phase 4 agent assignment by improving the `agent_skill_t` UI, adding an Agent Definition assignment context, and adding a batch assignment composite command that emits one `AgentSkillCreatedEvent` per selected skill.
+6. Enforce phase 4 assignment validation in command handlers and UI preflight: assigned skills must be active and must have at least one active direct `skill_tool_t` link. Workflow-backed skills still rely on `skill_tool_t` as the allowed tool set.
+7. Keep live gateway `tools/list` runtime executability checks as a diagnostics or governance concern, not as phase 4 persistence validation.
+8. Build the portal-query API layer to handle catalog retrieval from agents.
+9. Add publishing from LightAPI endpoint descriptions into the skill registry.
+10. Migrate existing file-based skills into structured catalog payloads, keeping instructions in Markdown and converting parameters to JSON Schema.
+11. Implement Pattern B (Semantic Tool RAG) after indexed catalog fields and embeddings are ready for production search.
