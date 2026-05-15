@@ -3182,6 +3182,7 @@ dependencies = [
  "mcp-client",
  "model-provider",
  "portal-registry",
+ "reqwest",
  "serde",
  "serde_json",
  "sqlx",

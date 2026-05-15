@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use axum::{
     Router,
     extract::{
@@ -18,14 +18,15 @@ use light_runtime::{
     config::{BootstrapConfig, ClientConfig, PortalRegistryConfig, ServerConfig},
 };
 use light_runtime::{ModuleKind, ModuleRegistry};
-use mcp_client::{McpContent, McpGatewayClient};
+use mcp_client::{McpContent, McpGatewayClient, McpTool};
 use model_provider::{ChatMessage, ChatRequest, ChatResponse, OllamaProvider, Provider, ToolSpec};
 use portal_registry::{PortalRegistryClient, RegistryHandler, ServiceRegistrationParams};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tower_http::services::ServeDir;
 use tracing::{error, warn};
 use tracing_subscriber::EnvFilter;
@@ -56,17 +57,39 @@ fn required_uuid_env_var(name: &str) -> anyhow::Result<Uuid> {
         .with_context(|| format!("Environment variable {name} must be a valid UUID"))
 }
 
+fn optional_uuid_env_var(names: &[&str]) -> anyhow::Result<Option<Uuid>> {
+    for name in names {
+        if let Ok(raw) = std::env::var(name) {
+            if raw.trim().is_empty() {
+                continue;
+            }
+            return Uuid::parse_str(raw.trim())
+                .with_context(|| format!("Environment variable {name} must be a valid UUID"))
+                .map(Some);
+        }
+    }
+    Ok(None)
+}
+
 fn to_registry_ws_url(portal_url: &str) -> anyhow::Result<String> {
     let mut url = Url::parse(portal_url)
         .with_context(|| format!("Invalid portal registry URL: {portal_url}"))?;
     let scheme = match url.scheme() {
         "https" => "wss",
         "http" => "ws",
-        other => anyhow::bail!("Unsupported portal registry URL scheme: {other}"),
+        other => bail!("Unsupported portal registry URL scheme: {other}"),
     };
     url.set_scheme(scheme)
-        .map_err(|_| anyhow::anyhow!("Failed to convert portal registry URL scheme"))?;
+        .map_err(|_| anyhow!("Failed to convert portal registry URL scheme"))?;
     url.set_path("/ws/microservice");
+    url.set_query(None);
+    Ok(url.to_string())
+}
+
+fn to_portal_query_url(portal_url: &str) -> anyhow::Result<String> {
+    let mut url = Url::parse(portal_url)
+        .with_context(|| format!("Invalid portal query URL: {portal_url}"))?;
+    url.set_path("/portal/query");
     url.set_query(None);
     Ok(url.to_string())
 }
@@ -105,13 +128,239 @@ fn strip_bearer_prefix(token: &str) -> String {
         .to_string()
 }
 
+fn portal_query_base_url(config: &PortalRegistryConfig) -> String {
+    std::env::var("LIGHT_AGENT_PORTAL_QUERY_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            config
+                .portal_query_url
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .unwrap_or_else(|| config.portal_url.clone())
+}
+
+#[derive(Clone)]
+struct AgentCatalogCache {
+    inner: Arc<RwLock<Option<EffectiveAgentCatalog>>>,
+}
+
+impl AgentCatalogCache {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    async fn get(&self) -> Option<EffectiveAgentCatalog> {
+        self.inner.read().await.clone()
+    }
+
+    async fn set(&self, catalog: EffectiveAgentCatalog) {
+        *self.inner.write().await = Some(catalog);
+    }
+
+    async fn clear(&self) {
+        *self.inner.write().await = None;
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct EffectiveAgentCatalog {
+    catalog_hash: Option<String>,
+    catalog_version: Option<u64>,
+    stale: bool,
+    skills: Vec<CatalogSkill>,
+}
+
+impl Default for EffectiveAgentCatalog {
+    fn default() -> Self {
+        Self {
+            catalog_hash: None,
+            catalog_version: None,
+            stale: false,
+            skills: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct CatalogSkill {
+    name: String,
+    description: Option<String>,
+    content_markdown: Option<String>,
+    priority: Option<i32>,
+    sequence_id: Option<i32>,
+    tags: Vec<String>,
+    categories: Vec<String>,
+    tools: Vec<CatalogTool>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct CatalogTool {
+    name: String,
+    description: Option<String>,
+    routing_domain: Option<String>,
+    semantic_namespace: Option<String>,
+    sensitivity_tier: Option<String>,
+    semantic_weight: Option<f32>,
+    source_protocol: Option<String>,
+    target_personas: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CatalogSelection {
+    tool_names: HashSet<String>,
+    context: Option<String>,
+}
+
+#[derive(Clone)]
+struct PortalQueryClient {
+    url: String,
+    token: String,
+    client: reqwest::Client,
+}
+
+impl PortalQueryClient {
+    fn with_options(
+        portal_url: &str,
+        token: String,
+        ca_cert_pem: Option<&[u8]>,
+        verify_hostname: bool,
+        timeout_ms: u64,
+    ) -> Result<Self> {
+        let mut builder = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(timeout_ms))
+            .connect_timeout(std::time::Duration::from_millis(timeout_ms));
+
+        if let Some(pem) = ca_cert_pem {
+            let cert = reqwest::Certificate::from_pem(pem)
+                .context("Invalid ca_cert_pem: failed to parse PEM-encoded CA certificate")?;
+            builder = builder.add_root_certificate(cert);
+        }
+
+        if !verify_hostname {
+            builder = builder.danger_accept_invalid_hostnames(true);
+        }
+
+        Ok(Self {
+            url: to_portal_query_url(portal_url)?,
+            token,
+            client: builder
+                .build()
+                .context("Failed to build portal query client")?,
+        })
+    }
+
+    async fn get_effective_agent_catalog(
+        &self,
+        host_id: Uuid,
+        agent_def_id: Uuid,
+        service_id: &str,
+        env_tag: Option<&str>,
+    ) -> Result<EffectiveAgentCatalog> {
+        let mut data = serde_json::json!({
+            "hostId": host_id,
+            "agentDefId": agent_def_id,
+            "serviceId": service_id,
+        });
+        if let Some(env_tag) = env_tag {
+            data["envTag"] = serde_json::json!(env_tag);
+        }
+        let request = serde_json::json!({
+            "host": "lightapi.net",
+            "service": "genai",
+            "action": "getEffectiveAgentCatalog",
+            "version": "0.1.0",
+            "data": data
+        });
+
+        let response = self
+            .client
+            .post(&self.url)
+            .bearer_auth(&self.token)
+            .json(&request)
+            .send()
+            .await
+            .context("HTTP request to portal query failed")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            bail!("portal query returned HTTP {status}: {body}");
+        }
+
+        let value: serde_json::Value = response
+            .json()
+            .await
+            .context("Failed to parse portal query response")?;
+        if value.get("statusCode").is_some() || value.get("code").is_some() {
+            bail!("portal query returned an error response: {value}");
+        }
+        serde_json::from_value(value).context("Failed to parse effective agent catalog")
+    }
+}
+
 struct AgentState {
     ollama_config: OllamaConfig,
     provider: OllamaProvider,
     mcp_client: McpGatewayClient,
+    portal_query_client: Option<PortalQueryClient>,
+    catalog_cache: AgentCatalogCache,
     memory: Arc<dyn HindsightMemory>,
     db: PgPool,
     host_id: Uuid,
+    agent_def_id: Option<Uuid>,
+    service_id: String,
+    env_tag: Option<String>,
+}
+
+impl AgentState {
+    async fn catalog_selection(&self, prompt: &str) -> Option<CatalogSelection> {
+        let catalog = self.effective_catalog().await?;
+        Some(select_catalog_tools(&catalog, prompt, 12))
+    }
+
+    async fn effective_catalog(&self) -> Option<EffectiveAgentCatalog> {
+        if let Some(catalog) = self.catalog_cache.get().await {
+            return Some(catalog);
+        }
+
+        let Some(client) = self.portal_query_client.as_ref() else {
+            return None;
+        };
+        let Some(agent_def_id) = self.agent_def_id else {
+            warn!(
+                "LIGHT_AGENT_AGENT_DEF_ID is not configured; using gateway tools/list without portal catalog filtering"
+            );
+            return None;
+        };
+
+        match client
+            .get_effective_agent_catalog(
+                self.host_id,
+                agent_def_id,
+                &self.service_id,
+                self.env_tag.as_deref(),
+            )
+            .await
+        {
+            Ok(catalog) => {
+                self.catalog_cache.set(catalog.clone()).await;
+                Some(catalog)
+            }
+            Err(err) => {
+                warn!(
+                    "Effective agent catalog lookup failed; using gateway tools/list fallback: {err}"
+                );
+                None
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -176,6 +425,236 @@ fn rollback_last_user_message(history: &mut Vec<ChatMessage>, expected_text: &st
         .is_some_and(|message| message.role == "user" && message.content == expected_text)
     {
         history.pop();
+    }
+}
+
+fn select_catalog_tools(
+    catalog: &EffectiveAgentCatalog,
+    prompt: &str,
+    limit: usize,
+) -> CatalogSelection {
+    let query_terms = tokenize(prompt);
+    let mut scored_tools: Vec<(f32, usize, String)> = Vec::new();
+
+    for (skill_index, skill) in catalog.skills.iter().enumerate() {
+        let skill_text = searchable_skill_text(skill);
+        let skill_score = keyword_score(&query_terms, &skill_text);
+        for tool in &skill.tools {
+            if tool.name.trim().is_empty() {
+                continue;
+            }
+            let tool_text = searchable_tool_text(tool);
+            let routing_score = routing_score(&query_terms, tool);
+            let priority = skill.priority.unwrap_or_default().max(0) as f32 / 10.0;
+            let semantic_weight = tool.semantic_weight.unwrap_or(1.0).max(0.1);
+            let score = ((skill_score * 0.75)
+                + (keyword_score(&query_terms, &tool_text) * 1.5)
+                + routing_score
+                + priority)
+                * semantic_weight;
+            if score > 0.0 {
+                scored_tools.push((
+                    score,
+                    skill.sequence_id.unwrap_or(skill_index as i32).max(0) as usize,
+                    tool.name.clone(),
+                ));
+            }
+        }
+    }
+
+    scored_tools.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.cmp(&b.1))
+    });
+
+    if scored_tools.is_empty() {
+        for (skill_index, skill) in catalog.skills.iter().enumerate() {
+            for tool in &skill.tools {
+                if tool.name.trim().is_empty() {
+                    continue;
+                }
+                scored_tools.push((
+                    0.1,
+                    skill.sequence_id.unwrap_or(skill_index as i32).max(0) as usize,
+                    tool.name.clone(),
+                ));
+            }
+            if scored_tools.len() >= limit {
+                break;
+            }
+        }
+    }
+
+    let selected: Vec<_> = scored_tools.into_iter().take(limit).collect();
+    let tool_names = selected
+        .iter()
+        .map(|(_, _, tool_name)| tool_name.clone())
+        .collect::<HashSet<_>>();
+
+    let context = if tool_names.is_empty() {
+        None
+    } else {
+        let mut context = String::from("Relevant agent catalog skills and tools:\n");
+        for skill in &catalog.skills {
+            let selected_skill_tools = skill
+                .tools
+                .iter()
+                .filter(|tool| tool_names.contains(&tool.name))
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>();
+            if selected_skill_tools.is_empty() {
+                continue;
+            }
+            let description = skill
+                .description
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("no description");
+            context.push_str(&format!("- {}: {}\n", skill.name, description));
+            if let Some(instructions) = skill
+                .content_markdown
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                context.push_str(&format!("  Instructions: {}\n", excerpt(instructions, 480)));
+            }
+            context.push_str(&format!("  Tools: {}\n", selected_skill_tools.join(", ")));
+        }
+        if let Some(hash) = &catalog.catalog_hash {
+            context.push_str(&format!("Catalog hash: {hash}\n"));
+        }
+        if let Some(version) = catalog.catalog_version {
+            context.push_str(&format!("Catalog version: {version}\n"));
+        }
+        if catalog.stale {
+            context.push_str("Catalog status: stale\n");
+        }
+        Some(context)
+    };
+
+    CatalogSelection {
+        tool_names,
+        context,
+    }
+}
+
+fn excerpt(value: &str, max_chars: usize) -> String {
+    let value = value.trim().replace('\n', " ");
+    if value.chars().count() <= max_chars {
+        return value;
+    }
+    let mut result = value.chars().take(max_chars).collect::<String>();
+    result.push_str("...");
+    result
+}
+
+fn filter_gateway_tools(
+    gateway_tools: Vec<McpTool>,
+    selection: Option<&CatalogSelection>,
+) -> Vec<McpTool> {
+    let Some(selection) = selection else {
+        return gateway_tools;
+    };
+    if selection.tool_names.is_empty() {
+        return gateway_tools;
+    }
+
+    let filtered = gateway_tools
+        .iter()
+        .filter(|tool| selection.tool_names.contains(&tool.name))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if filtered.is_empty() {
+        warn!(
+            "Portal catalog selected tools that are not currently executable in gateway tools/list; using gateway fallback"
+        );
+        gateway_tools
+    } else {
+        filtered
+    }
+}
+
+fn tokenize(value: &str) -> HashSet<String> {
+    value
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .map(str::to_ascii_lowercase)
+        .filter(|token| token.len() > 2)
+        .collect()
+}
+
+fn keyword_score(query_terms: &HashSet<String>, text: &str) -> f32 {
+    if query_terms.is_empty() || text.is_empty() {
+        return 0.0;
+    }
+    let text = text.to_ascii_lowercase();
+    query_terms
+        .iter()
+        .filter(|term| text.contains(term.as_str()))
+        .count() as f32
+}
+
+fn routing_score(query_terms: &HashSet<String>, tool: &CatalogTool) -> f32 {
+    [
+        tool.routing_domain.as_deref(),
+        tool.semantic_namespace.as_deref(),
+        tool.sensitivity_tier.as_deref(),
+        tool.source_protocol.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|value| keyword_score(query_terms, value))
+    .sum::<f32>()
+        * 2.0
+}
+
+fn searchable_skill_text(skill: &CatalogSkill) -> String {
+    let mut text = String::new();
+    append_search_text(&mut text, &skill.name);
+    append_search_text(&mut text, skill.description.as_deref().unwrap_or_default());
+    append_search_text(
+        &mut text,
+        skill.content_markdown.as_deref().unwrap_or_default(),
+    );
+    append_search_text(&mut text, &skill.tags.join(" "));
+    append_search_text(&mut text, &skill.categories.join(" "));
+    text
+}
+
+fn searchable_tool_text(tool: &CatalogTool) -> String {
+    let mut text = String::new();
+    append_search_text(&mut text, &tool.name);
+    append_search_text(&mut text, tool.description.as_deref().unwrap_or_default());
+    append_search_text(
+        &mut text,
+        tool.routing_domain.as_deref().unwrap_or_default(),
+    );
+    append_search_text(
+        &mut text,
+        tool.semantic_namespace.as_deref().unwrap_or_default(),
+    );
+    append_search_text(
+        &mut text,
+        tool.sensitivity_tier.as_deref().unwrap_or_default(),
+    );
+    append_search_text(
+        &mut text,
+        tool.source_protocol.as_deref().unwrap_or_default(),
+    );
+    append_search_text(
+        &mut text,
+        tool.target_personas.as_deref().unwrap_or_default(),
+    );
+    text
+}
+
+fn append_search_text(target: &mut String, value: &str) {
+    if !value.trim().is_empty() {
+        if !target.is_empty() {
+            target.push(' ');
+        }
+        target.push_str(value);
     }
 }
 
@@ -396,8 +875,18 @@ async fn run_agent_loop(
         }
     }
 
-    // 2. Discover executable tools from the gateway. Portal catalog caching is
-    // added in a later phase; the direct gateway path remains the baseline.
+    // 2. Discover executable tools from the gateway. The portal catalog only
+    // narrows what we expose to the model; gateway remains the execution path.
+    let catalog_selection = state.catalog_selection(&user_prompt).await;
+    if let Some(context) = catalog_selection
+        .as_ref()
+        .and_then(|selection| selection.context.as_ref())
+    {
+        if let Some(msg) = messages.last_mut() {
+            msg.content = format!("{}\n\n{}", context, msg.content);
+        }
+    }
+
     let mut tool_specs: Vec<ToolSpec> = Vec::new();
     let mcp_tools = state
         .mcp_client
@@ -407,7 +896,7 @@ async fn run_agent_loop(
             warn!("Gateway tools/list failed: {}", e);
             Vec::new()
         });
-    for t in mcp_tools {
+    for t in filter_gateway_tools(mcp_tools, catalog_selection.as_ref()) {
         tool_specs.push(ToolSpec {
             name: t.name,
             description: t.description,
@@ -488,7 +977,7 @@ async fn run_agent_loop(
         }
     }
 
-    let response = final_response.ok_or_else(|| anyhow::anyhow!("Max iterations reached"))?;
+    let response = final_response.ok_or_else(|| anyhow!("Max iterations reached"))?;
 
     // 4. Retain Experience (Learning)
     if let Some(ref text) = response.text {
@@ -575,7 +1064,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(true);
     if !verify_hostname {
         warn!(
-            "TLS hostname verification is disabled for the MCP gateway client; this weakens server identity validation"
+            "TLS hostname verification is disabled for the MCP gateway and portal query clients; this weakens server identity validation"
         );
     }
 
@@ -595,9 +1084,26 @@ async fn main() -> anyhow::Result<()> {
 
     let memory = Arc::new(PgHindsightClient::new(pool.clone()));
     let host_id = required_uuid_env_var("LIGHT_AGENT_HOST_ID")?;
+    let agent_def_id =
+        optional_uuid_env_var(&["LIGHT_AGENT_AGENT_DEF_ID", "LIGHT_AGENT_API_VERSION_ID"])?;
+    let env_tag =
+        (!server_config.environment.is_empty()).then(|| server_config.environment.clone());
+    let portal_token = registry_token(&portal_registry_config)
+        .context("Missing portal registry token; set light_portal_authorization or portalRegistry.portalToken")?;
+    let portal_query_client = Some(
+        PortalQueryClient::with_options(
+            &portal_query_base_url(&portal_registry_config),
+            portal_token.clone(),
+            ca_cert.as_deref(),
+            verify_hostname,
+            mcp_config.timeout_ms,
+        )
+        .context("Failed to build portal query client")?,
+    );
+    let catalog_cache = AgentCatalogCache::new();
 
     // Registry Client Configuration
-    let registry_handler = Arc::new(NoopRegistryHandler);
+    let registry_handler = Arc::new(AgentRegistryHandler::new(catalog_cache.clone()));
     let registration_params = ServiceRegistrationParams {
         service_id: server_config.service_id.clone(),
         version: "0.1.0".to_string(),
@@ -613,9 +1119,8 @@ async fn main() -> anyhow::Result<()> {
             server_config.http_port
         },
         tags: HashMap::new(),
-        env_tag: (!server_config.environment.is_empty()).then(|| server_config.environment.clone()),
-        jwt: registry_token(&portal_registry_config)
-            .context("Missing portal registry token; set light_portal_authorization or portalRegistry.portalToken")?,
+        env_tag: env_tag.clone(),
+        jwt: portal_token,
     };
 
     let registry_url = to_registry_ws_url(&portal_registry_config.portal_url)?;
@@ -629,10 +1134,15 @@ async fn main() -> anyhow::Result<()> {
         provider: OllamaProvider::new(Some(&ollama_config.ollama_url), None)
             .context("Failed to build Ollama provider")?,
         mcp_client,
+        portal_query_client,
+        catalog_cache,
         ollama_config,
         memory,
         db: pool,
         host_id,
+        agent_def_id,
+        service_id: server_config.service_id,
+        env_tag,
     });
 
     let app = AgentApp { state };
@@ -675,13 +1185,54 @@ fn init_tracing() {
     }
 }
 
-struct NoopRegistryHandler;
+struct AgentRegistryHandler {
+    catalog_cache: AgentCatalogCache,
+}
+
+impl AgentRegistryHandler {
+    fn new(catalog_cache: AgentCatalogCache) -> Self {
+        Self { catalog_cache }
+    }
+
+    fn is_catalog_invalidation(method: &str, params: &serde_json::Value) -> bool {
+        let method = method.to_ascii_lowercase();
+        if method.contains("catalog") || method.contains("cache") {
+            return true;
+        }
+        let params = params.to_string().to_ascii_lowercase();
+        params.contains("effective-agent-catalog")
+            || params.contains("agent-skill")
+            || params.contains("skill-tool")
+            || params.contains("tool")
+            || params.contains("workflow")
+    }
+}
+
 #[async_trait::async_trait]
-impl RegistryHandler for NoopRegistryHandler {}
+impl RegistryHandler for AgentRegistryHandler {
+    async fn handle_notification(&self, method: &str, params: serde_json::Value) {
+        if Self::is_catalog_invalidation(method, &params) {
+            self.catalog_cache.clear().await;
+        }
+    }
+
+    async fn handle_request(&self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        if Self::is_catalog_invalidation(method, &params) {
+            self.catalog_cache.clear().await;
+            serde_json::json!({"status": "cleared", "cache": "effective-agent-catalog"})
+        } else {
+            serde_json::json!({"status": "received"})
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
-    use super::{ChatMessage, MAX_SESSION_MESSAGES, rollback_last_user_message, trim_history};
+    use super::{
+        CatalogSkill, CatalogTool, ChatMessage, EffectiveAgentCatalog, MAX_SESSION_MESSAGES,
+        filter_gateway_tools, rollback_last_user_message, select_catalog_tools, trim_history,
+    };
+    use mcp_client::McpTool;
 
     #[test]
     fn trim_history_keeps_recent_messages() {
@@ -723,5 +1274,83 @@ mod tests {
 
         assert_eq!(history.len(), 2);
         assert_eq!(history[1].content, "previous reply");
+    }
+
+    #[test]
+    fn catalog_selection_prefers_matching_skill_tools() {
+        let catalog = EffectiveAgentCatalog {
+            catalog_hash: Some("abc".into()),
+            catalog_version: Some(42),
+            stale: false,
+            skills: vec![
+                CatalogSkill {
+                    name: "billing".into(),
+                    description: Some("Invoice and account support".into()),
+                    priority: Some(3),
+                    tools: vec![CatalogTool {
+                        name: "get_invoice".into(),
+                        description: Some("Fetch invoice details".into()),
+                        routing_domain: Some("billing".into()),
+                        semantic_weight: Some(1.0),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                CatalogSkill {
+                    name: "profile".into(),
+                    description: Some("Customer profile lookup".into()),
+                    tools: vec![CatalogTool {
+                        name: "get_profile".into(),
+                        description: Some("Fetch profile details".into()),
+                        routing_domain: Some("profile".into()),
+                        semantic_weight: Some(1.0),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+        };
+
+        let selection = select_catalog_tools(&catalog, "please find the invoice", 4);
+
+        assert!(selection.tool_names.contains("get_invoice"));
+        assert!(!selection.tool_names.contains("get_profile"));
+        let context = selection.context.unwrap();
+        assert!(context.contains("billing"));
+        assert!(context.contains("Tools: get_invoice"));
+    }
+
+    #[test]
+    fn gateway_tools_are_filtered_by_catalog_selection() {
+        let catalog = EffectiveAgentCatalog {
+            skills: vec![CatalogSkill {
+                name: "billing".into(),
+                tools: vec![CatalogTool {
+                    name: "get_invoice".into(),
+                    description: Some("Fetch invoice details".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let selection = select_catalog_tools(&catalog, "invoice", 4);
+        let tools = vec![
+            McpTool {
+                name: "get_invoice".into(),
+                description: String::new(),
+                input_schema: serde_json::json!({}),
+            },
+            McpTool {
+                name: "get_profile".into(),
+                description: String::new(),
+                input_schema: serde_json::json!({}),
+            },
+        ];
+
+        let filtered = filter_gateway_tools(tools, Some(&selection));
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "get_invoice");
     }
 }

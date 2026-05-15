@@ -63,6 +63,7 @@ data:
     shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
   portal-registry.yml: |
     portalUrl: ${portalRegistry.portalUrl:https://localhost:8438}
+    portalQueryUrl: ${portalQuery.url:${portalRegistry.portalUrl:https://localhost:8438}}
     portalToken: "${light_portal_authorization:}"
     controllerDiscoveryToken: ${portalRegistry.controllerDiscoveryToken:}
   client.yml: |

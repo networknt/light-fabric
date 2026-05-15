@@ -115,6 +115,8 @@ impl Default for ServerConfig {
 pub struct PortalRegistryConfig {
     pub portal_url: String,
     #[serde(default)]
+    pub portal_query_url: Option<String>,
+    #[serde(default)]
     pub portal_token: String,
     #[serde(default)]
     pub controller_discovery_token: String,
@@ -124,6 +126,7 @@ impl std::fmt::Debug for PortalRegistryConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PortalRegistryConfig")
             .field("portal_url", &self.portal_url)
+            .field("portal_query_url", &self.portal_query_url)
             .field(
                 "portal_token",
                 if self.portal_token.is_empty() {

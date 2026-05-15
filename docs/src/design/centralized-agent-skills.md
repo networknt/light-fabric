@@ -93,6 +93,13 @@ Because JSON Schema does not have built-in folders, hierarchy and categorization
 ### 4.2 Progressive Disclosure Patterns
 Agents should not load every executable tool into the LLM context. Instead, they should load their assigned skill/tool catalog from the portal API, cache it locally, and use one of the following progressive disclosure patterns:
 
+Phase 5 starts with the Rust `light-agent`. The agent loads
+`genai-query/getEffectiveAgentCatalog`, keeps a local cache keyed by
+`hostId + agentDefId + serviceId + envTag`, ranks cached skill/tool entries with
+keyword and routing-field matching, and intersects the selected tool names with
+the live gateway `tools/list` result before giving schemas to the model.
+Execution remains gateway `tools/call`.
+
 #### Pattern A: Meta-Tools (Dynamic Injection)
 The agent is booted with only two "meta-tools" designed for discovery.
 1.  Local catalog search: Agent searches its cached assigned skills. The cache contains lightweight summaries and mapped tool names.
@@ -196,7 +203,10 @@ effective prompt preview, and workflow link configuration.
 5. Complete phase 4 agent assignment by improving the `agent_skill_t` UI, adding an Agent Definition assignment context, and adding a batch assignment composite command that emits one `AgentSkillCreatedEvent` per selected skill.
 6. Enforce phase 4 assignment validation in command handlers and UI preflight: assigned skills must be active and must have at least one active direct `skill_tool_t` link. Workflow-backed skills still rely on `skill_tool_t` as the allowed tool set.
 7. Keep live gateway `tools/list` runtime executability checks as a diagnostics or governance concern, not as phase 4 persistence validation.
-8. Build the portal-query API layer to handle catalog retrieval from agents.
+8. Complete phase 5 for the Rust agent with the `genai-query`
+   `getEffectiveAgentCatalog` endpoint, claim checks against `host`, `sid`, and
+   `env`, local catalog caching, keyword/routing search, gateway `tools/list`
+   intersection, and controller-driven cache invalidation.
 9. Add publishing from LightAPI endpoint descriptions into the skill registry.
 10. Migrate existing file-based skills into structured catalog payloads, keeping instructions in Markdown and converting parameters to JSON Schema.
 11. Implement Pattern B (Semantic Tool RAG) after indexed catalog fields and embeddings are ready for production search.
