@@ -31,6 +31,14 @@ To solve the limitations of purely text-based skills, we will adopt a hybrid, st
 
 LightAPI is the preferred source format for API-backed skills because it describes endpoint identity, protocol invocation, input schema, request mapping, result shape, examples, and behavior notes in one agent-oriented document. See [LightAPI Description Design](lightapi-description.md) for the endpoint description model.
 
+YAML and JSON are the external skill document formats. In the portal database,
+they should not replace the Markdown instruction field. The normalized model is
+structured columns and relationships for identity, versioning, taxonomy, tools,
+and execution metadata, plus `content_markdown` for the LLM-facing instruction
+body. If the portal later needs to persist a full structured skill document,
+add a nullable JSONB skill-spec column beside `content_markdown` and normalize
+YAML imports to JSON.
+
 ### 3.1 Proposed Database Schema Structure
 Light Portal stores skills in structured catalog tables. Below is a representation of the skill payload:
 
@@ -146,8 +154,10 @@ Recommended flow:
 This avoids manually duplicating every API endpoint as a separate hand-written skill while still giving agents strict schemas and progressive disclosure.
 
 ## 8. Next Steps
-1. Provision the `agent_skills` table in the core database.
-2. Build the portal-query API layer to handle catalog retrieval from agents.
-3. Add publishing from LightAPI endpoint descriptions into the skill registry.
-4. Migrate existing Markdown-based skills into the structured DB payload (extracting prompts to the `instructions` field and converting parameters to JSON Schema).
-5. Implement Pattern B (Semantic Tool RAG) as the default progressive disclosure mechanism.
+1. Complete phase 3 by adding category and tag assignment to existing skill create/update forms, backed by `entity_category_t` and `entity_tag_t` with `entity_type = 'skill'`.
+2. Save skill taxonomy through a composite skill command so the skill row and selected taxonomy associations are emitted from the same user action.
+3. Move the richer authoring workspace, effective prompt preview, `skill_tool_t.config` formalization, and "create skill from LightAPI/tool" flows to phase 3.5.
+4. Build the portal-query API layer to handle catalog retrieval from agents.
+5. Add publishing from LightAPI endpoint descriptions into the skill registry.
+6. Migrate existing file-based skills into structured catalog payloads, keeping instructions in Markdown and converting parameters to JSON Schema.
+7. Implement Pattern B (Semantic Tool RAG) after indexed catalog fields and embeddings are ready for production search.
