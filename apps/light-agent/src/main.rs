@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow, bail};
 use axum::{
-    Router,
+    Json, Router,
     extract::{
         Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -197,6 +197,7 @@ struct CatalogSkill {
     tags: Vec<String>,
     categories: Vec<String>,
     tools: Vec<CatalogTool>,
+    policy_diagnostics: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -210,6 +211,23 @@ struct CatalogTool {
     semantic_weight: Option<f32>,
     source_protocol: Option<String>,
     target_personas: Option<String>,
+    read_only: Option<bool>,
+    destructive: Option<bool>,
+    requires_approval: Option<bool>,
+    policy: Option<CatalogToolPolicy>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct CatalogToolPolicy {
+    allowed: Option<bool>,
+    reason: Option<String>,
+    sensitivity_tier: Option<String>,
+    max_sensitivity_tier: Option<String>,
+    read_only: Option<bool>,
+    destructive: Option<bool>,
+    requires_approval: Option<bool>,
+    approval_configured: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -372,6 +390,7 @@ impl AxumApp for AgentApp {
     fn router(&self, _context: ServerContext) -> Router {
         Router::new()
             .route("/health", get(health))
+            .route("/diagnostics/tools", get(tool_diagnostics))
             .route("/chat", get(ws_handler))
             .fallback_service(ServeDir::new("public").append_index_html_on_directories(true))
             .with_state(self.state.clone())
@@ -380,6 +399,84 @@ impl AxumApp for AgentApp {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolDiagnosticsResponse {
+    catalog_available: bool,
+    catalog_hash: Option<String>,
+    catalog_version: Option<u64>,
+    catalog_stale: bool,
+    catalog_tools: Vec<String>,
+    gateway_available: bool,
+    gateway_tools: Vec<String>,
+    missing_from_gateway: Vec<String>,
+    extra_gateway_tools: Vec<String>,
+    policy_blocked: Vec<serde_json::Value>,
+    gateway_error: Option<String>,
+}
+
+async fn tool_diagnostics(
+    headers: HeaderMap,
+    State(state): State<Arc<AgentState>>,
+) -> Json<ToolDiagnosticsResponse> {
+    let authorization = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let catalog = state.effective_catalog().await;
+    let (catalog_tools, policy_blocked) = catalog
+        .as_ref()
+        .map(|catalog| {
+            (
+                collect_catalog_tool_names(catalog),
+                collect_policy_diagnostics(catalog),
+            )
+        })
+        .unwrap_or_default();
+
+    let gateway_result = state.mcp_client.list_tools(authorization.as_deref()).await;
+    let (gateway_available, gateway_tools, gateway_error) = match gateway_result {
+        Ok(tools) => {
+            let mut names = tools
+                .into_iter()
+                .map(|tool| tool.name)
+                .filter(|name| !name.trim().is_empty())
+                .collect::<Vec<_>>();
+            names.sort();
+            names.dedup();
+            (true, names, None)
+        }
+        Err(err) => (false, Vec::new(), Some(err.to_string())),
+    };
+
+    let missing_from_gateway = if gateway_available {
+        sorted_difference(&catalog_tools, &gateway_tools)
+    } else {
+        Vec::new()
+    };
+    let extra_gateway_tools = if catalog.is_some() && gateway_available {
+        sorted_difference(&gateway_tools, &catalog_tools)
+    } else {
+        Vec::new()
+    };
+
+    Json(ToolDiagnosticsResponse {
+        catalog_available: catalog.is_some(),
+        catalog_hash: catalog
+            .as_ref()
+            .and_then(|catalog| catalog.catalog_hash.clone()),
+        catalog_version: catalog.as_ref().and_then(|catalog| catalog.catalog_version),
+        catalog_stale: catalog.as_ref().is_some_and(|catalog| catalog.stale),
+        catalog_tools,
+        gateway_available,
+        gateway_tools,
+        missing_from_gateway,
+        extra_gateway_tools,
+        policy_blocked,
+        gateway_error,
+    })
 }
 
 async fn ws_handler(
@@ -443,6 +540,9 @@ fn select_catalog_tools(
             if tool.name.trim().is_empty() {
                 continue;
             }
+            if !catalog_tool_allowed(tool) {
+                continue;
+            }
             let tool_text = searchable_tool_text(tool);
             let routing_score = routing_score(&query_terms, tool);
             let priority = skill.priority.unwrap_or_default().max(0) as f32 / 10.0;
@@ -472,6 +572,9 @@ fn select_catalog_tools(
         for (skill_index, skill) in catalog.skills.iter().enumerate() {
             for tool in &skill.tools {
                 if tool.name.trim().is_empty() {
+                    continue;
+                }
+                if !catalog_tool_allowed(tool) {
                     continue;
                 }
                 scored_tools.push((
@@ -549,6 +652,93 @@ fn excerpt(value: &str, max_chars: usize) -> String {
     result
 }
 
+fn catalog_tool_allowed(tool: &CatalogTool) -> bool {
+    let policy = tool.policy.as_ref();
+    if policy.and_then(|policy| policy.allowed) == Some(false) {
+        return false;
+    }
+
+    let approval_configured = policy
+        .and_then(|policy| policy.approval_configured)
+        .unwrap_or(false);
+    let destructive = tool
+        .destructive
+        .or_else(|| policy.and_then(|policy| policy.destructive))
+        .unwrap_or(false);
+    let requires_approval = tool
+        .requires_approval
+        .or_else(|| policy.and_then(|policy| policy.requires_approval))
+        .unwrap_or(false);
+
+    !(destructive || requires_approval) || approval_configured
+}
+
+fn collect_catalog_tool_names(catalog: &EffectiveAgentCatalog) -> Vec<String> {
+    let mut names = catalog
+        .skills
+        .iter()
+        .flat_map(|skill| skill.tools.iter())
+        .filter(|tool| catalog_tool_allowed(tool))
+        .map(|tool| tool.name.clone())
+        .filter(|name| !name.trim().is_empty())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+fn collect_policy_diagnostics(catalog: &EffectiveAgentCatalog) -> Vec<serde_json::Value> {
+    let mut diagnostics = Vec::new();
+    for skill in &catalog.skills {
+        diagnostics.extend(skill.policy_diagnostics.iter().cloned());
+        for tool in &skill.tools {
+            if catalog_tool_allowed(tool) {
+                continue;
+            }
+            diagnostics.push(serde_json::json!({
+                "skill": skill.name,
+                "toolName": tool.name,
+                "reason": tool
+                    .policy
+                    .as_ref()
+                    .and_then(|policy| policy.reason.clone())
+                    .unwrap_or_else(|| "local_policy_guard".to_string()),
+                "sensitivityTier": tool
+                    .policy
+                    .as_ref()
+                    .and_then(|policy| policy.sensitivity_tier.clone())
+                    .or_else(|| tool.sensitivity_tier.clone()),
+                "maxSensitivityTier": tool
+                    .policy
+                    .as_ref()
+                    .and_then(|policy| policy.max_sensitivity_tier.clone()),
+                "readOnly": tool
+                    .read_only
+                    .or_else(|| tool.policy.as_ref().and_then(|policy| policy.read_only)),
+                "destructive": tool
+                    .destructive
+                    .or_else(|| tool.policy.as_ref().and_then(|policy| policy.destructive)),
+                "requiresApproval": tool
+                    .requires_approval
+                    .or_else(|| tool.policy.as_ref().and_then(|policy| policy.requires_approval)),
+            }));
+        }
+    }
+    diagnostics
+}
+
+fn sorted_difference(left: &[String], right: &[String]) -> Vec<String> {
+    let right = right.iter().collect::<HashSet<_>>();
+    let mut diff = left
+        .iter()
+        .filter(|item| !right.contains(item))
+        .cloned()
+        .collect::<Vec<_>>();
+    diff.sort();
+    diff
+}
+
 fn filter_gateway_tools(
     gateway_tools: Vec<McpTool>,
     selection: Option<&CatalogSelection>,
@@ -557,7 +747,7 @@ fn filter_gateway_tools(
         return gateway_tools;
     };
     if selection.tool_names.is_empty() {
-        return gateway_tools;
+        return Vec::new();
     }
 
     let filtered = gateway_tools
@@ -568,9 +758,9 @@ fn filter_gateway_tools(
 
     if filtered.is_empty() {
         warn!(
-            "Portal catalog selected tools that are not currently executable in gateway tools/list; using gateway fallback"
+            "Portal catalog selected tools that are not currently executable in gateway tools/list; hiding tools for this turn"
         );
-        gateway_tools
+        Vec::new()
     } else {
         filtered
     }
@@ -1229,7 +1419,8 @@ impl RegistryHandler for AgentRegistryHandler {
 #[cfg(test)]
 mod tests {
     use super::{
-        CatalogSkill, CatalogTool, ChatMessage, EffectiveAgentCatalog, MAX_SESSION_MESSAGES,
+        CatalogSkill, CatalogTool, CatalogToolPolicy, ChatMessage, EffectiveAgentCatalog,
+        MAX_SESSION_MESSAGES, collect_catalog_tool_names, collect_policy_diagnostics,
         filter_gateway_tools, rollback_last_user_message, select_catalog_tools, trim_history,
     };
     use mcp_client::McpTool;
@@ -1318,6 +1509,87 @@ mod tests {
         let context = selection.context.unwrap();
         assert!(context.contains("billing"));
         assert!(context.contains("Tools: get_invoice"));
+    }
+
+    #[test]
+    fn catalog_selection_omits_policy_blocked_tools() {
+        let catalog = EffectiveAgentCatalog {
+            skills: vec![CatalogSkill {
+                name: "billing".into(),
+                tools: vec![
+                    CatalogTool {
+                        name: "delete_invoice".into(),
+                        description: Some("Delete invoice".into()),
+                        destructive: Some(true),
+                        policy: Some(CatalogToolPolicy {
+                            allowed: Some(false),
+                            reason: Some("destructive_tool_requires_approval_workflow".into()),
+                            destructive: Some(true),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                    CatalogTool {
+                        name: "get_invoice".into(),
+                        description: Some("Fetch invoice details".into()),
+                        policy: Some(CatalogToolPolicy {
+                            allowed: Some(true),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let selection = select_catalog_tools(&catalog, "invoice", 4);
+
+        assert!(selection.tool_names.contains("get_invoice"));
+        assert!(!selection.tool_names.contains("delete_invoice"));
+    }
+
+    #[test]
+    fn catalog_diagnostics_include_blocked_tools() {
+        let catalog = EffectiveAgentCatalog {
+            skills: vec![CatalogSkill {
+                name: "admin".into(),
+                policy_diagnostics: vec![serde_json::json!({
+                    "toolName": "reset_account",
+                    "reason": "approval_required_missing_workflow"
+                })],
+                tools: vec![CatalogTool {
+                    name: "restricted_lookup".into(),
+                    policy: Some(CatalogToolPolicy {
+                        allowed: Some(false),
+                        reason: Some("sensitivity_tier_exceeds_policy".into()),
+                        sensitivity_tier: Some("restricted".into()),
+                        max_sensitivity_tier: Some("internal".into()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let tool_names = collect_catalog_tool_names(&catalog);
+        let diagnostics = collect_policy_diagnostics(&catalog);
+
+        assert!(tool_names.is_empty());
+        assert_eq!(diagnostics.len(), 2);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|item| item["toolName"] == "reset_account")
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|item| item["toolName"] == "restricted_lookup")
+        );
     }
 
     #[test]

@@ -207,6 +207,17 @@ effective prompt preview, and workflow link configuration.
    `getEffectiveAgentCatalog` endpoint, claim checks against `host`, `sid`, and
    `env`, local catalog caching, keyword/routing search, gateway `tools/list`
    intersection, and controller-driven cache invalidation.
-9. Add publishing from LightAPI endpoint descriptions into the skill registry.
-10. Migrate existing file-based skills into structured catalog payloads, keeping instructions in Markdown and converting parameters to JSON Schema.
-11. Implement Pattern B (Semantic Tool RAG) after indexed catalog fields and embeddings are ready for production search.
+9. Complete phase 6 governance for the Rust agent only: normalize sensitivity
+   tiers to `public`, `internal`, `confidential`, and `restricted`; filter
+   blocked tools before catalog disclosure; compare the effective catalog with
+   gateway `tools/list` through `/diagnostics/tools`; and keep execution
+   through gateway `tools/call`.
+10. Enforce destructive, approval-required, and sensitivity metadata at the
+    gateway with debug/auditInfo fields when a call is blocked. Do not use
+    workflow `audit_log_t` for catalog disclosure; use auditInfo/file logging
+    until a generic governance audit table is introduced.
+11. Keep current active row plus aggregate version as the approval/version
+    boundary until workflow-owned approval state is implemented.
+12. Add publishing from LightAPI endpoint descriptions into the skill registry.
+13. Migrate existing file-based skills into structured catalog payloads, keeping instructions in Markdown and converting parameters to JSON Schema.
+14. Implement Pattern B (Semantic Tool RAG) after indexed catalog fields and embeddings are ready for production search.
