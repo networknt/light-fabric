@@ -30,3 +30,4 @@ docs/book/
 AGENTS.md
 CLAUDE.md
 apps/light-gateway/config-cache/
+dist/

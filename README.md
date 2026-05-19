@@ -30,6 +30,157 @@ Full documentation, including architecture guides and implementation patterns, i
 
 To get started with the Light-Fabric, refer to the [Getting Started](docs/src/getting-started.md) guide in the documentation.
 
+## Release Binaries
+
+GitHub releases should publish the Light-Fabric app binaries for each supported
+platform target:
+
+```text
+light-agent
+light-deployer
+light-gateway
+light-workflow
+```
+
+Install the release targets before building:
+
+```bash
+rustup target add x86_64-apple-darwin
+rustup target add x86_64-unknown-linux-gnu
+rustup target add x86_64-unknown-linux-musl
+rustup target add x86_64-pc-windows-msvc
+```
+
+Rust target installation provides the Rust standard library for the target. The
+platform linker and SDK still need to come from a compatible release runner:
+macOS for `x86_64-apple-darwin`, Linux for the GNU and musl Linux targets, and
+Windows with the MSVC toolchain for `x86_64-pc-windows-msvc`.
+
+On Debian or Ubuntu Linux runners, install the musl C toolchain before building
+`x86_64-unknown-linux-musl`; crates with native C build steps expect
+`x86_64-linux-musl-gcc` to be available on `PATH`:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y musl-tools pkg-config
+```
+
+Build, package, and upload the Linux release artifacts with:
+
+```bash
+./release.sh v0.1.0
+```
+
+To build and package locally without uploading to GitHub:
+
+```bash
+./release.sh v0.1.0 --local
+```
+
+Build one target from the workspace root:
+
+```bash
+TARGET=x86_64-unknown-linux-gnu
+
+cargo build --locked --release --target "${TARGET}" \
+  --bin light-agent \
+  --bin light-deployer \
+  --bin light-gateway \
+  --bin light-workflow
+```
+
+The binaries are written to `target/${TARGET}/release/`. Windows builds produce
+`.exe` files.
+
+Package a Unix-style target:
+
+```bash
+VERSION=v0.1.0
+TARGET=x86_64-unknown-linux-gnu
+ARTIFACT="light-fabric-${VERSION}-${TARGET}"
+
+mkdir -p "dist/${ARTIFACT}"
+cp "target/${TARGET}/release/light-agent" "dist/${ARTIFACT}/"
+cp "target/${TARGET}/release/light-deployer" "dist/${ARTIFACT}/"
+cp "target/${TARGET}/release/light-gateway" "dist/${ARTIFACT}/"
+cp "target/${TARGET}/release/light-workflow" "dist/${ARTIFACT}/"
+tar -C dist -czf "dist/${ARTIFACT}.tar.gz" "${ARTIFACT}"
+```
+
+```bash
+VERSION=v0.1.0
+TARGET=x86_64-unknown-linux-musl
+ARTIFACT="light-fabric-${VERSION}-${TARGET}"
+
+mkdir -p "dist/${ARTIFACT}"
+cp "target/${TARGET}/release/light-agent" "dist/${ARTIFACT}/"
+cp "target/${TARGET}/release/light-deployer" "dist/${ARTIFACT}/"
+cp "target/${TARGET}/release/light-gateway" "dist/${ARTIFACT}/"
+cp "target/${TARGET}/release/light-workflow" "dist/${ARTIFACT}/"
+tar -C dist -czf "dist/${ARTIFACT}.tar.gz" "${ARTIFACT}"
+```
+
+```bash
+VERSION=v0.1.0
+TARGET=x86_64-apple-darwin
+ARTIFACT="light-fabric-${VERSION}-${TARGET}"
+
+mkdir -p "dist/${ARTIFACT}"
+cp "target/${TARGET}/release/light-agent" "dist/${ARTIFACT}/"
+cp "target/${TARGET}/release/light-deployer" "dist/${ARTIFACT}/"
+cp "target/${TARGET}/release/light-gateway" "dist/${ARTIFACT}/"
+cp "target/${TARGET}/release/light-workflow" "dist/${ARTIFACT}/"
+tar -C dist -czf "dist/${ARTIFACT}.tar.gz" "${ARTIFACT}"
+```
+
+Package the Windows target from PowerShell:
+
+```powershell
+$Version = "v0.1.0"
+$Target = "x86_64-pc-windows-msvc"
+$Artifact = "light-fabric-$Version-$Target"
+
+cargo build --locked --release --target $Target `
+  --bin light-agent `
+  --bin light-deployer `
+  --bin light-gateway `
+  --bin light-workflow
+
+New-Item -ItemType Directory -Force "dist/$Artifact" | Out-Null
+Copy-Item "target/$Target/release/light-agent.exe" "dist/$Artifact/"
+Copy-Item "target/$Target/release/light-deployer.exe" "dist/$Artifact/"
+Copy-Item "target/$Target/release/light-gateway.exe" "dist/$Artifact/"
+Copy-Item "target/$Target/release/light-workflow.exe" "dist/$Artifact/"
+Compress-Archive -Force "dist/$Artifact/*" "dist/$Artifact.zip"
+```
+
+Create the GitHub release and upload the packaged artifacts:
+
+```bash
+VERSION=v0.1.0
+
+gh release create "${VERSION}" \
+  dist/light-fabric-"${VERSION}"-x86_64-apple-darwin.tar.gz \
+  dist/light-fabric-"${VERSION}"-x86_64-unknown-linux-gnu.tar.gz \
+  dist/light-fabric-"${VERSION}"-x86_64-unknown-linux-musl.tar.gz \
+  dist/light-fabric-"${VERSION}"-x86_64-pc-windows-msvc.zip \
+  --title "${VERSION}" \
+  --notes "Light-Fabric release binaries"
+```
+
+If the release already exists, upload or replace the artifacts with:
+
+```bash
+VERSION=v0.1.0
+
+gh release upload "${VERSION}" \
+  dist/light-fabric-"${VERSION}"-x86_64-apple-darwin.tar.gz \
+  dist/light-fabric-"${VERSION}"-x86_64-unknown-linux-gnu.tar.gz \
+  dist/light-fabric-"${VERSION}"-x86_64-unknown-linux-musl.tar.gz \
+  dist/light-fabric-"${VERSION}"-x86_64-pc-windows-msvc.zip \
+  --clobber
+```
+
 ## License
 
 This project is licensed under the Apache-2.0 License.
