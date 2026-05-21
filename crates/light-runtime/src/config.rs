@@ -166,6 +166,8 @@ pub struct RuntimeConfig {
     pub config_dir: PathBuf,
     pub external_config_dir: PathBuf,
     pub resolved_values: HashMap<String, serde_yaml::Value>,
+    #[serde(skip, default)]
+    pub default_config_dir: Option<PathBuf>,
     #[serde(skip, default = "default_module_registry")]
     pub module_registry: Arc<ModuleRegistry>,
     #[serde(skip)]

@@ -44,6 +44,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 const CONFIG_DIR: &str = "config";
+const DEFAULT_CONFIG_DIR: &str = "config-defaults";
 const EXTERNAL_CONFIG_DIR: &str = "config-cache";
 const HEALTH_PATH: &str = "/health";
 
@@ -2524,6 +2525,7 @@ async fn main() -> Result<()> {
 
     let cache_registry = Arc::new(CacheRegistry::new());
     let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp))
+        .with_default_config_dir(DEFAULT_CONFIG_DIR)
         .with_config_dir(CONFIG_DIR)
         .with_external_config_dir(EXTERNAL_CONFIG_DIR)
         .with_cache_registry(cache_registry)
@@ -3227,6 +3229,7 @@ mod tests {
             config_dir: config_dir.path().to_path_buf(),
             external_config_dir: external_config_dir.path().to_path_buf(),
             resolved_values,
+            default_config_dir: None,
             module_registry: Arc::new(ModuleRegistry::new()),
             cache_registry: None,
             registry_client: None,

@@ -1035,6 +1035,7 @@ endpointRules:
             config_dir: config_dir.path().to_path_buf(),
             external_config_dir: config_dir.path().join("external"),
             resolved_values: values,
+            default_config_dir: None,
             module_registry: Arc::new(ModuleRegistry::new()),
             cache_registry: None,
             registry_client: None,

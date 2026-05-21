@@ -86,6 +86,7 @@ where
     transport: T,
     config_dir: PathBuf,
     external_config_dir: Option<PathBuf>,
+    default_config_dir: Option<PathBuf>,
     modules: Vec<Arc<dyn Module>>,
     module_registry: Arc<ModuleRegistry>,
     cache_registry: Option<Arc<CacheRegistry>>,
@@ -103,6 +104,7 @@ where
             transport,
             config_dir: PathBuf::from("config"),
             external_config_dir: None,
+            default_config_dir: None,
             modules: Vec::new(),
             module_registry: Arc::new(ModuleRegistry::new()),
             cache_registry: None,
@@ -119,6 +121,11 @@ where
 
     pub fn with_external_config_dir(mut self, external_config_dir: impl Into<PathBuf>) -> Self {
         self.external_config_dir = Some(external_config_dir.into());
+        self
+    }
+
+    pub fn with_default_config_dir(mut self, default_config_dir: impl Into<PathBuf>) -> Self {
+        self.default_config_dir = Some(default_config_dir.into());
         self
     }
 
@@ -157,6 +164,7 @@ where
             transport: self.transport,
             config_dir: self.config_dir,
             external_config_dir: self.external_config_dir,
+            default_config_dir: self.default_config_dir,
             modules: self.modules,
             module_registry: self.module_registry,
             cache_registry: self.cache_registry,
@@ -175,6 +183,7 @@ where
     transport: T,
     config_dir: PathBuf,
     external_config_dir: Option<PathBuf>,
+    default_config_dir: Option<PathBuf>,
     modules: Vec<Arc<dyn Module>>,
     module_registry: Arc<ModuleRegistry>,
     cache_registry: Option<Arc<CacheRegistry>>,
@@ -228,6 +237,7 @@ impl RuntimeConfig {
         )
         .await?;
         let values = load_values_map(
+            self.default_config_dir.as_deref(),
             &self.config_dir,
             &self.external_config_dir,
             remote_result.values_yaml,
@@ -316,16 +326,13 @@ where
     fn load_bootstrap_config(
         &self,
     ) -> Result<(BootstrapConfig, Option<ClientConfig>), RuntimeError> {
-        let values = load_bootstrap_values(&self.config_dir)?;
+        let values = load_bootstrap_values(self.default_config_dir.as_deref(), &self.config_dir)?;
         let password = std::env::var(CONFIG_PASSWORD_ENV).ok();
         let loader = ConfigLoader::from_values(values, password.as_deref(), None)?;
 
-        let startup_path = self.config_dir.join(STARTUP_FILE);
-        let mut config = if startup_path.exists() {
-            self.load_typed_config::<BootstrapConfig>(&loader, STARTUP_FILE)?
-        } else {
-            BootstrapConfig::default()
-        };
+        let mut config = self
+            .try_load_typed_config::<BootstrapConfig>(&loader, STARTUP_FILE)?
+            .unwrap_or_default();
 
         if config.accept_header.is_empty() {
             config.accept_header = default_accept_header();
@@ -372,6 +379,7 @@ where
         remote_result: RemoteBootstrapResult,
     ) -> Result<RuntimeConfig, RuntimeError> {
         let values = load_values_map(
+            self.default_config_dir.as_deref(),
             &self.config_dir,
             &external_config_dir,
             remote_result.values_yaml,
@@ -423,6 +431,7 @@ where
             config_dir: self.config_dir.clone(),
             external_config_dir,
             resolved_values: values,
+            default_config_dir: self.default_config_dir.clone(),
             module_registry: Arc::clone(&self.module_registry),
             cache_registry: self.cache_registry.clone(),
             registry_client,
@@ -516,25 +525,18 @@ where
     where
         V: DeserializeOwned,
     {
-        let mut paths = Vec::new();
-        let base_path = self.config_dir.join(file_name);
-        if base_path.exists() {
-            paths.push(base_path);
-        }
-        let overlay_path = self
+        let external_config_dir = self
             .external_config_dir
             .clone()
-            .unwrap_or_else(|| self.config_dir.clone())
-            .join(file_name);
-        if overlay_path.exists() && !paths.iter().any(|path| path == &overlay_path) {
-            paths.push(overlay_path);
-        }
-
-        if paths.is_empty() {
-            return Err(RuntimeError::MissingConfig(file_name.to_string()));
-        }
-
-        let merged = loader.load_merged_files(paths.iter().map(PathBuf::as_path))?;
+            .unwrap_or_else(|| self.config_dir.clone());
+        let merged = load_merged_config(
+            loader,
+            self.default_config_dir.as_deref(),
+            &self.config_dir,
+            &external_config_dir,
+            file_name,
+        )?
+        .ok_or_else(|| RuntimeError::MissingConfig(file_name.to_string()))?;
         let parsed = serde_yaml::from_value(merged)?;
         Ok(parsed)
     }
@@ -547,18 +549,23 @@ where
     where
         V: DeserializeOwned,
     {
-        let base_path = self.config_dir.join(file_name);
-        let overlay_path = self
+        let external_config_dir = self
             .external_config_dir
             .clone()
-            .unwrap_or_else(|| self.config_dir.clone())
-            .join(file_name);
-
-        if !base_path.exists() && !overlay_path.exists() {
+            .unwrap_or_else(|| self.config_dir.clone());
+        let Some(merged) = load_merged_config(
+            loader,
+            self.default_config_dir.as_deref(),
+            &self.config_dir,
+            &external_config_dir,
+            file_name,
+        )?
+        else {
             return Ok(None);
-        }
+        };
 
-        self.load_typed_config(loader, file_name).map(Some)
+        let parsed = serde_yaml::from_value(merged)?;
+        Ok(Some(parsed))
     }
 
     async fn register_controller_if_needed(
@@ -937,33 +944,38 @@ async fn fetch_remote_files(
     Ok(cached_files)
 }
 
-fn load_bootstrap_values(config_dir: &Path) -> Result<HashMap<String, Value>, RuntimeError> {
-    let values_path = config_dir.join(VALUES_FILE);
-    if !values_path.exists() {
-        return Ok(HashMap::new());
+fn load_bootstrap_values(
+    default_config_dir: Option<&Path>,
+    config_dir: &Path,
+) -> Result<HashMap<String, Value>, RuntimeError> {
+    let mut values = HashMap::new();
+
+    for path in existing_config_paths(default_config_dir, config_dir, None, VALUES_FILE) {
+        let content = fs::read_to_string(path)?;
+        let parsed: HashMap<String, Value> = serde_yaml::from_str(&content)?;
+        values.extend(parsed);
     }
 
-    let content = fs::read_to_string(values_path)?;
-    let parsed: HashMap<String, Value> = serde_yaml::from_str(&content)?;
-    Ok(parsed)
+    Ok(values)
 }
 
 fn load_values_map(
+    default_config_dir: Option<&Path>,
     config_dir: &Path,
     external_config_dir: &Path,
     remote_values_yaml: Option<String>,
 ) -> Result<HashMap<String, Value>, RuntimeError> {
     let mut values = HashMap::new();
 
-    for path in [
-        config_dir.join(VALUES_FILE),
-        external_config_dir.join(VALUES_FILE),
-    ] {
-        if path.exists() {
-            let content = fs::read_to_string(&path)?;
-            let parsed: HashMap<String, Value> = serde_yaml::from_str(&content)?;
-            values.extend(parsed);
-        }
+    for path in existing_config_paths(
+        default_config_dir,
+        config_dir,
+        Some(external_config_dir),
+        VALUES_FILE,
+    ) {
+        let content = fs::read_to_string(path)?;
+        let parsed: HashMap<String, Value> = serde_yaml::from_str(&content)?;
+        values.extend(parsed);
     }
 
     if let Some(remote_values_yaml) = remote_values_yaml {
@@ -972,6 +984,61 @@ fn load_values_map(
     }
 
     Ok(values)
+}
+
+pub(crate) fn load_merged_config(
+    loader: &ConfigLoader,
+    default_config_dir: Option<&Path>,
+    config_dir: &Path,
+    external_config_dir: &Path,
+    file_name: &str,
+) -> Result<Option<Value>, RuntimeError> {
+    let mut merged = Value::Mapping(serde_yaml::Mapping::new());
+    let mut found = false;
+
+    for path in existing_config_paths(
+        default_config_dir,
+        config_dir,
+        Some(external_config_dir),
+        file_name,
+    ) {
+        let value = loader.load_file(path)?;
+        ConfigLoader::merge_values(&mut merged, value);
+        found = true;
+    }
+
+    if !found {
+        return Ok(None);
+    }
+
+    loader.resolve_value(&mut merged)?;
+    Ok(Some(merged))
+}
+
+fn existing_config_paths(
+    default_config_dir: Option<&Path>,
+    config_dir: &Path,
+    external_config_dir: Option<&Path>,
+    file_name: &str,
+) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Some(default_config_dir) = default_config_dir {
+        push_existing_config_path(&mut paths, default_config_dir, file_name);
+    }
+    push_existing_config_path(&mut paths, config_dir, file_name);
+    if let Some(external_config_dir) = external_config_dir {
+        push_existing_config_path(&mut paths, external_config_dir, file_name);
+    }
+
+    paths
+}
+
+fn push_existing_config_path(paths: &mut Vec<PathBuf>, dir: &Path, file_name: &str) {
+    let path = dir.join(file_name);
+    if path.exists() && !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
 }
 
 fn parse_direct_registry_urls_value(
@@ -1177,9 +1244,15 @@ mod tests {
     }
 
     #[test]
-    fn merges_values_from_local_and_external_dirs() {
+    fn merges_values_from_default_local_external_and_remote_sources() {
+        let default_dir = TempDir::new().expect("default config temp dir");
         let config_dir = TempDir::new().expect("config temp dir");
         let external_dir = TempDir::new().expect("external temp dir");
+        fs::write(
+            default_dir.path().join(VALUES_FILE),
+            "a: default\nb: default\ndefaultOnly: true\n",
+        )
+        .expect("write default values");
         fs::write(config_dir.path().join(VALUES_FILE), "a: 1\nb: local\n")
             .expect("write local values");
         fs::write(
@@ -1188,12 +1261,62 @@ mod tests {
         )
         .expect("write external values");
 
-        let values =
-            load_values_map(config_dir.path(), external_dir.path(), None).expect("values map");
+        let values = load_values_map(
+            Some(default_dir.path()),
+            config_dir.path(),
+            external_dir.path(),
+            Some("b: config-server\nremoteOnly: 42\n".to_string()),
+        )
+        .expect("values map");
 
         assert_eq!(values["a"], Value::Number(1.into()));
-        assert_eq!(values["b"], Value::String("remote".to_string()));
+        assert_eq!(values["b"], Value::String("config-server".to_string()));
         assert_eq!(values["c"], Value::Bool(true));
+        assert_eq!(values["defaultOnly"], Value::Bool(true));
+        assert_eq!(values["remoteOnly"], Value::Number(42.into()));
+    }
+
+    #[test]
+    fn bootstrap_config_uses_default_template_with_local_overlay() {
+        let default_dir = TempDir::new().expect("default config temp dir");
+        let config_dir = TempDir::new().expect("config temp dir");
+        fs::write(
+            default_dir.path().join(STARTUP_FILE),
+            r#"
+host: ${startup.host:default.lightapi.net}
+serviceId: ${startup.serviceId:com.networknt.default-1.0.0}
+envTag: ${startup.envTag:dev}
+acceptHeader: application/yaml
+timeout: ${startup.timeout:3000}
+connectTimeout: ${startup.connectTimeout:3000}
+configServerUri: ${configServer.uri:https://default-config-server:8435}
+"#,
+        )
+        .expect("write default startup");
+        fs::write(
+            config_dir.path().join(STARTUP_FILE),
+            r#"
+serviceId: com.networknt.overlay-1.0.0
+configServerUri: https://overlay-config-server:8435
+"#,
+        )
+        .expect("write overlay startup");
+
+        let runtime = LightRuntimeBuilder::new(NoopTransport)
+            .with_default_config_dir(default_dir.path())
+            .with_config_dir(config_dir.path())
+            .build();
+        let (bootstrap, _) = runtime.load_bootstrap_config().expect("bootstrap config");
+
+        assert_eq!(bootstrap.host, "default.lightapi.net");
+        assert_eq!(
+            bootstrap.service_id.as_deref(),
+            Some("com.networknt.overlay-1.0.0")
+        );
+        assert_eq!(
+            bootstrap.config_server_uri.as_deref(),
+            Some("https://overlay-config-server:8435")
+        );
     }
 
     #[test]
@@ -1262,6 +1385,56 @@ direct-registry.directUrls:
         );
     }
 
+    #[test]
+    fn runtime_config_uses_default_server_template_without_local_server_file() {
+        let default_dir = TempDir::new().expect("default config temp dir");
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        fs::write(
+            default_dir.path().join(SERVER_FILE),
+            r#"
+ip: ${server.ip:0.0.0.0}
+httpPort: ${server.httpPort:8080}
+enableHttp: ${server.enableHttp:true}
+httpsPort: ${server.httpsPort:8443}
+enableHttps: ${server.enableHttps:false}
+serviceId: ${server.serviceId:com.networknt.default-1.0.0}
+enableRegistry: ${server.enableRegistry:false}
+startOnRegistryFailure: ${server.startOnRegistryFailure:true}
+dynamicPort: ${server.dynamicPort:false}
+environment: ${server.environment:dev}
+shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
+"#,
+        )
+        .expect("write default server template");
+
+        let runtime = LightRuntimeBuilder::new(NoopTransport)
+            .with_default_config_dir(default_dir.path())
+            .with_config_dir(config_dir.path())
+            .build();
+        let config = runtime
+            .build_runtime_config(
+                BootstrapConfig::default(),
+                None,
+                external_dir.path().to_path_buf(),
+                RemoteBootstrapResult {
+                    values_yaml: Some(
+                        "server.httpPort: 9090\nserver.serviceId: com.networknt.remote-2.0.0\n"
+                            .to_string(),
+                    ),
+                    cached_files: Vec::new(),
+                },
+            )
+            .expect("build runtime config");
+
+        assert_eq!(config.server.http_port, 9090);
+        assert_eq!(config.server.service_id, "com.networknt.remote-2.0.0");
+        assert_eq!(
+            config.default_config_dir.as_deref(),
+            Some(default_dir.path())
+        );
+    }
+
     #[tokio::test]
     async fn reload_context_fetches_remote_values_into_external_cache() {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -1314,6 +1487,7 @@ direct-registry.directUrls:
             config_dir: config_dir.path().to_path_buf(),
             external_config_dir: external_dir.path().to_path_buf(),
             resolved_values: HashMap::new(),
+            default_config_dir: None,
             module_registry: Arc::new(ModuleRegistry::new()),
             cache_registry: None,
             registry_client: None,

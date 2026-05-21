@@ -3,9 +3,9 @@
 This folder deploys the Rust `light-gateway` from `light-fabric` as a
 single-container microgateway pod.
 
-The gateway uses local bootstrap config from `/config`, downloads runtime config
-from config-server into `/app/config-cache`, starts Pingora, and registers with
-controller.
+The gateway uses local bootstrap config from `/config`, baked config templates
+from `/app/config-defaults`, downloads runtime config from config-server into
+`/app/config-cache`, starts Pingora, and registers with controller.
 
 The default `name` is `ai-microgateway-rust` so it can be deployed beside the
 existing Java `ai-microgateway` in the same `light-gateway` namespace. To
@@ -14,12 +14,14 @@ intentionally.
 
 ## Files
 
-- `configmap.yaml`: bootstrap `values.yml`, `startup.yml`, `server.yml`,
-  `portal-registry.yml`, and `client.yml`.
+- `configmap.yaml`: bootstrap `startup.yml`. Runtime templates such as
+  `server.yml`, `portal-registry.yml`, and `client.yml` are packaged in the
+  image under `/app/config-defaults`; files mounted in `/config` can still
+  override those defaults when needed.
 - `secret.yaml`: portal bearer token, optional config password, and bootstrap
   CA certificate.
-- `deployment.yaml`: Rust gateway container, projected bootstrap config, and
-  writable `config-cache`.
+- `deployment.yaml`: Rust gateway container, projected bootstrap config, baked
+  defaults, and writable `config-cache`.
 - `service.yaml`: `ClusterIP` Service for in-cluster access.
 - `render-request.json`: example light-deployer request.
 
@@ -154,6 +156,22 @@ Health check:
 ```sh
 curl -i http://127.0.0.1:8080/health
 ```
+
+
+To clean up and redeploy. 
+
+```
+kubectl -n light-gateway delete deploy,svc,cm,secret \
+-l app.kubernetes.io/managed-by=light-deployer
+```
+
+Access pod shell. 
+
+```
+kubectl exec -it ai-microgateway-d7b864586-f9kgr -n light-gateway -- /bin/sh
+```
+
+
 
 ## Notes
 

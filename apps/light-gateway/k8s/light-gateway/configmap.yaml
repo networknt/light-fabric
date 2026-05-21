@@ -8,30 +8,6 @@ metadata:
     app.kubernetes.io/component: micro-gateway
     app.kubernetes.io/part-of: lightapi
 data:
-  values.yml: |
-    startup.host: ${startup.host:dev.lightapi.net}
-    startup.timeout: ${startup.timeout:3000}
-    startup.connectTimeout: ${startup.connectTimeout:3000}
-    startup.bootstrapCaCertPath: config/ca.pem
-    light-config-server-uri: ${configServer.uri:https://light-config-server:8435}
-
-    server.serviceId: ${startup.serviceId:com.networknt.ai.gateway-1.0.0}
-    server.environment: ${startup.envTag:dev}
-    server.ip: 0.0.0.0
-    server.advertisedAddress: ${server.advertisedAddress:ai-microgateway-rust.light-gateway}
-    server.httpPort: ${ports.http:8080}
-    server.enableHttp: ${server.enableHttp:true}
-    server.httpsPort: ${ports.https:8443}
-    server.enableHttps: ${server.enableHttps:false}
-    server.tlsCertPath: ${server.tlsCertPath:}
-    server.tlsKeyPath: ${server.tlsKeyPath:}
-    server.enableRegistry: true
-    server.startOnRegistryFailure: ${server.startOnRegistryFailure:true}
-
-    portalRegistry.portalUrl: ${portalRegistry.portalUrl:https://controller:8438}
-
-    client.caCertPath: config/ca.pem
-    client.verifyHostname: ${client.verifyHostname:false}
   startup.yml: |
     host: ${startup.host:dev.lightapi.net}
     serviceId: ${startup.serviceId:com.networknt.ai.gateway-1.0.0}
@@ -42,31 +18,3 @@ data:
     configServerUri: ${configServer.uri:https://light-config-server:8435}
     authorization: "${light_portal_authorization:}"
     bootstrapCaCertPath: ${startup.bootstrapCaCertPath:config/ca.pem}
-  server.yml: |
-    ip: ${server.ip:0.0.0.0}
-    advertisedAddress: ${server.advertisedAddress:127.0.0.1}
-    httpPort: ${server.httpPort:8080}
-    enableHttp: ${server.enableHttp:true}
-    httpsPort: ${server.httpsPort:8443}
-    enableHttps: ${server.enableHttps:false}
-    tlsCertPath: ${server.tlsCertPath:}
-    tlsKeyPath: ${server.tlsKeyPath:}
-    serviceId: ${startup.serviceId:com.networknt.ai.gateway-1.0.0}
-    enableRegistry: ${server.enableRegistry:true}
-    startOnRegistryFailure: ${server.startOnRegistryFailure:true}
-    dynamicPort: ${server.dynamicPort:false}
-    environment: ${startup.envTag:dev}
-    shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
-  portal-registry.yml: |
-    portalUrl: ${portalRegistry.portalUrl:https://localhost:8438}
-    portalToken: "${light_portal_authorization:}"
-    controllerDiscoveryToken: ${portalRegistry.controllerDiscoveryToken:}
-  client.yml: |
-    tls:
-      caCertPath: ${client.caCertPath:config/ca.pem}
-      verifyHostname: ${client.verifyHostname:false}
-    request:
-      connectTimeout: ${client.connectTimeout:2000}
-      timeout: ${client.timeout:4000}
-      injectCallerId: ${client.injectCallerId:false}
-      enableHttp2: ${client.requestEnableHttp2:true}

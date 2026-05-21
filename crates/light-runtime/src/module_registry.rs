@@ -1,6 +1,6 @@
 use crate::cache::CacheRegistry;
 use crate::config::RuntimeConfig;
-use crate::runtime::RuntimeError;
+use crate::runtime::{RuntimeError, load_merged_config};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use config_loader::ConfigLoader;
@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::PathBuf;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 const MASKED_VALUE: &str = "*";
@@ -288,20 +287,14 @@ impl ModuleRegistry {
             None,
         )?;
 
-        let mut paths = Vec::new();
-        let base_path = runtime_config.config_dir.join(file_name);
-        if base_path.exists() {
-            paths.push(base_path);
-        }
-        let external_path = runtime_config.external_config_dir.join(file_name);
-        if external_path.exists() && !paths.iter().any(|path| path == &external_path) {
-            paths.push(external_path);
-        }
-        if paths.is_empty() {
-            return Err(RuntimeError::MissingConfig(file_name.to_string()));
-        }
-
-        let merged = loader.load_merged_files(paths.iter().map(PathBuf::as_path))?;
+        let merged = load_merged_config(
+            &loader,
+            runtime_config.default_config_dir.as_deref(),
+            &runtime_config.config_dir,
+            &runtime_config.external_config_dir,
+            file_name,
+        )?
+        .ok_or_else(|| RuntimeError::MissingConfig(file_name.to_string()))?;
         let parsed = serde_yaml::from_value::<T>(merged)?;
         Ok(parsed)
     }
@@ -1086,6 +1079,7 @@ mod tests {
             client: Some(client_config),
             portal_registry: Some(PortalRegistryConfig {
                 portal_url: "https://localhost:8438".to_string(),
+                portal_query_url: None,
                 portal_token: "portal-secret".to_string(),
                 controller_discovery_token: "discovery-secret".to_string(),
             }),
@@ -1099,6 +1093,7 @@ mod tests {
             config_dir: "config".into(),
             external_config_dir: "config-cache".into(),
             resolved_values: HashMap::new(),
+            default_config_dir: None,
             module_registry: Arc::new(ModuleRegistry::new()),
             cache_registry: None,
             registry_client: None,
@@ -1265,6 +1260,35 @@ mod tests {
                 .iter()
                 .any(|entry| entry.module_id == "test/sample" && !entry.reloadable)
         );
+    }
+
+    #[test]
+    fn load_config_uses_default_config_dir_when_local_file_is_absent() {
+        let registry = ModuleRegistry::new();
+        let default_config_dir = TempDir::new().expect("default config temp dir");
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_config_dir = TempDir::new().expect("external config temp dir");
+        std::fs::write(
+            default_config_dir.path().join("sample.yml"),
+            "password: ${sample.password}\npublicValue: from-default\n",
+        )
+        .expect("write default sample config");
+
+        let mut config = runtime_config();
+        config.default_config_dir = Some(default_config_dir.path().to_path_buf());
+        config.config_dir = config_dir.path().to_path_buf();
+        config.external_config_dir = external_config_dir.path().to_path_buf();
+        config.resolved_values.insert(
+            "sample.password".to_string(),
+            serde_yaml::Value::String("resolved-secret".to_string()),
+        );
+
+        let loaded: SampleConfig = registry
+            .load_config(&config, "sample.yml")
+            .expect("load default config");
+
+        assert_eq!(loaded.password, "resolved-secret");
+        assert_eq!(loaded.public_value, "from-default");
     }
 
     struct TestReloader;
