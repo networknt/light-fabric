@@ -522,6 +522,11 @@ mod unit_tests {
                         "ask": {
                             "prompt": "Configure endpoint authorization?",
                             "mode": "choice",
+                            "assignment": {
+                                "roleId": "api-approver",
+                                "categoryCode": "approval",
+                                "reasonCode": "endpoint-authorization"
+                            },
                             "options": [
                                 { "label": "Skip", "value": "skip" }
                             ]
@@ -575,7 +580,18 @@ mod unit_tests {
         assert!(workflow.use_.unwrap().mcp_sessions.is_some());
 
         let first = workflow.do_.entries[0].get("ask-authz").unwrap();
-        assert!(matches!(first, TaskDefinition::Ask(_)));
+        match first {
+            TaskDefinition::Ask(task) => {
+                let assignment = task.ask.assignment.as_ref().unwrap();
+                assert_eq!(assignment.role_id.as_deref(), Some("api-approver"));
+                assert_eq!(assignment.category_code.as_deref(), Some("approval"));
+                assert_eq!(
+                    assignment.reason_code.as_deref(),
+                    Some("endpoint-authorization")
+                );
+            }
+            other => panic!("expected ask task, got {:?}", other),
+        }
 
         let second = workflow.do_.entries[1].get("register-api").unwrap();
         assert!(matches!(

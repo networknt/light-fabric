@@ -3,15 +3,15 @@ use regex::Regex;
 use serde_json::{Map as JsonMap, Number, Value, json};
 use serde_yaml::Value as YamlValue;
 use sqlx::{PgPool, Postgres, Transaction};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 use workflow_core::models::task::{
-    AssertComparison, AssertComparisonObject, AssertDefinition, CallTaskDefinition,
+    AskDefinition, AssertComparison, AssertComparisonObject, AssertDefinition, CallTaskDefinition,
     HasLengthComparison, JsonRpcArguments, JsonRpcErrorPolicy, McpArguments, McpServerDefinition,
     OpenRpcArguments, SetValue, TaskDefinition, TaskDefinitionFields,
 };
@@ -33,6 +33,8 @@ pub struct ActiveTask {
     pub process_id: Uuid,
     pub wf_instance_id: String,
     pub wf_task_id: String,
+    pub status_code: String,
+    pub result_code: Option<String>,
 }
 
 struct ClaimedTask {
@@ -112,14 +114,18 @@ impl TaskExecutor {
             claimed.task.wf_task_id, claimed.task.task_type
         );
 
-        let result = match self.execute_task(&claimed).await {
-            Ok(result) => result,
-            Err(e) => TaskExecutionResult {
-                status_code: "F",
-                task_output: json!({ "error": e.to_string() }),
-                next_task: None,
-                context_data: None,
-            },
+        let result = if claimed.task.status_code == "C" && claimed.task.task_type == "ask" {
+            self.completed_ask_result(&claimed)
+        } else {
+            match self.execute_task(&claimed).await {
+                Ok(result) => result,
+                Err(e) => TaskExecutionResult {
+                    status_code: "F",
+                    task_output: json!({ "error": e.to_string() }),
+                    next_task: None,
+                    context_data: None,
+                },
+            }
         };
 
         let mut tx = self.pool.begin().await?;
@@ -138,17 +144,24 @@ impl TaskExecutor {
             SET locked = 'Y', update_ts = CURRENT_TIMESTAMP
             WHERE (host_id, task_id) IN (
                 SELECT host_id, task_id FROM task_info_t
-                WHERE status_code = 'A'
+                WHERE (
+                    (status_code = 'A' AND task_type IN ('ask', 'assert', 'call', 'set', 'switch'))
+                    OR (
+                        status_code = 'C'
+                        AND task_type = 'ask'
+                        AND completed_ts IS NOT NULL
+                        AND (task_output IS NULL OR task_output->>'status' = 'waiting_for_input')
+                    )
+                  )
                   AND (
                     locked = 'N'
                     OR (locked = 'Y' AND update_ts < CURRENT_TIMESTAMP - make_interval(mins => $1::int))
                   )
-                  AND task_type IN ('ask', 'assert', 'call', 'set', 'switch')
                 ORDER BY priority DESC, started_ts ASC
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
             )
-            RETURNING host_id, task_id, task_type, process_id, wf_instance_id, wf_task_id
+            RETURNING host_id, task_id, task_type, process_id, wf_instance_id, wf_task_id, status_code, result_code
             "#,
         )
         .bind(TASK_LOCK_TIMEOUT_MINUTES)
@@ -392,6 +405,25 @@ impl TaskExecutor {
                 ),
             )
             .into()),
+        }
+    }
+
+    fn completed_ask_result(&self, claimed: &ClaimedTask) -> TaskExecutionResult {
+        let task_output = claimed
+            .task
+            .result_code
+            .as_ref()
+            .map(|result_code| {
+                serde_json::from_str::<Value>(result_code)
+                    .unwrap_or_else(|_| Value::String(result_code.clone()))
+            })
+            .unwrap_or_else(|| Value::String("completed".to_string()));
+
+        TaskExecutionResult {
+            status_code: "C",
+            task_output,
+            next_task: None,
+            context_data: None,
         }
     }
 
@@ -1233,6 +1265,12 @@ impl TaskExecutor {
             )
             .await?;
         } else if result.status_code == "W" {
+            if let Some(TaskDefinition::Ask(ask_task)) =
+                self.find_task_definition(&claimed.definition, &claimed.task.wf_task_id)
+            {
+                self.ensure_ask_assignments(tx, claimed, &ask_task.ask)
+                    .await?;
+            }
             info!(
                 ">>> Workflow task waiting for input: {} ({})",
                 claimed.task.wf_task_id, claimed.task.wf_instance_id
@@ -1243,6 +1281,147 @@ impl TaskExecutor {
             )
             .bind(claimed.task.host_id)
             .bind(claimed.task.process_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn ensure_ask_assignments(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        claimed: &ClaimedTask,
+        ask: &AskDefinition,
+    ) -> Result<(), sqlx::Error> {
+        let Some(assignment) = ask.assignment.as_ref() else {
+            warn!(
+                "Ask task {} is waiting without an assignment definition",
+                claimed.task.wf_task_id
+            );
+            return Ok(());
+        };
+
+        let category_code = assignment
+            .category_code
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| self.resolve_template_to_string(value, &claimed.context_data))
+            .unwrap_or_else(|| "(all)".to_string());
+        let reason_code = assignment
+            .reason_code
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| self.resolve_template_to_string(value, &claimed.context_data))
+            .unwrap_or_else(|| "ask".to_string());
+
+        let mut assignees = Vec::new();
+        let mut seen = HashSet::new();
+
+        if let Some(assignee_id) = assignment
+            .assignee_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| self.resolve_template_to_string(value, &claimed.context_data))
+        {
+            if seen.insert(assignee_id.clone()) {
+                assignees.push(assignee_id);
+            }
+        }
+
+        if let Some(role_id) = assignment
+            .role_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| self.resolve_template_to_string(value, &claimed.context_data))
+        {
+            let role_users = sqlx::query_as::<_, (String,)>(
+                r#"
+                SELECT user_id::text
+                FROM role_user_t
+                WHERE host_id = $1
+                  AND role_id = $2
+                  AND active = TRUE
+                  AND (start_ts IS NULL OR start_ts <= CURRENT_TIMESTAMP)
+                  AND (end_ts IS NULL OR end_ts > CURRENT_TIMESTAMP)
+                ORDER BY user_id
+                "#,
+            )
+            .bind(claimed.task.host_id)
+            .bind(&role_id)
+            .fetch_all(&mut **tx)
+            .await?;
+
+            if role_users.is_empty() {
+                warn!(
+                    "Ask task {} assignment role {} has no active users",
+                    claimed.task.wf_task_id, role_id
+                );
+            }
+
+            for (assignee_id,) in role_users {
+                if seen.insert(assignee_id.clone()) {
+                    assignees.push(assignee_id);
+                }
+            }
+        }
+
+        if assignees.is_empty() {
+            warn!(
+                "Ask task {} has an assignment definition but no resolved assignees",
+                claimed.task.wf_task_id
+            );
+            return Ok(());
+        }
+
+        for assignee_id in assignees {
+            sqlx::query(
+                r#"
+                INSERT INTO worklist_t (
+                    host_id, assignee_id, category_id, status_code, app_id,
+                    update_user, update_ts, aggregate_version, active
+                )
+                VALUES ($1, $2, $3, 'Active', 'workflow', 'light-workflow', CURRENT_TIMESTAMP, 1, TRUE)
+                ON CONFLICT (host_id, assignee_id, category_id) DO UPDATE
+                SET status_code = EXCLUDED.status_code,
+                    app_id = EXCLUDED.app_id,
+                    update_user = EXCLUDED.update_user,
+                    update_ts = CURRENT_TIMESTAMP,
+                    active = TRUE
+                "#,
+            )
+            .bind(claimed.task.host_id)
+            .bind(&assignee_id)
+            .bind(&category_code)
+            .execute(&mut **tx)
+            .await?;
+
+            sqlx::query(
+                r#"
+                INSERT INTO task_asst_t (
+                    host_id, task_asst_id, task_id, assigned_ts, assignee_id,
+                    reason_code, category_code, update_user, update_ts,
+                    aggregate_version, active
+                )
+                SELECT $1, $2, $3, CURRENT_TIMESTAMP, $4, $5, $6,
+                       'light-workflow', CURRENT_TIMESTAMP, 1, TRUE
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM task_asst_t
+                    WHERE host_id = $1
+                      AND task_id = $3
+                      AND assignee_id = $4
+                      AND COALESCE(category_code, '') = COALESCE($6, '')
+                      AND active = TRUE
+                )
+                "#,
+            )
+            .bind(claimed.task.host_id)
+            .bind(Uuid::new_v4())
+            .bind(claimed.task.task_id)
+            .bind(&assignee_id)
+            .bind(&reason_code)
+            .bind(&category_code)
             .execute(&mut **tx)
             .await?;
         }

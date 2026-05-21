@@ -305,6 +305,8 @@ pub struct AskDefinition {
     pub prompt: String,
     #[serde(rename = "mode", skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    #[serde(rename = "assignment", skip_serializing_if = "Option::is_none")]
+    pub assignment: Option<AskAssignmentDefinition>,
     #[serde(rename = "options", skip_serializing_if = "Option::is_none")]
     pub options: Option<Vec<AskOption>>,
     #[serde(rename = "optionsFrom", skip_serializing_if = "Option::is_none")]
@@ -325,6 +327,18 @@ pub struct AskDefinition {
     pub retry_on_invalid: Option<Value>,
     #[serde(rename = "sensitive", skip_serializing_if = "Option::is_none")]
     pub sensitive: Option<bool>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AskAssignmentDefinition {
+    #[serde(rename = "assigneeId", skip_serializing_if = "Option::is_none")]
+    pub assignee_id: Option<String>,
+    #[serde(rename = "roleId", skip_serializing_if = "Option::is_none")]
+    pub role_id: Option<String>,
+    #[serde(rename = "categoryCode", skip_serializing_if = "Option::is_none")]
+    pub category_code: Option<String>,
+    #[serde(rename = "reasonCode", skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

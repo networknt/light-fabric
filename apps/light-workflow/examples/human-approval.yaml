@@ -26,6 +26,10 @@ do:
       ask:
         prompt: Review the workflow request and choose a decision.
         mode: approval
+        assignment:
+          roleId: account-manager
+          categoryCode: approval
+          reasonCode: human-approval
         options:
           - label: Approve
             value: APPROVED
