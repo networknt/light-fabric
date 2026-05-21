@@ -141,7 +141,7 @@ impl TaskExecutor {
                 WHERE status_code = 'A'
                   AND (
                     locked = 'N'
-                    OR (locked = 'Y' AND update_ts < CURRENT_TIMESTAMP - make_interval(mins => $1))
+                    OR (locked = 'Y' AND update_ts < CURRENT_TIMESTAMP - make_interval(mins => $1::int))
                   )
                   AND task_type IN ('ask', 'assert', 'call', 'set', 'switch')
                 ORDER BY priority DESC, started_ts ASC

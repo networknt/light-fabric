@@ -1,0 +1,42 @@
+document:
+  dsl: "1.0.3"
+  namespace: light-portal
+  name: simple-set-assert
+  version: "1.0.0"
+  title: Simple Set and Assert
+  summary: Local smoke test for set, export, assert, and sequential transitions.
+  tags:
+    testType: local
+    dependencies: none
+input:
+  schema:
+    format: json
+    document:
+      type: object
+      properties:
+        applicantId:
+          type: string
+      required:
+        - applicantId
+do:
+  - initializeDecision:
+      set:
+        applicantId: "${ .applicantId }"
+        status: APPROVED
+        reason: Local set task completed
+      export:
+        as:
+          decision: .output
+  - verifyDecision:
+      assert:
+        value: "${ .decision.status }"
+        equals: APPROVED
+      export:
+        as:
+          verification: .output
+  - finish:
+      set:
+        applicantId: "${ .decision.applicantId }"
+        status: "${ .decision.status }"
+        verified: "${ .verification.passed }"
+        message: Workflow completed by simple-set-assert

@@ -1,0 +1,88 @@
+document:
+  dsl: "1.0.3"
+  namespace: light-portal
+  name: http-risk-decision
+  version: "1.0.0"
+  title: HTTP Risk Decision
+  summary: Calls a mock risk service, branches on risk score, and records a normalized decision.
+  tags:
+    testType: local
+    dependencies: http-mock
+input:
+  schema:
+    format: json
+    document:
+      type: object
+      properties:
+        applicantId:
+          type: string
+        loanAmount:
+          type: number
+        creditScore:
+          type: number
+      required:
+        - applicantId
+        - loanAmount
+        - creditScore
+do:
+  - evaluateRisk:
+      call: http
+      with:
+        method: POST
+        endpoint:
+          uri: http://127.0.0.1:18080/risk/evaluate
+        body:
+          applicantId: "${ .applicantId }"
+          loanAmount: "${ .loanAmount }"
+          creditScore: "${ .creditScore }"
+        output: content
+      export:
+        as:
+          risk: .output
+  - chooseDecisionPath:
+      switch:
+        - autoApprove:
+            when: "${ .risk.riskScore <= 30 }"
+            then: approve
+        - manualReview:
+            when: "${ .risk.riskScore < 80 }"
+            then: reviewRequired
+        - default:
+            then: reject
+  - approve:
+      set:
+        status: APPROVED
+        decisionSource: Automatic
+        riskScore: "${ .risk.riskScore }"
+        reason: Low risk score
+      export:
+        as:
+          decision: .output
+      then: finish
+  - reviewRequired:
+      set:
+        status: REVIEW_REQUIRED
+        decisionSource: Workflow
+        riskScore: "${ .risk.riskScore }"
+        reason: Medium risk score
+      export:
+        as:
+          decision: .output
+      then: finish
+  - reject:
+      set:
+        status: REJECTED
+        decisionSource: Automatic
+        riskScore: "${ .risk.riskScore }"
+        reason: High risk score
+      export:
+        as:
+          decision: .output
+      then: finish
+  - finish:
+      set:
+        applicantId: "${ .applicantId }"
+        status: "${ .decision.status }"
+        decisionSource: "${ .decision.decisionSource }"
+        riskScore: "${ .decision.riskScore }"
+        reason: "${ .decision.reason }"

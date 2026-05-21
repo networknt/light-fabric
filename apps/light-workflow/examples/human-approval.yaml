@@ -1,0 +1,50 @@
+document:
+  dsl: "1.0.3"
+  namespace: light-portal
+  name: human-approval
+  version: "1.0.0"
+  title: Human Approval
+  summary: Creates an ask task that waits for an operator approval decision.
+  tags:
+    testType: local
+    dependencies: worklist
+input:
+  schema:
+    format: json
+    document:
+      type: object
+      properties:
+        requestId:
+          type: string
+        summary:
+          type: string
+      required:
+        - requestId
+        - summary
+do:
+  - requestApproval:
+      ask:
+        prompt: Review the workflow request and choose a decision.
+        mode: approval
+        options:
+          - label: Approve
+            value: APPROVED
+            description: Continue the request.
+          - label: Reject
+            value: REJECTED
+            description: Stop the request.
+        required: true
+        timeout:
+          after: PT24H
+        onTimeout:
+          action: default
+          default: REJECTED
+      export:
+        as:
+          approval: .output
+      then: recordDecision
+  - recordDecision:
+      set:
+        requestId: "${ .requestId }"
+        approval: "${ .approval }"
+        status: RECORDED

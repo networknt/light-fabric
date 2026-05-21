@@ -1,2 +1,122 @@
 # light-workflow
 An agentic workflow implemented in Rust
+
+## Run a Local Test
+
+Start the local light-portal stack first so Postgres, `workflow-command`, and
+`workflow-query` are available:
+
+```bash
+cd /home/steve/workspace/portal-config-loc
+./scripts/deploy-local.sh pg rust
+```
+
+Build the workflow engine binary from the `light-fabric` workspace root:
+
+```bash
+cd /home/steve/workspace/light-fabric
+cargo build -p light-workflow --locked
+```
+
+Run it from this app directory with the portal Postgres URL:
+
+```bash
+cd /home/steve/workspace/light-fabric/apps/light-workflow
+DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver ./run.sh --debug-binary
+```
+
+For a multi-line shell command, either keep the assignments attached to
+`./run.sh` with line continuations:
+
+```bash
+DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver \
+LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8080 \
+RUST_LOG=light_workflow=debug,info \
+WORKFLOW_LOG_ANSI=false \
+./run.sh --debug-binary
+```
+
+or export the variables before starting the script:
+
+```bash
+export DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver
+export LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8080
+export RUST_LOG=light_workflow=debug,info
+export WORKFLOW_LOG_ANSI=false
+./run.sh --debug-binary
+```
+
+Plain assignments on separate lines are shell-local variables, not environment
+variables, so `./run.sh` cannot read them unless they are exported.
+
+For repeated local runs, create `light-workflow.env` in this directory:
+
+```bash
+DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver
+LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8080
+RUST_LOG=light_workflow=debug,info
+WORKFLOW_LOG_ANSI=false
+```
+
+Then start the debug or release binary:
+
+```bash
+./run.sh --debug-binary
+./run.sh
+```
+
+The script also accepts `--binary PATH` and `--env-file PATH`. `DATABASE_URL`
+is required; `LIGHT_WORKFLOW_DATABASE_URL` and `WORKFLOW_DATABASE_URL` are
+accepted aliases.
+
+After `light-workflow` is running, create a workflow definition in
+light-portal using one of the YAML files under `examples/`, then start the
+workflow from the UI. The engine listens to `outbox_message_t`, creates the
+first active task in `task_info_t`, and executes supported task types:
+`ask`, `assert`, `call`, `set`, and `switch`.
+
+Useful database checks:
+
+```bash
+psql "postgresql://postgres:secret@localhost:5432/configserver" \
+  -c "select wf_def_id, name, version from wf_definition_t order by update_ts desc limit 5;"
+
+psql "postgresql://postgres:secret@localhost:5432/configserver" \
+  -c "select wf_task_id, task_type, status_code, task_output from task_info_t order by started_ts desc limit 10;"
+
+psql "postgresql://postgres:secret@localhost:5432/configserver" \
+  -c "select process_id, wf_instance_id, status_code, context_data from process_info_t order by started_ts desc limit 5;"
+```
+
+## Example Workflows
+
+The examples are based on
+`/home/steve/workspace/workflow-specification/schema/workflow.yaml` and are
+kept parseable by `workflow-core`.
+
+- `examples/simple-set-assert.yaml`: no external dependency; verifies `set`,
+  `export`, and `assert`.
+- `examples/http-risk-decision.yaml`: calls a local mock risk service at
+  `http://127.0.0.1:18080/risk/evaluate`, branches with `switch`, and finishes
+  with a normalized decision.
+- `examples/human-approval.yaml`: creates an `ask` approval task and is useful
+  for testing the waiting-task/worklist path.
+
+For the HTTP example, run any local mock that accepts:
+
+```json
+{
+  "applicantId": "APP-LOW-RISK",
+  "loanAmount": 100000,
+  "creditScore": 820
+}
+```
+
+and returns:
+
+```json
+{
+  "riskScore": 15,
+  "riskBand": "low"
+}
+```

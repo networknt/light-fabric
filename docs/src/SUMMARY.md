@@ -68,7 +68,7 @@
   - [Deploy Native](product/light-gateway/deploy-native.md)
   - [Deploy Kubernetes](product/light-gateway/deploy-kubernetes.md)
 - [Light-Workflow](product/light-workflow.md)
-
+  - [Start Workflow](product/light-workflow/start-workflow.md)
 
 # Comparisons
 
