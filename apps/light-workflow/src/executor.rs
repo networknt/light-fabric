@@ -1505,14 +1505,18 @@ impl TaskExecutor {
         host_id: &Uuid,
         process_id: &Uuid,
     ) -> Result<(Value, Uuid), sqlx::Error> {
-        let row: (Value, Uuid) = sqlx::query_as(
+        let row: (Option<Value>, Uuid) = sqlx::query_as(
             "SELECT context_data, wf_def_id FROM process_info_t WHERE host_id = $1 AND process_id = $2",
         )
         .bind(host_id)
         .bind(process_id)
         .fetch_one(&mut **tx)
         .await?;
-        Ok((row.0, row.1))
+        let context_data = match row.0 {
+            Some(Value::Null) | None => json!({}),
+            Some(value) => value,
+        };
+        Ok((context_data, row.1))
     }
 
     async fn get_workflow_definition(

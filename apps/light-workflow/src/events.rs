@@ -47,5 +47,42 @@ pub struct CloudEventEnvelope {
 pub struct WorkflowStartedPayload {
     pub host_id: Uuid,
     pub wf_def_id: Uuid,
-    pub data: Option<Value>, // Input data from the UI
+    pub wf_instance_id: Option<Uuid>,
+    #[serde(default)]
+    pub input: Option<Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WorkflowStartedPayload;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    #[test]
+    fn workflow_started_payload_reads_json_input_and_instance_id() {
+        let host_id = Uuid::new_v4();
+        let wf_def_id = Uuid::new_v4();
+        let wf_instance_id = Uuid::new_v4();
+        let value = json!({
+            "hostId": host_id,
+            "wfDefId": wf_def_id,
+            "wfInstanceId": wf_instance_id,
+            "input": {
+                "applicantId": "APP-001"
+            }
+        });
+
+        let payload: WorkflowStartedPayload =
+            serde_json::from_value(value).expect("payload should deserialize");
+
+        assert_eq!(payload.host_id, host_id);
+        assert_eq!(payload.wf_def_id, wf_def_id);
+        assert_eq!(payload.wf_instance_id, Some(wf_instance_id));
+        assert_eq!(
+            payload.input,
+            Some(json!({
+                "applicantId": "APP-001"
+            }))
+        );
+    }
 }

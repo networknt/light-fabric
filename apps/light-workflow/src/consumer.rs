@@ -1,5 +1,5 @@
 use crate::events::{CloudEventEnvelope, WorkflowStartedPayload};
-use serde_json::from_str;
+use serde_json::{Value, from_str, json};
 use serde_yaml;
 use sqlx::{PgPool, Postgres, Transaction, postgres::PgListener};
 use std::time::Duration;
@@ -224,9 +224,10 @@ impl EventConsumer {
                 };
 
                 // 1. Generate ids
-                let wf_instance_id = Uuid::new_v4();
+                let wf_instance_id = payload.wf_instance_id.unwrap_or_else(Uuid::new_v4);
                 let process_id = Uuid::new_v4();
                 let host_id: Uuid = event.host_id.parse()?;
+                let input_data = payload.input.clone().unwrap_or_else(|| json!({}));
 
                 if payload.host_id != host_id {
                     error!(
@@ -255,7 +256,7 @@ impl EventConsumer {
                     &payload.wf_def_id,
                     &wf_instance_id,
                     ce.source.as_str(),
-                    payload.data.as_ref(),
+                    &input_data,
                 )
                 .await?;
 
@@ -281,7 +282,7 @@ impl EventConsumer {
                             &process_id,
                             &wf_instance_id,
                             task_name,
-                            payload.data.as_ref(),
+                            &input_data,
                         )
                         .await?;
 
@@ -304,7 +305,7 @@ impl EventConsumer {
         wf_def_id: &Uuid,
         wf_instance_id: &Uuid,
         app_id: &str,
-        input_data: Option<&serde_json::Value>,
+        input_data: &Value,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             r#"
@@ -355,7 +356,7 @@ impl EventConsumer {
         process_id: &Uuid,
         wf_instance_id: &Uuid,
         wf_task_id: &str,
-        task_input: Option<&serde_json::Value>,
+        task_input: &Value,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             r#"
