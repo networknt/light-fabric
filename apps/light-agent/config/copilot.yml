@@ -1,0 +1,2 @@
+githubToken: ${copilot.githubToken:}
+model: ${copilot.model:}

@@ -3174,7 +3174,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
- "config-loader",
  "futures-util",
  "hindsight-client",
  "light-axum",

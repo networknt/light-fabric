@@ -27,6 +27,7 @@
 - [Client Configuration](design/client-configuration.md)
 - [Handler Chain](design/handler-chain.md)
 - [MCP Router](design/mcp-router.md)
+- [LLM Gateway](design/llm-gateway.md)
 - [WebSocket Router](design/websocket-router.md)
 - [Stateless Auth Handler](design/stateless-auth.md)
 - [MSAL Exchange Handler](design/msal-exchange.md)

@@ -38,9 +38,10 @@ impl DeployerApp {
     }
 }
 
+#[async_trait::async_trait]
 impl AxumApp for DeployerApp {
-    fn router(&self, _context: ServerContext) -> Router {
-        router(self.service.clone())
+    async fn router(&self, _context: ServerContext) -> Result<Router, light_runtime::RuntimeError> {
+        Ok(router(self.service.clone()))
     }
 }
 

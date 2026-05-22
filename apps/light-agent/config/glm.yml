@@ -1,0 +1,3 @@
+baseUrl: ${glm.baseUrl:https://open.bigmodel.cn/api/paas/v4}
+apiKey: ${glm.apiKey:}
+model: ${glm.model:}

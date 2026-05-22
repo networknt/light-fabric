@@ -13,8 +13,8 @@ The default `name` is `light-agent-account` and the default namespace is
 
 ## Files
 
-- `configmap.yaml`: bootstrap `values.yml`, `startup.yml`, `server.yml`,
-  `portal-registry.yml`, `client.yml`, `mcp-client.yml`, and `ollama.yml`.
+- `configmap.yaml`: bootstrap `startup.yml`. The image carries the default
+  config templates under `/app/config-defaults`.
 - `secret.yaml`: portal bearer token, config password, host id, database URL,
   and bootstrap CA certificate.
 - `public-configmap.yaml`: static chat UI mounted at `/app/public`.
@@ -54,11 +54,18 @@ image, or import the rebuilt image before redeploying.
 - `lightAgentHostId`: UUID used by Hindsight memory tables.
 - `database.url`: Postgres connection string for the configserver database.
 - `configServer.uri`: config-server base URL.
-- `portalRegistry.portalUrl`: controller URL.
-- `mcpClient.gatewayUrl`: light-gateway MCP base URL.
-- `ollama.ollamaUrl` and `ollama.model`: model provider configuration.
 - `startup.host`, `startup.serviceId`, and `startup.envTag`: the tuple used to
   fetch runtime config from config-server.
+
+The config-server `values.yml` for the selected startup tuple should provide
+the runtime overrides for `server.*`, `portalRegistry.*`, `client.*`,
+`mcp-client.*`, `model-provider.*`, and the selected provider namespace such as
+`ollama.*`, `bedrock.*`, `codex.*`, `openai.*`, or `anthropic.*`.
+
+Supported `model-provider.provider` values are `ollama`, `openai`,
+`azure-openai`, `anthropic`, `bedrock`, `codex`, `compatible`, `gemini`,
+`glm`, `openrouter`, `telnyx`, `copilot`, `claude-code`, `gemini-cli`, and
+`kilo-cli`.
 
 Generate the CA value:
 
@@ -80,13 +87,16 @@ The example request assumes:
 - Ollama is reachable from the cluster at `http://192.168.5.85:11434`.
 - Postgres is reachable from the cluster at `192.168.5.85:5432`.
 
-Update `render-request.json` if any of those addresses differ. If using the
-Rust gateway template beside Java, set `mcpClient.gatewayUrl` to the Rust
-Service, for example `https://ai-microgateway-rust.light-gateway:8443`.
+Update `render-request.json` for bootstrap-only values such as
+`configServer.uri`. Put controller, gateway, Ollama, and server registration
+overrides in config-server `values.yml` for the selected startup tuple. If
+using the Rust gateway template beside Java, set `mcp-client.gatewayUrl` there
+to the Rust Service, for example
+`https://ai-microgateway-rust.light-gateway:8443`.
 
 ## Registration Address
 
-The agent registers `server.advertisedAddress`.
+The agent registers `server.advertisedAddress` from config-server values.
 
 For local MicroK8s in-cluster access, use the Service DNS name:
 
@@ -94,7 +104,8 @@ For local MicroK8s in-cluster access, use the Service DNS name:
 server.advertisedAddress: light-agent-account.light-agent
 ```
 
-If you change `name` or `namespace`, update `server.advertisedAddress` to match:
+If you change `name` or `namespace`, update `server.advertisedAddress` in
+config-server values to match:
 
 ```text
 <service-name>.<namespace>
@@ -191,8 +202,8 @@ http://127.0.0.1:8083/
 
 - Keep namespace creation separate. The deployer may block cluster-scoped
   resources such as `Namespace`.
-- `mcp-client.yml` and `ollama.yml` are intentionally local bootstrap files
-  because the current agent reads them before remote bootstrap completes.
+- The agent layers config files in this order: bundled `/app/config-defaults`,
+  mounted `/config`, and writable `/app/config-cache`.
 - The current light-agent image does not include `public/`, so this template
   mounts `public-configmap.yaml` at `/app/public`.
 - The default probes use HTTP on port `8083`. If you disable HTTP and enable

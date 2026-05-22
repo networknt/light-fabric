@@ -32,8 +32,9 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl && \
     groupadd --system agent && \
     useradd --system --gid agent --home-dir /app --shell /usr/sbin/nologin agent && \
-    # Create /config and symlink it to /app/config so the binary can find it
-    mkdir -p /app /config && \
+    # Create /config and symlink it to /app/config so the binary can find it.
+    # Bundled templates live in /app/config-defaults and are overlaid by /config.
+    mkdir -p /app /config /app/config-defaults && \
     ln -s /config /app/config && \
     chown -R agent:agent /app /config && \
     rm -rf /var/lib/apt/lists/*
@@ -42,6 +43,7 @@ WORKDIR /app
 
 # Copy the compiled binary from the builder stage
 COPY --from=builder --chown=agent:agent /usr/src/app/target/x86_64-unknown-linux-musl/release/light-agent /app/light-agent
+COPY --from=builder --chown=agent:agent /usr/src/app/apps/light-agent/config/*.yml /app/config-defaults/
 
 # Expose the correct agent port (aligned with config/server.yml or values.yml)
 EXPOSE 8083

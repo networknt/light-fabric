@@ -13,8 +13,9 @@ pub struct ServerContext {
     pub runtime_config: Arc<RuntimeConfig>,
 }
 
+#[async_trait]
 pub trait AxumApp: Send + Sync + 'static {
-    fn router(&self, context: ServerContext) -> Router;
+    async fn router(&self, context: ServerContext) -> Result<Router, RuntimeError>;
 }
 
 pub struct AxumTransport<A>
@@ -74,7 +75,7 @@ where
         let context = ServerContext {
             runtime_config: Arc::new(config.clone()),
         };
-        let app = self.app.router(context);
+        let app = self.app.router(context).await?;
         let server_handle = handle.clone();
 
         let listener = tokio::net::TcpListener::bind(addr)

@@ -1,0 +1,5 @@
+credential: ${azure-openai.credential:}
+resourceName: ${azure-openai.resourceName:}
+deploymentName: ${azure-openai.deploymentName:}
+apiVersion: ${azure-openai.apiVersion:}
+model: ${azure-openai.model:}

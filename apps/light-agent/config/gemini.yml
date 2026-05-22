@@ -1,0 +1,4 @@
+baseUrl: ${gemini.baseUrl:https://generativelanguage.googleapis.com/v1beta}
+apiKey: ${gemini.apiKey:}
+model: ${gemini.model:}
+maxTokens: ${gemini.maxTokens:}

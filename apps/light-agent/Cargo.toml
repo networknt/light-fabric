@@ -7,7 +7,6 @@ license = "Apache-2.0"
 [dependencies]
 light-runtime = { path = "../../crates/light-runtime" }
 light-axum = { path = "../../frameworks/light-axum" }
-config-loader = { path = "../../crates/config-loader" }
 model-provider = { path = "../../crates/model-provider" }
 mcp-client = { path = "../../crates/mcp-client" }
 axum = { workspace = true, features = ["ws"] }

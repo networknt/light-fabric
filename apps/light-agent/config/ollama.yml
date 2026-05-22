@@ -2,6 +2,8 @@
 
 # The URL of the local Ollama server
 ollamaUrl: ${ollama.ollamaUrl:http://localhost:11434}
+apiKey: ${ollama.apiKey:}
+reasoningEnabled: ${ollama.reasoningEnabled:}
 
 # The default model to use
 model: ${ollama.model:gemma4:e4b}

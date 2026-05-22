@@ -9,22 +9,24 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
-use config_loader::ConfigLoader;
 use futures_util::{SinkExt, StreamExt};
 use hindsight_client::{HindsightMemory, PgHindsightClient};
 use light_axum::{AxumApp, AxumTransport, ServerContext};
 use light_runtime::{
-    LightRuntimeBuilder,
-    config::{BootstrapConfig, ClientConfig, PortalRegistryConfig, ServerConfig},
+    LightRuntimeBuilder, MaskSpec, ModuleKind, RuntimeConfig, RuntimeError,
+    config::PortalRegistryConfig,
 };
-use light_runtime::{ModuleKind, ModuleRegistry};
 use mcp_client::{McpContent, McpGatewayClient, McpTool};
-use model_provider::{ChatMessage, ChatRequest, ChatResponse, OllamaProvider, Provider, ToolSpec};
-use portal_registry::{PortalRegistryClient, RegistryHandler, ServiceRegistrationParams};
+use model_provider::{
+    AnthropicProvider, AzureOpenAiProvider, BedrockProvider, ChatMessage, ChatRequest,
+    ChatResponse, ClaudeCodeProvider, CodexProvider, CompatibleProvider, CopilotProvider,
+    GeminiCliProvider, GeminiProvider, GlmProvider, KiloCliProvider, OllamaProvider,
+    OpenAiProvider, OpenRouterProvider, Provider, TelnyxProvider, ToolSpec,
+};
+use portal_registry::RegistryHandler;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_http::services::ServeDir;
@@ -33,6 +35,10 @@ use tracing_subscriber::EnvFilter;
 use url::Url;
 use uuid::Uuid;
 
+const CONFIG_DIR: &str = "config";
+const DEFAULT_CONFIG_DIR: &str = "config-defaults";
+const EXTERNAL_CONFIG_DIR: &str = "config-cache";
+const MODEL_PROVIDER_FILE: &str = "model-provider.yml";
 const MAX_SESSION_MESSAGES: usize = 40;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -40,6 +46,10 @@ const MAX_SESSION_MESSAGES: usize = 40;
 pub struct OllamaConfig {
     pub ollama_url: String,
     pub model: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub reasoning_enabled: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -48,6 +58,133 @@ pub struct McpClientConfig {
     pub gateway_url: String,
     pub path: String,
     pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelProviderConfig {
+    #[serde(default = "default_model_provider")]
+    pub provider: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default = "default_model_temperature")]
+    pub temperature: f64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiModelProviderConfig {
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub max_tokens: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AzureOpenAiConfig {
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub credential: Option<String>,
+    #[serde(default)]
+    pub resource_name: Option<String>,
+    #[serde(default)]
+    pub deployment_name: Option<String>,
+    #[serde(default)]
+    pub api_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BedrockConfig {
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub access_key_id: Option<String>,
+    #[serde(default)]
+    pub secret_access_key: Option<String>,
+    #[serde(default)]
+    pub session_token: Option<String>,
+    #[serde(default)]
+    pub max_tokens: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexConfig {
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompatibleConfig {
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub max_tokens: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopilotConfig {
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub github_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GlmConfig {
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliModelProviderConfig {
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+struct ModelProviderSelection {
+    provider: Box<dyn Provider>,
+    model: String,
+    temperature: f64,
+}
+
+fn default_model_provider() -> String {
+    "ollama".to_string()
+}
+
+fn default_model_temperature() -> f64 {
+    0.7
 }
 
 fn required_uuid_env_var(name: &str) -> anyhow::Result<Uuid> {
@@ -71,41 +208,12 @@ fn optional_uuid_env_var(names: &[&str]) -> anyhow::Result<Option<Uuid>> {
     Ok(None)
 }
 
-fn to_registry_ws_url(portal_url: &str) -> anyhow::Result<String> {
-    let mut url = Url::parse(portal_url)
-        .with_context(|| format!("Invalid portal registry URL: {portal_url}"))?;
-    let scheme = match url.scheme() {
-        "https" => "wss",
-        "http" => "ws",
-        other => bail!("Unsupported portal registry URL scheme: {other}"),
-    };
-    url.set_scheme(scheme)
-        .map_err(|_| anyhow!("Failed to convert portal registry URL scheme"))?;
-    url.set_path("/ws/microservice");
-    url.set_query(None);
-    Ok(url.to_string())
-}
-
 fn to_portal_query_url(portal_url: &str) -> anyhow::Result<String> {
     let mut url = Url::parse(portal_url)
         .with_context(|| format!("Invalid portal query URL: {portal_url}"))?;
     url.set_path("/portal/query");
     url.set_query(None);
     Ok(url.to_string())
-}
-
-fn registry_advertised_address(server_config: &ServerConfig) -> String {
-    server_config
-        .advertised_address
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| {
-            if server_config.ip == "0.0.0.0" {
-                "127.0.0.1".to_string()
-            } else {
-                server_config.ip.clone()
-            }
-        })
 }
 
 fn registry_token(config: &PortalRegistryConfig) -> Option<String> {
@@ -324,8 +432,9 @@ impl PortalQueryClient {
 }
 
 struct AgentState {
-    ollama_config: OllamaConfig,
-    provider: OllamaProvider,
+    provider: Box<dyn Provider>,
+    model: String,
+    temperature: f64,
     mcp_client: McpGatewayClient,
     portal_query_client: Option<PortalQueryClient>,
     catalog_cache: AgentCatalogCache,
@@ -383,18 +492,24 @@ impl AgentState {
 
 #[derive(Clone)]
 struct AgentApp {
-    state: Arc<AgentState>,
+    catalog_cache: AgentCatalogCache,
 }
 
+#[async_trait::async_trait]
 impl AxumApp for AgentApp {
-    fn router(&self, _context: ServerContext) -> Router {
-        Router::new()
-            .route("/health", get(health))
-            .route("/diagnostics/tools", get(tool_diagnostics))
-            .route("/chat", get(ws_handler))
-            .fallback_service(ServeDir::new("public").append_index_html_on_directories(true))
-            .with_state(self.state.clone())
+    async fn router(&self, context: ServerContext) -> Result<Router, RuntimeError> {
+        let state = build_agent_state(&context.runtime_config, self.catalog_cache.clone()).await?;
+        Ok(agent_router(state))
     }
+}
+
+fn agent_router(state: Arc<AgentState>) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/diagnostics/tools", get(tool_diagnostics))
+        .route("/chat", get(ws_handler))
+        .fallback_service(ServeDir::new("public").append_index_html_on_directories(true))
+        .with_state(state)
 }
 
 async fn health() -> &'static str {
@@ -848,6 +963,448 @@ fn append_search_text(target: &mut String, value: &str) {
     }
 }
 
+fn build_model_provider(
+    runtime_config: &RuntimeConfig,
+    config: &ModelProviderConfig,
+) -> Result<ModelProviderSelection, RuntimeError> {
+    let provider_id = normalize_provider_id(&config.provider);
+    let temperature = config.temperature;
+
+    let selection = match provider_id.as_str() {
+        "ollama" => {
+            let provider_config: OllamaConfig = load_agent_registered_config(
+                runtime_config,
+                "ollama.yml",
+                "light-agent/ollama",
+                "ollama",
+                provider_secret_masks(),
+            )?;
+            let model = choose_model(config, Some(provider_config.model.as_str()), None, "ollama")?;
+            let provider = OllamaProvider::new_with_reasoning(
+                Some(&provider_config.ollama_url),
+                optional_str(&provider_config.api_key),
+                optional_bool(
+                    &provider_config.reasoning_enabled,
+                    "ollama.reasoningEnabled",
+                )?,
+            )
+            .map_err(|e| RuntimeError::Config(format!("failed to build Ollama provider: {e}")))?;
+            ModelProviderSelection {
+                provider: Box::new(provider),
+                model,
+                temperature,
+            }
+        }
+        "openai" | "open-ai" => {
+            let provider_config: ApiModelProviderConfig =
+                load_provider_config(runtime_config, "openai.yml", "openai")?;
+            let model = choose_model(config, optional_str(&provider_config.model), None, "openai")?;
+            let mut provider = OpenAiProvider::new(
+                optional_str(&provider_config.base_url),
+                optional_str(&provider_config.api_key),
+            )
+            .map_err(|e| RuntimeError::Config(format!("failed to build OpenAI provider: {e}")))?;
+            if let Some(max_tokens) = optional_u32(&provider_config.max_tokens, "openai.maxTokens")?
+            {
+                provider = provider.with_max_tokens(Some(max_tokens));
+            }
+            ModelProviderSelection {
+                provider: Box::new(provider),
+                model,
+                temperature,
+            }
+        }
+        "azure-openai" | "azure" | "azure-open-ai" => {
+            let provider_config: AzureOpenAiConfig =
+                load_provider_config(runtime_config, "azure-openai.yml", "azure-openai")?;
+            let resource_name = required_config_value(
+                optional_str(&provider_config.resource_name),
+                "azure-openai.resourceName",
+            )?;
+            let deployment_name = required_config_value(
+                optional_str(&provider_config.deployment_name),
+                "azure-openai.deploymentName",
+            )?;
+            let model = choose_model(
+                config,
+                optional_str(&provider_config.model),
+                Some(deployment_name),
+                "azure-openai",
+            )?;
+            let provider = AzureOpenAiProvider::new(
+                optional_str(&provider_config.credential),
+                resource_name,
+                deployment_name,
+                optional_str(&provider_config.api_version),
+            )
+            .map_err(|e| {
+                RuntimeError::Config(format!("failed to build Azure OpenAI provider: {e}"))
+            })?;
+            ModelProviderSelection {
+                provider: Box::new(provider),
+                model,
+                temperature,
+            }
+        }
+        "anthropic" | "claude" => {
+            let provider_config: ApiModelProviderConfig =
+                load_provider_config(runtime_config, "anthropic.yml", "anthropic")?;
+            let model = choose_model(
+                config,
+                optional_str(&provider_config.model),
+                None,
+                "anthropic",
+            )?;
+            let mut provider = AnthropicProvider::new(
+                optional_str(&provider_config.base_url),
+                optional_str(&provider_config.api_key),
+            )
+            .map_err(|e| {
+                RuntimeError::Config(format!("failed to build Anthropic provider: {e}"))
+            })?;
+            if let Some(max_tokens) =
+                optional_u32(&provider_config.max_tokens, "anthropic.maxTokens")?
+            {
+                provider = provider.with_max_tokens(max_tokens);
+            }
+            ModelProviderSelection {
+                provider: Box::new(provider),
+                model,
+                temperature,
+            }
+        }
+        "bedrock" | "aws-bedrock" => {
+            let provider_config: BedrockConfig =
+                load_provider_config(runtime_config, "bedrock.yml", "bedrock")?;
+            let model = choose_model(
+                config,
+                optional_str(&provider_config.model),
+                None,
+                "bedrock",
+            )?;
+            let mut provider = BedrockProvider::new(
+                optional_str(&provider_config.region),
+                optional_str(&provider_config.access_key_id),
+                optional_str(&provider_config.secret_access_key),
+                optional_str(&provider_config.session_token),
+            )
+            .map_err(|e| RuntimeError::Config(format!("failed to build Bedrock provider: {e}")))?;
+            if let Some(max_tokens) =
+                optional_u32(&provider_config.max_tokens, "bedrock.maxTokens")?
+            {
+                provider = provider.with_max_tokens(max_tokens);
+            }
+            ModelProviderSelection {
+                provider: Box::new(provider),
+                model,
+                temperature,
+            }
+        }
+        "codex" => {
+            let provider_config: CodexConfig =
+                load_provider_config(runtime_config, "codex.yml", "codex")?;
+            let model = choose_model(config, optional_str(&provider_config.model), None, "codex")?;
+            let provider = CodexProvider::new(
+                optional_str(&provider_config.base_url),
+                optional_str(&provider_config.api_key),
+                optional_str(&provider_config.account_id),
+                optional_str(&provider_config.reasoning_effort),
+            )
+            .map_err(|e| RuntimeError::Config(format!("failed to build Codex provider: {e}")))?;
+            ModelProviderSelection {
+                provider: Box::new(provider),
+                model,
+                temperature,
+            }
+        }
+        "compatible" | "openai-compatible" | "open-ai-compatible" => {
+            let provider_config: CompatibleConfig =
+                load_provider_config(runtime_config, "compatible.yml", "compatible")?;
+            let base_url = required_config_value(
+                optional_str(&provider_config.base_url),
+                "compatible.baseUrl",
+            )?;
+            let model = choose_model(
+                config,
+                optional_str(&provider_config.model),
+                None,
+                "compatible",
+            )?;
+            let name = optional_str(&provider_config.name).unwrap_or("compatible");
+            let mut provider =
+                CompatibleProvider::new(name, base_url, optional_str(&provider_config.api_key))
+                    .map_err(|e| {
+                        RuntimeError::Config(format!(
+                            "failed to build OpenAI-compatible provider: {e}"
+                        ))
+                    })?;
+            if let Some(max_tokens) =
+                optional_u32(&provider_config.max_tokens, "compatible.maxTokens")?
+            {
+                provider = provider.with_max_tokens(Some(max_tokens));
+            }
+            ModelProviderSelection {
+                provider: Box::new(provider),
+                model,
+                temperature,
+            }
+        }
+        "gemini" | "google-gemini" => {
+            let provider_config: ApiModelProviderConfig =
+                load_provider_config(runtime_config, "gemini.yml", "gemini")?;
+            let model = choose_model(config, optional_str(&provider_config.model), None, "gemini")?;
+            let mut provider = GeminiProvider::new(
+                optional_str(&provider_config.base_url),
+                optional_str(&provider_config.api_key),
+            )
+            .map_err(|e| RuntimeError::Config(format!("failed to build Gemini provider: {e}")))?;
+            if let Some(max_tokens) = optional_u32(&provider_config.max_tokens, "gemini.maxTokens")?
+            {
+                provider = provider.with_max_tokens(max_tokens);
+            }
+            ModelProviderSelection {
+                provider: Box::new(provider),
+                model,
+                temperature,
+            }
+        }
+        "glm" | "zhipu" | "bigmodel" => {
+            let provider_config: GlmConfig =
+                load_provider_config(runtime_config, "glm.yml", "glm")?;
+            let model = choose_model(config, optional_str(&provider_config.model), None, "glm")?;
+            let provider = GlmProvider::new(
+                optional_str(&provider_config.api_key),
+                optional_str(&provider_config.base_url),
+            )
+            .map_err(|e| RuntimeError::Config(format!("failed to build GLM provider: {e}")))?;
+            ModelProviderSelection {
+                provider: Box::new(provider),
+                model,
+                temperature,
+            }
+        }
+        "openrouter" | "open-router" => {
+            let provider_config: ApiModelProviderConfig =
+                load_provider_config(runtime_config, "openrouter.yml", "openrouter")?;
+            let model = choose_model(
+                config,
+                optional_str(&provider_config.model),
+                None,
+                "openrouter",
+            )?;
+            let mut provider = OpenRouterProvider::new(
+                optional_str(&provider_config.base_url),
+                optional_str(&provider_config.api_key),
+            )
+            .map_err(|e| {
+                RuntimeError::Config(format!("failed to build OpenRouter provider: {e}"))
+            })?;
+            if let Some(max_tokens) =
+                optional_u32(&provider_config.max_tokens, "openrouter.maxTokens")?
+            {
+                provider = provider.with_max_tokens(Some(max_tokens));
+            }
+            ModelProviderSelection {
+                provider: Box::new(provider),
+                model,
+                temperature,
+            }
+        }
+        "telnyx" => {
+            let provider_config: ApiModelProviderConfig =
+                load_provider_config(runtime_config, "telnyx.yml", "telnyx")?;
+            let model = choose_model(config, optional_str(&provider_config.model), None, "telnyx")?;
+            let provider =
+                TelnyxProvider::new(optional_str(&provider_config.api_key)).map_err(|e| {
+                    RuntimeError::Config(format!("failed to build Telnyx provider: {e}"))
+                })?;
+            ModelProviderSelection {
+                provider: Box::new(provider),
+                model,
+                temperature,
+            }
+        }
+        "copilot" | "github-copilot" => {
+            let provider_config: CopilotConfig =
+                load_provider_config(runtime_config, "copilot.yml", "copilot")?;
+            let model = choose_model(
+                config,
+                optional_str(&provider_config.model),
+                Some("gpt-4o"),
+                "copilot",
+            )?;
+            let provider = CopilotProvider::new(optional_str(&provider_config.github_token))
+                .map_err(|e| {
+                    RuntimeError::Config(format!("failed to build Copilot provider: {e}"))
+                })?;
+            ModelProviderSelection {
+                provider: Box::new(provider),
+                model,
+                temperature,
+            }
+        }
+        "claude-code" | "claudecode" => {
+            let provider_config: CliModelProviderConfig =
+                load_provider_config(runtime_config, "claude-code.yml", "claude-code")?;
+            let model = choose_model(
+                config,
+                optional_str(&provider_config.model),
+                Some("default"),
+                "claude-code",
+            )?;
+            ModelProviderSelection {
+                provider: Box::new(ClaudeCodeProvider::new()),
+                model,
+                temperature,
+            }
+        }
+        "gemini-cli" | "geminicli" => {
+            let provider_config: CliModelProviderConfig =
+                load_provider_config(runtime_config, "gemini-cli.yml", "gemini-cli")?;
+            let model = choose_model(
+                config,
+                optional_str(&provider_config.model),
+                Some("default"),
+                "gemini-cli",
+            )?;
+            ModelProviderSelection {
+                provider: Box::new(GeminiCliProvider::new()),
+                model,
+                temperature,
+            }
+        }
+        "kilo-cli" | "kilocli" | "kilo" => {
+            let provider_config: CliModelProviderConfig =
+                load_provider_config(runtime_config, "kilo-cli.yml", "kilo-cli")?;
+            let model = choose_model(
+                config,
+                optional_str(&provider_config.model),
+                Some("default"),
+                "kilo-cli",
+            )?;
+            ModelProviderSelection {
+                provider: Box::new(KiloCliProvider::new()),
+                model,
+                temperature,
+            }
+        }
+        other => {
+            return Err(RuntimeError::Unsupported(format!(
+                "unsupported model provider `{other}`"
+            )));
+        }
+    };
+
+    Ok(selection)
+}
+
+fn load_provider_config<T>(
+    runtime_config: &RuntimeConfig,
+    file_name: &str,
+    config_name: &str,
+) -> Result<T, RuntimeError>
+where
+    T: for<'de> Deserialize<'de> + Serialize,
+{
+    load_agent_registered_config(
+        runtime_config,
+        file_name,
+        format!("light-agent/{config_name}"),
+        config_name,
+        provider_secret_masks(),
+    )
+}
+
+fn load_agent_registered_config<T>(
+    runtime_config: &RuntimeConfig,
+    file_name: &str,
+    module_id: impl Into<String>,
+    config_name: impl Into<String>,
+    masks: impl IntoIterator<Item = MaskSpec>,
+) -> Result<T, RuntimeError>
+where
+    T: for<'de> Deserialize<'de> + Serialize,
+{
+    runtime_config.module_registry.load_registered(
+        runtime_config,
+        file_name,
+        module_id,
+        config_name,
+        ModuleKind::Application,
+        masks,
+        Some(true),
+        false,
+    )
+}
+
+fn provider_secret_masks() -> Vec<MaskSpec> {
+    vec![
+        MaskSpec::key("accessKeyId"),
+        MaskSpec::key("accountId"),
+        MaskSpec::key("apiKey"),
+        MaskSpec::key("credential"),
+        MaskSpec::key("githubToken"),
+        MaskSpec::key("secretAccessKey"),
+        MaskSpec::key("sessionToken"),
+    ]
+}
+
+fn choose_model(
+    model_provider_config: &ModelProviderConfig,
+    provider_model: Option<&str>,
+    default_model: Option<&str>,
+    provider_name: &str,
+) -> Result<String, RuntimeError> {
+    optional_str(&model_provider_config.model)
+        .or(provider_model)
+        .or(default_model)
+        .map(ToString::to_string)
+        .ok_or_else(|| {
+            RuntimeError::Config(format!(
+                "model-provider.model or {provider_name}.model is required"
+            ))
+        })
+}
+
+fn normalize_provider_id(provider: &str) -> String {
+    provider
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['_', ' '], "-")
+}
+
+fn optional_str(value: &Option<String>) -> Option<&str> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn required_config_value<'a>(value: Option<&'a str>, key: &str) -> Result<&'a str, RuntimeError> {
+    value.ok_or_else(|| RuntimeError::Config(format!("{key} is required")))
+}
+
+fn optional_u32(value: &Option<String>, key: &str) -> Result<Option<u32>, RuntimeError> {
+    let Some(value) = optional_str(value) else {
+        return Ok(None);
+    };
+    value
+        .parse::<u32>()
+        .map(Some)
+        .map_err(|e| RuntimeError::Config(format!("{key} must be an unsigned integer: {e}")))
+}
+
+fn optional_bool(value: &Option<String>, key: &str) -> Result<Option<bool>, RuntimeError> {
+    let Some(value) = optional_str(value) else {
+        return Ok(None);
+    };
+    match value.to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Ok(Some(true)),
+        "false" | "0" | "no" | "off" => Ok(Some(false)),
+        _ => Err(RuntimeError::Config(format!("{key} must be true or false"))),
+    }
+}
+
 async fn handle_socket(
     socket: WebSocket,
     state: Arc<AgentState>,
@@ -1108,7 +1665,7 @@ async fn run_agent_loop(
             };
             state
                 .provider
-                .chat(request, &state.ollama_config.model, 0.7)
+                .chat(request, &state.model, state.temperature)
                 .await?
         };
 
@@ -1189,52 +1746,34 @@ async fn run_agent_loop(
     Ok(response)
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    init_tracing();
-
-    let config_dir = PathBuf::from("config");
-    let values_path = config_dir.join("values.yml");
-    let values_yaml = std::fs::read_to_string(&values_path).unwrap_or_default();
-    let loader = ConfigLoader::new(&values_yaml, None, None)?;
-    let module_registry = Arc::new(ModuleRegistry::new());
-
-    let ollama_config: OllamaConfig = loader.load_typed([config_dir.join("ollama.yml")])?;
-    let mcp_config: McpClientConfig = loader.load_typed([config_dir.join("mcp-client.yml")])?;
-    module_registry.register_loaded_config(
-        "light-agent/ollama",
-        "ollama",
-        ModuleKind::Application,
-        &ollama_config,
+async fn build_agent_state(
+    runtime_config: &RuntimeConfig,
+    catalog_cache: AgentCatalogCache,
+) -> Result<Arc<AgentState>, RuntimeError> {
+    let model_provider_config: ModelProviderConfig = load_agent_registered_config(
+        runtime_config,
+        MODEL_PROVIDER_FILE,
+        "light-agent/model-provider",
+        "model-provider",
         [],
-        true,
-        Some(true),
-        false,
     )?;
-    module_registry.register_loaded_config(
+    let model_provider = build_model_provider(runtime_config, &model_provider_config)?;
+
+    let mcp_config: McpClientConfig = runtime_config.module_registry.load_registered(
+        runtime_config,
+        "mcp-client.yml",
         "light-agent/mcp-client",
         "mcp-client",
         ModuleKind::Application,
-        &mcp_config,
         [],
-        true,
         Some(true),
         false,
     )?;
 
-    // Load startup.yml (for bootstrap_ca_cert_path) and client.yml (for verify_hostname).
-    // This mirrors how the config-server and controller-rs clients are configured in light-runtime.
-    let startup_config: BootstrapConfig = loader
-        .load_typed([config_dir.join("startup.yml")])
-        .unwrap_or_default();
-    let client_config: Option<ClientConfig> =
-        loader.load_typed([config_dir.join("client.yml")]).ok();
-    let server_config: ServerConfig = loader
-        .load_typed([config_dir.join("server.yml")])
-        .context("Failed to load server.yml")?;
-    let portal_registry_config: PortalRegistryConfig = loader
-        .load_typed([config_dir.join("portal-registry.yml")])
-        .context("Failed to load portal-registry.yml")?;
+    let portal_registry_config = runtime_config
+        .portal_registry
+        .clone()
+        .ok_or_else(|| RuntimeError::MissingConfig("portal-registry.yml".to_string()))?;
 
     let mcp_gateway_url = format!(
         "{}/{}",
@@ -1242,13 +1781,14 @@ async fn main() -> anyhow::Result<()> {
         mcp_config.path.trim_start_matches('/')
     );
 
-    // Load TLS settings from the shared config files, consistent with how the
-    // config-server and controller-rs clients are built by light-runtime.
-    let ca_cert: Option<Vec<u8>> = startup_config
+    let ca_cert: Option<Vec<u8>> = runtime_config
+        .bootstrap
         .bootstrap_ca_cert_path
-        .as_deref()
-        .and_then(|path| std::fs::read(path).ok());
-    let verify_hostname: bool = client_config
+        .as_ref()
+        .map(std::fs::read)
+        .transpose()?;
+    let verify_hostname: bool = runtime_config
+        .client
         .as_ref()
         .map(|c| c.tls.verify_hostname)
         .unwrap_or(true);
@@ -1264,22 +1804,23 @@ async fn main() -> anyhow::Result<()> {
         verify_hostname,
         mcp_config.timeout_ms,
     )
-    .context("Failed to build MCP gateway client")?;
+    .map_err(|e| RuntimeError::Config(format!("failed to build MCP gateway client: {e}")))?;
 
     let db_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:secret@localhost:5432/configserver".to_string());
     let pool = PgPool::connect(&db_url)
         .await
-        .context("Failed to connect to database")?;
+        .map_err(|e| RuntimeError::Config(format!("failed to connect to database: {e}")))?;
 
     let memory = Arc::new(PgHindsightClient::new(pool.clone()));
-    let host_id = required_uuid_env_var("LIGHT_AGENT_HOST_ID")?;
+    let host_id = required_uuid_env_var("LIGHT_AGENT_HOST_ID")
+        .map_err(|e| RuntimeError::Config(e.to_string()))?;
     let agent_def_id =
-        optional_uuid_env_var(&["LIGHT_AGENT_AGENT_DEF_ID", "LIGHT_AGENT_API_VERSION_ID"])?;
-    let env_tag =
-        (!server_config.environment.is_empty()).then(|| server_config.environment.clone());
-    let portal_token = registry_token(&portal_registry_config)
-        .context("Missing portal registry token; set light_portal_authorization or portalRegistry.portalToken")?;
+        optional_uuid_env_var(&["LIGHT_AGENT_AGENT_DEF_ID", "LIGHT_AGENT_API_VERSION_ID"])
+            .map_err(|e| RuntimeError::Config(e.to_string()))?;
+    let env_tag = runtime_config.service_identity.env_tag.clone();
+    let portal_token =
+        registry_token(&portal_registry_config).ok_or(RuntimeError::MissingPortalToken)?;
     let portal_query_client = Some(
         PortalQueryClient::with_options(
             &portal_query_base_url(&portal_registry_config),
@@ -1288,59 +1829,39 @@ async fn main() -> anyhow::Result<()> {
             verify_hostname,
             mcp_config.timeout_ms,
         )
-        .context("Failed to build portal query client")?,
+        .map_err(|e| RuntimeError::Config(format!("failed to build portal query client: {e}")))?,
     );
-    let catalog_cache = AgentCatalogCache::new();
 
-    // Registry Client Configuration
-    let registry_handler = Arc::new(AgentRegistryHandler::new(catalog_cache.clone()));
-    let registration_params = ServiceRegistrationParams {
-        service_id: server_config.service_id.clone(),
-        version: "0.1.0".to_string(),
-        protocol: if server_config.enable_https {
-            "https".to_string()
-        } else {
-            "http".to_string()
-        },
-        address: registry_advertised_address(&server_config),
-        port: if server_config.enable_https {
-            server_config.https_port
-        } else {
-            server_config.http_port
-        },
-        tags: HashMap::new(),
-        env_tag: env_tag.clone(),
-        jwt: portal_token,
-    };
-
-    let registry_url = to_registry_ws_url(&portal_registry_config.portal_url)?;
-    let registry = Arc::new(PortalRegistryClient::new(
-        &registry_url,
-        registration_params,
-        registry_handler,
-    )?);
-
-    let state = Arc::new(AgentState {
-        provider: OllamaProvider::new(Some(&ollama_config.ollama_url), None)
-            .context("Failed to build Ollama provider")?,
+    Ok(Arc::new(AgentState {
+        provider: model_provider.provider,
+        model: model_provider.model,
+        temperature: model_provider.temperature,
         mcp_client,
         portal_query_client,
         catalog_cache,
-        ollama_config,
         memory,
         db: pool,
         host_id,
         agent_def_id,
-        service_id: server_config.service_id,
+        service_id: runtime_config.service_identity.service_id.clone(),
         env_tag,
-    });
+    }))
+}
 
-    let app = AgentApp { state };
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    init_tracing();
+
+    let catalog_cache = AgentCatalogCache::new();
+    let registry_handler: Arc<dyn RegistryHandler> =
+        Arc::new(AgentRegistryHandler::new(catalog_cache.clone()));
+    let app = AgentApp { catalog_cache };
 
     let runtime = LightRuntimeBuilder::new(AxumTransport::new(app))
-        .with_config_dir("config")
-        .with_module_registry(module_registry)
-        .with_registry_client(Arc::clone(&registry))
+        .with_default_config_dir(DEFAULT_CONFIG_DIR)
+        .with_config_dir(CONFIG_DIR)
+        .with_external_config_dir(EXTERNAL_CONFIG_DIR)
+        .with_registry_handler(registry_handler)
         .build();
 
     let running = runtime
@@ -1420,8 +1941,9 @@ impl RegistryHandler for AgentRegistryHandler {
 mod tests {
     use super::{
         CatalogSkill, CatalogTool, CatalogToolPolicy, ChatMessage, EffectiveAgentCatalog,
-        MAX_SESSION_MESSAGES, collect_catalog_tool_names, collect_policy_diagnostics,
-        filter_gateway_tools, rollback_last_user_message, select_catalog_tools, trim_history,
+        MAX_SESSION_MESSAGES, ModelProviderConfig, choose_model, collect_catalog_tool_names,
+        collect_policy_diagnostics, filter_gateway_tools, normalize_provider_id,
+        rollback_last_user_message, select_catalog_tools, trim_history,
     };
     use mcp_client::McpTool;
 
@@ -1465,6 +1987,25 @@ mod tests {
 
         assert_eq!(history.len(), 2);
         assert_eq!(history[1].content, "previous reply");
+    }
+
+    #[test]
+    fn provider_id_normalization_accepts_common_spellings() {
+        assert_eq!(normalize_provider_id("Azure_OpenAI"), "azure-openai");
+        assert_eq!(normalize_provider_id(" gemini cli "), "gemini-cli");
+    }
+
+    #[test]
+    fn choose_model_prefers_global_model_over_provider_default() {
+        let config = ModelProviderConfig {
+            provider: "openai".to_string(),
+            model: Some("gpt-selected".to_string()),
+            temperature: 0.4,
+        };
+
+        let model = choose_model(&config, Some("gpt-provider"), None, "openai").unwrap();
+
+        assert_eq!(model, "gpt-selected");
     }
 
     #[test]

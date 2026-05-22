@@ -1,0 +1,5 @@
+baseUrl: ${codex.baseUrl:}
+apiKey: ${codex.apiKey:}
+accountId: ${codex.accountId:}
+reasoningEffort: ${codex.reasoningEffort:}
+model: ${codex.model:}

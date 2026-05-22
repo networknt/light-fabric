@@ -1,0 +1,6 @@
+region: ${bedrock.region:us-east-1}
+accessKeyId: ${bedrock.accessKeyId:}
+secretAccessKey: ${bedrock.secretAccessKey:}
+sessionToken: ${bedrock.sessionToken:}
+model: ${bedrock.model:}
+maxTokens: ${bedrock.maxTokens:}
