@@ -2,7 +2,7 @@ document:
   dsl: "1.0.3"
   namespace: light-portal
   name: human-approval
-  version: "1.0.0"
+  version: "1.0.1"
   title: Human Approval
   summary: Creates an ask task that waits for an operator approval decision.
   tags:
@@ -27,7 +27,7 @@ do:
         prompt: Review the workflow request and choose a decision.
         mode: approval
         assignment:
-          roleId: account-manager
+          roleId: admin
           categoryCode: approval
           reasonCode: human-approval
         options:
