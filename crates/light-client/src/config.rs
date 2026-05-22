@@ -66,6 +66,7 @@ impl<'de> Deserialize<'de> for ClientConfig {
 #[serde(rename_all = "camelCase")]
 pub struct ClientTlsConfig {
     pub verify_hostname: bool,
+    pub accept_invalid_certs: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_cert_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -80,6 +81,7 @@ impl Default for ClientTlsConfig {
     fn default() -> Self {
         Self {
             verify_hostname: true,
+            accept_invalid_certs: false,
             ca_cert_path: None,
             client_cert_path: None,
             client_key_path: None,
@@ -102,6 +104,8 @@ impl<'de> Deserialize<'de> for ClientTlsConfig {
 struct RawClientTlsConfig {
     #[serde(default)]
     verify_hostname: Option<bool>,
+    #[serde(default)]
+    accept_invalid_certs: Option<bool>,
     #[serde(default)]
     ca_cert_path: Option<PathBuf>,
     #[serde(default)]
@@ -126,6 +130,7 @@ impl ClientTlsConfig {
                 .verify_hostname
                 .or(top_level_verify_hostname)
                 .unwrap_or(true),
+            accept_invalid_certs: raw.accept_invalid_certs.unwrap_or(false),
             ca_cert_path: raw.ca_cert_path,
             client_cert_path: raw.client_cert_path,
             client_key_path: raw.client_key_path,
@@ -1041,11 +1046,25 @@ tls:
     }
 
     #[test]
+    fn parses_nested_tls_accept_invalid_certs() {
+        let config: ClientConfig = serde_yaml::from_str(
+            r#"
+tls:
+  acceptInvalidCerts: true
+"#,
+        )
+        .expect("client config");
+
+        assert!(config.tls.accept_invalid_certs);
+    }
+
+    #[test]
     fn keeps_top_level_verify_hostname_as_fallback() {
         let config: ClientConfig =
             serde_yaml::from_str("verifyHostname: false\n").expect("client config");
 
         assert!(!config.tls.verify_hostname);
+        assert!(!config.tls.accept_invalid_certs);
     }
 
     #[test]
@@ -1067,6 +1086,7 @@ tls:
         let config: ClientConfig = serde_yaml::from_str("").expect("client config");
 
         assert!(config.tls.verify_hostname);
+        assert!(!config.tls.accept_invalid_certs);
         assert!(config.path_prefix_services.is_empty());
     }
 

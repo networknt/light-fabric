@@ -1,2 +1,3 @@
 tls:
   verifyHostname: ${client.verifyHostname:false}
+  acceptInvalidCerts: ${client.acceptInvalidCerts:false}

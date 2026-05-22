@@ -1,5 +1,6 @@
 tls:
   verifyHostname: ${client.verifyHostname:false}
+  acceptInvalidCerts: ${client.acceptInvalidCerts:false}
   caCertPath: ${client.caCertPath:}
 oauth:
   multipleAuthServers: ${client.multipleAuthServers:false}
