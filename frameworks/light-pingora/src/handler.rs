@@ -750,6 +750,7 @@ mod tests {
             external_config_dir: config_dir.path().join("external"),
             resolved_values: HashMap::new(),
             default_config_dir: None,
+            embedded_config: &[],
             module_registry: Arc::new(ModuleRegistry::new()),
             cache_registry: None,
             registry_client: None,

@@ -9,6 +9,7 @@ light-runtime = { path = "../../crates/light-runtime" }
 light-axum = { path = "../../frameworks/light-axum" }
 model-provider = { path = "../../crates/model-provider" }
 mcp-client = { path = "../../crates/mcp-client" }
+config-loader = { path = "../../crates/config-loader" }
 axum = { workspace = true, features = ["ws"] }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
@@ -25,3 +26,6 @@ hindsight-client = { path = "../../crates/hindsight-client" }
 portal-registry = { path = "../../crates/portal-registry" }
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
 async-trait = "0.1"
+
+[build-dependencies]
+config-embed-build = { path = "../../crates/config-embed-build" }

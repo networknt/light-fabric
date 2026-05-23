@@ -24,13 +24,24 @@ use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod embedded_config {
+    include!(concat!(env!("OUT_DIR"), "/embedded_config.rs"));
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_tracing();
+    if config_loader::handle_embedded_config_cli(embedded_config::FILES)? {
+        return Ok(());
+    }
 
     let config_dir = resolve_config_dir();
     let module_registry = Arc::new(ModuleRegistry::new());
-    let config = DeployerConfig::load_from_dir_registered(&config_dir, &module_registry)?;
+    let config = DeployerConfig::load_from_dir_registered(
+        embedded_config::FILES,
+        &config_dir,
+        &module_registry,
+    )?;
     let template_base_dir = std::env::var("LIGHT_DEPLOYER_TEMPLATE_BASE_DIR")
         .ok()
         .map(PathBuf::from);
@@ -58,6 +69,7 @@ async fn main() -> anyhow::Result<()> {
     let service = DeployerService::new(policy, template_source, kube, events);
     let app = DeployerApp::new(service);
     let runtime = LightRuntimeBuilder::new(AxumTransport::new(app))
+        .with_embedded_config(embedded_config::FILES)
         .with_module_registry(module_registry)
         .with_config_dir(config_dir)
         .build();

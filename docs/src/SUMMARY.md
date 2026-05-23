@@ -25,6 +25,7 @@
 - [Module Registry](design/module-registry.md)
 - [Cache Control Plane](design/cache-control-plane.md)
 - [Client Configuration](design/client-configuration.md)
+- [Embedded Configuration Templates](design/embedded-config-templates.md)
 - [Handler Chain](design/handler-chain.md)
 - [MCP Router](design/mcp-router.md)
 - [LLM Gateway](design/llm-gateway.md)

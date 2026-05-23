@@ -289,6 +289,7 @@ impl ModuleRegistry {
 
         let merged = load_merged_config(
             &loader,
+            runtime_config.embedded_config,
             runtime_config.default_config_dir.as_deref(),
             &runtime_config.config_dir,
             &runtime_config.external_config_dir,
@@ -1094,6 +1095,7 @@ mod tests {
             external_config_dir: "config-cache".into(),
             resolved_values: HashMap::new(),
             default_config_dir: None,
+            embedded_config: &[],
             module_registry: Arc::new(ModuleRegistry::new()),
             cache_registry: None,
             registry_client: None,

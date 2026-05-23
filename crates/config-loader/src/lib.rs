@@ -6,6 +6,7 @@ use serde_yaml::{Mapping, Value};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use symmetric_decryptor::{Decryptor as SymmetricDecryptorTrait, SymmetricDecryptor};
@@ -37,7 +38,195 @@ pub enum ConfigError {
     UnresolvedVariable(String),
     #[error("typed config conversion failed: {0}")]
     Convert(String),
+    #[error("embedded config error: {0}")]
+    Embedded(String),
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbeddedConfigFile {
+    pub name: &'static str,
+    pub content: &'static str,
+}
+
+pub fn embedded_config_file<'a>(
+    embedded: &'a [EmbeddedConfigFile],
+    file_name: &str,
+) -> Option<&'a EmbeddedConfigFile> {
+    embedded.iter().find(|file| file.name == file_name)
+}
+
+pub fn load_config_from_sources(
+    loader: &ConfigLoader,
+    embedded: &[EmbeddedConfigFile],
+    default_config_dir: Option<&Path>,
+    config_dir: &Path,
+    external_config_dir: Option<&Path>,
+    file_name: &str,
+) -> Result<Option<Value>, ConfigError> {
+    if let Some(path) = highest_priority_config_path(
+        default_config_dir,
+        config_dir,
+        external_config_dir,
+        file_name,
+    ) {
+        let mut value = loader.load_file(path)?;
+        loader.resolve_value(&mut value)?;
+        return Ok(Some(value));
+    }
+
+    let Some(file) = embedded_config_file(embedded, file_name) else {
+        return Ok(None);
+    };
+    let mut value = loader.load_embedded_file(file)?;
+    loader.resolve_value(&mut value)?;
+    Ok(Some(value))
+}
+
+pub fn load_values_from_sources(
+    embedded: &[EmbeddedConfigFile],
+    default_config_dir: Option<&Path>,
+    config_dir: &Path,
+    external_config_dir: Option<&Path>,
+    remote_values_yaml: Option<&str>,
+) -> Result<HashMap<String, Value>, ConfigError> {
+    let mut values = HashMap::new();
+
+    if let Some(file) = embedded_config_file(embedded, VALUES_FILE_NAME) {
+        values.extend(parse_values_content(file.content)?);
+    }
+
+    for path in existing_config_paths(
+        default_config_dir,
+        config_dir,
+        external_config_dir,
+        VALUES_FILE_NAME,
+    ) {
+        let content = fs::read_to_string(path)?;
+        values.extend(parse_values_content(&content)?);
+    }
+
+    if let Some(remote_values_yaml) = remote_values_yaml {
+        values.extend(parse_values_content(remote_values_yaml)?);
+    }
+
+    Ok(values)
+}
+
+pub fn handle_embedded_config_cli(embedded: &[EmbeddedConfigFile]) -> Result<bool, ConfigError> {
+    handle_embedded_config_args(embedded, env::args().skip(1))
+}
+
+pub fn handle_embedded_config_args<I, S>(
+    embedded: &[EmbeddedConfigFile],
+    args: I,
+) -> Result<bool, ConfigError>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
+    if let Some(index) = args.iter().position(|arg| arg == "--print-default-config") {
+        let Some(file_name) = args.get(index + 1) else {
+            return Err(ConfigError::Embedded(
+                "--print-default-config requires a file name".to_string(),
+            ));
+        };
+        print_embedded_config(embedded, file_name)?;
+        return Ok(true);
+    }
+    if let Some(index) = args.iter().position(|arg| arg == "--dump-default-configs") {
+        let Some(target_dir) = args.get(index + 1) else {
+            return Err(ConfigError::Embedded(
+                "--dump-default-configs requires a target directory".to_string(),
+            ));
+        };
+        dump_embedded_configs(embedded, Path::new(target_dir))?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+pub fn print_embedded_config(
+    embedded: &[EmbeddedConfigFile],
+    file_name: &str,
+) -> Result<(), ConfigError> {
+    let Some(file) = embedded_config_file(embedded, file_name) else {
+        return Err(ConfigError::Embedded(format!(
+            "embedded config `{file_name}` was not found"
+        )));
+    };
+    let mut stdout = std::io::stdout().lock();
+    stdout.write_all(file.content.as_bytes())?;
+    if !file.content.ends_with('\n') {
+        stdout.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
+pub fn dump_embedded_configs(
+    embedded: &[EmbeddedConfigFile],
+    target_dir: &Path,
+) -> Result<(), ConfigError> {
+    for file in embedded {
+        let target = target_dir.join(file.name);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(target, file.content)?;
+    }
+    Ok(())
+}
+
+fn highest_priority_config_path(
+    default_config_dir: Option<&Path>,
+    config_dir: &Path,
+    external_config_dir: Option<&Path>,
+    file_name: &str,
+) -> Option<PathBuf> {
+    existing_config_paths(
+        default_config_dir,
+        config_dir,
+        external_config_dir,
+        file_name,
+    )
+    .into_iter()
+    .last()
+}
+
+pub fn existing_config_paths(
+    default_config_dir: Option<&Path>,
+    config_dir: &Path,
+    external_config_dir: Option<&Path>,
+    file_name: &str,
+) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Some(default_config_dir) = default_config_dir {
+        push_existing_config_path(&mut paths, default_config_dir, file_name);
+    }
+    push_existing_config_path(&mut paths, config_dir, file_name);
+    if let Some(external_config_dir) = external_config_dir {
+        push_existing_config_path(&mut paths, external_config_dir, file_name);
+    }
+
+    paths
+}
+
+fn push_existing_config_path(paths: &mut Vec<PathBuf>, dir: &Path, file_name: &str) {
+    let path = dir.join(file_name);
+    if path.exists() && !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
+}
+
+fn parse_values_content(content: &str) -> Result<HashMap<String, Value>, ConfigError> {
+    if content.trim().is_empty() {
+        return Ok(HashMap::new());
+    }
+    Ok(serde_yaml::from_str(content)?)
+}
+
+const VALUES_FILE_NAME: &str = "values.yml";
 
 pub struct ConfigManager<T> {
     current: ArcSwap<T>,
@@ -101,6 +290,10 @@ impl ConfigLoader {
         let path = path.as_ref();
         let content = fs::read_to_string(path)?;
         Self::parse_config_str(path, &content)
+    }
+
+    pub fn load_embedded_file(&self, file: &EmbeddedConfigFile) -> Result<Value, ConfigError> {
+        Self::parse_config_str(Path::new(file.name), file.content)
     }
 
     pub fn load_merged_files<I, P>(&self, paths: I) -> Result<Value, ConfigError>
@@ -307,7 +500,8 @@ impl ConfigLoader {
         None
     }
 
-    fn parse_config_str(path: &Path, content: &str) -> Result<Value, ConfigError> {
+    pub fn parse_config_str(path: impl AsRef<Path>, content: &str) -> Result<Value, ConfigError> {
+        let path = path.as_ref();
         match path.extension().and_then(|ext| ext.to_str()) {
             Some("yaml" | "yml") => Ok(serde_yaml::from_str(content)?),
             Some("json") => Ok(serde_json::from_str(content)?),
@@ -664,6 +858,60 @@ mod tests {
             value,
             Value::String("com.networknt.agent.demo-1.0.0".to_string())
         );
+    }
+
+    #[test]
+    fn structured_config_uses_highest_priority_source_without_deep_merge() {
+        let embedded = [EmbeddedConfigFile {
+            name: "server.yml",
+            content: "ip: 0.0.0.0\nhttpPort: 8080\nserviceId: embedded\n",
+        }];
+        let config_dir = TempDir::new("config-source");
+        fs::write(config_dir.path().join("server.yml"), "serviceId: local\n")
+            .expect("write local config");
+        let loader = ConfigLoader::new("", None, None).expect("loader");
+
+        let value = load_config_from_sources(
+            &loader,
+            &embedded,
+            None,
+            config_dir.path(),
+            None,
+            "server.yml",
+        )
+        .expect("load config")
+        .expect("config value");
+
+        let map = value.as_mapping().expect("mapping");
+        assert_eq!(map.len(), 1);
+        assert_eq!(
+            map.get(&Value::String("serviceId".to_string()))
+                .expect("serviceId"),
+            &Value::String("local".to_string())
+        );
+    }
+
+    #[test]
+    fn values_merge_from_embedded_files_and_remote_payload() {
+        let embedded = [EmbeddedConfigFile {
+            name: "values.yml",
+            content: "a: embedded\nb: embedded\n",
+        }];
+        let config_dir = TempDir::new("values-source");
+        fs::write(config_dir.path().join("values.yml"), "b: local\n").expect("write local values");
+
+        let values = load_values_from_sources(
+            &embedded,
+            None,
+            config_dir.path(),
+            None,
+            Some("b: remote\nc: true\n"),
+        )
+        .expect("load values");
+
+        assert_eq!(values["a"], Value::String("embedded".to_string()));
+        assert_eq!(values["b"], Value::String("remote".to_string()));
+        assert_eq!(values["c"], Value::Bool(true));
     }
 
     #[test]

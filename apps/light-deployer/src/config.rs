@@ -1,8 +1,10 @@
 use crate::model::DeploymentAction;
-use config_loader::ConfigLoader;
+use config_loader::{
+    ConfigLoader, EmbeddedConfigFile, load_config_from_sources, load_values_from_sources,
+};
 use light_runtime::{ModuleKind, ModuleRegistry};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,35 +62,45 @@ impl Default for PruneConfig {
 
 impl DeployerConfig {
     pub fn load_from_dir_registered(
+        embedded_config: &'static [EmbeddedConfigFile],
         config_dir: impl AsRef<Path>,
         registry: &ModuleRegistry,
     ) -> anyhow::Result<Self> {
-        Self::load_from_dir_with_registry(config_dir, Some(registry))
+        Self::load_from_dir_with_registry(embedded_config, config_dir, Some(registry))
     }
 
     fn load_from_dir_with_registry(
+        embedded_config: &'static [EmbeddedConfigFile],
         config_dir: impl AsRef<Path>,
         registry: Option<&ModuleRegistry>,
     ) -> anyhow::Result<Self> {
         let config_dir = config_dir.as_ref();
-        let path = std::env::var("LIGHT_DEPLOYER_CONFIG")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| config_dir.join("deployer.yml"));
-        let config = if path.exists() {
-            let password = std::env::var("light_4j_config_password")
-                .ok()
-                .filter(|value| !value.trim().is_empty());
-            let values = load_values(config_dir)?;
-            let loader = ConfigLoader::from_values(values, password.as_deref(), None)?;
-            let value = loader.load_merged_files([&path])?;
-            let mut config: Self = serde_yaml::from_value(value)?;
-            config.apply_env_overrides();
-            config
-        } else {
-            let mut config = Self::default();
-            config.apply_env_overrides();
-            config
+        let password = std::env::var("light_4j_config_password")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+        let values = load_values_from_sources(embedded_config, None, config_dir, None, None)?;
+        let loader = ConfigLoader::from_values(values, password.as_deref(), None)?;
+        let config_value = match std::env::var("LIGHT_DEPLOYER_CONFIG").map(PathBuf::from) {
+            Ok(path) if path.exists() => {
+                let mut value = loader.load_file(path)?;
+                loader.resolve_value(&mut value)?;
+                Some(value)
+            }
+            Ok(_) => None,
+            Err(_) => load_config_from_sources(
+                &loader,
+                embedded_config,
+                None,
+                config_dir,
+                None,
+                "deployer.yml",
+            )?,
         };
+        let mut config = match config_value {
+            Some(value) => serde_yaml::from_value(value)?,
+            None => Self::default(),
+        };
+        config.apply_env_overrides();
 
         if let Some(registry) = registry {
             registry.register_loaded_config(
@@ -122,17 +134,6 @@ impl DeployerConfig {
             );
         }
     }
-}
-
-fn load_values(config_dir: &Path) -> anyhow::Result<HashMap<String, serde_yaml::Value>> {
-    let values_path = config_dir.join("values.yml");
-    if !values_path.exists() {
-        return Ok(HashMap::new());
-    }
-
-    let content = std::fs::read_to_string(values_path)?;
-    let values = serde_yaml::from_str(&content)?;
-    Ok(values)
 }
 
 impl Default for DeployerConfig {

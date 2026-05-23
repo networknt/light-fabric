@@ -9,6 +9,7 @@ pub use config::{
     BootstrapConfig, DirectRegistryConfig, PortalRegistryConfig, RemoteBootstrapResult,
     RuntimeConfig, ServerConfig, ServiceIdentity,
 };
+pub use config_loader::EmbeddedConfigFile;
 pub use module_registry::{
     CLIENT_CONFIG_NAME, CLIENT_MODULE_ID, ConfigManager, MaskSpec, ModuleEntry, ModuleKind,
     ModuleRegistry, ModuleSummary, ReloadContext, ReloadFailed, ReloadModulesResult, ReloadOutcome,

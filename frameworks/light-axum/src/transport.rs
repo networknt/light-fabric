@@ -186,6 +186,7 @@ mod tests {
             external_config_dir: PathBuf::from("config"),
             resolved_values: Default::default(),
             default_config_dir: None,
+            embedded_config: &[],
             module_registry: Arc::new(ModuleRegistry::new()),
             cache_registry: None,
             registry_client: None,

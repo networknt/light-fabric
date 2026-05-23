@@ -1,5 +1,6 @@
 use crate::cache::CacheRegistry;
 use crate::module_registry::ModuleRegistry;
+use config_loader::EmbeddedConfigFile;
 pub use light_client::ClientConfig;
 use portal_registry::PortalRegistryClient;
 use serde::{Deserialize, Serialize};
@@ -168,6 +169,8 @@ pub struct RuntimeConfig {
     pub resolved_values: HashMap<String, serde_yaml::Value>,
     #[serde(skip, default)]
     pub default_config_dir: Option<PathBuf>,
+    #[serde(skip, default = "default_embedded_config")]
+    pub embedded_config: &'static [EmbeddedConfigFile],
     #[serde(skip, default = "default_module_registry")]
     pub module_registry: Arc<ModuleRegistry>,
     #[serde(skip)]
@@ -217,4 +220,8 @@ pub(crate) fn default_shutdown_graceful_period_ms() -> u64 {
 
 pub(crate) fn default_module_registry() -> Arc<ModuleRegistry> {
     Arc::new(ModuleRegistry::new())
+}
+
+pub(crate) fn default_embedded_config() -> &'static [EmbeddedConfigFile] {
+    &[]
 }

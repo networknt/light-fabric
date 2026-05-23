@@ -26,3 +26,6 @@ portal-registry = { path = "../../crates/portal-registry" }
 serde_json = { workspace = true }
 tempfile = "3"
 tokio-tungstenite = { version = "0.24" }
+
+[build-dependencies]
+config-embed-build = { path = "../../crates/config-embed-build" }

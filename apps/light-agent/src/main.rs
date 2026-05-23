@@ -35,6 +35,10 @@ use tracing_subscriber::EnvFilter;
 use url::Url;
 use uuid::Uuid;
 
+mod embedded_config {
+    include!(concat!(env!("OUT_DIR"), "/embedded_config.rs"));
+}
+
 const CONFIG_DIR: &str = "config";
 const DEFAULT_CONFIG_DIR: &str = "config-defaults";
 const EXTERNAL_CONFIG_DIR: &str = "config-cache";
@@ -1865,6 +1869,9 @@ async fn build_agent_state(
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_tracing();
+    if config_loader::handle_embedded_config_cli(embedded_config::FILES)? {
+        return Ok(());
+    }
 
     let catalog_cache = AgentCatalogCache::new();
     let registry_handler: Arc<dyn RegistryHandler> =
@@ -1872,6 +1879,7 @@ async fn main() -> anyhow::Result<()> {
     let app = AgentApp { catalog_cache };
 
     let runtime = LightRuntimeBuilder::new(AxumTransport::new(app))
+        .with_embedded_config(embedded_config::FILES)
         .with_default_config_dir(DEFAULT_CONFIG_DIR)
         .with_config_dir(CONFIG_DIR)
         .with_external_config_dir(EXTERNAL_CONFIG_DIR)

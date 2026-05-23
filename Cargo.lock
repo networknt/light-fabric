@@ -701,6 +701,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "config-embed-build"
+version = "0.1.0"
+
+[[package]]
 name = "config-loader"
 version = "0.1.0"
 dependencies = [
@@ -3174,6 +3178,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "config-embed-build",
+ "config-loader",
  "futures-util",
  "hindsight-client",
  "light-axum",
@@ -3230,6 +3236,7 @@ dependencies = [
  "axum",
  "base64",
  "chrono",
+ "config-embed-build",
  "config-loader",
  "futures-util",
  "gix",
@@ -3257,6 +3264,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
+ "config-embed-build",
  "config-loader",
  "futures-util",
  "light-pingora",

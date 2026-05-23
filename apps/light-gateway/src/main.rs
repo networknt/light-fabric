@@ -43,6 +43,10 @@ use tokio::io::AsyncReadExt;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+mod embedded_config {
+    include!(concat!(env!("OUT_DIR"), "/embedded_config.rs"));
+}
+
 const CONFIG_DIR: &str = "config";
 const DEFAULT_CONFIG_DIR: &str = "config-defaults";
 const EXTERNAL_CONFIG_DIR: &str = "config-cache";
@@ -2522,9 +2526,13 @@ struct HandlerTiming {
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
+    if config_loader::handle_embedded_config_cli(embedded_config::FILES)? {
+        return Ok(());
+    }
 
     let cache_registry = Arc::new(CacheRegistry::new());
     let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp))
+        .with_embedded_config(embedded_config::FILES)
         .with_default_config_dir(DEFAULT_CONFIG_DIR)
         .with_config_dir(CONFIG_DIR)
         .with_external_config_dir(EXTERNAL_CONFIG_DIR)
@@ -3230,6 +3238,7 @@ mod tests {
             external_config_dir: external_config_dir.path().to_path_buf(),
             resolved_values,
             default_config_dir: None,
+            embedded_config: &[],
             module_registry: Arc::new(ModuleRegistry::new()),
             cache_registry: None,
             registry_client: None,
