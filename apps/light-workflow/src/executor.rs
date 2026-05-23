@@ -1315,7 +1315,7 @@ impl TaskExecutor {
             .map(|value| self.resolve_template_to_string(value, &claimed.context_data))
             .unwrap_or_else(|| "ask".to_string());
 
-        let mut assignees = Vec::new();
+        let mut assignment_targets = Vec::new();
         let mut seen = HashSet::new();
 
         if let Some(assignee_id) = assignment
@@ -1324,8 +1324,9 @@ impl TaskExecutor {
             .filter(|value| !value.trim().is_empty())
             .map(|value| self.resolve_template_to_string(value, &claimed.context_data))
         {
-            if seen.insert(assignee_id.clone()) {
-                assignees.push(assignee_id);
+            let key = format!("USER:{assignee_id}");
+            if seen.insert(key) {
+                assignment_targets.push(("USER", assignee_id));
             }
         }
 
@@ -1335,38 +1336,13 @@ impl TaskExecutor {
             .filter(|value| !value.trim().is_empty())
             .map(|value| self.resolve_template_to_string(value, &claimed.context_data))
         {
-            let role_users = sqlx::query_as::<_, (String,)>(
-                r#"
-                SELECT user_id::text
-                FROM role_user_t
-                WHERE host_id = $1
-                  AND role_id = $2
-                  AND active = TRUE
-                  AND (start_ts IS NULL OR start_ts <= CURRENT_TIMESTAMP)
-                  AND (end_ts IS NULL OR end_ts > CURRENT_TIMESTAMP)
-                ORDER BY user_id
-                "#,
-            )
-            .bind(claimed.task.host_id)
-            .bind(&role_id)
-            .fetch_all(&mut **tx)
-            .await?;
-
-            if role_users.is_empty() {
-                warn!(
-                    "Ask task {} assignment role {} has no active users",
-                    claimed.task.wf_task_id, role_id
-                );
-            }
-
-            for (assignee_id,) in role_users {
-                if seen.insert(assignee_id.clone()) {
-                    assignees.push(assignee_id);
-                }
+            let key = format!("ROLE:{role_id}");
+            if seen.insert(key) {
+                assignment_targets.push(("ROLE", role_id));
             }
         }
 
-        if assignees.is_empty() {
+        if assignment_targets.is_empty() {
             warn!(
                 "Ask task {} has an assignment definition but no resolved assignees",
                 claimed.task.wf_task_id
@@ -1374,7 +1350,7 @@ impl TaskExecutor {
             return Ok(());
         }
 
-        for assignee_id in assignees {
+        for (assignment_type, assignment_id) in assignment_targets {
             sqlx::query(
                 r#"
                 INSERT INTO worklist_t (
@@ -1391,7 +1367,7 @@ impl TaskExecutor {
                 "#,
             )
             .bind(claimed.task.host_id)
-            .bind(&assignee_id)
+            .bind(&assignment_id)
             .bind(&category_code)
             .execute(&mut **tx)
             .await?;
@@ -1400,18 +1376,19 @@ impl TaskExecutor {
                 r#"
                 INSERT INTO task_asst_t (
                     host_id, task_asst_id, task_id, assigned_ts, assignee_id,
-                    reason_code, category_code, update_user, update_ts,
+                    assignment_type, assignment_id, reason_code, category_code, update_user, update_ts,
                     aggregate_version, active
                 )
-                SELECT $1, $2, $3, CURRENT_TIMESTAMP, $4, $5, $6,
+                SELECT $1, $2, $3, CURRENT_TIMESTAMP, $4, $5, $6, $7, $8,
                        'light-workflow', CURRENT_TIMESTAMP, 1, TRUE
                 WHERE NOT EXISTS (
                     SELECT 1
                     FROM task_asst_t
                     WHERE host_id = $1
                       AND task_id = $3
-                      AND assignee_id = $4
-                      AND COALESCE(category_code, '') = COALESCE($6, '')
+                      AND assignment_type = $5
+                      AND assignment_id = $6
+                      AND COALESCE(category_code, '') = COALESCE($8, '')
                       AND active = TRUE
                 )
                 "#,
@@ -1419,7 +1396,9 @@ impl TaskExecutor {
             .bind(claimed.task.host_id)
             .bind(Uuid::new_v4())
             .bind(claimed.task.task_id)
-            .bind(&assignee_id)
+            .bind(&assignment_id)
+            .bind(assignment_type)
+            .bind(&assignment_id)
             .bind(&reason_code)
             .bind(&category_code)
             .execute(&mut **tx)
