@@ -1353,27 +1353,6 @@ impl TaskExecutor {
         for (assignment_type, assignment_id) in assignment_targets {
             sqlx::query(
                 r#"
-                INSERT INTO worklist_t (
-                    host_id, assignee_id, category_id, status_code, app_id,
-                    update_user, update_ts, aggregate_version, active
-                )
-                VALUES ($1, $2, $3, 'Active', 'workflow', 'light-workflow', CURRENT_TIMESTAMP, 1, TRUE)
-                ON CONFLICT (host_id, assignee_id, category_id) DO UPDATE
-                SET status_code = EXCLUDED.status_code,
-                    app_id = EXCLUDED.app_id,
-                    update_user = EXCLUDED.update_user,
-                    update_ts = CURRENT_TIMESTAMP,
-                    active = TRUE
-                "#,
-            )
-            .bind(claimed.task.host_id)
-            .bind(&assignment_id)
-            .bind(&category_code)
-            .execute(&mut **tx)
-            .await?;
-
-            sqlx::query(
-                r#"
                 INSERT INTO task_asst_t (
                     host_id, task_asst_id, task_id, assigned_ts, assignee_id,
                     assignment_type, assignment_id, reason_code, category_code, update_user, update_ts,
