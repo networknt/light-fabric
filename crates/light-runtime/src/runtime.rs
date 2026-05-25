@@ -498,11 +498,8 @@ where
                         "failed to build portal registry client: {e}"
                     ))
                 })?;
-        if let Some(ca_certificate) = bootstrap
-            .bootstrap_ca_cert_path
-            .as_ref()
-            .map(fs::read)
-            .transpose()?
+        if let Some((_ca_cert_path, ca_certificate)) =
+            read_portal_registry_ca_certificate(bootstrap, client_config.as_ref())?
         {
             client = client.with_ca_certificate(ca_certificate);
         }
@@ -631,12 +628,10 @@ where
         }
 
         let registration = registration.build();
-        let ca_certificate = runtime_config
-            .bootstrap
-            .bootstrap_ca_cert_path
-            .as_ref()
-            .map(fs::read)
-            .transpose()?;
+        let ca_certificate = read_portal_registry_ca_certificate(
+            &runtime_config.bootstrap,
+            runtime_config.client.as_ref(),
+        )?;
         let verify_hostname = runtime_config
             .client
             .as_ref()
@@ -647,6 +642,18 @@ where
                 "TLS hostname verification is disabled for the portal-registry client; this weakens server identity validation"
             );
         }
+        let ca_cert_path = ca_certificate
+            .as_ref()
+            .map(|(path, _)| path.display().to_string())
+            .unwrap_or_else(|| "<none>".to_string());
+        info!(
+            controller_url = %ws_url,
+            verify_hostname,
+            ca_cert_path = %ca_cert_path,
+            ca_cert_configured = ca_certificate.is_some(),
+            "portal-registry TLS configuration"
+        );
+        let ca_certificate = ca_certificate.map(|(_, certificate)| certificate);
 
         let shared_registry_client = runtime_config
             .registry_client
@@ -847,6 +854,32 @@ fn config_server_tls_config(
         tls.ca_cert_path = bootstrap.bootstrap_ca_cert_path.clone();
     }
     tls
+}
+
+fn portal_registry_ca_cert_path(
+    bootstrap: &BootstrapConfig,
+    client_config: Option<&ClientConfig>,
+) -> Option<PathBuf> {
+    client_config
+        .and_then(|client| client.tls.ca_cert_path.clone())
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| {
+            bootstrap
+                .bootstrap_ca_cert_path
+                .clone()
+                .filter(|path| !path.as_os_str().is_empty())
+        })
+}
+
+fn read_portal_registry_ca_certificate(
+    bootstrap: &BootstrapConfig,
+    client_config: Option<&ClientConfig>,
+) -> Result<Option<(PathBuf, Vec<u8>)>, RuntimeError> {
+    let Some(path) = portal_registry_ca_cert_path(bootstrap, client_config) else {
+        return Ok(None);
+    };
+    let certificate = fs::read(&path)?;
+    Ok(Some((path, certificate)))
 }
 
 fn build_query_params(bootstrap: &BootstrapConfig) -> Vec<(String, String)> {
@@ -1631,6 +1664,68 @@ tls:
         assert_eq!(tls.ca_cert_path, Some(PathBuf::from("config/ca.pem")));
         assert!(!tls.verify_hostname);
         assert!(!tls.accept_invalid_certs);
+    }
+
+    #[test]
+    fn portal_registry_ca_prefers_client_ca_path() {
+        let bootstrap = BootstrapConfig {
+            bootstrap_ca_cert_path: Some(PathBuf::from("config/bootstrap-ca.pem")),
+            ..BootstrapConfig::default()
+        };
+        let mut client_config = ClientConfig::default();
+        client_config.tls.ca_cert_path = Some(PathBuf::from("config/client-ca.pem"));
+
+        let ca_cert_path = portal_registry_ca_cert_path(&bootstrap, Some(&client_config));
+
+        assert_eq!(ca_cert_path, Some(PathBuf::from("config/client-ca.pem")));
+    }
+
+    #[test]
+    fn portal_registry_ca_falls_back_to_bootstrap_ca_when_client_ca_is_empty() {
+        let bootstrap = BootstrapConfig {
+            bootstrap_ca_cert_path: Some(PathBuf::from("config/bootstrap-ca.pem")),
+            ..BootstrapConfig::default()
+        };
+        let mut client_config = ClientConfig::default();
+        client_config.tls.ca_cert_path = Some(PathBuf::new());
+
+        let ca_cert_path = portal_registry_ca_cert_path(&bootstrap, Some(&client_config));
+
+        assert_eq!(ca_cert_path, Some(PathBuf::from("config/bootstrap-ca.pem")));
+    }
+
+    #[test]
+    fn portal_registry_ca_returns_none_when_no_ca_path_is_configured() {
+        let bootstrap = BootstrapConfig::default();
+        let client_config = ClientConfig::default();
+
+        let ca_cert_path = portal_registry_ca_cert_path(&bootstrap, Some(&client_config));
+
+        assert_eq!(ca_cert_path, None);
+    }
+
+    #[test]
+    fn portal_registry_ca_reads_client_ca_path() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let bootstrap_ca_path = config_dir.path().join("bootstrap-ca.pem");
+        let client_ca_path = config_dir.path().join("client-ca.pem");
+        fs::write(&bootstrap_ca_path, b"bootstrap-ca").expect("write bootstrap ca");
+        fs::write(&client_ca_path, b"client-ca").expect("write client ca");
+
+        let bootstrap = BootstrapConfig {
+            bootstrap_ca_cert_path: Some(bootstrap_ca_path),
+            ..BootstrapConfig::default()
+        };
+        let mut client_config = ClientConfig::default();
+        client_config.tls.ca_cert_path = Some(client_ca_path.clone());
+
+        let (ca_cert_path, certificate) =
+            read_portal_registry_ca_certificate(&bootstrap, Some(&client_config))
+                .expect("read portal-registry ca")
+                .expect("portal-registry ca");
+
+        assert_eq!(ca_cert_path, client_ca_path);
+        assert_eq!(certificate, b"client-ca");
     }
 
     #[tokio::test]

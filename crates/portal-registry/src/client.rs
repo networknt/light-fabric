@@ -293,7 +293,7 @@ impl PortalRegistryClient {
         {
             if !verify_hostname && ca_certificate.is_none() {
                 return Err(anyhow::anyhow!(
-                    "verify_hostname=false requires an explicit CA certificate"
+                    "verify_hostname=false requires an explicit CA certificate for portal-registry; set startup.bootstrapCaCertPath or client.caCertPath"
                 ));
             }
 

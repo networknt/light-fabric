@@ -17,6 +17,7 @@
 - [LightAPI Description](design/lightapi-description.md)
 - [Light-Rule](design/light-rule.md)
 - [Centralized Skills](design/centralized-agent-skills.md)
+- [Skill Workflow Orchestration](design/skill-workflow-orchestration.md)
 - [Hindsight Memory](design/hindsight-memory.md)
 - [Fine-Grained Authorization](design/fine-grained-authorization.md)
 - [Agent Engine Pattern](design/agent-engine-pattern.md)
