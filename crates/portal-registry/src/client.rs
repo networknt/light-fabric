@@ -3,6 +3,7 @@ use crate::protocol::{
     ServiceMetadataUpdate, ServiceRegistrationParams,
 };
 use futures_util::{SinkExt, StreamExt};
+use rustls::pki_types::CertificateDer;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -25,7 +26,7 @@ const REGISTRATION_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 struct NoHostnameVerifier {
-    roots: rustls::RootCertStore,
+    roots: Arc<rustls::RootCertStore>,
     supported_algs: rustls::crypto::WebPkiSupportedAlgorithms,
 }
 
@@ -38,14 +39,37 @@ impl rustls::client::danger::ServerCertVerifier for NoHostnameVerifier {
         _ocsp_response: &[u8],
         now: rustls::pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        let cert = rustls::server::ParsedCertificate::try_from(end_entity)?;
-        rustls::client::verify_server_cert_signed_by_trust_anchor(
+        let cert = match rustls::server::ParsedCertificate::try_from(end_entity) {
+            Ok(cert) => cert,
+            Err(error) => {
+                log_controller_certificate_verification_failure(
+                    "parse peer certificate",
+                    false,
+                    end_entity,
+                    intermediates,
+                    &error,
+                );
+                return Err(error);
+            }
+        };
+
+        if let Err(error) = rustls::client::verify_server_cert_signed_by_trust_anchor(
             &cert,
             &self.roots,
             intermediates,
             now,
             self.supported_algs.all,
-        )?;
+        ) {
+            log_controller_certificate_verification_failure(
+                "verify peer certificate chain",
+                false,
+                end_entity,
+                intermediates,
+                &error,
+            );
+            return Err(error);
+        }
+
         Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
 
@@ -70,6 +94,115 @@ impl rustls::client::danger::ServerCertVerifier for NoHostnameVerifier {
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
         self.supported_algs.supported_schemes()
     }
+}
+
+#[derive(Debug)]
+struct LoggingHostnameVerifier {
+    inner: Arc<rustls::client::WebPkiServerVerifier>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for LoggingHostnameVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &rustls::pki_types::ServerName<'_>,
+        ocsp_response: &[u8],
+        now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        match self.inner.verify_server_cert(
+            end_entity,
+            intermediates,
+            server_name,
+            ocsp_response,
+            now,
+        ) {
+            Ok(verified) => Ok(verified),
+            Err(error) => {
+                log_controller_certificate_verification_failure(
+                    "verify peer certificate",
+                    true,
+                    end_entity,
+                    intermediates,
+                    &error,
+                );
+                Err(error)
+            }
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.inner.supported_verify_schemes()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CertificateIdentity {
+    subject: String,
+    issuer: String,
+}
+
+fn certificate_identity(certificate: &CertificateDer<'_>) -> CertificateIdentity {
+    match x509_parser::parse_x509_certificate(certificate.as_ref()) {
+        Ok((_remaining, parsed)) => CertificateIdentity {
+            subject: parsed.subject().to_string(),
+            issuer: parsed.issuer().to_string(),
+        },
+        Err(error) => CertificateIdentity {
+            subject: format!("<unparsed: {error}>"),
+            issuer: "<unparsed>".to_string(),
+        },
+    }
+}
+
+fn log_controller_certificate_verification_failure(
+    verification_step: &str,
+    verify_hostname: bool,
+    end_entity: &CertificateDer<'_>,
+    intermediates: &[CertificateDer<'_>],
+    error: &rustls::Error,
+) {
+    let peer = certificate_identity(end_entity);
+    let intermediate_identities: Vec<CertificateIdentity> =
+        intermediates.iter().map(certificate_identity).collect();
+    let intermediate_subjects: Vec<&str> = intermediate_identities
+        .iter()
+        .map(|identity| identity.subject.as_str())
+        .collect();
+    let intermediate_issuers: Vec<&str> = intermediate_identities
+        .iter()
+        .map(|identity| identity.issuer.as_str())
+        .collect();
+
+    error!(
+        verification_step,
+        verify_hostname,
+        peer_cert_subject = %peer.subject,
+        peer_cert_issuer = %peer.issuer,
+        intermediate_cert_count = intermediates.len(),
+        intermediate_cert_subjects = ?intermediate_subjects,
+        intermediate_cert_issuers = ?intermediate_issuers,
+        error = %error,
+        "portal-registry controller certificate verification failed"
+    );
 }
 
 fn root_store_with_ca_bundle(
@@ -367,6 +500,7 @@ impl PortalRegistryClient {
             );
 
             let builder = rustls::ClientConfig::builder();
+            let root_store = Arc::new(root_store);
 
             if !verify_hostname {
                 let supported_algs = rustls::crypto::CryptoProvider::get_default()
@@ -375,7 +509,7 @@ impl PortalRegistryClient {
                         rustls::crypto::ring::default_provider().signature_verification_algorithms
                     });
                 let verifier = Arc::new(NoHostnameVerifier {
-                    roots: root_store,
+                    roots: Arc::clone(&root_store),
                     supported_algs,
                 });
                 let config = builder
@@ -384,8 +518,11 @@ impl PortalRegistryClient {
                     .with_no_client_auth();
                 Some(tokio_tungstenite::Connector::Rustls(Arc::new(config)))
             } else {
+                let inner = rustls::client::WebPkiServerVerifier::builder(root_store).build()?;
+                let verifier = Arc::new(LoggingHostnameVerifier { inner });
                 let config = builder
-                    .with_root_certificates(root_store)
+                    .dangerous()
+                    .with_custom_certificate_verifier(verifier)
                     .with_no_client_auth();
                 Some(tokio_tungstenite::Connector::Rustls(Arc::new(config)))
             }
@@ -579,6 +716,23 @@ mod tests {
             root_store_with_ca_bundle(Some(TEST_CA_PEM)).expect("root store");
 
         assert_eq!(certificate_count, 1);
+    }
+
+    #[test]
+    fn certificate_identity_extracts_subject_and_issuer() {
+        let mut reader = BufReader::new(Cursor::new(TEST_CA_PEM));
+        let certificate = match rustls_pemfile::read_one(&mut reader)
+            .expect("read test certificate")
+            .expect("test certificate")
+        {
+            rustls_pemfile::Item::X509Certificate(certificate) => certificate,
+            other => panic!("unexpected PEM item: {other:?}"),
+        };
+
+        let identity = certificate_identity(&certificate);
+
+        assert!(identity.subject.contains("networknt-local-ca"));
+        assert!(identity.issuer.contains("networknt-local-ca"));
     }
 
     #[test]

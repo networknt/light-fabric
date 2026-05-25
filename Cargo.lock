@@ -4293,6 +4293,7 @@ dependencies = [
  "url",
  "uuid",
  "webpki-roots 0.26.11",
+ "x509-parser",
 ]
 
 [[package]]
