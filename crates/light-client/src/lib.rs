@@ -9,7 +9,10 @@ pub use config::{
     OAuthSignKeyConfig, OAuthTokenAuthorizationCodeConfig, OAuthTokenCacheConfig, OAuthTokenConfig,
     OAuthTokenExchangeConfig, OAuthTokenRefreshTokenConfig, TlsVersion,
 };
-pub use http::{ClientBuildError, ClientFactory, EndpointOptions, build_reqwest_client};
+pub use http::{
+    CaBundleError, ClientBuildError, ClientFactory, EndpointOptions, build_reqwest_client,
+    load_ca_cert_bundle, parse_ca_cert_bundle,
+};
 pub use oauth::{OAuthClient, OAuthClientError, OAuthEndpoint};
 pub use provider::{
     OAuthProviderError, OAuthProviderResolver, OAuthProviderSection,

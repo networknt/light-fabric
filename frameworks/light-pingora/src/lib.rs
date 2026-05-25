@@ -213,7 +213,7 @@ where
         server_conf.threads = 1;
         server_conf.daemon = false;
         apply_client_request_config(config, &mut server_conf);
-        server_conf.ca_file = upstream_ca_file(config);
+        server_conf.ca_file = upstream_ca_file(config)?;
         let shutdown_seconds = config.server.shutdown_graceful_period.div_ceil(1000);
         server_conf.grace_period_seconds = Some(0);
         server_conf.graceful_shutdown_timeout_seconds = Some(shutdown_seconds);
@@ -311,15 +311,38 @@ fn listen_addr(config: &RuntimeConfig, port: u16) -> Result<String, RuntimeError
     Ok(addr.to_string())
 }
 
-fn upstream_ca_file(config: &RuntimeConfig) -> Option<String> {
-    config
+fn upstream_ca_file(config: &RuntimeConfig) -> Result<Option<String>, RuntimeError> {
+    let Some(path) = config
         .client
         .as_ref()
         .and_then(|client| client.tls.ca_cert_path.clone())
         .or_else(|| resolved_string(config, "client.caCertPath").map(PathBuf::from))
         .or_else(|| config.bootstrap.bootstrap_ca_cert_path.clone())
-        .filter(|path| path.exists())
-        .map(|path| path.to_string_lossy().to_string())
+        .filter(|path| !path.as_os_str().is_empty())
+    else {
+        return Ok(None);
+    };
+
+    if !path.exists() {
+        return Err(RuntimeError::Unsupported(format!(
+            "upstream CA bundle `{}` does not exist",
+            path.display()
+        )));
+    }
+
+    let certificates = light_client::load_ca_cert_bundle(&path).map_err(|e| {
+        RuntimeError::Unsupported(format!(
+            "invalid upstream CA bundle `{}`: {e}",
+            path.display()
+        ))
+    })?;
+    tracing::info!(
+        ca_cert_path = %path.display(),
+        ca_cert_count = certificates.len(),
+        "validated upstream CA certificate bundle"
+    );
+
+    Ok(Some(path.to_string_lossy().to_string()))
 }
 
 fn apply_client_request_config(config: &RuntimeConfig, server_conf: &mut ServerConf) {

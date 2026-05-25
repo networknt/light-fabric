@@ -8,6 +8,7 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 use std::collections::HashMap;
 use std::fmt;
+use std::io::{BufReader, Cursor};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -69,6 +70,66 @@ impl rustls::client::danger::ServerCertVerifier for NoHostnameVerifier {
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
         self.supported_algs.supported_schemes()
     }
+}
+
+fn root_store_with_ca_bundle(
+    ca_certificate: Option<&[u8]>,
+) -> anyhow::Result<(rustls::RootCertStore, usize)> {
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+    let Some(ca_certificate) = ca_certificate else {
+        return Ok((root_store, 0));
+    };
+
+    validate_ca_bundle_pem_labels(ca_certificate)?;
+
+    let mut reader = BufReader::new(Cursor::new(ca_certificate));
+    let mut certificate_count = 0usize;
+    loop {
+        let Some(item) = rustls_pemfile::read_one(&mut reader)? else {
+            break;
+        };
+
+        match item {
+            rustls_pemfile::Item::X509Certificate(cert) => {
+                root_store.add(cert)?;
+                certificate_count += 1;
+            }
+            other => {
+                return Err(anyhow::anyhow!(
+                    "portal-registry CA bundle contains unsupported PEM block: {:?}",
+                    other
+                ));
+            }
+        }
+    }
+
+    if certificate_count == 0 {
+        return Err(anyhow::anyhow!(
+            "portal-registry CA bundle contains no certificates"
+        ));
+    }
+
+    Ok((root_store, certificate_count))
+}
+
+fn validate_ca_bundle_pem_labels(ca_certificate: &[u8]) -> anyhow::Result<()> {
+    let text = std::str::from_utf8(ca_certificate)?;
+    for line in text.lines().map(str::trim) {
+        let Some(label) = line
+            .strip_prefix("-----BEGIN ")
+            .and_then(|value| value.strip_suffix("-----"))
+        else {
+            continue;
+        };
+        if label != "CERTIFICATE" {
+            return Err(anyhow::anyhow!(
+                "portal-registry CA bundle contains unsupported PEM block: {label}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -297,13 +358,13 @@ impl PortalRegistryClient {
                 ));
             }
 
-            let mut root_store = rustls::RootCertStore::empty();
-            if let Some(ca_cert) = &ca_certificate {
-                let mut reader = std::io::BufReader::new(std::io::Cursor::new(ca_cert));
-                for cert in rustls_pemfile::certs(&mut reader) {
-                    root_store.add(cert?)?;
-                }
-            }
+            let (root_store, ca_cert_count) = root_store_with_ca_bundle(ca_certificate.as_deref())?;
+            info!(
+                controller_url = %controller_url,
+                ca_cert_count,
+                verify_hostname,
+                "loaded portal-registry CA certificate bundle"
+            );
 
             let builder = rustls::ClientConfig::builder();
 
@@ -505,10 +566,43 @@ mod tests {
     use tokio::sync::oneshot;
     use tokio_tungstenite::accept_async;
 
+    const TEST_CA_PEM: &[u8] = include_bytes!("../../../apps/light-gateway/config/ca.pem");
+
     struct NoopHandler;
 
     #[async_trait::async_trait]
     impl RegistryHandler for NoopHandler {}
+
+    #[test]
+    fn root_store_accepts_single_ca_certificate() {
+        let (_root_store, certificate_count) =
+            root_store_with_ca_bundle(Some(TEST_CA_PEM)).expect("root store");
+
+        assert_eq!(certificate_count, 1);
+    }
+
+    #[test]
+    fn root_store_rejects_empty_ca_bundle() {
+        let error = root_store_with_ca_bundle(Some(b"# comment only\n"))
+            .expect_err("empty CA bundle should fail")
+            .to_string();
+
+        assert!(error.contains("contains no certificates"));
+    }
+
+    #[test]
+    fn root_store_rejects_non_certificate_pem_blocks() {
+        let mut bundle = Vec::from(TEST_CA_PEM);
+        bundle.extend_from_slice(
+            b"-----BEGIN PRIVATE KEY-----\nnot-a-valid-key\n-----END PRIVATE KEY-----\n",
+        );
+
+        let error = root_store_with_ca_bundle(Some(&bundle))
+            .expect_err("private key in CA bundle should fail")
+            .to_string();
+
+        assert!(error.contains("unsupported PEM block"));
+    }
 
     #[tokio::test]
     async fn registration_and_metadata_update_match_controller_protocol() {

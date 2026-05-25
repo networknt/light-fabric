@@ -3183,6 +3183,7 @@ dependencies = [
  "futures-util",
  "hindsight-client",
  "light-axum",
+ "light-client",
  "light-runtime",
  "mcp-client",
  "model-provider",
@@ -3219,6 +3220,7 @@ name = "light-client"
 version = "0.1.0"
 dependencies = [
  "reqwest",
+ "rustls-pemfile",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -3463,6 +3465,7 @@ name = "mcp-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "light-client",
  "reqwest",
  "serde",
  "serde_json",
@@ -4289,6 +4292,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]

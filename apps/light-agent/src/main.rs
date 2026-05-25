@@ -14,7 +14,7 @@ use hindsight_client::{HindsightMemory, PgHindsightClient};
 use light_axum::{AxumApp, AxumTransport, ServerContext};
 use light_runtime::{
     LightRuntimeBuilder, MaskSpec, ModuleKind, RuntimeConfig, RuntimeError,
-    config::PortalRegistryConfig,
+    config::{BootstrapConfig, ClientConfig, PortalRegistryConfig},
 };
 use mcp_client::{McpContent, McpGatewayClient, McpTool};
 use model_provider::{
@@ -27,10 +27,11 @@ use portal_registry::RegistryHandler;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_http::services::ServeDir;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use url::Url;
 use uuid::Uuid;
@@ -369,9 +370,17 @@ impl PortalQueryClient {
             .connect_timeout(std::time::Duration::from_millis(timeout_ms));
 
         if let Some(pem) = ca_cert_pem {
-            let cert = reqwest::Certificate::from_pem(pem)
-                .context("Invalid ca_cert_pem: failed to parse PEM-encoded CA certificate")?;
-            builder = builder.add_root_certificate(cert);
+            let certificates = light_client::parse_ca_cert_bundle(pem).context(
+                "Invalid ca_cert_pem: failed to parse PEM-encoded CA certificate bundle",
+            )?;
+            let certificate_count = certificates.len();
+            for certificate in certificates {
+                builder = builder.add_root_certificate(certificate);
+            }
+            info!(
+                ca_cert_count = certificate_count,
+                "loaded portal query CA certificate bundle"
+            );
         }
 
         if !verify_hostname {
@@ -1792,12 +1801,7 @@ async fn build_agent_state(
         mcp_config.path.trim_start_matches('/')
     );
 
-    let ca_cert: Option<Vec<u8>> = runtime_config
-        .bootstrap
-        .bootstrap_ca_cert_path
-        .as_ref()
-        .map(std::fs::read)
-        .transpose()?;
+    let ca_cert = read_agent_ca_cert_bundle(runtime_config)?;
     let verify_hostname: bool = runtime_config
         .client
         .as_ref()
@@ -1864,6 +1868,40 @@ async fn build_agent_state(
         service_id: runtime_config.service_identity.service_id.clone(),
         env_tag,
     }))
+}
+
+fn read_agent_ca_cert_bundle(
+    runtime_config: &RuntimeConfig,
+) -> Result<Option<Vec<u8>>, RuntimeError> {
+    let Some(path) = agent_ca_cert_path(runtime_config) else {
+        return Ok(None);
+    };
+    let bundle = std::fs::read(&path)?;
+    info!(
+        ca_cert_path = %path.display(),
+        ca_cert_configured = true,
+        "loaded light-agent outbound CA certificate bundle"
+    );
+    Ok(Some(bundle))
+}
+
+fn agent_ca_cert_path(runtime_config: &RuntimeConfig) -> Option<PathBuf> {
+    agent_ca_cert_path_from_config(&runtime_config.bootstrap, runtime_config.client.as_ref())
+}
+
+fn agent_ca_cert_path_from_config(
+    bootstrap: &BootstrapConfig,
+    client_config: Option<&ClientConfig>,
+) -> Option<PathBuf> {
+    client_config
+        .and_then(|client| client.tls.ca_cert_path.clone())
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| {
+            bootstrap
+                .bootstrap_ca_cert_path
+                .clone()
+                .filter(|path| !path.as_os_str().is_empty())
+        })
 }
 
 #[tokio::main]
@@ -1963,11 +2001,13 @@ impl RegistryHandler for AgentRegistryHandler {
 mod tests {
     use super::{
         CatalogSkill, CatalogTool, CatalogToolPolicy, ChatMessage, EffectiveAgentCatalog,
-        MAX_SESSION_MESSAGES, ModelProviderConfig, choose_model, collect_catalog_tool_names,
-        collect_policy_diagnostics, filter_gateway_tools, normalize_provider_id,
-        rollback_last_user_message, select_catalog_tools, trim_history,
+        MAX_SESSION_MESSAGES, ModelProviderConfig, agent_ca_cert_path_from_config, choose_model,
+        collect_catalog_tool_names, collect_policy_diagnostics, filter_gateway_tools,
+        normalize_provider_id, rollback_last_user_message, select_catalog_tools, trim_history,
     };
+    use light_runtime::config::{BootstrapConfig, ClientConfig};
     use mcp_client::McpTool;
+    use std::path::PathBuf;
 
     #[test]
     fn trim_history_keeps_recent_messages() {
@@ -2015,6 +2055,40 @@ mod tests {
     fn provider_id_normalization_accepts_common_spellings() {
         assert_eq!(normalize_provider_id("Azure_OpenAI"), "azure-openai");
         assert_eq!(normalize_provider_id(" gemini cli "), "gemini-cli");
+    }
+
+    #[test]
+    fn agent_ca_cert_path_prefers_client_ca_path() {
+        let bootstrap = BootstrapConfig {
+            bootstrap_ca_cert_path: Some(PathBuf::from("config/bootstrap-ca.pem")),
+            ..BootstrapConfig::default()
+        };
+        let mut client_config = ClientConfig::default();
+        client_config.tls.ca_cert_path = Some(PathBuf::from("config/client-ca-bundle.crt"));
+
+        let ca_cert_path = agent_ca_cert_path_from_config(&bootstrap, Some(&client_config));
+
+        assert_eq!(
+            ca_cert_path,
+            Some(PathBuf::from("config/client-ca-bundle.crt"))
+        );
+    }
+
+    #[test]
+    fn agent_ca_cert_path_falls_back_to_bootstrap_ca_when_client_ca_is_empty() {
+        let bootstrap = BootstrapConfig {
+            bootstrap_ca_cert_path: Some(PathBuf::from("config/bootstrap-ca-bundle.crt")),
+            ..BootstrapConfig::default()
+        };
+        let mut client_config = ClientConfig::default();
+        client_config.tls.ca_cert_path = Some(PathBuf::new());
+
+        let ca_cert_path = agent_ca_cert_path_from_config(&bootstrap, Some(&client_config));
+
+        assert_eq!(
+            ca_cert_path,
+            Some(PathBuf::from("config/bootstrap-ca-bundle.crt"))
+        );
     }
 
     #[test]

@@ -1,5 +1,7 @@
 use crate::config::{ClientConfig, ClientRequestConfig, ClientTlsConfig, TlsVersion};
 use std::fmt;
+use std::io::{BufReader, Cursor};
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -73,13 +75,49 @@ pub enum ClientBuildError {
     },
     CaParse {
         path: PathBuf,
-        source: reqwest::Error,
+        source: CaBundleError,
     },
     Proxy {
         proxy_url: String,
         source: reqwest::Error,
     },
     Build(reqwest::Error),
+}
+
+#[derive(Debug)]
+pub enum CaBundleError {
+    Empty,
+    InvalidPem { source: std::io::Error },
+    UnsupportedPemBlock { kind: String },
+    InvalidCertificate { source: reqwest::Error },
+}
+
+impl fmt::Display for CaBundleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "CA bundle contains no certificates"),
+            Self::InvalidPem { source } => write!(f, "invalid PEM block: {source}"),
+            Self::UnsupportedPemBlock { kind } => {
+                write!(f, "unsupported PEM block in CA bundle: {kind}")
+            }
+            Self::InvalidCertificate { source } => {
+                write!(
+                    f,
+                    "failed to parse PEM-encoded CA certificate bundle: {source}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for CaBundleError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Empty | Self::UnsupportedPemBlock { .. } => None,
+            Self::InvalidPem { source } => Some(source),
+            Self::InvalidCertificate { source } => Some(source),
+        }
+    }
 }
 
 impl fmt::Display for ClientBuildError {
@@ -131,7 +169,7 @@ impl fmt::Display for ClientBuildError {
             Self::CaParse { path, source } => {
                 write!(
                     f,
-                    "invalid client CA certificate `{}`: {source}",
+                    "invalid client CA certificate bundle `{}`: {source}",
                     path.display()
                 )
             }
@@ -211,6 +249,79 @@ pub fn build_reqwest_client(
     builder.build().map_err(ClientBuildError::Build)
 }
 
+pub fn load_ca_cert_bundle(path: &Path) -> Result<Vec<reqwest::Certificate>, ClientBuildError> {
+    let pem = std::fs::read(path).map_err(|source| ClientBuildError::CaRead {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    parse_ca_cert_bundle(&pem).map_err(|source| ClientBuildError::CaParse {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+pub fn parse_ca_cert_bundle(pem: &[u8]) -> Result<Vec<reqwest::Certificate>, CaBundleError> {
+    validate_ca_cert_bundle_pem(pem)?;
+    let certificates = reqwest::Certificate::from_pem_bundle(pem)
+        .map_err(|source| CaBundleError::InvalidCertificate { source })?;
+    if certificates.is_empty() {
+        return Err(CaBundleError::Empty);
+    }
+    Ok(certificates)
+}
+
+fn validate_ca_cert_bundle_pem(pem: &[u8]) -> Result<(), CaBundleError> {
+    validate_ca_cert_bundle_pem_labels(pem)?;
+
+    let mut reader = BufReader::new(Cursor::new(pem));
+    let mut certificate_count = 0usize;
+
+    loop {
+        let Some(item) = rustls_pemfile::read_one(&mut reader)
+            .map_err(|source| CaBundleError::InvalidPem { source })?
+        else {
+            break;
+        };
+
+        match item {
+            rustls_pemfile::Item::X509Certificate(_) => certificate_count += 1,
+            other => {
+                return Err(CaBundleError::UnsupportedPemBlock {
+                    kind: format!("{other:?}"),
+                });
+            }
+        }
+    }
+
+    if certificate_count == 0 {
+        return Err(CaBundleError::Empty);
+    }
+
+    Ok(())
+}
+
+fn validate_ca_cert_bundle_pem_labels(pem: &[u8]) -> Result<(), CaBundleError> {
+    let text = std::str::from_utf8(pem).map_err(|source| CaBundleError::InvalidPem {
+        source: std::io::Error::new(std::io::ErrorKind::InvalidData, source),
+    })?;
+
+    for line in text.lines().map(str::trim) {
+        let Some(label) = line
+            .strip_prefix("-----BEGIN ")
+            .and_then(|value| value.strip_suffix("-----"))
+        else {
+            continue;
+        };
+        if label != "CERTIFICATE" {
+            return Err(CaBundleError::UnsupportedPemBlock {
+                kind: label.to_string(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
 fn configure_reqwest_tls(
     mut builder: reqwest::ClientBuilder,
     tls: &ClientTlsConfig,
@@ -220,19 +331,16 @@ fn configure_reqwest_tls(
         .as_ref()
         .filter(|path| !path.as_os_str().is_empty())
     {
-        let pem = std::fs::read(path).map_err(|source| ClientBuildError::CaRead {
-            path: path.clone(),
-            source,
-        })?;
-        let certificates = reqwest::Certificate::from_pem_bundle(&pem).map_err(|source| {
-            ClientBuildError::CaParse {
-                path: path.clone(),
-                source,
-            }
-        })?;
+        let certificates = load_ca_cert_bundle(path)?;
+        let certificate_count = certificates.len();
         for certificate in certificates {
             builder = builder.add_root_certificate(certificate);
         }
+        tracing::info!(
+            ca_cert_path = %path.display(),
+            ca_cert_count = certificate_count,
+            "loaded client CA certificate bundle"
+        );
     }
 
     if !tls.verify_hostname {
@@ -306,6 +414,48 @@ fn configure_reqwest_tls(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TEST_CA_PEM: &[u8] = include_bytes!("../../../apps/light-gateway/config/ca.pem");
+
+    #[test]
+    fn parse_ca_cert_bundle_accepts_single_certificate() {
+        let certificates = parse_ca_cert_bundle(TEST_CA_PEM).expect("single certificate bundle");
+
+        assert_eq!(certificates.len(), 1);
+    }
+
+    #[test]
+    fn parse_ca_cert_bundle_accepts_multiple_certificates() {
+        let mut bundle = Vec::from(TEST_CA_PEM);
+        bundle.extend_from_slice(TEST_CA_PEM);
+
+        let certificates = parse_ca_cert_bundle(&bundle).expect("multi certificate bundle");
+
+        assert_eq!(certificates.len(), 2);
+    }
+
+    #[test]
+    fn parse_ca_cert_bundle_rejects_empty_bundle() {
+        let error = parse_ca_cert_bundle(b"# comment only\n")
+            .expect_err("empty CA bundle should fail")
+            .to_string();
+
+        assert!(error.contains("contains no certificates"));
+    }
+
+    #[test]
+    fn parse_ca_cert_bundle_rejects_non_certificate_pem_blocks() {
+        let mut bundle = Vec::from(TEST_CA_PEM);
+        bundle.extend_from_slice(
+            b"-----BEGIN PRIVATE KEY-----\nnot-a-valid-key\n-----END PRIVATE KEY-----\n",
+        );
+
+        let error = parse_ca_cert_bundle(&bundle)
+            .expect_err("private key in CA bundle should fail")
+            .to_string();
+
+        assert!(error.contains("unsupported PEM block"));
+    }
 
     #[test]
     fn mtls_requires_cert_and_key() {

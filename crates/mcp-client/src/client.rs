@@ -18,7 +18,7 @@ impl McpGatewayClient {
 
     /// Create a client with explicit TLS options.
     ///
-    /// - `ca_cert_pem`: PEM-encoded CA certificate to trust (e.g. loaded from `config/ca.pem`).
+    /// - `ca_cert_pem`: PEM-encoded CA certificate or CA bundle to trust.
     /// - `verify_hostname`: When `false`, hostname verification is skipped but the certificate
     ///   chain is still validated against `ca_cert_pem` (mirrors the config-server client behaviour).
     pub fn with_options(
@@ -44,9 +44,17 @@ impl McpGatewayClient {
             .connect_timeout(std::time::Duration::from_millis(timeout_ms));
 
         if let Some(pem) = ca_cert_pem {
-            let cert = reqwest::Certificate::from_pem(pem)
-                .context("Invalid ca_cert_pem: failed to parse PEM-encoded CA certificate")?;
-            builder = builder.add_root_certificate(cert);
+            let certificates = light_client::parse_ca_cert_bundle(pem).context(
+                "Invalid ca_cert_pem: failed to parse PEM-encoded CA certificate bundle",
+            )?;
+            let certificate_count = certificates.len();
+            for certificate in certificates {
+                builder = builder.add_root_certificate(certificate);
+            }
+            tracing::info!(
+                ca_cert_count = certificate_count,
+                "loaded MCP gateway CA certificate bundle"
+            );
         }
 
         if !verify_hostname {
@@ -148,6 +156,8 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::Mutex;
 
+    const TEST_CA_PEM: &[u8] = include_bytes!("../../../apps/light-gateway/config/ca.pem");
+
     async fn spawn_test_server(response: String) -> (String, Arc<Mutex<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -170,6 +180,22 @@ mod tests {
             "{status_line}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\n\r\n{body}",
             body.len()
         )
+    }
+
+    #[test]
+    fn mcp_tls_accepts_ca_bundle_bytes() {
+        let mut bundle = Vec::from(TEST_CA_PEM);
+        bundle.extend_from_slice(TEST_CA_PEM);
+
+        let client = McpGatewayClient::with_tls_options(
+            "http://127.0.0.1",
+            Some(&bundle),
+            true,
+            false,
+            1000,
+        );
+
+        assert!(client.is_ok());
     }
 
     #[tokio::test]
