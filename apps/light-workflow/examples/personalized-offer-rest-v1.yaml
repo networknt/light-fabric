@@ -37,6 +37,7 @@ output:
           type: string
           enum:
             - APPROVED
+            - REJECTED
             - NO_CONSENT
             - NO_ELIGIBLE_OFFER
         customerId:
@@ -71,7 +72,7 @@ do:
   - checkConsent:
       switch:
         - noConsent:
-            when: "${ .preferences.consent == false }"
+            when: .preferences.consent == false
             then: noConsentResult
         - default:
             then: searchOffers
@@ -94,7 +95,7 @@ do:
   - evaluateEligibility:
       switch:
         - premiumOntario:
-            when: "${ .profile.segment == premium }"
+            when: .profile.segment == premium
             then: selectOffer
         - default:
             then: noEligibleOfferResult
@@ -111,6 +112,45 @@ do:
       export:
         as:
           selectedOffer: .output
+  - requestApproval:
+      ask:
+        prompt: Review the selected personalized offer decision.
+        mode: approval
+        assignment:
+          roleId: admin
+          categoryCode: approval
+          reasonCode: personalized-offer-rest
+        options:
+          - label: Approve
+            value: APPROVED
+            description: Record the selected offer decision.
+          - label: Reject
+            value: REJECTED
+            description: Stop without recording an offer decision.
+        required: true
+        timeout:
+          after: PT24H
+        onTimeout:
+          action: default
+          default: REJECTED
+      export:
+        as:
+          approval: .output
+      then: checkApproval
+  - checkApproval:
+      switch:
+        - rejected:
+            when: .approval.value == REJECTED
+            then: rejectedResult
+        - default:
+            then: recordDecision
+  - rejectedResult:
+      set:
+        status: REJECTED
+        customerId: "${ .customerId }"
+        selectedOfferId: "${ .selectedOffer.offerId }"
+        reason: Offer decision was rejected by the assigned approver.
+      end: true
   - recordDecision:
       call: http
       with:

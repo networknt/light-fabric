@@ -42,10 +42,10 @@ do:
   - chooseDecisionPath:
       switch:
         - autoApprove:
-            when: "${ .risk.riskScore <= 30 }"
+            when: .risk.riskScore <= 30
             then: approve
         - manualReview:
-            when: "${ .risk.riskScore < 80 }"
+            when: .risk.riskScore < 80
             then: reviewRequired
         - default:
             then: reject
