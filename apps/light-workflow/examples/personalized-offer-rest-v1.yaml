@@ -1,0 +1,137 @@
+document:
+  dsl: "1.0.3"
+  namespace: light-demo
+  name: personalized-offer-rest-v1
+  version: "1.0.0"
+  title: Personalized Offer via REST Workflow
+  summary: Calls the demo customer profile and offer decision APIs directly and returns a normalized offer decision.
+  tags:
+    demo: skill-workflow-orchestration
+    executionPath: rest
+input:
+  schema:
+    format: json
+    document:
+      type: object
+      required:
+        - customerId
+        - channel
+      properties:
+        customerId:
+          type: string
+          example: CUST-1001
+        channel:
+          type: string
+          default: portal
+          example: portal
+output:
+  schema:
+    format: json
+    document:
+      type: object
+      required:
+        - status
+        - customerId
+      properties:
+        status:
+          type: string
+          enum:
+            - APPROVED
+            - NO_CONSENT
+            - NO_ELIGIBLE_OFFER
+        customerId:
+          type: string
+        selectedOfferId:
+          type: string
+        decisionId:
+          type: string
+        reason:
+          type: string
+do:
+  - loadProfile:
+      call: http
+      with:
+        method: GET
+        endpoint:
+          uri: http://demo-customer-profile-api:8085/customers/${ .customerId }
+        output: content
+      export:
+        as:
+          profile: .output
+  - loadPreferences:
+      call: http
+      with:
+        method: GET
+        endpoint:
+          uri: http://demo-customer-profile-api:8085/customers/${ .customerId }/preferences?channel=${ .channel }
+        output: content
+      export:
+        as:
+          preferences: .output
+  - checkConsent:
+      switch:
+        - noConsent:
+            when: "${ .preferences.consent == false }"
+            then: noConsentResult
+        - default:
+            then: searchOffers
+  - noConsentResult:
+      set:
+        status: NO_CONSENT
+        customerId: "${ .customerId }"
+        reason: Customer has not consented to personalized offers.
+      end: true
+  - searchOffers:
+      call: http
+      with:
+        method: GET
+        endpoint:
+          uri: http://demo-offer-decision-api:8086/offers?segment=${ .profile.segment }&state=${ .profile.state }&category=travel
+        output: content
+      export:
+        as:
+          offers: .output
+  - evaluateEligibility:
+      switch:
+        - premiumOntario:
+            when: "${ .profile.segment == premium }"
+            then: selectOffer
+        - default:
+            then: noEligibleOfferResult
+  - noEligibleOfferResult:
+      set:
+        status: NO_ELIGIBLE_OFFER
+        customerId: "${ .customerId }"
+        reason: No active offer matches the customer profile and preferences.
+      end: true
+  - selectOffer:
+      set:
+        offerId: OFFER-TRAVEL-01
+        reason: Selected highest-priority travel offer for the premium Ontario demo segment.
+      export:
+        as:
+          selectedOffer: .output
+  - recordDecision:
+      call: http
+      with:
+        method: POST
+        endpoint:
+          uri: http://demo-offer-decision-api:8086/offer-decisions
+        body:
+          customerId: "${ .customerId }"
+          offerId: "${ .selectedOffer.offerId }"
+          channel: "${ .channel }"
+          source: workflow-rest
+          reason: "${ .selectedOffer.reason }"
+          idempotencyKey: "personalized-offer-rest-v1:${ .customerId }:${ .selectedOffer.offerId }"
+        output: content
+      export:
+        as:
+          decision: .output
+  - finish:
+      set:
+        status: APPROVED
+        customerId: "${ .customerId }"
+        selectedOfferId: "${ .decision.offerId }"
+        decisionId: "${ .decision.decisionId }"
+      end: true
