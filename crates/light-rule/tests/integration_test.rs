@@ -45,6 +45,8 @@ fn build_test_config() -> (RuleConfig, Arc<RuleEngine>) {
         version: None,
         author: None,
         updated_at: None,
+        condition_language: None,
+        expression: None,
         conditions: Some(vec![RuleCondition {
             condition_id: None,
             condition_desc: None,
@@ -71,6 +73,8 @@ fn build_test_config() -> (RuleConfig, Arc<RuleEngine>) {
         version: None,
         author: None,
         updated_at: None,
+        condition_language: None,
+        expression: None,
         conditions: Some(vec![RuleCondition {
             condition_id: None,
             condition_desc: None,
@@ -186,6 +190,8 @@ async fn test_typed_expected_values_and_expanded_operators() {
         version: Some("1.1.0".into()),
         author: Some("test".into()),
         updated_at: None,
+        condition_language: None,
+        expression: None,
         conditions: Some(vec![
             RuleCondition {
                 condition_id: Some("age".into()),
@@ -310,6 +316,8 @@ async fn test_join_code_left_to_right_or() {
         version: None,
         author: None,
         updated_at: None,
+        condition_language: None,
+        expression: None,
         conditions: Some(vec![
             RuleCondition {
                 condition_id: Some("first".into()),
@@ -332,5 +340,46 @@ async fn test_join_code_left_to_right_or() {
     };
 
     let mut context = json!({ "role": "operator" });
+    assert!(engine.execute_rule(&rule, &mut context).await.unwrap());
+}
+
+#[tokio::test]
+async fn test_cel_condition_language() {
+    let registry = ActionRegistry::new();
+    let engine = RuleEngine::new(Arc::new(registry));
+
+    let rule = Rule {
+        rule_id: "rule_cel_01".into(),
+        rule_name: "CEL expression".into(),
+        rule_type: "access-control".into(),
+        common: "Y".into(),
+        host_id: None,
+        rule_desc: Some("Check CEL expression".into()),
+        version: None,
+        author: None,
+        updated_at: None,
+        condition_language: Some("cel".into()),
+        expression: Some(
+            "context.user.age >= 18 && contains_ignore_case(context.user.name, 'hu') && 'admin' in context.user.roles"
+                .into(),
+        ),
+        conditions: Some(vec![RuleCondition {
+            condition_id: Some("ignored-native-condition".into()),
+            condition_desc: None,
+            operator: Some("==".into()),
+            operand: Some("user.age".into()),
+            expected: Some(json!(0)),
+            join_code: None,
+        }]),
+        actions: None,
+    };
+
+    let mut context = json!({
+        "user": {
+            "age": 21,
+            "name": "Steve Hu",
+            "roles": ["admin", "user"]
+        }
+    });
     assert!(engine.execute_rule(&rule, &mut context).await.unwrap());
 }

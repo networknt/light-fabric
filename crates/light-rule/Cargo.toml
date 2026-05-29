@@ -14,3 +14,4 @@ evalexpr = "11.0"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 regex = "1"
+cel-interpreter = { version = "0.10.0", features = ["json"] }
