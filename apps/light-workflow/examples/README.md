@@ -120,6 +120,121 @@ Status codes:
 | `W` | Task is waiting for human input. |
 | `F` | Failed task or process. |
 
+## Insurance Claim Demo Runbook
+
+Use this section for the full agentic insurance-claim demo. It packages the
+REST, MCP, and headless workflow variants with repeatable command and SQL
+helpers.
+
+### Setup Checklist
+
+1. Start the local portal stack with Postgres, `workflow-command`,
+   `workflow-query`, and `light-gateway`.
+2. Start `light-workflow` with the same `DATABASE_URL` as the portal stack.
+3. Start `demo-customer-profile-api` and `demo-offer-decision-api`.
+4. Upload or refresh the phase 2 OpenAPI specs for both demo APIs.
+5. Import `agent-catalog-events.json` through `event-importer`.
+6. Verify the roles `claimant`, `claims-adjuster`, `siu-investigator`, and
+   `customer-service` exist in the host used for the demo.
+7. Create workflow definitions for `insurance-claim-rest-v1.yaml`,
+   `insurance-claim-mcp-v1.yaml`, and `insurance-claim-headless-v1.yaml`.
+8. Confirm `tools/list` exposes the seven insurance tools before running the
+   MCP workflow.
+
+Use this query to capture the workflow ids needed by curl or Postman:
+
+```bash
+psql "postgresql://postgres:secret@localhost:5432/configserver" \
+  -c "select host_id, wf_def_id, name from wf_definition_t where active and name in ('insurance-claim-rest-v1', 'insurance-claim-mcp-v1', 'insurance-claim-headless-v1') order by name;"
+```
+
+Use this JSON-RPC call to verify the MCP tool surface:
+
+```bash
+curl -k -sS -X POST "https://localhost:8443/mcp" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <access-token>" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+### Curl And Postman
+
+The curl helper starts each workflow and completes the two common human-task
+pauses:
+
+```bash
+cd /home/steve/workspace/light-fabric/apps/light-workflow/examples
+
+ACCESS_TOKEN=<token> \
+HOST_ID=<host-id> \
+HEADLESS_WF_DEF_ID=<headless-wf-def-id> \
+./insurance-claim-demo-curl.sh start-headless
+
+ACCESS_TOKEN=<token> \
+HOST_ID=<host-id> \
+REST_WF_DEF_ID=<rest-wf-def-id> \
+./insurance-claim-demo-curl.sh start-rest
+```
+
+After the REST or MCP workflow creates a human task, use the SQL helper below to
+copy `task_id` and `task_asst_id`, then run:
+
+```bash
+ACCESS_TOKEN=<token> \
+HOST_ID=<host-id> \
+TASK_ASST_ID=<task-asst-id> \
+./insurance-claim-demo-curl.sh claim-task
+
+ACCESS_TOKEN=<token> \
+HOST_ID=<host-id> \
+TASK_ID=<task-id> \
+TASK_ASST_ID=<task-asst-id> \
+./insurance-claim-demo-curl.sh complete-adjuster-approved
+
+ACCESS_TOKEN=<token> \
+HOST_ID=<host-id> \
+TASK_ID=<next-task-id> \
+TASK_ASST_ID=<next-task-asst-id> \
+./insurance-claim-demo-curl.sh complete-claimant-accepted
+```
+
+Import `insurance-claim-demo.postman_collection.json` into Postman for the same
+requests. Fill collection variables for `portalCommandUrl`, `accessToken`,
+`hostId`, and the three workflow definition ids.
+
+### SQL Verification And Reset
+
+Run the verification helper after each start or task completion:
+
+```bash
+psql "postgresql://postgres:secret@localhost:5432/configserver" \
+  -v host_id=<host-id> \
+  -f /home/steve/workspace/light-fabric/apps/light-workflow/examples/insurance-claim-demo-queries.sql
+```
+
+Reset only the runtime rows for the insurance claim demo workflows:
+
+```bash
+psql "postgresql://postgres:secret@localhost:5432/configserver" \
+  -v host_id=<host-id> \
+  -f /home/steve/workspace/light-fabric/apps/light-workflow/examples/insurance-claim-demo-reset.sql
+```
+
+The reset keeps workflow definitions, event-store rows, imported agent catalog
+data, and uploaded API metadata intact.
+
+### Troubleshooting
+
+| Symptom | Check |
+| ------- | ----- |
+| `startWorkflow` succeeds but fields resolve as `${ .customerId }` | The command sent `input` as a string. Send it as a JSON object. |
+| `loadCustomerProfile` fails | Verify `demo-customer-profile-api` is reachable from `light-workflow`; Docker runs should use the Compose service name. |
+| `triageClaim` or `recommendSettlement` fails | Verify `demo-offer-decision-api` is running and the phase 2 endpoints are present. |
+| Agent task fails before a human task | Confirm `agent-catalog-events.json` was imported for the same `hostId`; inspect `_agentAudit` with `insurance-claim-demo-queries.sql`. |
+| MCP task fails with tool not found | Call `tools/list` on `light-gateway` and confirm the seven insurance tool names match the workflow YAML exactly. |
+| Human task is not visible | Confirm the role assignment row in `task_asst_t`, the user's role membership, and that the task status is `W` or assignment status is `ASSIGNED`. |
+| Headless workflow creates an assignment | You started the REST or MCP definition instead of `insurance-claim-headless-v1`. |
+
 ## Workflow Inputs
 
 ### `simple-set-assert.yaml`

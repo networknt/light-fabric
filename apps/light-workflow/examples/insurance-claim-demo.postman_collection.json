@@ -1,0 +1,173 @@
+{
+  "info": {
+    "name": "Light Workflow Insurance Claim Demo",
+    "description": "Phase 6 demo collection for starting REST, MCP, and headless insurance claim workflows and completing human tasks.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "portalCommandUrl",
+      "value": "https://localhost:8443/portal/command"
+    },
+    {
+      "key": "accessToken",
+      "value": ""
+    },
+    {
+      "key": "host",
+      "value": "lightapi.net"
+    },
+    {
+      "key": "hostId",
+      "value": ""
+    },
+    {
+      "key": "restWfDefId",
+      "value": ""
+    },
+    {
+      "key": "mcpWfDefId",
+      "value": ""
+    },
+    {
+      "key": "headlessWfDefId",
+      "value": ""
+    },
+    {
+      "key": "taskId",
+      "value": ""
+    },
+    {
+      "key": "taskAsstId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Start REST Insurance Claim",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{accessToken}}"
+          }
+        ],
+        "url": "{{portalCommandUrl}}",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"host\": \"{{host}}\",\n  \"service\": \"workflow\",\n  \"action\": \"startWorkflow\",\n  \"version\": \"0.1.0\",\n  \"data\": {\n    \"hostId\": \"{{hostId}}\",\n    \"wfDefId\": \"{{restWfDefId}}\",\n    \"input\": {\n      \"customerId\": \"CUST-1001\",\n      \"vehicleId\": \"VEH-1001\",\n      \"incidentDate\": \"2026-05-30\",\n      \"accidentDescription\": \"Rear-ended at an intersection. No injuries reported.\",\n      \"location\": \"Ottawa, ON\",\n      \"injuryReported\": false,\n      \"vehicleDrivable\": false,\n      \"policeReportFiled\": true,\n      \"photosAvailable\": true,\n      \"channel\": \"portal\"\n    }\n  }\n}"
+        }
+      }
+    },
+    {
+      "name": "Start MCP Insurance Claim",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{accessToken}}"
+          }
+        ],
+        "url": "{{portalCommandUrl}}",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"host\": \"{{host}}\",\n  \"service\": \"workflow\",\n  \"action\": \"startWorkflow\",\n  \"version\": \"0.1.0\",\n  \"data\": {\n    \"hostId\": \"{{hostId}}\",\n    \"wfDefId\": \"{{mcpWfDefId}}\",\n    \"input\": {\n      \"customerId\": \"CUST-1001\",\n      \"vehicleId\": \"VEH-1001\",\n      \"incidentDate\": \"2026-05-30\",\n      \"accidentDescription\": \"Rear-ended at an intersection. No injuries reported.\",\n      \"location\": \"Ottawa, ON\",\n      \"injuryReported\": false,\n      \"vehicleDrivable\": false,\n      \"policeReportFiled\": true,\n      \"photosAvailable\": true,\n      \"channel\": \"portal\"\n    }\n  }\n}"
+        }
+      }
+    },
+    {
+      "name": "Start Headless Insurance Claim",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{accessToken}}"
+          }
+        ],
+        "url": "{{portalCommandUrl}}",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"host\": \"{{host}}\",\n  \"service\": \"workflow\",\n  \"action\": \"startWorkflow\",\n  \"version\": \"0.1.0\",\n  \"data\": {\n    \"hostId\": \"{{hostId}}\",\n    \"wfDefId\": \"{{headlessWfDefId}}\",\n    \"input\": {\n      \"customerId\": \"CUST-1001\",\n      \"vehicleId\": \"VEH-1001\",\n      \"incidentDate\": \"2026-05-30\",\n      \"accidentDescription\": \"Rear-ended at an intersection. No injuries reported.\",\n      \"location\": \"Ottawa, ON\",\n      \"injuryReported\": false,\n      \"vehicleDrivable\": false,\n      \"policeReportFiled\": true,\n      \"photosAvailable\": true,\n      \"channel\": \"portal\",\n      \"simulateMissingInfo\": false,\n      \"missingFields\": [],\n      \"approvalMode\": \"auto-approve\",\n      \"siuMode\": \"clear\",\n      \"customerResponseMode\": \"accept-repair\"\n    }\n  }\n}"
+        }
+      }
+    },
+    {
+      "name": "Claim Human Task",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{accessToken}}"
+          }
+        ],
+        "url": "{{portalCommandUrl}}",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"host\": \"{{host}}\",\n  \"service\": \"workflow\",\n  \"action\": \"claimHumanTask\",\n  \"version\": \"0.1.0\",\n  \"data\": {\n    \"hostId\": \"{{hostId}}\",\n    \"taskAsstId\": \"{{taskAsstId}}\",\n    \"claimMinutes\": 30\n  }\n}"
+        }
+      }
+    },
+    {
+      "name": "Complete Adjuster Task APPROVED",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{accessToken}}"
+          }
+        ],
+        "url": "{{portalCommandUrl}}",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"host\": \"{{host}}\",\n  \"service\": \"workflow\",\n  \"action\": \"completeTask\",\n  \"version\": \"0.1.0\",\n  \"data\": {\n    \"hostId\": \"{{hostId}}\",\n    \"taskId\": \"{{taskId}}\",\n    \"taskAsstId\": \"{{taskAsstId}}\",\n    \"statusCode\": \"C\",\n    \"response\": {\n      \"value\": \"APPROVED\",\n      \"comment\": \"Phase 6 demo adjuster approval.\"\n    }\n  }\n}"
+        }
+      }
+    },
+    {
+      "name": "Complete Claimant Task ACCEPT_REPAIR",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{accessToken}}"
+          }
+        ],
+        "url": "{{portalCommandUrl}}",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"host\": \"{{host}}\",\n  \"service\": \"workflow\",\n  \"action\": \"completeTask\",\n  \"version\": \"0.1.0\",\n  \"data\": {\n    \"hostId\": \"{{hostId}}\",\n    \"taskId\": \"{{taskId}}\",\n    \"taskAsstId\": \"{{taskAsstId}}\",\n    \"statusCode\": \"C\",\n    \"response\": {\n      \"value\": \"ACCEPT_REPAIR\",\n      \"comment\": \"Phase 6 demo claimant accepted repair.\"\n    }\n  }\n}"
+        }
+      }
+    }
+  ]
+}
