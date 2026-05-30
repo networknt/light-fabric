@@ -183,8 +183,8 @@
       "apiKeyRef": null,
       "temperature": 0.2,
       "maxTokens": 1000,
-      "aggregateVersion": 0,
-      "newAggregateVersion": 1
+      "aggregateVersion": 1,
+      "newAggregateVersion": 2
     },
     "host": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
     "time": "2026-05-30T00:00:06Z",
@@ -196,7 +196,7 @@
     "specversion": "1.0",
     "aggregatetype": "AgentDefinition",
     "datacontenttype": "application/json",
-    "aggregateversion": 1
+    "aggregateversion": 2
   },
   {
     "id": "019e7a3a-2f3b-7ca9-8783-610aa2ad5177",
@@ -208,8 +208,8 @@
       "apiKeyRef": null,
       "temperature": 0.2,
       "maxTokens": 1000,
-      "aggregateVersion": 0,
-      "newAggregateVersion": 1
+      "aggregateVersion": 1,
+      "newAggregateVersion": 2
     },
     "host": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
     "time": "2026-05-30T00:00:07Z",
@@ -221,7 +221,7 @@
     "specversion": "1.0",
     "aggregatetype": "AgentDefinition",
     "datacontenttype": "application/json",
-    "aggregateversion": 1
+    "aggregateversion": 2
   },
   {
     "id": "019e7a3a-2f40-7c68-8e8b-e472a3eca82f",
@@ -233,8 +233,8 @@
       "apiKeyRef": null,
       "temperature": 0.2,
       "maxTokens": 1000,
-      "aggregateVersion": 0,
-      "newAggregateVersion": 1
+      "aggregateVersion": 1,
+      "newAggregateVersion": 2
     },
     "host": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
     "time": "2026-05-30T00:00:08Z",
@@ -246,7 +246,7 @@
     "specversion": "1.0",
     "aggregatetype": "AgentDefinition",
     "datacontenttype": "application/json",
-    "aggregateversion": 1
+    "aggregateversion": 2
   },
   {
     "id": "019e7a3a-2f45-79c4-bc4a-66d81d006765",
