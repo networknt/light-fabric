@@ -9,6 +9,10 @@ portal workflow definition table and started from the portal UI or command API.
 - The workflow YAML has been created as a workflow definition in the portal.
 - For `personalized-offer-rest-v1.yaml`, these Compose services are running:
   `demo-customer-profile-api` and `demo-offer-decision-api`.
+- For `insurance-claim-rest-v1.yaml`, the same two demo API services are
+  running, the agent catalog events have been imported, and the phase 2 demo
+  API OpenAPI specs have been uploaded so the portal/tool catalog contains the
+  insurance endpoints.
 - For `personalized-offer-mcp-v1.yaml`, `light-gateway` is running and the MCP
   tools are visible in the control plane:
   `getCustomerProfile`, `getCustomerPreferences`, `searchOffers`, and
@@ -236,6 +240,49 @@ Approval behavior for `CUST-1001`:
 | -------------- | --------------- |
 | `APPROVED` | Records the offer decision through `demo-offer-decision-api` and completes with `status: APPROVED`, `selectedOfferId`, and `decisionId`. |
 | `REJECTED` | Skips the decision API and completes with `status: REJECTED`. |
+
+### `insurance-claim-rest-v1.yaml`
+
+Runs the phase 3 insurance claim demo over direct REST calls. It loads customer,
+policy, vehicle, and prior-claim data, runs the three bounded agents, creates
+durable human tasks, and posts the final settlement recommendation.
+
+Input:
+
+```json
+{
+  "customerId": "CUST-1001",
+  "vehicleId": "VEH-1001",
+  "incidentDate": "2026-05-30",
+  "accidentDescription": "Rear-ended at an intersection. No injuries reported.",
+  "location": "Ottawa, ON",
+  "injuryReported": false,
+  "vehicleDrivable": false,
+  "policeReportFiled": true,
+  "photosAvailable": true,
+  "channel": "portal"
+}
+```
+
+Seeded customer behavior:
+
+| Input | Expected result |
+| ----- | --------------- |
+| `CUST-1001` with `VEH-1001` | Loads an active policy and covered vehicle, runs intake and coverage agents, posts claim triage, and stops at `requestAdjusterApproval`. It creates a `claims-adjuster` assignment in category `approval` with reason `claim-review`. |
+| Intake agent returns `requiresHumanInput: true` | Stops at `askMissingInfo`. It creates a `customer-service` assignment in category `claim-info` with reason `missing-fnol-details`. |
+| Adjuster completes with `APPROVED` | Runs the settlement agent, posts the settlement recommendation, and stops at `requestCustomerResponse`. It creates a `claimant` assignment in category `claim-response` with reason `settlement-response`. |
+| Claimant completes with `ACCEPT_REPAIR` | Completes with `status: CLAIM_APPROVED`, `claimId`, `customerId`, `decisionId`, and `customerSummary`. |
+| `CUST-2002` with `VEH-2002` | Loads an expired policy and uncovered vehicle. The coverage and triage path can create a `claims-adjuster` or `siu-investigator` assignment depending on the review output. |
+| `CUST-3003` with `VEH-3003` | Loads a customer without communication consent. The claim can still be reviewed, but the workflow keeps the explicit human approval path for settlement. |
+| Unknown customer or vehicle | The failing API call returns 404, the current task fails, and the process status becomes `F`. |
+
+Human task completion values:
+
+| Task | Values |
+| ---- | ------ |
+| `requestAdjusterApproval` | `APPROVED`, `REJECTED`, `REQUEST_MORE_INFO`, `REFER_TO_SIU` |
+| `requestSiuReview` | `CLEAR`, `REFER_BACK_TO_ADJUSTER`, `HOLD_FOR_INVESTIGATION` |
+| `requestCustomerResponse` | `ACCEPT_REPAIR`, `REQUEST_CALLBACK`, `UPLOAD_MORE_DOCUMENTS`, `DISPUTE_RECOMMENDATION` |
 
 ### `personalized-offer-mcp-v1.yaml`
 
