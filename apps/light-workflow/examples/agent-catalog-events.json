@@ -1,6 +1,6 @@
 [
   {
-    "id": "10000000-0000-4000-8000-000000000001",
+    "id": "019e7a3a-2f1c-72d1-abce-ca1f409d665b",
     "data": {
       "lob": "",
       "apiId": "CLAIMINTAKE",
@@ -31,7 +31,7 @@
     "aggregateversion": 1
   },
   {
-    "id": "10000000-0000-4000-8000-000000000002",
+    "id": "019e7a3a-2f21-7e4f-94fa-3cb7305915ee",
     "data": {
       "lob": "",
       "apiId": "COVLIABILITY",
@@ -62,7 +62,7 @@
     "aggregateversion": 1
   },
   {
-    "id": "10000000-0000-4000-8000-000000000003",
+    "id": "019e7a3a-2f25-79cc-abda-80b894c232db",
     "data": {
       "lob": "",
       "apiId": "SETTLEMENT",
@@ -93,7 +93,7 @@
     "aggregateversion": 1
   },
   {
-    "id": "10000000-0000-4000-8000-000000000004",
+    "id": "019e7a3a-2f2a-7e6c-9a3d-bbaa348a308f",
     "data": {
       "apiId": "CLAIMINTAKE",
       "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
@@ -102,7 +102,7 @@
       "envTag": "dev",
       "serviceId": "claim-intake-agent",
       "apiVersion": "1.0.0",
-      "apiVersionId": "11111111-1111-4111-8111-111111111111",
+      "apiVersionId": "019e7a3a-2f7e-7e8a-ad17-c5b28c09de3f",
       "apiVersionDesc": "Insurance claim intake demo agent version.",
       "aggregateVersion": 0,
       "newAggregateVersion": 1
@@ -113,14 +113,14 @@
     "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
     "nonce": "0",
     "source": "https://github.com/lightapi/light-portal",
-    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|11111111-1111-4111-8111-111111111111",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019e7a3a-2f7e-7e8a-ad17-c5b28c09de3f",
     "specversion": "1.0",
     "aggregatetype": "ApiVersion",
     "datacontenttype": "application/json",
     "aggregateversion": 1
   },
   {
-    "id": "10000000-0000-4000-8000-000000000005",
+    "id": "019e7a3a-2f2e-7a53-8d56-06d9b4f4166f",
     "data": {
       "apiId": "COVLIABILITY",
       "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
@@ -129,7 +129,7 @@
       "envTag": "dev",
       "serviceId": "coverage-liability-agent",
       "apiVersion": "1.0.0",
-      "apiVersionId": "22222222-2222-4222-8222-222222222222",
+      "apiVersionId": "019e7a3a-2f82-7c8b-a113-9dbfc4a0b9ea",
       "apiVersionDesc": "Insurance coverage and liability demo agent version.",
       "aggregateVersion": 0,
       "newAggregateVersion": 1
@@ -140,14 +140,14 @@
     "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
     "nonce": "0",
     "source": "https://github.com/lightapi/light-portal",
-    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|22222222-2222-4222-8222-222222222222",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019e7a3a-2f82-7c8b-a113-9dbfc4a0b9ea",
     "specversion": "1.0",
     "aggregatetype": "ApiVersion",
     "datacontenttype": "application/json",
     "aggregateversion": 1
   },
   {
-    "id": "10000000-0000-4000-8000-000000000006",
+    "id": "019e7a3a-2f32-7c20-87d4-cf1365fd7813",
     "data": {
       "apiId": "SETTLEMENT",
       "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
@@ -156,7 +156,7 @@
       "envTag": "dev",
       "serviceId": "settlement-agent",
       "apiVersion": "1.0.0",
-      "apiVersionId": "33333333-3333-4333-8333-333333333333",
+      "apiVersionId": "019e7a3a-2f87-73cd-ac5f-394b9fd8c089",
       "apiVersionDesc": "Insurance settlement demo agent version.",
       "aggregateVersion": 0,
       "newAggregateVersion": 1
@@ -167,17 +167,17 @@
     "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
     "nonce": "0",
     "source": "https://github.com/lightapi/light-portal",
-    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|33333333-3333-4333-8333-333333333333",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019e7a3a-2f87-73cd-ac5f-394b9fd8c089",
     "specversion": "1.0",
     "aggregatetype": "ApiVersion",
     "datacontenttype": "application/json",
     "aggregateversion": 1
   },
   {
-    "id": "10000000-0000-4000-8000-000000000007",
+    "id": "019e7a3a-2f37-7be5-8df5-14424c54258c",
     "data": {
       "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
-      "agentDefId": "11111111-1111-4111-8111-111111111111",
+      "agentDefId": "019e7a3a-2f7e-7e8a-ad17-c5b28c09de3f",
       "modelProvider": "mock",
       "modelName": "mock-agent-v1",
       "apiKeyRef": null,
@@ -192,17 +192,17 @@
     "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
     "nonce": "0",
     "source": "https://github.com/lightapi/light-portal",
-    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|11111111-1111-4111-8111-111111111111",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019e7a3a-2f7e-7e8a-ad17-c5b28c09de3f",
     "specversion": "1.0",
     "aggregatetype": "AgentDefinition",
     "datacontenttype": "application/json",
     "aggregateversion": 1
   },
   {
-    "id": "10000000-0000-4000-8000-000000000008",
+    "id": "019e7a3a-2f3b-7ca9-8783-610aa2ad5177",
     "data": {
       "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
-      "agentDefId": "22222222-2222-4222-8222-222222222222",
+      "agentDefId": "019e7a3a-2f82-7c8b-a113-9dbfc4a0b9ea",
       "modelProvider": "mock",
       "modelName": "mock-agent-v1",
       "apiKeyRef": null,
@@ -217,17 +217,17 @@
     "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
     "nonce": "0",
     "source": "https://github.com/lightapi/light-portal",
-    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|22222222-2222-4222-8222-222222222222",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019e7a3a-2f82-7c8b-a113-9dbfc4a0b9ea",
     "specversion": "1.0",
     "aggregatetype": "AgentDefinition",
     "datacontenttype": "application/json",
     "aggregateversion": 1
   },
   {
-    "id": "10000000-0000-4000-8000-000000000009",
+    "id": "019e7a3a-2f40-7c68-8e8b-e472a3eca82f",
     "data": {
       "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
-      "agentDefId": "33333333-3333-4333-8333-333333333333",
+      "agentDefId": "019e7a3a-2f87-73cd-ac5f-394b9fd8c089",
       "modelProvider": "mock",
       "modelName": "mock-agent-v1",
       "apiKeyRef": null,
@@ -242,17 +242,17 @@
     "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
     "nonce": "0",
     "source": "https://github.com/lightapi/light-portal",
-    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|33333333-3333-4333-8333-333333333333",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019e7a3a-2f87-73cd-ac5f-394b9fd8c089",
     "specversion": "1.0",
     "aggregatetype": "AgentDefinition",
     "datacontenttype": "application/json",
     "aggregateversion": 1
   },
   {
-    "id": "10000000-0000-4000-8000-000000000010",
+    "id": "019e7a3a-2f45-79c4-bc4a-66d81d006765",
     "data": {
       "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
-      "skillId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+      "skillId": "019e7a3a-2f8b-7ddb-9e5c-644233333540",
       "name": "claim-intake",
       "description": "Normalize FNOL data and identify missing claim facts.",
       "contentMarkdown": "Summarize first notice of loss data. Identify missing information needed before coverage review. Return only the requested JSON object.",
@@ -266,17 +266,17 @@
     "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
     "nonce": "0",
     "source": "https://github.com/lightapi/light-portal",
-    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019e7a3a-2f8b-7ddb-9e5c-644233333540",
     "specversion": "1.0",
     "aggregatetype": "Skill",
     "datacontenttype": "application/json",
     "aggregateversion": 1
   },
   {
-    "id": "10000000-0000-4000-8000-000000000011",
+    "id": "019e7a3a-2f49-7da4-9176-7f6aa9a6a25d",
     "data": {
       "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
-      "skillId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+      "skillId": "019e7a3a-2f8f-78e3-859a-466b7baec58a",
       "name": "coverage-review",
       "description": "Review policy, liability, and risk facts.",
       "contentMarkdown": "Inspect claim, customer, policy, vehicle, and prior claim context. Produce a bounded coverage recommendation with human review flags.",
@@ -290,17 +290,17 @@
     "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
     "nonce": "0",
     "source": "https://github.com/lightapi/light-portal",
-    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019e7a3a-2f8f-78e3-859a-466b7baec58a",
     "specversion": "1.0",
     "aggregatetype": "Skill",
     "datacontenttype": "application/json",
     "aggregateversion": 1
   },
   {
-    "id": "10000000-0000-4000-8000-000000000012",
+    "id": "019e7a3a-2f4d-7f1b-8c54-686656d1f9d6",
     "data": {
       "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
-      "skillId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+      "skillId": "019e7a3a-2f93-7c30-b90c-9cdcc8c2ad62",
       "name": "settlement-recommendation",
       "description": "Prepare settlement recommendation and customer next action.",
       "contentMarkdown": "Prepare a concise settlement recommendation, explanation, and next customer action from the approved claim context.",
@@ -314,17 +314,17 @@
     "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
     "nonce": "0",
     "source": "https://github.com/lightapi/light-portal",
-    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019e7a3a-2f93-7c30-b90c-9cdcc8c2ad62",
     "specversion": "1.0",
     "aggregatetype": "Skill",
     "datacontenttype": "application/json",
     "aggregateversion": 1
   },
   {
-    "id": "10000000-0000-4000-8000-000000000013",
+    "id": "019e7a3a-2f52-7190-8425-3577a3d4a5bc",
     "data": {
       "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
-      "toolId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1",
+      "toolId": "019e7a3a-2f98-7a42-8563-2efb82288e06",
       "name": "getCustomerProfile",
       "description": "Load the customer profile for an insurance claimant.",
       "implementationType": "workflow",
@@ -342,17 +342,17 @@
     "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
     "nonce": "0",
     "source": "https://github.com/lightapi/light-portal",
-    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019e7a3a-2f98-7a42-8563-2efb82288e06",
     "specversion": "1.0",
     "aggregatetype": "Tool",
     "datacontenttype": "application/json",
     "aggregateversion": 1
   },
   {
-    "id": "10000000-0000-4000-8000-000000000014",
+    "id": "019e7a3a-2f57-7c90-a996-a84d6b95c3b9",
     "data": {
       "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
-      "toolId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
+      "toolId": "019e7a3a-2f9c-7db6-b52b-1a5bd175cf7b",
       "name": "evaluateCoverage",
       "description": "Evaluate coverage eligibility for the active claim.",
       "implementationType": "workflow",
@@ -370,17 +370,17 @@
     "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
     "nonce": "0",
     "source": "https://github.com/lightapi/light-portal",
-    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019e7a3a-2f9c-7db6-b52b-1a5bd175cf7b",
     "specversion": "1.0",
     "aggregatetype": "Tool",
     "datacontenttype": "application/json",
     "aggregateversion": 1
   },
   {
-    "id": "10000000-0000-4000-8000-000000000015",
+    "id": "019e7a3a-2f5b-744c-ae28-d50e97179b85",
     "data": {
       "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
-      "toolId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3",
+      "toolId": "019e7a3a-2fa1-7e59-9712-c7d353989a03",
       "name": "prepareSettlement",
       "description": "Prepare settlement options for an approved insurance claim.",
       "implementationType": "workflow",
@@ -398,18 +398,18 @@
     "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
     "nonce": "0",
     "source": "https://github.com/lightapi/light-portal",
-    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019e7a3a-2fa1-7e59-9712-c7d353989a03",
     "specversion": "1.0",
     "aggregatetype": "Tool",
     "datacontenttype": "application/json",
     "aggregateversion": 1
   },
   {
-    "id": "10000000-0000-4000-8000-000000000016",
+    "id": "019e7a3a-2f60-7249-a926-4516a15c8390",
     "data": {
       "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
-      "agentDefId": "11111111-1111-4111-8111-111111111111",
-      "skillId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+      "agentDefId": "019e7a3a-2f7e-7e8a-ad17-c5b28c09de3f",
+      "skillId": "019e7a3a-2f8b-7ddb-9e5c-644233333540",
       "config": "{}",
       "priority": 100,
       "sequenceId": 1,
@@ -422,18 +422,18 @@
     "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
     "nonce": "0",
     "source": "https://github.com/lightapi/light-portal",
-    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|11111111-1111-4111-8111-111111111111|aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019e7a3a-2f7e-7e8a-ad17-c5b28c09de3f|019e7a3a-2f8b-7ddb-9e5c-644233333540",
     "specversion": "1.0",
     "aggregatetype": "AgentSkill",
     "datacontenttype": "application/json",
     "aggregateversion": 1
   },
   {
-    "id": "10000000-0000-4000-8000-000000000017",
+    "id": "019e7a3a-2f64-7221-a22f-26c3c3ca2ed7",
     "data": {
       "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
-      "agentDefId": "22222222-2222-4222-8222-222222222222",
-      "skillId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+      "agentDefId": "019e7a3a-2f82-7c8b-a113-9dbfc4a0b9ea",
+      "skillId": "019e7a3a-2f8f-78e3-859a-466b7baec58a",
       "config": "{}",
       "priority": 100,
       "sequenceId": 1,
@@ -446,18 +446,18 @@
     "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
     "nonce": "0",
     "source": "https://github.com/lightapi/light-portal",
-    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|22222222-2222-4222-8222-222222222222|aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019e7a3a-2f82-7c8b-a113-9dbfc4a0b9ea|019e7a3a-2f8f-78e3-859a-466b7baec58a",
     "specversion": "1.0",
     "aggregatetype": "AgentSkill",
     "datacontenttype": "application/json",
     "aggregateversion": 1
   },
   {
-    "id": "10000000-0000-4000-8000-000000000018",
+    "id": "019e7a3a-2f69-772f-a915-8299365bb7af",
     "data": {
       "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
-      "agentDefId": "33333333-3333-4333-8333-333333333333",
-      "skillId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+      "agentDefId": "019e7a3a-2f87-73cd-ac5f-394b9fd8c089",
+      "skillId": "019e7a3a-2f93-7c30-b90c-9cdcc8c2ad62",
       "config": "{}",
       "priority": 100,
       "sequenceId": 1,
@@ -470,18 +470,18 @@
     "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
     "nonce": "0",
     "source": "https://github.com/lightapi/light-portal",
-    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|33333333-3333-4333-8333-333333333333|aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019e7a3a-2f87-73cd-ac5f-394b9fd8c089|019e7a3a-2f93-7c30-b90c-9cdcc8c2ad62",
     "specversion": "1.0",
     "aggregatetype": "AgentSkill",
     "datacontenttype": "application/json",
     "aggregateversion": 1
   },
   {
-    "id": "10000000-0000-4000-8000-000000000019",
+    "id": "019e7a3a-2f6d-7177-8424-9aa0e65c82c8",
     "data": {
       "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
-      "skillId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
-      "toolId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1",
+      "skillId": "019e7a3a-2f8b-7ddb-9e5c-644233333540",
+      "toolId": "019e7a3a-2f98-7a42-8563-2efb82288e06",
       "config": "{}",
       "accessLevel": "read",
       "aggregateVersion": 0,
@@ -493,18 +493,18 @@
     "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
     "nonce": "0",
     "source": "https://github.com/lightapi/light-portal",
-    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1|bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019e7a3a-2f8b-7ddb-9e5c-644233333540|019e7a3a-2f98-7a42-8563-2efb82288e06",
     "specversion": "1.0",
     "aggregatetype": "SkillTool",
     "datacontenttype": "application/json",
     "aggregateversion": 1
   },
   {
-    "id": "10000000-0000-4000-8000-000000000020",
+    "id": "019e7a3a-2f71-7300-929d-97b973753900",
     "data": {
       "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
-      "skillId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
-      "toolId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1",
+      "skillId": "019e7a3a-2f8f-78e3-859a-466b7baec58a",
+      "toolId": "019e7a3a-2f98-7a42-8563-2efb82288e06",
       "config": "{}",
       "accessLevel": "read",
       "aggregateVersion": 0,
@@ -516,18 +516,18 @@
     "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
     "nonce": "0",
     "source": "https://github.com/lightapi/light-portal",
-    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2|bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019e7a3a-2f8f-78e3-859a-466b7baec58a|019e7a3a-2f98-7a42-8563-2efb82288e06",
     "specversion": "1.0",
     "aggregatetype": "SkillTool",
     "datacontenttype": "application/json",
     "aggregateversion": 1
   },
   {
-    "id": "10000000-0000-4000-8000-000000000021",
+    "id": "019e7a3a-2f75-7e5c-9026-81dbc5cce94d",
     "data": {
       "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
-      "skillId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
-      "toolId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
+      "skillId": "019e7a3a-2f8f-78e3-859a-466b7baec58a",
+      "toolId": "019e7a3a-2f9c-7db6-b52b-1a5bd175cf7b",
       "config": "{}",
       "accessLevel": "read",
       "aggregateVersion": 0,
@@ -539,18 +539,18 @@
     "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
     "nonce": "0",
     "source": "https://github.com/lightapi/light-portal",
-    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2|bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019e7a3a-2f8f-78e3-859a-466b7baec58a|019e7a3a-2f9c-7db6-b52b-1a5bd175cf7b",
     "specversion": "1.0",
     "aggregatetype": "SkillTool",
     "datacontenttype": "application/json",
     "aggregateversion": 1
   },
   {
-    "id": "10000000-0000-4000-8000-000000000022",
+    "id": "019e7a3a-2f7a-7a7b-8ef0-08acfc0d8ac1",
     "data": {
       "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
-      "skillId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
-      "toolId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3",
+      "skillId": "019e7a3a-2f93-7c30-b90c-9cdcc8c2ad62",
+      "toolId": "019e7a3a-2fa1-7e59-9712-c7d353989a03",
       "config": "{}",
       "accessLevel": "read",
       "aggregateVersion": 0,
@@ -562,7 +562,7 @@
     "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
     "nonce": "0",
     "source": "https://github.com/lightapi/light-portal",
-    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3|bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019e7a3a-2f93-7c30-b90c-9cdcc8c2ad62|019e7a3a-2fa1-7e59-9712-c7d353989a03",
     "specversion": "1.0",
     "aggregatetype": "SkillTool",
     "datacontenttype": "application/json",
