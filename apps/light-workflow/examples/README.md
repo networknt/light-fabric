@@ -212,7 +212,7 @@ psql "postgresql://postgres:secret@localhost:5432/configserver" \
   -f /home/steve/workspace/light-fabric/apps/light-workflow/examples/insurance-claim-demo-queries.sql
 ```
 
-Reset only the runtime rows for the insurance claim demo workflows:
+Preview active reset candidates:
 
 ```bash
 psql "postgresql://postgres:secret@localhost:5432/configserver" \
@@ -220,8 +220,19 @@ psql "postgresql://postgres:secret@localhost:5432/configserver" \
   -f /home/steve/workspace/light-fabric/apps/light-workflow/examples/insurance-claim-demo-reset.sql
 ```
 
-The reset keeps workflow definitions, event-store rows, imported agent catalog
-data, and uploaded API metadata intact.
+Reset active insurance claim demo instances through `ProcessInfoDeletedEvent`:
+
+```bash
+cd /home/steve/workspace/light-fabric/apps/light-workflow/examples
+
+ACCESS_TOKEN=<token> \
+HOST_ID=<host-id> \
+./insurance-claim-demo-reset.sh
+```
+
+The reset uses `workflow/deleteProcessInfo`; the projection soft-deletes
+`process_info_t.active`. It keeps workflow definitions, event-store rows,
+imported agent catalog data, and uploaded API metadata intact.
 
 ### Troubleshooting
 
