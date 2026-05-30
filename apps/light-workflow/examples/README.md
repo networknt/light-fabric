@@ -13,6 +13,10 @@ portal workflow definition table and started from the portal UI or command API.
   running, the agent catalog events have been imported, and the phase 2 demo
   API OpenAPI specs have been uploaded so the portal/tool catalog contains the
   insurance endpoints.
+- For `insurance-claim-mcp-v1.yaml`, `light-gateway` is running and `tools/list`
+  exposes `getCustomerProfile`, `getCustomerPreferences`, `getCustomerPolicies`,
+  `getCoveredVehicle`, `listPriorClaims`, `triageClaim`, and
+  `recommendSettlement`.
 - For `personalized-offer-mcp-v1.yaml`, `light-gateway` is running and the MCP
   tools are visible in the control plane:
   `getCustomerProfile`, `getCustomerPreferences`, `searchOffers`, and
@@ -283,6 +287,32 @@ Human task completion values:
 | `requestAdjusterApproval` | `APPROVED`, `REJECTED`, `REQUEST_MORE_INFO`, `REFER_TO_SIU` |
 | `requestSiuReview` | `CLEAR`, `REFER_BACK_TO_ADJUSTER`, `HOLD_FOR_INVESTIGATION` |
 | `requestCustomerResponse` | `ACCEPT_REPAIR`, `REQUEST_CALLBACK`, `UPLOAD_MORE_DOCUMENTS`, `DISPUTE_RECOMMENDATION` |
+
+### `insurance-claim-mcp-v1.yaml`
+
+Runs the same claim workflow as `insurance-claim-rest-v1.yaml`, but calls the
+domain APIs through MCP tools exposed by `light-gateway`. Agent tasks and human
+tasks are intentionally identical to the REST workflow.
+
+Use the same input as `insurance-claim-rest-v1.yaml`.
+
+Expected MCP tools:
+
+| Tool | Context export |
+| ---- | -------------- |
+| `getCustomerProfile` | `customer` from `structuredContent` |
+| `getCustomerPreferences` | `preferences` from `structuredContent` |
+| `getCustomerPolicies` | `policies` from `structuredContent.policies` |
+| `getCoveredVehicle` | `vehicle` from `structuredContent` |
+| `listPriorClaims` | `priorClaims` from `structuredContent` |
+| `triageClaim` | `triage` from `structuredContent` |
+| `recommendSettlement` | `settlement` from `structuredContent` |
+
+Expected behavior matches the REST workflow for the same seeded inputs.
+`assertMcpClaimContext`, `assertMcpTriage`, and `assertMcpSettlement` fail fast
+if a tool returns malformed output or omits required `structuredContent` fields.
+If a tool is missing, the current MCP task fails and the process status becomes
+`F`.
 
 ### `personalized-offer-mcp-v1.yaml`
 

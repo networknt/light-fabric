@@ -1,0 +1,613 @@
+document:
+  dsl: "1.0.3"
+  namespace: light-demo
+  name: insurance-claim-mcp-v1
+  version: "1.0.0"
+  title: Insurance Claim via MCP Workflow
+  summary: Orchestrates an auto insurance claim with light-gateway MCP tools, bounded agents, and durable human tasks.
+  tags:
+    demo: insurance-claim-agentic-workflow
+    executionPath: mcp
+input:
+  schema:
+    format: json
+    document:
+      type: object
+      required:
+        - customerId
+        - vehicleId
+        - incidentDate
+        - accidentDescription
+        - injuryReported
+        - vehicleDrivable
+      properties:
+        customerId:
+          type: string
+          example: CUST-1001
+        vehicleId:
+          type: string
+          example: VEH-1001
+        incidentDate:
+          type: string
+          format: date
+          example: "2026-05-30"
+        accidentDescription:
+          type: string
+          example: Rear-ended at an intersection.
+        location:
+          type: string
+          default: Ottawa, ON
+          example: Ottawa, ON
+        injuryReported:
+          type: boolean
+          example: false
+        vehicleDrivable:
+          type: boolean
+          example: false
+        policeReportFiled:
+          type: boolean
+          default: true
+          example: true
+        photosAvailable:
+          type: boolean
+          default: true
+          example: true
+        channel:
+          type: string
+          default: portal
+          example: portal
+output:
+  schema:
+    format: json
+    document:
+      type: object
+      required:
+        - status
+        - customerId
+        - claimId
+      properties:
+        status:
+          type: string
+          enum:
+            - CLAIM_APPROVED
+            - NEEDS_ADJUSTER_REVIEW
+            - NEEDS_CUSTOMER_INFO
+            - REFERRED_TO_SIU
+            - CLAIM_DENIED_DRAFT
+        customerId:
+          type: string
+        claimId:
+          type: string
+        decisionId:
+          type: string
+        reason:
+          type: string
+        customerSummary:
+          type: string
+outputSchemas:
+  claimIntake:
+    type: object
+    required:
+      - normalizedClaim
+      - missingFields
+      - summary
+      - requiresHumanInput
+    properties:
+      normalizedClaim:
+        type: object
+      missingFields:
+        type: array
+        items:
+          type: string
+      summary:
+        type: string
+      requiresHumanInput:
+        type: boolean
+  coverageReview:
+    type: object
+    required:
+      - coverageStatus
+      - liabilityStatus
+      - riskLevel
+      - estimatedLoss
+      - requiresAdjusterReview
+      - requiresSiuReview
+      - reason
+    properties:
+      coverageStatus:
+        type: string
+      liabilityStatus:
+        type: string
+      riskLevel:
+        type: string
+        enum:
+          - low
+          - medium
+          - high
+      estimatedLoss:
+        type: number
+      deductible:
+        type: integer
+      requiresAdjusterReview:
+        type: boolean
+      requiresSiuReview:
+        type: boolean
+      reason:
+        type: string
+  settlementRecommendation:
+    type: object
+    required:
+      - recommendedPath
+      - customerSummary
+      - nextDocuments
+      - finalStatus
+    properties:
+      recommendedPath:
+        type: string
+      customerSummary:
+        type: string
+      nextDocuments:
+        type: array
+        items:
+          type: string
+      finalStatus:
+        type: string
+        enum:
+          - CLAIM_APPROVED
+          - NEEDS_ADJUSTER_REVIEW
+          - NEEDS_CUSTOMER_INFO
+          - REFERRED_TO_SIU
+          - CLAIM_DENIED_DRAFT
+use:
+  mcpSessions:
+    gateway:
+      server:
+        endpoint:
+          uri: https://light-gateway:8443/mcp
+        transport: http
+      reuse: true
+do:
+  - normalizeClaimInput:
+      set:
+        channel: "${ .channel }"
+        claim:
+          claimId: "CLM-${ .customerId }"
+          customerId: "${ .customerId }"
+          vehicleId: "${ .vehicleId }"
+          incidentDate: "${ .incidentDate }"
+          accidentDescription: "${ .accidentDescription }"
+          location: "${ .location }"
+          injuryReported: "${ .injuryReported }"
+          vehicleDrivable: "${ .vehicleDrivable }"
+          policeReportFiled: "${ .policeReportFiled }"
+          photosAvailable: "${ .photosAvailable }"
+      export:
+        as:
+          channel: .output.channel
+          claim: .output.claim
+  - loadCustomerProfile:
+      call: mcp
+      with:
+        session: gateway
+        tool: getCustomerProfile
+        arguments:
+          customerId: "${ .claim.customerId }"
+      export:
+        as:
+          customer: .output.structuredContent
+  - loadCustomerPreferences:
+      call: mcp
+      with:
+        session: gateway
+        tool: getCustomerPreferences
+        arguments:
+          customerId: "${ .claim.customerId }"
+          channel: "${ .channel }"
+      export:
+        as:
+          preferences: .output.structuredContent
+  - loadCustomerPolicies:
+      call: mcp
+      with:
+        session: gateway
+        tool: getCustomerPolicies
+        arguments:
+          customerId: "${ .claim.customerId }"
+      export:
+        as:
+          policies: .output.structuredContent.policies
+  - loadCoveredVehicle:
+      call: mcp
+      with:
+        session: gateway
+        tool: getCoveredVehicle
+        arguments:
+          customerId: "${ .claim.customerId }"
+          vehicleId: "${ .claim.vehicleId }"
+      export:
+        as:
+          vehicle: .output.structuredContent
+  - loadPriorClaims:
+      call: mcp
+      with:
+        session: gateway
+        tool: listPriorClaims
+        arguments:
+          customerId: "${ .claim.customerId }"
+      export:
+        as:
+          priorClaims: .output.structuredContent
+  - assertMcpClaimContext:
+      assert:
+        json:
+          customer.customerId:
+            exists: true
+          customer.accountStatus:
+            exists: true
+          preferences.consent:
+            exists: true
+          policies:
+            hasLength:
+              gte: 1
+          vehicle.vehicleId:
+            exists: true
+          vehicle.covered:
+            exists: true
+          priorClaims.priorClaimCount:
+            exists: true
+  - runClaimIntakeAgent:
+      call: agent
+      with:
+        agent: claim-intake-agent
+        skill: claim-intake
+        input:
+          claim: "${ .claim }"
+          customer: "${ .customer }"
+          preferences: "${ .preferences }"
+          policies: "${ .policies }"
+          vehicle: "${ .vehicle }"
+          priorClaims: "${ .priorClaims }"
+        outputSchemaRef: claimIntake
+        mockOutput:
+          normalizedClaim: "${ .claim }"
+          missingFields: []
+          summary: First notice of loss normalized for coverage review.
+          requiresHumanInput: false
+        onInvalidOutput:
+          retry: 1
+          then: requestAdjusterApproval
+      export:
+        as:
+          intake: .output
+  - assertCustomerAndCoverage:
+      assert:
+        value: "${ .customer.accountStatus }"
+        equals: active
+      export:
+        as:
+          customerAssertion: .output
+  - checkMissingInfo:
+      switch:
+        - missingInformation:
+            when: .intake.requiresHumanInput == true
+            then: askMissingInfo
+        - default:
+            then: runCoverageAndLiabilityAgent
+  - askMissingInfo:
+      ask:
+        prompt: Collect missing first-notice-of-loss details before claim review continues.
+        mode: form
+        assignment:
+          roleId: customer-service
+          categoryCode: claim-info
+          reasonCode: missing-fnol-details
+        required: true
+        timeout:
+          after: PT24H
+        onTimeout:
+          action: default
+          default:
+            value: NEEDS_CUSTOMER_INFO
+      export:
+        as:
+          missingInfo: .output
+      then: runCoverageAndLiabilityAgent
+  - runCoverageAndLiabilityAgent:
+      call: agent
+      with:
+        agent: coverage-liability-agent
+        skill: coverage-review
+        input:
+          claim: "${ .claim }"
+          customer: "${ .customer }"
+          preferences: "${ .preferences }"
+          policies: "${ .policies }"
+          vehicle: "${ .vehicle }"
+          priorClaims: "${ .priorClaims }"
+          intake: "${ .intake }"
+        outputSchemaRef: coverageReview
+        mockOutput:
+          coverageStatus: covered
+          liabilityStatus: unclear
+          riskLevel: medium
+          estimatedLoss: 3200
+          deductible: 500
+          requiresAdjusterReview: true
+          requiresSiuReview: false
+          reason: Vehicle is not drivable; adjuster review is required before settlement.
+        onInvalidOutput:
+          retry: 1
+          then: requestAdjusterApproval
+      export:
+        as:
+          coverageReview: .output
+  - triageClaim:
+      call: mcp
+      with:
+        session: gateway
+        tool: triageClaim
+        arguments:
+          claim: "${ .claim }"
+          customer: "${ .customer }"
+          policies:
+            policies: "${ .policies }"
+          vehicle: "${ .vehicle }"
+          priorClaims: "${ .priorClaims }"
+      export:
+        as:
+          triage: .output.structuredContent
+  - assertMcpTriage:
+      assert:
+        json:
+          triage.recommendedPath:
+            exists: true
+          triage.requiresAdjusterReview:
+            exists: true
+          triage.requiresSiuReview:
+            exists: true
+          triage.estimatedLoss:
+            exists: true
+  - switchRiskPath:
+      switch:
+        - siuReview:
+            when: .triage.requiresSiuReview == true
+            then: requestSiuReview
+        - adjusterReview:
+            when: .triage.requiresAdjusterReview == true
+            then: requestAdjusterApproval
+        - default:
+            then: autoApproveTriage
+  - autoApproveTriage:
+      set:
+        value: APPROVED
+        decision: APPROVED
+        source: workflow-auto
+        reason: Low risk claim can continue without manual approval.
+      export:
+        as:
+          approval: .output
+      then: runSettlementAgent
+  - requestSiuReview:
+      ask:
+        prompt: Review the claim for possible fraud, inconsistent facts, or high-risk history.
+        mode: approval
+        assignment:
+          roleId: siu-investigator
+          categoryCode: investigation
+          reasonCode: siu-review
+        options:
+          - label: Clear
+            value: CLEAR
+            description: Return the claim to adjuster review.
+          - label: Refer Back
+            value: REFER_BACK_TO_ADJUSTER
+            description: Continue with standard adjuster approval.
+          - label: Hold
+            value: HOLD_FOR_INVESTIGATION
+            description: Hold the claim for investigation.
+        required: true
+        timeout:
+          after: PT24H
+        onTimeout:
+          action: default
+          default: HOLD_FOR_INVESTIGATION
+      export:
+        as:
+          siuReview: .output
+      then: checkSiuReview
+  - checkSiuReview:
+      switch:
+        - hold:
+            when: .siuReview.value == HOLD_FOR_INVESTIGATION
+            then: siuHoldResult
+        - default:
+            then: requestAdjusterApproval
+  - siuHoldResult:
+      set:
+        status: REFERRED_TO_SIU
+        customerId: "${ .claim.customerId }"
+        claimId: "${ .claim.claimId }"
+        reason: Claim is held for SIU investigation.
+      end: true
+  - requestAdjusterApproval:
+      ask:
+        prompt: Review coverage, liability, and triage details before settlement.
+        mode: approval
+        assignment:
+          roleId: claims-adjuster
+          categoryCode: approval
+          reasonCode: claim-review
+        options:
+          - label: Approve
+            value: APPROVED
+            description: Continue to settlement recommendation.
+          - label: Reject
+            value: REJECTED
+            description: Produce a denial draft.
+          - label: More Info
+            value: REQUEST_MORE_INFO
+            description: Route back to missing information collection.
+          - label: Refer SIU
+            value: REFER_TO_SIU
+            description: Send to special investigation review.
+        required: true
+        timeout:
+          after: PT24H
+        onTimeout:
+          action: default
+          default: REQUEST_MORE_INFO
+      export:
+        as:
+          approval: .output
+      then: checkAdjusterApproval
+  - checkAdjusterApproval:
+      switch:
+        - rejected:
+            when: .approval.value == REJECTED
+            then: deniedDraftResult
+        - moreInfo:
+            when: .approval.value == REQUEST_MORE_INFO
+            then: needsCustomerInfoResult
+        - referSiu:
+            when: .approval.value == REFER_TO_SIU
+            then: requestSiuReview
+        - default:
+            then: runSettlementAgent
+  - deniedDraftResult:
+      set:
+        status: CLAIM_DENIED_DRAFT
+        customerId: "${ .claim.customerId }"
+        claimId: "${ .claim.claimId }"
+        reason: Claim was rejected by the assigned adjuster.
+      end: true
+  - needsCustomerInfoResult:
+      set:
+        status: NEEDS_CUSTOMER_INFO
+        customerId: "${ .claim.customerId }"
+        claimId: "${ .claim.claimId }"
+        reason: Claim requires more customer information before settlement.
+      end: true
+  - runSettlementAgent:
+      call: agent
+      with:
+        agent: settlement-agent
+        skill: settlement-recommendation
+        input:
+          claim: "${ .claim }"
+          coverageReview: "${ .coverageReview }"
+          triage: "${ .triage }"
+          approval: "${ .approval }"
+        outputSchemaRef: settlementRecommendation
+        mockOutput:
+          recommendedPath: repair
+          customerSummary: Repair is recommended after the deductible.
+          nextDocuments:
+            - repair_estimate
+            - damage_photos
+          finalStatus: CLAIM_APPROVED
+        onInvalidOutput:
+          retry: 1
+          then: requestAdjusterApproval
+      export:
+        as:
+          settlementDraft: .output
+  - recommendSettlement:
+      call: mcp
+      with:
+        session: gateway
+        tool: recommendSettlement
+        arguments:
+          claim: "${ .claim }"
+          coverageReview: "${ .coverageReview }"
+          triage: "${ .triage }"
+          approval: "${ .approval }"
+          idempotencyKey: "insurance-claim-mcp-v1:${ .claim.claimId }"
+      export:
+        as:
+          settlement: .output.structuredContent
+  - assertMcpSettlement:
+      assert:
+        json:
+          settlement.decisionId:
+            exists: true
+          settlement.recommendedPath:
+            exists: true
+          settlement.customerSummary:
+            exists: true
+  - requestCustomerResponse:
+      ask:
+        prompt: Confirm the claimant response to the settlement recommendation.
+        mode: approval
+        assignment:
+          roleId: claimant
+          categoryCode: claim-response
+          reasonCode: settlement-response
+        options:
+          - label: Accept Repair
+            value: ACCEPT_REPAIR
+            description: Accept the repair recommendation.
+          - label: Callback
+            value: REQUEST_CALLBACK
+            description: Request a callback from the claims team.
+          - label: More Documents
+            value: UPLOAD_MORE_DOCUMENTS
+            description: Upload additional claim documents.
+          - label: Dispute
+            value: DISPUTE_RECOMMENDATION
+            description: Dispute the recommendation.
+        required: true
+        timeout:
+          after: PT72H
+        onTimeout:
+          action: default
+          default: REQUEST_CALLBACK
+      export:
+        as:
+          customerResponse: .output
+      then: checkCustomerResponse
+  - checkCustomerResponse:
+      switch:
+        - callback:
+            when: .customerResponse.value == REQUEST_CALLBACK
+            then: customerCallbackResult
+        - documents:
+            when: .customerResponse.value == UPLOAD_MORE_DOCUMENTS
+            then: customerDocumentsResult
+        - dispute:
+            when: .customerResponse.value == DISPUTE_RECOMMENDATION
+            then: customerDisputeResult
+        - default:
+            then: finishApproved
+  - customerCallbackResult:
+      set:
+        status: NEEDS_ADJUSTER_REVIEW
+        customerId: "${ .claim.customerId }"
+        claimId: "${ .claim.claimId }"
+        decisionId: "${ .settlement.decisionId }"
+        reason: Claimant requested a callback before accepting the recommendation.
+      end: true
+  - customerDocumentsResult:
+      set:
+        status: NEEDS_CUSTOMER_INFO
+        customerId: "${ .claim.customerId }"
+        claimId: "${ .claim.claimId }"
+        decisionId: "${ .settlement.decisionId }"
+        reason: Claimant will upload more documents before settlement.
+      end: true
+  - customerDisputeResult:
+      set:
+        status: NEEDS_ADJUSTER_REVIEW
+        customerId: "${ .claim.customerId }"
+        claimId: "${ .claim.claimId }"
+        decisionId: "${ .settlement.decisionId }"
+        reason: Claimant disputed the settlement recommendation.
+      end: true
+  - finishApproved:
+      set:
+        status: CLAIM_APPROVED
+        customerId: "${ .claim.customerId }"
+        claimId: "${ .claim.claimId }"
+        decisionId: "${ .settlement.decisionId }"
+        customerSummary: "${ .settlement.customerSummary }"
+        reason: Claim settlement recommendation accepted by claimant.
+      end: true
