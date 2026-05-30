@@ -13,6 +13,8 @@ portal workflow definition table and started from the portal UI or command API.
   running, the agent catalog events have been imported, and the phase 2 demo
   API OpenAPI specs have been uploaded so the portal/tool catalog contains the
   insurance endpoints.
+- For `insurance-claim-headless-v1.yaml`, the same REST services and agent
+  catalog are available. This workflow does not create human task assignments.
 - For `insurance-claim-mcp-v1.yaml`, `light-gateway` is running and `tools/list`
   exposes `getCustomerProfile`, `getCustomerPreferences`, `getCustomerPolicies`,
   `getCoveredVehicle`, `listPriorClaims`, `triageClaim`, and
@@ -313,6 +315,52 @@ Expected behavior matches the REST workflow for the same seeded inputs.
 if a tool returns malformed output or omits required `structuredContent` fields.
 If a tool is missing, the current MCP task fails and the process status becomes
 `F`.
+
+### `insurance-claim-headless-v1.yaml`
+
+Runs the same REST-backed insurance claim path without `ask` tasks. Use it for
+CI, scheduled smoke tests, and repeatable local regression checks.
+The same cases are captured in `insurance-claim-headless-regression-cases.json`
+for script-driven runs.
+
+Happy path input:
+
+```json
+{
+  "customerId": "CUST-1001",
+  "vehicleId": "VEH-1001",
+  "incidentDate": "2026-05-30",
+  "accidentDescription": "Rear-ended at an intersection. No injuries reported.",
+  "location": "Ottawa, ON",
+  "injuryReported": false,
+  "vehicleDrivable": false,
+  "policeReportFiled": true,
+  "photosAvailable": true,
+  "channel": "portal",
+  "simulateMissingInfo": false,
+  "missingFields": [],
+  "approvalMode": "auto-approve",
+  "siuMode": "clear",
+  "customerResponseMode": "accept-repair"
+}
+```
+
+Control fields:
+
+| Field | Values |
+| ----- | ------ |
+| `approvalMode` | `auto-approve`, `auto-reject`, `request-more-info`, `refer-siu` |
+| `siuMode` | `clear`, `hold` |
+| `customerResponseMode` | `accept-repair`, `callback`, `upload-more-documents`, `dispute` |
+
+Regression cases:
+
+| Case | Input change | Expected result |
+| ---- | ------------ | --------------- |
+| Happy path | Use the sample input. | Completes with `status: CLAIM_APPROVED` and no `task_asst_t` assignment rows. |
+| Missing info | Set `simulateMissingInfo: true` and `missingFields: ["vehicleDrivable"]`. | Completes with `status: NEEDS_CUSTOMER_INFO` at `headlessMissingInfoResult`. |
+| SIU referral | Use `CUST-2002` with `VEH-2002` and set `siuMode: hold`. | Completes with `status: REFERRED_TO_SIU` at `siuHoldResult`. |
+| Unknown customer | Use `CUST-0001` with `VEH-0001`. | The profile API returns 404, the current task fails, and the process status becomes `F`. |
 
 ### `personalized-offer-mcp-v1.yaml`
 

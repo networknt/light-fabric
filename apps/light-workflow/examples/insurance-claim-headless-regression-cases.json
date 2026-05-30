@@ -1,0 +1,113 @@
+{
+  "workflowName": "insurance-claim-headless-v1",
+  "cases": [
+    {
+      "name": "happy-path",
+      "description": "CUST-1001 claim completes without human task assignments.",
+      "input": {
+        "customerId": "CUST-1001",
+        "vehicleId": "VEH-1001",
+        "incidentDate": "2026-05-30",
+        "accidentDescription": "Rear-ended at an intersection. No injuries reported.",
+        "location": "Ottawa, ON",
+        "injuryReported": false,
+        "vehicleDrivable": false,
+        "policeReportFiled": true,
+        "photosAvailable": true,
+        "channel": "portal",
+        "simulateMissingInfo": false,
+        "missingFields": [],
+        "approvalMode": "auto-approve",
+        "siuMode": "clear",
+        "customerResponseMode": "accept-repair"
+      },
+      "expected": {
+        "processStatus": "C",
+        "outputStatus": "CLAIM_APPROVED",
+        "assignmentRows": 0
+      }
+    },
+    {
+      "name": "missing-info",
+      "description": "Intake marks FNOL details missing and exits with customer-info status.",
+      "input": {
+        "customerId": "CUST-1001",
+        "vehicleId": "VEH-1001",
+        "incidentDate": "2026-05-30",
+        "accidentDescription": "Rear-ended at an intersection. No injuries reported.",
+        "location": "Ottawa, ON",
+        "injuryReported": false,
+        "vehicleDrivable": false,
+        "policeReportFiled": true,
+        "photosAvailable": true,
+        "channel": "portal",
+        "simulateMissingInfo": true,
+        "missingFields": [
+          "vehicleDrivable"
+        ],
+        "approvalMode": "auto-approve",
+        "siuMode": "clear",
+        "customerResponseMode": "accept-repair"
+      },
+      "expected": {
+        "processStatus": "C",
+        "outputStatus": "NEEDS_CUSTOMER_INFO",
+        "terminalTask": "headlessMissingInfoResult",
+        "assignmentRows": 0
+      }
+    },
+    {
+      "name": "siu-referral",
+      "description": "CUST-2002 routes to SIU and headless SIU mode holds the claim.",
+      "input": {
+        "customerId": "CUST-2002",
+        "vehicleId": "VEH-2002",
+        "incidentDate": "2026-05-30",
+        "accidentDescription": "Single vehicle collision with inconsistent prior claim history.",
+        "location": "Ottawa, ON",
+        "injuryReported": false,
+        "vehicleDrivable": false,
+        "policeReportFiled": true,
+        "photosAvailable": true,
+        "channel": "portal",
+        "simulateMissingInfo": false,
+        "missingFields": [],
+        "approvalMode": "auto-approve",
+        "siuMode": "hold",
+        "customerResponseMode": "accept-repair"
+      },
+      "expected": {
+        "processStatus": "C",
+        "outputStatus": "REFERRED_TO_SIU",
+        "terminalTask": "siuHoldResult",
+        "assignmentRows": 0
+      }
+    },
+    {
+      "name": "unknown-customer",
+      "description": "Unknown customer fails at profile lookup.",
+      "input": {
+        "customerId": "CUST-0001",
+        "vehicleId": "VEH-0001",
+        "incidentDate": "2026-05-30",
+        "accidentDescription": "Unknown customer regression case.",
+        "location": "Ottawa, ON",
+        "injuryReported": false,
+        "vehicleDrivable": false,
+        "policeReportFiled": true,
+        "photosAvailable": true,
+        "channel": "portal",
+        "simulateMissingInfo": false,
+        "missingFields": [],
+        "approvalMode": "auto-approve",
+        "siuMode": "clear",
+        "customerResponseMode": "accept-repair"
+      },
+      "expected": {
+        "processStatus": "F",
+        "failedTask": "loadCustomerProfile",
+        "assignmentRows": 0
+      }
+    }
+  ]
+}

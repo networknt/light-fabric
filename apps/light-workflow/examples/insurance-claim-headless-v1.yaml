@@ -1,0 +1,657 @@
+document:
+  dsl: "1.0.3"
+  namespace: light-demo
+  name: insurance-claim-headless-v1
+  version: "1.0.0"
+  title: Insurance Claim Headless Regression Workflow
+  summary: Runs the auto insurance claim workflow without human task pauses for CI and scheduled regression checks.
+  tags:
+    demo: insurance-claim-agentic-workflow
+    executionPath: headless
+input:
+  schema:
+    format: json
+    document:
+      type: object
+      required:
+        - customerId
+        - vehicleId
+        - incidentDate
+        - accidentDescription
+        - injuryReported
+        - vehicleDrivable
+        - simulateMissingInfo
+        - missingFields
+        - approvalMode
+        - siuMode
+        - customerResponseMode
+      properties:
+        customerId:
+          type: string
+          example: CUST-1001
+        vehicleId:
+          type: string
+          example: VEH-1001
+        incidentDate:
+          type: string
+          format: date
+          example: "2026-05-30"
+        accidentDescription:
+          type: string
+          example: Rear-ended at an intersection.
+        location:
+          type: string
+          default: Ottawa, ON
+          example: Ottawa, ON
+        injuryReported:
+          type: boolean
+          example: false
+        vehicleDrivable:
+          type: boolean
+          example: false
+        policeReportFiled:
+          type: boolean
+          default: true
+          example: true
+        photosAvailable:
+          type: boolean
+          default: true
+          example: true
+        channel:
+          type: string
+          default: portal
+          example: portal
+        simulateMissingInfo:
+          type: boolean
+          default: false
+          example: false
+        missingFields:
+          type: array
+          items:
+            type: string
+          default: []
+          example: []
+        approvalMode:
+          type: string
+          enum:
+            - auto-approve
+            - auto-reject
+            - request-more-info
+            - refer-siu
+          default: auto-approve
+          example: auto-approve
+        siuMode:
+          type: string
+          enum:
+            - clear
+            - hold
+          default: clear
+          example: clear
+        customerResponseMode:
+          type: string
+          enum:
+            - accept-repair
+            - callback
+            - upload-more-documents
+            - dispute
+          default: accept-repair
+          example: accept-repair
+output:
+  schema:
+    format: json
+    document:
+      type: object
+      required:
+        - status
+        - customerId
+        - claimId
+      properties:
+        status:
+          type: string
+          enum:
+            - CLAIM_APPROVED
+            - NEEDS_ADJUSTER_REVIEW
+            - NEEDS_CUSTOMER_INFO
+            - REFERRED_TO_SIU
+            - CLAIM_DENIED_DRAFT
+        customerId:
+          type: string
+        claimId:
+          type: string
+        decisionId:
+          type: string
+        reason:
+          type: string
+        customerSummary:
+          type: string
+outputSchemas:
+  claimIntake:
+    type: object
+    required:
+      - normalizedClaim
+      - missingFields
+      - summary
+      - requiresHumanInput
+    properties:
+      normalizedClaim:
+        type: object
+      missingFields:
+        type: array
+        items:
+          type: string
+      summary:
+        type: string
+      requiresHumanInput:
+        type: boolean
+  coverageReview:
+    type: object
+    required:
+      - coverageStatus
+      - liabilityStatus
+      - riskLevel
+      - estimatedLoss
+      - requiresAdjusterReview
+      - requiresSiuReview
+      - reason
+    properties:
+      coverageStatus:
+        type: string
+      liabilityStatus:
+        type: string
+      riskLevel:
+        type: string
+        enum:
+          - low
+          - medium
+          - high
+      estimatedLoss:
+        type: number
+      deductible:
+        type: integer
+      requiresAdjusterReview:
+        type: boolean
+      requiresSiuReview:
+        type: boolean
+      reason:
+        type: string
+  settlementRecommendation:
+    type: object
+    required:
+      - recommendedPath
+      - customerSummary
+      - nextDocuments
+      - finalStatus
+    properties:
+      recommendedPath:
+        type: string
+      customerSummary:
+        type: string
+      nextDocuments:
+        type: array
+        items:
+          type: string
+      finalStatus:
+        type: string
+        enum:
+          - CLAIM_APPROVED
+          - NEEDS_ADJUSTER_REVIEW
+          - NEEDS_CUSTOMER_INFO
+          - REFERRED_TO_SIU
+          - CLAIM_DENIED_DRAFT
+do:
+  - normalizeClaimInput:
+      set:
+        channel: "${ .channel }"
+        claim:
+          claimId: "CLM-${ .customerId }"
+          customerId: "${ .customerId }"
+          vehicleId: "${ .vehicleId }"
+          incidentDate: "${ .incidentDate }"
+          accidentDescription: "${ .accidentDescription }"
+          location: "${ .location }"
+          injuryReported: "${ .injuryReported }"
+          vehicleDrivable: "${ .vehicleDrivable }"
+          policeReportFiled: "${ .policeReportFiled }"
+          photosAvailable: "${ .photosAvailable }"
+      export:
+        as:
+          channel: .output.channel
+          claim: .output.claim
+  - loadCustomerProfile:
+      call: http
+      with:
+        method: GET
+        endpoint:
+          uri: http://demo-customer-profile-api:8085/customers/${ .claim.customerId }
+        output: content
+      export:
+        as:
+          customer: .output
+  - loadCustomerPreferences:
+      call: http
+      with:
+        method: GET
+        endpoint:
+          uri: http://demo-customer-profile-api:8085/customers/${ .claim.customerId }/preferences?channel=${ .channel }
+        output: content
+      export:
+        as:
+          preferences: .output
+  - loadCustomerPolicies:
+      call: http
+      with:
+        method: GET
+        endpoint:
+          uri: http://demo-customer-profile-api:8085/customers/${ .claim.customerId }/policies
+        output: content
+      export:
+        as:
+          policies: .output.policies
+  - loadCoveredVehicle:
+      call: http
+      with:
+        method: GET
+        endpoint:
+          uri: http://demo-customer-profile-api:8085/customers/${ .claim.customerId }/vehicles/${ .claim.vehicleId }
+        output: content
+      export:
+        as:
+          vehicle: .output
+  - loadPriorClaims:
+      call: http
+      with:
+        method: GET
+        endpoint:
+          uri: http://demo-customer-profile-api:8085/customers/${ .claim.customerId }/prior-claims
+        output: content
+      export:
+        as:
+          priorClaims: .output
+  - runClaimIntakeAgent:
+      call: agent
+      with:
+        agent: claim-intake-agent
+        skill: claim-intake
+        input:
+          claim: "${ .claim }"
+          customer: "${ .customer }"
+          preferences: "${ .preferences }"
+          policies: "${ .policies }"
+          vehicle: "${ .vehicle }"
+          priorClaims: "${ .priorClaims }"
+        outputSchemaRef: claimIntake
+        mockOutput:
+          normalizedClaim: "${ .claim }"
+          missingFields: "${ .missingFields }"
+          summary: First notice of loss normalized for coverage review.
+          requiresHumanInput: "${ .simulateMissingInfo }"
+        onInvalidOutput:
+          retry: 1
+          then: headlessAgentInvalidResult
+      export:
+        as:
+          intake: .output
+  - assertCustomerAndCoverage:
+      assert:
+        value: "${ .customer.accountStatus }"
+        equals: active
+      export:
+        as:
+          customerAssertion: .output
+  - checkMissingInfo:
+      switch:
+        - missingInformation:
+            when: .intake.requiresHumanInput == true
+            then: headlessMissingInfoResult
+        - default:
+            then: runCoverageAndLiabilityAgent
+  - headlessMissingInfoResult:
+      set:
+        status: NEEDS_CUSTOMER_INFO
+        customerId: "${ .claim.customerId }"
+        claimId: "${ .claim.claimId }"
+        reason: "Headless regression marked FNOL details missing: ${ .intake.missingFields }"
+      end: true
+  - runCoverageAndLiabilityAgent:
+      call: agent
+      with:
+        agent: coverage-liability-agent
+        skill: coverage-review
+        input:
+          claim: "${ .claim }"
+          customer: "${ .customer }"
+          preferences: "${ .preferences }"
+          policies: "${ .policies }"
+          vehicle: "${ .vehicle }"
+          priorClaims: "${ .priorClaims }"
+          intake: "${ .intake }"
+        outputSchemaRef: coverageReview
+        mockOutput:
+          coverageStatus: covered
+          liabilityStatus: unclear
+          riskLevel: medium
+          estimatedLoss: 3200
+          deductible: 500
+          requiresAdjusterReview: true
+          requiresSiuReview: false
+          reason: Vehicle is not drivable; adjuster review is required before settlement.
+        onInvalidOutput:
+          retry: 1
+          then: headlessAgentInvalidResult
+      export:
+        as:
+          coverageReview: .output
+  - triageClaim:
+      call: http
+      with:
+        method: POST
+        endpoint:
+          uri: http://demo-offer-decision-api:8086/claim-triage
+        body:
+          claim: "${ .claim }"
+          customer: "${ .customer }"
+          policies:
+            policies: "${ .policies }"
+          vehicle: "${ .vehicle }"
+          priorClaims: "${ .priorClaims }"
+        output: content
+      export:
+        as:
+          triage: .output
+  - switchRiskPath:
+      switch:
+        - siuReview:
+            when: .triage.requiresSiuReview == true
+            then: selectHeadlessSiuDecision
+        - adjusterReview:
+            when: .triage.requiresAdjusterReview == true
+            then: selectHeadlessApproval
+        - default:
+            then: autoApproveTriage
+  - autoApproveTriage:
+      set:
+        value: APPROVED
+        decision: APPROVED
+        source: workflow-headless
+        reason: Headless low-risk path approved the claim without manual review.
+      export:
+        as:
+          approval: .output
+      then: runSettlementAgent
+  - selectHeadlessSiuDecision:
+      switch:
+        - hold:
+            when: .siuMode == hold
+            then: headlessSiuHoldDecision
+        - default:
+            then: headlessSiuClearDecision
+  - headlessSiuClearDecision:
+      set:
+        value: CLEAR
+        decision: CLEAR
+        source: workflow-headless
+        reason: Headless SIU mode cleared the claim.
+      export:
+        as:
+          siuReview: .output
+      then: checkSiuReview
+  - headlessSiuHoldDecision:
+      set:
+        value: HOLD_FOR_INVESTIGATION
+        decision: HOLD_FOR_INVESTIGATION
+        source: workflow-headless
+        reason: Headless SIU mode held the claim for investigation.
+      export:
+        as:
+          siuReview: .output
+      then: checkSiuReview
+  - checkSiuReview:
+      switch:
+        - hold:
+            when: .siuReview.value == HOLD_FOR_INVESTIGATION
+            then: siuHoldResult
+        - default:
+            then: selectHeadlessPostSiuApproval
+  - siuHoldResult:
+      set:
+        status: REFERRED_TO_SIU
+        customerId: "${ .claim.customerId }"
+        claimId: "${ .claim.claimId }"
+        reason: Claim is held for SIU investigation.
+      end: true
+  - selectHeadlessApproval:
+      switch:
+        - rejected:
+            when: .approvalMode == auto-reject
+            then: headlessRejectApproval
+        - moreInfo:
+            when: .approvalMode == request-more-info
+            then: headlessRequestMoreInfoApproval
+        - referSiu:
+            when: .approvalMode == refer-siu
+            then: headlessReferSiuApproval
+        - default:
+            then: headlessApproveApproval
+  - selectHeadlessPostSiuApproval:
+      switch:
+        - rejected:
+            when: .approvalMode == auto-reject
+            then: headlessRejectApproval
+        - moreInfo:
+            when: .approvalMode == request-more-info
+            then: headlessRequestMoreInfoApproval
+        - default:
+            then: headlessApproveApproval
+  - headlessApproveApproval:
+      set:
+        value: APPROVED
+        decision: APPROVED
+        source: workflow-headless
+        reason: Headless approval mode approved the claim.
+      export:
+        as:
+          approval: .output
+      then: checkAdjusterApproval
+  - headlessRejectApproval:
+      set:
+        value: REJECTED
+        decision: REJECTED
+        source: workflow-headless
+        reason: Headless approval mode rejected the claim.
+      export:
+        as:
+          approval: .output
+      then: checkAdjusterApproval
+  - headlessRequestMoreInfoApproval:
+      set:
+        value: REQUEST_MORE_INFO
+        decision: REQUEST_MORE_INFO
+        source: workflow-headless
+        reason: Headless approval mode requested more information.
+      export:
+        as:
+          approval: .output
+      then: checkAdjusterApproval
+  - headlessReferSiuApproval:
+      set:
+        value: REFER_TO_SIU
+        decision: REFER_TO_SIU
+        source: workflow-headless
+        reason: Headless approval mode referred the claim to SIU.
+      export:
+        as:
+          approval: .output
+      then: checkAdjusterApproval
+  - checkAdjusterApproval:
+      switch:
+        - rejected:
+            when: .approval.value == REJECTED
+            then: deniedDraftResult
+        - moreInfo:
+            when: .approval.value == REQUEST_MORE_INFO
+            then: needsCustomerInfoResult
+        - referSiu:
+            when: .approval.value == REFER_TO_SIU
+            then: selectHeadlessSiuDecision
+        - default:
+            then: runSettlementAgent
+  - deniedDraftResult:
+      set:
+        status: CLAIM_DENIED_DRAFT
+        customerId: "${ .claim.customerId }"
+        claimId: "${ .claim.claimId }"
+        reason: Claim was rejected by the assigned adjuster.
+      end: true
+  - needsCustomerInfoResult:
+      set:
+        status: NEEDS_CUSTOMER_INFO
+        customerId: "${ .claim.customerId }"
+        claimId: "${ .claim.claimId }"
+        reason: Claim requires more customer information before settlement.
+      end: true
+  - headlessAgentInvalidResult:
+      set:
+        status: NEEDS_ADJUSTER_REVIEW
+        customerId: "${ .claim.customerId }"
+        claimId: "${ .claim.claimId }"
+        reason: Headless regression stopped because an agent returned invalid structured output.
+      end: true
+  - runSettlementAgent:
+      call: agent
+      with:
+        agent: settlement-agent
+        skill: settlement-recommendation
+        input:
+          claim: "${ .claim }"
+          coverageReview: "${ .coverageReview }"
+          triage: "${ .triage }"
+          approval: "${ .approval }"
+        outputSchemaRef: settlementRecommendation
+        mockOutput:
+          recommendedPath: repair
+          customerSummary: Repair is recommended after the deductible.
+          nextDocuments:
+            - repair_estimate
+            - damage_photos
+          finalStatus: CLAIM_APPROVED
+        onInvalidOutput:
+          retry: 1
+          then: headlessAgentInvalidResult
+      export:
+        as:
+          settlementDraft: .output
+  - recommendSettlement:
+      call: http
+      with:
+        method: POST
+        endpoint:
+          uri: http://demo-offer-decision-api:8086/settlement-recommendations
+        body:
+          claim: "${ .claim }"
+          coverageReview: "${ .coverageReview }"
+          triage: "${ .triage }"
+          approval: "${ .approval }"
+          idempotencyKey: "insurance-claim-headless-v1:${ .claim.claimId }"
+        output: content
+      export:
+        as:
+          settlement: .output
+  - selectHeadlessCustomerResponse:
+      switch:
+        - callback:
+            when: .customerResponseMode == callback
+            then: headlessCustomerCallbackDecision
+        - documents:
+            when: .customerResponseMode == upload-more-documents
+            then: headlessCustomerDocumentsDecision
+        - dispute:
+            when: .customerResponseMode == dispute
+            then: headlessCustomerDisputeDecision
+        - default:
+            then: headlessCustomerAcceptDecision
+  - headlessCustomerAcceptDecision:
+      set:
+        value: ACCEPT_REPAIR
+        decision: ACCEPT_REPAIR
+        source: workflow-headless
+        reason: Headless customer response accepted repair.
+      export:
+        as:
+          customerResponse: .output
+      then: checkCustomerResponse
+  - headlessCustomerCallbackDecision:
+      set:
+        value: REQUEST_CALLBACK
+        decision: REQUEST_CALLBACK
+        source: workflow-headless
+        reason: Headless customer response requested callback.
+      export:
+        as:
+          customerResponse: .output
+      then: checkCustomerResponse
+  - headlessCustomerDocumentsDecision:
+      set:
+        value: UPLOAD_MORE_DOCUMENTS
+        decision: UPLOAD_MORE_DOCUMENTS
+        source: workflow-headless
+        reason: Headless customer response will upload more documents.
+      export:
+        as:
+          customerResponse: .output
+      then: checkCustomerResponse
+  - headlessCustomerDisputeDecision:
+      set:
+        value: DISPUTE_RECOMMENDATION
+        decision: DISPUTE_RECOMMENDATION
+        source: workflow-headless
+        reason: Headless customer response disputed the recommendation.
+      export:
+        as:
+          customerResponse: .output
+      then: checkCustomerResponse
+  - checkCustomerResponse:
+      switch:
+        - callback:
+            when: .customerResponse.value == REQUEST_CALLBACK
+            then: customerCallbackResult
+        - documents:
+            when: .customerResponse.value == UPLOAD_MORE_DOCUMENTS
+            then: customerDocumentsResult
+        - dispute:
+            when: .customerResponse.value == DISPUTE_RECOMMENDATION
+            then: customerDisputeResult
+        - default:
+            then: finishApproved
+  - customerCallbackResult:
+      set:
+        status: NEEDS_ADJUSTER_REVIEW
+        customerId: "${ .claim.customerId }"
+        claimId: "${ .claim.claimId }"
+        decisionId: "${ .settlement.decisionId }"
+        reason: Claimant requested a callback before accepting the recommendation.
+      end: true
+  - customerDocumentsResult:
+      set:
+        status: NEEDS_CUSTOMER_INFO
+        customerId: "${ .claim.customerId }"
+        claimId: "${ .claim.claimId }"
+        decisionId: "${ .settlement.decisionId }"
+        reason: Claimant will upload more documents before settlement.
+      end: true
+  - customerDisputeResult:
+      set:
+        status: NEEDS_ADJUSTER_REVIEW
+        customerId: "${ .claim.customerId }"
+        claimId: "${ .claim.claimId }"
+        decisionId: "${ .settlement.decisionId }"
+        reason: Claimant disputed the settlement recommendation.
+      end: true
+  - finishApproved:
+      set:
+        status: CLAIM_APPROVED
+        customerId: "${ .claim.customerId }"
+        claimId: "${ .claim.claimId }"
+        decisionId: "${ .settlement.decisionId }"
+        customerSummary: "${ .settlement.customerSummary }"
+        reason: Claim settlement recommendation accepted by claimant.
+      end: true
