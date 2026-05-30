@@ -3433,6 +3433,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "light-rule",
+ "model-provider",
  "regex",
  "reqwest",
  "serde",

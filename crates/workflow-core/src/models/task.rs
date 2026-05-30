@@ -52,6 +52,8 @@ impl TaskType {
     pub const CALL_OPENRPC: &'static str = "openrpc";
     /// Gets the type of a 'a2a' call
     pub const CALL_A2A: &'static str = "a2a";
+    /// Gets the type of an 'agent' call
+    pub const CALL_AGENT: &'static str = "agent";
 }
 
 /// Enumerates all supported process types
@@ -475,6 +477,8 @@ pub enum CallTaskDefinition {
     OpenApi(Box<CallOpenApiTaskDefinition>),
     /// A2A call
     A2a(Box<CallA2aTaskDefinition>),
+    /// Native agent call
+    Agent(Box<CallAgentTaskDefinition>),
     /// MCP call
     Mcp(Box<CallMcpTaskDefinition>),
     /// JSON-RPC call
@@ -514,6 +518,9 @@ impl<'de> serde::Deserialize<'de> for CallTaskDefinition {
                 .map_err(serde::de::Error::custom),
             "a2a" => CallA2aTaskDefinition::deserialize(value)
                 .map(|v| CallTaskDefinition::A2a(Box::new(v)))
+                .map_err(serde::de::Error::custom),
+            "agent" => CallAgentTaskDefinition::deserialize(value)
+                .map(|v| CallTaskDefinition::Agent(Box::new(v)))
                 .map_err(serde::de::Error::custom),
             "mcp" => CallMcpTaskDefinition::deserialize(value)
                 .map(|v| CallTaskDefinition::Mcp(Box::new(v)))
@@ -831,6 +838,73 @@ pub struct A2aArguments {
     pub parameters: Option<Value>,
 }
 
+/// Represents the definition of a task used to run a portal-defined agent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CallAgentTaskDefinition {
+    /// The call type (must be 'agent')
+    #[serde(rename = "call")]
+    pub call: String,
+    /// Arguments for the native agent call
+    #[serde(rename = "with")]
+    pub with: AgentArguments,
+    /// Common task fields
+    #[serde(flatten)]
+    pub common: TaskDefinitionFields,
+}
+
+impl Default for CallAgentTaskDefinition {
+    fn default() -> Self {
+        Self {
+            call: "agent".to_string(),
+            with: AgentArguments::default(),
+            common: TaskDefinitionFields::default(),
+        }
+    }
+}
+
+/// Arguments for a native agent call.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentArguments {
+    /// Agent definition id or portal agent name.
+    #[serde(rename = "agent")]
+    pub agent: String,
+    /// Optional skill id or skill name. If absent, all active skills attached to the agent are used.
+    #[serde(rename = "skill", skip_serializing_if = "Option::is_none")]
+    pub skill: Option<String>,
+    /// Structured task input passed to the agent. Defaults to the workflow context.
+    #[serde(rename = "input", skip_serializing_if = "Option::is_none")]
+    pub input: Option<Value>,
+    /// Additional user prompt appended after the selected skill instructions.
+    #[serde(rename = "prompt", skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// Additional system instructions appended after the selected skill instructions.
+    #[serde(rename = "instructions", skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    /// Inline JSON schema subset for the expected agent output.
+    #[serde(rename = "outputSchema", skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
+    /// Reference to a schema in the workflow document.
+    #[serde(rename = "outputSchemaRef", skip_serializing_if = "Option::is_none")]
+    pub output_schema_ref: Option<String>,
+    /// Deterministic output for local demos and executor tests.
+    #[serde(rename = "mockOutput", skip_serializing_if = "Option::is_none")]
+    pub mock_output: Option<Value>,
+    /// Behavior when the model output is not valid JSON or does not match the output schema.
+    #[serde(rename = "onInvalidOutput", skip_serializing_if = "Option::is_none")]
+    pub on_invalid_output: Option<AgentInvalidOutputPolicy>,
+}
+
+/// Retry and fallback settings for malformed agent output.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentInvalidOutputPolicy {
+    /// Number of additional attempts after the first invalid output.
+    #[serde(rename = "retry", skip_serializing_if = "Option::is_none")]
+    pub retry: Option<u32>,
+    /// Task to route to after retry exhaustion.
+    #[serde(rename = "then", skip_serializing_if = "Option::is_none")]
+    pub then: Option<String>,
+}
+
 /// Represents the definition of a task used to perform an MCP call
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CallMcpTaskDefinition {
@@ -1041,6 +1115,7 @@ impl CallTaskDefinition {
             Self::Http(v) => &v.common,
             Self::OpenApi(v) => &v.common,
             Self::A2a(v) => &v.common,
+            Self::Agent(v) => &v.common,
             Self::Mcp(v) => &v.common,
             Self::JsonRpc(v) => &v.common,
             Self::OpenRpc(v) => &v.common,
@@ -1057,6 +1132,7 @@ impl CallTaskDefinition {
             Self::Http(v) => &mut v.common,
             Self::OpenApi(v) => &mut v.common,
             Self::A2a(v) => &mut v.common,
+            Self::Agent(v) => &mut v.common,
             Self::Mcp(v) => &mut v.common,
             Self::JsonRpc(v) => &mut v.common,
             Self::OpenRpc(v) => &mut v.common,

@@ -13,6 +13,7 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 workflow-core = { path = "../../crates/workflow-core" }
 light-rule = { path = "../../crates/light-rule" }
+model-provider = { path = "../../crates/model-provider" }
 sqlx = { version = "0.8", features = ["chrono", "json", "postgres", "runtime-tokio-rustls", "uuid"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }

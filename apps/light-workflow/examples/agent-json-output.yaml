@@ -1,0 +1,83 @@
+document:
+  dsl: "1.0.3"
+  namespace: light-portal
+  name: agent-json-output
+  version: "1.0.0"
+  title: Agent JSON Output
+  summary: Runs a native agent task and exports validated structured JSON.
+  tags:
+    testType: local
+    dependencies: agent-catalog
+input:
+  schema:
+    format: json
+    document:
+      type: object
+      properties:
+        claimId:
+          type: string
+        accidentDescription:
+          type: string
+      required:
+        - claimId
+        - accidentDescription
+outputSchemas:
+  intakeSummary:
+    type: object
+    required:
+      - summary
+      - missingInformation
+      - requiresHumanReview
+    properties:
+      summary:
+        type: string
+      missingInformation:
+        type: array
+        items:
+          type: string
+      requiresHumanReview:
+        type: boolean
+do:
+  - summarizeClaim:
+      call: agent
+      with:
+        agent: claim-intake-agent
+        skill: claim-intake
+        input:
+          claimId: "${ .claimId }"
+          accidentDescription: "${ .accidentDescription }"
+        outputSchemaRef: intakeSummary
+        mockOutput:
+          summary: Mock claim intake completed.
+          missingInformation: []
+          requiresHumanReview: false
+        onInvalidOutput:
+          retry: 1
+          then: requestManualReview
+      export:
+        as:
+          intakeSummary: .output
+      then: completeWorkflow
+  - requestManualReview:
+      ask:
+        prompt: Review the agent output issue and decide whether the claim can continue.
+        mode: approval
+        assignment:
+          roleId: claims-adjuster
+          categoryCode: claim-review
+          reasonCode: invalid-agent-output
+        options:
+          - label: Continue
+            value: CONTINUE
+          - label: Hold
+            value: HOLD
+        required: true
+      export:
+        as:
+          manualReview: .output
+      then: completeWorkflow
+  - completeWorkflow:
+      set:
+        claimId: "${ .claimId }"
+        intakeSummary: "${ .intakeSummary }"
+        status: COMPLETED

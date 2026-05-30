@@ -184,6 +184,57 @@ mod unit_tests {
     }
 
     #[test]
+    fn test_agent_call_deserialization() {
+        let agent_task_json = json!({
+            "call": "agent",
+            "with": {
+                "agent": "coverage-liability-agent",
+                "skill": "coverage-review",
+                "input": {
+                    "claim": "${ .claim }"
+                },
+                "outputSchemaRef": "coverageReview",
+                "onInvalidOutput": {
+                    "retry": 1,
+                    "then": "requestAdjusterApproval"
+                }
+            },
+            "export": {
+                "as": {
+                    "coverageReview": ".output"
+                }
+            }
+        });
+
+        let result: Result<TaskDefinition, _> = serde_json::from_value(agent_task_json);
+
+        match result {
+            Ok(TaskDefinition::Call(CallTaskDefinition::Agent(agent_def))) => {
+                assert_eq!(agent_def.with.agent, "coverage-liability-agent");
+                assert_eq!(agent_def.with.skill.as_deref(), Some("coverage-review"));
+                assert_eq!(
+                    agent_def.with.output_schema_ref.as_deref(),
+                    Some("coverageReview")
+                );
+                assert_eq!(
+                    agent_def
+                        .with
+                        .on_invalid_output
+                        .as_ref()
+                        .and_then(|policy| policy.retry),
+                    Some(1)
+                );
+            }
+            Ok(other) => {
+                panic!("Agent call deserialized as unexpected variant: {:?}", other);
+            }
+            Err(e) => {
+                panic!("Failed to deserialize agent call: {}", e);
+            }
+        }
+    }
+
+    #[test]
     fn test_for_task_with_while_condition() {
         // TestFor task with a while condition
         let for_task_json = json!({

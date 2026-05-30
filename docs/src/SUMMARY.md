@@ -73,6 +73,7 @@
   - [Deploy Kubernetes](product/light-gateway/deploy-kubernetes.md)
 - [Light-Workflow](product/light-workflow.md)
   - [Start Workflow](product/light-workflow/start-workflow.md)
+  - [Insurance Claim Agentic Workflow](product/workflow/insurance-claim-agentic-workflow.md)
 
 # Comparisons
 

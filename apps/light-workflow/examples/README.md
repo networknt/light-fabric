@@ -13,6 +13,34 @@ portal workflow definition table and started from the portal UI or command API.
   tools are visible in the control plane:
   `getCustomerProfile`, `getCustomerPreferences`, `searchOffers`, and
   `recordOfferDecision`.
+- For `agent-json-output.yaml`, import the demo agent catalog events with
+  `event-importer`. The file uses the standard local host/user ids from
+  `event-importer/events/local`; pass replacement rules when importing into
+  another host:
+
+```bash
+cd /home/steve/workspace/event-importer
+./importer.sh \
+  --filename /home/steve/workspace/light-fabric/apps/light-workflow/examples/agent-catalog-events.json
+```
+
+For a different host/user:
+
+```bash
+./importer.sh \
+  --filename /home/steve/workspace/light-fabric/apps/light-workflow/examples/agent-catalog-events.json \
+  --replacement '[
+    {"field":"hostId","from":"01964b05-552a-7c4b-9184-6857e7f3dc5f","to":"<host-id>"},
+    {"field":"user","from":"01964b05-5532-7c79-8cde-191dcbd421b8","to":"<user-id>"},
+    {"field":"operationOwner","from":"01964b05-5532-7c79-8cde-191dcbd421b8","to":"<user-id>"},
+    {"field":"deliveryOwner","from":"01964b05-5532-7c79-8cde-191dcbd421b8","to":"<user-id>"}
+  ]'
+```
+
+The event seed uses `modelProvider: mock` for deterministic local execution.
+For a real model, submit update events through the portal command path or adjust
+the event data before import. In phase 1, `apiKeyRef` is resolved as an
+environment variable name such as `OPENAI_API_KEY`, or as `env:OPENAI_API_KEY`.
 
 The `startWorkflow` command must send `input` as a JSON object, not as a JSON
 string.
@@ -118,6 +146,26 @@ Expected behavior:
 | ----- | --------------- |
 | Valid `requestId` and `summary` | Stops at `requestApproval` with task status `W`; creates a `task_asst_t` row for role `admin`, category `approval`, reason `human-approval`. |
 | Approval completed with `APPROVED` or `REJECTED` | Resumes and records the selected approval payload in `recordDecision`. |
+
+### `agent-json-output.yaml`
+
+Runs a native `call: agent` task, validates the returned JSON against an inline
+workflow schema reference, exports it into workflow context, and persists a
+compact `_agentAudit` field in task output.
+
+```json
+{
+  "claimId": "CLM-1001",
+  "accidentDescription": "Rear-end collision at a traffic light. No injuries reported."
+}
+```
+
+Expected behavior:
+
+| Input | Expected result |
+| ----- | --------------- |
+| Valid `claimId` and `accidentDescription` | Completes with `intakeSummary.summary`, `missingInformation`, `requiresHumanReview`, and `_agentAudit`. |
+| Invalid agent JSON after retry exhaustion | Routes to `requestManualReview` and creates a `claims-adjuster` role assignment. |
 
 ### `http-risk-decision.yaml`
 

@@ -1,9 +1,14 @@
 use light_rule::{ActionRegistry, MultiThreadRuleExecutor, RuleConfig, RuleEngine};
+use model_provider::{
+    AnthropicProvider, ChatMessage, ChatRequest, CompatibleProvider, GeminiProvider,
+    OllamaProvider, OpenAiProvider, OpenRouterProvider, Provider,
+};
 use regex::Regex;
 use serde_json::{Map as JsonMap, Number, Value, json};
 use serde_yaml::Value as YamlValue;
 use sqlx::{PgPool, Postgres, Transaction};
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::io;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -11,9 +16,9 @@ use tokio::time::sleep;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 use workflow_core::models::task::{
-    AskDefinition, AssertComparison, AssertComparisonObject, AssertDefinition, CallTaskDefinition,
-    HasLengthComparison, JsonRpcArguments, JsonRpcErrorPolicy, McpArguments, McpServerDefinition,
-    OpenRpcArguments, SetValue, TaskDefinition, TaskDefinitionFields,
+    AgentArguments, AskDefinition, AssertComparison, AssertComparisonObject, AssertDefinition,
+    CallTaskDefinition, HasLengthComparison, JsonRpcArguments, JsonRpcErrorPolicy, McpArguments,
+    McpServerDefinition, OpenRpcArguments, SetValue, TaskDefinition, TaskDefinitionFields,
 };
 use workflow_core::models::workflow::WorkflowDefinition;
 
@@ -24,6 +29,8 @@ static TEMPLATE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 });
 const TASK_LOCK_TIMEOUT_MINUTES: i64 = 5;
 const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
+const MAX_AGENT_OUTPUT_BYTES: usize = 128 * 1024;
+const AGENT_PROMPT_VERSION: u32 = 1;
 
 #[derive(sqlx::FromRow)]
 pub struct ActiveTask {
@@ -49,6 +56,46 @@ struct TaskExecutionResult {
     task_output: Value,
     next_task: Option<String>,
     context_data: Option<Value>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct AgentDefinitionRecord {
+    agent_def_id: Uuid,
+    agent_name: Option<String>,
+    model_provider: String,
+    model_name: String,
+    api_key_ref: Option<String>,
+    temperature: f64,
+    max_tokens: Option<i32>,
+    aggregate_version: i64,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct AgentSkillRecord {
+    skill_id: Uuid,
+    name: String,
+    description: Option<String>,
+    content_markdown: String,
+    priority: Option<i32>,
+    sequence_id: Option<i32>,
+    aggregate_version: i64,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct AgentToolRecord {
+    skill_id: Uuid,
+    tool_id: Uuid,
+    name: String,
+    description: String,
+    access_level: Option<String>,
+    response_schema: Option<Value>,
+    params: Value,
+}
+
+struct AgentCatalog {
+    agent: AgentDefinitionRecord,
+    skills: Vec<AgentSkillRecord>,
+    tools: Vec<AgentToolRecord>,
 }
 
 pub struct TaskExecutor {
@@ -313,6 +360,16 @@ impl TaskExecutor {
                 self.execute_mcp_call(&mcp_call.with, &claimed.definition, &claimed.context_data)
                     .await
             }
+            TaskDefinition::Call(CallTaskDefinition::Agent(agent_call)) => {
+                self.execute_agent_call(
+                    &agent_call.with,
+                    &claimed.context_data,
+                    &claimed.raw_definition,
+                    &claimed.task.host_id,
+                    &claimed.task.wf_task_id,
+                )
+                .await
+            }
             TaskDefinition::Call(CallTaskDefinition::Rule(rule_call)) => {
                 let rule_id = &rule_call.with.rule_id;
                 info!(">>> Making Rule Engine call to: {}", rule_id);
@@ -554,6 +611,775 @@ impl TaskExecutor {
             context,
         )
         .await
+    }
+
+    async fn execute_agent_call(
+        &self,
+        args: &AgentArguments,
+        context: &Value,
+        raw_definition: &YamlValue,
+        host_id: &Uuid,
+        task_name: &str,
+    ) -> Result<TaskExecutionResult, DynError> {
+        let catalog = self
+            .load_agent_catalog(host_id, &args.agent, args.skill.as_deref())
+            .await?;
+        let task_input = args
+            .input
+            .as_ref()
+            .map(|input| self.resolve_json_value(input, context))
+            .unwrap_or_else(|| context.clone());
+        let output_schema = self.resolve_agent_output_schema(args, raw_definition)?;
+        let retry_count = args
+            .on_invalid_output
+            .as_ref()
+            .and_then(|policy| policy.retry)
+            .unwrap_or(0);
+        let max_attempts = retry_count.saturating_add(1);
+        let mut last_error = None;
+
+        info!(
+            ">>> Executing agent task {} with agent {}",
+            task_name, args.agent
+        );
+
+        for attempt in 1..=max_attempts {
+            let raw_output = if let Some(mock_output) = &args.mock_output {
+                serde_json::to_string(&self.resolve_json_value(mock_output, context))?
+            } else if Self::is_mock_provider(&catalog.agent.model_provider) {
+                serde_json::to_string(&Self::mock_agent_output(output_schema.as_ref()))?
+            } else {
+                self.execute_agent_model_call(
+                    args,
+                    &catalog,
+                    &task_input,
+                    context,
+                    output_schema.as_ref(),
+                )
+                .await?
+            };
+
+            if raw_output.len() > MAX_AGENT_OUTPUT_BYTES {
+                last_error = Some(format!(
+                    "agent output exceeded {} bytes",
+                    MAX_AGENT_OUTPUT_BYTES
+                ));
+                warn!(
+                    "Agent task {} attempt {} produced oversized output",
+                    task_name, attempt
+                );
+                continue;
+            }
+
+            match Self::parse_agent_json_output(&raw_output)
+                .and_then(|output| Self::validate_agent_output(output, output_schema.as_ref()))
+            {
+                Ok(mut output) => {
+                    let audit = Self::agent_audit_output(&catalog, attempt, &output, None);
+                    Self::attach_agent_audit(&mut output, audit);
+                    return Ok(TaskExecutionResult {
+                        status_code: "C",
+                        task_output: output,
+                        next_task: None,
+                        context_data: None,
+                    });
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    warn!(
+                        "Agent task {} attempt {} returned invalid output: {}",
+                        task_name, attempt, message
+                    );
+                    last_error = Some(message);
+                }
+            }
+        }
+
+        let detail = last_error.unwrap_or_else(|| "agent output was invalid".to_string());
+        let error_output = json!({
+            "error": "invalid_agent_output",
+            "detail": detail,
+            "_agentAudit": Self::agent_audit_output(&catalog, max_attempts, &json!({}), Some("invalid_agent_output")),
+        });
+
+        if let Some(next_task) = args
+            .on_invalid_output
+            .as_ref()
+            .and_then(|policy| policy.then.clone())
+        {
+            Ok(TaskExecutionResult {
+                status_code: "C",
+                task_output: error_output,
+                next_task: Some(next_task),
+                context_data: None,
+            })
+        } else {
+            Ok(TaskExecutionResult {
+                status_code: "F",
+                task_output: error_output,
+                next_task: None,
+                context_data: None,
+            })
+        }
+    }
+
+    async fn load_agent_catalog(
+        &self,
+        host_id: &Uuid,
+        agent_ref: &str,
+        skill_ref: Option<&str>,
+    ) -> Result<AgentCatalog, DynError> {
+        let agent = sqlx::query_as::<_, AgentDefinitionRecord>(
+            r#"
+            SELECT ad.agent_def_id,
+                   a.api_name AS agent_name,
+                   ad.model_provider,
+                   ad.model_name,
+                   ad.api_key_ref,
+                   COALESCE(ad.temperature, 0.7)::float8 AS temperature,
+                   ad.max_tokens,
+                   ad.aggregate_version
+            FROM agent_definition_t ad
+            LEFT JOIN api_version_t av
+              ON av.host_id = ad.host_id
+             AND av.api_version_id = ad.agent_def_id
+             AND av.active = TRUE
+            LEFT JOIN api_t a
+              ON a.host_id = av.host_id
+             AND a.api_id = av.api_id
+             AND a.active = TRUE
+            WHERE ad.host_id = $1
+              AND ad.active = TRUE
+              AND (ad.agent_def_id::text = $2 OR LOWER(COALESCE(a.api_name, '')) = LOWER($2))
+            LIMIT 1
+            "#,
+        )
+        .bind(host_id)
+        .bind(agent_ref)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("active agent definition not found: {}", agent_ref),
+            )
+        })?;
+
+        let skills = sqlx::query_as::<_, AgentSkillRecord>(
+            r#"
+            SELECT s.skill_id,
+                   s.name,
+                   s.description,
+                   s.content_markdown,
+                   ag.priority,
+                   ag.sequence_id,
+                   GREATEST(ag.aggregate_version, s.aggregate_version) AS aggregate_version
+            FROM agent_skill_t ag
+            JOIN skill_t s
+              ON s.host_id = ag.host_id
+             AND s.skill_id = ag.skill_id
+            WHERE ag.host_id = $1
+              AND ag.agent_def_id = $2
+              AND ag.active = TRUE
+              AND s.active = TRUE
+              AND ($3::text IS NULL OR s.skill_id::text = $3 OR LOWER(s.name) = LOWER($3))
+            ORDER BY COALESCE(ag.sequence_id, 0), COALESCE(ag.priority, 0) DESC, s.name
+            "#,
+        )
+        .bind(host_id)
+        .bind(agent.agent_def_id)
+        .bind(skill_ref)
+        .fetch_all(&self.pool)
+        .await?;
+
+        if skills.is_empty() {
+            let message = match skill_ref {
+                Some(skill) => format!(
+                    "active skill '{}' is not attached to agent {}",
+                    skill, agent_ref
+                ),
+                None => format!("agent {} has no active skills", agent_ref),
+            };
+            return Err(io::Error::new(io::ErrorKind::NotFound, message).into());
+        }
+
+        let skill_ids: Vec<Uuid> = skills.iter().map(|skill| skill.skill_id).collect();
+        let tools = sqlx::query_as::<_, AgentToolRecord>(
+            r#"
+            SELECT st.skill_id,
+                   t.tool_id,
+                   t.name,
+                   t.description,
+                   st.access_level,
+                   t.response_schema,
+                   COALESCE(
+                     jsonb_agg(
+                       jsonb_build_object(
+                         'name', tp.name,
+                         'type', tp.param_type,
+                         'required', tp.required,
+                         'description', tp.description,
+                         'validationSchema', tp.validation_schema
+                       )
+                       ORDER BY tp.order_index
+                     ) FILTER (WHERE tp.param_id IS NOT NULL),
+                     '[]'::jsonb
+                   ) AS params
+            FROM skill_tool_t st
+            JOIN tool_t t
+              ON t.host_id = st.host_id
+             AND t.tool_id = st.tool_id
+            LEFT JOIN tool_param_t tp
+              ON tp.host_id = t.host_id
+             AND tp.tool_id = t.tool_id
+             AND tp.active = TRUE
+            WHERE st.host_id = $1
+              AND st.skill_id = ANY($2)
+              AND st.active = TRUE
+              AND t.active = TRUE
+            GROUP BY st.skill_id, t.tool_id, t.name, t.description, st.access_level, t.response_schema
+            ORDER BY st.skill_id, t.name
+            "#,
+        )
+        .bind(host_id)
+        .bind(&skill_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(AgentCatalog {
+            agent,
+            skills,
+            tools,
+        })
+    }
+
+    async fn execute_agent_model_call(
+        &self,
+        args: &AgentArguments,
+        catalog: &AgentCatalog,
+        task_input: &Value,
+        context: &Value,
+        output_schema: Option<&Value>,
+    ) -> Result<String, DynError> {
+        let provider = self.build_agent_provider(&catalog.agent)?;
+        let messages =
+            self.build_agent_messages(args, catalog, task_input, context, output_schema)?;
+        let response = provider
+            .chat(
+                ChatRequest {
+                    messages: &messages,
+                    tools: None,
+                },
+                &catalog.agent.model_name,
+                catalog.agent.temperature,
+            )
+            .await?;
+
+        response.text.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "agent provider returned no text content",
+            )
+            .into()
+        })
+    }
+
+    fn build_agent_provider(
+        &self,
+        agent: &AgentDefinitionRecord,
+    ) -> Result<Box<dyn Provider>, DynError> {
+        let api_key = self.resolve_agent_api_key(agent);
+        let base_url = self.provider_base_url(&agent.model_provider);
+        let max_tokens = agent
+            .max_tokens
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value > 0);
+        let provider_name = agent.model_provider.to_ascii_lowercase();
+
+        match provider_name.as_str() {
+            "openai" | "open-ai" => Ok(Box::new(
+                OpenAiProvider::new(base_url.as_deref(), api_key.as_deref())?
+                    .with_max_tokens(max_tokens),
+            )),
+            "anthropic" | "claude" => {
+                let mut provider = AnthropicProvider::new(base_url.as_deref(), api_key.as_deref())?;
+                if let Some(max_tokens) = max_tokens {
+                    provider = provider.with_max_tokens(max_tokens);
+                }
+                Ok(Box::new(provider))
+            }
+            "gemini" | "google" | "google-gemini" => {
+                let mut provider = GeminiProvider::new(base_url.as_deref(), api_key.as_deref())?;
+                if let Some(max_tokens) = max_tokens {
+                    provider = provider.with_max_tokens(max_tokens);
+                }
+                Ok(Box::new(provider))
+            }
+            "ollama" => Ok(Box::new(OllamaProvider::new(
+                base_url.as_deref(),
+                api_key.as_deref(),
+            )?)),
+            "openrouter" | "open-router" => Ok(Box::new(
+                OpenRouterProvider::new(base_url.as_deref(), api_key.as_deref())?
+                    .with_max_tokens(max_tokens),
+            )),
+            "compatible" | "openai-compatible" | "open-ai-compatible" => {
+                let base_url = base_url.ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "compatible agent provider requires LIGHT_WORKFLOW_AGENT_COMPATIBLE_BASE_URL or COMPATIBLE_BASE_URL",
+                    )
+                })?;
+                Ok(Box::new(
+                    CompatibleProvider::new(&agent.model_provider, &base_url, api_key.as_deref())?
+                        .with_max_tokens(max_tokens),
+                ))
+            }
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unsupported agent model provider '{}'", other),
+            )
+            .into()),
+        }
+    }
+
+    fn build_agent_messages(
+        &self,
+        args: &AgentArguments,
+        catalog: &AgentCatalog,
+        task_input: &Value,
+        context: &Value,
+        output_schema: Option<&Value>,
+    ) -> Result<Vec<ChatMessage>, DynError> {
+        let mut system = String::from(
+            "You are executing a bounded light-workflow agent task. Workflow context is authoritative. Do not use private memory for cross-step state. Return only one JSON object and no markdown.",
+        );
+
+        system.push_str("\n\nSelected skills:");
+        for skill in &catalog.skills {
+            system.push_str(&format!(
+                "\n\n## {} ({})\nsequence: {:?}, priority: {:?}",
+                skill.name, skill.skill_id, skill.sequence_id, skill.priority
+            ));
+            if let Some(description) = &skill.description {
+                system.push_str(&format!("\ndescription: {}", description));
+            }
+            system.push_str("\n");
+            system.push_str(&skill.content_markdown);
+        }
+
+        if !catalog.tools.is_empty() {
+            system.push_str(
+                "\n\nPermitted skill tools are listed for context and future tool routing. In this runtime phase, API orchestration remains explicit workflow tasks; do not invent unlisted tools.",
+            );
+            let tool_catalog: Vec<Value> = catalog
+                .tools
+                .iter()
+                .map(|tool| {
+                    json!({
+                        "skillId": tool.skill_id,
+                        "toolId": tool.tool_id,
+                        "name": tool.name,
+                        "description": tool.description,
+                        "accessLevel": tool.access_level,
+                        "params": tool.params,
+                        "responseSchema": tool.response_schema,
+                    })
+                })
+                .collect();
+            system.push_str("\n");
+            system.push_str(&serde_json::to_string_pretty(&tool_catalog)?);
+        }
+
+        if let Some(instructions) = &args.instructions {
+            system.push_str("\n\nAdditional instructions:\n");
+            system.push_str(&self.resolve_template_to_string(instructions, context));
+        }
+
+        if let Some(output_schema) = output_schema {
+            system.push_str("\n\nOutput JSON schema subset:\n");
+            system.push_str(&serde_json::to_string_pretty(output_schema)?);
+        }
+
+        let mut user_payload = json!({
+            "taskInput": task_input,
+            "workflowContext": context,
+        });
+        if let Some(prompt) = &args.prompt {
+            user_payload["prompt"] =
+                Value::String(self.resolve_template_to_string(prompt, context));
+        }
+
+        Ok(vec![
+            ChatMessage::system(system),
+            ChatMessage::user(serde_json::to_string_pretty(&user_payload)?),
+        ])
+    }
+
+    fn resolve_agent_api_key(&self, agent: &AgentDefinitionRecord) -> Option<String> {
+        if let Some(api_key_ref) = agent
+            .api_key_ref
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if let Some(value) = api_key_ref.strip_prefix("literal:") {
+                return Some(value.to_string());
+            }
+
+            let env_name = api_key_ref.strip_prefix("env:").unwrap_or(api_key_ref);
+            match env::var(env_name) {
+                Ok(value) if !value.trim().is_empty() => return Some(value),
+                _ => warn!(
+                    "Agent api_key_ref '{}' was not found as an environment variable",
+                    api_key_ref
+                ),
+            }
+        }
+
+        for env_name in Self::provider_api_key_env_names(&agent.model_provider) {
+            if let Ok(value) = env::var(env_name) {
+                if !value.trim().is_empty() {
+                    return Some(value);
+                }
+            }
+        }
+
+        None
+    }
+
+    fn provider_base_url(&self, provider: &str) -> Option<String> {
+        let normalized = provider
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_uppercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        let keys = [
+            format!("LIGHT_WORKFLOW_AGENT_{}_BASE_URL", normalized),
+            format!("{}_BASE_URL", normalized),
+        ];
+
+        keys.iter().find_map(|key| {
+            env::var(key)
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+    }
+
+    fn provider_api_key_env_names(provider: &str) -> Vec<&'static str> {
+        match provider.to_ascii_lowercase().as_str() {
+            "openai" | "open-ai" => vec!["OPENAI_API_KEY"],
+            "anthropic" | "claude" => vec!["ANTHROPIC_API_KEY"],
+            "gemini" | "google" | "google-gemini" => vec!["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+            "ollama" => vec!["OLLAMA_API_KEY"],
+            "openrouter" | "open-router" => vec!["OPENROUTER_API_KEY"],
+            "compatible" | "openai-compatible" | "open-ai-compatible" => {
+                vec!["COMPATIBLE_API_KEY", "OPENAI_API_KEY"]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn is_mock_provider(provider: &str) -> bool {
+        matches!(
+            provider.to_ascii_lowercase().as_str(),
+            "mock" | "stub" | "echo"
+        )
+    }
+
+    fn resolve_agent_output_schema(
+        &self,
+        args: &AgentArguments,
+        raw_definition: &YamlValue,
+    ) -> Result<Option<Value>, DynError> {
+        if let Some(schema) = &args.output_schema {
+            return Ok(Some(schema.clone()));
+        }
+
+        let Some(schema_ref) = args.output_schema_ref.as_deref() else {
+            return Ok(None);
+        };
+
+        for parent in [
+            raw_definition.get("agentSchemas"),
+            raw_definition.get("outputSchemas"),
+            raw_definition.get("schemas"),
+            raw_definition
+                .get("use")
+                .and_then(|use_| use_.get("agentSchemas")),
+            raw_definition
+                .get("use")
+                .and_then(|use_| use_.get("schemas")),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(schema) = parent.get(schema_ref) {
+                return serde_json::to_value(schema).map(Some).map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("invalid outputSchemaRef '{}': {}", schema_ref, err),
+                    )
+                    .into()
+                });
+            }
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("outputSchemaRef '{}' not found", schema_ref),
+        )
+        .into())
+    }
+
+    fn parse_agent_json_output(output: &str) -> Result<Value, DynError> {
+        let output = output.trim();
+        if output.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "agent output is empty").into());
+        }
+
+        if let Ok(value) = serde_json::from_str::<Value>(output) {
+            return Ok(value);
+        }
+
+        if let Some(fence_start) = output.find("```") {
+            let mut fenced = &output[fence_start + 3..];
+            fenced = fenced.trim_start();
+            if let Some(rest) = fenced.strip_prefix("json") {
+                fenced = rest.trim_start();
+            }
+            if let Some(fence_end) = fenced.find("```") {
+                if let Ok(value) = serde_json::from_str::<Value>(fenced[..fence_end].trim()) {
+                    return Ok(value);
+                }
+            }
+        }
+
+        if let (Some(start), Some(end)) = (output.find('{'), output.rfind('}')) {
+            if start < end {
+                return serde_json::from_str::<Value>(&output[start..=end]).map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("agent output is not valid JSON: {}", err),
+                    )
+                    .into()
+                });
+            }
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "agent output did not contain a JSON object",
+        )
+        .into())
+    }
+
+    fn validate_agent_output(
+        output: Value,
+        output_schema: Option<&Value>,
+    ) -> Result<Value, DynError> {
+        if !output.is_object() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "agent output must be a JSON object",
+            )
+            .into());
+        }
+
+        if let Some(schema) = output_schema {
+            Self::validate_json_schema_subset("$", schema, &output).map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("agent output failed schema validation: {}", err),
+                )
+            })?;
+        }
+
+        Ok(output)
+    }
+
+    fn validate_json_schema_subset(
+        path: &str,
+        schema: &Value,
+        value: &Value,
+    ) -> Result<(), String> {
+        if let Some(enum_values) = schema.get("enum").and_then(Value::as_array) {
+            if !enum_values.iter().any(|candidate| candidate == value) {
+                return Err(format!("{} value {} is not in enum", path, value));
+            }
+        }
+
+        if let Some(schema_type) = schema.get("type").and_then(Value::as_str) {
+            let type_matches = match schema_type {
+                "object" => value.is_object(),
+                "array" => value.is_array(),
+                "string" => value.is_string(),
+                "boolean" => value.is_boolean(),
+                "number" => value.is_number(),
+                "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+                "null" => value.is_null(),
+                _ => true,
+            };
+            if !type_matches {
+                return Err(format!("{} expected {}, got {}", path, schema_type, value));
+            }
+        }
+
+        if let Some(required) = schema.get("required").and_then(Value::as_array) {
+            let object = value
+                .as_object()
+                .ok_or_else(|| format!("{} required fields need an object", path))?;
+            for field in required {
+                let Some(field) = field.as_str() else {
+                    continue;
+                };
+                if !object.contains_key(field) || object.get(field).is_some_and(Value::is_null) {
+                    return Err(format!("{} missing required field {}", path, field));
+                }
+            }
+        }
+
+        if let (Some(properties), Some(object)) = (
+            schema.get("properties").and_then(Value::as_object),
+            value.as_object(),
+        ) {
+            for (property, property_schema) in properties {
+                if let Some(property_value) = object.get(property) {
+                    Self::validate_json_schema_subset(
+                        &format!("{}.{}", path, property),
+                        property_schema,
+                        property_value,
+                    )?;
+                }
+            }
+        }
+
+        if let (Some(items_schema), Some(values)) = (schema.get("items"), value.as_array()) {
+            for (index, item) in values.iter().enumerate() {
+                Self::validate_json_schema_subset(
+                    &format!("{}[{}]", path, index),
+                    items_schema,
+                    item,
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn mock_agent_output(output_schema: Option<&Value>) -> Value {
+        let Some(schema) = output_schema else {
+            return json!({ "status": "MOCK_COMPLETED" });
+        };
+        let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+            return json!({ "status": "MOCK_COMPLETED" });
+        };
+
+        let mut output = JsonMap::new();
+        for required in schema
+            .get("required")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            if let Some(property_schema) = properties.get(required) {
+                output.insert(
+                    required.to_string(),
+                    Self::mock_value_for_schema(property_schema),
+                );
+            }
+        }
+
+        if output.is_empty() {
+            output.insert(
+                "status".to_string(),
+                Value::String("MOCK_COMPLETED".to_string()),
+            );
+        }
+
+        Value::Object(output)
+    }
+
+    fn mock_value_for_schema(schema: &Value) -> Value {
+        match schema.get("type").and_then(Value::as_str) {
+            Some("boolean") => Value::Bool(false),
+            Some("integer") => json!(0),
+            Some("number") => json!(0.0),
+            Some("array") => Value::Array(Vec::new()),
+            Some("object") => Value::Object(JsonMap::new()),
+            _ => schema
+                .get("enum")
+                .and_then(Value::as_array)
+                .and_then(|values| values.first())
+                .cloned()
+                .unwrap_or_else(|| Value::String("MOCK".to_string())),
+        }
+    }
+
+    fn attach_agent_audit(output: &mut Value, audit: Value) {
+        if let Some(object) = output.as_object_mut() {
+            object.insert("_agentAudit".to_string(), audit);
+        }
+    }
+
+    fn agent_audit_output(
+        catalog: &AgentCatalog,
+        attempts: u32,
+        output: &Value,
+        error: Option<&str>,
+    ) -> Value {
+        let catalog_version = catalog
+            .skills
+            .iter()
+            .map(|skill| skill.aggregate_version)
+            .chain(std::iter::once(catalog.agent.aggregate_version))
+            .max()
+            .unwrap_or(catalog.agent.aggregate_version);
+        json!({
+            "agentDefId": catalog.agent.agent_def_id,
+            "agentName": catalog.agent.agent_name,
+            "modelProvider": catalog.agent.model_provider,
+            "modelName": catalog.agent.model_name,
+            "promptVersion": AGENT_PROMPT_VERSION,
+            "skillIds": catalog.skills.iter().map(|skill| skill.skill_id).collect::<Vec<_>>(),
+            "skillNames": catalog.skills.iter().map(|skill| skill.name.clone()).collect::<Vec<_>>(),
+            "toolIds": catalog.tools.iter().map(|tool| tool.tool_id).collect::<Vec<_>>(),
+            "toolNames": catalog.tools.iter().map(|tool| tool.name.clone()).collect::<Vec<_>>(),
+            "attempts": attempts,
+            "catalogAggregateVersion": catalog_version,
+            "error": error,
+            "outputSummary": Self::agent_output_summary(output),
+        })
+    }
+
+    fn agent_output_summary(output: &Value) -> Value {
+        if let Some(object) = output.as_object() {
+            let keys: Vec<String> = object
+                .keys()
+                .filter(|key| key.as_str() != "_agentAudit")
+                .take(8)
+                .cloned()
+                .collect();
+            json!({
+                "type": "object",
+                "keys": keys,
+                "status": object
+                    .get("status")
+                    .or_else(|| object.get("decision"))
+                    .or_else(|| object.get("recommendation"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            })
+        } else {
+            json!({ "type": "non_object" })
+        }
     }
 
     async fn execute_jsonrpc_request(
@@ -1988,5 +2814,62 @@ impl TaskExecutor {
         let quoted = (value.starts_with('"') && value.ends_with('"'))
             || (value.starts_with('\'') && value.ends_with('\''));
         quoted.then(|| value[1..value.len() - 1].to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_agent_json_output_accepts_fenced_json() {
+        let parsed = TaskExecutor::parse_agent_json_output(
+            r#"
+            Here is the result:
+            ```json
+            {"decision":"REVIEW","requiresHumanReview":true}
+            ```
+            "#,
+        )
+        .expect("fenced JSON should parse");
+
+        assert_eq!(parsed["decision"], "REVIEW");
+        assert_eq!(parsed["requiresHumanReview"], true);
+    }
+
+    #[test]
+    fn validate_agent_output_rejects_missing_required_fields() {
+        let schema = json!({
+            "type": "object",
+            "required": ["decision", "confidence"],
+            "properties": {
+                "decision": { "type": "string" },
+                "confidence": { "type": "number" }
+            }
+        });
+        let output = json!({ "decision": "APPROVE" });
+
+        let result = TaskExecutor::validate_agent_output(output, Some(&schema));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_agent_output_adds_audit_after_schema_validation() {
+        let schema = json!({
+            "type": "object",
+            "required": ["decision"],
+            "properties": {
+                "decision": { "type": "string", "enum": ["APPROVE", "REVIEW"] }
+            }
+        });
+        let mut output =
+            TaskExecutor::validate_agent_output(json!({ "decision": "APPROVE" }), Some(&schema))
+                .expect("output should match schema");
+
+        TaskExecutor::attach_agent_audit(&mut output, json!({ "attempts": 1 }));
+
+        assert_eq!(output["decision"], "APPROVE");
+        assert_eq!(output["_agentAudit"]["attempts"], 1);
     }
 }
