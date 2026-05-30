@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, anyhow, bail};
+use async_trait::async_trait;
 use axum::{
     Json, Router,
     extract::{
@@ -221,6 +222,14 @@ fn to_portal_query_url(portal_url: &str) -> anyhow::Result<String> {
     Ok(url.to_string())
 }
 
+fn to_portal_command_url(portal_url: &str) -> anyhow::Result<String> {
+    let mut url = Url::parse(portal_url)
+        .with_context(|| format!("Invalid portal command URL: {portal_url}"))?;
+    url.set_path("/portal/command");
+    url.set_query(None);
+    Ok(url.to_string())
+}
+
 fn registry_token(config: &PortalRegistryConfig) -> Option<String> {
     std::env::var("LIGHT_PORTAL_AUTHORIZATION")
         .ok()
@@ -356,6 +365,88 @@ struct PortalQueryClient {
     client: reqwest::Client,
 }
 
+#[derive(Clone)]
+struct PortalCommandClient {
+    url: String,
+    token: String,
+    client: reqwest::Client,
+}
+
+impl PortalCommandClient {
+    fn with_options(
+        portal_url: &str,
+        token: String,
+        ca_cert_pem: Option<&[u8]>,
+        verify_hostname: bool,
+        accept_invalid_certs: bool,
+        timeout_ms: u64,
+    ) -> Result<Self> {
+        let mut builder = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(timeout_ms))
+            .connect_timeout(std::time::Duration::from_millis(timeout_ms));
+
+        if let Some(pem) = ca_cert_pem {
+            let certificates = light_client::parse_ca_cert_bundle(pem).context(
+                "Invalid ca_cert_pem: failed to parse PEM-encoded CA certificate bundle",
+            )?;
+            for certificate in certificates {
+                builder = builder.add_root_certificate(certificate);
+            }
+        }
+
+        if !verify_hostname {
+            builder = builder.danger_accept_invalid_hostnames(true);
+        }
+        if accept_invalid_certs {
+            warn!(
+                "TLS certificate validation is disabled for the portal command client; this should only be enabled in development environments"
+            );
+            builder = builder.danger_accept_invalid_certs(true);
+        }
+
+        Ok(Self {
+            url: to_portal_command_url(portal_url)?,
+            token,
+            client: builder
+                .build()
+                .context("Failed to build portal command client")?,
+        })
+    }
+
+    async fn call(&self, action: &str, data: serde_json::Value) -> Result<serde_json::Value> {
+        let request = serde_json::json!({
+            "host": "lightapi.net",
+            "service": "genai",
+            "action": action,
+            "version": "0.1.0",
+            "data": data
+        });
+        let response = self
+            .client
+            .post(&self.url)
+            .bearer_auth(&self.token)
+            .json(&request)
+            .send()
+            .await
+            .context("HTTP request to portal command failed")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            bail!("portal command {action} returned HTTP {status}: {body}");
+        }
+
+        let value: serde_json::Value = response
+            .json()
+            .await
+            .context("Failed to parse portal command response")?;
+        if value.get("statusCode").is_some() || value.get("code").is_some() {
+            bail!("portal command {action} returned an error response: {value}");
+        }
+        Ok(value)
+    }
+}
+
 impl PortalQueryClient {
     fn with_options(
         portal_url: &str,
@@ -451,6 +542,236 @@ impl PortalQueryClient {
     }
 }
 
+#[async_trait]
+trait MemoryStore: Send + Sync {
+    async fn ensure_session_memory_bank(
+        &self,
+        host_id: Uuid,
+        bank_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<()>;
+    async fn load_session_history(
+        &self,
+        host_id: Uuid,
+        bank_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<Vec<ChatMessage>>;
+    async fn persist_session_history(
+        &self,
+        host_id: Uuid,
+        bank_id: Uuid,
+        session_id: Uuid,
+        history: &[ChatMessage],
+    ) -> Result<()>;
+    async fn retain(
+        &self,
+        host_id: Uuid,
+        bank_id: Uuid,
+        content: &str,
+        fact_type: &str,
+        metadata: serde_json::Value,
+    ) -> Result<Uuid>;
+    async fn recall(
+        &self,
+        host_id: Uuid,
+        bank_id: Uuid,
+        query_embedding: Vec<f32>,
+        limit: i32,
+    ) -> Result<Vec<hindsight_client::MemoryUnit>>;
+}
+
+struct DirectPgMemoryStore {
+    pool: PgPool,
+    hindsight: PgHindsightClient,
+}
+
+impl DirectPgMemoryStore {
+    fn new(pool: PgPool) -> Self {
+        Self {
+            hindsight: PgHindsightClient::new(pool.clone()),
+            pool,
+        }
+    }
+}
+
+struct PortalCommandMemoryStore {
+    pool: PgPool,
+    hindsight: PgHindsightClient,
+    command_client: PortalCommandClient,
+}
+
+impl PortalCommandMemoryStore {
+    fn new(pool: PgPool, command_client: PortalCommandClient) -> Self {
+        Self {
+            hindsight: PgHindsightClient::new(pool.clone()),
+            pool,
+            command_client,
+        }
+    }
+}
+
+#[async_trait]
+impl MemoryStore for DirectPgMemoryStore {
+    async fn ensure_session_memory_bank(
+        &self,
+        host_id: Uuid,
+        bank_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<()> {
+        insert_session_memory_bank(&self.pool, host_id, bank_id, session_id).await
+    }
+
+    async fn load_session_history(
+        &self,
+        host_id: Uuid,
+        bank_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<Vec<ChatMessage>> {
+        load_session_history_from_db(&self.pool, host_id, bank_id, session_id).await
+    }
+
+    async fn persist_session_history(
+        &self,
+        host_id: Uuid,
+        bank_id: Uuid,
+        session_id: Uuid,
+        history: &[ChatMessage],
+    ) -> Result<()> {
+        persist_session_history_to_db(&self.pool, host_id, bank_id, session_id, history).await
+    }
+
+    async fn retain(
+        &self,
+        host_id: Uuid,
+        bank_id: Uuid,
+        content: &str,
+        fact_type: &str,
+        metadata: serde_json::Value,
+    ) -> Result<Uuid> {
+        self.hindsight
+            .retain(host_id, bank_id, content, fact_type, None, metadata)
+            .await
+    }
+
+    async fn recall(
+        &self,
+        host_id: Uuid,
+        bank_id: Uuid,
+        query_embedding: Vec<f32>,
+        limit: i32,
+    ) -> Result<Vec<hindsight_client::MemoryUnit>> {
+        self.hindsight
+            .recall(host_id, bank_id, query_embedding, limit)
+            .await
+    }
+}
+
+#[async_trait]
+impl MemoryStore for PortalCommandMemoryStore {
+    async fn ensure_session_memory_bank(
+        &self,
+        host_id: Uuid,
+        bank_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<()> {
+        self.command_client
+            .call(
+                "createAgentMemoryBank",
+                serde_json::json!({
+                    "hostId": host_id,
+                    "bankId": bank_id,
+                    "bankName": format!("session-{session_id}")
+                }),
+            )
+            .await?;
+
+        if !session_history_exists(&self.pool, host_id, bank_id, session_id).await? {
+            self.command_client
+                .call(
+                    "createAgentSessionHistory",
+                    serde_json::json!({
+                        "hostId": host_id,
+                        "bankId": bank_id,
+                        "sessionId": session_id,
+                        "messages": []
+                    }),
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn load_session_history(
+        &self,
+        host_id: Uuid,
+        bank_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<Vec<ChatMessage>> {
+        load_session_history_from_db(&self.pool, host_id, bank_id, session_id).await
+    }
+
+    async fn persist_session_history(
+        &self,
+        host_id: Uuid,
+        bank_id: Uuid,
+        session_id: Uuid,
+        history: &[ChatMessage],
+    ) -> Result<()> {
+        self.command_client
+            .call(
+                "compactAgentSessionHistory",
+                serde_json::json!({
+                    "hostId": host_id,
+                    "bankId": bank_id,
+                    "sessionId": session_id,
+                    "messages": history
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn retain(
+        &self,
+        host_id: Uuid,
+        bank_id: Uuid,
+        content: &str,
+        fact_type: &str,
+        metadata: serde_json::Value,
+    ) -> Result<Uuid> {
+        let value = self
+            .command_client
+            .call(
+                "retainAgentMemoryUnit",
+                serde_json::json!({
+                    "hostId": host_id,
+                    "bankId": bank_id,
+                    "content": content,
+                    "factType": fact_type,
+                    "metadata": metadata
+                }),
+            )
+            .await?;
+        let unit_id = value
+            .get("unitId")
+            .and_then(|value| value.as_str())
+            .context("retainAgentMemoryUnit response did not include unitId")?;
+        Uuid::parse_str(unit_id).context("retainAgentMemoryUnit returned invalid unitId")
+    }
+
+    async fn recall(
+        &self,
+        host_id: Uuid,
+        bank_id: Uuid,
+        query_embedding: Vec<f32>,
+        limit: i32,
+    ) -> Result<Vec<hindsight_client::MemoryUnit>> {
+        self.hindsight
+            .recall(host_id, bank_id, query_embedding, limit)
+            .await
+    }
+}
+
 struct AgentState {
     provider: Box<dyn Provider>,
     model: String,
@@ -458,8 +779,7 @@ struct AgentState {
     mcp_client: McpGatewayClient,
     portal_query_client: Option<PortalQueryClient>,
     catalog_cache: AgentCatalogCache,
-    memory: Arc<dyn HindsightMemory>,
-    db: PgPool,
+    memory: Arc<dyn MemoryStore>,
     host_id: Uuid,
     agent_def_id: Option<Uuid>,
     service_id: String,
@@ -1450,8 +1770,10 @@ async fn handle_socket(
     // 1. Load or Initialize Session
     let session_uuid = Uuid::parse_str(&current_session_id).unwrap_or_else(|_| Uuid::new_v4());
     let bank_id = session_uuid; // Using session as bank for simplicity
-    if let Err(e) =
-        ensure_session_memory_bank(&state.db, state.host_id, bank_id, &current_session_id).await
+    if let Err(e) = state
+        .memory
+        .ensure_session_memory_bank(state.host_id, bank_id, session_uuid)
+        .await
     {
         error!("Failed to initialize session memory bank: {}", e);
         match serde_json::to_string(&ServerMessage::Error {
@@ -1470,29 +1792,17 @@ async fn handle_socket(
         return;
     }
 
-    let mut history = match sqlx::query(
-        "SELECT messages FROM agent_session_history_t
-         WHERE host_id = $1 AND bank_id = $2 AND session_id = $3",
-    )
-    .bind(state.host_id)
-    .bind(bank_id)
-    .bind(session_uuid)
-    .fetch_optional(&state.db)
-    .await
-    {
-        Ok(Some(row)) => {
-            let messages: serde_json::Value = row.get("messages");
-            serde_json::from_value::<Vec<ChatMessage>>(messages).unwrap_or_default()
-        }
-        Ok(None) => Vec::new(),
-        Err(e) => {
+    let mut history = state
+        .memory
+        .load_session_history(state.host_id, bank_id, session_uuid)
+        .await
+        .unwrap_or_else(|e| {
             warn!(
                 "Failed to load session history for host_id={}, bank_id={}, session_id={}: {}",
                 state.host_id, bank_id, session_uuid, e
             );
             Vec::new()
-        }
-    };
+        });
 
     while let Some(Ok(msg)) = receiver.next().await {
         if let Message::Text(text) = msg {
@@ -1534,29 +1844,12 @@ async fn handle_socket(
                         history.push(ChatMessage::assistant(text.clone()));
                         trim_history(&mut history);
 
-                        match serde_json::to_value(&history) {
-                            Ok(history_payload) => {
-                                if let Err(e) = sqlx::query(
-                                    "INSERT INTO agent_session_history_t
-                                    (host_id, bank_id, session_id, messages)
-                                    VALUES ($1, $2, $3, $4)
-                                    ON CONFLICT (host_id, bank_id, session_id)
-                                    DO UPDATE SET messages = EXCLUDED.messages,
-                                                  update_ts = CURRENT_TIMESTAMP",
-                                )
-                                .bind(state.host_id)
-                                .bind(bank_id)
-                                .bind(session_uuid)
-                                .bind(history_payload)
-                                .execute(&state.db)
-                                .await
-                                {
-                                    warn!("Failed to persist session history: {}", e);
-                                }
-                            }
-                            Err(e) => {
-                                error!("Failed to serialize session history: {}", e);
-                            }
+                        if let Err(e) = state
+                            .memory
+                            .persist_session_history(state.host_id, bank_id, session_uuid, &history)
+                            .await
+                        {
+                            warn!("Failed to persist session history: {}", e);
                         }
 
                         match serde_json::to_string(&ServerMessage::Text { text }) {
@@ -1591,11 +1884,11 @@ async fn handle_socket(
     }
 }
 
-async fn ensure_session_memory_bank(
+async fn insert_session_memory_bank(
     db: &PgPool,
     host_id: Uuid,
     bank_id: Uuid,
-    session_id: &str,
+    session_id: Uuid,
 ) -> Result<()> {
     sqlx::query(
         "INSERT INTO agent_memory_bank_t (host_id, bank_id, bank_name)
@@ -1609,6 +1902,78 @@ async fn ensure_session_memory_bank(
     .await
     .context("failed to create session memory bank")?;
 
+    Ok(())
+}
+
+async fn session_history_exists(
+    db: &PgPool,
+    host_id: Uuid,
+    bank_id: Uuid,
+    session_id: Uuid,
+) -> Result<bool> {
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+            SELECT 1 FROM agent_session_history_t
+            WHERE host_id = $1 AND bank_id = $2 AND session_id = $3
+        )",
+    )
+    .bind(host_id)
+    .bind(bank_id)
+    .bind(session_id)
+    .fetch_one(db)
+    .await
+    .context("failed to check session history existence")?;
+    Ok(exists)
+}
+
+async fn load_session_history_from_db(
+    db: &PgPool,
+    host_id: Uuid,
+    bank_id: Uuid,
+    session_id: Uuid,
+) -> Result<Vec<ChatMessage>> {
+    let row = sqlx::query(
+        "SELECT messages FROM agent_session_history_t
+         WHERE host_id = $1 AND bank_id = $2 AND session_id = $3",
+    )
+    .bind(host_id)
+    .bind(bank_id)
+    .bind(session_id)
+    .fetch_optional(db)
+    .await
+    .context("failed to load session history")?;
+
+    let Some(row) = row else {
+        return Ok(Vec::new());
+    };
+    let messages: serde_json::Value = row.get("messages");
+    Ok(serde_json::from_value::<Vec<ChatMessage>>(messages).unwrap_or_default())
+}
+
+async fn persist_session_history_to_db(
+    db: &PgPool,
+    host_id: Uuid,
+    bank_id: Uuid,
+    session_id: Uuid,
+    history: &[ChatMessage],
+) -> Result<()> {
+    let history_payload =
+        serde_json::to_value(history).context("failed to serialize session history")?;
+    sqlx::query(
+        "INSERT INTO agent_session_history_t
+         (host_id, bank_id, session_id, messages)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (host_id, bank_id, session_id)
+         DO UPDATE SET messages = EXCLUDED.messages,
+                       update_ts = CURRENT_TIMESTAMP",
+    )
+    .bind(host_id)
+    .bind(bank_id)
+    .bind(session_id)
+    .bind(history_payload)
+    .execute(db)
+    .await
+    .context("failed to persist session history")?;
     Ok(())
 }
 
@@ -1756,7 +2121,6 @@ async fn run_agent_loop(
                 bank_id,
                 &trajectory,
                 "experience",
-                None,
                 serde_json::json!({ "session_id": session_id }),
             )
             .await
@@ -1833,7 +2197,6 @@ async fn build_agent_state(
         .await
         .map_err(|e| RuntimeError::Config(format!("failed to connect to database: {e}")))?;
 
-    let memory = Arc::new(PgHindsightClient::new(pool.clone()));
     let host_id = required_uuid_env_var("LIGHT_AGENT_HOST_ID")
         .map_err(|e| RuntimeError::Config(e.to_string()))?;
     let agent_def_id =
@@ -1842,6 +2205,35 @@ async fn build_agent_state(
     let env_tag = runtime_config.service_identity.env_tag.clone();
     let portal_token =
         registry_token(&portal_registry_config).ok_or(RuntimeError::MissingPortalToken)?;
+    let memory_write_mode = std::env::var("LIGHT_AGENT_MEMORY_WRITE_MODE")
+        .unwrap_or_else(|_| "direct-pg".to_string())
+        .to_ascii_lowercase();
+    let memory: Arc<dyn MemoryStore> = match memory_write_mode.as_str() {
+        "portal-command" => {
+            let command_url = std::env::var("LIGHT_AGENT_PORTAL_COMMAND_URL")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| portal_query_base_url(&portal_registry_config));
+            let command_client = PortalCommandClient::with_options(
+                &command_url,
+                portal_token.clone(),
+                ca_cert.as_deref(),
+                verify_hostname,
+                accept_invalid_certs,
+                mcp_config.timeout_ms,
+            )
+            .map_err(|e| {
+                RuntimeError::Config(format!("failed to build portal command client: {e}"))
+            })?;
+            Arc::new(PortalCommandMemoryStore::new(pool.clone(), command_client))
+        }
+        "direct-pg" => Arc::new(DirectPgMemoryStore::new(pool.clone())),
+        other => {
+            return Err(RuntimeError::Config(format!(
+                "LIGHT_AGENT_MEMORY_WRITE_MODE must be portal-command or direct-pg, got {other}"
+            )));
+        }
+    };
     let portal_query_client = Some(
         PortalQueryClient::with_options(
             &portal_query_base_url(&portal_registry_config),
@@ -1862,7 +2254,6 @@ async fn build_agent_state(
         portal_query_client,
         catalog_cache,
         memory,
-        db: pool,
         host_id,
         agent_def_id,
         service_id: runtime_config.service_identity.service_id.clone(),
