@@ -28,6 +28,28 @@ The same business flow should be executable in two variants:
 The workflow owns the process. Agents work inside bounded tasks and should not
 invent new process paths outside the workflow definition.
 
+For the agent execution boundary, see
+[Native Agent Call](native-agent-call.md). In the current implementation,
+`call: agent` is a native `light-workflow` task. It does not invoke a
+containerized `light-agent` service. API access in this demo is owned by the
+workflow through direct HTTP tasks or MCP tool calls routed through
+`light-gateway`.
+
+## Execution Model
+
+This demo uses the enterprise workflow-first model:
+
+- `light-workflow` owns the claim process, task state, retries, branching,
+  human tasks, and audit trail.
+- API access is explicit in the workflow as `call: http` or `call: mcp`.
+- Native `call: agent` tasks perform bounded reasoning over workflow-owned
+  context and must return structured output.
+- Skills provide instructions, tool context, and workflow mappings, but they do
+  not give an agent permission to invent unreviewed process paths.
+- Containerized `light-agent` services are not invoked by this demo workflow.
+  They remain the runtime for chat clients and future service-agent
+  integration.
+
 ## Demo APIs
 
 The existing demo APIs can be used as stand-ins for insurance services.
@@ -159,7 +181,7 @@ The workflow validates that `customerId`, `vehicleId`, `incidentDate`, and
 
 ### 2. Fetch Customer Context
 
-The Claim Intake Agent calls the profile API to retrieve:
+The workflow calls the profile and policy capabilities to retrieve:
 
 - customer identity
 - policy list
@@ -189,7 +211,8 @@ The workflow should be resumable after the claimant answers.
 
 ### 4. Coverage Check
 
-The Coverage and Liability Agent checks:
+The workflow passes the gathered claim context to a native Coverage and
+Liability agent task. That task checks:
 
 - policy active on incident date
 - covered vehicle
@@ -205,7 +228,8 @@ Branches:
 
 ### 5. Triage Decision
 
-The workflow calls the decision API with normalized claim context.
+The workflow calls the decision API, either directly with HTTP or through
+`light-gateway` MCP, with normalized claim context.
 
 Expected decision output:
 
@@ -228,7 +252,8 @@ Branches:
 
 ### 6. Settlement Recommendation
 
-The Settlement Agent prepares:
+The workflow passes the approved claim context to a native Settlement agent
+task. That task prepares:
 
 - recommended path: repair, estimate, total-loss review, denial draft, or more
   information
@@ -390,11 +415,11 @@ with the same claim context.
 Start with a narrow happy path:
 
 1. Start with `customerId`, `vehicleId`, and accident details.
-2. Claim Intake Agent fetches customer profile.
+2. Workflow fetches customer profile through HTTP or MCP.
 3. Workflow asserts active policy and covered vehicle.
-4. Coverage Agent calls decision API for triage.
+4. Workflow calls the decision API for triage.
 5. Workflow asks an adjuster to approve if `estimatedLoss` exceeds a threshold.
-6. Settlement Agent prepares the recommendation.
+6. Native Settlement agent task prepares the recommendation.
 7. Workflow completes with `claim-approved` or `needs-adjuster-review`.
 
 This first version is enough to demonstrate multi-agent orchestration without

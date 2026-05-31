@@ -200,9 +200,17 @@ The current examples are in
 | `simple-set-assert.yaml` | Basic local smoke test with no external dependency. | `{ "applicantId": "APP-001" }` |
 | `http-risk-decision.yaml` | Calls a risk evaluation HTTP endpoint and branches on the result. | `{ "applicantId": "APP-001", "loanAmount": 25000, "creditScore": 720 }` |
 | `human-approval.yaml` | Creates a human approval style workflow and waits for a later decision. | `{ "requestId": "REQ-001", "summary": "Approve test request" }` |
+| `insurance-claim-rest-v1.yaml` | Complete product demo with direct HTTP API orchestration, native agent tasks, and human tasks. | See `examples/README.md`. |
+| `insurance-claim-mcp-v1.yaml` | Complete product demo with gateway MCP tool orchestration, native agent tasks, and human tasks. | See `examples/README.md`. |
+| `insurance-claim-headless-v1.yaml` | Headless insurance-claim regression workflow with deterministic agent outputs and no human-task pauses. | See `examples/README.md`. |
 
 Start with `simple-set-assert.yaml`. It is the best smoke test because it does
 not require another service.
+
+For a complete multi-agent product demo, use the insurance claim suite in
+`apps/light-workflow/examples`. The product walkthrough is
+[Insurance Claim Agentic Workflow](insurance-claim-agentic-workflow.md), and
+the operational runbook is in `apps/light-workflow/examples/README.md`.
 
 For `http-risk-decision.yaml`, start a local mock service for the URL used by
 the definition. When `light-workflow` runs natively with `run.sh`,
