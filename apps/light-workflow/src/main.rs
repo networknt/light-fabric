@@ -5,17 +5,21 @@ mod rule_api;
 
 use consumer::EventConsumer;
 use executor::TaskExecutor;
+use light_runtime::{TracingOptions, init_tracing};
 use rule_api::run_rule_api;
 use sqlx::postgres::PgPoolOptions;
 use std::env;
 use std::error::Error;
 use std::io;
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    init_tracing();
+    let _tracing_guard = init_tracing(
+        TracingOptions::new("light-workflow")
+            .with_default_filter("light_workflow=debug,info")
+            .with_legacy_ansi_env("WORKFLOW_LOG_ANSI"),
+    )?;
 
     info!("Light Workflow Engine starting...");
 
@@ -84,23 +88,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     )?;
 
     Ok(())
-}
-
-fn init_tracing() {
-    let filter = tracing_subscriber::EnvFilter::new(
-        std::env::var("RUST_LOG").unwrap_or_else(|_| "light_workflow=debug,info".into()),
-    );
-    let use_ansi = std::env::var("WORKFLOW_LOG_ANSI")
-        .ok()
-        .map(|v| v.trim().to_lowercase())
-        .map(|v| v == "true" || v == "1" || v == "yes" || v == "on");
-
-    let fmt_layer = tracing_subscriber::fmt::layer();
-
-    let subscriber = tracing_subscriber::registry().with(filter);
-
-    match use_ansi {
-        Some(use_ansi) => subscriber.with(fmt_layer.with_ansi(use_ansi)).init(),
-        None => subscriber.with(fmt_layer).init(),
-    }
 }

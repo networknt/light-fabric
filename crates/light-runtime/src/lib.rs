@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod config;
+pub mod logging;
 pub mod module_registry;
 pub mod runtime;
 pub mod transport;
@@ -10,6 +11,10 @@ pub use config::{
     RuntimeConfig, ServerConfig, ServiceIdentity,
 };
 pub use config_loader::EmbeddedConfigFile;
+pub use logging::{
+    LOGGING_FILTER_KEY, LOGGING_MODULE_ID, LoggingControl, LoggingFilterState, TracingGuard,
+    TracingInitError, TracingOptions, init_tracing,
+};
 pub use module_registry::{
     CLIENT_CONFIG_NAME, CLIENT_MODULE_ID, ConfigManager, MaskSpec, ModuleEntry, ModuleKind,
     ModuleRegistry, ModuleSummary, ReloadContext, ReloadFailed, ReloadModulesResult, ReloadOutcome,

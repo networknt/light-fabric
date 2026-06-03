@@ -37,6 +37,7 @@
 - [PII Tokenization](design/pii-tokenization.md)
 - [Token Handler](design/token-handler.md)
 - [Service Discovery](design/service-discovery.md)
+- [Tracing](design/tracing.md)
 
 # Crate
 

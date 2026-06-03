@@ -18,11 +18,10 @@ use crate::kube::{KubeExecutor, KubeRsExecutor, NoopKubeExecutor};
 use crate::policy::Policy;
 use anyhow::Context;
 use light_axum::AxumTransport;
-use light_runtime::{LightRuntimeBuilder, ModuleRegistry};
+use light_runtime::{LightRuntimeBuilder, ModuleRegistry, TracingOptions, init_tracing};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod embedded_config {
     include!(concat!(env!("OUT_DIR"), "/embedded_config.rs"));
@@ -30,7 +29,9 @@ mod embedded_config {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    init_tracing();
+    let tracing_guard = init_tracing(
+        TracingOptions::new("light-deployer").with_default_filter("light_deployer=debug,info"),
+    )?;
     if config_loader::handle_embedded_config_cli(embedded_config::FILES)? {
         return Ok(());
     }
@@ -72,6 +73,7 @@ async fn main() -> anyhow::Result<()> {
         .with_embedded_config(embedded_config::FILES)
         .with_module_registry(module_registry)
         .with_config_dir(config_dir)
+        .with_logging_control(tracing_guard.logging_control())
         .build();
 
     let running = runtime
@@ -104,14 +106,4 @@ fn should_use_real_kube() -> bool {
         Ok(mode) if mode.eq_ignore_ascii_case("noop") => false,
         _ => std::env::var("KUBERNETES_SERVICE_HOST").is_ok(),
     }
-}
-
-fn init_tracing() {
-    let filter = tracing_subscriber::EnvFilter::new(
-        std::env::var("RUST_LOG").unwrap_or_else(|_| "light_deployer=debug,info".into()),
-    );
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(tracing_subscriber::fmt::layer())
-        .init();
 }

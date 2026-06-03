@@ -25,6 +25,7 @@ use crate::config::{
     RemoteBootstrapResult, RuntimeConfig, ServerConfig, ServiceIdentity, default_accept_header,
     default_environment,
 };
+use crate::logging::{LoggingControl, register_logging_module};
 use crate::module_registry::{ModuleRegistry, ReloadContext, RuntimeMcpHandler};
 use crate::transport::{BoundTransport, TransportRuntime};
 
@@ -93,6 +94,7 @@ where
     modules: Vec<Arc<dyn Module>>,
     module_registry: Arc<ModuleRegistry>,
     cache_registry: Option<Arc<CacheRegistry>>,
+    logging_control: Option<Arc<LoggingControl>>,
     registration_timeout: Duration,
     registry_handler: Arc<dyn RegistryHandler>,
     registry_client: Option<Arc<PortalRegistryClient>>,
@@ -112,6 +114,7 @@ where
             modules: Vec::new(),
             module_registry: Arc::new(ModuleRegistry::new()),
             cache_registry: None,
+            logging_control: None,
             registration_timeout: Duration::from_secs(5),
             registry_handler: Arc::new(NoopRegistryHandler),
             registry_client: None,
@@ -153,6 +156,11 @@ where
         self
     }
 
+    pub fn with_logging_control(mut self, logging_control: Arc<LoggingControl>) -> Self {
+        self.logging_control = Some(logging_control);
+        self
+    }
+
     pub fn with_registration_timeout(mut self, registration_timeout: Duration) -> Self {
         self.registration_timeout = registration_timeout;
         self
@@ -178,6 +186,7 @@ where
             modules: self.modules,
             module_registry: self.module_registry,
             cache_registry: self.cache_registry,
+            logging_control: self.logging_control,
             registration_timeout: self.registration_timeout,
             registry_handler: self.registry_handler,
             registry_client: self.registry_client,
@@ -198,6 +207,7 @@ where
     modules: Vec<Arc<dyn Module>>,
     module_registry: Arc<ModuleRegistry>,
     cache_registry: Option<Arc<CacheRegistry>>,
+    logging_control: Option<Arc<LoggingControl>>,
     registration_timeout: Duration,
     registry_handler: Arc<dyn RegistryHandler>,
     registry_client: Option<Arc<PortalRegistryClient>>,
@@ -290,6 +300,13 @@ where
         )?;
         self.module_registry
             .register_runtime_configs(&runtime_config)?;
+        if let Some(logging_control) = self.logging_control.as_ref() {
+            register_logging_module(
+                &self.module_registry,
+                &runtime_config,
+                Arc::clone(logging_control),
+            )?;
+        }
 
         for module in &self.modules {
             module.on_runtime_built(&runtime_config).await?;
@@ -612,6 +629,9 @@ where
         );
         if let Some(cache_registry) = self.cache_registry.as_ref() {
             runtime_handler = runtime_handler.with_cache_registry(Arc::clone(cache_registry));
+        }
+        if let Some(logging_control) = self.logging_control.as_ref() {
+            runtime_handler = runtime_handler.with_logging_control(Arc::clone(logging_control));
         }
         let registry_handler: Arc<dyn RegistryHandler> = Arc::new(runtime_handler);
         let mut registration = RegistrationBuilder::new(

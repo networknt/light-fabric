@@ -14,8 +14,9 @@ use futures_util::{SinkExt, StreamExt};
 use hindsight_client::{HindsightMemory, PgHindsightClient};
 use light_axum::{AxumApp, AxumTransport, ServerContext};
 use light_runtime::{
-    LightRuntimeBuilder, MaskSpec, ModuleKind, RuntimeConfig, RuntimeError,
+    LightRuntimeBuilder, MaskSpec, ModuleKind, RuntimeConfig, RuntimeError, TracingOptions,
     config::{BootstrapConfig, ClientConfig, PortalRegistryConfig},
+    init_tracing,
 };
 use mcp_client::{McpContent, McpGatewayClient, McpTool};
 use model_provider::{
@@ -33,7 +34,6 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_http::services::ServeDir;
 use tracing::{error, info, warn};
-use tracing_subscriber::EnvFilter;
 use url::Url;
 use uuid::Uuid;
 
@@ -2297,7 +2297,8 @@ fn agent_ca_cert_path_from_config(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    init_tracing();
+    let tracing_guard =
+        init_tracing(TracingOptions::new("light-agent").with_legacy_ansi_env("AGENT_LOG_ANSI"))?;
     if config_loader::handle_embedded_config_cli(embedded_config::FILES)? {
         return Ok(());
     }
@@ -2313,6 +2314,7 @@ async fn main() -> anyhow::Result<()> {
         .with_config_dir(CONFIG_DIR)
         .with_external_config_dir(EXTERNAL_CONFIG_DIR)
         .with_registry_handler(registry_handler)
+        .with_logging_control(tracing_guard.logging_control())
         .build();
 
     let running = runtime
@@ -2330,21 +2332,6 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to shut down agent")?;
 
     Ok(())
-}
-
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let use_ansi = std::env::var("AGENT_LOG_ANSI")
-        .ok()
-        .map(|v| v.trim().to_lowercase())
-        .map(|v| v == "true" || v == "1" || v == "yes" || v == "on");
-
-    let subscriber = tracing_subscriber::fmt().with_env_filter(filter);
-
-    match use_ansi {
-        Some(use_ansi) => subscriber.with_ansi(use_ansi).init(),
-        None => subscriber.init(),
-    }
 }
 
 struct AgentRegistryHandler {

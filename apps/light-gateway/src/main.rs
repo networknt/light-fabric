@@ -28,7 +28,7 @@ use light_pingora::{
 };
 use light_runtime::{
     CacheRegistry, ConfigManager, LightRuntimeBuilder, ReloadContext, ReloadOutcome,
-    ReloadableModule, RuntimeConfig, RuntimeError,
+    ReloadableModule, RuntimeConfig, RuntimeError, TracingOptions, init_tracing,
 };
 use pingora::http::ResponseHeader;
 use pingora::prelude::{HttpPeer, ProxyHttp, Session};
@@ -41,7 +41,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
 use tracing::info;
-use tracing_subscriber::EnvFilter;
 
 mod embedded_config {
     include!(concat!(env!("OUT_DIR"), "/embedded_config.rs"));
@@ -2525,7 +2524,9 @@ struct HandlerTiming {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    init_tracing();
+    let tracing_guard = init_tracing(
+        TracingOptions::new("light-gateway").with_legacy_ansi_env("GATEWAY_LOG_ANSI"),
+    )?;
     if config_loader::handle_embedded_config_cli(embedded_config::FILES)? {
         return Ok(());
     }
@@ -2537,6 +2538,7 @@ async fn main() -> Result<()> {
         .with_config_dir(CONFIG_DIR)
         .with_external_config_dir(EXTERNAL_CONFIG_DIR)
         .with_cache_registry(cache_registry)
+        .with_logging_control(tracing_guard.logging_control())
         .build();
 
     let running = runtime
@@ -3167,21 +3169,6 @@ fn build_registered_gateway_handler(
 ) -> Result<Arc<dyn PingoraHandler>, RuntimeError> {
     let id: &'static str = Box::leak(ctx.handler_id.to_string().into_boxed_str());
     Ok(Arc::new(RegisteredGatewayHandler { id }))
-}
-
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let use_ansi = std::env::var("GATEWAY_LOG_ANSI")
-        .ok()
-        .map(|v| v.trim().to_lowercase())
-        .map(|v| v == "true" || v == "1" || v == "yes" || v == "on");
-
-    let subscriber = tracing_subscriber::fmt().with_env_filter(filter);
-
-    match use_ansi {
-        Some(use_ansi) => subscriber.with_ansi(use_ansi).init(),
-        None => subscriber.init(),
-    }
 }
 
 #[cfg(test)]

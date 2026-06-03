@@ -1,5 +1,6 @@
 use crate::cache::CacheRegistry;
 use crate::config::RuntimeConfig;
+use crate::logging::LoggingControl;
 use crate::runtime::{RuntimeError, load_merged_config};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -634,6 +635,7 @@ pub struct RuntimeMcpHandler {
     config: RuntimeConfig,
     delegate: Arc<dyn RegistryHandler>,
     cache_registry: Option<Arc<CacheRegistry>>,
+    logging_control: Option<Arc<LoggingControl>>,
 }
 
 impl RuntimeMcpHandler {
@@ -647,11 +649,17 @@ impl RuntimeMcpHandler {
             config,
             delegate,
             cache_registry: None,
+            logging_control: None,
         }
     }
 
     pub fn with_cache_registry(mut self, cache_registry: Arc<CacheRegistry>) -> Self {
         self.cache_registry = Some(cache_registry);
+        self
+    }
+
+    pub fn with_logging_control(mut self, logging_control: Arc<LoggingControl>) -> Self {
+        self.logging_control = Some(logging_control);
         self
     }
 }
@@ -678,6 +686,8 @@ impl RegistryHandler for RuntimeMcpHandler {
                     "list_caches" => self.list_caches(),
                     "get_cache_entries" => self.get_cache_entries(params.get("arguments")).await,
                     "clear_cache" => self.clear_cache(params.get("arguments")).await,
+                    "get_logging_filter" => self.get_logging_filter(),
+                    "set_logging_filter" => self.set_logging_filter(params.get("arguments")),
                     "reload_modules" => match parse_reload_modules(params.get("arguments")) {
                         Ok(modules) => {
                             let result = match self.config.reload_context().await {
@@ -767,6 +777,40 @@ impl RuntimeMcpHandler {
             None => cache_not_found_response(&name),
         }
     }
+
+    fn get_logging_filter(&self) -> JsonValue {
+        let Some(logging_control) = self.logging_control.as_ref() else {
+            return unsupported_logging_response();
+        };
+        logging_control.status_json()
+    }
+
+    fn set_logging_filter(&self, arguments: Option<&JsonValue>) -> JsonValue {
+        let Some(logging_control) = self.logging_control.as_ref() else {
+            return unsupported_logging_response();
+        };
+        let filter = match parse_logging_filter(arguments) {
+            Ok(filter) => filter,
+            Err(message) => {
+                return json!({
+                    "status": "error",
+                    "message": message
+                });
+            }
+        };
+
+        match logging_control.set_filter(filter, "mcp:set_logging_filter") {
+            Ok(state) => json!({
+                "status": "success",
+                "filter": state.filter,
+                "source": state.source
+            }),
+            Err(error) => json!({
+                "status": "error",
+                "message": error.to_string()
+            }),
+        }
+    }
 }
 
 fn runtime_tools() -> JsonValue {
@@ -797,6 +841,25 @@ fn runtime_tools() -> JsonValue {
                         "type": "array",
                         "items": { "type": "string" }
                     }
+                }
+            }
+        },
+        {
+            "name": "get_logging_filter",
+            "description": "Retrieve the current runtime logging filter.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        },
+        {
+            "name": "set_logging_filter",
+            "description": "Validate and apply a new runtime logging filter without restarting the service.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["filter"],
+                "properties": {
+                    "filter": { "type": "string" }
                 }
             }
         },
@@ -845,6 +908,29 @@ fn parse_cache_name(arguments: Option<&JsonValue>, tool_name: &str) -> Result<St
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .ok_or_else(|| format!("{tool_name} arguments.name must be a non-empty string"))
+}
+
+fn parse_logging_filter(arguments: Option<&JsonValue>) -> Result<String, String> {
+    let Some(arguments) = arguments else {
+        return Err("set_logging_filter arguments.filter is required".to_string());
+    };
+    let Some(filter) = arguments.get("filter") else {
+        return Err("set_logging_filter arguments.filter is required".to_string());
+    };
+    filter
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "set_logging_filter arguments.filter must be a non-empty string".to_string())
+}
+
+fn unsupported_logging_response() -> JsonValue {
+    json!({
+        "supported": false,
+        "status": "unsupported",
+        "message": "Runtime logging control is not available on this service."
+    })
 }
 
 fn unsupported_cache_response(name: Option<&str>) -> JsonValue {
@@ -1360,6 +1446,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reload_modules_updates_logging_filter_from_values() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let (logging_control, _filter_layer) = crate::logging::LoggingControl::new_for_test("info");
+        crate::logging::register_logging_module(
+            &registry,
+            &runtime_config(),
+            Arc::clone(&logging_control),
+        )
+        .expect("register logging module");
+
+        let mut reload_config = runtime_config();
+        reload_config.resolved_values.insert(
+            crate::logging::LOGGING_FILTER_KEY.to_string(),
+            serde_yaml::Value::String("info,light_gateway=debug".to_string()),
+        );
+
+        let result = registry
+            .reload_modules(
+                ReloadContext::new(reload_config),
+                &[crate::logging::LOGGING_MODULE_ID.to_string()],
+            )
+            .await;
+
+        assert_eq!(result.reloaded, vec![crate::logging::LOGGING_MODULE_ID]);
+        assert_eq!(
+            logging_control.current_state().filter,
+            "info,light_gateway=debug"
+        );
+    }
+
+    #[tokio::test]
     async fn runtime_mcp_handler_exposes_management_tools() {
         let registry = Arc::new(ModuleRegistry::new());
         let config = runtime_config();
@@ -1459,6 +1576,40 @@ mod tests {
         assert_eq!(clear["supported"], false);
         assert_eq!(clear["status"], "unsupported");
         assert_eq!(clear["name"], "reference-data");
+    }
+
+    #[tokio::test]
+    async fn runtime_mcp_handler_gets_and_sets_logging_filter() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let (logging_control, _filter_layer) = crate::logging::LoggingControl::new_for_test("info");
+        let handler = RuntimeMcpHandler::new(
+            Arc::clone(&registry),
+            runtime_config(),
+            Arc::new(DelegateHandler),
+        )
+        .with_logging_control(Arc::clone(&logging_control));
+
+        let initial = handler
+            .handle_request("tools/call", json!({ "name": "get_logging_filter" }))
+            .await;
+        assert_eq!(initial["status"], "success");
+        assert_eq!(initial["filter"], "info");
+
+        let updated = handler
+            .handle_request(
+                "tools/call",
+                json!({
+                    "name": "set_logging_filter",
+                    "arguments": { "filter": "info,light_gateway=debug" }
+                }),
+            )
+            .await;
+        assert_eq!(updated["status"], "success");
+        assert_eq!(updated["filter"], "info,light_gateway=debug");
+        assert_eq!(
+            logging_control.current_state().filter,
+            "info,light_gateway=debug"
+        );
     }
 
     #[tokio::test]
