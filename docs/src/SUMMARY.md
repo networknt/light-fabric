@@ -38,6 +38,7 @@
 - [Token Handler](design/token-handler.md)
 - [Service Discovery](design/service-discovery.md)
 - [Tracing](design/tracing.md)
+- [Release With Changelog](design/release-with-changelog.md)
 
 # Crate
 
