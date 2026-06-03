@@ -46,6 +46,7 @@ fn build_test_config() -> (RuleConfig, Arc<RuleEngine>) {
         author: None,
         updated_at: None,
         condition_language: None,
+        condition_security_profile: None,
         expression: None,
         conditions: Some(vec![RuleCondition {
             condition_id: None,
@@ -74,6 +75,7 @@ fn build_test_config() -> (RuleConfig, Arc<RuleEngine>) {
         author: None,
         updated_at: None,
         condition_language: None,
+        condition_security_profile: None,
         expression: None,
         conditions: Some(vec![RuleCondition {
             condition_id: None,
@@ -191,6 +193,7 @@ async fn test_typed_expected_values_and_expanded_operators() {
         author: Some("test".into()),
         updated_at: None,
         condition_language: None,
+        condition_security_profile: None,
         expression: None,
         conditions: Some(vec![
             RuleCondition {
@@ -317,6 +320,7 @@ async fn test_join_code_left_to_right_or() {
         author: None,
         updated_at: None,
         condition_language: None,
+        condition_security_profile: None,
         expression: None,
         conditions: Some(vec![
             RuleCondition {
@@ -359,6 +363,7 @@ async fn test_cel_condition_language() {
         author: None,
         updated_at: None,
         condition_language: Some("cel".into()),
+        condition_security_profile: Some("standard".into()),
         expression: Some(
             "context.user.age >= 18 && contains_ignore_case(context.user.name, 'hu') && 'admin' in context.user.roles"
                 .into(),
@@ -382,4 +387,174 @@ async fn test_cel_condition_language() {
         }
     });
     assert!(engine.execute_rule(&rule, &mut context).await.unwrap());
+}
+
+#[tokio::test]
+async fn test_strict_cel_profile_uses_curated_roots() {
+    let registry = ActionRegistry::new();
+    let engine = RuleEngine::new(Arc::new(registry));
+
+    let rule = Rule {
+        rule_id: "rule_cel_strict_01".into(),
+        rule_name: "Strict CEL expression".into(),
+        rule_type: "access-control".into(),
+        common: "Y".into(),
+        host_id: None,
+        rule_desc: None,
+        version: None,
+        author: None,
+        updated_at: None,
+        condition_language: Some("cel".into()),
+        condition_security_profile: Some("strict".into()),
+        expression: Some(
+            "auditInfo.subject_claims.ClaimsMap.role == 'admin' && contains_ignore_case(headers.owner, 'hu')"
+                .into(),
+        ),
+        conditions: None,
+        actions: None,
+    };
+
+    let mut context = json!({
+        "auditInfo": {
+            "subject_claims": {
+                "ClaimsMap": {
+                    "role": "admin"
+                }
+            }
+        },
+        "headers": {
+            "owner": "Steve Hu"
+        },
+        "internalState": {
+            "tenantSecret": "hidden"
+        }
+    });
+
+    assert!(engine.execute_rule(&rule, &mut context).await.unwrap());
+}
+
+#[tokio::test]
+async fn test_strict_cel_profile_rejects_context_alias() {
+    let registry = ActionRegistry::new();
+    let engine = RuleEngine::new(Arc::new(registry));
+
+    let rule = Rule {
+        rule_id: "rule_cel_strict_02".into(),
+        rule_name: "Strict CEL rejects context".into(),
+        rule_type: "access-control".into(),
+        common: "Y".into(),
+        host_id: None,
+        rule_desc: None,
+        version: None,
+        author: None,
+        updated_at: None,
+        condition_language: Some("cel".into()),
+        condition_security_profile: None,
+        expression: Some("context.user.age >= 18".into()),
+        conditions: None,
+        actions: None,
+    };
+
+    let mut context = json!({ "user": { "age": 21 } });
+    let error = engine.execute_rule(&rule, &mut context).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("strict profile does not expose full context"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn test_strict_cel_profile_rejects_regex() {
+    let registry = ActionRegistry::new();
+    let engine = RuleEngine::new(Arc::new(registry));
+
+    let rule = Rule {
+        rule_id: "rule_cel_strict_03".into(),
+        rule_name: "Strict CEL rejects regex".into(),
+        rule_type: "access-control".into(),
+        common: "Y".into(),
+        host_id: None,
+        rule_desc: None,
+        version: None,
+        author: None,
+        updated_at: None,
+        condition_language: Some("cel".into()),
+        condition_security_profile: Some("strict".into()),
+        expression: Some("headers.path.matches('^/admin')".into()),
+        conditions: None,
+        actions: None,
+    };
+
+    let mut context = json!({ "headers": { "path": "/admin/users" } });
+    let error = engine.execute_rule(&rule, &mut context).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("strict profile does not allow regex"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn test_response_phase_caps_standard_cel_to_strict() {
+    let registry = ActionRegistry::new();
+    let engine = RuleEngine::new(Arc::new(registry));
+
+    let rule = Rule {
+        rule_id: "rule_cel_res_01".into(),
+        rule_name: "Response CEL expression".into(),
+        rule_type: "res-tra".into(),
+        common: "Y".into(),
+        host_id: None,
+        rule_desc: None,
+        version: None,
+        author: None,
+        updated_at: None,
+        condition_language: Some("cel".into()),
+        condition_security_profile: Some("standard".into()),
+        expression: Some("context.responseBody.items.size() > 0".into()),
+        conditions: None,
+        actions: None,
+    };
+
+    let mut context = json!({ "responseBody": { "items": [1, 2, 3] } });
+    let error = engine.execute_rule(&rule, &mut context).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("strict profile does not expose full context"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn test_internal_admin_cel_profile_is_disabled_by_default() {
+    let registry = ActionRegistry::new();
+    let engine = RuleEngine::new(Arc::new(registry));
+
+    let rule = Rule {
+        rule_id: "rule_cel_internal_01".into(),
+        rule_name: "Internal admin CEL expression".into(),
+        rule_type: "access-control".into(),
+        common: "Y".into(),
+        host_id: None,
+        rule_desc: None,
+        version: None,
+        author: None,
+        updated_at: None,
+        condition_language: Some("cel".into()),
+        condition_security_profile: Some("internal-admin".into()),
+        expression: Some("context.user.age >= 18".into()),
+        conditions: None,
+        actions: None,
+    };
+
+    let mut context = json!({ "user": { "age": 21 } });
+    let error = engine.execute_rule(&rule, &mut context).await.unwrap_err();
+    assert!(
+        error.to_string().contains("internal-admin is disabled"),
+        "unexpected error: {error}"
+    );
 }

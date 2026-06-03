@@ -5,14 +5,66 @@ use cel_interpreter::{Context as CelContext, ExecutionError as CelExecutionError
 use cel_interpreter::{Program as CelProgram, Value as CelValue};
 use regex::Regex;
 use serde_json::Value as JsonValue;
+use std::collections::HashMap;
 use std::error::Error as StdError;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tracing::{debug, error};
 
 /// The core Rule Engine for evaluating conditions and executing actions.
 pub struct RuleEngine {
     action_registry: Arc<ActionRegistry>,
+    cel_cache: Mutex<HashMap<String, Arc<CelProgram>>>,
+}
+
+const CONDITION_SECURITY_PROFILE_STRICT: &str = "strict";
+const CONDITION_SECURITY_PROFILE_STANDARD: &str = "standard";
+const CONDITION_SECURITY_PROFILE_INTERNAL_ADMIN: &str = "internal-admin";
+const STRICT_CEL_ROOTS: &[&str] = &[
+    "auditInfo",
+    "headers",
+    "toolArguments",
+    "endpoint",
+    "toolName",
+    "correlationId",
+    "roles",
+    "row",
+    "col",
+    "statusCode",
+    "permission",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CelSecurityProfile {
+    Strict,
+    Standard,
+    InternalAdmin,
+}
+
+impl CelSecurityProfile {
+    fn requested(value: Option<&str>) -> Result<Self, RuleEngineError> {
+        let value = value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(CONDITION_SECURITY_PROFILE_STRICT)
+            .to_lowercase();
+        match value.as_str() {
+            CONDITION_SECURITY_PROFILE_STRICT => Ok(Self::Strict),
+            CONDITION_SECURITY_PROFILE_STANDARD => Ok(Self::Standard),
+            CONDITION_SECURITY_PROFILE_INTERNAL_ADMIN => Ok(Self::InternalAdmin),
+            other => Err(RuleEngineError::UnsupportedConditionSecurityProfile(
+                other.to_string(),
+            )),
+        }
+    }
+
+    fn cache_name(self) -> &'static str {
+        match self {
+            Self::Strict => CONDITION_SECURITY_PROFILE_STRICT,
+            Self::Standard => CONDITION_SECURITY_PROFILE_STANDARD,
+            Self::InternalAdmin => CONDITION_SECURITY_PROFILE_INTERNAL_ADMIN,
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -21,6 +73,12 @@ enum RuleEngineError {
     MissingCelExpression,
     #[error("Unsupported conditionLanguage: {0}")]
     UnsupportedConditionLanguage(String),
+    #[error("Unsupported conditionSecurityProfile: {0}")]
+    UnsupportedConditionSecurityProfile(String),
+    #[error("CEL conditionSecurityProfile internal-admin is disabled by runtime policy")]
+    InternalAdminProfileDisabled,
+    #[error("CEL security policy violation: {0}")]
+    CelSecurityPolicy(String),
     #[error("Failed to compile CEL expression: {0}")]
     CelCompile(String),
     #[error("Failed to evaluate CEL expression: {0}")]
@@ -32,7 +90,10 @@ enum RuleEngineError {
 impl RuleEngine {
     /// Create a new RuleEngine with the given ActionRegistry.
     pub fn new(action_registry: Arc<ActionRegistry>) -> Self {
-        Self { action_registry }
+        Self {
+            action_registry,
+            cel_cache: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Execute a single rule against a context Object (map).
@@ -53,7 +114,7 @@ impl RuleEngine {
             .to_lowercase();
         let conditions_passed = match condition_language.as_str() {
             "native" | "" => self.evaluate_native_conditions(rule, context),
-            "cel" => self.evaluate_cel_expression(rule.expression.as_deref(), context)?,
+            "cel" => self.evaluate_cel_expression(rule, context)?,
             other => {
                 return Err(Box::new(RuleEngineError::UnsupportedConditionLanguage(
                     other.to_string(),
@@ -123,27 +184,24 @@ impl RuleEngine {
 
     fn evaluate_cel_expression(
         &self,
-        expression: Option<&str>,
+        rule: &Rule,
         context: &JsonValue,
     ) -> Result<bool, Box<dyn StdError + Send + Sync>> {
-        let expression = expression
+        let expression = rule
+            .expression
+            .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .ok_or(RuleEngineError::MissingCelExpression)?;
-        let program = CelProgram::compile(expression)
-            .map_err(|err| RuleEngineError::CelCompile(err.to_string()))?;
-        let mut cel_context = CelContext::default();
-        cel_context.add_function("contains_ignore_case", cel_contains_ignore_case);
-        cel_context.add_function("containsIgnoreCase", cel_contains_ignore_case);
-
-        if let JsonValue::Object(map) = context {
-            for (key, value) in map {
-                if is_cel_identifier(key) && key != "context" {
-                    cel_context.add_variable(key.as_str(), value.clone())?;
-                }
-            }
+        let requested_profile =
+            CelSecurityProfile::requested(rule.condition_security_profile.as_deref())?;
+        if requested_profile == CelSecurityProfile::InternalAdmin {
+            return Err(Box::new(RuleEngineError::InternalAdminProfileDisabled));
         }
-        cel_context.add_variable("context", context.clone())?;
+        let effective_profile = effective_cel_profile(requested_profile, &rule.rule_type);
+        let program = self.compile_cel_program(&rule.rule_id, expression, effective_profile)?;
+        self.validate_cel_program(&program, effective_profile)?;
+        let cel_context = build_cel_context(effective_profile, context)?;
 
         match program
             .execute(&cel_context)
@@ -154,6 +212,50 @@ impl RuleEngine {
                 "{other:?}"
             )))),
         }
+    }
+
+    fn compile_cel_program(
+        &self,
+        rule_id: &str,
+        expression: &str,
+        profile: CelSecurityProfile,
+    ) -> Result<Arc<CelProgram>, Box<dyn StdError + Send + Sync>> {
+        let cache_key = format!("{rule_id}:{}:{expression}", profile.cache_name());
+        let mut cache = self
+            .cel_cache
+            .lock()
+            .map_err(|_| RuleEngineError::CelCompile("compile cache lock poisoned".into()))?;
+        if let Some(program) = cache.get(&cache_key) {
+            return Ok(program.clone());
+        }
+        let program = Arc::new(
+            CelProgram::compile(expression)
+                .map_err(|err| RuleEngineError::CelCompile(err.to_string()))?,
+        );
+        cache.insert(cache_key, program.clone());
+        Ok(program)
+    }
+
+    fn validate_cel_program(
+        &self,
+        program: &CelProgram,
+        profile: CelSecurityProfile,
+    ) -> Result<(), Box<dyn StdError + Send + Sync>> {
+        if profile != CelSecurityProfile::Strict {
+            return Ok(());
+        }
+        let references = program.references();
+        if references.has_variable("context") {
+            return Err(Box::new(RuleEngineError::CelSecurityPolicy(
+                "strict profile does not expose full context; use curated root variables".into(),
+            )));
+        }
+        if references.has_function("matches") {
+            return Err(Box::new(RuleEngineError::CelSecurityPolicy(
+                "strict profile does not allow regex matches".into(),
+            )));
+        }
+        Ok(())
     }
 
     fn evaluate_condition(&self, condition: &RuleCondition, context: &JsonValue) -> bool {
@@ -408,6 +510,52 @@ impl RuleEngine {
             other => other.to_string(),
         }
     }
+}
+
+fn effective_cel_profile(requested: CelSecurityProfile, rule_type: &str) -> CelSecurityProfile {
+    if is_response_phase(rule_type) {
+        CelSecurityProfile::Strict
+    } else {
+        requested
+    }
+}
+
+fn is_response_phase(rule_type: &str) -> bool {
+    rule_type.eq_ignore_ascii_case("res-tra") || rule_type.eq_ignore_ascii_case("res-fil")
+}
+
+fn build_cel_context(
+    profile: CelSecurityProfile,
+    context: &JsonValue,
+) -> Result<CelContext<'static>, Box<dyn StdError + Send + Sync>> {
+    let mut cel_context = match profile {
+        CelSecurityProfile::Strict => CelContext::empty(),
+        CelSecurityProfile::Standard | CelSecurityProfile::InternalAdmin => CelContext::default(),
+    };
+    cel_context.add_function("contains_ignore_case", cel_contains_ignore_case);
+    cel_context.add_function("containsIgnoreCase", cel_contains_ignore_case);
+
+    if let JsonValue::Object(map) = context {
+        for (key, value) in map {
+            if !is_cel_identifier(key) || key == "context" {
+                continue;
+            }
+            match profile {
+                CelSecurityProfile::Strict => {
+                    if STRICT_CEL_ROOTS.contains(&key.as_str()) {
+                        cel_context.add_variable(key.as_str(), value.clone())?;
+                    }
+                }
+                CelSecurityProfile::Standard | CelSecurityProfile::InternalAdmin => {
+                    cel_context.add_variable(key.as_str(), value.clone())?;
+                }
+            }
+        }
+    }
+    if profile != CelSecurityProfile::Strict {
+        cel_context.add_variable("context", context.clone())?;
+    }
+    Ok(cel_context)
 }
 
 fn is_cel_identifier(value: &str) -> bool {
