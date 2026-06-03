@@ -84,8 +84,8 @@ pub use metrics::{
 };
 pub use msal_exchange::{
     MSAL_EXCHANGE_CONFIG_NAME, MSAL_EXCHANGE_FILE, MSAL_EXCHANGE_LEGACY_FILE,
-    MSAL_EXCHANGE_MODULE_ID, MsalExchangeConfig, MsalExchangeOutcome, MsalExchangeRuntime,
-    SECURITY_MSAL_CONFIG_NAME, SECURITY_MSAL_FILE, SECURITY_MSAL_MODULE_ID,
+    MSAL_EXCHANGE_MODULE_ID, MsalAuthorizationToken, MsalExchangeConfig, MsalExchangeOutcome,
+    MsalExchangeRuntime, SECURITY_MSAL_CONFIG_NAME, SECURITY_MSAL_FILE, SECURITY_MSAL_MODULE_ID,
     load_msal_exchange_runtime,
 };
 pub use pii_tokenization::{

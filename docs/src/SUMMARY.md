@@ -56,7 +56,7 @@
 - [Light-Axum](framework/light-axum.md)
 
 - [Light-Pingora](framework/light-pingora.md)
-
+  - [MSAL Exchange](framework/light-pingora/msal-exchange.md)
 # Product
 
 - [Light-Agent](product/light-agent.md)

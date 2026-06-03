@@ -2,8 +2,8 @@ use crate::security::{
     JwtExpiryMode, load_security_runtime, load_security_runtime_from_file, verify_jwt_token,
 };
 use crate::spa_auth::{
-    SpaAuthResponse, SpaCookieConfig, SpaSessionOutcome, SpaSessionRuntime, bearer_token,
-    generate_csrf, load_spa_token_client,
+    AUTHORIZATION_HEADER, SpaAuthResponse, SpaCookieConfig, SpaSessionOutcome, SpaSessionRuntime,
+    bearer_token, generate_csrf, load_spa_token_client,
 };
 use light_runtime::{ModuleKind, RuntimeConfig, RuntimeError};
 use pingora::prelude::Session;
@@ -17,6 +17,20 @@ pub const MSAL_EXCHANGE_CONFIG_NAME: &str = "msal-exchange";
 pub const SECURITY_MSAL_FILE: &str = "security-msal.yml";
 pub const SECURITY_MSAL_MODULE_ID: &str = "light-pingora/security-msal";
 pub const SECURITY_MSAL_CONFIG_NAME: &str = "security-msal";
+const DEFAULT_LIGHT_TOKEN_HEADER: &str = "X-Light-Token";
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum MsalAuthorizationToken {
+    LightOauth,
+    AzureMsal,
+}
+
+impl Default for MsalAuthorizationToken {
+    fn default() -> Self {
+        Self::LightOauth
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -51,6 +65,10 @@ pub struct MsalExchangeConfig {
     pub cookie_timeout_uri: String,
     #[serde(default)]
     pub subject_token_type: Option<String>,
+    #[serde(default)]
+    pub authorization_token: MsalAuthorizationToken,
+    #[serde(default = "default_light_token_header")]
+    pub light_token_header: String,
 }
 
 impl Default for MsalExchangeConfig {
@@ -71,6 +89,8 @@ impl Default for MsalExchangeConfig {
             cookie_same_site: crate::spa_auth::CookieSameSite::None,
             cookie_timeout_uri: default_cookie_timeout_uri(),
             subject_token_type: None,
+            authorization_token: MsalAuthorizationToken::default(),
+            light_token_header: default_light_token_header(),
         }
     }
 }
@@ -110,7 +130,19 @@ impl MsalExchangeRuntime {
         if path == self.config.logout_path {
             return Ok(MsalExchangeOutcome::Respond(self.session.logout_response()));
         }
-        match self.session.validate_or_refresh(session).await? {
+        if matches!(
+            self.config.authorization_token,
+            MsalAuthorizationToken::AzureMsal
+        ) && self.session.has_session_cookie(session)
+        {
+            self.verify_current_msal_token(session).await?;
+        }
+        let light_token_header = self.light_token_header();
+        match self
+            .session
+            .validate_or_refresh_with_token_header(session, light_token_header)
+            .await?
+        {
             SpaSessionOutcome::Continue {
                 auth,
                 response_headers,
@@ -119,6 +151,30 @@ impl MsalExchangeRuntime {
                 response_headers,
             }),
             SpaSessionOutcome::Respond(response) => Ok(MsalExchangeOutcome::Respond(response)),
+        }
+    }
+
+    async fn verify_current_msal_token(
+        &self,
+        session: &Session,
+    ) -> Result<(), crate::HandlerRejection> {
+        let microsoft_token = bearer_token(session).ok_or_else(|| {
+            crate::HandlerRejection::new(401, "ERR11000", "Microsoft bearer token is missing")
+        })?;
+        verify_jwt_token(
+            &self.msal_security,
+            microsoft_token.as_str(),
+            JwtExpiryMode::Enforce,
+        )
+        .await
+        .map_err(|error| crate::HandlerRejection::new(error.status, "ERR10000", error.message))?;
+        Ok(())
+    }
+
+    fn light_token_header(&self) -> &str {
+        match self.config.authorization_token {
+            MsalAuthorizationToken::LightOauth => AUTHORIZATION_HEADER,
+            MsalAuthorizationToken::AzureMsal => self.config.light_token_header.as_str(),
         }
     }
 
@@ -178,6 +234,7 @@ pub fn load_msal_exchange_runtime(
     }
 
     let config = load_msal_exchange_config(runtime_config)?.unwrap_or_default();
+    validate_msal_exchange_config(&config)?;
     runtime_config.module_registry.register_loaded_config(
         MSAL_EXCHANGE_MODULE_ID,
         MSAL_EXCHANGE_CONFIG_NAME,
@@ -282,6 +339,32 @@ fn default_cookie_timeout_uri() -> String {
     "/".to_string()
 }
 
+fn default_light_token_header() -> String {
+    DEFAULT_LIGHT_TOKEN_HEADER.to_string()
+}
+
+fn validate_msal_exchange_config(config: &MsalExchangeConfig) -> Result<(), RuntimeError> {
+    if matches!(
+        config.authorization_token,
+        MsalAuthorizationToken::AzureMsal
+    ) {
+        let header = config.light_token_header.trim();
+        if header.is_empty() {
+            return Err(RuntimeError::Unsupported(
+                "msal-exchange.lightTokenHeader must not be empty when authorizationToken is azure-msal"
+                    .to_string(),
+            ));
+        }
+        if header.eq_ignore_ascii_case(AUTHORIZATION_HEADER) {
+            return Err(RuntimeError::Unsupported(
+                "msal-exchange.lightTokenHeader must not be Authorization; use authorizationToken: light-oauth for that placement"
+                    .to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn default_session_timeout() -> u64 {
     3600
 }
@@ -324,6 +407,47 @@ subjectTokenType: urn:ietf:params:oauth:token-type:jwt
         assert_eq!(
             config.subject_token_type.as_deref(),
             Some("urn:ietf:params:oauth:token-type:jwt")
+        );
+        assert_eq!(
+            config.authorization_token,
+            MsalAuthorizationToken::LightOauth
+        );
+        assert_eq!(config.light_token_header, DEFAULT_LIGHT_TOKEN_HEADER);
+    }
+
+    #[test]
+    fn msal_exchange_config_accepts_azure_msal_token_placement() {
+        let config: MsalExchangeConfig = serde_yaml::from_str(
+            r#"
+authorizationToken: azure-msal
+lightTokenHeader: X-Light-Token
+"#,
+        )
+        .expect("parse config");
+
+        assert_eq!(
+            config.authorization_token,
+            MsalAuthorizationToken::AzureMsal
+        );
+        assert_eq!(config.light_token_header, "X-Light-Token");
+        validate_msal_exchange_config(&config).expect("valid placement");
+    }
+
+    #[test]
+    fn msal_exchange_config_rejects_authorization_as_light_header_in_azure_mode() {
+        let config: MsalExchangeConfig = serde_yaml::from_str(
+            r#"
+authorizationToken: azure-msal
+lightTokenHeader: Authorization
+"#,
+        )
+        .expect("parse config");
+
+        let error = validate_msal_exchange_config(&config).expect_err("invalid placement");
+        assert!(
+            error
+                .to_string()
+                .contains("lightTokenHeader must not be Authorization")
         );
     }
 }

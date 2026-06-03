@@ -118,6 +118,7 @@ ruleBodies:
     ruleName: Allow approved transfer
     ruleType: req-acc
     conditionLanguage: cel
+    conditionSecurityProfile: strict
     expression: >
       auditInfo.subject_claims.ClaimsMap.role != null
       && roles.exists(r, r == auditInfo.subject_claims.ClaimsMap.role)
@@ -132,8 +133,18 @@ ALTER TABLE rule_t
 ADD COLUMN condition_language VARCHAR(16) DEFAULT 'native' NOT NULL;
 
 ALTER TABLE rule_t
+ADD COLUMN condition_security_profile VARCHAR(32);
+
+ALTER TABLE rule_t
 ADD CONSTRAINT rule_t_condition_language_check
 CHECK (condition_language IN ('native', 'cel'));
+
+ALTER TABLE rule_t
+ADD CONSTRAINT rule_t_condition_security_profile_check
+CHECK (
+  condition_security_profile IS NULL
+  OR condition_security_profile IN ('strict', 'standard', 'internal-admin')
+);
 ```
 
 Recommended schema rules:
@@ -141,6 +152,7 @@ Recommended schema rules:
 - `conditionLanguage` is optional and defaults to `native`
 - `conditionLanguage: native` allows `conditions` and rejects `expression`
 - `conditionLanguage: cel` requires `expression` and rejects `conditions`
+- `conditionSecurityProfile` is optional and names a runtime-defined profile
 - native conditions continue to require `operator` or `operatorCode`
 - native conditions continue to require `operand` or `propertyPath`
 - unknown rule and condition fields should continue to be rejected by the schema
@@ -170,6 +182,7 @@ The Rust model can add optional fields to `Rule`:
 
 ```rust
 pub condition_language: Option<String>,
+pub condition_security_profile: Option<String>,
 pub expression: Option<String>,
 ```
 
@@ -184,14 +197,15 @@ than a `light-fabric`-only feature.
 
 | Area | Required work |
 | --- | --- |
-| `rule-specification` | Add `conditionLanguage`, `expression`, native rule and CEL rule schema branches, and mode-specific validation rules. |
-| `portal-db` | Add `rule_t.condition_language` with default `native` and check constraint. Keep existing rows valid without rewriting `rule_body`. |
-| `light-portal` | Update persistence and projection code so rule create/update/read/export/import paths carry `conditionLanguage`; ensure endpoint rule config generation emits self-contained rule bodies. |
-| `rule-command` | Accept `conditionLanguage` and `expression`, normalize old/native payloads, validate mode-specific shape, and write both DB metadata and rule body consistently. |
-| `rule-query` | Return `conditionLanguage` for list/detail APIs, include it in test-case execution payloads, and surface CEL parse/type/missing-field errors from Java and Rust runners. |
-| `portal-view` | Render either the native condition builder or a CEL expression editor based on `conditionLanguage`; do not require the UI to infer mode from `ruleBody`. |
-| `light-fabric` | Add `conditionLanguage` and `expression` to `crates/light-rule`, dispatch in `RuleEngine`, add CEL evaluator/caching, and update gateway/workflow tests. |
-| `yaml-rule` | Add Java runtime parity for `conditionLanguage: cel` if Java services need to execute the same rules; otherwise reject CEL rules explicitly with a clear runtime-capability error. |
+| `rule-specification` | Add `conditionLanguage`, `conditionSecurityProfile`, `expression`, native rule and CEL rule schema branches, and mode/profile-specific validation rules. |
+| `portal-db` | Add `rule_t.condition_language` with default `native`, optional `rule_t.condition_security_profile`, check constraints, and pending rule-change approval state if workflow task payloads are not sufficient. Keep existing rows valid without rewriting `rule_body`. |
+| `light-portal` | Update persistence and projection code so rule create/update/read/export/import paths carry `conditionLanguage` and `conditionSecurityProfile`; ensure endpoint rule config generation emits only approved, self-contained rule bodies; integrate stronger-profile requests with worklist and assistant-task approval. |
+| `rule-command` | Accept `conditionLanguage`, `conditionSecurityProfile`, and `expression`, normalize old/native payloads, validate mode/profile-specific shape, publish `strict` changes immediately, route stronger profile requests through approval, and write both DB metadata and rule body consistently after approval. |
+| `rule-query` | Return `conditionLanguage`, `conditionSecurityProfile`, and approval status for list/detail APIs, include selected/effective profiles in test-case execution payloads, and surface CEL parse/type/missing-field/profile errors from Java and Rust runners. |
+| `portal-view` | Render either the native condition builder or a CEL expression editor based on `conditionLanguage`; show a controlled profile selector for CEL rules; submit `strict` directly and route `standard` or `internal-admin` to worklist approval; do not require the UI to infer mode from `ruleBody`. |
+| workflow and assistant task | Use the existing human-in-the-loop worklist flow for stronger profile approval, route tasks to `admin` and `rule-admin`, and attach an advisory assistant-task risk summary for the approver. |
+| `light-fabric` | Add `conditionLanguage`, `conditionSecurityProfile`, and `expression` to `crates/light-rule`, dispatch in `RuleEngine`, add policy-driven CEL evaluator/caching, and update gateway/workflow tests. |
+| `yaml-rule` | Add Java runtime parity for `conditionLanguage: cel` and named profile enforcement if Java services need to execute the same rules; otherwise reject CEL rules explicitly with a clear runtime-capability error. |
 
 `portal-db` is listed even though it is not a rule engine because `rule_t` lives
 there. Without the DB column, `portal-view` would need to parse the compact rule
@@ -299,7 +313,8 @@ filters are available as `col`. A future runtime can also expose a namespaced
 require that shape to preserve compatibility with existing native rules and
 actions.
 
-The CEL environment should expose variables in two ways:
+For `standard` and `internal-admin` profiles, the CEL environment can expose
+variables in two ways:
 
 - top-level context fields as direct CEL variables, such as `auditInfo`,
   `toolArguments`, and `roles`
@@ -309,6 +324,13 @@ The CEL environment should expose variables in two ways:
 Direct variables keep expressions concise and close to the native condition path
 style. The `context` variable is safer for generated expressions, collision
 avoidance, and future fields that are not valid CEL identifiers.
+
+For the `strict` profile, the runtime should expose only curated root variables
+such as `auditInfo`, `headers`, `toolArguments`, endpoint metadata, and
+permission values needed by the rule phase. It should not expose the full
+`context` object by default. This prevents future internal runtime metadata from
+becoming visible to tenant-authored CEL just because it was appended to the root
+request context.
 
 The context contract should be documented as part of Light-Rule because CEL
 expressions depend on stable field names. Adding fields is compatible. Renaming
@@ -383,10 +405,17 @@ Validation must enforce mode-specific shape:
 - `native`: `conditions` is allowed, `expression` is rejected
 - `cel`: `expression` is required, `conditions` is rejected
 - persisted `rule_t.condition_language` must match `ruleBody.conditionLanguage`
+- persisted `rule_t.condition_security_profile` must match
+  `ruleBody.conditionSecurityProfile` when either side is present
 
 Runtime reload should reject invalid CEL when strict validation is enabled. If a
 service must preserve availability, it can keep the last known-good rule set and
 report the new config as rejected.
+
+Approval workflow should not bypass validation. For profile escalation requests,
+the command path should validate the submitted rule shape and expression before
+creating the approval task. Final approval should revalidate the exact submitted
+rule body before emitting the active rule event.
 
 Validation output should include:
 
@@ -403,11 +432,13 @@ compiled program with the loaded rule set.
 Recommended cache key:
 
 ```text
-ruleId + expression hash
+ruleId + expression hash + effective profile
 ```
 
 The compiled expression cache should be replaced atomically when the rule config
-reloads. It should not outlive the rule version it was compiled from.
+reloads. It should not outlive the rule version it was compiled from. Old
+compiled entries must be evicted during reload so repeated rule updates cannot
+leak memory through stale expression hashes.
 
 ## Rust CEL Library
 
@@ -458,6 +489,62 @@ and edge-case behavior should be implemented in the Java runtime.
 
 CEL support should be deterministic and sandboxed.
 
+The evaluator does not need an operating-system sandbox for normal
+trusted/admin-authored rule configuration. CEL is an interpreted expression
+language, not arbitrary Rust or JavaScript execution, and expressions can only
+resolve variables and functions registered in the CEL context. The CEL context
+is therefore the primary sandbox boundary.
+
+For the Rust `cel-interpreter` integration, context construction should be
+explicit. `Context::default()` exposes standard pure CEL functions such as
+`size`, `contains`, string helpers, type conversions, regex `matches`, and time
+parsing helpers depending on enabled crate features. If a service accepts
+tenant-authored or otherwise untrusted CEL, prefer `Context::empty()` and add
+only platform-approved helper functions.
+
+Security policy should be engine-owned. A rule may request a named condition
+security profile, but it must not define its own function allowlist, size
+limits, resource limits, or isolation mode. If a rule author controls the rule
+body, then inline security settings are also attacker-controlled.
+
+Recommended policy model:
+
+```text
+runtime config defines profiles:
+  strict
+  standard
+  internal-admin
+
+rule optionally requests:
+  conditionSecurityProfile: strict
+
+effective policy:
+  runtime maximum profile intersected with requested profile
+```
+
+If a rule omits `conditionSecurityProfile`, the runtime default applies. If a
+rule requests a profile that the service, tenant, or rule phase does not allow,
+the rule config should be rejected during validation or runtime reload. The
+engine may choose a stricter profile than requested, but it must never choose a
+weaker one because the rule requested it.
+
+Recommended profiles:
+
+- `strict`: default for tenant-authored, portal self-service, imported, or
+  marketplace-style CEL. Use an empty CEL context, expose only approved
+  variables, add only pure helper functions, and enforce tight size and
+  expression-shape limits. Do not expose the full `context` root, and disable
+  regex until both Java and Rust provide matching bounded or linear-time
+  behavior.
+- `standard`: default for internal business rules. Keep allowlists and resource
+  limits, but permit common pure helpers such as `size`, `contains`,
+  `startsWith`, `endsWith`, `contains_ignore_case`, and bounded regex support
+  if needed.
+- `internal-admin`: limited to trusted operator-maintained rules. This may be
+  closer to the selected CEL runtime's default behavior, but should still
+  compile during rule load, validate references, enforce maximum input size, and
+  protect reloads with the last known-good rule set.
+
 Allowed:
 
 - boolean logic
@@ -479,6 +566,57 @@ Not allowed:
 
 Custom functions should be added conservatively. Native Light-Rule actions
 remain the extension point for side effects and transformations.
+
+The core runtime object should be a policy-driven condition evaluator rather
+than ad hoc logic embedded directly in `RuleEngine`:
+
+```text
+RuleEngineOptions
+  -> ConditionExecutionPolicy
+      -> defaultCelProfile
+      -> allowRuleProfileSelection
+      -> profiles[name] = CelSecurityProfile
+
+CelSecurityProfile
+  -> allowedFunctions
+  -> allowedRootVariables
+  -> exposeContextRoot
+  -> exposeTopLevelAliases
+  -> maxExpressionBytes
+  -> maxContextBytes
+  -> maxStringBytes
+  -> maxCollectionItems
+  -> allowRegex
+  -> allowTimeParsing
+  -> allowComprehensions
+  -> maxComprehensionNesting
+```
+
+CEL still needs resource and robustness controls because expressions run on
+request paths and can iterate over input data. Runtime and publish-time
+validation should:
+
+- allow-list functions and variables, using compiled expression references where
+  available
+- reject functions that perform I/O, mutation, service lookup, action execution,
+  random generation, or implicit current-time access
+- cap expression length and input context size
+- reject or limit expensive access to large request or response bodies
+- compile during rule load and fail invalid expression shapes before request
+  execution
+- keep the last known-good rule set if reload validation fails
+
+Phase ceilings should be enforced by runtime policy. Response phases such as
+`res-tra` and `res-fil` should default to a `strict` ceiling or tight
+`maxContextBytes` limits because they can include large response payloads.
+Access-control phases may allow `standard` only when the exposed context is
+small and bounded. A rule request for a stronger profile than the phase ceiling
+must be rejected or downgraded to the stricter effective profile.
+
+For fully untrusted public input, evaluate CEL in a separate worker, process, or
+another resource-isolated execution path with CPU and memory limits. A Tokio
+timeout alone is not a complete guard for synchronous CPU-bound expression
+evaluation.
 
 ## Portal Experience
 
@@ -503,6 +641,12 @@ Recommended behavior:
 - do not try to round-trip arbitrary CEL into native builder rows
 - store the selected mode in `rule_t.condition_language` and in the JSON rule
   body as `conditionLanguage`
+- for CEL rules, store only the selected profile name in
+  `rule_t.condition_security_profile` and in the JSON rule body as
+  `conditionSecurityProfile`; do not expose raw policy limits in the form
+- do not show `internal-admin` in standard self-service forms; allow it only
+  through checked-in runtime configuration or an explicitly authorized internal
+  admin JWT/role path
 
 The CEL editor should provide:
 
@@ -510,7 +654,53 @@ The CEL editor should provide:
 - test context input
 - expression result preview
 - visible context field reference
+- selected and effective security profile display
 - rule test execution against the same backend evaluator used by runtime
+
+## Profile Approval Workflow
+
+Light-Portal may allow a user to select a CEL security profile, but the selected
+profile is only a request. Runtime policy still computes the effective profile
+from the requested profile, the service maximum, the tenant maximum, and the rule
+phase ceiling.
+
+Recommended publish behavior:
+
+- `strict`: direct publish. If schema, CEL validation, and command authorization
+  pass, create or update the rule immediately.
+- `standard`: approval required. Submit the proposed rule change, create a
+  worklist task for `rule-admin` and `admin`, and keep the change pending until
+  approval.
+- `internal-admin`: hidden from standard self-service authoring. If exposed to an
+  operator-only flow, require stronger approval and never allow ordinary
+  self-service users to request it.
+
+For approval-required changes, the command side should not emit the final active
+`RuleCreated` or `RuleUpdated` event at submission time. It should emit a
+submission event such as `RuleChangeSubmittedEvent` or
+`RuleApprovalRequestedEvent`, store the proposed rule body and requested profile,
+and create the human-in-the-loop worklist task. Only approval should emit the
+active rule event. Rejection should emit a rejection event and leave the active
+rule unchanged.
+
+Assistant tasks can help the approver by summarizing the CEL expression, rule
+phase, requested profile, referenced context roots, use of response body fields,
+regex usage, and any runtime ceiling that would downgrade the effective profile.
+The assistant output is advisory only; the human approver remains responsible for
+the approval decision.
+
+Recommended approval rules:
+
+- changing the expression, action list, rule phase, requested profile, or exposed
+  context assumptions invalidates prior approval
+- downgrading from `standard` to `strict` can publish directly after validation
+- upgrading from `strict` to `standard` or `internal-admin` requires approval
+- requester and approver should be different users except for an explicit
+  break-glass workflow
+- approval audit should record requested profile, effective profile, requester,
+  approver, approval time, assistant-task summary id, and approval comments
+- pending rules must not be exported to runtime endpoint rule config until
+  approved
 
 ## Compatibility
 
@@ -520,6 +710,10 @@ Rules without `conditionLanguage` are treated as `native`. The database
 migration should add `rule_t.condition_language` with default `native`, so
 existing rows do not need their `rule_body` rewritten immediately.
 
+Rules without `conditionSecurityProfile` use the runtime default CEL profile.
+The field is meaningful only for CEL rules; native rules do not need a condition
+security profile.
+
 Native condition aliases must continue to work:
 
 - `operatorCode` as alias for `operator`
@@ -527,8 +721,11 @@ Native condition aliases must continue to work:
 - `actionClassName` as alias for `actionRef`
 
 CEL introduces a new capability. If the Java yaml-rule runtime needs to execute
-the same rules, it must implement the same CEL rule shape. Until then, CEL
-rules should be marked as requiring runtimes with CEL support.
+the same rules, it must implement the same CEL rule shape. Until then, Java
+runtimes must fail closed with a clear capability error, such as
+`UnsupportedConditionLanguageException`, when loading or executing a rule with
+`conditionLanguage: cel`. A runtime must not silently ignore a CEL rule because
+that can fail open for access-control rules.
 
 Java parity is feasible because Google maintains CEL-Java under the `dev.cel`
 Maven group, including the `dev.cel:cel` artifact with compiler and runtime
@@ -546,6 +743,7 @@ ruleBodies:
     ruleName: Allow approved transfer
     ruleType: req-acc
     conditionLanguage: cel
+    conditionSecurityProfile: strict
     expression: >
       auditInfo.subject_claims.ClaimsMap.role in roles
       && (
@@ -575,6 +773,7 @@ ruleBodies:
     ruleName: Filter accounts for portal users
     ruleType: res-fil
     conditionLanguage: cel
+    conditionSecurityProfile: strict
     expression: >
       statusCode == 200
       && responseBody != ""
@@ -585,26 +784,33 @@ ruleBodies:
 
 ## Rollout Plan
 
-1. Add `rule_t.condition_language` with default `native` and a check constraint.
-2. Extend the rule specification with native and CEL rule branches.
-3. Add `conditionLanguage` and `expression` fields to the Rust `Rule` model.
+1. Add `rule_t.condition_language` with default `native`, optional
+   `rule_t.condition_security_profile`, and check constraints.
+2. Extend the rule specification with native and CEL rule branches plus
+   optional `conditionSecurityProfile`.
+3. Add `conditionLanguage`, `conditionSecurityProfile`, and `expression` fields
+   to the Rust `Rule` model.
 4. Update command/query APIs so the portal can persist and read the condition
-   language without parsing `ruleBody`.
+   language, security profile, and approval state without parsing `ruleBody`.
 5. Optionally accept `operatorCode: cel` as an import/compatibility alias and
    normalize it to the rule-level CEL shape.
 6. Choose and pin the Rust CEL crate behind an internal evaluator abstraction.
-7. Dispatch inside `RuleEngine::execute_rule` based on `conditionLanguage`.
-8. Compile and cache CEL expressions during rule config load.
-9. Add unit tests for CEL true, CEL false, invalid expression, mode validation,
+7. Add runtime-owned CEL security profiles and policy-driven context building.
+8. Add approval workflow integration for `standard` and `internal-admin`
+   profile requests, including worklist and assistant-task support.
+9. Dispatch inside `RuleEngine::execute_rule` based on `conditionLanguage`.
+10. Compile and cache CEL expressions during rule config load.
+11. Add unit tests for CEL true, CEL false, invalid expression, mode validation,
    and missing-field behavior.
-10. Add tests for custom native-parity helper functions.
-11. Add performance tests for context conversion with large `toolArguments` and
+12. Add tests for custom native-parity helper functions.
+13. Add performance tests for context conversion with large `toolArguments` and
    response payloads.
-12. Add gateway integration tests using the existing rule context and the
+14. Add gateway integration tests using the existing rule context and the
    `context` root variable.
-13. Add rule test API support so Light-Portal can validate CEL before publish.
-14. Add portal mode-based rule editing.
-15. Document runtime compatibility and Java parity requirements.
+15. Add rule test API support so Light-Portal can validate CEL before publish.
+16. Add portal mode-based rule editing, a controlled CEL profile selector, and
+   approval UX for stronger profile requests.
+17. Document runtime compatibility and Java parity requirements.
 
 ## Decision
 

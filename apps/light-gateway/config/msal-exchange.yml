@@ -13,3 +13,5 @@ refreshSingleFlightMaxEntries: ${msal-exchange.refreshSingleFlightMaxEntries:100
 cookieSameSite: ${msal-exchange.cookieSameSite:None}
 cookieTimeoutUri: ${msal-exchange.cookieTimeoutUri:/}
 subjectTokenType: ${msal-exchange.subjectTokenType:}
+authorizationToken: ${msal-exchange.authorizationToken:light-oauth}
+lightTokenHeader: ${msal-exchange.lightTokenHeader:X-Light-Token}

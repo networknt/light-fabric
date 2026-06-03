@@ -33,8 +33,7 @@ pub const ROLES_COOKIE: &str = "roles";
 pub const HOST_COOKIE: &str = "host";
 pub const EMAIL_COOKIE: &str = "email";
 pub const EID_COOKIE: &str = "eid";
-
-const AUTHORIZATION_HEADER: &str = "authorization";
+pub const AUTHORIZATION_HEADER: &str = "authorization";
 const CSRF_HEADER: &str = "X-CSRF-TOKEN";
 const CSRF_PROTOCOL_PREFIX: &str = "csrf.";
 const CONTENT_TYPE_JSON: &str = "application/json";
@@ -171,6 +170,15 @@ impl SpaSessionRuntime {
         &self,
         session: &mut Session,
     ) -> Result<SpaSessionOutcome, HandlerRejection> {
+        self.validate_or_refresh_with_token_header(session, AUTHORIZATION_HEADER)
+            .await
+    }
+
+    pub async fn validate_or_refresh_with_token_header(
+        &self,
+        session: &mut Session,
+        token_header: &str,
+    ) -> Result<SpaSessionOutcome, HandlerRejection> {
         let cookies = request_cookies(session);
         let access_token = cookies.get(ACCESS_TOKEN_COOKIE).cloned();
         let refresh_token = cookies.get(REFRESH_TOKEN_COOKIE).cloned();
@@ -185,10 +193,10 @@ impl SpaSessionRuntime {
             validate_csrf(session, &principal.claims)?;
             if token_needs_refresh(&principal.claims, self.cookies.renew_before_seconds) {
                 return self
-                    .renew_or_expire(session, refresh_token.as_deref())
+                    .renew_or_expire(session, refresh_token.as_deref(), token_header)
                     .await;
             }
-            inject_authorization(session, access_token)?;
+            inject_bearer_token(session, token_header, access_token)?;
             return Ok(SpaSessionOutcome::Continue {
                 auth: Some(principal),
                 response_headers: Vec::new(),
@@ -197,7 +205,7 @@ impl SpaSessionRuntime {
 
         if refresh_token.is_some() {
             return self
-                .renew_or_expire(session, refresh_token.as_deref())
+                .renew_or_expire(session, refresh_token.as_deref(), token_header)
                 .await;
         }
 
@@ -207,10 +215,16 @@ impl SpaSessionRuntime {
         })
     }
 
+    pub fn has_session_cookie(&self, session: &Session) -> bool {
+        let cookies = request_cookies(session);
+        cookies.contains_key(ACCESS_TOKEN_COOKIE) || cookies.contains_key(REFRESH_TOKEN_COOKIE)
+    }
+
     async fn renew_or_expire(
         &self,
         session: &mut Session,
         refresh_token: Option<&str>,
+        token_header: &str,
     ) -> Result<SpaSessionOutcome, HandlerRejection> {
         let Some(refresh_token) = refresh_token.filter(|value| !value.trim().is_empty()) else {
             return Ok(SpaSessionOutcome::Respond(session_expired_response(
@@ -223,7 +237,7 @@ impl SpaSessionRuntime {
             .await
         {
             Ok(result) => {
-                inject_authorization(session, result.response.access_token.as_str())?;
+                inject_bearer_token(session, token_header, result.response.access_token.as_str())?;
                 let principal = verify_jwt_token(
                     self.security.as_ref(),
                     result.response.access_token.as_str(),
@@ -585,11 +599,23 @@ fn websocket_protocol_csrf(session: &Session) -> Option<String> {
     })
 }
 
-fn inject_authorization(session: &mut Session, token: &str) -> Result<(), HandlerRejection> {
+fn inject_bearer_token(
+    session: &mut Session,
+    header_name: &str,
+    token: &str,
+) -> Result<(), HandlerRejection> {
+    let header_name = header_name.trim();
+    if header_name.is_empty() {
+        return Err(HandlerRejection::new(
+            500,
+            "ERR10001",
+            "invalid token header",
+        ));
+    }
     session
         .req_header_mut()
-        .insert_header(AUTHORIZATION_HEADER, format!("Bearer {token}"))
-        .map_err(|_| HandlerRejection::new(500, "ERR10001", "invalid Authorization header"))?;
+        .insert_header(header_name.to_string(), format!("Bearer {token}"))
+        .map_err(|_| HandlerRejection::new(500, "ERR10001", "invalid token header"))?;
     Ok(())
 }
 
