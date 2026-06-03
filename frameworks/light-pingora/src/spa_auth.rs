@@ -544,12 +544,21 @@ pub fn query_param(session: &Session, name: &str) -> Option<String> {
 }
 
 pub fn bearer_token(session: &Session) -> Option<String> {
-    let value = request_header(session, AUTHORIZATION_HEADER)?;
+    bearer_token_from_header(session, AUTHORIZATION_HEADER)
+}
+
+pub fn bearer_token_from_header(session: &Session, header_name: &str) -> Option<String> {
+    let value = request_header(session, header_name)?;
     let (scheme, token) = value.split_once(' ')?;
     scheme
         .eq_ignore_ascii_case("bearer")
         .then(|| token.trim().to_string())
         .filter(|token| !token.is_empty())
+}
+
+pub fn request_cookie(session: &Session, name: &str) -> Option<String> {
+    let mut cookies = request_cookies(session);
+    cookies.remove(name)
 }
 
 pub fn social_scopes<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
@@ -755,6 +764,39 @@ fn push_cookie(
     headers.push(("set-cookie".to_string(), cookie));
 }
 
+pub fn session_cookie_header(
+    config: &SpaCookieConfig,
+    name: &str,
+    value: &str,
+    max_age: u64,
+    http_only: bool,
+) -> (String, String) {
+    let mut headers = Vec::new();
+    push_cookie(&mut headers, config, name, value, max_age, http_only);
+    headers.remove(0)
+}
+
+pub fn delete_cookie_header(
+    config: &SpaCookieConfig,
+    name: &str,
+    http_only: bool,
+) -> (String, String) {
+    let mut cookie = format!(
+        "{}=; Max-Age=0; Domain={}; Path={}; SameSite={}",
+        name,
+        config.cookie_domain,
+        config.cookie_path,
+        config.cookie_same_site.as_cookie_value()
+    );
+    if http_only {
+        cookie.push_str("; HttpOnly");
+    }
+    if config.cookie_secure {
+        cookie.push_str("; Secure");
+    }
+    ("set-cookie".to_string(), cookie)
+}
+
 fn delete_cookie_headers(config: &SpaCookieConfig) -> Vec<(String, String)> {
     [
         ACCESS_TOKEN_COOKIE,
@@ -769,20 +811,11 @@ fn delete_cookie_headers(config: &SpaCookieConfig) -> Vec<(String, String)> {
     ]
     .iter()
     .map(|name| {
-        let mut cookie = format!(
-            "{}=; Max-Age=0; Domain={}; Path={}; SameSite={}",
+        delete_cookie_header(
+            config,
             name,
-            config.cookie_domain,
-            config.cookie_path,
-            config.cookie_same_site.as_cookie_value()
-        );
-        if matches!(*name, ACCESS_TOKEN_COOKIE | REFRESH_TOKEN_COOKIE) {
-            cookie.push_str("; HttpOnly");
-        }
-        if config.cookie_secure {
-            cookie.push_str("; Secure");
-        }
-        ("set-cookie".to_string(), cookie)
+            matches!(*name, ACCESS_TOKEN_COOKIE | REFRESH_TOKEN_COOKIE),
+        )
     })
     .collect()
 }

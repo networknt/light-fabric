@@ -4,10 +4,12 @@ The `msal-exchange` handler is a BFF security handler for SPA applications
 that authenticate with Microsoft Authentication Library, MSAL, and need an
 internal light-oauth security profile for gateway authorization.
 
-The SPA obtains an Azure MSAL token in the browser, sends it to the gateway,
-and the gateway exchanges it with light-oauth for an internal access token and,
-optionally, a refresh token. The internal token set is stored in secure BFF
-cookies and is used on later requests together with CSRF protection.
+The SPA obtains Azure MSAL tokens in the browser. It sends the MSAL ID token to
+the gateway for light-oauth token exchange. In the Azure authorization
+placement pattern, it also sends the MSAL access token during the exchange so
+the gateway can store it in a secure BFF cookie. The internal light-oauth token
+set is stored in secure BFF cookies and is used on later requests together with
+CSRF protection.
 
 This page documents the current behavior and the token placement extension for
 deployments that must keep the Azure MSAL access token in the downstream
@@ -75,15 +77,15 @@ light-oauth token-exchange client configuration.
 
 ## Exchange Flow
 
-The exchange endpoint receives the Azure token from the SPA and creates the BFF
-session.
+The exchange endpoint receives the Azure MSAL ID token from the SPA and creates
+the BFF session.
 
 ```text
 POST /auth/ms/exchange
-Authorization: Bearer <azure-msal-token>
+Authorization: Bearer <azure-msal-id-token>
 
-  -> read the Azure bearer token
-  -> verify it with security-msal.yml
+  -> read the Azure MSAL ID token
+  -> verify the ID token with security-msal.yml
   -> generate a CSRF value
   -> call light-oauth with the token-exchange grant
   -> verify the returned light-oauth access token with security.yml
@@ -96,7 +98,7 @@ The outgoing form body contains:
 
 ```text
 grant_type=urn:ietf:params:oauth:grant-type:token-exchange
-subject_token=<azure-msal-token>
+subject_token=<azure-msal-id-token>
 subject_token_type=urn:ietf:params:oauth:token-type:jwt
 csrf=<generated-csrf>
 ```
@@ -120,6 +122,7 @@ The handler uses the same cookie contract as the stateless SPA auth handler.
 | --- | --- | --- |
 | `accessToken` | true | light-oauth access token |
 | `refreshToken` | true | light-oauth refresh token, when returned |
+| `msalAccessToken` | true | Azure MSAL access token when `authorizationToken` is `azure-msal` |
 | `csrf` | false | Generated CSRF value |
 | `userId` | false | User id from `uid`, `user_id`, or `sub` |
 | `userType` | false | User type from `userType` |
@@ -156,7 +159,7 @@ Supported values:
 | Value | `Authorization` header | Light-oauth token location | Use case |
 | --- | --- | --- | --- |
 | `light-oauth` | `Bearer <light-oauth-token>` | `Authorization` | Existing enterprise BFF pattern |
-| `azure-msal` | `Bearer <azure-msal-token>` | `lightTokenHeader`, default `X-Light-Token` | Azure-whitelisted downstream systems, such as AWS Agent Core |
+| `azure-msal` | `Bearer <azure-msal-access-token>` | `lightTokenHeader`, default `X-Light-Token` | Azure-whitelisted downstream systems, such as AWS Agent Core |
 
 ### `authorizationToken: light-oauth`
 
@@ -193,31 +196,44 @@ light-oauth directly and expect fine-grained security claims in the normal
 
 ### `authorizationToken: azure-msal`
 
-This is the new token placement pattern.
+This token placement pattern uses both Azure and light-oauth tokens downstream.
 
-The exchange endpoint is unchanged. The SPA still sends the Azure token to
-`/auth/ms/exchange`, and the gateway still stores the returned light-oauth
-token in HttpOnly cookies.
+At exchange time, the SPA sends the MSAL ID token in `Authorization` and the
+MSAL access token in `msalAccessTokenHeader`, which defaults to
+`X-MSAL-Access-Token`:
 
-For later protected requests, the SPA sends the current Azure MSAL access token
-in `Authorization`, plus cookies and CSRF:
+```text
+POST /auth/ms/exchange
+Authorization: Bearer <azure-msal-id-token>
+X-MSAL-Access-Token: Bearer <azure-msal-access-token>
+
+  -> verify the MSAL ID token with security-msal.yml
+  -> verify the MSAL access token with security-msal.yml
+  -> exchange the ID token for a light-oauth token
+  -> store the light-oauth token in accessToken
+  -> store the MSAL access token in msalAccessToken
+```
+
+For later protected requests, the SPA sends cookies and CSRF. The SPA does not
+need to put the Azure access token in the browser request `Authorization`
+header because the gateway reads it from the HttpOnly `msalAccessToken` cookie:
 
 ```text
 GET /agent/chat
-Authorization: Bearer <azure-msal-token>
-Cookie: accessToken=...; csrf=...
+Cookie: accessToken=...; msalAccessToken=...; csrf=...
 X-CSRF-TOKEN: <csrf>
 ```
 
-The handler should:
+The handler:
 
 ```text
-  -> verify the Azure bearer token with security-msal.yml
+  -> read the MSAL access token from the msalAccessToken cookie
+  -> verify the MSAL access token with security-msal.yml
   -> read the light-oauth accessToken cookie
   -> verify the light-oauth token with security.yml
   -> validate CSRF
   -> refresh the light-oauth token if it is close to expiry
-  -> preserve Authorization: Bearer <azure-msal-token>
+  -> inject Authorization: Bearer <azure-msal-access-token>
   -> inject X-Light-Token: Bearer <light-oauth-token>
   -> continue the handler chain
 ```
@@ -225,7 +241,7 @@ The handler should:
 Downstream systems receive both tokens:
 
 ```text
-Authorization: Bearer <azure-msal-token>
+Authorization: Bearer <azure-msal-access-token>
 X-Light-Token: Bearer <light-oauth-token>
 ```
 
@@ -264,6 +280,8 @@ cookieTimeoutUri: ${msal-exchange.cookieTimeoutUri:/}
 subjectTokenType: ${msal-exchange.subjectTokenType:}
 authorizationToken: ${msal-exchange.authorizationToken:light-oauth}
 lightTokenHeader: ${msal-exchange.lightTokenHeader:X-Light-Token}
+msalAccessTokenHeader: ${msal-exchange.msalAccessTokenHeader:X-MSAL-Access-Token}
+msalAccessTokenCookie: ${msal-exchange.msalAccessTokenCookie:msalAccessToken}
 ```
 
 Fields:
@@ -271,7 +289,7 @@ Fields:
 | Field | Default | Description |
 | --- | --- | --- |
 | `enabled` | `true` | Enables or disables the handler once it is active in the chain. |
-| `exchangePath` | `/auth/ms/exchange` | Endpoint that receives the Azure MSAL bearer token and creates the BFF session. |
+| `exchangePath` | `/auth/ms/exchange` | Endpoint that receives the Azure MSAL ID token and creates the BFF session. |
 | `logoutPath` | `/auth/ms/logout` | Endpoint that clears BFF cookies. |
 | `cookieDomain` | `localhost` | Cookie domain for session cookies. |
 | `cookiePath` | `/` | Cookie path for session cookies. |
@@ -287,10 +305,15 @@ Fields:
 | `subjectTokenType` | blank | Optional token-exchange subject token type override. |
 | `authorizationToken` | `light-oauth` | Token to place in downstream `Authorization`: `light-oauth` or `azure-msal`. |
 | `lightTokenHeader` | `X-Light-Token` | Header used for the light-oauth token when `authorizationToken` is `azure-msal`. |
+| `msalAccessTokenHeader` | `X-MSAL-Access-Token` | Header that carries the Azure MSAL access token on the exchange request when `authorizationToken` is `azure-msal`. |
+| `msalAccessTokenCookie` | `msalAccessToken` | HttpOnly cookie used to store the Azure MSAL access token after exchange when `authorizationToken` is `azure-msal`. |
 
 Invalid `authorizationToken` values should fail startup. `lightTokenHeader`
 should not be `Authorization`; use `authorizationToken: light-oauth` for that
-case.
+case. In `azure-msal` mode, `msalAccessTokenHeader` must not be
+`Authorization` because `Authorization` carries the MSAL ID token on the
+exchange endpoint. `msalAccessTokenHeader` must also be different from
+`lightTokenHeader`.
 
 ## Security Configuration
 
@@ -333,7 +356,20 @@ await fetch("/auth/ms/exchange", {
   method: "POST",
   credentials: "include",
   headers: {
-    Authorization: `Bearer ${azureMsalAccessToken}`
+    Authorization: `Bearer ${azureMsalIdToken}`
+  }
+});
+```
+
+Initial exchange with `authorizationToken: azure-msal`:
+
+```javascript
+await fetch("/auth/ms/exchange", {
+  method: "POST",
+  credentials: "include",
+  headers: {
+    Authorization: `Bearer ${azureMsalIdToken}`,
+    "X-MSAL-Access-Token": `Bearer ${azureMsalAccessToken}`
   }
 });
 ```
@@ -355,7 +391,6 @@ Subsequent requests with the Azure MSAL authorization pattern:
 await fetch("/agent/chat", {
   credentials: "include",
   headers: {
-    Authorization: `Bearer ${azureMsalAccessToken}`,
     "X-CSRF-TOKEN": csrf
   }
 });
@@ -363,9 +398,10 @@ await fetch("/agent/chat", {
 
 In both patterns, the SPA must send cookies with `credentials: "include"`.
 In the Azure MSAL authorization pattern, MSAL.js is responsible for obtaining
-and refreshing the Azure access token used in the browser request
-`Authorization` header. The gateway is responsible for validating the BFF
-session and injecting the light-oauth token into `lightTokenHeader`.
+the Azure access token before calling `/auth/ms/exchange`. The gateway stores
+that access token in the HttpOnly `msalAccessToken` cookie, validates it on
+later BFF requests, injects it into `Authorization`, and injects the
+light-oauth token into `lightTokenHeader`.
 
 ## Logout
 
@@ -384,7 +420,7 @@ Important error codes:
 
 | Code | Meaning |
 | --- | --- |
-| `ERR11000` | Azure MSAL bearer token is missing on the exchange endpoint. |
+| `ERR11000` | Required Azure MSAL bearer token is missing on the exchange endpoint or in the MSAL access-token cookie. |
 | `ERR11001` | light-oauth token exchange failed. |
 | `ERR10000` | Azure MSAL token or light-oauth token verification failed. |
 | `ERR10036` | CSRF token is missing from the request. |
@@ -399,13 +435,17 @@ contract:
 
 - `authorizationToken: light-oauth` preserves the existing behavior and injects
   the light-oauth token into `Authorization`.
-- `authorizationToken: azure-msal` verifies the request's Azure bearer token
-  with `security-msal.yml`, preserves that token in `Authorization`, and
+- `authorizationToken: azure-msal` verifies the exchange request's MSAL ID
+  token and MSAL access token with `security-msal.yml`, stores the MSAL access
+  token in `msalAccessToken`, injects it into downstream `Authorization`, and
   injects the light-oauth token into `lightTokenHeader`.
 - `lightTokenHeader` defaults to `X-Light-Token` and must not be
   `Authorization` when `authorizationToken` is `azure-msal`.
+- `msalAccessTokenHeader` defaults to `X-MSAL-Access-Token` and is used only on
+  the exchange endpoint.
+- `msalAccessTokenCookie` defaults to `msalAccessToken` and is HttpOnly.
 
-In `azure-msal` placement, the gateway requires the Azure bearer token only
-when a BFF session cookie is present. Requests without `accessToken` or
+In `azure-msal` placement, the gateway requires the MSAL access-token cookie
+only when a BFF session cookie is present. Requests without `accessToken` or
 `refreshToken` cookies keep the existing pass-through behavior so public
 endpoints are not forced to authenticate at this handler.

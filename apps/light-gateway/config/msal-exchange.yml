@@ -15,3 +15,5 @@ cookieTimeoutUri: ${msal-exchange.cookieTimeoutUri:/}
 subjectTokenType: ${msal-exchange.subjectTokenType:}
 authorizationToken: ${msal-exchange.authorizationToken:light-oauth}
 lightTokenHeader: ${msal-exchange.lightTokenHeader:X-Light-Token}
+msalAccessTokenHeader: ${msal-exchange.msalAccessTokenHeader:X-MSAL-Access-Token}
+msalAccessTokenCookie: ${msal-exchange.msalAccessTokenCookie:msalAccessToken}

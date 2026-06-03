@@ -3,12 +3,14 @@ use crate::security::{
 };
 use crate::spa_auth::{
     AUTHORIZATION_HEADER, SpaAuthResponse, SpaCookieConfig, SpaSessionOutcome, SpaSessionRuntime,
-    bearer_token, generate_csrf, load_spa_token_client,
+    bearer_token, bearer_token_from_header, delete_cookie_header, generate_csrf,
+    load_spa_token_client, request_cookie, session_cookie_header,
 };
 use light_runtime::{ModuleKind, RuntimeConfig, RuntimeError};
 use pingora::prelude::Session;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const MSAL_EXCHANGE_FILE: &str = "msal-exchange.yml";
 pub const MSAL_EXCHANGE_LEGACY_FILE: &str = "msal-exchange.yaml";
@@ -18,6 +20,8 @@ pub const SECURITY_MSAL_FILE: &str = "security-msal.yml";
 pub const SECURITY_MSAL_MODULE_ID: &str = "light-pingora/security-msal";
 pub const SECURITY_MSAL_CONFIG_NAME: &str = "security-msal";
 const DEFAULT_LIGHT_TOKEN_HEADER: &str = "X-Light-Token";
+const DEFAULT_MSAL_ACCESS_TOKEN_HEADER: &str = "X-MSAL-Access-Token";
+const DEFAULT_MSAL_ACCESS_TOKEN_COOKIE: &str = "msalAccessToken";
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -69,6 +73,10 @@ pub struct MsalExchangeConfig {
     pub authorization_token: MsalAuthorizationToken,
     #[serde(default = "default_light_token_header")]
     pub light_token_header: String,
+    #[serde(default = "default_msal_access_token_header")]
+    pub msal_access_token_header: String,
+    #[serde(default = "default_msal_access_token_cookie")]
+    pub msal_access_token_cookie: String,
 }
 
 impl Default for MsalExchangeConfig {
@@ -91,6 +99,8 @@ impl Default for MsalExchangeConfig {
             subject_token_type: None,
             authorization_token: MsalAuthorizationToken::default(),
             light_token_header: default_light_token_header(),
+            msal_access_token_header: default_msal_access_token_header(),
+            msal_access_token_cookie: default_msal_access_token_cookie(),
         }
     }
 }
@@ -128,14 +138,15 @@ impl MsalExchangeRuntime {
             return self.handle_exchange(session).await;
         }
         if path == self.config.logout_path {
-            return Ok(MsalExchangeOutcome::Respond(self.session.logout_response()));
+            return Ok(MsalExchangeOutcome::Respond(self.logout_response()));
         }
         if matches!(
             self.config.authorization_token,
             MsalAuthorizationToken::AzureMsal
         ) && self.session.has_session_cookie(session)
         {
-            self.verify_current_msal_token(session).await?;
+            let msal_access_token = self.msal_access_token_from_cookie(session).await?;
+            self.inject_msal_authorization(session, msal_access_token.as_str())?;
         }
         let light_token_header = self.light_token_header();
         match self
@@ -150,24 +161,44 @@ impl MsalExchangeRuntime {
                 auth,
                 response_headers,
             }),
-            SpaSessionOutcome::Respond(response) => Ok(MsalExchangeOutcome::Respond(response)),
+            SpaSessionOutcome::Respond(response) => Ok(MsalExchangeOutcome::Respond(
+                self.with_msal_access_delete(response),
+            )),
         }
     }
 
-    async fn verify_current_msal_token(
+    async fn verify_msal_token(
+        &self,
+        token: &str,
+    ) -> Result<crate::AuthPrincipal, crate::HandlerRejection> {
+        verify_jwt_token(&self.msal_security, token, JwtExpiryMode::Enforce)
+            .await
+            .map_err(|error| crate::HandlerRejection::new(error.status, "ERR10000", error.message))
+    }
+
+    async fn msal_access_token_from_cookie(
         &self,
         session: &Session,
+    ) -> Result<String, crate::HandlerRejection> {
+        let token = request_cookie(session, self.config.msal_access_token_cookie.as_str())
+            .ok_or_else(|| {
+                crate::HandlerRejection::new(401, "ERR11000", "Microsoft access token is missing")
+            })?;
+        self.verify_msal_token(token.as_str()).await?;
+        Ok(token)
+    }
+
+    fn inject_msal_authorization(
+        &self,
+        session: &mut Session,
+        token: &str,
     ) -> Result<(), crate::HandlerRejection> {
-        let microsoft_token = bearer_token(session).ok_or_else(|| {
-            crate::HandlerRejection::new(401, "ERR11000", "Microsoft bearer token is missing")
-        })?;
-        verify_jwt_token(
-            &self.msal_security,
-            microsoft_token.as_str(),
-            JwtExpiryMode::Enforce,
-        )
-        .await
-        .map_err(|error| crate::HandlerRejection::new(error.status, "ERR10000", error.message))?;
+        session
+            .req_header_mut()
+            .insert_header(AUTHORIZATION_HEADER, format!("Bearer {token}"))
+            .map_err(|_| {
+                crate::HandlerRejection::new(500, "ERR10001", "invalid Authorization header")
+            })?;
         Ok(())
     }
 
@@ -185,13 +216,29 @@ impl MsalExchangeRuntime {
         let microsoft_token = bearer_token(session).ok_or_else(|| {
             crate::HandlerRejection::new(401, "ERR11000", "Microsoft bearer token is missing")
         })?;
-        verify_jwt_token(
-            &self.msal_security,
-            microsoft_token.as_str(),
-            JwtExpiryMode::Enforce,
-        )
-        .await
-        .map_err(|error| crate::HandlerRejection::new(error.status, "ERR10000", error.message))?;
+        self.verify_msal_token(microsoft_token.as_str()).await?;
+
+        let msal_access_cookie = if matches!(
+            self.config.authorization_token,
+            MsalAuthorizationToken::AzureMsal
+        ) {
+            let access_token =
+                bearer_token_from_header(session, self.config.msal_access_token_header.as_str())
+                    .ok_or_else(|| {
+                        crate::HandlerRejection::new(
+                            401,
+                            "ERR11000",
+                            "Microsoft access token is missing",
+                        )
+                    })?;
+            let principal = self.verify_msal_token(access_token.as_str()).await?;
+            Some((
+                access_token,
+                msal_access_cookie_max_age(&principal, self.config.session_timeout),
+            ))
+        } else {
+            None
+        };
 
         let csrf = generate_csrf();
         let token = self
@@ -209,11 +256,58 @@ impl MsalExchangeRuntime {
             .session
             .set_login_cookies(&token, csrf.as_str())
             .await?;
+        let headers = self.with_msal_access_cookie(
+            headers,
+            msal_access_cookie
+                .as_ref()
+                .map(|(token, max_age)| (token.as_str(), *max_age)),
+        );
         Ok(MsalExchangeOutcome::Respond(SpaAuthResponse::json(
             200,
             json!({ "scopes": scopes }),
             headers,
         )))
+    }
+
+    fn with_msal_access_cookie(
+        &self,
+        mut headers: Vec<(String, String)>,
+        msal_access_token: Option<(&str, u64)>,
+    ) -> Vec<(String, String)> {
+        if let Some((token, max_age)) = msal_access_token {
+            headers.push(session_cookie_header(
+                self.session.cookies(),
+                self.config.msal_access_token_cookie.as_str(),
+                token,
+                max_age,
+                true,
+            ));
+        }
+        headers
+    }
+
+    fn logout_response(&self) -> SpaAuthResponse {
+        let mut response = self.session.logout_response();
+        response.headers.push(delete_cookie_header(
+            self.session.cookies(),
+            self.config.msal_access_token_cookie.as_str(),
+            true,
+        ));
+        response
+    }
+
+    fn with_msal_access_delete(&self, mut response: SpaAuthResponse) -> SpaAuthResponse {
+        if matches!(
+            self.config.authorization_token,
+            MsalAuthorizationToken::AzureMsal
+        ) {
+            response.headers.push(delete_cookie_header(
+                self.session.cookies(),
+                self.config.msal_access_token_cookie.as_str(),
+                true,
+            ));
+        }
+        response
     }
 }
 
@@ -343,6 +437,14 @@ fn default_light_token_header() -> String {
     DEFAULT_LIGHT_TOKEN_HEADER.to_string()
 }
 
+fn default_msal_access_token_header() -> String {
+    DEFAULT_MSAL_ACCESS_TOKEN_HEADER.to_string()
+}
+
+fn default_msal_access_token_cookie() -> String {
+    DEFAULT_MSAL_ACCESS_TOKEN_COOKIE.to_string()
+}
+
 fn validate_msal_exchange_config(config: &MsalExchangeConfig) -> Result<(), RuntimeError> {
     if matches!(
         config.authorization_token,
@@ -361,8 +463,50 @@ fn validate_msal_exchange_config(config: &MsalExchangeConfig) -> Result<(), Runt
                     .to_string(),
             ));
         }
+        let access_header = config.msal_access_token_header.trim();
+        if access_header.is_empty() {
+            return Err(RuntimeError::Unsupported(
+                "msal-exchange.msalAccessTokenHeader must not be empty when authorizationToken is azure-msal"
+                    .to_string(),
+            ));
+        }
+        if access_header.eq_ignore_ascii_case(AUTHORIZATION_HEADER) {
+            return Err(RuntimeError::Unsupported(
+                "msal-exchange.msalAccessTokenHeader must not be Authorization because Authorization carries the MSAL ID token on the exchange endpoint"
+                    .to_string(),
+            ));
+        }
+        if access_header.eq_ignore_ascii_case(header) {
+            return Err(RuntimeError::Unsupported(
+                "msal-exchange.msalAccessTokenHeader must be different from lightTokenHeader"
+                    .to_string(),
+            ));
+        }
+        if config.msal_access_token_cookie.trim().is_empty() {
+            return Err(RuntimeError::Unsupported(
+                "msal-exchange.msalAccessTokenCookie must not be empty when authorizationToken is azure-msal"
+                    .to_string(),
+            ));
+        }
     }
     Ok(())
+}
+
+fn msal_access_cookie_max_age(principal: &crate::AuthPrincipal, session_timeout: u64) -> u64 {
+    principal
+        .claims
+        .get("exp")
+        .and_then(serde_json::Value::as_u64)
+        .map(|exp| exp.saturating_sub(now_seconds()).min(session_timeout))
+        .filter(|max_age| *max_age > 0)
+        .unwrap_or(session_timeout)
+}
+
+fn now_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 fn default_session_timeout() -> u64 {
@@ -413,6 +557,14 @@ subjectTokenType: urn:ietf:params:oauth:token-type:jwt
             MsalAuthorizationToken::LightOauth
         );
         assert_eq!(config.light_token_header, DEFAULT_LIGHT_TOKEN_HEADER);
+        assert_eq!(
+            config.msal_access_token_header,
+            DEFAULT_MSAL_ACCESS_TOKEN_HEADER
+        );
+        assert_eq!(
+            config.msal_access_token_cookie,
+            DEFAULT_MSAL_ACCESS_TOKEN_COOKIE
+        );
     }
 
     #[test]
@@ -421,6 +573,8 @@ subjectTokenType: urn:ietf:params:oauth:token-type:jwt
             r#"
 authorizationToken: azure-msal
 lightTokenHeader: X-Light-Token
+msalAccessTokenHeader: X-MSAL-Access-Token
+msalAccessTokenCookie: msalAccessToken
 "#,
         )
         .expect("parse config");
@@ -430,6 +584,8 @@ lightTokenHeader: X-Light-Token
             MsalAuthorizationToken::AzureMsal
         );
         assert_eq!(config.light_token_header, "X-Light-Token");
+        assert_eq!(config.msal_access_token_header, "X-MSAL-Access-Token");
+        assert_eq!(config.msal_access_token_cookie, "msalAccessToken");
         validate_msal_exchange_config(&config).expect("valid placement");
     }
 
@@ -448,6 +604,44 @@ lightTokenHeader: Authorization
             error
                 .to_string()
                 .contains("lightTokenHeader must not be Authorization")
+        );
+    }
+
+    #[test]
+    fn msal_exchange_config_rejects_authorization_as_msal_access_header_in_azure_mode() {
+        let config: MsalExchangeConfig = serde_yaml::from_str(
+            r#"
+authorizationToken: azure-msal
+lightTokenHeader: X-Light-Token
+msalAccessTokenHeader: Authorization
+"#,
+        )
+        .expect("parse config");
+
+        let error = validate_msal_exchange_config(&config).expect_err("invalid placement");
+        assert!(
+            error
+                .to_string()
+                .contains("msalAccessTokenHeader must not be Authorization")
+        );
+    }
+
+    #[test]
+    fn msal_exchange_config_rejects_shared_msal_access_and_light_headers() {
+        let config: MsalExchangeConfig = serde_yaml::from_str(
+            r#"
+authorizationToken: azure-msal
+lightTokenHeader: X-Light-Token
+msalAccessTokenHeader: X-Light-Token
+"#,
+        )
+        .expect("parse config");
+
+        let error = validate_msal_exchange_config(&config).expect_err("invalid placement");
+        assert!(
+            error
+                .to_string()
+                .contains("msalAccessTokenHeader must be different from lightTokenHeader")
         );
     }
 }
