@@ -40,7 +40,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
-use tracing::info;
+use tracing::{debug, info};
 
 mod embedded_config {
     include!(concat!(env!("OUT_DIR"), "/embedded_config.rs"));
@@ -2136,7 +2136,7 @@ impl ProxyHttp for GatewayProxy {
                 format!("upstream circuit is open for {}", upstream.address),
             ));
         }
-        info!("proxying request to {}", upstream.address);
+        debug!("proxying request to {}", upstream.address);
         let mut peer = if upstream.tls {
             if let Some(cert_key) = self.upstream_client_cert_key.as_ref() {
                 HttpPeer::new_mtls(
