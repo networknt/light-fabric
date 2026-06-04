@@ -946,7 +946,7 @@ async fn fetch_remote_values(
         .header(reqwest::header::ACCEPT, bootstrap.accept_header.clone())
         .header(
             reqwest::header::AUTHORIZATION,
-            bootstrap.authorization.clone().unwrap_or_default(),
+            config_server_authorization_header(bootstrap.authorization.as_deref()),
         )
         .send()
         .await?;
@@ -985,7 +985,7 @@ async fn fetch_remote_files(
         .query(query)
         .header(
             reqwest::header::AUTHORIZATION,
-            bootstrap.authorization.clone().unwrap_or_default(),
+            config_server_authorization_header(bootstrap.authorization.as_deref()),
         )
         .send()
         .await?;
@@ -1015,6 +1015,34 @@ async fn fetch_remote_files(
     }
 
     Ok(cached_files)
+}
+
+fn config_server_authorization_header(authorization: Option<&str>) -> String {
+    let Some(authorization) = authorization else {
+        return String::new();
+    };
+    let trimmed = authorization.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let mut parts = trimmed.splitn(2, char::is_whitespace);
+    let first = parts.next().unwrap_or_default();
+    let rest = parts.next();
+
+    if first.eq_ignore_ascii_case("Bearer") {
+        return rest
+            .map(str::trim_start)
+            .filter(|credentials| !credentials.is_empty())
+            .map(|credentials| format!("Bearer {credentials}"))
+            .unwrap_or_default();
+    }
+
+    if rest.is_some() {
+        trimmed.to_string()
+    } else {
+        format!("Bearer {trimmed}")
+    }
 }
 
 fn load_bootstrap_values(
@@ -1241,6 +1269,32 @@ mod tests {
         }
 
         assert_eq!(value.as_deref(), Some("Bearer test-token"));
+    }
+
+    #[test]
+    fn config_server_authorization_header_accepts_bearer_and_bare_tokens() {
+        assert_eq!(
+            config_server_authorization_header(Some("Bearer test-token")),
+            "Bearer test-token"
+        );
+        assert_eq!(
+            config_server_authorization_header(Some("bearer test-token")),
+            "Bearer test-token"
+        );
+        assert_eq!(
+            config_server_authorization_header(Some("  test-token  ")),
+            "Bearer test-token"
+        );
+        assert_eq!(config_server_authorization_header(None), "");
+        assert_eq!(config_server_authorization_header(Some("   ")), "");
+    }
+
+    #[test]
+    fn config_server_authorization_header_leaves_other_schemes_unchanged() {
+        assert_eq!(
+            config_server_authorization_header(Some("Basic credentials")),
+            "Basic credentials"
+        );
     }
 
     #[test]
