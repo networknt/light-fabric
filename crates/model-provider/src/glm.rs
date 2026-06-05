@@ -1,6 +1,6 @@
 use crate::traits::{
     ChatMessage, ChatRequest as ProviderChatRequest, ChatResponse as ProviderChatResponse,
-    Provider, ProviderCapabilities, TokenUsage, ToolCall as ProviderToolCall,
+    Provider, ProviderCapabilities,
 };
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};

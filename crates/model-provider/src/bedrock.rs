@@ -1,6 +1,6 @@
 use crate::traits::{
     ChatMessage, ChatRequest as ProviderChatRequest, ChatResponse as ProviderChatResponse,
-    Provider, ProviderCapabilities, TokenUsage, ToolCall as ProviderToolCall,
+    Provider, ProviderCapabilities, TokenUsage,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -393,8 +393,9 @@ impl Provider for BedrockProvider {
             && let Some(message) = output.message
         {
             for block in message.content {
-                if let ResponseContentBlock::Text(tb) = block {
-                    text_parts.push(tb.text);
+                match block {
+                    ResponseContentBlock::Text(tb) => text_parts.push(tb.text),
+                    ResponseContentBlock::Other(other) => drop(other),
                 }
             }
         }

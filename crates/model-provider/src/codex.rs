@@ -1,7 +1,5 @@
 use crate::multimodal;
-use crate::traits::{
-    ChatMessage, ChatResponse, Provider, ProviderCapabilities, TokenUsage, ToolCall,
-};
+use crate::traits::{ChatMessage, ChatResponse, Provider, ProviderCapabilities};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::Client;

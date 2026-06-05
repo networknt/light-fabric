@@ -153,7 +153,7 @@ impl Provider for ClaudeCodeProvider {
         &self,
         messages: &[ChatMessage],
         model: &str,
-        temperature: f64,
+        _temperature: f64,
     ) -> anyhow::Result<String> {
         let system = messages
             .iter()

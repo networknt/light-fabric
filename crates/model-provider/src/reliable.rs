@@ -1,7 +1,6 @@
 use crate::traits::{ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities};
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tracing::{info, warn};
 
@@ -10,7 +9,6 @@ pub struct ReliableProvider {
     max_retries: u32,
     base_backoff_ms: u64,
     api_keys: Vec<String>,
-    key_index: AtomicUsize,
     model_fallbacks: HashMap<String, Vec<String>>,
 }
 
@@ -25,7 +23,6 @@ impl ReliableProvider {
             max_retries,
             base_backoff_ms: base_backoff_ms.max(50),
             api_keys: Vec::new(),
-            key_index: AtomicUsize::new(0),
             model_fallbacks: HashMap::new(),
         }
     }

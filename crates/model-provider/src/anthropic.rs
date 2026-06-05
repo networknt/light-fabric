@@ -21,7 +21,7 @@ struct NativeChatRequest<'a> {
     model: String,
     max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<SystemPrompt>,
+    system: Option<Vec<SystemBlock>>,
     messages: Vec<NativeMessage>,
     temperature: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -91,13 +91,6 @@ impl CacheControl {
             cache_type: "ephemeral".to_string(),
         }
     }
-}
-
-#[derive(Debug, Serialize)]
-#[serde(untagged)]
-enum SystemPrompt {
-    String(String),
-    Blocks(Vec<SystemBlock>),
 }
 
 #[derive(Debug, Serialize)]
@@ -189,7 +182,7 @@ impl AnthropicProvider {
 
     async fn convert_messages(
         messages: &[ChatMessage],
-    ) -> (Option<SystemPrompt>, Vec<NativeMessage>) {
+    ) -> (Option<Vec<SystemBlock>>, Vec<NativeMessage>) {
         let mut system_text = None;
         let mut native_messages = Vec::new();
 
@@ -317,11 +310,11 @@ impl AnthropicProvider {
         }
 
         let system_prompt = system_text.map(|text| {
-            SystemPrompt::Blocks(vec![SystemBlock {
+            vec![SystemBlock {
                 block_type: "text".to_string(),
                 text,
                 cache_control: Some(CacheControl::ephemeral()),
-            }])
+            }]
         });
 
         if let Some(last_user_msg) = native_messages.iter_mut().rev().find(|m| m.role == "user") {
@@ -341,7 +334,7 @@ impl AnthropicProvider {
 
     async fn send_request(
         &self,
-        system: Option<SystemPrompt>,
+        system: Option<Vec<SystemBlock>>,
         messages: Vec<NativeMessage>,
         model: &str,
         temperature: f64,
