@@ -1189,8 +1189,15 @@ fn to_microservice_ws_url(portal_url: &Url) -> Result<String, RuntimeError> {
     ws_url
         .set_scheme(scheme)
         .map_err(|_| RuntimeError::Unsupported("failed to convert portal URL".to_string()))?;
-    ws_url.set_path("/ws/microservice");
+    let base_path = portal_url.path().trim_end_matches('/');
+    let microservice_path = if base_path.is_empty() {
+        "/ws/microservice".to_string()
+    } else {
+        format!("{base_path}/ws/microservice")
+    };
+    ws_url.set_path(&microservice_path);
     ws_url.set_query(None);
+    ws_url.set_fragment(None);
     Ok(ws_url.to_string())
 }
 
@@ -1653,6 +1660,67 @@ shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
         assert_eq!(
             derive_service_version("com.networknt.petstore"),
             env!("CARGO_PKG_VERSION").to_string()
+        );
+    }
+
+    #[test]
+    fn microservice_ws_url_uses_root_path_for_plain_portal_url() {
+        let portal_url = Url::parse("https://controller:8438").expect("portal url");
+
+        let ws_url = to_microservice_ws_url(&portal_url).expect("microservice ws url");
+
+        assert_eq!(ws_url, "wss://controller:8438/ws/microservice");
+    }
+
+    #[test]
+    fn microservice_ws_url_preserves_portal_url_base_path() {
+        let portal_url = Url::parse("https://dev-apmh-api-platform.networknt.com/controlplane/v2")
+            .expect("portal url");
+
+        let ws_url = to_microservice_ws_url(&portal_url).expect("microservice ws url");
+
+        assert_eq!(
+            ws_url,
+            "wss://dev-apmh-api-platform.networknt.com/controlplane/v2/ws/microservice"
+        );
+    }
+
+    #[test]
+    fn microservice_ws_url_preserves_base_path_without_trailing_slash() {
+        let portal_url = Url::parse("https://dev-apmh-api-platform.networknt.com/controlplane/v2/")
+            .expect("portal url");
+
+        let ws_url = to_microservice_ws_url(&portal_url).expect("microservice ws url");
+
+        assert_eq!(
+            ws_url,
+            "wss://dev-apmh-api-platform.networknt.com/controlplane/v2/ws/microservice"
+        );
+    }
+
+    #[test]
+    fn microservice_ws_url_strips_query_and_fragment() {
+        let portal_url = Url::parse("http://controller:8080/controlplane/v2?tenant=apmh#registry")
+            .expect("portal url");
+
+        let ws_url = to_microservice_ws_url(&portal_url).expect("microservice ws url");
+
+        assert_eq!(
+            ws_url,
+            "ws://controller:8080/controlplane/v2/ws/microservice"
+        );
+    }
+
+    #[test]
+    fn microservice_ws_url_rejects_unsupported_scheme() {
+        let portal_url = Url::parse("ftp://controller/controlplane/v2").expect("portal url");
+
+        let error = to_microservice_ws_url(&portal_url).expect_err("unsupported scheme");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported portal URL scheme `ftp`")
         );
     }
 
