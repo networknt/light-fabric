@@ -25,7 +25,8 @@ mod websocket;
 
 use async_trait::async_trait;
 use light_runtime::{
-    BoundTransport, ResolvedServerMetadata, RuntimeConfig, RuntimeError, TransportRuntime,
+    BoundTransport, ResolvedServerMetadata, RuntimeConfig, RuntimeError, ServerConfig,
+    TransportRuntime,
 };
 use pingora::apps::HttpServerApp;
 use pingora::listeners::tls::TlsSettings;
@@ -225,19 +226,7 @@ where
         if config.server.enable_http {
             service.add_tcp(&listen_addr(config, config.server.http_port)?);
         }
-        if config.server.enable_https {
-            let cert_path = config.server.tls_cert_path.clone().ok_or_else(|| {
-                RuntimeError::Unsupported(
-                    "https is enabled but server.tlsCertPath is missing".to_string(),
-                )
-            })?;
-            let key_path = config.server.tls_key_path.clone().ok_or_else(|| {
-                RuntimeError::Unsupported(
-                    "https is enabled but server.tlsKeyPath is missing".to_string(),
-                )
-            })?;
-            let cert_path = cert_path.to_string_lossy().to_string();
-            let key_path = key_path.to_string_lossy().to_string();
+        if let Some((cert_path, key_path)) = https_listener_tls_paths(&config.server)? {
             let mut tls = TlsSettings::intermediate(&cert_path, &key_path)
                 .map_err(|e| RuntimeError::Unsupported(format!("invalid TLS config: {e}")))?;
             tls.enable_h2();
@@ -302,6 +291,32 @@ where
         }
         Ok(())
     }
+}
+
+fn https_listener_tls_paths(
+    server: &ServerConfig,
+) -> Result<Option<(String, String)>, RuntimeError> {
+    if !server.enable_https {
+        return Ok(None);
+    }
+
+    let cert_path = required_non_empty_path(server.tls_cert_path.clone(), "server.tlsCertPath")?;
+    let key_path = required_non_empty_path(server.tls_key_path.clone(), "server.tlsKeyPath")?;
+
+    Ok(Some((
+        cert_path.to_string_lossy().to_string(),
+        key_path.to_string_lossy().to_string(),
+    )))
+}
+
+fn required_non_empty_path(
+    path: Option<PathBuf>,
+    field: &'static str,
+) -> Result<PathBuf, RuntimeError> {
+    path.filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| {
+            RuntimeError::Unsupported(format!("https is enabled but {field} is missing or empty"))
+        })
 }
 
 fn listen_addr(config: &RuntimeConfig, port: u16) -> Result<String, RuntimeError> {
@@ -407,5 +422,91 @@ impl ShutdownSignalWatch for ControlledShutdown {
             }
         }
         ShutdownSignal::GracefulTerminate
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn server_config_with_https(
+        tls_cert_path: Option<PathBuf>,
+        tls_key_path: Option<PathBuf>,
+    ) -> ServerConfig {
+        ServerConfig {
+            enable_https: true,
+            tls_cert_path,
+            tls_key_path,
+            ..Default::default()
+        }
+    }
+
+    fn unsupported_message(error: RuntimeError) -> String {
+        match error {
+            RuntimeError::Unsupported(message) => message,
+            other => panic!("expected RuntimeError::Unsupported, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn https_listener_tls_paths_returns_none_when_https_disabled() {
+        let server = ServerConfig::default();
+
+        let paths = https_listener_tls_paths(&server).expect("https disabled");
+
+        assert_eq!(paths, None);
+    }
+
+    #[test]
+    fn https_listener_tls_paths_rejects_missing_cert_path() {
+        let server = server_config_with_https(None, Some(PathBuf::from("server-key.pem")));
+
+        let error = https_listener_tls_paths(&server).expect_err("missing cert path");
+
+        assert_eq!(
+            unsupported_message(error),
+            "https is enabled but server.tlsCertPath is missing or empty"
+        );
+    }
+
+    #[test]
+    fn https_listener_tls_paths_rejects_empty_cert_path() {
+        let server =
+            server_config_with_https(Some(PathBuf::new()), Some(PathBuf::from("server-key.pem")));
+
+        let error = https_listener_tls_paths(&server).expect_err("empty cert path");
+
+        assert_eq!(
+            unsupported_message(error),
+            "https is enabled but server.tlsCertPath is missing or empty"
+        );
+    }
+
+    #[test]
+    fn https_listener_tls_paths_rejects_empty_key_path() {
+        let server =
+            server_config_with_https(Some(PathBuf::from("server.pem")), Some(PathBuf::new()));
+
+        let error = https_listener_tls_paths(&server).expect_err("empty key path");
+
+        assert_eq!(
+            unsupported_message(error),
+            "https is enabled but server.tlsKeyPath is missing or empty"
+        );
+    }
+
+    #[test]
+    fn https_listener_tls_paths_accepts_non_empty_paths() {
+        let server = server_config_with_https(
+            Some(PathBuf::from("server.pem")),
+            Some(PathBuf::from("server-key.pem")),
+        );
+
+        let paths = https_listener_tls_paths(&server).expect("non-empty paths");
+
+        assert_eq!(
+            paths,
+            Some(("server.pem".to_string(), "server-key.pem".to_string()))
+        );
     }
 }
