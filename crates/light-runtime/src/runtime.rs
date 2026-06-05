@@ -364,17 +364,17 @@ where
         let loader = ConfigLoader::from_values(values, password.as_deref(), None)?;
 
         let mut config = self
-            .try_load_typed_config::<BootstrapConfig>(&loader, STARTUP_FILE)?
+            .try_load_bootstrap_typed_config::<BootstrapConfig>(&loader, STARTUP_FILE)?
             .unwrap_or_default();
 
         if config.accept_header.is_empty() {
             config.accept_header = default_accept_header();
         }
         if config.env_tag.is_none() {
-            config.env_tag = std::env::var(LIGHT_ENV_ENV).ok();
+            config.env_tag = get_env_value(LIGHT_ENV_ENV);
         }
         if config.config_server_uri.is_none() {
-            config.config_server_uri = std::env::var(CONFIG_SERVER_URI_ENV).ok();
+            config.config_server_uri = get_env_value(CONFIG_SERVER_URI_ENV);
         }
         if let Some(env_authorization) = get_env_value(PORTAL_AUTH_ENV)
             .map(|value| value.trim().to_string())
@@ -383,7 +383,8 @@ where
             config.authorization = Some(env_authorization);
         }
 
-        let client_config = self.try_load_typed_config::<ClientConfig>(&loader, CLIENT_FILE)?;
+        let client_config =
+            self.try_load_bootstrap_typed_config::<ClientConfig>(&loader, CLIENT_FILE)?;
 
         Ok((config, client_config))
     }
@@ -572,6 +573,30 @@ where
         .ok_or_else(|| RuntimeError::MissingConfig(file_name.to_string()))?;
         let parsed = serde_yaml::from_value(merged)?;
         Ok(parsed)
+    }
+
+    fn try_load_bootstrap_typed_config<V>(
+        &self,
+        loader: &ConfigLoader,
+        file_name: &str,
+    ) -> Result<Option<V>, RuntimeError>
+    where
+        V: DeserializeOwned,
+    {
+        let Some(merged) = load_config_from_sources(
+            loader,
+            self.embedded_config,
+            self.default_config_dir.as_deref(),
+            &self.config_dir,
+            None,
+            file_name,
+        )?
+        else {
+            return Ok(None);
+        };
+
+        let parsed = serde_yaml::from_value(merged)?;
+        Ok(Some(parsed))
     }
 
     fn try_load_typed_config<V>(
@@ -1237,9 +1262,12 @@ mod tests {
     use super::*;
     use crate::transport::{BoundTransport, ResolvedServerMetadata, TransportRuntime};
     use async_trait::async_trait;
+    use std::sync::{LazyLock, Mutex};
     use tempfile::TempDir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    static ENV_TEST_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     struct NoopTransport;
 
@@ -1264,6 +1292,7 @@ mod tests {
 
     #[test]
     fn portal_auth_env_uses_shell_friendly_uppercase_name() {
+        let _guard = ENV_TEST_MUTEX.lock().expect("env test mutex");
         unsafe {
             std::env::remove_var(PORTAL_AUTH_ENV);
             std::env::set_var("LIGHT_PORTAL_AUTHORIZATION", "Bearer test-token");
@@ -1276,6 +1305,36 @@ mod tests {
         }
 
         assert_eq!(value.as_deref(), Some("Bearer test-token"));
+    }
+
+    #[test]
+    fn bootstrap_config_uses_shell_friendly_uppercase_env_fallbacks() {
+        let _guard = ENV_TEST_MUTEX.lock().expect("env test mutex");
+        unsafe {
+            std::env::remove_var(LIGHT_ENV_ENV);
+            std::env::remove_var("LIGHT_ENV");
+            std::env::remove_var(CONFIG_SERVER_URI_ENV);
+            std::env::remove_var("LIGHT_CONFIG_SERVER_URI");
+            std::env::set_var("LIGHT_ENV", "qa");
+            std::env::set_var("LIGHT_CONFIG_SERVER_URI", "https://config.example.com");
+        }
+
+        let config_dir = TempDir::new().expect("config temp dir");
+        let runtime = LightRuntimeBuilder::new(NoopTransport)
+            .with_config_dir(config_dir.path())
+            .build();
+        let (bootstrap, _) = runtime.load_bootstrap_config().expect("bootstrap config");
+
+        unsafe {
+            std::env::remove_var("LIGHT_ENV");
+            std::env::remove_var("LIGHT_CONFIG_SERVER_URI");
+        }
+
+        assert_eq!(bootstrap.env_tag.as_deref(), Some("qa"));
+        assert_eq!(
+            bootstrap.config_server_uri.as_deref(),
+            Some("https://config.example.com")
+        );
     }
 
     #[test]
@@ -1452,6 +1511,51 @@ configServerUri: https://overlay-config-server:8435
         assert_eq!(
             bootstrap.config_server_uri.as_deref(),
             Some("https://overlay-config-server:8435")
+        );
+    }
+
+    #[test]
+    fn bootstrap_config_ignores_external_startup_cache() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external config temp dir");
+        fs::write(
+            config_dir.path().join(STARTUP_FILE),
+            r#"
+host: ca.my-host.com
+configServerUri: https://my-domain.com
+bootstrapCaCertPath: /config/server.pem
+"#,
+        )
+        .expect("write local startup");
+        fs::write(
+            external_dir.path().join(STARTUP_FILE),
+            r#"
+host: ${startup.host:dev.lightapi.net}
+serviceId: ${server.serviceId:com.networknt.light-gateway-1.0.0}
+envTag: ${server.environment:dev}
+acceptHeader: application/yaml
+timeout: ${startup.timeout:3000}
+connectTimeout: ${startup.connectTimeout:3000}
+configServerUri: ${light-config-server-uri:https://local.localhost}
+bootstrapCaCertPath: ${startup.bootstrapCaCertPath:config/ca.pem}
+"#,
+        )
+        .expect("write cached startup");
+
+        let runtime = LightRuntimeBuilder::new(NoopTransport)
+            .with_config_dir(config_dir.path())
+            .with_external_config_dir(external_dir.path())
+            .build();
+        let (bootstrap, _) = runtime.load_bootstrap_config().expect("bootstrap config");
+
+        assert_eq!(bootstrap.host, "ca.my-host.com");
+        assert_eq!(
+            bootstrap.config_server_uri.as_deref(),
+            Some("https://my-domain.com")
+        );
+        assert_eq!(
+            bootstrap.bootstrap_ca_cert_path.as_deref(),
+            Some(Path::new("/config/server.pem"))
         );
     }
 
