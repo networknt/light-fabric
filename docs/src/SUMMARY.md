@@ -73,6 +73,7 @@
   - [Light Rule](product/light-gateway/light-rule.md)
   - [Deploy Native](product/light-gateway/deploy-native.md)
   - [Deploy Kubernetes](product/light-gateway/deploy-kubernetes.md)
+  - [Kubernetes Gateway API](product/light-gateway/k8s-gateway-api.md)
 - [Light-Workflow](product/light-workflow.md)
   - [Start Workflow](product/light-workflow/start-workflow.md)
   - [Native Agent Call](product/light-workflow/native-agent-call.md)
