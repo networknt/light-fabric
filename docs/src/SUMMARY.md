@@ -39,6 +39,7 @@
 - [Service Discovery](design/service-discovery.md)
 - [Tracing](design/tracing.md)
 - [Release Workflow](design/release-workflow.md)
+- [Light-Workflow Runner](design/light-workflow-runner.md)
 
 # Crate
 
