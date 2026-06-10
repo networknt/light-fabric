@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use config_loader::{
-    ConfigLoader, EmbeddedConfigFile, load_config_from_sources, load_values_from_sources,
+    ConfigLoader, EmbeddedConfigFile, embedded_config_file, existing_config_paths,
+    load_config_from_sources, load_values_from_sources,
 };
 use portal_registry::{
     PortalRegistryClient, RegistrationBuilder, RegistrationState, RegistryHandler,
@@ -583,10 +584,34 @@ where
     where
         V: DeserializeOwned,
     {
+        let default_config_dir = self.default_config_dir.as_deref();
+        let searched_paths =
+            bootstrap_search_paths(default_config_dir, &self.config_dir, file_name);
+        let existing_paths =
+            existing_config_paths(default_config_dir, &self.config_dir, None, file_name);
+        let embedded_available = embedded_config_file(self.embedded_config, file_name).is_some();
+        let selected_source = existing_paths
+            .last()
+            .map(|path| path_for_log(path))
+            .or_else(|| embedded_available.then(|| format!("embedded:{file_name}")))
+            .unwrap_or_else(|| "<missing>".to_string());
+
+        info!(
+            config_file = file_name,
+            working_dir = %current_dir_for_log(),
+            searched_paths = ?paths_for_log(&searched_paths),
+            existing_files = ?paths_for_log(&existing_paths),
+            external_config_dir = %optional_path_for_log(self.external_config_dir.as_deref()),
+            external_config_dir_used = false,
+            embedded_available,
+            selected_source = %selected_source,
+            "bootstrap config source selection"
+        );
+
         let Some(merged) = load_config_from_sources(
             loader,
             self.embedded_config,
-            self.default_config_dir.as_deref(),
+            default_config_dir,
             &self.config_dir,
             None,
             file_name,
@@ -1082,6 +1107,41 @@ fn load_bootstrap_values(
         None,
         None,
     )?)
+}
+
+fn bootstrap_search_paths(
+    default_config_dir: Option<&Path>,
+    config_dir: &Path,
+    file_name: &str,
+) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(default_config_dir) = default_config_dir {
+        paths.push(default_config_dir.join(file_name));
+    }
+    paths.push(config_dir.join(file_name));
+    paths
+}
+
+fn current_dir_for_log() -> String {
+    std::env::current_dir()
+        .map(|path| path_for_log(&path))
+        .unwrap_or_else(|error| format!("<unavailable: {error}>"))
+}
+
+fn optional_path_for_log(path: Option<&Path>) -> String {
+    path.map(path_for_log)
+        .unwrap_or_else(|| "<unset>".to_string())
+}
+
+fn path_for_log(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .display()
+        .to_string()
+}
+
+fn paths_for_log(paths: &[PathBuf]) -> Vec<String> {
+    paths.iter().map(|path| path_for_log(path)).collect()
 }
 
 #[cfg(test)]
