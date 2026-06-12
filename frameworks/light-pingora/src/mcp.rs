@@ -2489,6 +2489,32 @@ endpointRules:
         assert_eq!(url.as_str(), "https://example.com/api/api2/weather");
     }
 
+    #[test]
+    fn apply_tool_path_normalizes_tool_path_without_leading_slash() {
+        let mut tool = test_tool(
+            "weather",
+            "Get weather",
+            "https://example.com",
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        );
+
+        tool.path = "weather".to_string();
+        let url = apply_tool_path(Url::parse("https://example.com").expect("url"), &tool);
+        assert_eq!(url.as_str(), "https://example.com/weather");
+
+        tool.path = "services/mcp".to_string();
+        let url = apply_tool_path(
+            Url::parse("https://example.com/gateway/service/").expect("url"),
+            &tool,
+        );
+        assert_eq!(
+            url.as_str(),
+            "https://example.com/gateway/service/services/mcp"
+        );
+    }
+
     fn runtime_with_tool(name: &str, description: &str, target_host: &str) -> McpRouterRuntime {
         McpRouterRuntime::new(McpRouterConfig {
             tools: vec![test_tool(
