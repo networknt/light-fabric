@@ -1236,17 +1236,52 @@ fn parse_base_url(base: &str, tool_name: &str) -> Result<Url, McpExecutionError>
 }
 
 fn apply_tool_path(mut url: Url, tool: &McpToolConfig) -> Url {
-    let base_path = url.path().trim_end_matches('/');
-    let tool_path = tool.path.as_str();
-    let combined = if base_path.is_empty() || base_path == "/" {
-        tool_path.to_string()
-    } else if tool_path == "/" {
-        base_path.to_string()
-    } else {
-        format!("{base_path}{tool_path}")
-    };
+    let combined = combine_base_and_tool_path(url.path(), tool.path.as_str());
     url.set_path(combined.as_str());
     url
+}
+
+fn combine_base_and_tool_path(base_path: &str, tool_path: &str) -> String {
+    let base_path = normalize_base_path(base_path);
+    let tool_path = normalize_tool_path(tool_path);
+
+    if base_path.is_empty() {
+        return tool_path;
+    }
+    if tool_path == "/" {
+        return base_path;
+    }
+    if tool_path == base_path
+        || matches!(
+            tool_path.strip_prefix(&base_path),
+            Some(suffix) if suffix.starts_with('/')
+        )
+    {
+        return tool_path;
+    }
+    format!("{base_path}{tool_path}")
+}
+
+fn normalize_base_path(path: &str) -> String {
+    let trimmed = path.trim().trim_end_matches('/');
+    if trimmed.is_empty() || trimmed == "/" {
+        String::new()
+    } else if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    }
+}
+
+fn normalize_tool_path(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        "/".to_string()
+    } else if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    }
 }
 
 fn select_discovery_node<'a>(
@@ -2016,6 +2051,70 @@ tools:
     }
 
     #[tokio::test]
+    async fn direct_registry_base_path_is_not_duplicated_when_tool_path_already_contains_it() {
+        let (base, received) = spawn_http_server(http_json_response(json!({"ok": true}))).await;
+        let service_id = "api-ba-en-it-mcp-eadpservices-1.0.0";
+        let registry_base =
+            format!("{base}/dev-apiplatformapplications-genai-ns/api-ba-en-it-mcp-eadpservices");
+        let runtime = McpRouterRuntime::new_with_discovery_policy_and_direct_registry(
+            McpRouterConfig {
+                tools: vec![McpToolConfig {
+                    name: "get_sh_vers".to_string(),
+                    description: "Search API versions".to_string(),
+                    protocol: None,
+                    service_id: Some(service_id.to_string()),
+                    env_tag: None,
+                    target_host: None,
+                    path: "/dev-apiplatformapplications-genai-ns/api-ba-en-it-mcp-eadpservices/services/mcp".to_string(),
+                    method: McpHttpMethod::Call,
+                    endpoint: Some("get_sh_vers@call".to_string()),
+                    api_type: McpToolType::Http,
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "apiName": {
+                                "type": "string"
+                            }
+                        },
+                        "required": ["apiName"]
+                    }),
+                    input_schema_configured: true,
+                    tool_metadata: default_object(),
+                }],
+                ..McpRouterConfig::default()
+            },
+            None,
+            None,
+            DirectRegistryConfig {
+                direct_urls: BTreeMap::from([(service_id.to_string(), registry_base)]),
+            },
+        )
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json()],
+                body: br#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"get_sh_vers","arguments":{"apiName":"petstore"}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_mcp_json_result(&body["result"], json!({"ok": true}));
+        let request = received.await.expect("server request");
+        assert!(request.starts_with(
+            "POST /dev-apiplatformapplications-genai-ns/api-ba-en-it-mcp-eadpservices/services/mcp HTTP/1.1"
+        ));
+        assert!(!request.starts_with(
+            "POST /dev-apiplatformapplications-genai-ns/api-ba-en-it-mcp-eadpservices/dev-apiplatformapplications-genai-ns"
+        ));
+    }
+
+    #[tokio::test]
     async fn mcp_proxy_tool_posts_backend_tools_call_and_forwards_headers() {
         let backend_result = json!({
             "jsonrpc": "2.0",
@@ -2328,6 +2427,92 @@ endpointRules:
         assert_eq!(response.status, 400);
         let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
         assert_eq!(body["error"]["code"], -32700);
+    }
+
+    #[test]
+    fn apply_tool_path_appends_tool_path_to_base_path() {
+        let mut tool = test_tool(
+            "weather",
+            "Get weather",
+            "https://example.com",
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        );
+        tool.path = "/weather".to_string();
+
+        let url = apply_tool_path(
+            Url::parse("https://example.com/gateway/service").expect("url"),
+            &tool,
+        );
+
+        assert_eq!(url.as_str(), "https://example.com/gateway/service/weather");
+    }
+
+    #[test]
+    fn apply_tool_path_preserves_tool_path_that_already_contains_base_path() {
+        let mut tool = test_tool(
+            "get_sh_vers",
+            "Search API versions",
+            "https://example.com",
+            McpHttpMethod::Post,
+            None,
+            default_input_schema(),
+        );
+        tool.path = "/gateway/service/services/mcp".to_string();
+
+        let url = apply_tool_path(
+            Url::parse("https://example.com/gateway/service").expect("url"),
+            &tool,
+        );
+
+        assert_eq!(
+            url.as_str(),
+            "https://example.com/gateway/service/services/mcp"
+        );
+    }
+
+    #[test]
+    fn apply_tool_path_matches_base_prefix_on_path_segment_boundary() {
+        let mut tool = test_tool(
+            "weather",
+            "Get weather",
+            "https://example.com",
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        );
+        tool.path = "/api2/weather".to_string();
+
+        let url = apply_tool_path(Url::parse("https://example.com/api").expect("url"), &tool);
+
+        assert_eq!(url.as_str(), "https://example.com/api/api2/weather");
+    }
+
+    #[test]
+    fn apply_tool_path_handles_trailing_slash_in_base_path() {
+        let mut tool = test_tool(
+            "weather",
+            "Get weather",
+            "https://example.com",
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        );
+
+        tool.path = "/weather".to_string();
+        let url = apply_tool_path(Url::parse("https://example.com").expect("url"), &tool);
+        assert_eq!(url.as_str(), "https://example.com/weather");
+
+        tool.path = "/services/mcp".to_string();
+        let url = apply_tool_path(
+            Url::parse("https://example.com/gateway/service/").expect("url"),
+            &tool,
+        );
+        assert_eq!(
+            url.as_str(),
+            "https://example.com/gateway/service/services/mcp"
+        );
     }
 
     fn runtime_with_tool(name: &str, description: &str, target_host: &str) -> McpRouterRuntime {
