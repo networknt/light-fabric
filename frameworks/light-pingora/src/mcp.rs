@@ -1251,7 +1251,12 @@ fn combine_base_and_tool_path(base_path: &str, tool_path: &str) -> String {
     if tool_path == "/" {
         return base_path;
     }
-    if tool_path == base_path || tool_path.starts_with(&format!("{base_path}/")) {
+    if tool_path == base_path
+        || matches!(
+            tool_path.strip_prefix(&base_path),
+            Some(suffix) if suffix.starts_with('/')
+        )
+    {
         return tool_path;
     }
     format!("{base_path}{tool_path}")
