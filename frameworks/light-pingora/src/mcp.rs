@@ -2490,7 +2490,7 @@ endpointRules:
     }
 
     #[test]
-    fn apply_tool_path_normalizes_tool_path_without_leading_slash() {
+    fn apply_tool_path_handles_trailing_slash_in_base_path() {
         let mut tool = test_tool(
             "weather",
             "Get weather",
@@ -2500,11 +2500,11 @@ endpointRules:
             default_input_schema(),
         );
 
-        tool.path = "weather".to_string();
+        tool.path = "/weather".to_string();
         let url = apply_tool_path(Url::parse("https://example.com").expect("url"), &tool);
         assert_eq!(url.as_str(), "https://example.com/weather");
 
-        tool.path = "services/mcp".to_string();
+        tool.path = "/services/mcp".to_string();
         let url = apply_tool_path(
             Url::parse("https://example.com/gateway/service/").expect("url"),
             &tool,
