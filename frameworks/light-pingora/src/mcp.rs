@@ -1122,28 +1122,51 @@ impl McpRouterRuntime {
                 agent_headers,
             )
             .await?;
-        let existing = {
-            let mut sessions = self.sessions.lock().map_err(|_| {
-                McpExecutionError::execution_failed("MCP session store unavailable")
-            })?;
-            let session = sessions
-                .get_mut(frontend_session_id)
-                .ok_or_else(|| McpExecutionError::execution_failed("unknown MCP session id"))?;
-            if let Some(existing) = session.backend_sessions.get(target_key.as_str()) {
-                Some(existing.clone())
-            } else {
-                session
-                    .backend_sessions
-                    .insert(target_key, initialized.clone());
-                None
+        let insert_result = {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| McpExecutionError::execution_failed("MCP session store unavailable"));
+            match sessions.as_mut() {
+                Err(error) => Err(error.clone()),
+                Ok(sessions) => {
+                    if let Some(session) = sessions.get_mut(frontend_session_id) {
+                        if let Some(existing) = session.backend_sessions.get(target_key.as_str()) {
+                            Ok(Some(existing.clone()))
+                        } else {
+                            session
+                                .backend_sessions
+                                .insert(target_key, initialized.clone());
+                            Ok(None)
+                        }
+                    } else {
+                        Err(McpExecutionError::execution_failed(
+                            "unknown MCP session id",
+                        ))
+                    }
+                }
             }
         };
-        if let Some(existing) = existing {
-            self.terminate_backend_session(initialized).await;
-            Ok(existing)
-        } else {
-            Ok(initialized)
+        match insert_result {
+            Ok(None) => Ok(initialized),
+            Ok(Some(existing)) => {
+                self.terminate_backend_session(initialized).await;
+                Ok(existing)
+            }
+            Err(error) => {
+                self.cleanup_initialized_backend_session(initialized, error)
+                    .await
+            }
         }
+    }
+
+    async fn cleanup_initialized_backend_session<T>(
+        &self,
+        backend_session: McpBackendSession,
+        error: McpExecutionError,
+    ) -> Result<T, McpExecutionError> {
+        self.terminate_backend_session(backend_session).await;
+        Err(error)
     }
 
     async fn initialize_backend_session(
@@ -1225,18 +1248,24 @@ impl McpRouterRuntime {
                 "MCP backend initialize response missing result",
             ));
         }
-        self.send_backend_initialized(
-            target_url.clone(),
-            backend_protocol_version.as_str(),
-            backend_session_id.as_deref(),
-            agent_headers,
-        )
-        .await?;
-        Ok(McpBackendSession {
+        let backend_session = McpBackendSession {
             target_url: target_url.to_string(),
             session_id: backend_session_id,
             protocol_version: backend_protocol_version,
-        })
+        };
+        if let Err(error) = self
+            .send_backend_initialized(
+                target_url.clone(),
+                backend_session.protocol_version.as_str(),
+                backend_session.session_id.as_deref(),
+                agent_headers,
+            )
+            .await
+        {
+            self.terminate_backend_session(backend_session).await;
+            return Err(error);
+        }
+        Ok(backend_session)
     }
 
     async fn send_backend_initialized(
@@ -3129,6 +3158,116 @@ tools:
     }
 
     #[tokio::test]
+    async fn mcp_proxy_terminates_backend_session_when_frontend_session_disappears() {
+        let (base, initialize_seen, release_initialize, received) =
+            spawn_http_sequence_server_with_first_response_gate(vec![
+                backend_initialize_response("backend-session"),
+                http_empty_response(202),
+                http_empty_response(202),
+            ])
+            .await;
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        let gateway_session = session_header(&runtime);
+        let frontend_session_id = gateway_session.1.clone();
+        let target_url = Url::parse(format!("{base}/mcp").as_str()).expect("url");
+        let runtime_for_task = runtime.clone();
+        let frontend_session_id_for_task = frontend_session_id.clone();
+
+        let task = tokio::spawn(async move {
+            runtime_for_task
+                .ensure_backend_session(
+                    frontend_session_id_for_task.as_str(),
+                    &target_url,
+                    &[accept_json()],
+                )
+                .await
+        });
+        initialize_seen.await.expect("initialize observed");
+        runtime
+            .sessions
+            .lock()
+            .expect("session lock")
+            .remove(frontend_session_id.as_str());
+        release_initialize.send(()).expect("release initialize");
+
+        let error = task
+            .await
+            .expect("task")
+            .expect_err("missing frontend session should fail");
+        assert_eq!(error.message, "unknown MCP session id");
+        let requests = received.await.expect("server requests");
+        assert_eq!(requests.len(), 3);
+        assert_eq!(request_json_body(&requests[0])["method"], "initialize");
+        assert_eq!(
+            request_json_body(&requests[1])["method"],
+            "notifications/initialized"
+        );
+        assert!(requests[2].starts_with("DELETE /mcp HTTP/1.1"));
+        assert!(requests[2].contains("mcp-session-id: backend-session"));
+        assert!(requests[2].contains("mcp-protocol-version: 2025-06-18"));
+    }
+
+    #[tokio::test]
+    async fn mcp_proxy_terminates_backend_session_when_initialized_notification_fails() {
+        let (base, received) = spawn_http_sequence_server(vec![
+            backend_initialize_response("backend-session"),
+            http_json_response_with_status(401, json!({"error": "unauthorized"})),
+            http_empty_response(202),
+        ])
+        .await;
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![McpToolConfig {
+                name: "weather".to_string(),
+                description: "Get weather".to_string(),
+                protocol: None,
+                service_id: None,
+                env_tag: None,
+                target_host: Some(base),
+                path: "/mcp".to_string(),
+                method: McpHttpMethod::Post,
+                endpoint: None,
+                api_type: McpToolType::Mcp,
+                input_schema: default_input_schema(),
+                input_schema_configured: true,
+                tool_metadata: default_object(),
+            }],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"weather","arguments":{"city":"Ottawa"}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["error"]["code"], -32000);
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("backend MCP initialized notification returned HTTP 401")
+        );
+        let requests = received.await.expect("server requests");
+        assert_eq!(requests.len(), 3);
+        assert_eq!(request_json_body(&requests[0])["method"], "initialize");
+        assert_eq!(
+            request_json_body(&requests[1])["method"],
+            "notifications/initialized"
+        );
+        assert!(requests[2].starts_with("DELETE /mcp HTTP/1.1"));
+        assert!(requests[2].contains("mcp-session-id: backend-session"));
+        assert!(requests[2].contains("mcp-protocol-version: 2025-06-18"));
+    }
+
+    #[tokio::test]
     async fn delete_frontend_session_terminates_backend_session() {
         let backend_result = json!({
             "jsonrpc": "2.0",
@@ -3645,6 +3784,22 @@ endpointRules:
         http_json_response_with_headers(value, &[])
     }
 
+    fn http_json_response_with_status(status: u16, value: JsonValue) -> String {
+        let body = serde_json::to_string(&value).expect("serialize response");
+        let reason = match status {
+            400 => "Bad Request",
+            401 => "Unauthorized",
+            403 => "Forbidden",
+            500 => "Internal Server Error",
+            _ => "OK",
+        };
+        format!(
+            "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+    }
+
     fn http_json_response_with_headers(value: JsonValue, headers: &[(&str, &str)]) -> String {
         let body = serde_json::to_string(&value).expect("serialize response");
         let extra_headers = headers
@@ -3811,6 +3966,61 @@ endpointRules:
             let _ = tx.send(requests);
         });
         (format!("http://{address}"), rx)
+    }
+
+    async fn spawn_http_sequence_server_with_first_response_gate(
+        responses: Vec<String>,
+    ) -> (
+        String,
+        oneshot::Receiver<()>,
+        oneshot::Sender<()>,
+        oneshot::Receiver<Vec<String>>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("local addr");
+        let (requests_tx, requests_rx) = oneshot::channel();
+        let (first_seen_tx, first_seen_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let mut requests = Vec::new();
+            let mut first_seen_tx = Some(first_seen_tx);
+            let mut release_rx = Some(release_rx);
+            for response in responses {
+                let (mut stream, _) = listener.accept().await.expect("accept connection");
+                let mut buffer = vec![0_u8; 1024];
+                let mut request_bytes = Vec::new();
+                loop {
+                    let read = stream.read(&mut buffer).await.expect("read request");
+                    if read == 0 {
+                        break;
+                    }
+                    request_bytes.extend_from_slice(&buffer[..read]);
+                    if request_complete(&request_bytes) {
+                        break;
+                    }
+                }
+                requests.push(String::from_utf8_lossy(&request_bytes).to_string());
+                if let Some(first_seen_tx) = first_seen_tx.take() {
+                    let _ = first_seen_tx.send(());
+                    if let Some(release_rx) = release_rx.take() {
+                        let _ = release_rx.await;
+                    }
+                }
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write response");
+            }
+            let _ = requests_tx.send(requests);
+        });
+        (
+            format!("http://{address}"),
+            first_seen_rx,
+            release_tx,
+            requests_rx,
+        )
     }
 
     fn request_complete(request: &[u8]) -> bool {
