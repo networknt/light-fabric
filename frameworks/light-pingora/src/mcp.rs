@@ -33,6 +33,7 @@ const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
 const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
 const MCP_PROTOCOL_VERSION_HEADER: &str = "mcp-protocol-version";
 const MCP_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const MCP_SESSION_PURGE_INTERVAL: Duration = Duration::from_secs(60);
 const DEFAULT_MCP_MAX_FRONTEND_SESSIONS: usize = 10_000;
 const DEFAULT_MCP_MAX_FRONTEND_SESSIONS_PER_CLIENT: usize = 100;
 const JSON_CONTENT_TYPE: &str = "application/json";
@@ -364,6 +365,7 @@ pub struct McpRouterRuntime {
     discovery: Option<Arc<dyn McpDiscoveryResolver>>,
     policy: Option<Arc<AccessControlRuntime>>,
     sessions: Arc<Mutex<BTreeMap<String, McpGatewaySession>>>,
+    last_session_purge: Arc<Mutex<Option<Instant>>>,
 }
 
 impl fmt::Debug for McpRouterRuntime {
@@ -478,6 +480,7 @@ impl McpRouterRuntime {
             discovery,
             policy,
             sessions: Arc::new(Mutex::new(BTreeMap::new())),
+            last_session_purge: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -539,7 +542,7 @@ impl McpRouterRuntime {
                 format!("unsupported MCP protocol version `{version}`"),
             );
         }
-        self.purge_expired_sessions().await?;
+        self.purge_expired_sessions(false).await;
 
         let payload = match serde_json::from_slice::<JsonValue>(&request.body) {
             Ok(payload) => payload,
@@ -683,7 +686,7 @@ impl McpRouterRuntime {
         &self,
         request: McpHttpRequest,
     ) -> Result<McpHttpResponse, RuntimeError> {
-        self.purge_expired_sessions().await?;
+        self.purge_expired_sessions(false).await;
         let removed_session = match self.remove_frontend_session(&request.headers).await {
             Ok(session) => session,
             Err(error) => {
@@ -696,8 +699,8 @@ impl McpRouterRuntime {
                 );
             }
         };
-        for backend_session in removed_session.backend_sessions {
-            self.terminate_backend_session(backend_session).await;
+        if !removed_session.backend_sessions.is_empty() {
+            self.terminate_backend_sessions_in_background(removed_session.backend_sessions);
         }
         Ok(accepted_response_with_protocol_version(Some(
             removed_session.protocol_version.as_str(),
@@ -730,30 +733,45 @@ impl McpRouterRuntime {
             .unwrap_or(DEFAULT_PROTOCOL_VERSION)
             .to_string();
         let client_key = frontend_client_key(message, context);
-        let mut sessions = self.sessions.lock().await;
-        if sessions.len() >= self.config.max_sessions {
-            return Err(McpSessionError {
-                status: 503,
-                code: -32000,
-                message: "MCP session store is full".to_string(),
-            });
+        let mut forced_purge = false;
+        loop {
+            let mut sessions = self.sessions.lock().await;
+            if sessions.len() >= self.config.max_sessions && !forced_purge {
+                drop(sessions);
+                self.purge_expired_sessions(true).await;
+                forced_purge = true;
+                continue;
+            }
+            if sessions.len() >= self.config.max_sessions {
+                return Err(McpSessionError {
+                    status: 503,
+                    code: -32000,
+                    message: "MCP session store is full".to_string(),
+                });
+            }
+            let client_sessions = sessions
+                .values()
+                .filter(|session| session.client_key == client_key)
+                .count();
+            if client_sessions >= self.config.max_sessions_per_client && !forced_purge {
+                drop(sessions);
+                self.purge_expired_sessions(true).await;
+                forced_purge = true;
+                continue;
+            }
+            if client_sessions >= self.config.max_sessions_per_client {
+                return Err(McpSessionError {
+                    status: 429,
+                    code: -32000,
+                    message: "MCP client session limit exceeded".to_string(),
+                });
+            }
+            sessions.insert(
+                session_id.clone(),
+                McpGatewaySession::new(protocol_version, client_key),
+            );
+            return Ok(session_id);
         }
-        let client_sessions = sessions
-            .values()
-            .filter(|session| session.client_key == client_key)
-            .count();
-        if client_sessions >= self.config.max_sessions_per_client {
-            return Err(McpSessionError {
-                status: 429,
-                code: -32000,
-                message: "MCP client session limit exceeded".to_string(),
-            });
-        }
-        sessions.insert(
-            session_id.clone(),
-            McpGatewaySession::new(protocol_version, client_key),
-        );
-        Ok(session_id)
     }
 
     async fn validate_frontend_session(
@@ -768,19 +786,60 @@ impl McpRouterRuntime {
                 code: -32600,
                 message: "missing MCP session id".to_string(),
             })?;
-        let mut sessions = self.sessions.lock().await;
-        if let Some(session) = sessions.get_mut(session_id.as_str()) {
-            session.touch(Instant::now());
-            Ok(McpFrontendSession {
-                id: session_id,
-                protocol_version: session.protocol_version.clone(),
-            })
+        let now = Instant::now();
+        let mut expired_backend_sessions = Vec::new();
+        let result = {
+            let mut sessions = self.sessions.lock().await;
+            if sessions
+                .get(session_id.as_str())
+                .is_some_and(|session| session.is_expired(now))
+            {
+                if let Some(session) = sessions.remove(session_id.as_str()) {
+                    expired_backend_sessions = session.backend_sessions.into_values().collect();
+                }
+                Err(McpSessionError {
+                    status: 400,
+                    code: -32000,
+                    message: "unknown MCP session id".to_string(),
+                })
+            } else if let Some(session) = sessions.get_mut(session_id.as_str()) {
+                session.touch(now);
+                Ok(McpFrontendSession {
+                    id: session_id,
+                    protocol_version: session.protocol_version.clone(),
+                })
+            } else {
+                Err(McpSessionError {
+                    status: 400,
+                    code: -32000,
+                    message: "unknown MCP session id".to_string(),
+                })
+            }
+        };
+        if !expired_backend_sessions.is_empty() {
+            self.terminate_backend_sessions_in_background(expired_backend_sessions);
+        }
+        result
+    }
+
+    async fn purge_expired_sessions(&self, force: bool) {
+        let now = Instant::now();
+        if !force {
+            let mut last_purge = self.last_session_purge.lock().await;
+            if last_purge.is_some_and(|last| {
+                now.saturating_duration_since(last) < MCP_SESSION_PURGE_INTERVAL
+            }) {
+                return;
+            }
+            *last_purge = Some(now);
         } else {
-            Err(McpSessionError {
-                status: 400,
-                code: -32000,
-                message: "unknown MCP session id".to_string(),
-            })
+            *self.last_session_purge.lock().await = Some(now);
+        }
+        let mut sessions = self.sessions.lock().await;
+        let backend_sessions = remove_expired_sessions(&mut sessions, now);
+        drop(sessions);
+        if !backend_sessions.is_empty() {
+            self.terminate_backend_sessions_in_background(backend_sessions);
         }
     }
 
@@ -808,28 +867,6 @@ impl McpRouterRuntime {
             protocol_version: session.protocol_version,
             backend_sessions: session.backend_sessions.into_values().collect(),
         })
-    }
-
-    async fn purge_expired_sessions(&self) -> Result<(), RuntimeError> {
-        let backend_sessions = {
-            let now = Instant::now();
-            let mut sessions = self.sessions.lock().await;
-            let expired_ids = sessions
-                .iter()
-                .filter_map(|(session_id, session)| {
-                    session.is_expired(now).then(|| session_id.clone())
-                })
-                .collect::<Vec<_>>();
-            expired_ids
-                .into_iter()
-                .filter_map(|session_id| sessions.remove(session_id.as_str()))
-                .flat_map(|session| session.backend_sessions.into_values())
-                .collect::<Vec<_>>()
-        };
-        if !backend_sessions.is_empty() {
-            self.terminate_backend_sessions_in_background(backend_sessions);
-        }
-        Ok(())
     }
 
     fn tools_list_result(&self, message: &serde_json::Map<String, JsonValue>) -> JsonValue {
@@ -1459,6 +1496,21 @@ fn tool_name_alias_key(name: &str) -> String {
     name.chars()
         .filter(|ch| ch.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn remove_expired_sessions(
+    sessions: &mut BTreeMap<String, McpGatewaySession>,
+    now: Instant,
+) -> Vec<McpBackendSession> {
+    let expired_ids = sessions
+        .iter()
+        .filter_map(|(session_id, session)| session.is_expired(now).then(|| session_id.clone()))
+        .collect::<Vec<_>>();
+    expired_ids
+        .into_iter()
+        .filter_map(|session_id| sessions.remove(session_id.as_str()))
+        .flat_map(|session| session.backend_sessions.into_values())
         .collect()
 }
 
@@ -3517,6 +3569,121 @@ tools:
         assert!(requests[0].starts_with("DELETE /mcp HTTP/1.1"));
         assert!(requests[0].contains("mcp-session-id: backend-session"));
         assert!(requests[0].contains("mcp-protocol-version: 2025-06-18"));
+    }
+
+    #[tokio::test]
+    async fn initialize_forces_purge_when_session_store_is_full() {
+        let (base, received) = spawn_http_sequence_server(vec![http_empty_response(202)]).await;
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            max_sessions: 1,
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+        let frontend_session_id = uuid::Uuid::new_v4().to_string();
+        let backend_target_url = format!("{base}/mcp");
+        let mut session = McpGatewaySession::new(
+            DEFAULT_PROTOCOL_VERSION.to_string(),
+            "old-client".to_string(),
+        );
+        session.last_accessed = Instant::now()
+            .checked_sub(MCP_SESSION_IDLE_TIMEOUT + Duration::from_secs(1))
+            .expect("expired instant");
+        session.backend_sessions.insert(
+            backend_target_url.clone(),
+            McpBackendSession {
+                target_url: backend_target_url,
+                session_id: Some("backend-session".to_string()),
+                protocol_version: DEFAULT_PROTOCOL_VERSION.to_string(),
+            },
+        );
+        runtime
+            .sessions
+            .lock()
+            .await
+            .insert(frontend_session_id.clone(), session);
+        *runtime.last_session_purge.lock().await = Some(Instant::now());
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json()],
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"new-client","version":"1.0"}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        assert!(
+            !runtime
+                .sessions
+                .lock()
+                .await
+                .contains_key(frontend_session_id.as_str())
+        );
+        let requests = received.await.expect("server requests");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("DELETE /mcp HTTP/1.1"));
+        assert!(requests[0].contains("mcp-session-id: backend-session"));
+    }
+
+    #[tokio::test]
+    async fn initialize_forces_purge_when_client_session_limit_is_reached() {
+        let (base, received) = spawn_http_sequence_server(vec![http_empty_response(202)]).await;
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            max_sessions: 10,
+            max_sessions_per_client: 1,
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+        let frontend_session_id = uuid::Uuid::new_v4().to_string();
+        let backend_target_url = format!("{base}/mcp");
+        let mut session = McpGatewaySession::new(
+            DEFAULT_PROTOCOL_VERSION.to_string(),
+            "mcp-client:curl-test:1.0".to_string(),
+        );
+        session.last_accessed = Instant::now()
+            .checked_sub(MCP_SESSION_IDLE_TIMEOUT + Duration::from_secs(1))
+            .expect("expired instant");
+        session.backend_sessions.insert(
+            backend_target_url.clone(),
+            McpBackendSession {
+                target_url: backend_target_url,
+                session_id: Some("backend-session".to_string()),
+                protocol_version: DEFAULT_PROTOCOL_VERSION.to_string(),
+            },
+        );
+        runtime
+            .sessions
+            .lock()
+            .await
+            .insert(frontend_session_id.clone(), session);
+        *runtime.last_session_purge.lock().await = Some(Instant::now());
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json()],
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"curl-test","version":"1.0"}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        assert!(
+            !runtime
+                .sessions
+                .lock()
+                .await
+                .contains_key(frontend_session_id.as_str())
+        );
+        let requests = received.await.expect("server requests");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("DELETE /mcp HTTP/1.1"));
+        assert!(requests[0].contains("mcp-session-id: backend-session"));
     }
 
     #[tokio::test]
