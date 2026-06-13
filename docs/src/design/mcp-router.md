@@ -5,8 +5,8 @@
 Phases 1, 2, 3, and 4 are implemented in `light-pingora` and
 `light-gateway`. The configurable tokenization client remains deferred until
 `light-tokenization` is migrated to `portal-service/apps/portal-service` and
-the protocol is selected. Stateful backend MCP session mapping is documented
-below as required design work for robust `apiType: mcp` backends.
+the protocol is selected. Stateful backend MCP session mapping is implemented
+for the single-process gateway session store and documented below.
 
 ## Purpose
 
@@ -359,6 +359,10 @@ The frontend session is created during client `initialize`:
    session ids should fail before tool execution.
 5. A client `DELETE` request, explicit expiry, or gateway shutdown should close
    all backend sessions associated with the frontend session.
+
+The in-memory gateway store uses a 30-minute idle timeout. Expired sessions are
+purged lazily during later MCP requests, and any mapped backend MCP sessions are
+closed during that purge.
 
 For a single gateway process, the session store can start in memory. In a
 multi-pod deployment, the store should be external, such as Redis, or ingress
@@ -726,10 +730,13 @@ is designed.
 - Terminate mapped backend MCP sessions when the frontend session is deleted,
   expires, or the gateway shuts down.
 - Add tests for frontend session validation, backend session creation, backend
-  session reuse, backend session termination, and multi-backend isolation.
+  session reuse, and backend session termination.
 
-Status: design. Required for robust `apiType: mcp` backends that enforce MCP
-session state.
+Status: implemented for the in-memory frontend session store, 30-minute lazy
+idle expiry, lazy backend initialization, backend `Mcp-Session-Id` mapping,
+backend session reuse, and explicit `DELETE` teardown. Shutdown cleanup,
+external session storage, and multi-backend isolation tests remain future
+hardening for multi-pod deployments.
 
 ## Testing Strategy
 

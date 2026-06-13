@@ -18,8 +18,8 @@ use serde_yaml::Value as YamlValue;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error as StdError;
 use std::fmt;
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use url::Url;
 
 pub const MCP_ROUTER_FILE: &str = "mcp-router.yml";
@@ -29,6 +29,9 @@ pub const MCP_ROUTER_CONFIG_NAME: &str = "mcp-router";
 
 const DEFAULT_MCP_PATH: &str = "/mcp";
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
+const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
+const MCP_PROTOCOL_VERSION_HEADER: &str = "mcp-protocol-version";
+const MCP_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const JSON_CONTENT_TYPE: &str = "application/json";
 const EVENT_STREAM_CONTENT_TYPE: &str = "text/event-stream";
 const TEXT_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
@@ -289,6 +292,38 @@ pub struct McpRequestContext {
     pub correlation_id: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct McpGatewaySession {
+    protocol_version: String,
+    last_accessed: Instant,
+    backend_sessions: BTreeMap<String, McpBackendSession>,
+}
+
+impl McpGatewaySession {
+    fn new(protocol_version: String) -> Self {
+        Self {
+            protocol_version,
+            last_accessed: Instant::now(),
+            backend_sessions: BTreeMap::new(),
+        }
+    }
+
+    fn is_expired(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.last_accessed) >= MCP_SESSION_IDLE_TIMEOUT
+    }
+
+    fn touch(&mut self, now: Instant) {
+        self.last_accessed = now;
+    }
+}
+
+#[derive(Debug, Clone)]
+struct McpBackendSession {
+    target_url: String,
+    session_id: Option<String>,
+    protocol_version: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum McpResponseMode {
     Json,
@@ -303,6 +338,7 @@ pub struct McpRouterRuntime {
     direct_registry: DirectRegistryConfig,
     discovery: Option<Arc<dyn McpDiscoveryResolver>>,
     policy: Option<Arc<AccessControlRuntime>>,
+    sessions: Arc<Mutex<BTreeMap<String, McpGatewaySession>>>,
 }
 
 impl fmt::Debug for McpRouterRuntime {
@@ -316,6 +352,10 @@ impl fmt::Debug for McpRouterRuntime {
             )
             .field("discovery", &self.discovery.is_some())
             .field("policy", &self.policy.is_some())
+            .field(
+                "session_count",
+                &self.sessions.lock().map(|sessions| sessions.len()).ok(),
+            )
             .finish()
     }
 }
@@ -412,6 +452,7 @@ impl McpRouterRuntime {
             direct_registry,
             discovery,
             policy,
+            sessions: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
@@ -444,7 +485,7 @@ impl McpRouterRuntime {
         match method.as_str() {
             "POST" => self.handle_post(request, &context).await.map(Some),
             "GET" => Ok(Some(method_not_allowed_response())),
-            "DELETE" => Ok(Some(method_not_allowed_response())),
+            "DELETE" => self.handle_delete(request).await.map(Some),
             _ => Ok(Some(method_not_allowed_response())),
         }
     }
@@ -473,6 +514,7 @@ impl McpRouterRuntime {
                 format!("unsupported MCP protocol version `{version}`"),
             );
         }
+        self.purge_expired_sessions().await?;
 
         let payload = match serde_json::from_slice::<JsonValue>(&request.body) {
             Ok(payload) => payload,
@@ -510,6 +552,22 @@ impl McpRouterRuntime {
             return Ok(accepted_response());
         }
         let method = method.unwrap_or_default();
+        let frontend_session_id = if method == "initialize" {
+            None
+        } else {
+            match self.validate_frontend_session(&request.headers) {
+                Ok(session_id) => Some(session_id),
+                Err(error) => {
+                    return rpc_error_response(
+                        response_mode,
+                        error.status,
+                        id.clone().unwrap_or(JsonValue::Null),
+                        error.code,
+                        error.message,
+                    );
+                }
+            }
+        };
         if id.is_none() {
             return Ok(accepted_response());
         }
@@ -526,13 +584,20 @@ impl McpRouterRuntime {
         let id = id.unwrap_or(JsonValue::Null);
         match method {
             "initialize" => {
-                rpc_result_response(response_mode, 200, id, self.initialize_result(message))
+                let result = self.initialize_result(message);
+                let session_id = self.create_frontend_session(message)?;
+                initialize_response(response_mode, 200, id, result, session_id)
             }
             "tools/list" => {
                 rpc_result_response(response_mode, 200, id, self.tools_list_result(message))
             }
             "tools/call" => match self
-                .handle_tool_call(message, &request.headers, context)
+                .handle_tool_call(
+                    message,
+                    &request.headers,
+                    frontend_session_id.as_deref().unwrap_or_default(),
+                    context,
+                )
                 .await
             {
                 Ok(result) => rpc_result_response(response_mode, 200, id, result),
@@ -548,12 +613,31 @@ impl McpRouterRuntime {
         }
     }
 
+    async fn handle_delete(
+        &self,
+        request: McpHttpRequest,
+    ) -> Result<McpHttpResponse, RuntimeError> {
+        self.purge_expired_sessions().await?;
+        let backend_sessions = match self.remove_frontend_session(&request.headers) {
+            Ok(backend_sessions) => backend_sessions,
+            Err(error) => {
+                return rpc_error_response(
+                    McpResponseMode::Json,
+                    error.status,
+                    JsonValue::Null,
+                    error.code,
+                    error.message,
+                );
+            }
+        };
+        for backend_session in backend_sessions {
+            self.terminate_backend_session(backend_session).await;
+        }
+        Ok(accepted_response())
+    }
+
     fn initialize_result(&self, message: &serde_json::Map<String, JsonValue>) -> JsonValue {
-        let requested = message
-            .get("params")
-            .and_then(|params| params.get("protocolVersion"))
-            .and_then(JsonValue::as_str)
-            .filter(|version| protocol_version_supported(version));
+        let requested = requested_protocol_version(message);
         json!({
             "protocolVersion": requested.unwrap_or(DEFAULT_PROTOCOL_VERSION),
             "capabilities": {
@@ -566,6 +650,101 @@ impl McpRouterRuntime {
                 "version": env!("CARGO_PKG_VERSION")
             }
         })
+    }
+
+    fn create_frontend_session(
+        &self,
+        message: &serde_json::Map<String, JsonValue>,
+    ) -> Result<String, RuntimeError> {
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let protocol_version = requested_protocol_version(message)
+            .unwrap_or(DEFAULT_PROTOCOL_VERSION)
+            .to_string();
+        let mut sessions = self.sessions.lock().map_err(|_| {
+            RuntimeError::Unsupported("MCP session store lock poisoned".to_string())
+        })?;
+        sessions.insert(session_id.clone(), McpGatewaySession::new(protocol_version));
+        Ok(session_id)
+    }
+
+    fn validate_frontend_session(
+        &self,
+        headers: &[(String, String)],
+    ) -> Result<String, McpSessionError> {
+        let session_id = first_header(headers, MCP_SESSION_ID_HEADER)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| McpSessionError {
+                status: 400,
+                code: -32600,
+                message: "missing MCP session id".to_string(),
+            })?;
+        let mut sessions = self.sessions.lock().map_err(|_| McpSessionError {
+            status: 500,
+            code: -32000,
+            message: "MCP session store unavailable".to_string(),
+        })?;
+        if let Some(session) = sessions.get_mut(session_id.as_str()) {
+            session.touch(Instant::now());
+            Ok(session_id)
+        } else {
+            Err(McpSessionError {
+                status: 400,
+                code: -32000,
+                message: "unknown MCP session id".to_string(),
+            })
+        }
+    }
+
+    fn remove_frontend_session(
+        &self,
+        headers: &[(String, String)],
+    ) -> Result<Vec<McpBackendSession>, McpSessionError> {
+        let session_id = first_header(headers, MCP_SESSION_ID_HEADER)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| McpSessionError {
+                status: 400,
+                code: -32600,
+                message: "missing MCP session id".to_string(),
+            })?;
+        let mut sessions = self.sessions.lock().map_err(|_| McpSessionError {
+            status: 500,
+            code: -32000,
+            message: "MCP session store unavailable".to_string(),
+        })?;
+        let session = sessions
+            .remove(session_id.as_str())
+            .ok_or_else(|| McpSessionError {
+                status: 400,
+                code: -32000,
+                message: "unknown MCP session id".to_string(),
+            })?;
+        Ok(session.backend_sessions.into_values().collect())
+    }
+
+    async fn purge_expired_sessions(&self) -> Result<(), RuntimeError> {
+        let backend_sessions = {
+            let now = Instant::now();
+            let mut sessions = self.sessions.lock().map_err(|_| {
+                RuntimeError::Unsupported("MCP session store lock poisoned".to_string())
+            })?;
+            let expired_ids = sessions
+                .iter()
+                .filter_map(|(session_id, session)| {
+                    session.is_expired(now).then(|| session_id.clone())
+                })
+                .collect::<Vec<_>>();
+            expired_ids
+                .into_iter()
+                .filter_map(|session_id| sessions.remove(session_id.as_str()))
+                .flat_map(|session| session.backend_sessions.into_values())
+                .collect::<Vec<_>>()
+        };
+        for backend_session in backend_sessions {
+            self.terminate_backend_session(backend_session).await;
+        }
+        Ok(())
     }
 
     fn tools_list_result(&self, message: &serde_json::Map<String, JsonValue>) -> JsonValue {
@@ -598,6 +777,7 @@ impl McpRouterRuntime {
         &self,
         message: &serde_json::Map<String, JsonValue>,
         agent_headers: &[(String, String)],
+        frontend_session_id: &str,
         context: &McpRequestContext,
     ) -> Result<JsonValue, McpExecutionError> {
         let params = message
@@ -669,8 +849,13 @@ impl McpRouterRuntime {
                     .await
             }
             McpToolType::Mcp => {
-                self.execute_mcp_proxy_tool(tool, &masked_arguments, agent_headers)
-                    .await
+                self.execute_mcp_proxy_tool(
+                    tool,
+                    &masked_arguments,
+                    agent_headers,
+                    frontend_session_id,
+                )
+                .await
             }
         };
         let result = match execution {
@@ -797,6 +982,7 @@ impl McpRouterRuntime {
         tool: &McpToolConfig,
         arguments: &JsonValue,
         agent_headers: &[(String, String)],
+        frontend_session_id: &str,
     ) -> Result<JsonValue, McpExecutionError> {
         let method = effective_http_method(tool);
         if matches!(tool.method, McpHttpMethod::Call)
@@ -808,6 +994,9 @@ impl McpRouterRuntime {
         }
 
         let url = self.tool_target_url(tool).await?;
+        let backend_session = self
+            .ensure_backend_session(frontend_session_id, &url, agent_headers)
+            .await?;
         let request = json!({
             "jsonrpc": "2.0",
             "id": uuid::Uuid::new_v4().to_string(),
@@ -820,7 +1009,11 @@ impl McpRouterRuntime {
         let response = self
             .client
             .post(url)
-            .headers(outbound_headers(agent_headers)?)
+            .headers(backend_headers(
+                agent_headers,
+                backend_session.session_id.as_deref(),
+                Some(backend_session.protocol_version.as_str()),
+            )?)
             .json(&request)
             .send()
             .await
@@ -851,6 +1044,218 @@ impl McpRouterRuntime {
         message.get("result").cloned().ok_or_else(|| {
             McpExecutionError::execution_failed("MCP backend response missing result")
         })
+    }
+
+    async fn ensure_backend_session(
+        &self,
+        frontend_session_id: &str,
+        target_url: &Url,
+        agent_headers: &[(String, String)],
+    ) -> Result<McpBackendSession, McpExecutionError> {
+        let target_key = target_url.as_str().to_string();
+        let protocol_version = {
+            let sessions = self.sessions.lock().map_err(|_| {
+                McpExecutionError::execution_failed("MCP session store unavailable")
+            })?;
+            let session = sessions
+                .get(frontend_session_id)
+                .ok_or_else(|| McpExecutionError::execution_failed("unknown MCP session id"))?;
+            if let Some(backend_session) = session.backend_sessions.get(target_key.as_str()) {
+                return Ok(backend_session.clone());
+            }
+            session.protocol_version.clone()
+        };
+
+        let initialized = self
+            .initialize_backend_session(
+                target_url.clone(),
+                protocol_version.as_str(),
+                agent_headers,
+            )
+            .await?;
+        let existing = {
+            let mut sessions = self.sessions.lock().map_err(|_| {
+                McpExecutionError::execution_failed("MCP session store unavailable")
+            })?;
+            let session = sessions
+                .get_mut(frontend_session_id)
+                .ok_or_else(|| McpExecutionError::execution_failed("unknown MCP session id"))?;
+            if let Some(existing) = session.backend_sessions.get(target_key.as_str()) {
+                Some(existing.clone())
+            } else {
+                session
+                    .backend_sessions
+                    .insert(target_key, initialized.clone());
+                None
+            }
+        };
+        if let Some(existing) = existing {
+            self.terminate_backend_session(initialized).await;
+            Ok(existing)
+        } else {
+            Ok(initialized)
+        }
+    }
+
+    async fn initialize_backend_session(
+        &self,
+        target_url: Url,
+        protocol_version: &str,
+        agent_headers: &[(String, String)],
+    ) -> Result<McpBackendSession, McpExecutionError> {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": uuid::Uuid::new_v4().to_string(),
+            "method": "initialize",
+            "params": {
+                "protocolVersion": protocol_version,
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "light-gateway-mcp",
+                    "version": env!("CARGO_PKG_VERSION")
+                }
+            }
+        });
+        let response = self
+            .client
+            .post(target_url.clone())
+            .headers(backend_headers(
+                agent_headers,
+                None,
+                Some(protocol_version),
+            )?)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|error| {
+                McpExecutionError::execution_failed(format!(
+                    "backend MCP initialize failed: {error}"
+                ))
+            })?;
+        let status = response.status();
+        let backend_session_id = response
+            .headers()
+            .get(MCP_SESSION_ID_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let body = response.bytes().await.map_err(|error| {
+            McpExecutionError::execution_failed(format!(
+                "backend MCP initialize response read failed: {error}"
+            ))
+        })?;
+        if !status.is_success() {
+            return Err(McpExecutionError::execution_failed(format!(
+                "backend MCP initialize returned HTTP {}: {}",
+                status.as_u16(),
+                String::from_utf8_lossy(&body)
+            )));
+        }
+        let message = serde_json::from_slice::<JsonValue>(&body).map_err(|error| {
+            McpExecutionError::execution_failed(format!(
+                "invalid MCP backend initialize response: {error}"
+            ))
+        })?;
+        if let Some(error) = message.get("error") {
+            let message = error
+                .get("message")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("MCP backend initialize returned an error");
+            return Err(McpExecutionError::execution_failed(message));
+        }
+        let result = message.get("result").ok_or_else(|| {
+            McpExecutionError::execution_failed("MCP backend initialize response missing result")
+        })?;
+        let backend_protocol_version = result
+            .get("protocolVersion")
+            .and_then(JsonValue::as_str)
+            .filter(|version| protocol_version_supported(version))
+            .unwrap_or(protocol_version)
+            .to_string();
+        if result.is_null() {
+            return Err(McpExecutionError::execution_failed(
+                "MCP backend initialize response missing result",
+            ));
+        }
+        self.send_backend_initialized(
+            target_url.clone(),
+            backend_protocol_version.as_str(),
+            backend_session_id.as_deref(),
+            agent_headers,
+        )
+        .await?;
+        Ok(McpBackendSession {
+            target_url: target_url.to_string(),
+            session_id: backend_session_id,
+            protocol_version: backend_protocol_version,
+        })
+    }
+
+    async fn send_backend_initialized(
+        &self,
+        target_url: Url,
+        protocol_version: &str,
+        backend_session_id: Option<&str>,
+        agent_headers: &[(String, String)],
+    ) -> Result<(), McpExecutionError> {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        });
+        let response = self
+            .client
+            .post(target_url)
+            .headers(backend_headers(
+                agent_headers,
+                backend_session_id,
+                Some(protocol_version),
+            )?)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|error| {
+                McpExecutionError::execution_failed(format!(
+                    "backend MCP initialized notification failed: {error}"
+                ))
+            })?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.bytes().await.map_err(|error| {
+                McpExecutionError::execution_failed(format!(
+                    "backend MCP initialized response read failed: {error}"
+                ))
+            })?;
+            return Err(McpExecutionError::execution_failed(format!(
+                "backend MCP initialized notification returned HTTP {}: {}",
+                status.as_u16(),
+                String::from_utf8_lossy(&body)
+            )));
+        }
+        Ok(())
+    }
+
+    async fn terminate_backend_session(&self, backend_session: McpBackendSession) {
+        let Some(session_id) = backend_session.session_id.as_deref() else {
+            return;
+        };
+        let mut headers = HeaderMap::new();
+        let Ok(value) = HeaderValue::from_str(session_id) else {
+            return;
+        };
+        headers.insert(HeaderName::from_static(MCP_SESSION_ID_HEADER), value);
+        if let Err(error) = self
+            .client
+            .delete(backend_session.target_url.as_str())
+            .headers(headers)
+            .send()
+            .await
+        {
+            tracing::warn!(
+                target: "light_pingora::mcp",
+                url = %backend_session.target_url,
+                error = %error,
+                "backend MCP session termination failed"
+            );
+        }
     }
 
     async fn tool_target_url(&self, tool: &McpToolConfig) -> Result<Url, McpExecutionError> {
@@ -985,6 +1390,21 @@ impl McpExecutionError {
             message: message.into(),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct McpSessionError {
+    status: u16,
+    code: i64,
+    message: String,
+}
+
+fn requested_protocol_version(message: &serde_json::Map<String, JsonValue>) -> Option<&str> {
+    message
+        .get("params")
+        .and_then(|params| params.get("protocolVersion"))
+        .and_then(JsonValue::as_str)
+        .filter(|version| protocol_version_supported(version))
 }
 
 pub fn load_mcp_router_runtime(
@@ -1367,6 +1787,40 @@ fn outbound_headers(headers: &[(String, String)]) -> Result<HeaderMap, McpExecut
     Ok(outbound)
 }
 
+fn backend_headers(
+    headers: &[(String, String)],
+    backend_session_id: Option<&str>,
+    protocol_version: Option<&str>,
+) -> Result<HeaderMap, McpExecutionError> {
+    let mut outbound = outbound_headers(headers)?;
+    if !outbound.contains_key(ACCEPT) {
+        outbound.insert(
+            ACCEPT,
+            HeaderValue::from_static("application/json, text/event-stream"),
+        );
+    }
+    if let Some(protocol_version) = protocol_version {
+        let value = HeaderValue::from_str(protocol_version).map_err(|error| {
+            McpExecutionError::execution_failed(format!(
+                "invalid MCP protocol version header value: {error}"
+            ))
+        })?;
+        outbound.insert(HeaderName::from_static(MCP_PROTOCOL_VERSION_HEADER), value);
+    } else if !outbound.contains_key(MCP_PROTOCOL_VERSION_HEADER) {
+        let value = HeaderValue::from_static(DEFAULT_PROTOCOL_VERSION);
+        outbound.insert(HeaderName::from_static(MCP_PROTOCOL_VERSION_HEADER), value);
+    }
+    if let Some(session_id) = backend_session_id {
+        let value = HeaderValue::from_str(session_id).map_err(|error| {
+            McpExecutionError::execution_failed(format!(
+                "invalid backend MCP session id header value: {error}"
+            ))
+        })?;
+        outbound.insert(HeaderName::from_static(MCP_SESSION_ID_HEADER), value);
+    }
+    Ok(outbound)
+}
+
 fn should_regenerate_header(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     matches!(
@@ -1382,6 +1836,7 @@ fn should_regenerate_header(name: &str) -> bool {
             | "proxy-authorization"
             | "proxy-authenticate"
             | "accept-encoding"
+            | MCP_SESSION_ID_HEADER
     )
 }
 
@@ -1455,6 +1910,20 @@ fn rpc_result_response(
             "result": result
         }),
     )
+}
+
+fn initialize_response(
+    mode: McpResponseMode,
+    status: u16,
+    id: JsonValue,
+    result: JsonValue,
+    session_id: String,
+) -> Result<McpHttpResponse, RuntimeError> {
+    let mut response = rpc_result_response(mode, status, id, result)?;
+    response
+        .headers
+        .push((MCP_SESSION_ID_HEADER.to_string(), session_id));
+    Ok(response)
 }
 
 fn rpc_error_response(
@@ -1732,6 +2201,10 @@ tools:
         let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
         assert_eq!(body["result"]["protocolVersion"], "2025-06-18");
         assert_eq!(body["result"]["serverInfo"]["name"], "light-gateway-mcp");
+        let session_id =
+            first_header(&response.headers, MCP_SESSION_ID_HEADER).expect("session id header");
+        uuid::Uuid::parse_str(session_id.as_str()).expect("session id uuid");
+        assert!(session_id.bytes().all(|byte| (0x21..=0x7e).contains(&byte)));
     }
 
     #[tokio::test]
@@ -1742,7 +2215,7 @@ tools:
             .handle_request(McpHttpRequest {
                 method: "POST".to_string(),
                 path: "/mcp".to_string(),
-                headers: vec![accept_json()],
+                headers: accept_json_with_session(&runtime),
                 body: br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_vec(),
             })
             .await
@@ -1761,7 +2234,7 @@ tools:
             .handle_request(McpHttpRequest {
                 method: "POST".to_string(),
                 path: "/mcp".to_string(),
-                headers: vec![accept_json()],
+                headers: accept_json_with_session(&runtime),
                 body: br#"{"jsonrpc":"2.0","id":"1","method":"tools/list","params":{"query":"weath"}}"#.to_vec(),
             })
             .await
@@ -1770,6 +2243,54 @@ tools:
 
         let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
         assert_eq!(body["result"]["tools"][0]["name"], "weather");
+    }
+
+    #[tokio::test]
+    async fn tools_list_requires_frontend_session() {
+        let runtime = runtime_with_tool("weather", "Get weather", "http://127.0.0.1:8080");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json()],
+                body: br#"{"jsonrpc":"2.0","id":"1","method":"tools/list"}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 400);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["error"]["code"], -32600);
+        assert_eq!(body["error"]["message"], "missing MCP session id");
+    }
+
+    #[tokio::test]
+    async fn tools_list_rejects_unknown_frontend_session() {
+        let runtime = runtime_with_tool("weather", "Get weather", "http://127.0.0.1:8080");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![
+                    accept_json(),
+                    (
+                        MCP_SESSION_ID_HEADER.to_string(),
+                        "missing-session".to_string(),
+                    ),
+                ],
+                body: br#"{"jsonrpc":"2.0","id":"1","method":"tools/list"}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 400);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["error"]["code"], -32000);
+        assert_eq!(body["error"]["message"], "unknown MCP session id");
     }
 
     #[tokio::test]
@@ -1828,6 +2349,7 @@ tools:
                 path: "/mcp".to_string(),
                 headers: vec![
                     accept_json(),
+                    session_header(&runtime),
                     ("authorization".to_string(), "Bearer abc".to_string()),
                 ],
                 body: br#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"weather","arguments":{"city":"New York","unit":"c"}}}"#.to_vec(),
@@ -1854,7 +2376,7 @@ tools:
             .handle_request(McpHttpRequest {
                 method: "POST".to_string(),
                 path: "/mcp".to_string(),
-                headers: vec![accept_json()],
+                headers: accept_json_with_session(&runtime),
                 body: br#"{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"list_pets","arguments":{"limit":1}}}"#.to_vec(),
             })
             .await
@@ -1897,7 +2419,7 @@ tools:
             .handle_request(McpHttpRequest {
                 method: "POST".to_string(),
                 path: "/mcp".to_string(),
-                headers: vec![accept_json()],
+                headers: accept_json_with_session(&runtime),
                 body: br#"{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"list-pets","arguments":{}}}"#.to_vec(),
             })
             .await
@@ -1919,7 +2441,7 @@ tools:
             .handle_request(McpHttpRequest {
                 method: "POST".to_string(),
                 path: "/mcp".to_string(),
-                headers: vec![accept_sse()],
+                headers: accept_sse_with_session(&runtime),
                 body: br#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"weather","arguments":{"city":"New York"}}}"#.to_vec(),
             })
             .await
@@ -1972,7 +2494,7 @@ tools:
             .handle_request(McpHttpRequest {
                 method: "POST".to_string(),
                 path: "/mcp".to_string(),
-                headers: vec![accept_json()],
+                headers: accept_json_with_session(&runtime),
                 body: br#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"weather","arguments":{"city":"Toronto"}}}"#.to_vec(),
             })
             .await
@@ -2035,7 +2557,7 @@ tools:
             .handle_request(McpHttpRequest {
                 method: "POST".to_string(),
                 path: "/mcp".to_string(),
-                headers: vec![accept_json()],
+                headers: accept_json_with_session(&runtime),
                 body: br#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"weather","arguments":{"city":"Toronto"}}}"#.to_vec(),
             })
             .await
@@ -2095,7 +2617,7 @@ tools:
             .handle_request(McpHttpRequest {
                 method: "POST".to_string(),
                 path: "/mcp".to_string(),
-                headers: vec![accept_json()],
+                headers: accept_json_with_session(&runtime),
                 body: br#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"get_sh_vers","arguments":{"apiName":"petstore"}}}"#.to_vec(),
             })
             .await
@@ -2128,7 +2650,12 @@ tools:
                 ]
             }
         });
-        let (base, received) = spawn_http_server(http_json_response(backend_result)).await;
+        let (base, received) = spawn_http_sequence_server(vec![
+            backend_initialize_response("backend-session"),
+            http_empty_response(202),
+            http_json_response(backend_result),
+        ])
+        .await;
         let runtime = McpRouterRuntime::new(McpRouterConfig {
             tools: vec![McpToolConfig {
                 name: "weather".to_string(),
@@ -2148,6 +2675,8 @@ tools:
             ..McpRouterConfig::default()
         })
         .expect("runtime");
+        let gateway_session = session_header(&runtime);
+        let gateway_session_id = gateway_session.1.clone();
 
         let response = runtime
             .handle_request(McpHttpRequest {
@@ -2156,6 +2685,7 @@ tools:
                 headers: vec![
                     accept_json(),
                     ("authorization".to_string(), "Bearer abc".to_string()),
+                    gateway_session,
                 ],
                 body: br#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"weather","arguments":{"city":"Ottawa"}}}"#.to_vec(),
             })
@@ -2166,11 +2696,30 @@ tools:
         assert_eq!(response.status, 200);
         let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
         assert_eq!(body["result"]["content"][0]["text"], "cloudy");
-        let request = received.await.expect("server request");
-        assert!(request.starts_with("POST /mcp HTTP/1.1"));
-        assert!(request.contains("authorization: Bearer abc"));
-        let body = request.split("\r\n\r\n").nth(1).expect("request body");
-        let backend_call = serde_json::from_str::<JsonValue>(body).expect("backend json");
+        let requests = received.await.expect("server requests");
+        assert_eq!(requests.len(), 3);
+
+        assert!(requests[0].starts_with("POST /mcp HTTP/1.1"));
+        let backend_initialize = request_json_body(&requests[0]);
+        assert_eq!(backend_initialize["method"], "initialize");
+        assert!(
+            !requests[0]
+                .contains(format!("{MCP_SESSION_ID_HEADER}: {gateway_session_id}").as_str())
+        );
+
+        assert!(requests[1].starts_with("POST /mcp HTTP/1.1"));
+        assert!(requests[1].contains("mcp-session-id: backend-session"));
+        let backend_initialized = request_json_body(&requests[1]);
+        assert_eq!(backend_initialized["method"], "notifications/initialized");
+
+        assert!(requests[2].starts_with("POST /mcp HTTP/1.1"));
+        assert!(requests[2].contains("authorization: Bearer abc"));
+        assert!(requests[2].contains("mcp-session-id: backend-session"));
+        assert!(
+            !requests[2]
+                .contains(format!("{MCP_SESSION_ID_HEADER}: {gateway_session_id}").as_str())
+        );
+        let backend_call = request_json_body(&requests[2]);
         assert_eq!(backend_call["method"], "tools/call");
         assert_eq!(backend_call["params"]["name"], "weather");
         assert_eq!(backend_call["params"]["arguments"]["city"], "Ottawa");
@@ -2190,7 +2739,12 @@ tools:
                 ]
             }
         });
-        let (base, received) = spawn_http_server(http_json_response(backend_result)).await;
+        let (base, received) = spawn_http_sequence_server(vec![
+            backend_initialize_response("backend-session"),
+            http_empty_response(202),
+            http_json_response(backend_result),
+        ])
+        .await;
         let runtime = McpRouterRuntime::new(McpRouterConfig {
             tools: vec![McpToolConfig {
                 name: "weather".to_string(),
@@ -2222,7 +2776,7 @@ tools:
             .handle_request(McpHttpRequest {
                 method: "POST".to_string(),
                 path: "/mcp".to_string(),
-                headers: vec![accept_json()],
+                headers: accept_json_with_session(&runtime),
                 body: br#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"weather","arguments":{"city":"Ottawa"}}}"#.to_vec(),
             })
             .await
@@ -2230,13 +2784,230 @@ tools:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let request = received.await.expect("server request");
-        assert!(request.starts_with("POST /mcp HTTP/1.1"));
-        let body = request.split("\r\n\r\n").nth(1).expect("request body");
-        let backend_call = serde_json::from_str::<JsonValue>(body).expect("backend json");
+        let requests = received.await.expect("server requests");
+        assert_eq!(requests.len(), 3);
+        let backend_call = request_json_body(&requests[2]);
         assert_eq!(backend_call["method"], "tools/call");
         assert_eq!(backend_call["params"]["name"], "weather");
         assert_eq!(backend_call["params"]["arguments"]["city"], "Ottawa");
+    }
+
+    #[tokio::test]
+    async fn mcp_proxy_reuses_backend_session_for_frontend_session_and_target() {
+        let backend_result = json!({
+            "jsonrpc": "2.0",
+            "id": "backend",
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "ok"
+                    }
+                ]
+            }
+        });
+        let (base, received) = spawn_http_sequence_server(vec![
+            backend_initialize_response("backend-session"),
+            http_empty_response(202),
+            http_json_response(backend_result.clone()),
+            http_json_response(backend_result),
+        ])
+        .await;
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![McpToolConfig {
+                name: "weather".to_string(),
+                description: "Get weather".to_string(),
+                protocol: None,
+                service_id: None,
+                env_tag: None,
+                target_host: Some(base),
+                path: "/mcp".to_string(),
+                method: McpHttpMethod::Call,
+                endpoint: None,
+                api_type: McpToolType::Mcp,
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "city": {
+                            "type": "string"
+                        }
+                    }
+                }),
+                input_schema_configured: true,
+                tool_metadata: default_object(),
+            }],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+        let gateway_session = session_header(&runtime);
+
+        for city in ["Ottawa", "Toronto"] {
+            let response = runtime
+                .handle_request(McpHttpRequest {
+                    method: "POST".to_string(),
+                    path: "/mcp".to_string(),
+                    headers: vec![accept_json(), gateway_session.clone()],
+                    body: format!(
+                        r#"{{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{{"name":"weather","arguments":{{"city":"{city}"}}}}}}"#
+                    )
+                    .into_bytes(),
+                })
+                .await
+                .expect("handle")
+                .expect("response");
+            assert_eq!(response.status, 200);
+        }
+
+        let requests = received.await.expect("server requests");
+        assert_eq!(requests.len(), 4);
+        assert_eq!(request_json_body(&requests[0])["method"], "initialize");
+        assert_eq!(
+            request_json_body(&requests[1])["method"],
+            "notifications/initialized"
+        );
+        assert_eq!(request_json_body(&requests[2])["method"], "tools/call");
+        assert_eq!(request_json_body(&requests[3])["method"], "tools/call");
+        assert!(requests[2].contains("mcp-session-id: backend-session"));
+        assert!(requests[3].contains("mcp-session-id: backend-session"));
+    }
+
+    #[tokio::test]
+    async fn delete_frontend_session_terminates_backend_session() {
+        let backend_result = json!({
+            "jsonrpc": "2.0",
+            "id": "backend",
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "ok"
+                    }
+                ]
+            }
+        });
+        let (base, received) = spawn_http_sequence_server(vec![
+            backend_initialize_response("backend-session"),
+            http_empty_response(202),
+            http_json_response(backend_result),
+            http_empty_response(202),
+        ])
+        .await;
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![McpToolConfig {
+                name: "weather".to_string(),
+                description: "Get weather".to_string(),
+                protocol: None,
+                service_id: None,
+                env_tag: None,
+                target_host: Some(base),
+                path: "/mcp".to_string(),
+                method: McpHttpMethod::Post,
+                endpoint: None,
+                api_type: McpToolType::Mcp,
+                input_schema: default_input_schema(),
+                input_schema_configured: true,
+                tool_metadata: default_object(),
+            }],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+        let gateway_session = session_header(&runtime);
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json(), gateway_session.clone()],
+                body: br#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"weather","arguments":{"city":"Ottawa"}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 200);
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "DELETE".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![gateway_session.clone()],
+                body: Vec::new(),
+            })
+            .await
+            .expect("delete")
+            .expect("response");
+        assert_eq!(response.status, 202);
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json(), gateway_session],
+                body: br#"{"jsonrpc":"2.0","id":"1","method":"tools/list"}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 400);
+
+        let requests = received.await.expect("server requests");
+        assert_eq!(requests.len(), 4);
+        assert_eq!(request_json_body(&requests[0])["method"], "initialize");
+        assert_eq!(
+            request_json_body(&requests[1])["method"],
+            "notifications/initialized"
+        );
+        assert_eq!(request_json_body(&requests[2])["method"], "tools/call");
+        assert!(requests[3].starts_with("DELETE /mcp HTTP/1.1"));
+        assert!(requests[3].contains("mcp-session-id: backend-session"));
+    }
+
+    #[tokio::test]
+    async fn expired_frontend_session_terminates_backend_sessions() {
+        let (base, received) = spawn_http_sequence_server(vec![http_empty_response(202)]).await;
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        let frontend_session_id = uuid::Uuid::new_v4().to_string();
+        let backend_target_url = format!("{base}/mcp");
+        let mut session = McpGatewaySession::new(DEFAULT_PROTOCOL_VERSION.to_string());
+        session.last_accessed = Instant::now()
+            .checked_sub(MCP_SESSION_IDLE_TIMEOUT + Duration::from_secs(1))
+            .expect("expired instant");
+        session.backend_sessions.insert(
+            backend_target_url.clone(),
+            McpBackendSession {
+                target_url: backend_target_url,
+                session_id: Some("backend-session".to_string()),
+                protocol_version: DEFAULT_PROTOCOL_VERSION.to_string(),
+            },
+        );
+        runtime
+            .sessions
+            .lock()
+            .expect("session lock")
+            .insert(frontend_session_id.clone(), session);
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json()],
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        assert!(
+            !runtime
+                .sessions
+                .lock()
+                .expect("session lock")
+                .contains_key(frontend_session_id.as_str())
+        );
+        let requests = received.await.expect("server requests");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("DELETE /mcp HTTP/1.1"));
+        assert!(requests[0].contains("mcp-session-id: backend-session"));
     }
 
     #[tokio::test]
@@ -2266,7 +3037,7 @@ tools:
             .handle_request(McpHttpRequest {
                 method: "POST".to_string(),
                 path: "/mcp".to_string(),
-                headers: vec![accept_json()],
+                headers: accept_json_with_session(&runtime),
                 body: br#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"serverInfo","arguments":{}}}"#.to_vec(),
             })
             .await
@@ -2305,7 +3076,7 @@ tools:
             .handle_request(McpHttpRequest {
                 method: "POST".to_string(),
                 path: "/mcp".to_string(),
-                headers: vec![accept_json()],
+                headers: accept_json_with_session(&runtime),
                 body: br#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"weather","arguments":{}}}"#.to_vec(),
             })
             .await
@@ -2383,7 +3154,7 @@ endpointRules:
                 McpHttpRequest {
                     method: "POST".to_string(),
                     path: "/mcp".to_string(),
-                    headers: vec![accept_json()],
+                    headers: accept_json_with_session(&runtime),
                     body: br#"{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"weather","arguments":{"ssn":"123-45-6789","city":"Toronto"}}}"#.to_vec(),
                 },
                 McpRequestContext {
@@ -2569,6 +3340,23 @@ endpointRules:
         )
     }
 
+    fn session_header(runtime: &McpRouterRuntime) -> (String, String) {
+        let session_id = uuid::Uuid::new_v4().to_string();
+        runtime.sessions.lock().expect("session lock").insert(
+            session_id.clone(),
+            McpGatewaySession::new(DEFAULT_PROTOCOL_VERSION.to_string()),
+        );
+        (MCP_SESSION_ID_HEADER.to_string(), session_id)
+    }
+
+    fn accept_json_with_session(runtime: &McpRouterRuntime) -> Vec<(String, String)> {
+        vec![accept_json(), session_header(runtime)]
+    }
+
+    fn accept_sse_with_session(runtime: &McpRouterRuntime) -> Vec<(String, String)> {
+        vec![accept_sse(), session_header(runtime)]
+    }
+
     fn sse_json(body: &[u8]) -> JsonValue {
         let event = String::from_utf8(body.to_vec()).expect("sse utf8");
         assert!(event.starts_with("event: message\n"));
@@ -2589,12 +3377,56 @@ endpointRules:
     }
 
     fn http_json_response(value: JsonValue) -> String {
+        http_json_response_with_headers(value, &[])
+    }
+
+    fn http_json_response_with_headers(value: JsonValue, headers: &[(&str, &str)]) -> String {
         let body = serde_json::to_string(&value).expect("serialize response");
+        let extra_headers = headers
+            .iter()
+            .map(|(name, value)| format!("{name}: {value}\r\n"))
+            .collect::<String>();
         format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n{extra_headers}content-length: {}\r\n\r\n{}",
             body.len(),
             body
         )
+    }
+
+    fn http_empty_response(status: u16) -> String {
+        let reason = match status {
+            202 => "Accepted",
+            204 => "No Content",
+            _ => "OK",
+        };
+        format!("HTTP/1.1 {status} {reason}\r\nconnection: close\r\ncontent-length: 0\r\n\r\n")
+    }
+
+    fn backend_initialize_response(session_id: &str) -> String {
+        http_json_response_with_headers(
+            json!({
+                "jsonrpc": "2.0",
+                "id": "backend-init",
+                "result": {
+                    "protocolVersion": DEFAULT_PROTOCOL_VERSION,
+                    "capabilities": {
+                        "tools": {
+                            "listChanged": true
+                        }
+                    },
+                    "serverInfo": {
+                        "name": "backend-mcp",
+                        "version": "1.0"
+                    }
+                }
+            }),
+            &[(MCP_SESSION_ID_HEADER, session_id)],
+        )
+    }
+
+    fn request_json_body(request: &str) -> JsonValue {
+        let body = request.split("\r\n\r\n").nth(1).expect("request body");
+        serde_json::from_str::<JsonValue>(body).expect("backend json")
     }
 
     fn discovery_snapshot(
@@ -2677,6 +3509,41 @@ endpointRules:
                 .write_all(response.as_bytes())
                 .await
                 .expect("write response");
+        });
+        (format!("http://{address}"), rx)
+    }
+
+    async fn spawn_http_sequence_server(
+        responses: Vec<String>,
+    ) -> (String, oneshot::Receiver<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("local addr");
+        let (tx, rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for response in responses {
+                let (mut stream, _) = listener.accept().await.expect("accept connection");
+                let mut buffer = vec![0_u8; 1024];
+                let mut request_bytes = Vec::new();
+                loop {
+                    let read = stream.read(&mut buffer).await.expect("read request");
+                    if read == 0 {
+                        break;
+                    }
+                    request_bytes.extend_from_slice(&buffer[..read]);
+                    if request_complete(&request_bytes) {
+                        break;
+                    }
+                }
+                requests.push(String::from_utf8_lossy(&request_bytes).to_string());
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write response");
+            }
+            let _ = tx.send(requests);
         });
         (format!("http://{address}"), rx)
     }
