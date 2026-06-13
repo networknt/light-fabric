@@ -20,7 +20,7 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
+use tokio::sync::Mutex as AsyncMutex;
 use url::Url;
 
 pub const MCP_ROUTER_FILE: &str = "mcp-router.yml";
@@ -442,8 +442,8 @@ pub struct McpRouterRuntime {
     direct_registry: DirectRegistryConfig,
     discovery: Option<Arc<dyn McpDiscoveryResolver>>,
     policy: Option<Arc<AccessControlRuntime>>,
-    sessions: Arc<Mutex<McpSessionStore>>,
-    last_session_purge: Arc<Mutex<Option<Instant>>>,
+    sessions: Arc<AsyncMutex<McpSessionStore>>,
+    last_session_purge: Arc<AsyncMutex<Option<Instant>>>,
 }
 
 impl fmt::Debug for McpRouterRuntime {
@@ -557,8 +557,8 @@ impl McpRouterRuntime {
             direct_registry,
             discovery,
             policy,
-            sessions: Arc::new(Mutex::new(McpSessionStore::default())),
-            last_session_purge: Arc::new(Mutex::new(None)),
+            sessions: Arc::new(AsyncMutex::new(McpSessionStore::default())),
+            last_session_purge: Arc::new(AsyncMutex::new(None)),
         })
     }
 
