@@ -1,3 +1,5 @@
 enabled: ${mcp-router.enabled:true}
 path: ${mcp-router.path:/mcp}
+maxSessions: ${mcp-router.maxSessions:10000}
+maxSessionsPerClient: ${mcp-router.maxSessionsPerClient:100}
 tools: ${mcp-router.tools:[]}

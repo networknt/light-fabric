@@ -32,6 +32,8 @@ const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
 const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
 const MCP_PROTOCOL_VERSION_HEADER: &str = "mcp-protocol-version";
 const MCP_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const DEFAULT_MCP_MAX_FRONTEND_SESSIONS: usize = 10_000;
+const DEFAULT_MCP_MAX_FRONTEND_SESSIONS_PER_CLIENT: usize = 100;
 const JSON_CONTENT_TYPE: &str = "application/json";
 const EVENT_STREAM_CONTENT_TYPE: &str = "text/event-stream";
 const TEXT_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
@@ -43,6 +45,13 @@ pub struct McpRouterConfig {
     pub enabled: bool,
     #[serde(default = "default_mcp_path")]
     pub path: String,
+    #[serde(default = "default_max_frontend_sessions", alias = "maxSessions")]
+    pub max_sessions: usize,
+    #[serde(
+        default = "default_max_frontend_sessions_per_client",
+        alias = "maxSessionsPerClient"
+    )]
+    pub max_sessions_per_client: usize,
     #[serde(default, deserialize_with = "deserialize_typed_list")]
     pub tools: Vec<McpToolConfig>,
 }
@@ -52,6 +61,8 @@ impl Default for McpRouterConfig {
         Self {
             enabled: true,
             path: default_mcp_path(),
+            max_sessions: default_max_frontend_sessions(),
+            max_sessions_per_client: default_max_frontend_sessions_per_client(),
             tools: Vec::new(),
         }
     }
@@ -295,14 +306,16 @@ pub struct McpRequestContext {
 #[derive(Debug, Clone)]
 struct McpGatewaySession {
     protocol_version: String,
+    client_key: String,
     last_accessed: Instant,
     backend_sessions: BTreeMap<String, McpBackendSession>,
 }
 
 impl McpGatewaySession {
-    fn new(protocol_version: String) -> Self {
+    fn new(protocol_version: String, client_key: String) -> Self {
         Self {
             protocol_version,
+            client_key,
             last_accessed: Instant::now(),
             backend_sessions: BTreeMap::new(),
         }
@@ -585,7 +598,18 @@ impl McpRouterRuntime {
         match method {
             "initialize" => {
                 let result = self.initialize_result(message);
-                let session_id = self.create_frontend_session(message)?;
+                let session_id = match self.create_frontend_session(message, context) {
+                    Ok(session_id) => session_id,
+                    Err(error) => {
+                        return rpc_error_response(
+                            response_mode,
+                            error.status,
+                            id,
+                            error.code,
+                            error.message,
+                        );
+                    }
+                };
                 initialize_response(response_mode, 200, id, result, session_id)
             }
             "tools/list" => {
@@ -655,15 +679,40 @@ impl McpRouterRuntime {
     fn create_frontend_session(
         &self,
         message: &serde_json::Map<String, JsonValue>,
-    ) -> Result<String, RuntimeError> {
+        context: &McpRequestContext,
+    ) -> Result<String, McpSessionError> {
         let session_id = uuid::Uuid::new_v4().to_string();
         let protocol_version = requested_protocol_version(message)
             .unwrap_or(DEFAULT_PROTOCOL_VERSION)
             .to_string();
-        let mut sessions = self.sessions.lock().map_err(|_| {
-            RuntimeError::Unsupported("MCP session store lock poisoned".to_string())
+        let client_key = frontend_client_key(message, context);
+        let mut sessions = self.sessions.lock().map_err(|_| McpSessionError {
+            status: 500,
+            code: -32000,
+            message: "MCP session store unavailable".to_string(),
         })?;
-        sessions.insert(session_id.clone(), McpGatewaySession::new(protocol_version));
+        if sessions.len() >= self.config.max_sessions {
+            return Err(McpSessionError {
+                status: 503,
+                code: -32000,
+                message: "MCP session store is full".to_string(),
+            });
+        }
+        let client_sessions = sessions
+            .values()
+            .filter(|session| session.client_key == client_key)
+            .count();
+        if client_sessions >= self.config.max_sessions_per_client {
+            return Err(McpSessionError {
+                status: 429,
+                code: -32000,
+                message: "MCP client session limit exceeded".to_string(),
+            });
+        }
+        sessions.insert(
+            session_id.clone(),
+            McpGatewaySession::new(protocol_version, client_key),
+        );
         Ok(session_id)
     }
 
@@ -1410,6 +1459,52 @@ fn requested_protocol_version(message: &serde_json::Map<String, JsonValue>) -> O
         .filter(|version| protocol_version_supported(version))
 }
 
+fn frontend_client_key(
+    message: &serde_json::Map<String, JsonValue>,
+    context: &McpRequestContext,
+) -> String {
+    if let Some(auth) = &context.auth {
+        if let Some(client_id) = auth.client_id.as_deref().filter(|value| !value.is_empty()) {
+            return format!(
+                "auth:client:{}:{client_id}",
+                auth.issuer.as_deref().unwrap_or_default()
+            );
+        }
+        if let Some(user_id) = auth.user_id.as_deref().filter(|value| !value.is_empty()) {
+            return format!(
+                "auth:user:{}:{user_id}",
+                auth.issuer.as_deref().unwrap_or_default()
+            );
+        }
+        if let Some(email) = auth.email.as_deref().filter(|value| !value.is_empty()) {
+            return format!(
+                "auth:email:{}:{email}",
+                auth.issuer.as_deref().unwrap_or_default()
+            );
+        }
+        if let Some(host) = auth.host.as_deref().filter(|value| !value.is_empty()) {
+            return format!("auth:host:{host}");
+        }
+    }
+
+    let client_info = message
+        .get("params")
+        .and_then(|params| params.get("clientInfo"));
+    let name = client_info
+        .and_then(|client_info| client_info.get("name"))
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unknown");
+    let version = client_info
+        .and_then(|client_info| client_info.get("version"))
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unknown");
+    format!("mcp-client:{name}:{version}")
+}
+
 pub fn load_mcp_router_runtime(
     runtime_config: &RuntimeConfig,
     active: bool,
@@ -1474,6 +1569,16 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
             "mcp-router.path `{}` must start with `/`",
             config.path
         )));
+    }
+    if config.max_sessions == 0 {
+        return Err(RuntimeError::Unsupported(
+            "mcp-router.maxSessions must be greater than 0".to_string(),
+        ));
+    }
+    if config.max_sessions_per_client == 0 {
+        return Err(RuntimeError::Unsupported(
+            "mcp-router.maxSessionsPerClient must be greater than 0".to_string(),
+        ));
     }
     let mut names = BTreeSet::new();
     for tool in &config.tools {
@@ -1840,6 +1945,7 @@ fn should_regenerate_header(name: &str) -> bool {
             | "proxy-authenticate"
             | "accept-encoding"
             | MCP_SESSION_ID_HEADER
+            | MCP_PROTOCOL_VERSION_HEADER
     )
 }
 
@@ -1922,11 +2028,33 @@ fn initialize_response(
     result: JsonValue,
     session_id: String,
 ) -> Result<McpHttpResponse, RuntimeError> {
+    let protocol_version = result
+        .get("protocolVersion")
+        .and_then(JsonValue::as_str)
+        .unwrap_or(DEFAULT_PROTOCOL_VERSION)
+        .to_string();
     let mut response = rpc_result_response(mode, status, id, result)?;
+    set_response_header(
+        &mut response.headers,
+        MCP_PROTOCOL_VERSION_HEADER,
+        protocol_version,
+    );
     response
         .headers
         .push((MCP_SESSION_ID_HEADER.to_string(), session_id));
     Ok(response)
+}
+
+fn set_response_header(headers: &mut Vec<(String, String)>, name: &str, value: impl Into<String>) {
+    let value = value.into();
+    if let Some((_, existing)) = headers
+        .iter_mut()
+        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
+    {
+        *existing = value;
+    } else {
+        headers.push((name.to_string(), value));
+    }
 }
 
 fn rpc_error_response(
@@ -2060,6 +2188,14 @@ fn default_mcp_path() -> String {
     DEFAULT_MCP_PATH.to_string()
 }
 
+fn default_max_frontend_sessions() -> usize {
+    DEFAULT_MCP_MAX_FRONTEND_SESSIONS
+}
+
+fn default_max_frontend_sessions_per_client() -> usize {
+    DEFAULT_MCP_MAX_FRONTEND_SESSIONS_PER_CLIENT
+}
+
 fn default_input_schema() -> JsonValue {
     json!({ "type": "object" })
 }
@@ -2094,11 +2230,15 @@ mod tests {
             r#"
 enabled: true
 path: /mcp
+maxSessions: 123
+maxSessionsPerClient: 7
 tools: '[{"name":"weather","description":"Weather","targetHost":"http://127.0.0.1:8080","path":"/weather","method":"GET","inputSchema":{"type":"object"}}]'
 "#,
         )
         .expect("parse config");
 
+        assert_eq!(config.max_sessions, 123);
+        assert_eq!(config.max_sessions_per_client, 7);
         assert_eq!(config.tools.len(), 1);
         assert_eq!(config.tools[0].name, "weather");
         assert_eq!(config.tools[0].input_schema["type"], "object");
@@ -2208,6 +2348,113 @@ tools:
             first_header(&response.headers, MCP_SESSION_ID_HEADER).expect("session id header");
         uuid::Uuid::parse_str(session_id.as_str()).expect("session id uuid");
         assert!(session_id.bytes().all(|byte| (0x21..=0x7e).contains(&byte)));
+    }
+
+    #[tokio::test]
+    async fn initialize_protocol_header_matches_negotiated_version() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json()],
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["result"]["protocolVersion"], "2025-03-26");
+        assert_eq!(
+            first_header(&response.headers, MCP_PROTOCOL_VERSION_HEADER).as_deref(),
+            Some("2025-03-26")
+        );
+    }
+
+    #[tokio::test]
+    async fn initialize_rejects_new_session_when_store_is_full() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        {
+            let mut sessions = runtime.sessions.lock().expect("session lock");
+            for index in 0..runtime.config.max_sessions {
+                sessions.insert(
+                    format!("session-{index}"),
+                    McpGatewaySession::new(
+                        DEFAULT_PROTOCOL_VERSION.to_string(),
+                        format!("test-client-{index}"),
+                    ),
+                );
+            }
+        }
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json()],
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 503);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["error"]["code"], -32000);
+        assert_eq!(body["error"]["message"], "MCP session store is full");
+        assert!(
+            first_header(&response.headers, MCP_SESSION_ID_HEADER).is_none(),
+            "failed initialize must not issue a session id"
+        );
+    }
+
+    #[tokio::test]
+    async fn initialize_rejects_new_session_when_client_limit_is_reached() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            max_sessions: 10,
+            max_sessions_per_client: 2,
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+        let client_key = "mcp-client:curl-test:1.0".to_string();
+        {
+            let mut sessions = runtime.sessions.lock().expect("session lock");
+            for index in 0..runtime.config.max_sessions_per_client {
+                sessions.insert(
+                    format!("session-{index}"),
+                    McpGatewaySession::new(
+                        DEFAULT_PROTOCOL_VERSION.to_string(),
+                        client_key.clone(),
+                    ),
+                );
+            }
+        }
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json()],
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"curl-test","version":"1.0"}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 429);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["error"]["code"], -32000);
+        assert_eq!(
+            body["error"]["message"],
+            "MCP client session limit exceeded"
+        );
+        assert!(
+            first_header(&response.headers, MCP_SESSION_ID_HEADER).is_none(),
+            "failed initialize must not issue a session id"
+        );
     }
 
     #[tokio::test]
@@ -2353,6 +2600,10 @@ tools:
                 headers: vec![
                     accept_json(),
                     session_header(&runtime),
+                    (
+                        MCP_PROTOCOL_VERSION_HEADER.to_string(),
+                        "2025-03-26".to_string(),
+                    ),
                     ("authorization".to_string(), "Bearer abc".to_string()),
                 ],
                 body: br#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"weather","arguments":{"city":"New York","unit":"c"}}}"#.to_vec(),
@@ -2367,6 +2618,7 @@ tools:
         let request = received.await.expect("server request");
         assert!(request.starts_with("GET /weather?city=New+York&unit=c HTTP/1.1"));
         assert!(request.contains("authorization: Bearer abc"));
+        assert!(!request.contains("mcp-protocol-version"));
     }
 
     #[tokio::test]
@@ -2712,12 +2964,14 @@ tools:
 
         assert!(requests[1].starts_with("POST /mcp HTTP/1.1"));
         assert!(requests[1].contains("mcp-session-id: backend-session"));
+        assert!(requests[1].contains("mcp-protocol-version: 2025-06-18"));
         let backend_initialized = request_json_body(&requests[1]);
         assert_eq!(backend_initialized["method"], "notifications/initialized");
 
         assert!(requests[2].starts_with("POST /mcp HTTP/1.1"));
         assert!(requests[2].contains("authorization: Bearer abc"));
         assert!(requests[2].contains("mcp-session-id: backend-session"));
+        assert!(requests[2].contains("mcp-protocol-version: 2025-06-18"));
         assert!(
             !requests[2]
                 .contains(format!("{MCP_SESSION_ID_HEADER}: {gateway_session_id}").as_str())
@@ -2971,7 +3225,10 @@ tools:
         let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
         let frontend_session_id = uuid::Uuid::new_v4().to_string();
         let backend_target_url = format!("{base}/mcp");
-        let mut session = McpGatewaySession::new(DEFAULT_PROTOCOL_VERSION.to_string());
+        let mut session = McpGatewaySession::new(
+            DEFAULT_PROTOCOL_VERSION.to_string(),
+            "test-client".to_string(),
+        );
         session.last_accessed = Instant::now()
             .checked_sub(MCP_SESSION_IDLE_TIMEOUT + Duration::from_secs(1))
             .expect("expired instant");
@@ -3349,7 +3606,10 @@ endpointRules:
         let session_id = uuid::Uuid::new_v4().to_string();
         runtime.sessions.lock().expect("session lock").insert(
             session_id.clone(),
-            McpGatewaySession::new(DEFAULT_PROTOCOL_VERSION.to_string()),
+            McpGatewaySession::new(
+                DEFAULT_PROTOCOL_VERSION.to_string(),
+                "test-client".to_string(),
+            ),
         );
         (MCP_SESSION_ID_HEADER.to_string(), session_id)
     }

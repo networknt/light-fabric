@@ -84,6 +84,8 @@ downstream MCP servers:
 ```yaml
 enabled: true
 path: /mcp
+maxSessions: 10000
+maxSessionsPerClient: 100
 tools:
   - name: weather
     description: Get weather.
@@ -102,6 +104,11 @@ tools:
 The `endpoint` field is the stable policy key used by `rule.yml`. If it is
 omitted, the gateway derives one from the tool path and method, such as
 `/weather@get`.
+
+`maxSessions` caps the total in-memory MCP frontend sessions for this gateway
+process. `maxSessionsPerClient` caps sessions for one authenticated client or,
+when no principal is available, one MCP `clientInfo.name` and
+`clientInfo.version` pair.
 
 For downstream MCP servers, set `apiType: mcp`. For downstream API servers, use
 `apiType: http` or omit it when the default is acceptable.

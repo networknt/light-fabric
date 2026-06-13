@@ -76,6 +76,8 @@ Java configuration:
 ```yaml
 enabled: ${mcp-router.enabled:true}
 path: ${mcp-router.path:/mcp}
+maxSessions: ${mcp-router.maxSessions:10000}
+maxSessionsPerClient: ${mcp-router.maxSessionsPerClient:100}
 tools: ${mcp-router.tools:}
 ```
 
@@ -360,9 +362,17 @@ The frontend session is created during client `initialize`:
 5. A client `DELETE` request, explicit expiry, or gateway shutdown should close
    all backend sessions associated with the frontend session.
 
-The in-memory gateway store uses a 30-minute idle timeout. Expired sessions are
-purged lazily during later MCP requests, and any mapped backend MCP sessions are
-closed during that purge.
+The in-memory gateway store uses a 30-minute idle timeout, a configurable
+maximum frontend session count, and a configurable per-client frontend session
+count. Expired sessions are purged lazily during later MCP requests, and any
+mapped backend MCP sessions are closed during that purge. If the store is still
+full after lazy purge, or the client already owns the maximum allowed sessions,
+new `initialize` requests fail without issuing another session id.
+
+The per-client key is derived from the authenticated principal when available,
+preferring `client_id`, then `user_id`, `email`, and `host`. If no security
+principal is available, the key falls back to MCP `clientInfo.name` and
+`clientInfo.version` from the `initialize` request.
 
 For a single gateway process, the session store can start in memory. In a
 multi-pod deployment, the store should be external, such as Redis, or ingress
@@ -732,11 +742,12 @@ is designed.
 - Add tests for frontend session validation, backend session creation, backend
   session reuse, and backend session termination.
 
-Status: implemented for the in-memory frontend session store, 30-minute lazy
-idle expiry, lazy backend initialization, backend `Mcp-Session-Id` mapping,
-backend session reuse, and explicit `DELETE` teardown. Shutdown cleanup,
-external session storage, and multi-backend isolation tests remain future
-hardening for multi-pod deployments.
+Status: implemented for the in-memory frontend session store, configurable
+global and per-client session caps, 30-minute lazy idle expiry, lazy backend
+initialization, backend `Mcp-Session-Id` mapping, backend session reuse, and
+explicit `DELETE` teardown. Shutdown cleanup, external session storage, and
+multi-backend isolation tests remain future hardening for multi-pod
+deployments.
 
 ## Testing Strategy
 
