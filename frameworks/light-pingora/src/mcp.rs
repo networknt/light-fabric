@@ -1242,6 +1242,9 @@ impl McpRouterRuntime {
             return;
         };
         headers.insert(HeaderName::from_static(MCP_SESSION_ID_HEADER), value);
+        if let Ok(value) = HeaderValue::from_str(backend_session.protocol_version.as_str()) {
+            headers.insert(HeaderName::from_static(MCP_PROTOCOL_VERSION_HEADER), value);
+        }
         if let Err(error) = self
             .client
             .delete(backend_session.target_url.as_str())
@@ -1889,7 +1892,7 @@ fn method_not_allowed_response() -> McpHttpResponse {
     McpHttpResponse {
         status: 405,
         content_type: TEXT_CONTENT_TYPE.to_string(),
-        headers: vec![("allow".to_string(), "POST".to_string())],
+        headers: vec![("allow".to_string(), "POST, DELETE".to_string())],
         body: b"method not allowed".to_vec(),
         streamed: false,
     }
@@ -2333,7 +2336,7 @@ tools:
         assert!(!response.streamed);
         assert_eq!(
             response.headers,
-            vec![("allow".to_string(), "POST".to_string())]
+            vec![("allow".to_string(), "POST, DELETE".to_string())]
         );
     }
 
@@ -2959,6 +2962,7 @@ tools:
         assert_eq!(request_json_body(&requests[2])["method"], "tools/call");
         assert!(requests[3].starts_with("DELETE /mcp HTTP/1.1"));
         assert!(requests[3].contains("mcp-session-id: backend-session"));
+        assert!(requests[3].contains("mcp-protocol-version: 2025-06-18"));
     }
 
     #[tokio::test]
@@ -3008,6 +3012,7 @@ tools:
         assert_eq!(requests.len(), 1);
         assert!(requests[0].starts_with("DELETE /mcp HTTP/1.1"));
         assert!(requests[0].contains("mcp-session-id: backend-session"));
+        assert!(requests[0].contains("mcp-protocol-version: 2025-06-18"));
     }
 
     #[tokio::test]
