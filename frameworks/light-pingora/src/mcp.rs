@@ -414,6 +414,7 @@ struct McpBackendSession {
     target_url: String,
     session_id: Option<String>,
     protocol_version: String,
+    agent_headers: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -1389,6 +1390,7 @@ impl McpRouterRuntime {
             target_url: target_url.to_string(),
             session_id: backend_session_id,
             protocol_version: backend_protocol_version,
+            agent_headers: agent_headers.to_vec(),
         };
         if let Err(error) = self
             .send_backend_initialized(
@@ -1452,14 +1454,22 @@ impl McpRouterRuntime {
         let Some(session_id) = backend_session.session_id.as_deref() else {
             return;
         };
-        let mut headers = HeaderMap::new();
-        let Ok(value) = HeaderValue::from_str(session_id) else {
-            return;
+        let headers = match backend_headers(
+            &backend_session.agent_headers,
+            Some(session_id),
+            Some(backend_session.protocol_version.as_str()),
+        ) {
+            Ok(headers) => headers,
+            Err(error) => {
+                tracing::warn!(
+                    target: "light_pingora::mcp",
+                    url = %backend_session.target_url,
+                    error = %error.message,
+                    "backend MCP session termination headers invalid"
+                );
+                return;
+            }
         };
-        headers.insert(HeaderName::from_static(MCP_SESSION_ID_HEADER), value);
-        if let Ok(value) = HeaderValue::from_str(backend_session.protocol_version.as_str()) {
-            headers.insert(HeaderName::from_static(MCP_PROTOCOL_VERSION_HEADER), value);
-        }
         if let Err(error) = self
             .client
             .delete(backend_session.target_url.as_str())
@@ -2077,17 +2087,13 @@ fn backend_headers(
 ) -> Result<HeaderMap, McpExecutionError> {
     let mut outbound = outbound_headers(headers)?;
     outbound.insert(ACCEPT, HeaderValue::from_static("application/json"));
-    if let Some(protocol_version) = protocol_version {
-        let value = HeaderValue::from_str(protocol_version).map_err(|error| {
-            McpExecutionError::execution_failed(format!(
-                "invalid MCP protocol version header value: {error}"
-            ))
-        })?;
-        outbound.insert(HeaderName::from_static(MCP_PROTOCOL_VERSION_HEADER), value);
-    } else if !outbound.contains_key(MCP_PROTOCOL_VERSION_HEADER) {
-        let value = HeaderValue::from_static(DEFAULT_PROTOCOL_VERSION);
-        outbound.insert(HeaderName::from_static(MCP_PROTOCOL_VERSION_HEADER), value);
-    }
+    let protocol_version = protocol_version.unwrap_or(DEFAULT_PROTOCOL_VERSION);
+    let value = HeaderValue::from_str(protocol_version).map_err(|error| {
+        McpExecutionError::execution_failed(format!(
+            "invalid MCP protocol version header value: {error}"
+        ))
+    })?;
+    outbound.insert(HeaderName::from_static(MCP_PROTOCOL_VERSION_HEADER), value);
     if let Some(session_id) = backend_session_id {
         let value = HeaderValue::from_str(session_id).map_err(|error| {
             McpExecutionError::execution_failed(format!(
@@ -3531,7 +3537,11 @@ tools:
             .handle_request(McpHttpRequest {
                 method: "POST".to_string(),
                 path: "/mcp".to_string(),
-                headers: vec![accept_json(), gateway_session.clone()],
+                headers: vec![
+                    accept_json(),
+                    ("authorization".to_string(), "Bearer abc".to_string()),
+                    gateway_session.clone(),
+                ],
                 body: br#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"weather","arguments":{"city":"Ottawa"}}}"#.to_vec(),
             })
             .await
@@ -3572,6 +3582,7 @@ tools:
         );
         assert_eq!(request_json_body(&requests[2])["method"], "tools/call");
         assert!(requests[3].starts_with("DELETE /mcp HTTP/1.1"));
+        assert!(requests[3].contains("authorization: Bearer abc"));
         assert!(requests[3].contains("mcp-session-id: backend-session"));
         assert!(requests[3].contains("mcp-protocol-version: 2025-06-18"));
     }
@@ -3595,6 +3606,7 @@ tools:
                 target_url: backend_target_url,
                 session_id: Some("backend-session".to_string()),
                 protocol_version: DEFAULT_PROTOCOL_VERSION.to_string(),
+                agent_headers: Vec::new(),
             },
         );
         runtime
@@ -3652,6 +3664,7 @@ tools:
                 target_url: backend_target_url,
                 session_id: Some("backend-session".to_string()),
                 protocol_version: DEFAULT_PROTOCOL_VERSION.to_string(),
+                agent_headers: Vec::new(),
             },
         );
         runtime
@@ -3710,6 +3723,7 @@ tools:
                 target_url: backend_target_url,
                 session_id: Some("backend-session".to_string()),
                 protocol_version: DEFAULT_PROTOCOL_VERSION.to_string(),
+                agent_headers: Vec::new(),
             },
         );
         runtime
