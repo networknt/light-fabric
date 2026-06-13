@@ -116,6 +116,9 @@ if [[ -z "$BINARY_PATH" ]]; then
       BINARY_PATH="$DEFAULT_DEBUG_BINARY"
     fi
   fi
+  if [[ ! -x "$BINARY_PATH" && -x "${SCRIPT_DIR}/light-gateway" ]]; then
+    BINARY_PATH="${SCRIPT_DIR}/light-gateway"
+  fi
 fi
 
 [[ -x "$BINARY_PATH" ]] || fail "binary is not executable: $BINARY_PATH. Build it with: cargo build --release -p light-gateway"
