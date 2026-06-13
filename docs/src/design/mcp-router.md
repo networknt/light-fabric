@@ -5,7 +5,8 @@
 Phases 1, 2, 3, and 4 are implemented in `light-pingora` and
 `light-gateway`. The configurable tokenization client remains deferred until
 `light-tokenization` is migrated to `portal-service/apps/portal-service` and
-the protocol is selected.
+the protocol is selected. Stateful backend MCP session mapping is documented
+below as required design work for robust `apiType: mcp` backends.
 
 ## Purpose
 
@@ -138,8 +139,9 @@ same endpoint.
 - Reuse the light-4j `access-control.yml` compatibility contract for MCP,
   REST, and JSON-RPC authorization.
 - Do not add configured per-tool outbound headers. Backend tool calls should
-  pass through the headers received from the agent, subject only to transport
-  headers that the HTTP client must regenerate for a new outbound request.
+  pass through the headers received from the agent, subject only to headers
+  that the HTTP client must regenerate for a new outbound request and MCP
+  session headers that the gateway must map or regenerate.
 
 ## Rust Architecture
 
@@ -243,8 +245,9 @@ When the request path matches `mcp-router.path`:
 - `GET` with `Accept: text/event-stream` may open a server-to-client SSE stream
   on the same endpoint. If the gateway has no server-initiated messages to
   stream, it should return `405 Method Not Allowed`.
-- `DELETE` may terminate a stateful MCP session later. The initial stateless
-  router can return `405 Method Not Allowed`.
+- `DELETE` should terminate the gateway session and any mapped backend MCP
+  sessions. Until session termination is implemented, it can return
+  `405 Method Not Allowed`.
 - Other methods return `405 Method Not Allowed`.
 
 When the path does not match, the handler continues to the next handler in the
@@ -326,9 +329,99 @@ For Streamable HTTP:
   endpoint.
 - Clients should send `Accept: application/json, text/event-stream`.
 - The router should negotiate and honor `MCP-Protocol-Version`.
-- The router can remain stateless initially and omit `Mcp-Session-Id`. If
-  stateful sessions are added later, initialize responses can include
-  `Mcp-Session-Id`, and later requests must validate it.
+- The router terminates the client-facing MCP session. `initialize` responses
+  should include a gateway-owned `Mcp-Session-Id`, and later client requests
+  should be validated against that gateway session.
+
+### MCP Session Management
+
+The MCP router should use a facade model. To the agent, `light-gateway` is the
+MCP server. To upstream MCP targets, `light-gateway` is an MCP client. This
+keeps gateway security, access-control policy, masking, response filtering, and
+tool aggregation in one place while still respecting upstream MCP session
+state.
+
+There are two distinct session scopes:
+
+- Frontend session: the session between the MCP client and `light-gateway`.
+- Backend session: one upstream MCP server session owned by the gateway for a
+  specific frontend session and backend target.
+
+The frontend session is created during client `initialize`:
+
+1. The client sends `initialize` to `mcp-router.path`.
+2. The gateway returns the MCP capabilities it exposes and a gateway-generated
+   `Mcp-Session-Id`.
+3. The gateway stores session state keyed by that id. The state should include
+   the negotiated protocol version, client info, security principal or relevant
+   auth context, and any backend MCP sessions created for this client session.
+4. Later client requests must include the gateway session id. Unknown or expired
+   session ids should fail before tool execution.
+5. A client `DELETE` request, explicit expiry, or gateway shutdown should close
+   all backend sessions associated with the frontend session.
+
+For a single gateway process, the session store can start in memory. In a
+multi-pod deployment, the store should be external, such as Redis, or ingress
+must provide sticky routing for all requests that carry the same
+`Mcp-Session-Id`.
+
+Backend handling depends on the tool type.
+
+For `apiType: http`, the backend is a normal stateless API:
+
+1. No backend MCP session is created.
+2. The gateway translates `tools/call` arguments into a normal HTTP request.
+3. `GET` tools serialize arguments into the query string; body-capable methods
+   send JSON.
+4. The gateway wraps the HTTP response into an MCP `tools/call` result.
+5. User-specific auth, tenant, correlation, and trace headers come from the
+   frontend session or inbound request and are applied to the outbound HTTP
+   call as normal gateway headers.
+
+For `apiType: mcp`, the backend is a stateful MCP server:
+
+1. The gateway lazily initializes the backend session the first time a frontend
+   session calls a tool for that backend target. If future dynamic tool
+   discovery depends on the backend, this initialization can happen before
+   `tools/list` instead.
+2. The gateway sends `initialize` to the backend MCP endpoint as an MCP client.
+   It should use the client-requested protocol version when supported and pass
+   only the capabilities it needs upstream.
+3. If the backend returns `Mcp-Session-Id`, the gateway stores it in a mapping
+   keyed by the gateway session id and backend target identity.
+4. The gateway sends `notifications/initialized` to the backend when the
+   backend session is established.
+5. For later backend calls, the gateway sends the backend session id to that
+   backend. It must not forward the frontend gateway session id as if it were a
+   backend session id.
+6. The gateway still performs access checks before calling the backend and
+   response filtering after the backend response.
+7. When the frontend session ends, the gateway should terminate each mapped
+   backend MCP session to avoid leaking backend resources.
+
+The backend target identity used in the session map should be stable across
+requests. It should include the resolved route information that distinguishes
+one backend MCP endpoint from another, such as `targetHost` or `serviceId`,
+`envTag`, `protocol`, and tool `path`.
+
+When the router aggregates tools from both MCP servers and normal APIs, the
+client still sees one gateway MCP session and one `tools/list` response. The
+gateway registry decides how each `tools/call` is executed:
+
+| Feature | MCP server backend | Normal API backend |
+| --- | --- | --- |
+| Config type | `apiType: mcp` | `apiType: http` or omitted |
+| Backend session | Yes, mapped from gateway session to backend target | No |
+| Initialization | Gateway initializes backend as an MCP client | No upstream initialization |
+| Message handling | JSON-RPC `tools/call` through backend MCP session | Translate JSON-RPC arguments to HTTP |
+| Backend session header | Send backend `Mcp-Session-Id` only to that backend | Do not send MCP session state |
+| Tear-down | Close backend session on client session end | Nothing backend-specific |
+
+The configured `tools/list` remains the gateway's public contract. A future
+dynamic-discovery mode may call backend MCP `tools/list` and merge those tools
+with configured HTTP tools, but that must still preserve the gateway's policy
+surface and avoid exposing backend tools that are not authorized for the
+product.
 
 ### HTTP Tool Execution
 
@@ -361,10 +454,15 @@ Target resolution:
 For `apiType: mcp`:
 
 1. Resolve the target base URL the same way as HTTP tools.
-2. POST to the configured backend `path`.
-3. Pass through the inbound agent headers to the backend MCP server, with
+2. Ensure a backend MCP session exists for the current gateway session and
+   backend target. If none exists, initialize the backend MCP endpoint and store
+   the returned backend `Mcp-Session-Id`.
+3. POST to the configured backend `path`.
+4. Pass through the inbound agent headers to the backend MCP server, with
    transport-specific headers regenerated for the new outbound request.
-4. Send a backend JSON-RPC request:
+   Replace any frontend gateway `Mcp-Session-Id` with the mapped backend
+   session id for this backend target.
+5. Send a backend JSON-RPC request:
 
 ```json
 {
@@ -378,11 +476,13 @@ For `apiType: mcp`:
 }
 ```
 
-5. If the backend returns `error`, map it to `-32000`.
-6. If the backend returns `result`, return it to the caller.
+6. If the backend returns `error`, map it to `-32000`.
+7. If the backend returns `result`, return it to the caller.
+8. On frontend session termination or expiry, close the backend MCP session.
 
 This preserves the Java `McpProxyTool` behavior while using Rust's typed
-JSON-RPC models where possible.
+JSON-RPC models where possible and adds the MCP session mapping required by
+stateful backend MCP servers.
 
 ## Configuration Loading
 
@@ -534,7 +634,9 @@ configuration when it calls a specific backend target, for example a configured
 header. We do not need that feature. The required behavior is header
 pass-through: backend tool calls receive the headers that came from the agent,
 while the HTTP client regenerates only the transport-specific headers required
-for a valid outbound request.
+for a valid outbound request. MCP session headers are not normal pass-through
+headers. The gateway owns the frontend `Mcp-Session-Id` and maps it to backend
+session ids when an upstream MCP server is involved.
 
 ## Relationship To Existing Runtime MCP
 
@@ -567,7 +669,8 @@ gateway route.
 - Implement JSON-RPC `initialize`, `notifications/initialized`, `tools/list`,
   and `tools/call`.
 - Implement direct `targetHost` HTTP tools.
-- Pass through agent request headers to direct HTTP and backend MCP tool calls.
+- Pass through agent request headers to direct HTTP and backend MCP tool calls,
+  except MCP session headers that the gateway must map separately.
 - Wire the existing `mcp` handler id in `light-gateway`.
 - Register module status and config with the module registry.
 - Add parser and handler tests.
@@ -589,8 +692,8 @@ Status: implemented.
 - Add streamed `text/event-stream` responses from `POST /mcp` for long-running
   tool calls or server-to-client messages related to the originating request.
 - Add optional `GET /mcp` server-to-client streams on the same endpoint.
-- Track sessions only if a real client needs session affinity. Otherwise keep
-  the router stateless and return `405` for standalone GET streams.
+- Track frontend sessions when `Mcp-Session-Id` is issued. Return `405` for
+  standalone GET streams until server-initiated messages are implemented.
 - Add tests for content negotiation, `202 Accepted` notifications, streamed
   POST responses, and optional GET behavior.
 
@@ -608,6 +711,25 @@ Status: implemented.
 Status: implemented for access control, response filtering, and request
 masking. Tokenization is deferred until the portal-service tokenization client
 is designed.
+
+### Phase 5: Stateful MCP Backend Sessions
+
+- Add a gateway session store keyed by frontend `Mcp-Session-Id`.
+- Validate later client requests against the gateway session.
+- For `apiType: mcp`, maintain backend session mappings keyed by gateway
+  session id and backend target identity.
+- Lazily initialize backend MCP sessions by sending backend `initialize`,
+  capturing backend `Mcp-Session-Id`, and sending
+  `notifications/initialized`.
+- Replace the frontend session id with the mapped backend session id on
+  upstream MCP calls.
+- Terminate mapped backend MCP sessions when the frontend session is deleted,
+  expires, or the gateway shuts down.
+- Add tests for frontend session validation, backend session creation, backend
+  session reuse, backend session termination, and multi-backend isolation.
+
+Status: design. Required for robust `apiType: mcp` backends that enforce MCP
+session state.
 
 ## Testing Strategy
 
