@@ -329,9 +329,7 @@ enableRelaxedKeyValidation: ${security-msal.enableRelaxedKeyValidation:false}
 issuer: ${security-msal.issuer:}
 audience: ${security-msal.audience:}
 jwt:
-  certificate: ${security-msal.jwt.certificate:}
   clockSkewInSeconds: ${security-msal.jwt.clockSkewInSeconds:60}
-  keyResolver: ${security-msal.jwt.keyResolver:}
 ```
 
 Recommended settings:
@@ -340,8 +338,7 @@ Recommended settings:
 - Set `audience` to the SPA client id or the expected Azure access-token
   audience.
 - Keep `ignoreJwtExpiry: false` in production.
-- Use the configured Microsoft JWK or certificate resolver supported by the
-  gateway security runtime.
+- Use the configured Microsoft JWK supported by the gateway security runtime.
 
 `security.yml` remains the normal light-oauth verifier. It validates the
 light-oauth access token stored in the `accessToken` cookie and provides the

@@ -378,7 +378,6 @@ impl PortalCommandClient {
         token: String,
         ca_cert_pem: Option<&[u8]>,
         verify_hostname: bool,
-        accept_invalid_certs: bool,
         timeout_ms: u64,
     ) -> Result<Self> {
         let mut builder = reqwest::Client::builder()
@@ -396,12 +395,6 @@ impl PortalCommandClient {
 
         if !verify_hostname {
             builder = builder.danger_accept_invalid_hostnames(true);
-        }
-        if accept_invalid_certs {
-            warn!(
-                "TLS certificate validation is disabled for the portal command client; this should only be enabled in development environments"
-            );
-            builder = builder.danger_accept_invalid_certs(true);
         }
 
         Ok(Self {
@@ -453,7 +446,6 @@ impl PortalQueryClient {
         token: String,
         ca_cert_pem: Option<&[u8]>,
         verify_hostname: bool,
-        accept_invalid_certs: bool,
         timeout_ms: u64,
     ) -> Result<Self> {
         let mut builder = reqwest::Client::builder()
@@ -476,12 +468,6 @@ impl PortalQueryClient {
 
         if !verify_hostname {
             builder = builder.danger_accept_invalid_hostnames(true);
-        }
-        if accept_invalid_certs {
-            warn!(
-                "TLS certificate validation is disabled for the portal query client; this should only be enabled in development environments"
-            );
-            builder = builder.danger_accept_invalid_certs(true);
         }
 
         Ok(Self {
@@ -2171,11 +2157,6 @@ async fn build_agent_state(
         .as_ref()
         .map(|c| c.tls.verify_hostname)
         .unwrap_or(true);
-    let accept_invalid_certs: bool = runtime_config
-        .client
-        .as_ref()
-        .map(|c| c.tls.accept_invalid_certs)
-        .unwrap_or(false);
     if !verify_hostname {
         warn!(
             "TLS hostname verification is disabled for the MCP gateway and portal query clients; this weakens server identity validation"
@@ -2186,7 +2167,6 @@ async fn build_agent_state(
         &mcp_gateway_url,
         ca_cert.as_deref(),
         verify_hostname,
-        accept_invalid_certs,
         mcp_config.timeout_ms,
     )
     .map_err(|e| RuntimeError::Config(format!("failed to build MCP gateway client: {e}")))?;
@@ -2219,7 +2199,6 @@ async fn build_agent_state(
                 portal_token.clone(),
                 ca_cert.as_deref(),
                 verify_hostname,
-                accept_invalid_certs,
                 mcp_config.timeout_ms,
             )
             .map_err(|e| {
@@ -2240,7 +2219,6 @@ async fn build_agent_state(
             portal_token.clone(),
             ca_cert.as_deref(),
             verify_hostname,
-            accept_invalid_certs,
             mcp_config.timeout_ms,
         )
         .map_err(|e| RuntimeError::Config(format!("failed to build portal query client: {e}")))?,

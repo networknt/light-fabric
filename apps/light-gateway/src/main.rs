@@ -1332,6 +1332,11 @@ impl ReloadableModule for SecurityReloader {
             &["security", "jwt", "unified-security", "unified"],
         );
         let config = load_security_runtime(&ctx.runtime_config, active)?;
+        if let Some(ref runtime) = config {
+            if let Err(error) = runtime.bootstrap().await {
+                tracing::warn!("Failed to bootstrap JWT keys on security config reload: {} (status: {}, code: {})", error.message, error.status, error.code);
+            }
+        }
         let stateless_auth = load_stateless_auth_runtime(
             &ctx.runtime_config,
             handler_active(
@@ -1343,6 +1348,11 @@ impl ReloadableModule for SecurityReloader {
             &ctx.runtime_config,
             active_handlers.is_handler_active("msal-exchange"),
         )?;
+        if let Some(ref msal) = msal_exchange {
+            if let Err(error) = msal.bootstrap().await {
+                tracing::warn!("Failed to bootstrap MSAL keys on security config reload: {} (status: {}, code: {})", error.message, error.status, error.code);
+            }
+        }
         self.security_runtime.store(config);
         self.stateless_auth.store(stateless_auth);
         self.msal_exchange.store(msal_exchange);
@@ -1440,6 +1450,11 @@ impl ReloadableModule for MsalExchangeReloader {
             .load()
             .is_handler_active("msal-exchange");
         let runtime = load_msal_exchange_runtime(&ctx.runtime_config, active)?;
+        if let Some(ref msal) = runtime {
+            if let Err(error) = msal.bootstrap().await {
+                tracing::warn!("Failed to bootstrap MSAL keys on msal-exchange config reload: {} (status: {}, code: {})", error.message, error.status, error.code);
+            }
+        }
         self.msal_exchange.store(runtime);
         Ok(ReloadOutcome::success("msal-exchange.yml reloaded"))
     }
@@ -1537,6 +1552,11 @@ impl ReloadableModule for TokenReloader {
             &ctx.runtime_config,
             active_handlers.is_handler_active("msal-exchange"),
         )?;
+        if let Some(ref msal) = msal_exchange {
+            if let Err(error) = msal.bootstrap().await {
+                tracing::warn!("Failed to bootstrap MSAL keys on token config reload: {} (status: {}, code: {})", error.message, error.status, error.code);
+            }
+        }
         self.token_runtime.store(runtime);
         self.stateless_auth.store(stateless_auth);
         self.msal_exchange.store(msal_exchange);

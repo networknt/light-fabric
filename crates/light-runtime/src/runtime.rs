@@ -1915,7 +1915,6 @@ shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
             r#"
 tls:
   verifyHostname: false
-  acceptInvalidCerts: true
 "#,
         )
         .expect("write client config");
@@ -1929,7 +1928,6 @@ tls:
 
         let tls = client_config.map(|c| c.tls).expect("client tls");
         assert!(!tls.verify_hostname);
-        assert!(tls.accept_invalid_certs);
     }
 
     #[test]
@@ -1969,7 +1967,6 @@ tls:
 
         assert_eq!(tls.ca_cert_path, Some(PathBuf::from("config/ca.pem")));
         assert!(!tls.verify_hostname);
-        assert!(!tls.accept_invalid_certs);
     }
 
     #[test]

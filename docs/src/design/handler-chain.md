@@ -674,14 +674,12 @@ ignoreJwtExpiry: ${security.ignoreJwtExpiry:false}
 enableH2c: ${security.enableH2c:false}
 enableMockJwt: ${security.enableMockJwt:false}
 jwt:
-  certificate: ${security.jwt.certificate:{}}
   clockSkewInSeconds: ${security.jwt.clockSkewInSeconds:60}
-  keyResolver: ${security.jwt.keyResolver:}
 skipPathPrefixes: ${security.skipPathPrefixes:[]}
 passThroughClaims: ${security.passThroughClaims:{}}
 ```
 
-The Rust handler verifies Bearer JWTs with configured PEM certificates, honors
+The Rust handler verifies Bearer JWTs with configured JWKs, honors
 `kid` when present, supports RSA and EC algorithms handled by the Rust JWT
 library, applies clock skew and optional expiry bypass, caches decoded claims,
 and forwards configured pass-through claims as request headers. Dynamic JWK key

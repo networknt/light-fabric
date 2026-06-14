@@ -4,7 +4,7 @@ use crate::protocol::{
 use anyhow::{Context, Result, anyhow, bail};
 use reqwest::Client;
 use serde_json::json;
-use tracing::{debug, warn};
+use tracing::debug;
 
 pub struct McpGatewayClient {
     url: String,
@@ -27,15 +27,14 @@ impl McpGatewayClient {
         verify_hostname: bool,
         timeout_ms: u64,
     ) -> Result<Self> {
-        Self::with_tls_options(url, ca_cert_pem, verify_hostname, false, timeout_ms)
+        Self::with_tls_options(url, ca_cert_pem, verify_hostname, timeout_ms)
     }
 
-    /// Create a client with explicit TLS options, including development-only certificate bypass.
+    /// Create a client with explicit TLS options.
     pub fn with_tls_options(
         url: &str,
         ca_cert_pem: Option<&[u8]>,
         verify_hostname: bool,
-        accept_invalid_certs: bool,
         timeout_ms: u64,
     ) -> Result<Self> {
         let mut builder = Client::builder();
@@ -59,12 +58,6 @@ impl McpGatewayClient {
 
         if !verify_hostname {
             builder = builder.danger_accept_invalid_hostnames(true);
-        }
-        if accept_invalid_certs {
-            warn!(
-                "TLS certificate validation is disabled for the MCP gateway client; this should only be enabled in development environments"
-            );
-            builder = builder.danger_accept_invalid_certs(true);
         }
 
         let client = builder.build().context("Failed to build reqwest Client")?;
@@ -191,7 +184,6 @@ mod tests {
             "http://127.0.0.1",
             Some(&bundle),
             true,
-            false,
             1000,
         );
 

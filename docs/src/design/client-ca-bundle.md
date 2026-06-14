@@ -79,8 +79,6 @@ on which client builds the TLS connector.
   encoded bundle saved with a `.crt` extension.
 - Do not add a separate `caBundlePath` setting. `caCertPath` should accept both
   single-cert and bundle files.
-- Do not make `acceptInvalidCerts` a workaround for missing trust material.
-  Development-only certificate bypass remains explicit.
 - Do not hot-reload CA bundle files in this phase. Clients read trust material
   when they are constructed; certificate rotation requires a process restart or
   an explicit client rebuild through a later reload feature.
@@ -94,7 +92,6 @@ The canonical Rust `client.yml` remains:
 ```yaml
 tls:
   verifyHostname: ${client.verifyHostname:true}
-  acceptInvalidCerts: ${client.acceptInvalidCerts:false}
   caCertPath: ${client.caCertPath:}
 ```
 

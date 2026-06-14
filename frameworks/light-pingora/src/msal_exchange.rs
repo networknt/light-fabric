@@ -125,6 +125,10 @@ impl MsalExchangeRuntime {
         }
     }
 
+    pub async fn bootstrap(&self) -> Result<(), crate::HandlerRejection> {
+        self.msal_security.bootstrap().await
+    }
+
     pub fn config(&self) -> &MsalExchangeConfig {
         &self.config
     }

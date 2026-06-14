@@ -20,7 +20,6 @@ use pingora::prelude::Session;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
@@ -158,20 +157,14 @@ impl Default for SecurityConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SecurityJwtConfig {
-    #[serde(default, deserialize_with = "deserialize_string_map")]
-    pub certificate: BTreeMap<String, String>,
     #[serde(default = "default_clock_skew_seconds")]
     pub clock_skew_in_seconds: u64,
-    #[serde(default)]
-    pub key_resolver: String,
 }
 
 impl Default for SecurityJwtConfig {
     fn default() -> Self {
         Self {
-            certificate: BTreeMap::new(),
             clock_skew_in_seconds: default_clock_skew_seconds(),
-            key_resolver: String::new(),
         }
     }
 }
@@ -179,7 +172,6 @@ impl Default for SecurityJwtConfig {
 #[derive(Clone)]
 pub struct SecurityRuntime {
     pub config: SecurityConfig,
-    certificates: Arc<BTreeMap<String, Vec<u8>>>,
     jwk_source: Option<Arc<JwkSource>>,
     jwks: Arc<RwLock<BTreeMap<String, Jwk>>>,
     cache: Arc<Mutex<BTreeMap<String, CachedPrincipal>>>,
@@ -187,31 +179,20 @@ pub struct SecurityRuntime {
 
 impl SecurityRuntime {
     fn new(config: SecurityConfig, runtime_config: &RuntimeConfig) -> Result<Self, RuntimeError> {
-        let mut certificates = BTreeMap::new();
-        if !config.bootstrap_from_key_service {
-            for (kid, file_name) in &config.jwt.certificate {
-                let file_name = file_name.trim();
-                if file_name.is_empty() {
-                    continue;
-                }
-                let path = resolve_config_file(runtime_config, file_name);
-                let content = std::fs::read(&path).map_err(|error| {
-                    RuntimeError::Unsupported(format!(
-                        "failed to read JWT certificate `{}`: {error}",
-                        path.display()
-                    ))
-                })?;
-                certificates.insert(kid.clone(), content);
-            }
-        }
         let jwk_source = load_jwk_source(runtime_config)?;
         Ok(Self {
             config,
-            certificates: Arc::new(certificates),
             jwk_source,
             jwks: Arc::new(RwLock::new(BTreeMap::new())),
             cache: Arc::new(Mutex::new(BTreeMap::new())),
         })
+    }
+
+    pub async fn bootstrap(&self) -> Result<(), HandlerRejection> {
+        if self.config.bootstrap_from_key_service {
+            refresh_jwks_for_service(self, None).await?;
+        }
+        Ok(())
     }
 }
 
@@ -319,10 +300,22 @@ async fn verify_jwt_token_for_service(
         return Ok(principal);
     }
 
-    let header =
-        decode_header(token).map_err(|_| HandlerRejection::unauthorized("invalid JWT header"))?;
-    let key =
-        decoding_key_for_token(runtime, header.kid.as_deref(), header.alg, service_id).await?;
+    let header = match decode_header(token) {
+        Ok(header) => header,
+        Err(error) => {
+            tracing::debug!("JWT header decoding failed: {error}");
+            return Err(HandlerRejection::unauthorized("invalid JWT header"));
+        }
+    };
+    let key = match decoding_key_for_token(runtime, header.kid.as_deref(), header.alg, service_id)
+        .await
+    {
+        Ok(key) => key,
+        Err(error) => {
+            tracing::debug!("JWT key resolution failed: {}", error.message);
+            return Err(error);
+        }
+    };
     let validation = validation_for_mode(&runtime.config, header.alg, expiry_mode);
     let decoded = match decode::<JsonValue>(token, &key, &validation) {
         Ok(decoded) => decoded,
@@ -341,8 +334,17 @@ async fn verify_jwt_token_for_service(
             return Err(HandlerRejection::unauthorized("JWT validation failed"));
         }
     };
-    validate_issuer_and_audience(&runtime.config, &decoded.claims)?;
-    validate_client_key_audience(runtime, service_id, &decoded.claims)?;
+    if let Err(error) = validate_issuer_and_audience(&runtime.config, &decoded.claims) {
+        tracing::debug!("JWT issuer/audience validation failed: {}", error.message);
+        return Err(error);
+    }
+    if let Err(error) = validate_client_key_audience(runtime, service_id, &decoded.claims) {
+        tracing::debug!(
+            "JWT client key audience validation failed: {}",
+            error.message
+        );
+        return Err(error);
+    }
     let principal = principal_from_claims(decoded.claims);
     if service_id.is_none() && matches!(expiry_mode, JwtExpiryMode::Enforce) {
         cache_principal(runtime, token.to_string(), &principal);
@@ -490,56 +492,16 @@ fn validate_client_key_audience(
     Ok(())
 }
 
-fn certificate_for_token(runtime: &SecurityRuntime, kid: Option<&str>) -> Option<Vec<u8>> {
-    if runtime.config.bootstrap_from_key_service {
-        return None;
-    }
-    if let Some(kid) = kid {
-        if let Some(certificate) = runtime.certificates.get(kid) {
-            return Some(certificate.clone());
-        }
-    }
-    if runtime.certificates.len() == 1 || runtime.config.enable_relaxed_key_validation {
-        return runtime.certificates.values().next().cloned();
-    }
-    None
-}
-
 async fn decoding_key_for_token(
     runtime: &SecurityRuntime,
     kid: Option<&str>,
-    algorithm: Algorithm,
+    _algorithm: Algorithm,
     service_id: Option<&str>,
 ) -> Result<DecodingKey, HandlerRejection> {
-    if runtime.config.bootstrap_from_key_service {
-        if let Some(key) = decoding_key_from_jwk(runtime, kid, service_id).await? {
-            return Ok(key);
-        }
-    }
-    if let Some(pem) = certificate_for_token(runtime, kid) {
-        return decoding_key_for_alg(pem.as_slice(), algorithm)
-            .map_err(|_| HandlerRejection::unauthorized("JWT key cannot verify token algorithm"));
-    }
     if let Some(key) = decoding_key_from_jwk(runtime, kid, service_id).await? {
         return Ok(key);
     }
     Err(HandlerRejection::unauthorized("JWT key is not configured"))
-}
-
-fn decoding_key_for_alg(
-    pem: &[u8],
-    algorithm: Algorithm,
-) -> Result<DecodingKey, jsonwebtoken::errors::Error> {
-    match algorithm {
-        Algorithm::RS256
-        | Algorithm::RS384
-        | Algorithm::RS512
-        | Algorithm::PS256
-        | Algorithm::PS384
-        | Algorithm::PS512 => DecodingKey::from_rsa_pem(pem),
-        Algorithm::ES256 | Algorithm::ES384 => DecodingKey::from_ec_pem(pem),
-        _ => DecodingKey::from_rsa_pem(pem),
-    }
 }
 
 async fn decoding_key_from_jwk(
@@ -992,18 +954,6 @@ fn mock_principal() -> AuthPrincipal {
     }
 }
 
-fn resolve_config_file(runtime_config: &RuntimeConfig, file_name: &str) -> PathBuf {
-    let path = Path::new(file_name);
-    if path.is_absolute() {
-        return path.to_path_buf();
-    }
-    let external = runtime_config.external_config_dir.join(path);
-    if external.exists() {
-        return external;
-    }
-    runtime_config.config_dir.join(path)
-}
-
 fn now_epoch_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1040,15 +990,12 @@ mod tests {
     fn security_config_accepts_java_style_maps_and_lists() {
         let config: SecurityConfig = serde_yaml::from_str(
             r#"
-jwt:
-  certificate: '100=primary.crt&101=secondary.crt'
 skipPathPrefixes: /health,/info
 passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
 "#,
         )
         .expect("parse security config");
 
-        assert_eq!(config.jwt.certificate["100"], "primary.crt");
         assert_eq!(config.skip_path_prefixes, ["/health", "/info"]);
         assert_eq!(config.pass_through_claims["client_id"], "x-client-id");
     }
@@ -1126,7 +1073,6 @@ passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
     fn test_runtime_with_client(client: ClientTokenConfig) -> SecurityRuntime {
         SecurityRuntime {
             config: SecurityConfig::default(),
-            certificates: Arc::new(BTreeMap::new()),
             jwk_source: Some(Arc::new(test_jwk_source(client))),
             jwks: Arc::new(RwLock::new(BTreeMap::new())),
             cache: Arc::new(Mutex::new(BTreeMap::new())),

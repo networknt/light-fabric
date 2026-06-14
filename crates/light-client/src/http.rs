@@ -346,12 +346,7 @@ fn configure_reqwest_tls(
     if !tls.verify_hostname {
         builder = builder.danger_accept_invalid_hostnames(true);
     }
-    if tls.accept_invalid_certs {
-        tracing::warn!(
-            "TLS certificate validation is disabled for the HTTP client; this should only be enabled in development environments"
-        );
-        builder = builder.danger_accept_invalid_certs(true);
-    }
+
 
     if let Some(tls_version) = tls.tls_version {
         builder = builder.min_tls_version(match tls_version {

@@ -4,6 +4,4 @@ enableRelaxedKeyValidation: ${security-msal.enableRelaxedKeyValidation:false}
 issuer: ${security-msal.issuer:}
 audience: ${security-msal.audience:}
 jwt:
-  certificate: ${security-msal.jwt.certificate:}
   clockSkewInSeconds: ${security-msal.jwt.clockSkewInSeconds:60}
-  keyResolver: ${security-msal.jwt.keyResolver:}
