@@ -558,3 +558,157 @@ async fn test_internal_admin_cel_profile_is_disabled_by_default() {
         "unexpected error: {error}"
     );
 }
+
+#[tokio::test]
+async fn test_strict_cel_profile_list_matching() {
+    let registry = ActionRegistry::new();
+    let engine = RuleEngine::new(Arc::new(registry));
+
+    let rule = Rule {
+        rule_id: "rule_cel_strict_list_01".into(),
+        rule_name: "Strict CEL list membership".into(),
+        rule_type: "access-control".into(),
+        common: "Y".into(),
+        host_id: None,
+        rule_desc: None,
+        version: None,
+        author: None,
+        updated_at: None,
+        condition_language: Some("cel".into()),
+        condition_security_profile: Some("strict".into()),
+        expression: Some(
+            "'portal.w' in auditInfo.subject_claims.ClaimsMap.scp".into(),
+        ),
+        conditions: None,
+        actions: None,
+    };
+
+    let mut context = json!({
+        "auditInfo": {
+            "subject_claims": {
+                "ClaimsMap": {
+                    "scp": ["portal.r", "portal.w"]
+                }
+            }
+        }
+    });
+
+    assert!(engine.execute_rule(&rule, &mut context).await.unwrap());
+}
+
+#[tokio::test]
+async fn test_strict_cel_profile_missing_scp() {
+    let registry = ActionRegistry::new();
+    let engine = RuleEngine::new(Arc::new(registry));
+
+    let rule = Rule {
+        rule_id: "rule_cel_strict_list_02".into(),
+        rule_name: "Strict CEL list membership missing".into(),
+        rule_type: "access-control".into(),
+        common: "Y".into(),
+        host_id: None,
+        rule_desc: None,
+        version: None,
+        author: None,
+        updated_at: None,
+        condition_language: Some("cel".into()),
+        condition_security_profile: Some("strict".into()),
+        expression: Some(
+            "'scp' in auditInfo.subject_claims.ClaimsMap && 'portal.w' in auditInfo.subject_claims.ClaimsMap.scp".into(),
+        ),
+        conditions: None,
+        actions: None,
+    };
+
+    let mut context = json!({
+        "auditInfo": {
+            "subject_claims": {
+                "ClaimsMap": {
+                    // scp is missing
+                }
+            }
+        }
+    });
+
+    let res = engine.execute_rule(&rule, &mut context).await.unwrap();
+    assert!(!res, "Expected rule to evaluate to false when scp is missing");
+}
+
+#[tokio::test]
+async fn test_strict_cel_profile_endpoint_permission() {
+    let registry = ActionRegistry::new();
+    let engine = RuleEngine::new(Arc::new(registry));
+
+    let rule = Rule {
+        rule_id: "rule_cel_strict_list_03".into(),
+        rule_name: "Strict CEL dynamic permission match".into(),
+        rule_type: "access-control".into(),
+        common: "Y".into(),
+        host_id: None,
+        rule_desc: None,
+        version: None,
+        author: None,
+        updated_at: None,
+        condition_language: Some("cel".into()),
+        condition_security_profile: Some("strict".into()),
+        expression: Some(
+            "'scp' in auditInfo.subject_claims.ClaimsMap && permission.groups in auditInfo.subject_claims.ClaimsMap.scp".into(),
+        ),
+        conditions: None,
+        actions: None,
+    };
+
+    let mut context = json!({
+        "auditInfo": {
+            "subject_claims": {
+                "ClaimsMap": {
+                    "scp": ["portal.r", "portal.w"]
+                }
+            }
+        },
+        "permission": {
+            "groups": "portal.w"
+        }
+    });
+
+    assert!(engine.execute_rule(&rule, &mut context).await.unwrap());
+}
+
+#[tokio::test]
+async fn test_strict_cel_profile_missing_permission_variable() {
+    let registry = ActionRegistry::new();
+    let engine = RuleEngine::new(Arc::new(registry));
+
+    let rule = Rule {
+        rule_id: "rule_cel_strict_list_04".into(),
+        rule_name: "Strict CEL missing permission var".into(),
+        rule_type: "access-control".into(),
+        common: "Y".into(),
+        host_id: None,
+        rule_desc: None,
+        version: None,
+        author: None,
+        updated_at: None,
+        condition_language: Some("cel".into()),
+        condition_security_profile: Some("strict".into()),
+        expression: Some(
+            "'scp' in auditInfo.subject_claims.ClaimsMap && 'groups' in permission && permission.groups in auditInfo.subject_claims.ClaimsMap.scp".into(),
+        ),
+        conditions: None,
+        actions: None,
+    };
+
+    let mut context = json!({
+        "auditInfo": {
+            "subject_claims": {
+                "ClaimsMap": {
+                    "scp": ["portal.r", "portal.w"]
+                }
+            }
+        }
+        // permission is missing
+    });
+
+    let res = engine.execute_rule(&rule, &mut context).await.unwrap();
+    assert!(!res);
+}

@@ -551,6 +551,11 @@ fn build_cel_context(
                 }
             }
         }
+        if profile == CelSecurityProfile::Strict && !map.contains_key("permission") {
+            cel_context.add_variable("permission", JsonValue::Object(serde_json::Map::new()))?;
+        }
+    } else if profile == CelSecurityProfile::Strict {
+        cel_context.add_variable("permission", JsonValue::Object(serde_json::Map::new()))?;
     }
     if profile != CelSecurityProfile::Strict {
         cel_context.add_variable("context", context.clone())?;

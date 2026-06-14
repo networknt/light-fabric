@@ -449,6 +449,11 @@ fn build_rule_context(
             JsonValue::String(correlation_id.to_string()),
         );
     }
+    let permission_val = match permission {
+        Some(perm) => JsonValue::Object(perm.clone()),
+        None => JsonValue::Object(JsonMap::new()),
+    };
+    context.insert("permission".to_string(), permission_val);
     if let Some(permission) = permission {
         for (key, value) in permission {
             context.insert(key.clone(), value.clone());
@@ -1206,6 +1211,96 @@ allow-account-role:
         assert_eq!(
             result["content"][0]["text"],
             JsonValue::String("[{\"status\":\"O\"}]".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pingora_access_control_strict_cel_dynamic_permission() {
+        let mut values = HashMap::new();
+        values.insert("access-control.enabled".to_string(), YamlValue::Bool(true));
+        values.insert(
+            "access-control.accessRuleLogic".to_string(),
+            YamlValue::String("any".to_string()),
+        );
+        values.insert(
+            "rule.ruleBodies".to_string(),
+            serde_yaml::from_str(
+                r#"
+allow-scp-claim-group-access-control.lightapi.net:
+  common: Y
+  ruleId: allow-scp-claim-group-access-control.lightapi.net
+  ruleName: Group-based access control to match endpoint group with jwt scp claim
+  ruleType: req-acc
+  expression: "'scp' in auditInfo.subject_claims.ClaimsMap && 'groups' in permission && permission.groups in auditInfo.subject_claims.ClaimsMap.scp"
+  conditionLanguage: cel
+  conditionSecurityProfile: strict
+"#,
+            )
+            .expect("rule bodies"),
+        );
+        values.insert(
+            "rule.endpointRules".to_string(),
+            serde_yaml::from_str(
+                r#"
+/v1/accounts@get:
+  req-acc:
+    - allow-scp-claim-group-access-control.lightapi.net
+  permission:
+    groups: portal.w
+"#,
+            )
+            .expect("endpoint rules"),
+        );
+
+        let (_config_dir, runtime_config) = runtime_config_with_values(values);
+        let policy = load_access_control_runtime(&runtime_config, true)
+            .expect("load policy")
+            .expect("policy");
+
+        let auth_allowed = AuthPrincipal {
+            role: Some("admin".to_string()),
+            claims: json!({
+                "scp": ["portal.r", "portal.w"]
+            }),
+            ..AuthPrincipal::default()
+        };
+
+        let auth_denied = AuthPrincipal {
+            role: Some("admin".to_string()),
+            claims: json!({
+                "scp": ["portal.r"]
+            }),
+            ..AuthPrincipal::default()
+        };
+
+        assert_eq!(
+            policy
+                .authorize_tool(
+                    "getAccounts",
+                    "/v1/accounts@get",
+                    &[],
+                    Some(&auth_allowed),
+                    &json!({}),
+                    None,
+                )
+                .await,
+            AccessDecision::Allowed
+        );
+
+        assert_eq!(
+            policy
+                .authorize_tool(
+                    "getAccounts",
+                    "/v1/accounts@get",
+                    &[],
+                    Some(&auth_denied),
+                    &json!({}),
+                    None,
+                )
+                .await,
+            AccessDecision::Denied(
+                "Access denied by access control rule for /v1/accounts@get".to_string()
+            )
         );
     }
 }

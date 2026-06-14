@@ -136,14 +136,19 @@ impl MultiThreadRuleExecutor {
                     .collect();
 
                 // Apply permissions if present
-                if let Some(perm) = map.get("permission") {
-                    if let Value::Object(perm_map) = perm {
-                        if let Value::Object(input_map) = input {
-                            for (k, v) in perm_map {
-                                input_map.insert(k.clone(), v.clone());
-                            }
+                let perm_val = match map.get("permission") {
+                    Some(perm) => perm.clone(),
+                    None => Value::Object(serde_json::Map::new()),
+                };
+                if let Value::Object(perm_map) = &perm_val {
+                    if let Value::Object(input_map) = input {
+                        for (k, v) in perm_map {
+                            input_map.insert(k.clone(), v.clone());
                         }
                     }
+                }
+                if let Value::Object(input_map) = input {
+                    input_map.insert("permission".to_string(), perm_val);
                 }
 
                 let logic = if rule_type == "req-tra" || rule_type == "res-tra" {
