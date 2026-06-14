@@ -74,6 +74,11 @@ impl Default for McpRouterConfig {
 #[serde(rename_all = "camelCase")]
 pub struct McpToolConfig {
     pub name: String,
+    /// The real tool name understood by the backend MCP server (operationId).
+    /// When present this is used in `tools/call` requests forwarded to the backend,
+    /// while `name` is the gateway-facing identifier exposed to agents.
+    #[serde(default, alias = "endpointName")]
+    pub endpoint_name: Option<String>,
     #[serde(default)]
     pub description: String,
     #[serde(default)]
@@ -113,6 +118,8 @@ impl<'de> Deserialize<'de> for McpToolConfig {
         #[serde(rename_all = "camelCase")]
         struct RawMcpToolConfig {
             name: String,
+            #[serde(default, alias = "endpointName")]
+            endpoint_name: Option<String>,
             #[serde(default)]
             description: String,
             #[serde(default)]
@@ -149,6 +156,7 @@ impl<'de> Deserialize<'de> for McpToolConfig {
         let input_schema_configured = raw.input_schema.is_some();
         Ok(Self {
             name: raw.name,
+            endpoint_name: raw.endpoint_name,
             description: raw.description,
             protocol: raw.protocol,
             service_id: raw.service_id,
@@ -1194,12 +1202,19 @@ impl McpRouterRuntime {
         let backend_session = self
             .ensure_backend_session(frontend_session_id, &url, agent_headers)
             .await?;
+        // Use `endpoint_name` (the raw operationId registered on the backend MCP server) when
+        // available, falling back to `name` for configs that predate this field.
+        let backend_tool_name = tool
+            .endpoint_name
+            .as_deref()
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or(tool.name.as_str());
         let request = json!({
             "jsonrpc": "2.0",
             "id": uuid::Uuid::new_v4().to_string(),
             "method": "tools/call",
             "params": {
-                "name": tool.name,
+                "name": backend_tool_name,
                 "arguments": arguments
             }
         });
@@ -2975,6 +2990,7 @@ tools:
             McpRouterConfig {
                 tools: vec![McpToolConfig {
                     name: "weather".to_string(),
+                    endpoint_name: None,
                     description: "Get weather".to_string(),
                     protocol: Some("http".to_string()),
                     service_id: Some("com.networknt.weather-1.0.0".to_string()),
@@ -3031,6 +3047,7 @@ tools:
             McpRouterConfig {
                 tools: vec![McpToolConfig {
                     name: "weather".to_string(),
+                    endpoint_name: None,
                     description: "Get weather".to_string(),
                     protocol: Some("http".to_string()),
                     service_id: Some("com.networknt.weather-1.0.0".to_string()),
@@ -3086,6 +3103,7 @@ tools:
             McpRouterConfig {
                 tools: vec![McpToolConfig {
                     name: "get_sh_vers".to_string(),
+                    endpoint_name: None,
                     description: "Search API versions".to_string(),
                     protocol: None,
                     service_id: Some(service_id.to_string()),
@@ -3163,6 +3181,7 @@ tools:
         let runtime = McpRouterRuntime::new(McpRouterConfig {
             tools: vec![McpToolConfig {
                 name: "weather".to_string(),
+                endpoint_name: None,
                 description: "Get weather".to_string(),
                 protocol: None,
                 service_id: None,
@@ -3235,6 +3254,77 @@ tools:
         assert_eq!(backend_call["params"]["arguments"]["city"], "Ottawa");
     }
 
+    /// Regression test: when `endpoint_name` differs from `name`, the gateway-facing `name`
+    /// (e.g. `local_mcp_echo`) is used for tool lookup, but the backend `tools/call` must
+    /// carry `endpoint_name` (e.g. `echo`) so the real MCP server can find the tool.
+    #[tokio::test]
+    async fn mcp_proxy_tool_uses_endpoint_name_for_backend_tools_call() {
+        let backend_result = json!({
+            "jsonrpc": "2.0",
+            "id": "backend",
+            "result": {
+                "content": [{"type": "text", "text": "hello"}]
+            }
+        });
+        let (base, received) = spawn_http_sequence_server(vec![
+            backend_initialize_response("backend-session"),
+            http_empty_response(202),
+            http_json_response(backend_result),
+        ])
+        .await;
+        // Gateway-facing name is the concatenated label; endpointName is the real operationId.
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![McpToolConfig {
+                name: "local_mcp_echo".to_string(),
+                endpoint_name: Some("echo".to_string()),
+                description: "Echoes back the input".to_string(),
+                protocol: None,
+                service_id: None,
+                env_tag: None,
+                target_host: Some(base),
+                path: "/mcp".to_string(),
+                method: McpHttpMethod::Post,
+                endpoint: None,
+                api_type: McpToolType::Mcp,
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {"message": {"type": "string"}},
+                    "required": ["message"]
+                }),
+                input_schema_configured: true,
+                tool_metadata: default_object(),
+            }],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        // The agent calls the tool by its gateway-facing name.
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"local_mcp_echo","arguments":{"message":"hi"}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["result"]["content"][0]["text"], "hello");
+
+        let requests = received.await.expect("server requests");
+        assert_eq!(requests.len(), 3);
+        assert_eq!(request_json_body(&requests[0])["method"], "initialize");
+        assert_eq!(request_json_body(&requests[1])["method"], "notifications/initialized");
+        let backend_call = request_json_body(&requests[2]);
+        assert_eq!(backend_call["method"], "tools/call");
+        // Must use endpointName ("echo"), NOT the gateway-facing name ("local_mcp_echo").
+        assert_eq!(backend_call["params"]["name"], "echo");
+        assert_eq!(backend_call["params"]["arguments"]["message"], "hi");
+    }
+
     #[tokio::test]
     async fn mcp_proxy_call_with_input_schema_posts_backend_tools_call() {
         let backend_result = json!({
@@ -3258,6 +3348,7 @@ tools:
         let runtime = McpRouterRuntime::new(McpRouterConfig {
             tools: vec![McpToolConfig {
                 name: "weather".to_string(),
+                endpoint_name: None,
                 description: "Get weather".to_string(),
                 protocol: None,
                 service_id: None,
@@ -3326,6 +3417,7 @@ tools:
         let runtime = McpRouterRuntime::new(McpRouterConfig {
             tools: vec![McpToolConfig {
                 name: "weather".to_string(),
+                endpoint_name: None,
                 description: "Get weather".to_string(),
                 protocol: None,
                 service_id: None,
@@ -3442,6 +3534,7 @@ tools:
         let runtime = McpRouterRuntime::new(McpRouterConfig {
             tools: vec![McpToolConfig {
                 name: "weather".to_string(),
+                endpoint_name: None,
                 description: "Get weather".to_string(),
                 protocol: None,
                 service_id: None,
@@ -3515,6 +3608,7 @@ tools:
         let runtime = McpRouterRuntime::new(McpRouterConfig {
             tools: vec![McpToolConfig {
                 name: "weather".to_string(),
+                endpoint_name: None,
                 description: "Get weather".to_string(),
                 protocol: None,
                 service_id: None,
@@ -3764,6 +3858,7 @@ tools:
         let runtime = McpRouterRuntime::new(McpRouterConfig {
             tools: vec![McpToolConfig {
                 name: "serverInfo".to_string(),
+                endpoint_name: None,
                 description: "Get server info".to_string(),
                 protocol: None,
                 service_id: None,
@@ -4059,6 +4154,7 @@ endpointRules:
     ) -> McpToolConfig {
         McpToolConfig {
             name: name.to_string(),
+            endpoint_name: None,
             description: description.to_string(),
             protocol: None,
             service_id: None,
