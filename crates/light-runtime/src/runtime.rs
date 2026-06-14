@@ -409,7 +409,7 @@ where
     fn build_runtime_config(
         &self,
         bootstrap: BootstrapConfig,
-        client: Option<ClientConfig>,
+        _client: Option<ClientConfig>,
         external_config_dir: PathBuf,
         remote_result: RemoteBootstrapResult,
     ) -> Result<RuntimeConfig, RuntimeError> {
@@ -424,10 +424,7 @@ where
         let loader = ConfigLoader::from_values(values.clone(), password.as_deref(), None)?;
 
         let server = self.load_typed_config::<ServerConfig>(&loader, SERVER_FILE)?;
-        let client = match client {
-            Some(c) => Some(c),
-            None => self.try_load_typed_config::<ClientConfig>(&loader, CLIENT_FILE)?,
-        };
+        let client = self.try_load_typed_config::<ClientConfig>(&loader, CLIENT_FILE)?;
         let portal_registry =
             self.try_load_typed_config::<PortalRegistryConfig>(&loader, PORTAL_REGISTRY_FILE)?;
         let direct_registry = self.load_direct_registry_config(&loader, &values)?;
@@ -1732,6 +1729,76 @@ shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
         assert_eq!(
             config.default_config_dir.as_deref(),
             Some(default_dir.path())
+        );
+    }
+
+    #[test]
+    fn runtime_config_client_is_reloaded_from_merged_values() {
+        let default_dir = TempDir::new().expect("default config temp dir");
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+
+        fs::write(
+            default_dir.path().join(CLIENT_FILE),
+            r#"
+oauth:
+  token:
+    key:
+      serverUrl: ${client.tokenKeyServerUrl:}
+      uri: ${client.tokenKeyUri:/oauth2/key}
+"#,
+        )
+        .expect("write default client template");
+
+        fs::write(
+            default_dir.path().join(SERVER_FILE),
+            r#"
+ip: ${server.ip:0.0.0.0}
+httpPort: ${server.httpPort:8080}
+enableHttp: ${server.enableHttp:true}
+httpsPort: ${server.httpsPort:8443}
+enableHttps: ${server.enableHttps:false}
+serviceId: ${server.serviceId:com.networknt.default-1.0.0}
+enableRegistry: ${server.enableRegistry:false}
+startOnRegistryFailure: ${server.startOnRegistryFailure:true}
+dynamicPort: ${server.dynamicPort:false}
+environment: ${server.environment:dev}
+shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
+"#,
+        )
+        .expect("write default server template");
+
+        let runtime = LightRuntimeBuilder::new(NoopTransport)
+            .with_default_config_dir(default_dir.path())
+            .with_config_dir(config_dir.path())
+            .build();
+
+        let bootstrap_client = ClientConfig::default();
+
+        let config = runtime
+            .build_runtime_config(
+                BootstrapConfig::default(),
+                Some(bootstrap_client),
+                external_dir.path().to_path_buf(),
+                RemoteBootstrapResult {
+                    values_yaml: Some(
+                        "client.tokenKeyServerUrl: https://remote-oauth\n\
+                         client.tokenKeyUri: /oauth2/custom/keys\n"
+                            .to_string(),
+                    ),
+                    cached_files: Vec::new(),
+                },
+            )
+            .expect("build runtime config");
+
+        let client_config = config.client.as_ref().expect("client config present");
+        assert_eq!(
+            client_config.oauth.token.key.server_url.as_deref(),
+            Some("https://remote-oauth")
+        );
+        assert_eq!(
+            client_config.oauth.token.key.uri.as_str(),
+            "/oauth2/custom/keys"
         );
     }
 

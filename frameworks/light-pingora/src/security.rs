@@ -700,6 +700,17 @@ fn load_jwk_source(runtime_config: &RuntimeConfig) -> Result<Option<Arc<JwkSourc
         Err(error) => return Err(error),
     };
     let resolver = OAuthProviderResolver::new(&client);
+    tracing::info!(
+        "load_jwk_source resolved key config: server_url={:?}, service_id={:?}, uri={}, client_id={:?}, has_client_secret={}, service_id_auth_servers={:?}, audience={:?}",
+        client.oauth.token.key.server_url,
+        client.oauth.token.key.service_id,
+        client.oauth.token.key.uri,
+        client.oauth.token.key.client_id,
+        !client.oauth.token.key.client_secret.is_empty(),
+        client.oauth.token.key.service_id_auth_servers.keys().collect::<Vec<_>>(),
+        client.oauth.token.key.audience,
+    );
+    tracing::info!("load_jwk_source has_key_providers: {}", resolver.has_key_providers());
     if !resolver.has_key_providers() {
         return Ok(None);
     }
