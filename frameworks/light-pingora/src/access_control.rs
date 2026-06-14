@@ -762,7 +762,15 @@ fn set_response_body(context: &mut JsonValue, body: &JsonValue) {
 }
 
 fn apply_column_filters(body: &mut JsonValue, context: &JsonValue, col_config: &JsonValue) {
-    let Some(items) = body.as_array_mut() else {
+    let items = if body.is_array() {
+        body.as_array_mut().unwrap()
+    } else if let Some(obj) = body.as_object_mut() {
+        if let Some(arr) = obj.get_mut("items").and_then(|v| v.as_array_mut()) {
+            arr
+        } else {
+            return;
+        }
+    } else {
         return;
     };
     for dimension in ["role", "group", "position", "attribute", "user"] {
@@ -793,7 +801,15 @@ fn apply_column_filters(body: &mut JsonValue, context: &JsonValue, col_config: &
 }
 
 fn apply_row_filters(body: &mut JsonValue, context: &JsonValue, row_config: &JsonValue) {
-    let Some(items) = body.as_array_mut() else {
+    let items = if body.is_array() {
+        body.as_array_mut().unwrap()
+    } else if let Some(obj) = body.as_object_mut() {
+        if let Some(arr) = obj.get_mut("items").and_then(|v| v.as_array_mut()) {
+            arr
+        } else {
+            return;
+        }
+    } else {
         return;
     };
     for dimension in ["role", "group", "position", "attribute", "user"] {
@@ -1167,6 +1183,58 @@ allow-account-role:
         assert_eq!(
             result["content"][0]["text"],
             JsonValue::String("[{\"id\":1}]".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn response_column_filter_handles_wrapped_arrays() {
+        let policy = policy_for_filter(
+            "col",
+            json!({
+                "col": {
+                    "role": {
+                        "mcp-reader": "id"
+                    }
+                }
+            }),
+        );
+
+        let result = policy
+            .filter_mcp_response(
+                "accounts",
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("mcp-reader")),
+                &json!({}),
+                None,
+                json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "{\"items\":[{\"id\":1,\"secret\":\"x\"}]}"
+                        }
+                    ],
+                    "structuredContent": {
+                        "items": [
+                            {
+                                "id": 1,
+                                "secret": "x"
+                            }
+                        ]
+                    }
+                }),
+            )
+            .await;
+
+        assert_eq!(result["structuredContent"]["items"][0]["id"], 1);
+        assert!(
+            result["structuredContent"]["items"][0]
+                .get("secret")
+                .is_none()
+        );
+        assert_eq!(
+            result["content"][0]["text"],
+            JsonValue::String("{\"items\":[{\"id\":1}]}".to_string())
         );
     }
 

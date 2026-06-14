@@ -1760,7 +1760,13 @@ fn mcp_text_result(text: impl Into<String>) -> JsonValue {
 }
 
 fn mcp_json_result(value: JsonValue) -> JsonValue {
-    let text = serde_json::to_string(&value).unwrap_or_else(|_| value.to_string());
+    let structured_content = if value.is_array() {
+        json!({ "items": value })
+    } else {
+        value
+    };
+    let text = serde_json::to_string(&structured_content)
+        .unwrap_or_else(|_| structured_content.to_string());
     json!({
         "content": [
             {
@@ -1768,7 +1774,7 @@ fn mcp_json_result(value: JsonValue) -> JsonValue {
                 "text": text
             }
         ],
-        "structuredContent": value
+        "structuredContent": structured_content
     })
 }
 
@@ -4373,11 +4379,16 @@ endpointRules:
     }
 
     fn assert_mcp_json_result(result: &JsonValue, expected: JsonValue) {
-        assert_eq!(result["structuredContent"], expected);
+        let expected_structured = if expected.is_array() {
+            json!({ "items": expected })
+        } else {
+            expected
+        };
+        assert_eq!(result["structuredContent"], expected_structured);
         assert_eq!(result["content"][0]["type"], "text");
         let text = result["content"][0]["text"].as_str().expect("text content");
         let parsed = serde_json::from_str::<JsonValue>(text).expect("json text content");
-        assert_eq!(parsed, expected);
+        assert_eq!(parsed, expected_structured);
     }
 
     fn http_json_response(value: JsonValue) -> String {
