@@ -1123,19 +1123,157 @@ impl McpRouterRuntime {
         method: McpHttpMethod,
     ) -> Result<JsonValue, McpExecutionError> {
         let mut url = self.tool_target_url(tool).await?;
-        if matches!(method, McpHttpMethod::Get | McpHttpMethod::Head) {
+
+        let mut path_params = std::collections::HashMap::new();
+        let mut query_params = std::collections::HashMap::new();
+        let mut header_params = std::collections::HashMap::new();
+        let mut cookie_params = std::collections::HashMap::new();
+        let mut body_val: Option<&JsonValue> = None;
+
+        let mut has_mapping = false;
+        let mapping = tool
+            .tool_metadata
+            .get("routing")
+            .and_then(|r| r.get("parameters"))
+            .and_then(|p| p.as_object());
+
+        if let Some(mapping) = mapping {
+            has_mapping = true;
+            if let Some(args_obj) = arguments.as_object() {
+                for (key, val) in args_obj {
+                    if let Some(loc) = mapping.get(key).and_then(|l| l.as_str()) {
+                        match loc {
+                            "path" => {
+                                path_params.insert(key.clone(), val);
+                            }
+                            "query" => {
+                                query_params.insert(key.clone(), val);
+                            }
+                            "header" => {
+                                header_params.insert(key.clone(), val);
+                            }
+                            "cookie" => {
+                                cookie_params.insert(key.clone(), val);
+                            }
+                            "body" => {
+                                body_val = Some(val);
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        if key == "body" {
+                            body_val = Some(val);
+                        } else if matches!(method, McpHttpMethod::Get | McpHttpMethod::Head) {
+                            query_params.insert(key.clone(), val);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 1. Substitute path parameters in URL path
+        if has_mapping && !path_params.is_empty() {
+            let mut path = url.path().to_string();
+            for (key, val) in path_params {
+                let val_str = match val {
+                    JsonValue::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                let encoded_val = Self::percent_encode_path_segment(&val_str);
+                let placeholder1 = format!("{{{}}}", key);
+                path = path.replace(&placeholder1, &encoded_val);
+                let placeholder2 = format!("%7B{}%7D", key);
+                path = path.replace(&placeholder2, &encoded_val);
+            }
+            url.set_path(&path);
+        }
+
+        // 2. Query parameters
+        if has_mapping {
+            if !query_params.is_empty() {
+                let mut query_pairs = url.query_pairs_mut();
+                for (key, val) in query_params {
+                    if val.is_null() {
+                        continue;
+                    }
+                    query_pairs.append_pair(&key, &json_value_to_query(val));
+                }
+            }
+        } else if matches!(method, McpHttpMethod::Get | McpHttpMethod::Head) {
             append_query_arguments(&mut url, arguments);
         }
 
         let request_url = url.to_string();
         let request_method = method.as_reqwest();
+
+        // 3. Headers & Cookies
+        let mut request_headers = outbound_headers(agent_headers)?;
+        if has_mapping {
+            for (key, val) in header_params {
+                if val.is_null() {
+                    continue;
+                }
+                let val_str = json_value_to_query(val);
+                if let Ok(header_name) = reqwest::header::HeaderName::from_bytes(key.as_bytes()) {
+                    if let Ok(header_val) = reqwest::header::HeaderValue::from_str(&val_str) {
+                        request_headers.insert(header_name, header_val);
+                    }
+                }
+            }
+            if !cookie_params.is_empty() {
+                let mut cookies = Vec::new();
+                for (key, val) in cookie_params {
+                    if val.is_null() {
+                        continue;
+                    }
+                    let val_str = json_value_to_query(val);
+                    cookies.push(format!("{}={}", key, val_str));
+                }
+                if !cookies.is_empty() {
+                    let cookie_header_val = cookies.join("; ");
+                    if let Ok(header_val) =
+                        reqwest::header::HeaderValue::from_str(&cookie_header_val)
+                    {
+                        request_headers.insert(reqwest::header::COOKIE, header_val);
+                    }
+                }
+            }
+        }
+
         let mut request = self
             .client
             .request(request_method.clone(), url)
-            .headers(outbound_headers(agent_headers)?);
+            .headers(request_headers);
+
+        // 4. Request Body
         if method.sends_json_body() {
-            request = request.json(arguments);
+            let mut final_body = None;
+            if has_mapping {
+                if let Some(body) = body_val {
+                    final_body = Some(body.clone());
+                } else if let Some(mapping) = mapping {
+                    let mut body_obj = serde_json::Map::new();
+                    if let Some(args_obj) = arguments.as_object() {
+                        for (key, val) in args_obj {
+                            let mapped_loc = mapping.get(key).and_then(|l| l.as_str());
+                            if !matches!(mapped_loc, Some("path" | "query" | "header" | "cookie")) {
+                                body_obj.insert(key.clone(), val.clone());
+                            }
+                        }
+                    }
+                    if !body_obj.is_empty() {
+                        final_body = Some(JsonValue::Object(body_obj));
+                    }
+                }
+            } else {
+                final_body = Some(arguments.clone());
+            }
+
+            if let Some(body) = final_body {
+                request = request.json(&body);
+            }
         }
+
         let response = request.send().await.map_err(|error| {
             let detail = error_chain(&error);
             tracing::warn!(
@@ -1180,6 +1318,18 @@ impl McpRouterRuntime {
             return Ok(mcp_json_result(value));
         }
         Ok(mcp_text_result(String::from_utf8_lossy(&body).to_string()))
+    }
+
+    fn percent_encode_path_segment(input: &str) -> String {
+        input
+            .bytes()
+            .flat_map(|byte| match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                    vec![byte as char]
+                }
+                _ => format!("%{byte:02X}").chars().collect(),
+            })
+            .collect()
     }
 
     async fn execute_mcp_proxy_tool(
@@ -3317,7 +3467,10 @@ tools:
         let requests = received.await.expect("server requests");
         assert_eq!(requests.len(), 3);
         assert_eq!(request_json_body(&requests[0])["method"], "initialize");
-        assert_eq!(request_json_body(&requests[1])["method"], "notifications/initialized");
+        assert_eq!(
+            request_json_body(&requests[1])["method"],
+            "notifications/initialized"
+        );
         let backend_call = request_json_body(&requests[2]);
         assert_eq!(backend_call["method"], "tools/call");
         // Must use endpointName ("echo"), NOT the gateway-facing name ("local_mcp_echo").
@@ -4483,5 +4636,138 @@ endpointRules:
                 .flatten()
         });
         content_length.is_none_or(|content_length| body_len >= content_length)
+    }
+
+    #[tokio::test]
+    async fn tool_call_performs_openapi_parameter_mapping() {
+        let (base, received) =
+            spawn_http_server(http_json_response(json!({"success": true}))).await;
+
+        let mut tool = test_tool(
+            "updateUser",
+            "Update user",
+            base.as_str(),
+            McpHttpMethod::Put,
+            None,
+            default_input_schema(),
+        );
+        tool.path = "/users/{userId}".to_string();
+        tool.tool_metadata = json!({
+            "routing": {
+                "parameters": {
+                    "userId": "path",
+                    "X-Trace-Id": "header",
+                    "body": "body",
+                    "session_cookie": "cookie"
+                }
+            }
+        });
+
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![tool],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: serde_json::to_vec(&json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "updateUser",
+                        "arguments": {
+                            "userId": "usr/999",
+                            "X-Trace-Id": "trace-uuid-123",
+                            "session_cookie": "session_val_xyz",
+                            "body": {
+                                "name": "Avery"
+                            }
+                        }
+                    }
+                }))
+                .unwrap(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        println!("RESPONSE STATUS: {}", response.status);
+        println!("RESPONSE BODY: {}", String::from_utf8_lossy(&response.body));
+        assert_eq!(response.status, 200);
+        let request = received.await.expect("server request");
+        println!("RECEIVED REQUEST:\n{}", request);
+        assert!(request.starts_with("PUT /users/usr%2F999 HTTP/1.1"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("x-trace-id: trace-uuid-123")
+        );
+        assert!(request.contains("cookie: session_cookie=session_val_xyz"));
+        assert!(request.contains("{\"name\":\"Avery\"}"));
+    }
+
+    #[tokio::test]
+    async fn tool_call_performs_openapi_parameter_mapping_get() {
+        let (base, received) =
+            spawn_http_server(http_json_response(json!({"success": true}))).await;
+
+        let mut tool = test_tool(
+            "searchOffers",
+            "Search offers",
+            base.as_str(),
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        );
+        tool.path = "/offers".to_string();
+        tool.tool_metadata = json!({
+            "routing": {
+                "parameters": {
+                    "segment": "query",
+                    "state": "query"
+                }
+            }
+        });
+
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![tool],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: serde_json::to_vec(&json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "searchOffers",
+                        "arguments": {
+                            "segment": "premium",
+                            "state": "ON"
+                        }
+                    }
+                }))
+                .unwrap(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        let request = received.await.expect("server request");
+
+        assert!(request.starts_with("GET /offers?"));
+        assert!(request.contains("segment=premium"));
+        assert!(request.contains("state=ON"));
     }
 }

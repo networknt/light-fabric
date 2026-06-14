@@ -707,10 +707,19 @@ fn load_jwk_source(runtime_config: &RuntimeConfig) -> Result<Option<Arc<JwkSourc
         client.oauth.token.key.uri,
         client.oauth.token.key.client_id,
         !client.oauth.token.key.client_secret.is_empty(),
-        client.oauth.token.key.service_id_auth_servers.keys().collect::<Vec<_>>(),
+        client
+            .oauth
+            .token
+            .key
+            .service_id_auth_servers
+            .keys()
+            .collect::<Vec<_>>(),
         client.oauth.token.key.audience,
     );
-    tracing::info!("load_jwk_source has_key_providers: {}", resolver.has_key_providers());
+    tracing::info!(
+        "load_jwk_source has_key_providers: {}",
+        resolver.has_key_providers()
+    );
     if !resolver.has_key_providers() {
         return Ok(None);
     }
