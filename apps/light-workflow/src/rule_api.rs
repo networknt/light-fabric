@@ -32,7 +32,7 @@ pub struct RuleTestResponse {
 
 pub async fn run_rule_api() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = std::env::var("LIGHT_WORKFLOW_HTTP_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0:8080".to_string())
+        .unwrap_or_else(|_| "0.0.0.0:8436".to_string())
         .parse()?;
 
     let state = RuleApiState {

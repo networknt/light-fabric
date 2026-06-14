@@ -26,7 +26,7 @@ Required environment:
   DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver
 
 Common optional environment:
-  LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8080
+  LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8436
   RUST_LOG=light_workflow=debug,info
   WORKFLOW_LOG_ANSI=false
 
@@ -133,7 +133,7 @@ export_if_set WORKFLOW_LOG_ANSI "${WORKFLOW_LOG_ANSI:-}"
 echo "Starting light-workflow"
 echo "  binary: ${BINARY_PATH}"
 echo "  database: ${DATABASE_URL}"
-echo "  http addr: ${LIGHT_WORKFLOW_HTTP_ADDR:-0.0.0.0:8080}"
+echo "  http addr: ${LIGHT_WORKFLOW_HTTP_ADDR:-0.0.0.0:8436}"
 echo "  rust log: ${RUST_LOG:-light_workflow=debug,info}"
 
 cd "$SCRIPT_DIR"

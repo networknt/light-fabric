@@ -30,7 +30,7 @@ For a multi-line shell command, either keep the assignments attached to
 
 ```bash
 DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver \
-LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8080 \
+LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8436 \
 RUST_LOG=light_workflow=debug,info \
 WORKFLOW_LOG_ANSI=false \
 ./run.sh --debug-binary
@@ -40,7 +40,7 @@ or export the variables before starting the script:
 
 ```bash
 export DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver
-export LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8080
+export LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8436
 export RUST_LOG=light_workflow=debug,info
 export WORKFLOW_LOG_ANSI=false
 ./run.sh --debug-binary
@@ -53,7 +53,7 @@ For repeated local runs, create `light-workflow.env` in this directory:
 
 ```bash
 DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver
-LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8080
+LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8436
 RUST_LOG=light_workflow=debug,info
 WORKFLOW_LOG_ANSI=false
 ```

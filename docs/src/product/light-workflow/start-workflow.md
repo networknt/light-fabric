@@ -49,7 +49,7 @@ Create `light-workflow.env` in
 
 ```bash
 DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver
-LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8080
+LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8436
 RUST_LOG=light_workflow=debug,info
 WORKFLOW_LOG_ANSI=false
 ```
@@ -65,7 +65,7 @@ file, export the values before running the script:
 
 ```bash
 export DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver
-export LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8080
+export LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8436
 export RUST_LOG=light_workflow=debug,info
 export WORKFLOW_LOG_ANSI=false
 ./run.sh --debug-binary

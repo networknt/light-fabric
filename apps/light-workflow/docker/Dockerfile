@@ -33,7 +33,7 @@ COPY --from=builder --chown=workflow:workflow /usr/src/app/target/release/light-
 
 ENV WORKFLOW_LOG_ANSI=false
 
-EXPOSE 8080
+EXPOSE 8436
 
 USER workflow:workflow
 CMD ["/app/light-workflow"]
