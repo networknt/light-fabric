@@ -25,3 +25,4 @@ url = { workspace = true }
 futures-util = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
+rand = "0.8"

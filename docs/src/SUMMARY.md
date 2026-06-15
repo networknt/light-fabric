@@ -26,6 +26,7 @@
 - [Light-Deployer](design/light-deployer.md)
 - [Module Registry](design/module-registry.md)
 - [Module Hot Reload](design/module-hot-reload.md)
+- [Controller Registry Client](design/controller-registry.md)
 - [Cache Control Plane](design/cache-control-plane.md)
 - [Client Configuration](design/client-configuration.md)
 - [Embedded Configuration Templates](design/embedded-config-templates.md)

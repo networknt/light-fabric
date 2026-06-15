@@ -288,6 +288,7 @@ pub struct PortalRegistryClient {
     ca_certificate: Mutex<Option<Vec<u8>>>,
     verify_hostname: Mutex<bool>,
     pending_requests: Arc<Mutex<HashMap<String, oneshot::Sender<JsonRpcMessage>>>>,
+    heartbeat_interval: Duration,
 }
 
 impl fmt::Debug for PortalRegistryClient {
@@ -323,6 +324,7 @@ impl PortalRegistryClient {
             ca_certificate: Mutex::new(None),
             verify_hostname: Mutex::new(true),
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
+            heartbeat_interval: Duration::from_secs(30),
         })
     }
 
@@ -333,6 +335,11 @@ impl PortalRegistryClient {
 
     pub fn with_verify_hostname(mut self, verify: bool) -> Self {
         self.verify_hostname = Mutex::new(verify);
+        self
+    }
+
+    pub fn with_heartbeat_interval(mut self, interval: Duration) -> Self {
+        self.heartbeat_interval = interval;
         self
     }
 
@@ -460,19 +467,34 @@ impl PortalRegistryClient {
     pub async fn run(&self) {
         let mut retry_delay = Duration::from_secs(1);
         loop {
-            match self.connect_and_loop().await {
+            let connection_start = std::time::Instant::now();
+            let result = self.connect_and_loop().await;
+            let connection_elapsed = connection_start.elapsed();
+
+            let jitter_ms = rand::random::<u64>() % 1000;
+            let total_delay = retry_delay + Duration::from_millis(jitter_ms);
+
+            match result {
                 Ok(_) => {
-                    info!("Registry connection closed normally, reconnecting...");
-                    retry_delay = Duration::from_secs(1);
+                    info!(
+                        "Registry connection closed normally. Reconnecting in {:?}",
+                        total_delay
+                    );
                 }
                 Err(e) => {
                     error!(
                         "Registry connection error: {:?}. Retrying in {:?}",
-                        e, retry_delay
+                        e, total_delay
                     );
-                    tokio::time::sleep(retry_delay).await;
-                    retry_delay = std::cmp::min(retry_delay * 2, Duration::from_secs(60));
                 }
+            }
+
+            tokio::time::sleep(total_delay).await;
+
+            if connection_elapsed > Duration::from_secs(10) {
+                retry_delay = Duration::from_secs(1);
+            } else {
+                retry_delay = std::cmp::min(retry_delay * 2, Duration::from_secs(60));
             }
         }
     }
@@ -552,67 +574,94 @@ impl PortalRegistryClient {
 
         let handler = self.handler.read().await.clone();
         let outbound_state = Arc::clone(&self.outbound_tx);
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            while let Some(msg) = rx.recv().await {
-                if let Err(e) = sender.send(msg).await {
-                    error!("Failed to send websocket message: {:?}", e);
-                    break;
-                }
-            }
-        });
 
-        while let Some(msg) = receiver.next().await {
-            match msg? {
-                Message::Text(text) => {
-                    if let Ok(json_msg) = serde_json::from_str::<JsonRpcMessage>(&text) {
-                        if let Some(method) = json_msg.method.as_deref() {
-                            // Request or Notification
-                            if json_msg.id.is_some() {
-                                // Request from server
-                                let result = handler
-                                    .handle_request(method, json_msg.params.unwrap_or(json!({})))
-                                    .await;
-                                let response = JsonRpcMessage {
-                                    jsonrpc: "2.0".to_string(),
-                                    id: json_msg.id,
-                                    method: None,
-                                    params: None,
-                                    result: Some(result),
-                                    error: None,
-                                };
-                                let _ = tx_clone
-                                    .send(Message::Text(serde_json::to_string(&response)?.into()))
-                                    .await;
-                            } else {
-                                // Notification from server
-                                handler
-                                    .handle_notification(
-                                        method,
-                                        json_msg.params.unwrap_or(json!({})),
-                                    )
-                                    .await;
+        let mut heartbeat = tokio::time::interval(self.heartbeat_interval);
+        // Reset the heartbeat interval so it doesn't fire immediately
+        heartbeat.tick().await;
+
+        let mut ping_outstanding = false;
+
+        let res = async {
+            loop {
+                tokio::select! {
+                    res = receiver.next() => {
+                        match res {
+                            Some(Ok(msg)) => {
+                                // Any message received indicates active data flow and clears outstanding ping status
+                                ping_outstanding = false;
+                                match msg {
+                                    Message::Text(text) => {
+                                        if let Ok(json_msg) = serde_json::from_str::<JsonRpcMessage>(&text) {
+                                            if let Some(method) = json_msg.method.as_deref() {
+                                                // Request or Notification
+                                                if json_msg.id.is_some() {
+                                                    // Request from server
+                                                    let result = handler
+                                                        .handle_request(method, json_msg.params.unwrap_or(json!({})))
+                                                        .await;
+                                                    let response = JsonRpcMessage {
+                                                        jsonrpc: "2.0".to_string(),
+                                                        id: json_msg.id,
+                                                        method: None,
+                                                        params: None,
+                                                        result: Some(result),
+                                                        error: None,
+                                                    };
+                                                    let _ = tx.send(Message::Text(serde_json::to_string(&response)?.into())).await;
+                                                } else {
+                                                    // Notification from server
+                                                    handler
+                                                        .handle_notification(
+                                                            method,
+                                                            json_msg.params.unwrap_or(json!({})),
+                                                        )
+                                                        .await;
+                                                }
+                                            } else if let Some(id_val) = json_msg.id.as_ref() {
+                                                // Response to our request
+                                                let id_str = match id_val {
+                                                    serde_json::Value::String(s) => s.clone(),
+                                                    _ => id_val.to_string(),
+                                                };
+                                                let mut pending = self.pending_requests.lock().await;
+                                                if let Some(tx) = pending.remove(&id_str) {
+                                                    let _ = tx.send(json_msg);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Message::Ping(payload) => {
+                                        let _ = tx.send(Message::Pong(payload)).await;
+                                    }
+                                    Message::Pong(_) => {
+                                        // Received Pong from server
+                                    }
+                                    Message::Close(_) => break,
+                                    _ => {}
+                                }
                             }
-                        } else if let Some(id_val) = json_msg.id.as_ref() {
-                            // Response to our request
-                            let id_str = match id_val {
-                                serde_json::Value::String(s) => s.clone(),
-                                _ => id_val.to_string(),
-                            };
-                            let mut pending = self.pending_requests.lock().await;
-                            if let Some(tx) = pending.remove(&id_str) {
-                                let _ = tx.send(json_msg);
-                            }
+                            Some(Err(err)) => return Err(err.into()),
+                            None => break,
                         }
                     }
+                    Some(msg) = rx.recv() => {
+                        sender.send(msg).await?;
+                    }
+                    _ = heartbeat.tick() => {
+                        if ping_outstanding {
+                            return Err(anyhow::anyhow!(
+                                "heartbeat timeout: no pong received within {:?}",
+                                self.heartbeat_interval
+                            ));
+                        }
+                        ping_outstanding = true;
+                        sender.send(Message::Ping(vec![].into())).await?;
+                    }
                 }
-                Message::Ping(payload) => {
-                    let _ = tx_clone.send(Message::Pong(payload)).await;
-                }
-                Message::Close(_) => break,
-                _ => {}
             }
+            Ok(())
         }
+        .await;
 
         {
             let mut guard = outbound_state.lock().await;
@@ -621,7 +670,7 @@ impl PortalRegistryClient {
         self.pending_requests.lock().await.clear();
         let _ = self.registration_tx.send(RegistrationState::Disconnected);
 
-        Ok(())
+        res
     }
 
     async fn register(&self, ws_stream: &mut WsStream) -> anyhow::Result<()> {
@@ -1075,5 +1124,155 @@ mod tests {
 
         let state = registration_rx.borrow().clone();
         assert!(matches!(state, RegistrationState::Registered { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_registry_client_reconnects_and_reregisters_on_run_level() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let (register_tx1, register_rx1) = oneshot::channel();
+        let (register_tx2, register_rx2) = oneshot::channel();
+
+        tokio::spawn(async move {
+            // First connection
+            let (stream, _) = listener.accept().await.expect("accept first connection");
+            let mut ws = accept_async(stream).await.expect("accept first websocket");
+            let register1 = ws.next().await.unwrap().unwrap().into_text().unwrap();
+            let _ = register_tx1.send(serde_json::from_str::<Value>(&register1).unwrap());
+            ws.send(Message::Text(json!({
+                "jsonrpc": "2.0",
+                "id": "register-1",
+                "result": { "runtimeInstanceId": "0195ef10-2f24-7af2-85e9-a8ef54642f39", "status": "registered" }
+            }).to_string().into())).await.unwrap();
+            ws.close(None).await.unwrap();
+
+            // Second connection
+            let (stream, _) = listener.accept().await.expect("accept second connection");
+            let mut ws = accept_async(stream).await.expect("accept second websocket");
+            let register2 = ws.next().await.unwrap().unwrap().into_text().unwrap();
+            let _ = register_tx2.send(serde_json::from_str::<Value>(&register2).unwrap());
+            ws.send(Message::Text(json!({
+                "jsonrpc": "2.0",
+                "id": "register-1",
+                "result": { "runtimeInstanceId": "0195ef10-2f24-7af2-85e9-a8ef54642f40", "status": "registered" }
+            }).to_string().into())).await.unwrap();
+            ws.close(None).await.unwrap();
+        });
+
+        let client = Arc::new(
+            PortalRegistryClient::new(
+                &format!("ws://{addr}"),
+                ServiceRegistrationParams {
+                    service_id: "reconnect-service".to_string(),
+                    version: "1.0.0".to_string(),
+                    protocol: "https".to_string(),
+                    address: "127.0.0.1".to_string(),
+                    port: 8443,
+                    tags: HashMap::new(),
+                    env_tag: None,
+                    jwt: "token".to_string(),
+                },
+                Arc::new(NoopHandler),
+            )
+            .unwrap(),
+        );
+
+        let task_client = Arc::clone(&client);
+        let run_task = tokio::spawn(async move {
+            task_client.run().await;
+        });
+
+        let register1 = tokio::time::timeout(Duration::from_secs(5), register_rx1)
+            .await
+            .expect("Timeout waiting for first registration handshake")
+            .expect("register_rx1 closed");
+        assert_eq!(register1["method"], "service/register");
+        assert_eq!(register1["params"]["serviceId"], "reconnect-service");
+
+        let register2 = tokio::time::timeout(Duration::from_secs(5), register_rx2)
+            .await
+            .expect("Timeout waiting for second registration handshake")
+            .expect("register_rx2 closed");
+        assert_eq!(register2["method"], "service/register");
+        assert_eq!(register2["params"]["serviceId"], "reconnect-service");
+
+        run_task.abort();
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat_timeout_detects_silent_controller_loss() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let (register_tx, register_rx) = oneshot::channel();
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept connection");
+            let mut ws = accept_async(stream).await.expect("accept websocket");
+            let register = ws.next().await.unwrap().unwrap().into_text().unwrap();
+            let _ = register_tx.send(serde_json::from_str::<Value>(&register).unwrap());
+            ws.send(Message::Text(json!({
+                "jsonrpc": "2.0",
+                "id": "register-1",
+                "result": { "runtimeInstanceId": "0195ef10-2f24-7af2-85e9-a8ef54642f39", "status": "registered" }
+            }).to_string().into())).await.unwrap();
+
+            // Keep the connection open indefinitely without reading from it,
+            // so we do not automatically respond with a Pong to the client's Ping.
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+        });
+
+        let client = Arc::new(
+            PortalRegistryClient::new(
+                &format!("ws://{addr}"),
+                ServiceRegistrationParams {
+                    service_id: "heartbeat-service".to_string(),
+                    version: "1.0.0".to_string(),
+                    protocol: "https".to_string(),
+                    address: "127.0.0.1".to_string(),
+                    port: 8443,
+                    tags: HashMap::new(),
+                    env_tag: None,
+                    jwt: "token".to_string(),
+                },
+                Arc::new(NoopHandler),
+            )
+            .unwrap()
+            .with_heartbeat_interval(Duration::from_millis(100)),
+        );
+
+        let registration_rx = client.subscribe_registration();
+        let task_client = Arc::clone(&client);
+        let run_task = tokio::spawn(async move { task_client.connect_and_loop().await });
+
+        // Wait for registration
+        let register = tokio::time::timeout(Duration::from_secs(5), register_rx)
+            .await
+            .expect("register_rx timeout")
+            .unwrap();
+        assert_eq!(register["method"], "service/register");
+
+        // Yield to allow the client to process the registration response and update its state
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Verify we are registered initially
+        assert!(matches!(
+            *registration_rx.borrow(),
+            RegistrationState::Registered { .. }
+        ));
+
+        // The task should complete with Err (heartbeat timeout) within 500ms
+        let res = tokio::time::timeout(Duration::from_millis(500), run_task)
+            .await
+            .expect("run_task join timeout")
+            .unwrap();
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("heartbeat timeout"));
+
+        // Verify state is Disconnected
+        assert_eq!(*registration_rx.borrow(), RegistrationState::Disconnected);
     }
 }
