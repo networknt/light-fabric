@@ -1040,7 +1040,6 @@ tls:
         assert!(!config.tls.verify_hostname);
     }
 
-
     #[test]
     fn keeps_top_level_verify_hostname_as_fallback() {
         let config: ClientConfig =

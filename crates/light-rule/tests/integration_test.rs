@@ -576,9 +576,7 @@ async fn test_strict_cel_profile_list_matching() {
         updated_at: None,
         condition_language: Some("cel".into()),
         condition_security_profile: Some("strict".into()),
-        expression: Some(
-            "'portal.w' in auditInfo.subject_claims.ClaimsMap.scp".into(),
-        ),
+        expression: Some("'portal.w' in auditInfo.subject_claims.ClaimsMap.scp".into()),
         conditions: None,
         actions: None,
     };
@@ -631,7 +629,10 @@ async fn test_strict_cel_profile_missing_scp() {
     });
 
     let res = engine.execute_rule(&rule, &mut context).await.unwrap();
-    assert!(!res, "Expected rule to evaluate to false when scp is missing");
+    assert!(
+        !res,
+        "Expected rule to evaluate to false when scp is missing"
+    );
 }
 
 #[tokio::test]

@@ -347,7 +347,6 @@ fn configure_reqwest_tls(
         builder = builder.danger_accept_invalid_hostnames(true);
     }
 
-
     if let Some(tls_version) = tls.tls_version {
         builder = builder.min_tls_version(match tls_version {
             TlsVersion::TlsV1_2 => reqwest::tls::Version::TLS_1_2,

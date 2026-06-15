@@ -4285,6 +4285,58 @@ tools:
     }
 
     #[tokio::test]
+    async fn gateway_client_config_reload() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+
+        // Write initial client config with verifyHostname: false
+        std::fs::write(
+            config_dir.path().join("client.yml"),
+            r#"
+tls:
+  verifyHostname: false
+"#,
+        )
+        .expect("write client config");
+
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+        config
+            .module_registry
+            .register_runtime_configs(&config)
+            .expect("register configs");
+        let _proxy = GatewayProxy::from_runtime_config(&config).expect("build proxy");
+
+        // Verify initial value in component configs
+        let component_configs = config.module_registry.component_configs();
+        assert_eq!(component_configs["client"]["tls"]["verifyHostname"], false);
+
+        // Update client config on disk in external dir with verifyHostname: true
+        std::fs::write(
+            external_dir.path().join("client.yml"),
+            r#"
+tls:
+  verifyHostname: true
+"#,
+        )
+        .expect("write updated client config");
+
+        // Reload the client module
+        let reload_ctx = config.reload_context().await.expect("reload context");
+        let result = config
+            .module_registry
+            .reload_modules(reload_ctx, &[light_runtime::CLIENT_MODULE_ID.to_string()])
+            .await;
+
+        assert_eq!(result.reloaded, vec![light_runtime::CLIENT_MODULE_ID]);
+        assert!(result.skipped.is_empty());
+        assert!(result.failed.is_empty());
+
+        // Verify updated value in component configs
+        let updated_configs = config.module_registry.component_configs();
+        assert_eq!(updated_configs["client"]["tls"]["verifyHostname"], true);
+    }
+
+    #[tokio::test]
     async fn gateway_reload_swaps_live_websocket_router_config() {
         let config_dir = TempDir::new().expect("config temp dir");
         let external_dir = TempDir::new().expect("external temp dir");

@@ -273,6 +273,27 @@ impl RuntimeConfig {
         }
         validate_direct_registry_config(&runtime_config.direct_registry)?;
         runtime_config.resolved_values = values;
+
+        if runtime_config.client.is_some() {
+            let password = std::env::var(CONFIG_PASSWORD_ENV).ok();
+            let loader = ConfigLoader::from_values(
+                runtime_config.resolved_values.clone(),
+                password.as_deref(),
+                None,
+            )?;
+            if let Some(merged) = load_config_from_sources(
+                &loader,
+                runtime_config.embedded_config,
+                runtime_config.default_config_dir.as_deref(),
+                &runtime_config.config_dir,
+                Some(&runtime_config.external_config_dir),
+                CLIENT_FILE,
+            )? {
+                let client = serde_yaml::from_value::<ClientConfig>(merged)?;
+                runtime_config.client = Some(client);
+            }
+        }
+
         Ok(ReloadContext::new(runtime_config))
     }
 }

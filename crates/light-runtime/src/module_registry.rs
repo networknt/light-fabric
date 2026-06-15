@@ -363,8 +363,9 @@ impl ModuleRegistry {
                 client_config_masks(),
                 true,
                 Some(true),
-                false,
+                true,
             );
+            self.register_reloader(CLIENT_MODULE_ID, Arc::new(ClientReloader));
         }
 
         if let Some(portal_registry) = &config.portal_registry {
@@ -391,7 +392,11 @@ impl ModuleRegistry {
             [],
             true,
             Some(!config.direct_registry.direct_urls.is_empty()),
-            false,
+            true,
+        );
+        self.register_reloader(
+            "light-runtime/direct-registry",
+            Arc::new(DirectRegistryReloader),
         );
 
         Ok(())
@@ -518,6 +523,31 @@ impl ModuleRegistry {
         ctx: ReloadContext,
         requested_modules: &[String],
     ) -> ReloadModulesResult {
+        // Update direct-registry config if present in the fresh context.
+        if let Ok(direct_val) = serde_json::to_value(&ctx.runtime_config.direct_registry) {
+            if let Some(entry) = self
+                .entries_write()
+                .get_mut("light-runtime/direct-registry")
+            {
+                entry.config = direct_val;
+                entry.enabled = Some(!ctx.runtime_config.direct_registry.direct_urls.is_empty());
+                entry.loaded_at = Utc::now();
+            }
+        }
+
+        // Update client config if present in the fresh context.
+        if let Some(client) = &ctx.runtime_config.client {
+            if let Ok(mut client_val) = serde_json::to_value(client) {
+                if let Some(entry) = self.entries_write().get_mut(CLIENT_MODULE_ID) {
+                    if *self.mask_read() {
+                        apply_masks(&mut client_val, &entry.masks);
+                    }
+                    entry.config = client_val;
+                    entry.loaded_at = Utc::now();
+                }
+            }
+        }
+
         let module_ids = self.module_ids();
         let target_modules = if requested_modules.is_empty()
             || requested_modules
@@ -1128,6 +1158,24 @@ fn hostname() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
+struct ClientReloader;
+
+#[async_trait]
+impl ReloadableModule for ClientReloader {
+    async fn reload(&self, _ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        Ok(ReloadOutcome::success("client.yml reloaded"))
+    }
+}
+
+struct DirectRegistryReloader;
+
+#[async_trait]
+impl ReloadableModule for DirectRegistryReloader {
+    async fn reload(&self, _ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        Ok(ReloadOutcome::success("direct-registry reloaded"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1477,6 +1525,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reload_modules_updates_direct_registry_config() {
+        let registry = ModuleRegistry::new();
+        let mut config = runtime_config();
+        config
+            .direct_registry
+            .direct_urls
+            .insert("service1".to_string(), "http://localhost:8080".to_string());
+        registry
+            .register_runtime_configs(&config)
+            .expect("register runtime configs");
+
+        let startup_configs = registry.component_configs();
+        assert_eq!(
+            startup_configs["direct-registry"]["directUrls"],
+            json!({"service1": "http://localhost:8080"})
+        );
+
+        let mut reload_config = config;
+        reload_config
+            .direct_registry
+            .direct_urls
+            .insert("service1".to_string(), "http://localhost:9090".to_string());
+
+        let result = registry
+            .reload_modules(ReloadContext::new(reload_config), &["ALL".to_string()])
+            .await;
+
+        assert!(
+            result
+                .reloaded
+                .contains(&"light-runtime/direct-registry".to_string())
+        );
+
+        let reloaded_configs = registry.component_configs();
+        assert_eq!(
+            reloaded_configs["direct-registry"]["directUrls"],
+            json!({"service1": "http://localhost:9090"})
+        );
+    }
+
+    #[tokio::test]
     async fn runtime_mcp_handler_exposes_management_tools() {
         let registry = Arc::new(ModuleRegistry::new());
         let config = runtime_config();
@@ -1530,7 +1619,10 @@ mod tests {
                 }),
             )
             .await;
-        assert_eq!(reload["modules"], json!([]));
+        assert_eq!(
+            reload["modules"],
+            json!(["light-client/client", "light-runtime/direct-registry"])
+        );
         assert!(
             reload["skipped"]
                 .as_array()

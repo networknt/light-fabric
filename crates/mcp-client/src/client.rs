@@ -180,12 +180,8 @@ mod tests {
         let mut bundle = Vec::from(TEST_CA_PEM);
         bundle.extend_from_slice(TEST_CA_PEM);
 
-        let client = McpGatewayClient::with_tls_options(
-            "http://127.0.0.1",
-            Some(&bundle),
-            true,
-            1000,
-        );
+        let client =
+            McpGatewayClient::with_tls_options("http://127.0.0.1", Some(&bundle), true, 1000);
 
         assert!(client.is_ok());
     }
