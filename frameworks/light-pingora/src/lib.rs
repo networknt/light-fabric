@@ -76,8 +76,9 @@ pub use header::{
 };
 pub use mcp::{
     MCP_ROUTER_CONFIG_NAME, MCP_ROUTER_FILE, MCP_ROUTER_LEGACY_FILE, MCP_ROUTER_MODULE_ID,
-    McpDiscoveryResolver, McpHttpMethod, McpHttpRequest, McpHttpResponse, McpRequestContext,
-    McpRouterConfig, McpRouterRuntime, McpToolConfig, McpToolType, load_mcp_router_runtime,
+    MCP_SESSION_ID_HEADER, McpDiscoveryResolver, McpHttpMethod, McpHttpRequest, McpHttpResponse,
+    McpRequestContext, McpRouterConfig, McpRouterRuntime, McpToolConfig, McpToolType,
+    load_mcp_router_runtime,
 };
 pub use metrics::{
     METRICS_CONFIG_NAME, METRICS_FILE, METRICS_MODULE_ID, MetricCounts, MetricsConfig,

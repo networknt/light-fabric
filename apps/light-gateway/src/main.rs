@@ -1181,9 +1181,10 @@ impl ReloadableModule for HandlerReloader {
             &ctx.runtime_config,
             handler_active(&active_handlers, &["tokenize", "detokenize"]),
         )?;
-        let mcp_router = load_mcp_router_runtime(
+        let mcp_router = load_mcp_router_runtime_preserving_state(
             &ctx.runtime_config,
             active_handlers.is_handler_active("mcp"),
+            &self.mcp_router,
         )?;
         let websocket_router = load_websocket_router_runtime_preserving_state(
             &ctx.runtime_config,
@@ -1334,7 +1335,12 @@ impl ReloadableModule for SecurityReloader {
         let config = load_security_runtime(&ctx.runtime_config, active)?;
         if let Some(ref runtime) = config {
             if let Err(error) = runtime.bootstrap().await {
-                tracing::warn!("Failed to bootstrap JWT keys on security config reload: {} (status: {}, code: {})", error.message, error.status, error.code);
+                tracing::warn!(
+                    "Failed to bootstrap JWT keys on security config reload: {} (status: {}, code: {})",
+                    error.message,
+                    error.status,
+                    error.code
+                );
             }
         }
         let stateless_auth = load_stateless_auth_runtime(
@@ -1350,7 +1356,12 @@ impl ReloadableModule for SecurityReloader {
         )?;
         if let Some(ref msal) = msal_exchange {
             if let Err(error) = msal.bootstrap().await {
-                tracing::warn!("Failed to bootstrap MSAL keys on security config reload: {} (status: {}, code: {})", error.message, error.status, error.code);
+                tracing::warn!(
+                    "Failed to bootstrap MSAL keys on security config reload: {} (status: {}, code: {})",
+                    error.message,
+                    error.status,
+                    error.code
+                );
             }
         }
         self.security_runtime.store(config);
@@ -1452,7 +1463,12 @@ impl ReloadableModule for MsalExchangeReloader {
         let runtime = load_msal_exchange_runtime(&ctx.runtime_config, active)?;
         if let Some(ref msal) = runtime {
             if let Err(error) = msal.bootstrap().await {
-                tracing::warn!("Failed to bootstrap MSAL keys on msal-exchange config reload: {} (status: {}, code: {})", error.message, error.status, error.code);
+                tracing::warn!(
+                    "Failed to bootstrap MSAL keys on msal-exchange config reload: {} (status: {}, code: {})",
+                    error.message,
+                    error.status,
+                    error.code
+                );
             }
         }
         self.msal_exchange.store(runtime);
@@ -1485,7 +1501,11 @@ struct McpRouterReloader {
 impl ReloadableModule for McpRouterReloader {
     async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
         let active = self.active_handlers.load().is_handler_active("mcp");
-        let runtime = load_mcp_router_runtime(&ctx.runtime_config, active)?;
+        let runtime = load_mcp_router_runtime_preserving_state(
+            &ctx.runtime_config,
+            active,
+            &self.mcp_router,
+        )?;
         self.mcp_router.store(runtime);
         Ok(ReloadOutcome::success("mcp-router.yml reloaded"))
     }
@@ -1520,9 +1540,10 @@ struct AccessControlReloader {
 impl ReloadableModule for AccessControlReloader {
     async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
         let active_handlers = self.active_handlers.load();
-        let mcp_router = load_mcp_router_runtime(
+        let mcp_router = load_mcp_router_runtime_preserving_state(
             &ctx.runtime_config,
             active_handlers.is_handler_active("mcp"),
+            &self.mcp_router,
         )?;
         let websocket_router = load_websocket_router_runtime_preserving_state(
             &ctx.runtime_config,
@@ -1554,7 +1575,12 @@ impl ReloadableModule for TokenReloader {
         )?;
         if let Some(ref msal) = msal_exchange {
             if let Err(error) = msal.bootstrap().await {
-                tracing::warn!("Failed to bootstrap MSAL keys on token config reload: {} (status: {}, code: {})", error.message, error.status, error.code);
+                tracing::warn!(
+                    "Failed to bootstrap MSAL keys on token config reload: {} (status: {}, code: {})",
+                    error.message,
+                    error.status,
+                    error.code
+                );
             }
         }
         self.token_runtime.store(runtime);
@@ -2026,9 +2052,13 @@ impl ProxyHttp for GatewayProxy {
                         ctx.record_handler_duration(&handler_id, started.elapsed());
                         continue;
                     }
+                    let path_with_query = match session.req_header().uri.query() {
+                        Some(query) => format!("{request_path}?{query}"),
+                        None => request_path.clone(),
+                    };
                     let request = McpHttpRequest {
                         method: method.clone(),
-                        path: request_path.clone(),
+                        path: path_with_query,
                         headers: agent_headers(session),
                         body: read_request_body(session).await?,
                     };
@@ -3075,6 +3105,21 @@ fn upstream_client_cert_key(config: &RuntimeConfig) -> Result<Option<Arc<CertKey
         ))
     })?;
     Ok(Some(Arc::new(cert_key)))
+}
+
+fn load_mcp_router_runtime_preserving_state(
+    runtime_config: &RuntimeConfig,
+    active: bool,
+    current: &ConfigManager<Option<McpRouterRuntime>>,
+) -> Result<Option<McpRouterRuntime>, RuntimeError> {
+    let previous = current.load();
+    let mut runtime = load_mcp_router_runtime(runtime_config, active)?;
+    if let Some(runtime) = runtime.as_mut()
+        && let Some(previous) = previous.as_ref().as_ref()
+    {
+        runtime.preserve_state_from(previous);
+    }
+    Ok(runtime)
 }
 
 fn load_websocket_router_runtime_preserving_state(
@@ -4127,6 +4172,115 @@ tools:
                 .tools[0]
                 .name,
             "forecast"
+        );
+    }
+
+    #[tokio::test]
+    async fn gateway_mcp_session_survives_config_reload() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            r#"
+handlers:
+  - mcp
+paths:
+  - path: /mcp
+    method: POST
+    exec:
+      - mcp
+defaultHandlers: []
+"#,
+        )
+        .expect("write handler config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::MCP_ROUTER_FILE),
+            r#"
+enabled: true
+path: /mcp
+tools:
+  - name: weather
+    targetHost: http://127.0.0.1:8080
+    path: /weather
+"#,
+        )
+        .expect("write mcp config");
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+        let proxy = GatewayProxy::from_runtime_config(&config).expect("build proxy");
+
+        // --- Initialize a session before the reload ---
+        let mcp = proxy.current_mcp_router();
+        let mcp = mcp.as_ref().as_ref().expect("mcp runtime");
+        let init_response = mcp
+            .handle_request(light_pingora::McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![("accept".to_string(), "application/json".to_string())],
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}"#
+                    .to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(init_response.status, 200, "initialize must succeed");
+        let session_id = init_response
+            .headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(light_pingora::MCP_SESSION_ID_HEADER))
+            .map(|(_, v)| v.clone())
+            .expect("session id header after initialize");
+
+        // --- Reload the MCP router config (simulates /reload endpoint) ---
+        std::fs::write(
+            external_dir.path().join(light_pingora::MCP_ROUTER_FILE),
+            r#"
+enabled: true
+path: /mcp
+tools:
+  - name: forecast
+    targetHost: http://127.0.0.1:8081
+    path: /forecast
+"#,
+        )
+        .expect("write updated mcp config");
+        let result = config
+            .module_registry
+            .reload_modules(
+                ReloadContext::new(config.clone()),
+                &[light_pingora::MCP_ROUTER_MODULE_ID.to_string()],
+            )
+            .await;
+        assert!(result.failed.is_empty(), "reload must not fail");
+
+        // --- Verify that the existing session survives the reload ---
+        let mcp_after = proxy.current_mcp_router();
+        let mcp_after = mcp_after
+            .as_ref()
+            .as_ref()
+            .expect("mcp runtime after reload");
+        // Config swap must have happened.
+        assert_eq!(mcp_after.config().tools[0].name, "forecast");
+
+        // tools/list with the original session ID must still succeed.
+        let tools_response = mcp_after
+            .handle_request(light_pingora::McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![
+                    ("accept".to_string(), "application/json".to_string()),
+                    (
+                        light_pingora::MCP_SESSION_ID_HEADER.to_string(),
+                        session_id.clone(),
+                    ),
+                ],
+                body: br#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(
+            tools_response.status, 200,
+            "tools/list must succeed with pre-reload session after config reload"
         );
     }
 

@@ -21,7 +21,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
-use url::Url;
+use url::{Url, form_urlencoded};
 
 pub const MCP_ROUTER_FILE: &str = "mcp-router.yml";
 pub const MCP_ROUTER_LEGACY_FILE: &str = "mcp-router.yaml";
@@ -30,7 +30,7 @@ pub const MCP_ROUTER_CONFIG_NAME: &str = "mcp-router";
 
 const DEFAULT_MCP_PATH: &str = "/mcp";
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
-const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
+pub const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
 const MCP_PROTOCOL_VERSION_HEADER: &str = "mcp-protocol-version";
 const MCP_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MCP_SESSION_PURGE_INTERVAL: Duration = Duration::from_secs(60);
@@ -575,7 +575,20 @@ impl McpRouterRuntime {
     }
 
     pub fn matches_path(&self, path: &str) -> bool {
-        self.config.enabled && path == self.config.path
+        if !self.config.enabled {
+            return false;
+        }
+        // Strip any query string so the caller can pass the full URI.
+        let path_only = path.split('?').next().unwrap_or(path);
+        path_only == self.config.path
+    }
+
+    /// Shares the live session store and purge timestamp with a freshly loaded
+    /// runtime, so active client sessions are not lost when configuration is
+    /// reloaded.  Mirrors `WebSocketRouterRuntime::preserve_state_from`.
+    pub fn preserve_state_from(&mut self, previous: &Self) {
+        self.sessions = Arc::clone(&previous.sessions);
+        self.last_session_purge = Arc::clone(&previous.last_session_purge);
     }
 
     pub async fn handle_request(
@@ -669,7 +682,10 @@ impl McpRouterRuntime {
         let frontend_session = if method == "initialize" {
             None
         } else {
-            match self.validate_frontend_session(&request.headers).await {
+            match self
+                .validate_frontend_session(request.path.as_str(), &request.headers)
+                .await
+            {
                 Ok(session) => Some(session),
                 Err(error) => {
                     return rpc_error_response(
@@ -773,7 +789,10 @@ impl McpRouterRuntime {
         request: McpHttpRequest,
     ) -> Result<McpHttpResponse, RuntimeError> {
         self.purge_expired_sessions(false).await;
-        let removed_session = match self.remove_frontend_session(&request.headers).await {
+        let removed_session = match self
+            .remove_frontend_session(request.path.as_str(), &request.headers)
+            .await
+        {
             Ok(session) => session,
             Err(error) => {
                 return rpc_error_response(
@@ -859,12 +878,11 @@ impl McpRouterRuntime {
 
     async fn validate_frontend_session(
         &self,
+        path: &str,
         headers: &[(String, String)],
     ) -> Result<McpFrontendSession, McpSessionError> {
-        let session_id = first_header(headers, MCP_SESSION_ID_HEADER)
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| McpSessionError {
+        let session_id =
+            session_id_from_path_and_headers(path, headers).ok_or_else(|| McpSessionError {
                 status: 400,
                 code: -32600,
                 message: "missing MCP session id".to_string(),
@@ -928,12 +946,11 @@ impl McpRouterRuntime {
 
     async fn remove_frontend_session(
         &self,
+        path: &str,
         headers: &[(String, String)],
     ) -> Result<RemovedMcpSession, McpSessionError> {
-        let session_id = first_header(headers, MCP_SESSION_ID_HEADER)
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| McpSessionError {
+        let session_id =
+            session_id_from_path_and_headers(path, headers).ok_or_else(|| McpSessionError {
                 status: 400,
                 code: -32600,
                 message: "missing MCP session id".to_string(),
@@ -2294,6 +2311,32 @@ fn should_regenerate_header(name: &str) -> bool {
             | MCP_SESSION_ID_HEADER
             | MCP_PROTOCOL_VERSION_HEADER
     )
+}
+
+/// Extracts the MCP session id from an inbound request.
+///
+/// The `mcp-session-id` header is tried first (MCP Streamable HTTP spec).
+/// If the header is absent or empty the function falls back to the `sessionId`
+/// or `session_id` query parameter in `path`, which some clients append when
+/// reconnecting after a server restart.
+fn session_id_from_path_and_headers(path: &str, headers: &[(String, String)]) -> Option<String> {
+    if let Some(id) = first_header(headers, MCP_SESSION_ID_HEADER)
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+    {
+        return Some(id);
+    }
+    if let Some(query_str) = path.split('?').nth(1) {
+        for (key, val) in form_urlencoded::parse(query_str.as_bytes()) {
+            if key == "sessionId" || key == "session_id" {
+                let id = val.trim().to_string();
+                if !id.is_empty() {
+                    return Some(id);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn preferred_response_mode(headers: &[(String, String)]) -> Option<McpResponseMode> {
@@ -4780,5 +4823,107 @@ endpointRules:
         assert!(request.starts_with("GET /offers?"));
         assert!(request.contains("segment=premium"));
         assert!(request.contains("state=ON"));
+    }
+
+    #[tokio::test]
+    async fn preserve_state_from_carries_sessions_across_reload() {
+        let original = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        // Seed a session in the original runtime (simulates a connected client).
+        let session_id = {
+            let mut store = original.sessions.lock().await;
+            let id = uuid::Uuid::new_v4().to_string();
+            store.insert(
+                id.clone(),
+                McpGatewaySession::new(
+                    DEFAULT_PROTOCOL_VERSION.to_string(),
+                    "test-client".to_string(),
+                ),
+            );
+            id
+        };
+
+        // Simulate a config reload: build a fresh runtime then preserve state.
+        let mut reloaded = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        reloaded.preserve_state_from(&original);
+
+        // The previously established session must still be visible.
+        assert!(
+            reloaded
+                .sessions
+                .lock()
+                .await
+                .contains_key(session_id.as_str()),
+            "session must survive config reload"
+        );
+
+        // And tools/list with that session must succeed.
+        let response = reloaded
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![
+                    accept_json(),
+                    (MCP_SESSION_ID_HEADER.to_string(), session_id.clone()),
+                ],
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        assert!(body["result"]["tools"].is_array());
+    }
+
+    #[tokio::test]
+    async fn tools_list_accepts_session_id_in_query_parameter() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        let (_, session_id) = session_header(&runtime);
+
+        // Pass the session id as a query parameter instead of a header.
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: format!("/mcp?sessionId={session_id}"),
+                headers: vec![accept_json()],
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        assert!(body["result"]["tools"].is_array());
+    }
+
+    #[tokio::test]
+    async fn delete_accepts_session_id_in_query_parameter() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        let (_, session_id) = session_header(&runtime);
+
+        // Terminate the session using query parameter only (no header).
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "DELETE".to_string(),
+                path: format!("/mcp?sessionId={session_id}"),
+                headers: vec![],
+                body: vec![],
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        // Expect 202 Accepted (session terminated).
+        assert_eq!(response.status, 202);
+        // Session must now be gone.
+        assert!(
+            !runtime
+                .sessions
+                .lock()
+                .await
+                .contains_key(session_id.as_str()),
+            "session must be removed after DELETE"
+        );
     }
 }
