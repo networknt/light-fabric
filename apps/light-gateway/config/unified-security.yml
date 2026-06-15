@@ -1,0 +1,78 @@
+# Unified Security Handler Configuration
+# This file is loaded only when "unified-security" or "unified" appears in
+# handler.handlers (via values.yml). It is NOT loaded when only "jwt",
+# "basic-auth", or "api-key" are active — those use their own config files.
+#
+# To activate this handler, add to values.yml:
+#
+#   handler.handlers:
+#     - correlation
+#     - headers
+#     - unified-security
+#     - proxy
+#
+#   handler.defaultHandlers:
+#     - default
+#
+# Then configure the sections below, or supply values via config-server.
+
+# Enable or disable the unified security handler entirely.
+enabled: ${unified-security.enabled:true}
+
+# Paths that bypass ALL security checks.
+# Requests matching any of these prefixes are forwarded immediately without
+# checking the Authorization header or any pathPrefixAuths rule.
+#
+# Accepts comma-separated string, JSON array string, or YAML list:
+#   /health,/server/info
+#   ["/health", "/server/info"]
+#   - /health
+#   - /server/info
+anonymousPrefixes: ${unified-security.anonymousPrefixes:[]}
+
+# Per-prefix authentication rules.
+#
+# The Rust implementation selects the LONGEST matching prefix (most specific wins).
+# The Java implementation selects the FIRST matching prefix (order in list matters).
+# Configure non-overlapping prefixes to avoid any ordering ambiguity.
+#
+# Each rule supports:
+#   prefix:         (string)  Required. URI path prefix to match.
+#   basic:          (bool)    Accept HTTP Basic authentication for this prefix.
+#   jwt:            (bool)    Accept Bearer JWT. JWKs fetched via client.yml.
+#   sjwt:           (bool)    Accept Simple-JWT (JWT with no scope/scp claim).
+#                             When both jwt and sjwt are true, the handler
+#                             inspects the token: scope present -> jwt verifier,
+#                             no scope -> sjwt verifier.
+#   swt:            (bool)    Accept SWT (opaque token introspection). [NOT YET IMPLEMENTED]
+#   apikey:         (bool)    Accept API key (header defined in apikey.yml).
+#   jwkServiceIds:  (list)    Service IDs from client.yml serviceIdAuthServers
+#                             used to resolve JWK endpoints for jwt verification.
+#                             All configured IDs are tried in order. Falls back
+#                             to the default key server when empty.
+#   sjwkServiceIds: (list)    Same as jwkServiceIds but for sjwt verification.
+#   swtServiceIds:  (list)    Service IDs for SWT introspection endpoints. [NOT YET IMPLEMENTED - Gap 3]
+#
+# Example (YAML format):
+#
+# pathPrefixAuths:
+#   - prefix: /salesforce
+#     jwt: true
+#     jwkServiceIds:
+#       - com.networknt.oauth2-salesforce-1.0.0
+#   - prefix: /blackrock
+#     jwt: true
+#     jwkServiceIds:
+#       - com.networknt.oauth2-blackrock-1.0.0
+#   - prefix: /admin
+#     basic: true
+#   - prefix: /webhook
+#     apikey: true
+#   - prefix: /
+#     jwt: true
+#
+# Example (JSON string format for config-server injection):
+#
+# pathPrefixAuths: '[{"prefix":"/salesforce","jwt":true,"jwkServiceIds":"com.networknt.oauth2-salesforce-1.0.0"},{"prefix":"/admin","basic":true},{"prefix":"/webhook","apikey":true},{"prefix":"/","jwt":true}]'
+
+pathPrefixAuths: ${unified-security.pathPrefixAuths:[]}

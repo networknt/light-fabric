@@ -119,7 +119,9 @@ pub use router::{
 pub use security::{
     AuthPrincipal, HandlerRejection, JwtExpiryMode, SECURITY_CONFIG_NAME, SECURITY_FILE,
     SECURITY_MODULE_ID, SecurityConfig, SecurityJwtConfig, SecurityRuntime, load_security_runtime,
-    load_security_runtime_from_file, verify_jwt_request, verify_jwt_token,
+    load_security_runtime_from_file, verify_jwt_request,
+    verify_jwt_request_with_service_id_override, verify_jwt_request_with_service_ids,
+    verify_jwt_token,
 };
 pub use service::{
     PATH_PREFIX_SERVICE_CONFIG_NAME, PATH_PREFIX_SERVICE_FILE, PATH_PREFIX_SERVICE_LEGACY_FILE,

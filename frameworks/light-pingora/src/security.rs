@@ -280,20 +280,21 @@ pub async fn verify_jwt_token(
     token: &str,
     expiry_mode: JwtExpiryMode,
 ) -> Result<AuthPrincipal, HandlerRejection> {
-    verify_jwt_token_for_service(runtime, token, expiry_mode, None).await
+    verify_jwt_token_for_services(runtime, token, expiry_mode, &[]).await
 }
 
-async fn verify_jwt_token_for_service(
+async fn verify_jwt_token_for_services(
     runtime: &SecurityRuntime,
     token: &str,
     expiry_mode: JwtExpiryMode,
-    service_id: Option<&str>,
+    service_ids: &[String],
 ) -> Result<AuthPrincipal, HandlerRejection> {
     let token = token.trim();
     if token.is_empty() {
         return Err(HandlerRejection::unauthorized("missing bearer token"));
     }
-    if service_id.is_none()
+    let has_service_ids = has_service_ids(service_ids);
+    if !has_service_ids
         && matches!(expiry_mode, JwtExpiryMode::Enforce)
         && let Some(principal) = cached_principal(runtime, token)
     {
@@ -307,7 +308,7 @@ async fn verify_jwt_token_for_service(
             return Err(HandlerRejection::unauthorized("invalid JWT header"));
         }
     };
-    let key = match decoding_key_for_token(runtime, header.kid.as_deref(), header.alg, service_id)
+    let key = match decoding_key_for_token(runtime, header.kid.as_deref(), header.alg, service_ids)
         .await
     {
         Ok(key) => key,
@@ -320,9 +321,9 @@ async fn verify_jwt_token_for_service(
     let decoded = match decode::<JsonValue>(token, &key, &validation) {
         Ok(decoded) => decoded,
         Err(error) if runtime.jwk_source.is_some() => {
-            refresh_jwks_for_service(runtime, service_id).await?;
+            refresh_jwks_for_services(runtime, service_ids).await?;
             let key =
-                decoding_key_for_token(runtime, header.kid.as_deref(), header.alg, service_id)
+                decoding_key_for_token(runtime, header.kid.as_deref(), header.alg, service_ids)
                     .await?;
             decode::<JsonValue>(token, &key, &validation).map_err(|_| {
                 tracing::debug!("JWT validation failed after JWKS refresh: {error}");
@@ -338,7 +339,7 @@ async fn verify_jwt_token_for_service(
         tracing::debug!("JWT issuer/audience validation failed: {}", error.message);
         return Err(error);
     }
-    if let Err(error) = validate_client_key_audience(runtime, service_id, &decoded.claims) {
+    if let Err(error) = validate_client_key_audiences(runtime, service_ids, &decoded.claims) {
         tracing::debug!(
             "JWT client key audience validation failed: {}",
             error.message
@@ -346,7 +347,7 @@ async fn verify_jwt_token_for_service(
         return Err(error);
     }
     let principal = principal_from_claims(decoded.claims);
-    if service_id.is_none() && matches!(expiry_mode, JwtExpiryMode::Enforce) {
+    if !has_service_ids && matches!(expiry_mode, JwtExpiryMode::Enforce) {
         cache_principal(runtime, token.to_string(), &principal);
     }
     Ok(principal)
@@ -356,6 +357,44 @@ pub async fn verify_jwt_request(
     session: &mut Session,
     runtime: &SecurityRuntime,
     request_path: &str,
+) -> Result<Option<AuthPrincipal>, HandlerRejection> {
+    verify_jwt_request_with_service_ids(session, runtime, request_path, &[]).await
+}
+
+/// Like [`verify_jwt_request`] but allows the caller to supply an explicit JWK
+/// service ID that overrides the `service_id` request header and the
+/// `client.yml` path routing.  When `service_id_override` is `Some`, the
+/// supplied value is used as-is for JWK resolution.  Pass `None` to fall back
+/// to the normal header/`client.yml` resolver.
+///
+/// Used by the unified-security handler to route JWT verification to the JWK
+/// server configured per path prefix via `jwkServiceIds` /
+/// `sjwkServiceIds`.
+pub async fn verify_jwt_request_with_service_id_override(
+    session: &mut Session,
+    runtime: &SecurityRuntime,
+    request_path: &str,
+    service_id_override: Option<&str>,
+) -> Result<Option<AuthPrincipal>, HandlerRejection> {
+    let service_ids = service_id_override
+        .and_then(|id| non_empty(Some(id)))
+        .map(|id| vec![id.to_string()])
+        .unwrap_or_default();
+    verify_jwt_request_with_service_ids(session, runtime, request_path, &service_ids).await
+}
+
+/// Like [`verify_jwt_request`] but allows the caller to supply explicit JWK
+/// service IDs that override the `service_id` request header and `client.yml`
+/// path routing.  When `service_ids` contains one or more non-empty entries,
+/// all supplied IDs are used for JWK resolution and audience validation.
+///
+/// Used by the unified-security handler to route JWT/SJWT verification to the
+/// JWK servers configured per path prefix via `jwkServiceIds` / `sjwkServiceIds`.
+pub async fn verify_jwt_request_with_service_ids(
+    session: &mut Session,
+    runtime: &SecurityRuntime,
+    request_path: &str,
+    service_ids: &[String],
 ) -> Result<Option<AuthPrincipal>, HandlerRejection> {
     let config = &runtime.config;
     if request_path_is_skipped(config, request_path) {
@@ -382,20 +421,26 @@ pub async fn verify_jwt_request(
             .flatten()
     });
     let token = token.ok_or_else(|| HandlerRejection::unauthorized("missing bearer token"))?;
-    let jwk_service_id = jwk_service_id_for_request(runtime, session, request_path);
 
-    if jwk_service_id.is_none()
+    let mut effective_service_ids = normalized_service_ids(service_ids);
+    if effective_service_ids.is_empty()
+        && let Some(service_id) = jwk_service_id_for_request(runtime, session, request_path)
+    {
+        effective_service_ids.push(service_id);
+    }
+
+    if effective_service_ids.is_empty()
         && let Some(principal) = cached_principal(runtime, token.as_str())
     {
         apply_pass_through_claims(session, config, &principal)?;
         return Ok(Some(principal));
     }
 
-    let principal = verify_jwt_token_for_service(
+    let principal = verify_jwt_token_for_services(
         runtime,
         token.as_str(),
         JwtExpiryMode::Enforce,
-        jwk_service_id.as_deref(),
+        &effective_service_ids,
     )
     .await?;
     apply_pass_through_claims(session, config, &principal)?;
@@ -467,24 +512,51 @@ fn jwk_service_id_for_request(
         .service_id_for_request(explicit.as_deref(), request_path)
 }
 
-fn validate_client_key_audience(
+fn validate_client_key_audiences(
     runtime: &SecurityRuntime,
-    service_id: Option<&str>,
+    service_ids: &[String],
     claims: &JsonValue,
 ) -> Result<(), HandlerRejection> {
     let Some(source) = runtime.jwk_source.as_ref() else {
         return Ok(());
     };
-    let provider = match OAuthProviderResolver::new(&source.client).key_provider(service_id) {
-        Ok(provider) => provider,
-        Err(OAuthProviderError::MissingServiceId { .. })
-        | Err(OAuthProviderError::MissingProvider { .. }) => return Ok(()),
-        Err(error) => return Err(jwk_provider_error(error)),
-    };
-    let Some(audience) = non_empty(provider.audience.as_deref()) else {
+    let resolver = OAuthProviderResolver::new(&source.client);
+    let normalized = normalized_service_ids(service_ids);
+    if normalized.is_empty() {
+        let provider = match resolver.key_provider(None) {
+            Ok(provider) => provider,
+            Err(OAuthProviderError::MissingServiceId { .. })
+            | Err(OAuthProviderError::MissingProvider { .. }) => return Ok(()),
+            Err(error) => return Err(jwk_provider_error(error)),
+        };
+        let Some(audience) = non_empty(provider.audience.as_deref()) else {
+            return Ok(());
+        };
+        if !claim_audience_matches(claims, &[audience]) {
+            return Err(HandlerRejection::unauthorized(
+                "JWT audience validation failed",
+            ));
+        }
         return Ok(());
-    };
-    if !claim_audience_matches(claims, &[audience]) {
+    }
+
+    let mut found_configured_audience = false;
+    for service_id in &normalized {
+        let provider = match resolver.key_provider(Some(service_id.as_str())) {
+            Ok(provider) => provider,
+            Err(OAuthProviderError::MissingServiceId { .. })
+            | Err(OAuthProviderError::MissingProvider { .. }) => continue,
+            Err(error) => return Err(jwk_provider_error(error)),
+        };
+        let Some(audience) = non_empty(provider.audience.as_deref()) else {
+            continue;
+        };
+        found_configured_audience = true;
+        if claim_audience_matches(claims, &[audience]) {
+            return Ok(());
+        }
+    }
+    if found_configured_audience {
         return Err(HandlerRejection::unauthorized(
             "JWT audience validation failed",
         ));
@@ -496,9 +568,9 @@ async fn decoding_key_for_token(
     runtime: &SecurityRuntime,
     kid: Option<&str>,
     _algorithm: Algorithm,
-    service_id: Option<&str>,
+    service_ids: &[String],
 ) -> Result<DecodingKey, HandlerRejection> {
-    if let Some(key) = decoding_key_from_jwk(runtime, kid, service_id).await? {
+    if let Some(key) = decoding_key_from_jwk(runtime, kid, service_ids).await? {
         return Ok(key);
     }
     Err(HandlerRejection::unauthorized("JWT key is not configured"))
@@ -507,9 +579,9 @@ async fn decoding_key_for_token(
 async fn decoding_key_from_jwk(
     runtime: &SecurityRuntime,
     kid: Option<&str>,
-    service_id: Option<&str>,
+    service_ids: &[String],
 ) -> Result<Option<DecodingKey>, HandlerRejection> {
-    let Some(jwk) = jwk_for_token(runtime, kid, service_id).await? else {
+    let Some(jwk) = jwk_for_services(runtime, kid, service_ids).await? else {
         return Ok(None);
     };
     DecodingKey::from_jwk(&jwk)
@@ -517,33 +589,38 @@ async fn decoding_key_from_jwk(
         .map_err(|_| HandlerRejection::unauthorized("JWK cannot verify token algorithm"))
 }
 
-async fn jwk_for_token(
+async fn jwk_for_services(
     runtime: &SecurityRuntime,
     kid: Option<&str>,
-    service_id: Option<&str>,
+    service_ids: &[String],
 ) -> Result<Option<Jwk>, HandlerRejection> {
     if runtime.jwk_source.is_none() {
         return Ok(None);
     }
-    if let Some(jwk) = cached_jwk_for_token(runtime, kid, service_id).await {
+    if let Some(jwk) = cached_jwk_for_services(runtime, kid, service_ids).await {
         return Ok(Some(jwk));
     }
-    refresh_jwks_for_service(runtime, service_id).await?;
-    Ok(cached_jwk_for_token(runtime, kid, service_id).await)
+    refresh_jwks_for_services(runtime, service_ids).await?;
+    Ok(cached_jwk_for_services(runtime, kid, service_ids).await)
 }
 
-async fn cached_jwk_for_token(
+async fn cached_jwk_for_services(
     runtime: &SecurityRuntime,
     kid: Option<&str>,
-    service_id: Option<&str>,
+    service_ids: &[String],
 ) -> Option<Jwk> {
+    let service_ids = normalized_service_ids(service_ids);
     let jwks = runtime.jwks.read().await;
     if let Some(kid) = kid {
-        if let Some(service_id) = service_id.and_then(|value| non_empty(Some(value))) {
-            if let Some(jwk) = jwks.get(jwk_cache_key(kid, Some(service_id)).as_str()) {
-                return Some(jwk.clone());
+        if !service_ids.is_empty() {
+            for service_id in &service_ids {
+                if let Some(jwk) = jwks.get(jwk_cache_key(kid, Some(service_id)).as_str()) {
+                    return Some(jwk.clone());
+                }
             }
-            if let Some(jwk) = jwks.get(kid) {
+            if service_ids.len() == 1
+                && let Some(jwk) = jwks.get(kid)
+            {
                 return Some(jwk.clone());
             }
         } else {
@@ -561,15 +638,17 @@ async fn cached_jwk_for_token(
             }
         }
     }
-    if let Some(service_id) = service_id.and_then(|value| non_empty(Some(value))) {
-        let prefix = format!("{service_id}:");
-        let mut matched = jwks
-            .iter()
-            .filter(|(key, _)| key.starts_with(prefix.as_str()));
-        if let Some((_, jwk)) = matched.next()
-            && matched.next().is_none()
-        {
-            return Some(jwk.clone());
+    if !service_ids.is_empty() {
+        for service_id in &service_ids {
+            let prefix = format!("{service_id}:");
+            let mut matched = jwks
+                .iter()
+                .filter(|(key, _)| key.starts_with(prefix.as_str()));
+            if let Some((_, jwk)) = matched.next()
+                && matched.next().is_none()
+            {
+                return Some(jwk.clone());
+            }
         }
         return None;
     }
@@ -583,10 +662,22 @@ async fn refresh_jwks_for_service(
     runtime: &SecurityRuntime,
     service_id: Option<&str>,
 ) -> Result<(), HandlerRejection> {
+    let service_ids = service_id
+        .and_then(|id| non_empty(Some(id)))
+        .map(|id| vec![id.to_string()])
+        .unwrap_or_default();
+    refresh_jwks_for_services(runtime, &service_ids).await
+}
+
+async fn refresh_jwks_for_services(
+    runtime: &SecurityRuntime,
+    service_ids: &[String],
+) -> Result<(), HandlerRejection> {
     let Some(source) = runtime.jwk_source.as_ref() else {
         return Ok(());
     };
-    let providers = key_providers_for_service(source, service_id)?;
+    let service_ids = normalized_service_ids(service_ids);
+    let providers = key_providers_for_services(source, &service_ids)?;
     let mut entries = BTreeMap::new();
     for provider in providers {
         entries.extend(fetch_jwks_for_provider(source, &provider).await?);
@@ -599,9 +690,16 @@ async fn refresh_jwks_for_service(
         ));
     }
     let mut cached = runtime.jwks.write().await;
-    if let Some(service_id) = service_id.and_then(|value| non_empty(Some(value))) {
-        let prefix = format!("{service_id}:");
-        cached.retain(|key, _| !key.starts_with(prefix.as_str()));
+    if !service_ids.is_empty() {
+        let prefixes = service_ids
+            .iter()
+            .map(|service_id| format!("{service_id}:"))
+            .collect::<Vec<_>>();
+        cached.retain(|key, _| {
+            !prefixes
+                .iter()
+                .any(|prefix| key.starts_with(prefix.as_str()))
+        });
         cached.extend(entries);
     } else {
         *cached = entries;
@@ -609,18 +707,25 @@ async fn refresh_jwks_for_service(
     Ok(())
 }
 
-fn key_providers_for_service(
+fn key_providers_for_services(
     source: &JwkSource,
-    service_id: Option<&str>,
+    service_ids: &[String],
 ) -> Result<Vec<ResolvedKeyProvider>, HandlerRejection> {
     let resolver = OAuthProviderResolver::new(&source.client);
-    match service_id.and_then(|value| non_empty(Some(value))) {
-        Some(service_id) => resolver
-            .key_provider(Some(service_id))
-            .map(|provider| vec![provider])
-            .map_err(jwk_provider_error),
-        None => resolver.key_providers().map_err(jwk_provider_error),
+    let service_ids = normalized_service_ids(service_ids);
+    if service_ids.is_empty() {
+        return resolver.key_providers().map_err(jwk_provider_error);
     }
+
+    let mut providers = Vec::with_capacity(service_ids.len());
+    for service_id in &service_ids {
+        providers.push(
+            resolver
+                .key_provider(Some(service_id.as_str()))
+                .map_err(jwk_provider_error)?,
+        );
+    }
+    Ok(providers)
 }
 
 async fn fetch_jwks_for_provider(
@@ -883,6 +988,21 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
+fn has_service_ids(service_ids: &[String]) -> bool {
+    service_ids
+        .iter()
+        .any(|service_id| !service_id.trim().is_empty())
+}
+
+fn normalized_service_ids(service_ids: &[String]) -> Vec<String> {
+    service_ids
+        .iter()
+        .map(|service_id| service_id.trim())
+        .filter(|service_id| !service_id.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 fn apply_pass_through_claims(
     session: &mut Session,
     config: &SecurityConfig,
@@ -1052,7 +1172,8 @@ passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
         );
         let source = test_jwk_source(client);
 
-        let providers = key_providers_for_service(&source, Some("orders")).expect("providers");
+        let providers =
+            key_providers_for_services(&source, &["orders".to_string()]).expect("providers");
 
         assert_eq!(providers.len(), 1);
         assert_eq!(
@@ -1061,6 +1182,43 @@ passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
         );
         assert_eq!(providers[0].audience.as_deref(), Some("orders-api"));
         assert_eq!(providers[0].cache_service_id.as_deref(), Some("orders"));
+    }
+
+    #[test]
+    fn key_provider_selection_uses_all_service_ids() {
+        let mut client = ClientTokenConfig::default();
+        client.oauth.multiple_auth_servers = true;
+        client.oauth.token.key.service_id_auth_servers.insert(
+            "orders".to_string(),
+            AuthServerConfig {
+                server_url: Some("https://orders-oauth".to_string()),
+                audience: Some("orders-api".to_string()),
+                ..AuthServerConfig::default()
+            },
+        );
+        client.oauth.token.key.service_id_auth_servers.insert(
+            "billing".to_string(),
+            AuthServerConfig {
+                server_url: Some("https://billing-oauth".to_string()),
+                audience: Some("billing-api".to_string()),
+                ..AuthServerConfig::default()
+            },
+        );
+        let source = test_jwk_source(client);
+
+        let providers =
+            key_providers_for_services(&source, &["orders".to_string(), "billing".to_string()])
+                .expect("providers");
+
+        assert_eq!(providers.len(), 2);
+        assert_eq!(
+            providers[0].server_url.as_deref(),
+            Some("https://orders-oauth")
+        );
+        assert_eq!(
+            providers[1].server_url.as_deref(),
+            Some("https://billing-oauth")
+        );
     }
 
     #[test]
@@ -1077,18 +1235,57 @@ passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
         );
         let runtime = test_runtime_with_client(client);
 
-        validate_client_key_audience(
+        validate_client_key_audiences(
             &runtime,
-            Some("orders"),
+            &["orders".to_string()],
             &serde_json::json!({ "aud": "orders-api" }),
         )
         .expect("audience matches");
-        let error = validate_client_key_audience(
+        let error = validate_client_key_audiences(
             &runtime,
-            Some("orders"),
+            &["orders".to_string()],
             &serde_json::json!({ "aud": "other-api" }),
         )
         .expect_err("audience mismatch");
+
+        assert_eq!(error.status, 401);
+        assert_eq!(error.code, "ERR10002");
+    }
+
+    #[test]
+    fn client_key_audience_accepts_any_service_provider_audience() {
+        let mut client = ClientTokenConfig::default();
+        client.oauth.multiple_auth_servers = true;
+        client.oauth.token.key.service_id_auth_servers.insert(
+            "orders".to_string(),
+            AuthServerConfig {
+                server_url: Some("https://orders-oauth".to_string()),
+                audience: Some("orders-api".to_string()),
+                ..AuthServerConfig::default()
+            },
+        );
+        client.oauth.token.key.service_id_auth_servers.insert(
+            "billing".to_string(),
+            AuthServerConfig {
+                server_url: Some("https://billing-oauth".to_string()),
+                audience: Some("billing-api".to_string()),
+                ..AuthServerConfig::default()
+            },
+        );
+        let runtime = test_runtime_with_client(client);
+
+        validate_client_key_audiences(
+            &runtime,
+            &["orders".to_string(), "billing".to_string()],
+            &serde_json::json!({ "aud": "billing-api" }),
+        )
+        .expect("one configured audience matches");
+        let error = validate_client_key_audiences(
+            &runtime,
+            &["orders".to_string(), "billing".to_string()],
+            &serde_json::json!({ "aud": "other-api" }),
+        )
+        .expect_err("all configured audiences mismatch");
 
         assert_eq!(error.status, 401);
         assert_eq!(error.code, "ERR10002");
@@ -1141,7 +1338,8 @@ passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
             jwks.insert("service1:key1".to_string(), jwk2.clone());
         }
 
-        let found = cached_jwk_for_token(&runtime, Some("key1"), Some("service1")).await;
+        let found =
+            cached_jwk_for_services(&runtime, Some("key1"), &["service1".to_string()]).await;
         assert!(found.is_some());
         assert_eq!(found.unwrap(), jwk2);
     }
@@ -1164,7 +1362,8 @@ passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
             jwks.insert("key1".to_string(), jwk1.clone());
         }
 
-        let found = cached_jwk_for_token(&runtime, Some("key1"), Some("service1")).await;
+        let found =
+            cached_jwk_for_services(&runtime, Some("key1"), &["service1".to_string()]).await;
         assert!(found.is_some());
         assert_eq!(found.unwrap(), jwk1);
     }
@@ -1187,8 +1386,47 @@ passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
             jwks.insert("service1:key1".to_string(), jwk.clone());
         }
 
-        let found = cached_jwk_for_token(&runtime, Some("key1"), Some("service2")).await;
+        let found =
+            cached_jwk_for_services(&runtime, Some("key1"), &["service2".to_string()]).await;
         assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn cached_jwk_uses_ordered_service_id_list() {
+        let runtime = test_runtime_with_client(ClientTokenConfig::default());
+        let jwk1: Jwk = serde_json::from_str(
+            r#"{
+            "kty": "RSA",
+            "kid": "key1",
+            "n": "n-val-1",
+            "e": "AQAB"
+        }"#,
+        )
+        .unwrap();
+        let jwk2: Jwk = serde_json::from_str(
+            r#"{
+            "kty": "RSA",
+            "kid": "key1",
+            "n": "n-val-2",
+            "e": "AQAB"
+        }"#,
+        )
+        .unwrap();
+
+        {
+            let mut jwks = runtime.jwks.write().await;
+            jwks.insert("service1:key1".to_string(), jwk1.clone());
+            jwks.insert("service2:key1".to_string(), jwk2.clone());
+        }
+
+        let found = cached_jwk_for_services(
+            &runtime,
+            Some("key1"),
+            &["service2".to_string(), "service1".to_string()],
+        )
+        .await;
+        assert!(found.is_some());
+        assert_eq!(found.unwrap(), jwk2);
     }
 
     #[tokio::test]
@@ -1209,7 +1447,7 @@ passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
             jwks.insert("service1:key1".to_string(), jwk.clone());
         }
 
-        let found = cached_jwk_for_token(&runtime, Some("key1"), None).await;
+        let found = cached_jwk_for_services(&runtime, Some("key1"), &[]).await;
         assert!(found.is_some());
         assert_eq!(found.unwrap(), jwk);
     }
@@ -1242,7 +1480,7 @@ passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
             jwks.insert("service2:key1".to_string(), jwk2.clone());
         }
 
-        let found = cached_jwk_for_token(&runtime, Some("key1"), None).await;
+        let found = cached_jwk_for_services(&runtime, Some("key1"), &[]).await;
         assert!(found.is_none());
     }
 
@@ -1290,7 +1528,7 @@ passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
         let runtime = test_runtime_with_client(client);
 
         // First call should fetch
-        let first = jwk_for_token(&runtime, Some("key_fetch_once"), None)
+        let first = jwk_for_services(&runtime, Some("key_fetch_once"), &[])
             .await
             .unwrap();
         assert!(first.is_some());
@@ -1301,7 +1539,7 @@ passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
         assert_eq!(*call_count.lock().unwrap(), 1);
 
         // Second call should hit the cache directly, call count stays at 1
-        let second = jwk_for_token(&runtime, Some("key_fetch_once"), None)
+        let second = jwk_for_services(&runtime, Some("key_fetch_once"), &[])
             .await
             .unwrap();
         assert!(second.is_some());
@@ -1362,11 +1600,13 @@ passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
         }
 
         // Subsequent requests with kid & serviceId must hit the cache directly
-        let found = cached_jwk_for_token(&runtime, Some("key_boot"), Some("service_boot1")).await;
+        let found =
+            cached_jwk_for_services(&runtime, Some("key_boot"), &["service_boot1".to_string()])
+                .await;
         assert!(found.is_some());
         assert_eq!(found.unwrap().common.key_id, Some("key_boot".to_string()));
 
-        let resolved = jwk_for_token(&runtime, Some("key_boot"), Some("service_boot1"))
+        let resolved = jwk_for_services(&runtime, Some("key_boot"), &["service_boot1".to_string()])
             .await
             .unwrap();
         assert!(resolved.is_some());

@@ -36,6 +36,7 @@
 - [WebSocket Router](design/websocket-router.md)
 - [Stateless Auth Handler](design/stateless-auth.md)
 - [MSAL Exchange Handler](design/msal-exchange.md)
+- [Unified Security Handler](design/unified-security.md)
 - [PII Tokenization](design/pii-tokenization.md)
 - [Token Handler](design/token-handler.md)
 - [Service Discovery](design/service-discovery.md)
