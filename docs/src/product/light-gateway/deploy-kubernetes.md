@@ -78,8 +78,8 @@ fresh cache and avoids accidentally keeping stale config across pod replacement.
 
 Use a `PersistentVolumeClaim` only when the customer explicitly wants the
 gateway to restart from the last downloaded config during a config-server
-outage. A persistent cache improves outage tolerance but can also preserve stale
-runtime state.
+download outage. On each startup, the gateway tries to download the latest
+`values.yml` before starting.
 
 ## Registration Address
 
@@ -504,9 +504,10 @@ Kubernetes starts pod
   -> route protected MCP traffic to backend MCP servers
 ```
 
-If config-server is unavailable and `/app/config-cache/values.yml` exists, the
-runtime can continue from cached config. With `emptyDir`, that cache disappears
-when the pod is recreated. With a PVC, it can survive pod replacement.
+When `startup.yml` configures config-server, the runtime tries to download the
+latest `values.yml` before starting. If that download fails for any reason, the
+runtime continues startup with the available local and cached config, including
+`/app/config-cache/values.yml` when present.
 
 ## Upgrade And Rollback
 

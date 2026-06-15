@@ -632,9 +632,10 @@ Kubernetes starts pod
   -> forward tool discovery and tool calls to light-gateway
 ```
 
-If config-server is unavailable and `/app/config-cache/values.yml` exists, the
-runtime can continue from cached config. With `emptyDir`, that cache disappears
-when the pod is recreated. With a PVC, it can survive pod replacement.
+When `startup.yml` configures config-server, the runtime tries to download the
+latest `values.yml` before starting. If that download fails for any reason, the
+runtime continues startup with the available local and cached config, including
+`/app/config-cache/values.yml` when present.
 
 ## Upgrade And Rollback
 

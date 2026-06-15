@@ -287,10 +287,10 @@ systemd
   -> route protected MCP traffic to downstream MCP servers
 ```
 
-If config-server is temporarily unavailable and cached config exists, the
-runtime can continue from `config-cache`. If this is not acceptable for a
-customer environment, make it an operational policy to clear `config-cache`
-before restart or add a pre-start health check for config-server availability.
+When `startup.yml` configures config-server, the runtime tries to download the
+latest `values.yml` before starting. If that download fails for any reason, the
+runtime continues startup with the available local and cached config, including
+`config-cache/values.yml` when present.
 
 ## Upgrade And Rollback
 

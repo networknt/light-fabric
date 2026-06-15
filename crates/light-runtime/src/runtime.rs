@@ -841,7 +841,7 @@ async fn fetch_remote_bootstrap_if_needed(
                 CONFIG_SERVER_CERTS_CONTEXT_ROOT,
                 CONFIG_SERVER_FILES_CONTEXT_ROOT,
             ] {
-                let files = fetch_remote_files(
+                match fetch_remote_files(
                     &client,
                     config_server_uri,
                     context_root,
@@ -849,22 +849,25 @@ async fn fetch_remote_bootstrap_if_needed(
                     bootstrap,
                     external_config_dir,
                 )
-                .await?;
-                result.cached_files.extend(files);
+                .await
+                {
+                    Ok(files) => result.cached_files.extend(files),
+                    Err(error) => warn!(
+                        context_root,
+                        "remote bootstrap file download failed; continuing with available local/cache files: {:?}",
+                        error
+                    ),
+                }
             }
 
             Ok(result)
         }
         Err(error) => {
-            if external_config_dir.join(VALUES_FILE).exists() {
-                warn!(
-                    "remote bootstrap failed; continuing with cached local config: {:?}",
-                    error
-                );
-                Ok(RemoteBootstrapResult::default())
-            } else {
-                Err(error)
-            }
+            warn!(
+                "remote bootstrap values download failed; continuing with available local/cache config: {:?}",
+                error
+            );
+            Ok(RemoteBootstrapResult::default())
         }
     }
 }
@@ -1896,6 +1899,143 @@ shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
             "https://controller:8438"
         );
         assert!(external_dir.path().join(VALUES_FILE).exists());
+        server.await.expect("config server task");
+    }
+
+    #[tokio::test]
+    async fn remote_bootstrap_http_error_uses_available_cache() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind config server");
+        let addr = listener.local_addr().expect("config server addr");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let mut buffer = [0_u8; 4096];
+            let _ = stream.read(&mut buffer).await.expect("read request");
+            let body = "config server unavailable";
+            let response = format!(
+                "HTTP/1.1 503 Service Unavailable\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+        });
+
+        let external_dir = TempDir::new().expect("external temp dir");
+        fs::write(
+            external_dir.path().join(VALUES_FILE),
+            "server.serviceId: com.networknt.cached-1.0.0\n",
+        )
+        .expect("write cached values");
+        let bootstrap = BootstrapConfig {
+            config_server_uri: Some(format!("http://{addr}")),
+            accept_header: default_accept_header(),
+            timeout: crate::config::default_timeout_ms(),
+            connect_timeout: crate::config::default_connect_timeout_ms(),
+            ..BootstrapConfig::default()
+        };
+
+        let result = fetch_remote_bootstrap_if_needed(&bootstrap, None, external_dir.path())
+            .await
+            .expect("http error should use available cache");
+
+        assert!(result.values_yaml.is_none());
+        assert!(result.cached_files.is_empty());
+        assert!(external_dir.path().join(VALUES_FILE).exists());
+        server.await.expect("config server task");
+    }
+
+    #[tokio::test]
+    async fn remote_bootstrap_connection_failure_uses_cached_values() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind unused config server port");
+        let addr = listener.local_addr().expect("config server addr");
+        drop(listener);
+
+        let external_dir = TempDir::new().expect("external temp dir");
+        fs::write(
+            external_dir.path().join(VALUES_FILE),
+            "server.serviceId: com.networknt.cached-1.0.0\n",
+        )
+        .expect("write cached values");
+        let bootstrap = BootstrapConfig {
+            config_server_uri: Some(format!("http://{addr}")),
+            accept_header: default_accept_header(),
+            timeout: crate::config::default_timeout_ms(),
+            connect_timeout: crate::config::default_connect_timeout_ms(),
+            ..BootstrapConfig::default()
+        };
+
+        let result = fetch_remote_bootstrap_if_needed(&bootstrap, None, external_dir.path())
+            .await
+            .expect("connection failure should use cached values");
+
+        assert!(result.values_yaml.is_none());
+        assert!(result.cached_files.is_empty());
+        assert!(external_dir.path().join(VALUES_FILE).exists());
+    }
+
+    #[tokio::test]
+    async fn remote_bootstrap_file_download_error_keeps_downloaded_values() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind config server");
+        let addr = listener.local_addr().expect("config server addr");
+        let server = tokio::spawn(async move {
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().await.expect("accept request");
+                let mut buffer = [0_u8; 4096];
+                let bytes = stream.read(&mut buffer).await.expect("read request");
+                let request = String::from_utf8_lossy(&buffer[..bytes]);
+                let (status, content_type, body) =
+                    if request.starts_with("GET /config-server/configs") {
+                        ("200 OK", "application/yaml", "server.httpPort: 9090\n")
+                    } else {
+                        (
+                            "500 Internal Server Error",
+                            "text/plain",
+                            "file download failed",
+                        )
+                    };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write response");
+            }
+        });
+
+        let external_dir = TempDir::new().expect("external temp dir");
+        let bootstrap = BootstrapConfig {
+            config_server_uri: Some(format!("http://{addr}")),
+            accept_header: default_accept_header(),
+            timeout: crate::config::default_timeout_ms(),
+            connect_timeout: crate::config::default_connect_timeout_ms(),
+            ..BootstrapConfig::default()
+        };
+
+        let result = fetch_remote_bootstrap_if_needed(&bootstrap, None, external_dir.path())
+            .await
+            .expect("file download error should keep downloaded values");
+
+        assert_eq!(
+            result.values_yaml.as_deref(),
+            Some("server.httpPort: 9090\n")
+        );
+        assert_eq!(
+            result.cached_files,
+            vec![external_dir.path().join(VALUES_FILE)]
+        );
+        assert_eq!(
+            fs::read_to_string(external_dir.path().join(VALUES_FILE)).expect("read values"),
+            "server.httpPort: 9090\n"
+        );
         server.await.expect("config server task");
     }
 
