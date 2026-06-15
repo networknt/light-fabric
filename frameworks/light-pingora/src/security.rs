@@ -543,11 +543,13 @@ async fn cached_jwk_for_token(
             if let Some(jwk) = jwks.get(jwk_cache_key(kid, Some(service_id)).as_str()) {
                 return Some(jwk.clone());
             }
-        }
-        if let Some(jwk) = jwks.get(kid) {
-            return Some(jwk.clone());
-        }
-        if service_id.is_none() {
+            if let Some(jwk) = jwks.get(kid) {
+                return Some(jwk.clone());
+            }
+        } else {
+            if let Some(jwk) = jwks.get(kid) {
+                return Some(jwk.clone());
+            }
             let suffix = format!(":{kid}");
             let mut matched = jwks
                 .iter()
@@ -1005,6 +1007,8 @@ fn default_clock_skew_seconds() -> u64 {
 mod tests {
     use super::*;
     use light_client::AuthServerConfig;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     #[test]
     fn security_config_accepts_java_style_maps_and_lists() {
@@ -1106,6 +1110,301 @@ passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
             client,
             direct_registry: DirectRegistryConfig::default(),
             registry_client: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn cached_jwk_prefers_exact_service_kid() {
+        let runtime = test_runtime_with_client(ClientTokenConfig::default());
+        let jwk1: Jwk = serde_json::from_str(
+            r#"{
+            "kty": "RSA",
+            "kid": "key1",
+            "n": "global-n",
+            "e": "AQAB"
+        }"#,
+        )
+        .unwrap();
+        let jwk2: Jwk = serde_json::from_str(
+            r#"{
+            "kty": "RSA",
+            "kid": "key1",
+            "n": "service-n",
+            "e": "AQAB"
+        }"#,
+        )
+        .unwrap();
+
+        {
+            let mut jwks = runtime.jwks.write().await;
+            jwks.insert("key1".to_string(), jwk1.clone());
+            jwks.insert("service1:key1".to_string(), jwk2.clone());
+        }
+
+        let found = cached_jwk_for_token(&runtime, Some("key1"), Some("service1")).await;
+        assert!(found.is_some());
+        assert_eq!(found.unwrap(), jwk2);
+    }
+
+    #[tokio::test]
+    async fn cached_jwk_uses_plain_kid_for_global_provider() {
+        let runtime = test_runtime_with_client(ClientTokenConfig::default());
+        let jwk1: Jwk = serde_json::from_str(
+            r#"{
+            "kty": "RSA",
+            "kid": "key1",
+            "n": "global-n",
+            "e": "AQAB"
+        }"#,
+        )
+        .unwrap();
+
+        {
+            let mut jwks = runtime.jwks.write().await;
+            jwks.insert("key1".to_string(), jwk1.clone());
+        }
+
+        let found = cached_jwk_for_token(&runtime, Some("key1"), Some("service1")).await;
+        assert!(found.is_some());
+        assert_eq!(found.unwrap(), jwk1);
+    }
+
+    #[tokio::test]
+    async fn cached_jwk_does_not_cross_service_prefixes() {
+        let runtime = test_runtime_with_client(ClientTokenConfig::default());
+        let jwk: Jwk = serde_json::from_str(
+            r#"{
+            "kty": "RSA",
+            "kid": "key1",
+            "n": "n-val",
+            "e": "AQAB"
+        }"#,
+        )
+        .unwrap();
+
+        {
+            let mut jwks = runtime.jwks.write().await;
+            jwks.insert("service1:key1".to_string(), jwk.clone());
+        }
+
+        let found = cached_jwk_for_token(&runtime, Some("key1"), Some("service2")).await;
+        assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn cached_jwk_no_service_suffix_match_requires_uniqueness() {
+        let runtime = test_runtime_with_client(ClientTokenConfig::default());
+        let jwk: Jwk = serde_json::from_str(
+            r#"{
+            "kty": "RSA",
+            "kid": "key1",
+            "n": "n-val",
+            "e": "AQAB"
+        }"#,
+        )
+        .unwrap();
+
+        {
+            let mut jwks = runtime.jwks.write().await;
+            jwks.insert("service1:key1".to_string(), jwk.clone());
+        }
+
+        let found = cached_jwk_for_token(&runtime, Some("key1"), None).await;
+        assert!(found.is_some());
+        assert_eq!(found.unwrap(), jwk);
+    }
+
+    #[tokio::test]
+    async fn cached_jwk_no_service_suffix_match_fails_on_ambiguity() {
+        let runtime = test_runtime_with_client(ClientTokenConfig::default());
+        let jwk1: Jwk = serde_json::from_str(
+            r#"{
+            "kty": "RSA",
+            "kid": "key1",
+            "n": "n-val-1",
+            "e": "AQAB"
+        }"#,
+        )
+        .unwrap();
+        let jwk2: Jwk = serde_json::from_str(
+            r#"{
+            "kty": "RSA",
+            "kid": "key1",
+            "n": "n-val-2",
+            "e": "AQAB"
+        }"#,
+        )
+        .unwrap();
+
+        {
+            let mut jwks = runtime.jwks.write().await;
+            jwks.insert("service1:key1".to_string(), jwk1.clone());
+            jwks.insert("service2:key1".to_string(), jwk2.clone());
+        }
+
+        let found = cached_jwk_for_token(&runtime, Some("key1"), None).await;
+        assert!(found.is_none());
+    }
+
+    async fn spawn_mock_jwks_server(response: String) -> (String, Arc<Mutex<usize>>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock server");
+        let address = listener.local_addr().expect("local addr");
+        let call_count = Arc::new(Mutex::new(0));
+        let count_clone = call_count.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Ok((mut stream, _)) = listener.accept().await {
+                    let mut buffer = vec![0_u8; 1024];
+                    let _read = stream.read(&mut buffer).await;
+                    *count_clone.lock().unwrap() += 1;
+                    let _ = stream.write_all(response.as_bytes()).await;
+                } else {
+                    break;
+                }
+            }
+        });
+        (format!("http://{address}"), call_count)
+    }
+
+    #[tokio::test]
+    async fn jwk_for_token_fetches_once_for_cached_kid() {
+        let response_body = r#"{"keys":[{
+            "kty": "RSA",
+            "kid": "key_fetch_once",
+            "n": "u1WabeaJBoGl",
+            "e": "AQAB"
+        }]}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
+        let (server_url, call_count) = spawn_mock_jwks_server(response).await;
+
+        let mut client = ClientTokenConfig::default();
+        client.oauth.token.key.server_url = Some(server_url.clone());
+        client.oauth.token.key.uri = "/keys".to_string();
+
+        let runtime = test_runtime_with_client(client);
+
+        // First call should fetch
+        let first = jwk_for_token(&runtime, Some("key_fetch_once"), None)
+            .await
+            .unwrap();
+        assert!(first.is_some());
+        assert_eq!(
+            first.unwrap().common.key_id,
+            Some("key_fetch_once".to_string())
+        );
+        assert_eq!(*call_count.lock().unwrap(), 1);
+
+        // Second call should hit the cache directly, call count stays at 1
+        let second = jwk_for_token(&runtime, Some("key_fetch_once"), None)
+            .await
+            .unwrap();
+        assert!(second.is_some());
+        assert_eq!(
+            second.unwrap().common.key_id,
+            Some("key_fetch_once".to_string())
+        );
+        assert_eq!(*call_count.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_caches_all_service_key_providers() {
+        let response_body = r#"{"keys":[{
+            "kty": "RSA",
+            "kid": "key_boot",
+            "n": "u1WabeaJBoGl",
+            "e": "AQAB"
+        }]}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
+        let (server_url, call_count) = spawn_mock_jwks_server(response).await;
+
+        let mut client = ClientTokenConfig::default();
+        client.oauth.multiple_auth_servers = true;
+        client.oauth.token.key.server_url = Some(server_url.clone());
+        client.oauth.token.key.uri = "/keys".to_string();
+        client.oauth.token.key.service_id_auth_servers.insert(
+            "service_boot1".to_string(),
+            AuthServerConfig {
+                server_url: Some(server_url.clone()),
+                ..AuthServerConfig::default()
+            },
+        );
+        client.oauth.token.key.service_id_auth_servers.insert(
+            "service_boot2".to_string(),
+            AuthServerConfig {
+                server_url: Some(server_url.clone()),
+                ..AuthServerConfig::default()
+            },
+        );
+
+        let mut runtime = test_runtime_with_client(client);
+        runtime.config.bootstrap_from_key_service = true;
+
+        runtime.bootstrap().await.expect("bootstrap");
+
+        // The mock server should have been hit for both providers (2 hits)
+        assert_eq!(*call_count.lock().unwrap(), 2);
+
+        // Verify keys are cached under serviceId:kid
+        {
+            let jwks = runtime.jwks.read().await;
+            assert!(jwks.contains_key("service_boot1:key_boot"));
+            assert!(jwks.contains_key("service_boot2:key_boot"));
+        }
+
+        // Subsequent requests with kid & serviceId must hit the cache directly
+        let found = cached_jwk_for_token(&runtime, Some("key_boot"), Some("service_boot1")).await;
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().common.key_id, Some("key_boot".to_string()));
+
+        let resolved = jwk_for_token(&runtime, Some("key_boot"), Some("service_boot1"))
+            .await
+            .unwrap();
+        assert!(resolved.is_some());
+        assert_eq!(*call_count.lock().unwrap(), 2); // No new fetch!
+    }
+
+    #[tokio::test]
+    async fn bootstrap_caches_single_provider() {
+        let response_body = r#"{"keys":[{
+            "kty": "RSA",
+            "kid": "key_boot_single",
+            "n": "u1WabeaJBoGl",
+            "e": "AQAB"
+        }]}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
+        let (server_url, call_count) = spawn_mock_jwks_server(response).await;
+
+        let mut client = ClientTokenConfig::default();
+        client.oauth.multiple_auth_servers = false;
+        client.oauth.token.key.server_url = Some(server_url.clone());
+        client.oauth.token.key.uri = "/keys".to_string();
+
+        let mut runtime = test_runtime_with_client(client);
+        runtime.config.bootstrap_from_key_service = true;
+
+        runtime.bootstrap().await.expect("bootstrap");
+
+        // The mock server should have been hit once
+        assert_eq!(*call_count.lock().unwrap(), 1);
+
+        // Verify key is cached under plain kid
+        {
+            let jwks = runtime.jwks.read().await;
+            assert!(jwks.contains_key("key_boot_single"));
         }
     }
 }
