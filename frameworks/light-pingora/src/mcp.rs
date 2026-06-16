@@ -1398,6 +1398,11 @@ impl McpRouterRuntime {
             .await
             .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
         let status = response.status();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
         let body = response
             .bytes()
             .await
@@ -1410,9 +1415,8 @@ impl McpRouterRuntime {
                 String::from_utf8_lossy(&body)
             )));
         }
-        let message = serde_json::from_slice::<JsonValue>(&body).map_err(|error| {
-            McpExecutionError::execution_failed(format!("invalid MCP backend response: {error}"))
-        })?;
+        let message = parse_mcp_backend_response(&body, content_type.as_deref())
+            .map_err(McpExecutionError::execution_failed)?;
         if let Some(error) = message.get("error") {
             let message = error
                 .get("message")
@@ -1530,6 +1534,11 @@ impl McpRouterRuntime {
             .get(MCP_SESSION_ID_HEADER)
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
         let body = response.bytes().await.map_err(|error| {
             McpExecutionError::execution_failed(format!(
                 "backend MCP initialize response read failed: {error}"
@@ -1542,11 +1551,13 @@ impl McpRouterRuntime {
                 String::from_utf8_lossy(&body)
             )));
         }
-        let message = serde_json::from_slice::<JsonValue>(&body).map_err(|error| {
-            McpExecutionError::execution_failed(format!(
-                "invalid MCP backend initialize response: {error}"
-            ))
-        })?;
+        let message = parse_mcp_backend_response(&body, content_type.as_deref()).map_err(
+            |error| {
+                McpExecutionError::execution_failed(format!(
+                    "invalid MCP backend initialize response: {error}"
+                ))
+            },
+        )?;
         if let Some(error) = message.get("error") {
             let message = error
                 .get("message")
@@ -2555,6 +2566,62 @@ fn event_stream_headers() -> Vec<(String, String)> {
     headers
 }
 
+fn parse_mcp_backend_response(
+    body: &[u8],
+    content_type: Option<&str>,
+) -> Result<JsonValue, String> {
+    match serde_json::from_slice::<JsonValue>(body) {
+        Ok(value) => return Ok(value),
+        Err(error) if !looks_like_event_stream(body, content_type) => {
+            return Err(error.to_string());
+        }
+        Err(_) => {}
+    }
+
+    parse_sse_json_message(body).ok_or_else(|| {
+        "backend returned text/event-stream without a JSON data message".to_string()
+    })
+}
+
+fn looks_like_event_stream(body: &[u8], content_type: Option<&str>) -> bool {
+    content_type
+        .is_some_and(|value| value.to_ascii_lowercase().contains(EVENT_STREAM_CONTENT_TYPE))
+        || body.starts_with(b"data:")
+        || body.starts_with(b"event:")
+}
+
+fn parse_sse_json_message(body: &[u8]) -> Option<JsonValue> {
+    let text = std::str::from_utf8(body).ok()?;
+    let mut data_lines = Vec::new();
+
+    for line in text.lines() {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if line.is_empty() {
+            if let Some(value) = parse_sse_data_lines(&data_lines) {
+                return Some(value);
+            }
+            data_lines.clear();
+            continue;
+        }
+        if line.starts_with(':') {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("data:") {
+            data_lines.push(value.strip_prefix(' ').unwrap_or(value));
+        }
+    }
+
+    parse_sse_data_lines(&data_lines)
+}
+
+fn parse_sse_data_lines(data_lines: &[&str]) -> Option<JsonValue> {
+    if data_lines.is_empty() {
+        return None;
+    }
+    let data = data_lines.join("\n");
+    serde_json::from_str::<JsonValue>(&data).ok()
+}
+
 fn sse_message_body(body: &JsonValue) -> Result<Vec<u8>, RuntimeError> {
     let serialized = serde_json::to_string(body)?;
     let mut event = String::from("event: message\n");
@@ -3452,6 +3519,65 @@ tools:
         assert_eq!(backend_call["method"], "tools/call");
         assert_eq!(backend_call["params"]["name"], "weather");
         assert_eq!(backend_call["params"]["arguments"]["city"], "Ottawa");
+    }
+
+    #[tokio::test]
+    async fn mcp_proxy_tool_accepts_backend_sse_json_rpc_responses() {
+        let backend_result = json!({
+            "jsonrpc": "2.0",
+            "id": "backend",
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "cloudy"
+                    }
+                ]
+            }
+        });
+        let (base, received) = spawn_http_sequence_server(vec![
+            backend_initialize_sse_response("backend-session"),
+            http_empty_response(202),
+            http_sse_json_response(backend_result),
+        ])
+        .await;
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![McpToolConfig {
+                name: "weather".to_string(),
+                endpoint_name: None,
+                description: "Get weather".to_string(),
+                protocol: None,
+                service_id: None,
+                env_tag: None,
+                target_host: Some(base),
+                path: "/mcp".to_string(),
+                method: McpHttpMethod::Post,
+                endpoint: None,
+                api_type: McpToolType::Mcp,
+                input_schema: default_input_schema(),
+                input_schema_configured: true,
+                tool_metadata: default_object(),
+            }],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"weather","arguments":{"city":"Ottawa"}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["result"]["content"][0]["text"], "cloudy");
+        let requests = received.await.expect("server requests");
+        assert_eq!(requests.len(), 3);
     }
 
     /// Regression test: when `endpoint_name` differs from `name`, the gateway-facing `name`
@@ -4468,6 +4594,24 @@ endpointRules:
         )
     }
 
+    fn http_sse_json_response(value: JsonValue) -> String {
+        http_sse_json_response_with_headers(value, &[])
+    }
+
+    fn http_sse_json_response_with_headers(value: JsonValue, headers: &[(&str, &str)]) -> String {
+        let data = sse_message_body(&value).expect("serialize sse response");
+        let body = String::from_utf8(data).expect("sse utf8");
+        let extra_headers = headers
+            .iter()
+            .map(|(name, value)| format!("{name}: {value}\r\n"))
+            .collect::<String>();
+        format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n{extra_headers}content-length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+    }
+
     fn http_empty_response(status: u16) -> String {
         let reason = match status {
             202 => "Accepted",
@@ -4479,6 +4623,28 @@ endpointRules:
 
     fn backend_initialize_response(session_id: &str) -> String {
         http_json_response_with_headers(
+            json!({
+                "jsonrpc": "2.0",
+                "id": "backend-init",
+                "result": {
+                    "protocolVersion": DEFAULT_PROTOCOL_VERSION,
+                    "capabilities": {
+                        "tools": {
+                            "listChanged": true
+                        }
+                    },
+                    "serverInfo": {
+                        "name": "backend-mcp",
+                        "version": "1.0"
+                    }
+                }
+            }),
+            &[(MCP_SESSION_ID_HEADER, session_id)],
+        )
+    }
+
+    fn backend_initialize_sse_response(session_id: &str) -> String {
+        http_sse_json_response_with_headers(
             json!({
                 "jsonrpc": "2.0",
                 "id": "backend-init",
