@@ -1385,6 +1385,7 @@ impl McpRouterRuntime {
                 "arguments": arguments
             }
         });
+        let url_for_log = url.to_string();
         let response = self
             .client
             .post(url)
@@ -1397,16 +1398,8 @@ impl McpRouterRuntime {
             .send()
             .await
             .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
-        let status = response.status();
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
-        let body = response
-            .bytes()
-            .await
-            .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
+        let (status, content_type, _headers, body) =
+            read_backend_mcp_response(response, "tools/call", &url_for_log).await?;
         if !status.is_success() {
             return Err(McpExecutionError::execution_failed(format!(
                 "MCP tool `{}` returned HTTP {}: {}",
@@ -1528,22 +1521,13 @@ impl McpRouterRuntime {
                     "backend MCP initialize failed: {error}"
                 ))
             })?;
-        let status = response.status();
         let backend_session_id = response
             .headers()
             .get(MCP_SESSION_ID_HEADER)
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
-        let body = response.bytes().await.map_err(|error| {
-            McpExecutionError::execution_failed(format!(
-                "backend MCP initialize response read failed: {error}"
-            ))
-        })?;
+        let (status, content_type, _headers, body) =
+            read_backend_mcp_response(response, "initialize", target_url.as_str()).await?;
         if !status.is_success() {
             return Err(McpExecutionError::execution_failed(format!(
                 "backend MCP initialize returned HTTP {}: {}",
@@ -1551,13 +1535,12 @@ impl McpRouterRuntime {
                 String::from_utf8_lossy(&body)
             )));
         }
-        let message = parse_mcp_backend_response(&body, content_type.as_deref()).map_err(
-            |error| {
+        let message =
+            parse_mcp_backend_response(&body, content_type.as_deref()).map_err(|error| {
                 McpExecutionError::execution_failed(format!(
                     "invalid MCP backend initialize response: {error}"
                 ))
-            },
-        )?;
+            })?;
         if let Some(error) = message.get("error") {
             let message = error
                 .get("message")
@@ -1611,6 +1594,7 @@ impl McpRouterRuntime {
             "jsonrpc": "2.0",
             "method": "notifications/initialized"
         });
+        let target_url_for_log = target_url.to_string();
         let response = self
             .client
             .post(target_url)
@@ -1627,13 +1611,10 @@ impl McpRouterRuntime {
                     "backend MCP initialized notification failed: {error}"
                 ))
             })?;
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.bytes().await.map_err(|error| {
-                McpExecutionError::execution_failed(format!(
-                    "backend MCP initialized response read failed: {error}"
-                ))
-            })?;
+        let (status, _content_type, _headers, body) =
+            read_backend_mcp_response(response, "notifications/initialized", &target_url_for_log)
+                .await?;
+        if !status.is_success() {
             return Err(McpExecutionError::execution_failed(format!(
                 "backend MCP initialized notification returned HTTP {}: {}",
                 status.as_u16(),
@@ -2566,6 +2547,58 @@ fn event_stream_headers() -> Vec<(String, String)> {
     headers
 }
 
+async fn read_backend_mcp_response(
+    response: reqwest::Response,
+    operation: &str,
+    url: &str,
+) -> Result<(reqwest::StatusCode, Option<String>, HeaderMap, Vec<u8>), McpExecutionError> {
+    let status = response.status();
+    let headers = response.headers().clone();
+    let content_type = headers
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+
+    tracing::debug!(
+        target: "light_pingora::mcp",
+        operation = %operation,
+        url = %url,
+        status = %status,
+        headers = ?headers,
+        "received backend MCP response headers"
+    );
+
+    match response.bytes().await {
+        Ok(body) => {
+            tracing::debug!(
+                target: "light_pingora::mcp",
+                operation = %operation,
+                url = %url,
+                status = %status,
+                headers = ?headers,
+                body_len = body.len(),
+                body = %String::from_utf8_lossy(&body),
+                "received backend MCP response body"
+            );
+            Ok((status, content_type, headers, body.to_vec()))
+        }
+        Err(error) => {
+            tracing::debug!(
+                target: "light_pingora::mcp",
+                operation = %operation,
+                url = %url,
+                status = %status,
+                headers = ?headers,
+                error = %error,
+                "failed to decode backend MCP response body"
+            );
+            Err(McpExecutionError::execution_failed(format!(
+                "backend MCP {operation} response read failed: {error}"
+            )))
+        }
+    }
+}
+
 fn parse_mcp_backend_response(
     body: &[u8],
     content_type: Option<&str>,
@@ -2578,15 +2611,16 @@ fn parse_mcp_backend_response(
         Err(_) => {}
     }
 
-    parse_sse_json_message(body).ok_or_else(|| {
-        "backend returned text/event-stream without a JSON data message".to_string()
-    })
+    parse_sse_json_message(body)
+        .ok_or_else(|| "backend returned text/event-stream without a JSON data message".to_string())
 }
 
 fn looks_like_event_stream(body: &[u8], content_type: Option<&str>) -> bool {
-    content_type
-        .is_some_and(|value| value.to_ascii_lowercase().contains(EVENT_STREAM_CONTENT_TYPE))
-        || body.starts_with(b"data:")
+    content_type.is_some_and(|value| {
+        value
+            .to_ascii_lowercase()
+            .contains(EVENT_STREAM_CONTENT_TYPE)
+    }) || body.starts_with(b"data:")
         || body.starts_with(b"event:")
 }
 
