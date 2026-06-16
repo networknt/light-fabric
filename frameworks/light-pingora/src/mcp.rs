@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error as StdError;
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
 use url::{Url, form_urlencoded};
@@ -452,6 +453,7 @@ pub struct McpRouterRuntime {
     policy: Option<Arc<AccessControlRuntime>>,
     sessions: Arc<AsyncMutex<McpSessionStore>>,
     last_session_purge: Arc<AsyncMutex<Option<Instant>>>,
+    next_backend_request_id: Arc<AtomicU64>,
 }
 
 impl fmt::Debug for McpRouterRuntime {
@@ -567,11 +569,16 @@ impl McpRouterRuntime {
             policy,
             sessions: Arc::new(AsyncMutex::new(McpSessionStore::default())),
             last_session_purge: Arc::new(AsyncMutex::new(None)),
+            next_backend_request_id: Arc::new(AtomicU64::new(1)),
         })
     }
 
     pub fn config(&self) -> &McpRouterConfig {
         &self.config
+    }
+
+    fn next_backend_request_id(&self) -> u64 {
+        self.next_backend_request_id.fetch_add(1, Ordering::Relaxed)
     }
 
     pub fn matches_path(&self, path: &str) -> bool {
@@ -589,6 +596,7 @@ impl McpRouterRuntime {
     pub fn preserve_state_from(&mut self, previous: &Self) {
         self.sessions = Arc::clone(&previous.sessions);
         self.last_session_purge = Arc::clone(&previous.last_session_purge);
+        self.next_backend_request_id = Arc::clone(&previous.next_backend_request_id);
     }
 
     pub async fn handle_request(
@@ -1378,7 +1386,7 @@ impl McpRouterRuntime {
             .unwrap_or(tool.name.as_str());
         let request = json!({
             "jsonrpc": "2.0",
-            "id": uuid::Uuid::new_v4().to_string(),
+            "id": self.next_backend_request_id(),
             "method": "tools/call",
             "params": {
                 "name": backend_tool_name,
@@ -1494,7 +1502,7 @@ impl McpRouterRuntime {
     ) -> Result<McpBackendSession, McpExecutionError> {
         let request = json!({
             "jsonrpc": "2.0",
-            "id": uuid::Uuid::new_v4().to_string(),
+            "id": self.next_backend_request_id(),
             "method": "initialize",
             "params": {
                 "protocolVersion": protocol_version,
@@ -3530,6 +3538,7 @@ tools:
         assert!(requests[0].starts_with("POST /mcp HTTP/1.1"));
         let backend_initialize = request_json_body(&requests[0]);
         assert_eq!(backend_initialize["method"], "initialize");
+        assert!(backend_initialize["id"].is_number());
         assert!(
             !requests[0]
                 .contains(format!("{MCP_SESSION_ID_HEADER}: {gateway_session_id}").as_str())
@@ -3551,6 +3560,7 @@ tools:
         );
         let backend_call = request_json_body(&requests[2]);
         assert_eq!(backend_call["method"], "tools/call");
+        assert!(backend_call["id"].is_number());
         assert_eq!(backend_call["params"]["name"], "weather");
         assert_eq!(backend_call["params"]["arguments"]["city"], "Ottawa");
     }
@@ -3612,6 +3622,69 @@ tools:
         assert_eq!(body["result"]["content"][0]["text"], "cloudy");
         let requests = received.await.expect("server requests");
         assert_eq!(requests.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn mcp_proxy_tool_accepts_backend_string_response_ids() {
+        let backend_result = json!({
+            "jsonrpc": "2.0",
+            "id": "backend-string-id",
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "cloudy"
+                    }
+                ]
+            }
+        });
+        let (base, received) = spawn_http_sequence_server(vec![
+            backend_initialize_response("backend-session"),
+            http_empty_response(202),
+            http_json_response(backend_result),
+        ])
+        .await;
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![McpToolConfig {
+                name: "weather".to_string(),
+                endpoint_name: None,
+                description: "Get weather".to_string(),
+                protocol: None,
+                service_id: None,
+                env_tag: None,
+                target_host: Some(base),
+                path: "/mcp".to_string(),
+                method: McpHttpMethod::Post,
+                endpoint: None,
+                api_type: McpToolType::Mcp,
+                input_schema: default_input_schema(),
+                input_schema_configured: true,
+                tool_metadata: default_object(),
+            }],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"weather","arguments":{"city":"Ottawa"}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["id"], "1");
+        assert_eq!(body["result"]["content"][0]["text"], "cloudy");
+        let requests = received.await.expect("server requests");
+        let backend_initialize = request_json_body(&requests[0]);
+        let backend_call = request_json_body(&requests[2]);
+        assert!(backend_initialize["id"].is_number());
+        assert!(backend_call["id"].is_number());
     }
 
     /// Regression test: when `endpoint_name` differs from `name`, the gateway-facing `name`
