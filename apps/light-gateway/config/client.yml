@@ -52,4 +52,4 @@ request:
   connectTimeout: ${client.connectTimeout:2000}
   timeout: ${client.timeout:4000}
   injectCallerId: ${client.injectCallerId:false}
-  enableHttp2: ${client.requestEnableHttp2:true}
+  enableHttp2: ${client.enableHttp2:true}
