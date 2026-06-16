@@ -680,6 +680,21 @@ fn path_template_match(template: &str, request_path: &str) -> Option<BTreeMap<St
         return Some(BTreeMap::new());
     }
 
+    if let Some(prefix) = template.strip_suffix("/*") {
+        let prefix = prefix.trim_end_matches('/');
+        if prefix.is_empty() {
+            return request_path.starts_with('/').then(BTreeMap::new);
+        }
+        if request_path == prefix
+            || request_path
+                .strip_prefix(prefix)
+                .is_some_and(|suffix| suffix.starts_with('/'))
+        {
+            return Some(BTreeMap::new());
+        }
+        return None;
+    }
+
     let template_segments = path_segments(template);
     let request_segments = path_segments(request_path);
     if template_segments.len() != request_segments.len() {
@@ -1079,6 +1094,48 @@ defaultHandlers:
                 .resolve_handler_ids("/api/v1/test", "GET")
                 .expect("resolve with base path"),
             vec!["active".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolves_trailing_wildcard_paths() {
+        let active = ActiveHandlerSet {
+            config: HandlerConfig {
+                paths: vec![
+                    HandlerPath {
+                        path: "/customers/*".to_string(),
+                        method: "GET".to_string(),
+                        exec: vec!["active".to_string()],
+                    },
+                    HandlerPath {
+                        path: "/*".to_string(),
+                        method: "POST".to_string(),
+                        exec: vec!["unused".to_string()],
+                    },
+                ],
+                ..HandlerConfig::default()
+            },
+            active_handler_ids: Vec::new(),
+            handlers: Vec::new(),
+        };
+
+        assert_eq!(
+            active
+                .resolve_handler_ids("/customers/CUST-1001", "GET")
+                .expect("resolve customer wildcard"),
+            vec!["active".to_string()]
+        );
+        assert_eq!(
+            active
+                .resolve_handler_ids("/customers/CUST-1001/preferences", "GET")
+                .expect("resolve nested customer wildcard"),
+            vec!["active".to_string()]
+        );
+        assert_eq!(
+            active
+                .resolve_handler_ids("/orders", "POST")
+                .expect("resolve catch-all wildcard"),
+            vec!["unused".to_string()]
         );
     }
 }
