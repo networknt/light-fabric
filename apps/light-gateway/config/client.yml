@@ -46,6 +46,7 @@ oauth:
       uri: ${client.tokenKeyUri:/oauth2/key}
       client_id: ${client.tokenKeyClientId:}
       client_secret: ${client.tokenKeyClientSecret:}
+      serviceIdAuthServers: ${client.tokenKeyServiceIdAuthServers:}
       enableHttp2: ${client.tokenKeyEnableHttp2:true}
 pathPrefixServices: ${client.pathPrefixServices:}
 request:
