@@ -2274,7 +2274,9 @@ fn backend_headers(
     protocol_version: Option<&str>,
 ) -> Result<HeaderMap, McpExecutionError> {
     let mut outbound = outbound_headers(headers)?;
-    outbound.insert(ACCEPT, HeaderValue::from_static("application/json"));
+    if !outbound.contains_key(ACCEPT) {
+        outbound.insert(ACCEPT, HeaderValue::from_static("application/json"));
+    }
     let protocol_version = protocol_version.unwrap_or(DEFAULT_PROTOCOL_VERSION);
     let value = HeaderValue::from_str(protocol_version).map_err(|error| {
         McpExecutionError::execution_failed(format!(
@@ -3421,8 +3423,7 @@ tools:
         let requests = received.await.expect("server requests");
         assert_eq!(requests.len(), 3);
         for request in &requests {
-            assert!(request.contains("accept: application/json\r\n"));
-            assert!(!request.contains("accept: application/json, text/event-stream"));
+            assert!(request.contains("accept: application/json, text/event-stream\r\n"));
         }
 
         assert!(requests[0].starts_with("POST /mcp HTTP/1.1"));
