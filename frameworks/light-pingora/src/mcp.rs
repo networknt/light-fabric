@@ -2629,6 +2629,8 @@ fn looks_like_event_stream(body: &[u8], content_type: Option<&str>) -> bool {
             .to_ascii_lowercase()
             .contains(EVENT_STREAM_CONTENT_TYPE)
     }) || body.starts_with(b"data:")
+        || body.starts_with(b"id:")
+        || body.starts_with(b"retry:")
         || body.starts_with(b"event:")
 }
 
@@ -3583,6 +3585,73 @@ tools:
             backend_initialize_sse_response("backend-session"),
             http_empty_response(202),
             http_sse_json_response(backend_result),
+        ])
+        .await;
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![McpToolConfig {
+                name: "weather".to_string(),
+                endpoint_name: None,
+                description: "Get weather".to_string(),
+                protocol: None,
+                service_id: None,
+                env_tag: None,
+                target_host: Some(base),
+                path: "/mcp".to_string(),
+                method: McpHttpMethod::Post,
+                endpoint: None,
+                api_type: McpToolType::Mcp,
+                input_schema: default_input_schema(),
+                input_schema_configured: true,
+                tool_metadata: default_object(),
+            }],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"weather","arguments":{"city":"Ottawa"}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["result"]["content"][0]["text"], "cloudy");
+        let requests = received.await.expect("server requests");
+        assert_eq!(requests.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn mcp_proxy_tool_accepts_backend_sse_json_rpc_response_with_id_first() {
+        let backend_result = json!({
+            "jsonrpc": "2.0",
+            "id": "backend",
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "cloudy"
+                    }
+                ]
+            }
+        });
+        let body = format!(
+            "retry:1000\nid:my-session-uuid\nevent:message\ndata: {}\n\n",
+            serde_json::to_string(&backend_result).expect("serialize backend result")
+        );
+        let (base, received) = spawn_http_sequence_server(vec![
+            backend_initialize_sse_response("backend-session"),
+            http_empty_response(202),
+            format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            ),
         ])
         .await;
         let runtime = McpRouterRuntime::new(McpRouterConfig {
