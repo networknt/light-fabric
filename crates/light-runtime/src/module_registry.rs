@@ -718,6 +718,9 @@ impl RegistryHandler for RuntimeMcpHandler {
                     "clear_cache" => self.clear_cache(params.get("arguments")).await,
                     "get_logging_filter" => self.get_logging_filter(),
                     "set_logging_filter" => self.set_logging_filter(params.get("arguments")),
+                    "get_log_content" => unsupported_log_access_response(),
+                    "start_logs" => unsupported_log_access_response(),
+                    "stop_logs" => unsupported_log_access_response(),
                     "reload_modules" => match parse_reload_modules(params.get("arguments")) {
                         Ok(modules) => {
                             let result = match self.config.reload_context().await {
@@ -894,6 +897,41 @@ fn runtime_tools() -> JsonValue {
             }
         },
         {
+            "name": "get_log_content",
+            "description": "Retrieve historical log entries from a configured runtime log source.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "startTime": { "type": "string" },
+                    "endTime": { "type": "string" },
+                    "level": { "type": "string" },
+                    "filter": { "type": "string" },
+                    "loggerName": { "type": "string" },
+                    "limit": { "type": "integer" }
+                }
+            }
+        },
+        {
+            "name": "start_logs",
+            "description": "Start streaming log entries from a configured runtime log source.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "level": { "type": "string" },
+                    "filter": { "type": "string" },
+                    "loggerName": { "type": "string" }
+                }
+            }
+        },
+        {
+            "name": "stop_logs",
+            "description": "Stop a runtime log stream.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        },
+        {
             "name": "list_caches",
             "description": "Retrieve available runtime caches.",
             "inputSchema": {
@@ -960,6 +998,14 @@ fn unsupported_logging_response() -> JsonValue {
         "supported": false,
         "status": "unsupported",
         "message": "Runtime logging control is not available on this service."
+    })
+}
+
+fn unsupported_log_access_response() -> JsonValue {
+    json!({
+        "supported": false,
+        "status": "unsupported",
+        "message": "Runtime log access is not available from this service. Configure the controller to read JSON log files or Kubernetes/container logs for history and streaming."
     })
 }
 
@@ -1591,6 +1637,20 @@ mod tests {
                 .iter()
                 .any(|tool| tool["name"] == "clear_cache")
         );
+        assert!(
+            tools["tools"]
+                .as_array()
+                .expect("tools array")
+                .iter()
+                .any(|tool| tool["name"] == "get_log_content")
+        );
+        assert!(
+            tools["tools"]
+                .as_array()
+                .expect("tools array")
+                .iter()
+                .any(|tool| tool["name"] == "start_logs")
+        );
 
         let info = handler
             .handle_request(
@@ -1628,6 +1688,48 @@ mod tests {
                 .as_array()
                 .is_some_and(|items| !items.is_empty())
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_mcp_handler_reports_log_access_tools_unsupported_without_provider() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let config = runtime_config();
+        let handler =
+            RuntimeMcpHandler::new(Arc::clone(&registry), config, Arc::new(DelegateHandler));
+
+        let history = handler
+            .handle_request(
+                "tools/call",
+                json!({
+                    "name": "get_log_content",
+                    "arguments": {
+                        "startTime": "2026-06-17T00:00:00Z",
+                        "endTime": "2026-06-17T01:00:00Z",
+                        "filter": "info,light_pingora::security=debug"
+                    }
+                }),
+            )
+            .await;
+        assert_eq!(history["supported"], false);
+        assert_eq!(history["status"], "unsupported");
+
+        let start = handler
+            .handle_request(
+                "tools/call",
+                json!({
+                    "name": "start_logs",
+                    "arguments": { "filter": "info,light_pingora::security=debug" }
+                }),
+            )
+            .await;
+        assert_eq!(start["supported"], false);
+        assert_eq!(start["status"], "unsupported");
+
+        let stop = handler
+            .handle_request("tools/call", json!({ "name": "stop_logs" }))
+            .await;
+        assert_eq!(stop["supported"], false);
+        assert_eq!(stop["status"], "unsupported");
     }
 
     #[tokio::test]
