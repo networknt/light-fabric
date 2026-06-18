@@ -12,7 +12,7 @@ pub use config::{
 };
 pub use config_loader::EmbeddedConfigFile;
 pub use logging::{
-    LOGGING_FILTER_KEY, LOGGING_MODULE_ID, LogStreamBroadcaster, LoggingControl,
+    LOGGING_FILTER_KEY, LOGGING_MODULE_ID, LogFileAccess, LogStreamBroadcaster, LoggingControl,
     LoggingFilterState, TracingGuard, TracingInitError, TracingOptions, init_tracing,
 };
 pub use module_registry::{

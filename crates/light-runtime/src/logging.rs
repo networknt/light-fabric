@@ -56,6 +56,7 @@ impl TracingOptions {
 pub struct TracingGuard {
     logging_control: Arc<LoggingControl>,
     log_stream: Arc<LogStreamBroadcaster>,
+    log_file_access: Option<Arc<LogFileAccess>>,
     _json_file_guard: Option<tracing_appender::non_blocking::WorkerGuard>,
 }
 
@@ -66,6 +67,10 @@ impl TracingGuard {
 
     pub fn log_stream(&self) -> Arc<LogStreamBroadcaster> {
         Arc::clone(&self.log_stream)
+    }
+
+    pub fn log_file_access(&self) -> Option<Arc<LogFileAccess>> {
+        self.log_file_access.as_ref().map(Arc::clone)
     }
 }
 
@@ -106,6 +111,10 @@ pub fn init_tracing(options: TracingOptions) -> Result<TracingGuard, TracingInit
     let console_format = LogFormat::from_env()?;
     let console_ansi = configured_ansi(options.legacy_ansi_env);
     let json_file = JsonFileConfig::from_env(options.service_name)?;
+    let log_file_access = json_file
+        .as_ref()
+        .and_then(JsonFileConfig::active_file_path)
+        .map(|path| Arc::new(LogFileAccess::new(path)));
 
     match (console_format, json_file) {
         (LogFormat::Text, None) => {
@@ -118,6 +127,7 @@ pub fn init_tracing(options: TracingOptions) -> Result<TracingGuard, TracingInit
             Ok(TracingGuard {
                 logging_control,
                 log_stream,
+                log_file_access,
                 _json_file_guard: None,
             })
         }
@@ -130,6 +140,7 @@ pub fn init_tracing(options: TracingOptions) -> Result<TracingGuard, TracingInit
             Ok(TracingGuard {
                 logging_control,
                 log_stream,
+                log_file_access,
                 _json_file_guard: None,
             })
         }
@@ -145,6 +156,7 @@ pub fn init_tracing(options: TracingOptions) -> Result<TracingGuard, TracingInit
             Ok(TracingGuard {
                 logging_control,
                 log_stream,
+                log_file_access,
                 _json_file_guard: Some(json_file_guard),
             })
         }
@@ -159,6 +171,7 @@ pub fn init_tracing(options: TracingOptions) -> Result<TracingGuard, TracingInit
             Ok(TracingGuard {
                 logging_control,
                 log_stream,
+                log_file_access,
                 _json_file_guard: Some(json_file_guard),
             })
         }
@@ -219,6 +232,21 @@ pub struct LogStreamEvent {
 #[derive(Debug)]
 pub struct LogStreamBroadcaster {
     sender: broadcast::Sender<LogStreamEvent>,
+}
+
+#[derive(Debug)]
+pub struct LogFileAccess {
+    path: PathBuf,
+}
+
+impl LogFileAccess {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
 }
 
 impl LogStreamBroadcaster {
@@ -510,6 +538,10 @@ impl JsonFileConfig {
             file_name,
             rotation,
         }))
+    }
+
+    fn active_file_path(&self) -> Option<PathBuf> {
+        (self.rotation == LogFileRotation::Never).then(|| self.dir.join(&self.file_name))
     }
 }
 

@@ -1,6 +1,6 @@
 use crate::cache::CacheRegistry;
 use crate::config::RuntimeConfig;
-use crate::logging::{LogStreamBroadcaster, LogStreamEvent, LoggingControl};
+use crate::logging::{LogFileAccess, LogStreamBroadcaster, LogStreamEvent, LoggingControl};
 use crate::runtime::{RuntimeError, load_merged_config};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -669,6 +669,7 @@ pub struct RuntimeMcpHandler {
     cache_registry: Option<Arc<CacheRegistry>>,
     logging_control: Option<Arc<LoggingControl>>,
     log_stream: Option<Arc<LogStreamBroadcaster>>,
+    log_file_access: Option<Arc<LogFileAccess>>,
     notifier: Option<PortalRegistryNotifier>,
     log_stream_task: Mutex<Option<JoinHandle<()>>>,
 }
@@ -686,6 +687,7 @@ impl RuntimeMcpHandler {
             cache_registry: None,
             logging_control: None,
             log_stream: None,
+            log_file_access: None,
             notifier: None,
             log_stream_task: Mutex::new(None),
         }
@@ -708,6 +710,11 @@ impl RuntimeMcpHandler {
     ) -> Self {
         self.log_stream = Some(log_stream);
         self.notifier = Some(notifier);
+        self
+    }
+
+    pub fn with_log_file_access(mut self, log_file_access: Arc<LogFileAccess>) -> Self {
+        self.log_file_access = Some(log_file_access);
         self
     }
 }
@@ -736,7 +743,7 @@ impl RegistryHandler for RuntimeMcpHandler {
                     "clear_cache" => self.clear_cache(params.get("arguments")).await,
                     "get_logging_filter" => self.get_logging_filter(),
                     "set_logging_filter" => self.set_logging_filter(params.get("arguments")),
-                    "get_log_content" => unsupported_log_access_response(),
+                    "get_log_content" => self.get_log_content(params.get("arguments")).await,
                     "start_logs" => self.start_logs(params.get("arguments")).await,
                     "stop_logs" => self.stop_logs().await,
                     "reload_modules" => match parse_reload_modules(params.get("arguments")) {
@@ -863,6 +870,35 @@ impl RuntimeMcpHandler {
         }
     }
 
+    async fn get_log_content(&self, arguments: Option<&JsonValue>) -> JsonValue {
+        let Some(log_file_access) = self.log_file_access.as_ref() else {
+            return unsupported_log_file_response();
+        };
+        let query = match LogHistoryQuery::from_arguments(arguments) {
+            Ok(query) => query,
+            Err(message) => {
+                return json!({
+                    "status": "error",
+                    "message": message
+                });
+            }
+        };
+
+        match read_json_log_file(log_file_access, &query).await {
+            Ok(logs) => json!({
+                "supported": true,
+                "status": "success",
+                "source": "file",
+                "path": log_file_access.path().display().to_string(),
+                "logs": logs
+            }),
+            Err(error) => json!({
+                "status": "error",
+                "message": error
+            }),
+        }
+    }
+
     async fn start_logs(&self, arguments: Option<&JsonValue>) -> JsonValue {
         let (Some(log_stream), Some(notifier)) = (self.log_stream.as_ref(), self.notifier.as_ref())
         else {
@@ -930,6 +966,187 @@ impl RuntimeMcpHandler {
             task.abort();
         }
     }
+}
+
+#[derive(Debug)]
+struct LogHistoryQuery {
+    start_time: DateTime<Utc>,
+    end_time: Option<DateTime<Utc>>,
+    logger_name: Option<String>,
+    logger_level: Option<LogSeverity>,
+    limit: usize,
+}
+
+impl LogHistoryQuery {
+    fn from_arguments(arguments: Option<&JsonValue>) -> Result<Self, String> {
+        let Some(arguments) = arguments else {
+            return Err("get_log_content arguments.startTime is required".to_string());
+        };
+        let start_time = parse_datetime_arg(arguments, "startTime")?;
+        let end_time = match arguments.get("endTime") {
+            Some(value) if !value.is_null() => Some(parse_datetime_value(value, "endTime")?),
+            _ => None,
+        };
+        if let Some(end_time) = end_time
+            && end_time < start_time
+        {
+            return Err("get_log_content arguments.endTime must be after startTime".to_string());
+        }
+        let logger_name = arguments
+            .get("loggerName")
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let logger_level = arguments
+            .get("loggerLevel")
+            .and_then(JsonValue::as_str)
+            .map(LogSeverity::parse)
+            .transpose()?;
+        let limit = arguments
+            .get("limit")
+            .and_then(JsonValue::as_u64)
+            .map(|value| value.clamp(1, 10_000) as usize)
+            .unwrap_or(1_000);
+
+        Ok(Self {
+            start_time,
+            end_time,
+            logger_name,
+            logger_level,
+            limit,
+        })
+    }
+
+    fn matches(&self, row: &JsonValue) -> bool {
+        let Some(timestamp) = row
+            .get("timestamp")
+            .and_then(JsonValue::as_str)
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.with_timezone(&Utc))
+        else {
+            return false;
+        };
+        if timestamp < self.start_time {
+            return false;
+        }
+        if let Some(end_time) = self.end_time
+            && timestamp > end_time
+        {
+            return false;
+        }
+        if let Some(required_level) = self.logger_level {
+            let Some(level) = row
+                .get("level")
+                .and_then(JsonValue::as_str)
+                .and_then(|level| LogSeverity::parse(level).ok())
+            else {
+                return false;
+            };
+            if level < required_level {
+                return false;
+            }
+        }
+        if let Some(logger_name) = self.logger_name.as_deref() {
+            let logger = row.get("logger").and_then(JsonValue::as_str).unwrap_or("");
+            let target = row.get("target").and_then(JsonValue::as_str).unwrap_or("");
+            if !logger.contains(logger_name) && !target.contains(logger_name) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+async fn read_json_log_file(
+    log_file_access: &LogFileAccess,
+    query: &LogHistoryQuery,
+) -> Result<Vec<JsonValue>, String> {
+    let file = match tokio::fs::File::open(log_file_access.path()).await {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(format!(
+                "failed to open log file `{}`: {error}",
+                log_file_access.path().display()
+            ));
+        }
+    };
+
+    let reader = tokio::io::BufReader::new(file);
+    let mut lines = tokio::io::AsyncBufReadExt::lines(reader);
+    let mut logs = Vec::new();
+    while let Some(line) = lines
+        .next_line()
+        .await
+        .map_err(|error| format!("failed to read log file: {error}"))?
+    {
+        let Some(row) = parse_json_log_line(&line) else {
+            continue;
+        };
+        if query.matches(&row) {
+            logs.push(row);
+            if logs.len() > query.limit {
+                logs.remove(0);
+            }
+        }
+    }
+    logs.sort_by(|left, right| {
+        let left_ts = left
+            .get("timestamp")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("");
+        let right_ts = right
+            .get("timestamp")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("");
+        right_ts.cmp(left_ts)
+    });
+    Ok(logs)
+}
+
+fn parse_json_log_line(line: &str) -> Option<JsonValue> {
+    let value: JsonValue = serde_json::from_str(line).ok()?;
+    let timestamp = value.get("timestamp").and_then(JsonValue::as_str)?;
+    let level = value.get("level").and_then(JsonValue::as_str).unwrap_or("");
+    let target = value
+        .get("target")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("");
+    let message = value
+        .pointer("/fields/message")
+        .and_then(JsonValue::as_str)
+        .or_else(|| value.get("message").and_then(JsonValue::as_str))
+        .unwrap_or("");
+
+    Some(json!({
+        "timestamp": timestamp,
+        "level": level,
+        "logger": target,
+        "target": target,
+        "message": message,
+        "thread": value.get("thread").and_then(JsonValue::as_str).unwrap_or(""),
+        "exception": value.get("exception").and_then(JsonValue::as_str).unwrap_or(""),
+        "fields": value.get("fields").cloned().unwrap_or(JsonValue::Null)
+    }))
+}
+
+fn parse_datetime_arg(arguments: &JsonValue, key: &str) -> Result<DateTime<Utc>, String> {
+    let Some(value) = arguments.get(key) else {
+        return Err(format!("get_log_content arguments.{key} is required"));
+    };
+    parse_datetime_value(value, key)
+}
+
+fn parse_datetime_value(value: &JsonValue, key: &str) -> Result<DateTime<Utc>, String> {
+    value
+        .as_str()
+        .ok_or_else(|| format!("get_log_content arguments.{key} must be a string"))
+        .and_then(|value| {
+            DateTime::parse_from_rfc3339(value)
+                .map(|value| value.with_timezone(&Utc))
+                .map_err(|error| format!("invalid get_log_content arguments.{key}: {error}"))
+        })
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -1192,6 +1409,14 @@ fn unsupported_log_access_response() -> JsonValue {
         "supported": false,
         "status": "unsupported",
         "message": "Runtime log access is not available from this service. Configure the controller to read JSON log files or Kubernetes/container logs for history and streaming."
+    })
+}
+
+fn unsupported_log_file_response() -> JsonValue {
+    json!({
+        "supported": false,
+        "status": "unsupported",
+        "message": "Runtime log file history is not available. Enable JSON file logging with LIGHT_LOG_JSON_FILE_ENABLED=true and LIGHT_LOG_JSON_FILE_ROTATION=never."
     })
 }
 
@@ -1964,6 +2189,52 @@ mod tests {
         assert_eq!(stop["supported"], true);
         assert_eq!(stop["status"], "success");
         assert_eq!(stop["streaming"], false);
+    }
+
+    #[tokio::test]
+    async fn runtime_mcp_handler_reads_history_from_json_log_file() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let temp_dir = TempDir::new().expect("log temp dir");
+        let log_path = temp_dir.path().join("service.jsonl");
+        std::fs::write(
+            &log_path,
+            r#"{"timestamp":"2026-06-17T21:37:43.147463Z","level":"DEBUG","target":"light_pingora::security","fields":{"message":"JWT validation failed after JWKS refresh: InvalidSignature"}}"#
+                .to_string()
+                + "\n"
+                + r#"{"timestamp":"2026-06-17T21:38:00.000000Z","level":"INFO","target":"light_runtime::runtime","fields":{"message":"ready"}}"#
+                + "\n",
+        )
+        .expect("write log file");
+        let handler = RuntimeMcpHandler::new(
+            Arc::clone(&registry),
+            runtime_config(),
+            Arc::new(DelegateHandler),
+        )
+        .with_log_file_access(Arc::new(crate::logging::LogFileAccess::new(log_path)));
+
+        let history = handler
+            .handle_request(
+                "tools/call",
+                json!({
+                    "name": "get_log_content",
+                    "arguments": {
+                        "startTime": "2026-06-17T21:37:00Z",
+                        "endTime": "2026-06-17T21:38:30Z",
+                        "loggerName": "light_pingora::security",
+                        "loggerLevel": "debug"
+                    }
+                }),
+            )
+            .await;
+
+        assert_eq!(history["supported"], true);
+        assert_eq!(history["status"], "success");
+        assert_eq!(history["source"], "file");
+        assert_eq!(history["logs"].as_array().expect("logs").len(), 1);
+        assert_eq!(
+            history["logs"][0]["message"],
+            "JWT validation failed after JWKS refresh: InvalidSignature"
+        );
     }
 
     #[tokio::test]

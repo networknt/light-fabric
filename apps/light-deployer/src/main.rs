@@ -75,6 +75,7 @@ async fn main() -> anyhow::Result<()> {
         .with_config_dir(config_dir)
         .with_logging_control(tracing_guard.logging_control())
         .with_log_stream(tracing_guard.log_stream())
+        .with_optional_log_file_access(tracing_guard.log_file_access())
         .build();
 
     let running = runtime

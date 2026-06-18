@@ -26,7 +26,9 @@ use crate::config::{
     RemoteBootstrapResult, RuntimeConfig, ServerConfig, ServiceIdentity, default_accept_header,
     default_environment,
 };
-use crate::logging::{LogStreamBroadcaster, LoggingControl, register_logging_module};
+use crate::logging::{
+    LogFileAccess, LogStreamBroadcaster, LoggingControl, register_logging_module,
+};
 use crate::module_registry::{ModuleRegistry, ReloadContext, RuntimeMcpHandler};
 use crate::transport::{BoundTransport, TransportRuntime};
 
@@ -97,6 +99,7 @@ where
     cache_registry: Option<Arc<CacheRegistry>>,
     logging_control: Option<Arc<LoggingControl>>,
     log_stream: Option<Arc<LogStreamBroadcaster>>,
+    log_file_access: Option<Arc<LogFileAccess>>,
     registration_timeout: Duration,
     registry_handler: Arc<dyn RegistryHandler>,
     registry_client: Option<Arc<PortalRegistryClient>>,
@@ -118,6 +121,7 @@ where
             cache_registry: None,
             logging_control: None,
             log_stream: None,
+            log_file_access: None,
             registration_timeout: Duration::from_secs(5),
             registry_handler: Arc::new(NoopRegistryHandler),
             registry_client: None,
@@ -169,6 +173,19 @@ where
         self
     }
 
+    pub fn with_log_file_access(mut self, log_file_access: Arc<LogFileAccess>) -> Self {
+        self.log_file_access = Some(log_file_access);
+        self
+    }
+
+    pub fn with_optional_log_file_access(
+        mut self,
+        log_file_access: Option<Arc<LogFileAccess>>,
+    ) -> Self {
+        self.log_file_access = log_file_access;
+        self
+    }
+
     pub fn with_registration_timeout(mut self, registration_timeout: Duration) -> Self {
         self.registration_timeout = registration_timeout;
         self
@@ -196,6 +213,7 @@ where
             cache_registry: self.cache_registry,
             logging_control: self.logging_control,
             log_stream: self.log_stream,
+            log_file_access: self.log_file_access,
             registration_timeout: self.registration_timeout,
             registry_handler: self.registry_handler,
             registry_client: self.registry_client,
@@ -218,6 +236,7 @@ where
     cache_registry: Option<Arc<CacheRegistry>>,
     logging_control: Option<Arc<LoggingControl>>,
     log_stream: Option<Arc<LogStreamBroadcaster>>,
+    log_file_access: Option<Arc<LogFileAccess>>,
     registration_timeout: Duration,
     registry_handler: Arc<dyn RegistryHandler>,
     registry_client: Option<Arc<PortalRegistryClient>>,
@@ -785,6 +804,9 @@ where
         if let Some(log_stream) = self.log_stream.as_ref() {
             runtime_handler =
                 runtime_handler.with_log_stream(Arc::clone(log_stream), client.notifier());
+        }
+        if let Some(log_file_access) = self.log_file_access.as_ref() {
+            runtime_handler = runtime_handler.with_log_file_access(Arc::clone(log_file_access));
         }
         let registry_handler: Arc<dyn RegistryHandler> = Arc::new(runtime_handler);
         client.set_handler(registry_handler).await;
