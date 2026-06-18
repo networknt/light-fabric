@@ -8,11 +8,16 @@ use crate::module_registry::{
 };
 use crate::runtime::RuntimeError;
 use async_trait::async_trait;
+use chrono::Utc;
 use serde::Serialize;
 use serde_json::{Value as JsonValue, json};
 use thiserror::Error;
+use tokio::sync::broadcast;
+use tracing::Event;
+use tracing::field::{Field, Visit};
 use tracing_subscriber::{
-    EnvFilter, Registry, layer::SubscriberExt, reload, util::SubscriberInitExt,
+    EnvFilter, Layer, Registry, layer::Context, layer::SubscriberExt, reload,
+    util::SubscriberInitExt,
 };
 
 pub const LOGGING_MODULE_ID: &str = "runtime/logging";
@@ -50,12 +55,17 @@ impl TracingOptions {
 #[derive(Debug)]
 pub struct TracingGuard {
     logging_control: Arc<LoggingControl>,
+    log_stream: Arc<LogStreamBroadcaster>,
     _json_file_guard: Option<tracing_appender::non_blocking::WorkerGuard>,
 }
 
 impl TracingGuard {
     pub fn logging_control(&self) -> Arc<LoggingControl> {
         Arc::clone(&self.logging_control)
+    }
+
+    pub fn log_stream(&self) -> Arc<LogStreamBroadcaster> {
+        Arc::clone(&self.log_stream)
     }
 }
 
@@ -92,6 +102,7 @@ pub fn init_tracing(options: TracingOptions) -> Result<TracingGuard, TracingInit
         options.default_filter,
         initial_filter,
     ));
+    let log_stream = Arc::new(LogStreamBroadcaster::new());
     let console_format = LogFormat::from_env()?;
     let console_ansi = configured_ansi(options.legacy_ansi_env);
     let json_file = JsonFileConfig::from_env(options.service_name)?;
@@ -101,20 +112,24 @@ pub fn init_tracing(options: TracingOptions) -> Result<TracingGuard, TracingInit
             let text_layer = text_layer(console_ansi);
             tracing_subscriber::registry()
                 .with(filter_layer)
+                .with(LogStreamLayer::new(Arc::clone(&log_stream)))
                 .with(text_layer)
                 .try_init()?;
             Ok(TracingGuard {
                 logging_control,
+                log_stream,
                 _json_file_guard: None,
             })
         }
         (LogFormat::Json, None) => {
             tracing_subscriber::registry()
                 .with(filter_layer)
+                .with(LogStreamLayer::new(Arc::clone(&log_stream)))
                 .with(json_console_layer())
                 .try_init()?;
             Ok(TracingGuard {
                 logging_control,
+                log_stream,
                 _json_file_guard: None,
             })
         }
@@ -123,11 +138,13 @@ pub fn init_tracing(options: TracingOptions) -> Result<TracingGuard, TracingInit
             let text_layer = text_layer(console_ansi);
             tracing_subscriber::registry()
                 .with(filter_layer)
+                .with(LogStreamLayer::new(Arc::clone(&log_stream)))
                 .with(text_layer)
                 .with(json_file_layer)
                 .try_init()?;
             Ok(TracingGuard {
                 logging_control,
+                log_stream,
                 _json_file_guard: Some(json_file_guard),
             })
         }
@@ -135,11 +152,13 @@ pub fn init_tracing(options: TracingOptions) -> Result<TracingGuard, TracingInit
             let (json_file_layer, json_file_guard) = json_file_layer(json_file)?;
             tracing_subscriber::registry()
                 .with(filter_layer)
+                .with(LogStreamLayer::new(Arc::clone(&log_stream)))
                 .with(json_console_layer())
                 .with(json_file_layer)
                 .try_init()?;
             Ok(TracingGuard {
                 logging_control,
+                log_stream,
                 _json_file_guard: Some(json_file_guard),
             })
         }
@@ -181,6 +200,135 @@ pub struct LoggingControl {
     default_filter: String,
     state: RwLock<LoggingFilterState>,
     startup_locked_by_env: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogStreamEvent {
+    pub timestamp: String,
+    pub level: String,
+    pub logger: String,
+    pub target: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields: Option<JsonValue>,
+}
+
+#[derive(Debug)]
+pub struct LogStreamBroadcaster {
+    sender: broadcast::Sender<LogStreamEvent>,
+}
+
+impl LogStreamBroadcaster {
+    pub fn new() -> Self {
+        let (sender, _) = broadcast::channel(1024);
+        Self { sender }
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<LogStreamEvent> {
+        self.sender.subscribe()
+    }
+
+    fn publish(&self, event: LogStreamEvent) {
+        if self.sender.receiver_count() > 0 {
+            let _ = self.sender.send(event);
+        }
+    }
+}
+
+impl Default for LogStreamBroadcaster {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+struct LogStreamLayer {
+    broadcaster: Arc<LogStreamBroadcaster>,
+}
+
+impl LogStreamLayer {
+    fn new(broadcaster: Arc<LogStreamBroadcaster>) -> Self {
+        Self { broadcaster }
+    }
+}
+
+impl<S> Layer<S> for LogStreamLayer
+where
+    S: tracing::Subscriber,
+{
+    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        self.broadcaster.publish(LogStreamEvent::from_event(event));
+    }
+}
+
+impl LogStreamEvent {
+    fn from_event(event: &Event<'_>) -> Self {
+        let metadata = event.metadata();
+        let mut visitor = LogFieldVisitor::default();
+        event.record(&mut visitor);
+        let fields = if visitor.fields.is_empty() {
+            None
+        } else {
+            Some(JsonValue::Object(visitor.fields))
+        };
+
+        Self {
+            timestamp: Utc::now().to_rfc3339(),
+            level: metadata.level().to_string(),
+            logger: metadata.target().to_string(),
+            target: metadata.target().to_string(),
+            message: visitor.message.unwrap_or_default(),
+            thread: std::thread::current().name().map(str::to_string),
+            fields,
+        }
+    }
+}
+
+#[derive(Default)]
+struct LogFieldVisitor {
+    message: Option<String>,
+    fields: serde_json::Map<String, JsonValue>,
+}
+
+impl Visit for LogFieldVisitor {
+    fn record_bool(&mut self, field: &Field, value: bool) {
+        self.record_value(field, JsonValue::Bool(value));
+    }
+
+    fn record_i64(&mut self, field: &Field, value: i64) {
+        self.record_value(field, json!(value));
+    }
+
+    fn record_u64(&mut self, field: &Field, value: u64) {
+        self.record_value(field, json!(value));
+    }
+
+    fn record_str(&mut self, field: &Field, value: &str) {
+        self.record_value(field, JsonValue::String(value.to_string()));
+    }
+
+    fn record_error(&mut self, field: &Field, value: &(dyn std::error::Error + 'static)) {
+        self.record_value(field, JsonValue::String(value.to_string()));
+    }
+
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        self.record_value(field, JsonValue::String(format!("{value:?}")));
+    }
+}
+
+impl LogFieldVisitor {
+    fn record_value(&mut self, field: &Field, value: JsonValue) {
+        if field.name() == "message" {
+            self.message = value
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| Some(value.to_string()));
+            return;
+        }
+        self.fields.insert(field.name().to_string(), value);
+    }
 }
 
 impl std::fmt::Debug for LoggingControl {

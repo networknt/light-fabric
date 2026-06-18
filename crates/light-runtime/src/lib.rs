@@ -12,8 +12,8 @@ pub use config::{
 };
 pub use config_loader::EmbeddedConfigFile;
 pub use logging::{
-    LOGGING_FILTER_KEY, LOGGING_MODULE_ID, LoggingControl, LoggingFilterState, TracingGuard,
-    TracingInitError, TracingOptions, init_tracing,
+    LOGGING_FILTER_KEY, LOGGING_MODULE_ID, LogStreamBroadcaster, LoggingControl,
+    LoggingFilterState, TracingGuard, TracingInitError, TracingOptions, init_tracing,
 };
 pub use module_registry::{
     CLIENT_CONFIG_NAME, CLIENT_MODULE_ID, ConfigManager, MaskSpec, ModuleEntry, ModuleKind,

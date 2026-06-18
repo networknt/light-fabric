@@ -1,17 +1,19 @@
 use crate::cache::CacheRegistry;
 use crate::config::RuntimeConfig;
-use crate::logging::LoggingControl;
+use crate::logging::{LogStreamBroadcaster, LogStreamEvent, LoggingControl};
 use crate::runtime::{RuntimeError, load_merged_config};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use config_loader::ConfigLoader;
-use portal_registry::RegistryHandler;
+use portal_registry::{PortalRegistryNotifier, RegistryHandler};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 
 const MASKED_VALUE: &str = "*";
 pub const CLIENT_MODULE_ID: &str = "light-client/client";
@@ -666,6 +668,9 @@ pub struct RuntimeMcpHandler {
     delegate: Arc<dyn RegistryHandler>,
     cache_registry: Option<Arc<CacheRegistry>>,
     logging_control: Option<Arc<LoggingControl>>,
+    log_stream: Option<Arc<LogStreamBroadcaster>>,
+    notifier: Option<PortalRegistryNotifier>,
+    log_stream_task: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl RuntimeMcpHandler {
@@ -680,6 +685,9 @@ impl RuntimeMcpHandler {
             delegate,
             cache_registry: None,
             logging_control: None,
+            log_stream: None,
+            notifier: None,
+            log_stream_task: Mutex::new(None),
         }
     }
 
@@ -690,6 +698,16 @@ impl RuntimeMcpHandler {
 
     pub fn with_logging_control(mut self, logging_control: Arc<LoggingControl>) -> Self {
         self.logging_control = Some(logging_control);
+        self
+    }
+
+    pub fn with_log_stream(
+        mut self,
+        log_stream: Arc<LogStreamBroadcaster>,
+        notifier: PortalRegistryNotifier,
+    ) -> Self {
+        self.log_stream = Some(log_stream);
+        self.notifier = Some(notifier);
         self
     }
 }
@@ -719,8 +737,8 @@ impl RegistryHandler for RuntimeMcpHandler {
                     "get_logging_filter" => self.get_logging_filter(),
                     "set_logging_filter" => self.set_logging_filter(params.get("arguments")),
                     "get_log_content" => unsupported_log_access_response(),
-                    "start_logs" => unsupported_log_access_response(),
-                    "stop_logs" => unsupported_log_access_response(),
+                    "start_logs" => self.start_logs(params.get("arguments")).await,
+                    "stop_logs" => self.stop_logs().await,
                     "reload_modules" => match parse_reload_modules(params.get("arguments")) {
                         Ok(modules) => {
                             let result = match self.config.reload_context().await {
@@ -842,6 +860,174 @@ impl RuntimeMcpHandler {
                 "status": "error",
                 "message": error.to_string()
             }),
+        }
+    }
+
+    async fn start_logs(&self, arguments: Option<&JsonValue>) -> JsonValue {
+        let (Some(log_stream), Some(notifier)) = (self.log_stream.as_ref(), self.notifier.as_ref())
+        else {
+            return unsupported_log_access_response();
+        };
+        let filter = match LogStreamFilter::from_arguments(arguments) {
+            Ok(filter) => filter,
+            Err(message) => {
+                return json!({
+                    "status": "error",
+                    "message": message
+                });
+            }
+        };
+
+        self.abort_log_stream().await;
+
+        let mut receiver = log_stream.subscribe();
+        let notifier = notifier.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                match receiver.recv().await {
+                    Ok(event) if filter.matches(&event) => {
+                        let Ok(params) = serde_json::to_value(event) else {
+                            continue;
+                        };
+                        if notifier
+                            .send_notification("notifications/log", params)
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+
+        *self.log_stream_task.lock().await = Some(task);
+
+        json!({
+            "supported": true,
+            "status": "success",
+            "streaming": true
+        })
+    }
+
+    async fn stop_logs(&self) -> JsonValue {
+        if self.log_stream.is_none() || self.notifier.is_none() {
+            return unsupported_log_access_response();
+        }
+        self.abort_log_stream().await;
+        json!({
+            "supported": true,
+            "status": "success",
+            "streaming": false
+        })
+    }
+
+    async fn abort_log_stream(&self) {
+        if let Some(task) = self.log_stream_task.lock().await.take() {
+            task.abort();
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct LogStreamFilter {
+    default_level: Option<LogSeverity>,
+    target_levels: Vec<(String, LogSeverity)>,
+}
+
+impl LogStreamFilter {
+    fn from_arguments(arguments: Option<&JsonValue>) -> Result<Self, String> {
+        let level = arguments
+            .and_then(|value| value.get("level"))
+            .and_then(JsonValue::as_str);
+        let filter = arguments
+            .and_then(|value| value.get("filter"))
+            .and_then(JsonValue::as_str);
+
+        if let Some(filter) = filter {
+            return Self::parse_filter_expression(filter);
+        }
+
+        let default_level = level
+            .map(LogSeverity::parse)
+            .transpose()?
+            .or(Some(LogSeverity::Trace));
+        Ok(Self {
+            default_level,
+            target_levels: Vec::new(),
+        })
+    }
+
+    fn parse_filter_expression(filter: &str) -> Result<Self, String> {
+        let mut default_level = None;
+        let mut target_levels = Vec::new();
+
+        for directive in filter
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+        {
+            if let Some((target, level)) = directive.split_once('=') {
+                let target = target.trim();
+                if target.is_empty() {
+                    return Err("start_logs arguments.filter contains an empty target".to_string());
+                }
+                target_levels.push((target.to_string(), LogSeverity::parse(level.trim())?));
+            } else {
+                default_level = Some(LogSeverity::parse(directive)?);
+            }
+        }
+
+        Ok(Self {
+            default_level,
+            target_levels,
+        })
+    }
+
+    fn matches(&self, event: &LogStreamEvent) -> bool {
+        let Some(event_level) = LogSeverity::parse(&event.level).ok() else {
+            return false;
+        };
+        let required = self
+            .target_levels
+            .iter()
+            .filter(|(target, _)| {
+                event.target == *target
+                    || event
+                        .target
+                        .strip_prefix(target)
+                        .is_some_and(|suffix| suffix.starts_with("::"))
+            })
+            .max_by_key(|(target, _)| target.len())
+            .map(|(_, level)| *level)
+            .or(self.default_level)
+            .unwrap_or(LogSeverity::Trace);
+
+        event_level >= required
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+enum LogSeverity {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl LogSeverity {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "trace" => Ok(Self::Trace),
+            "debug" => Ok(Self::Debug),
+            "info" => Ok(Self::Info),
+            "warn" | "warning" => Ok(Self::Warn),
+            "error" => Ok(Self::Error),
+            other => Err(format!("unsupported log level `{other}`")),
         }
     }
 }
@@ -1730,6 +1916,54 @@ mod tests {
             .await;
         assert_eq!(stop["supported"], false);
         assert_eq!(stop["status"], "unsupported");
+    }
+
+    #[tokio::test]
+    async fn runtime_mcp_handler_starts_and_stops_in_process_log_stream() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let client = portal_registry::PortalRegistryClient::new(
+            "ws://127.0.0.1:8080/ws/microservice",
+            portal_registry::RegistrationBuilder::new(
+                "test-service-1.0.0",
+                "1.0.0",
+                "http",
+                "127.0.0.1",
+                8080,
+            )
+            .with_jwt("token")
+            .build(),
+            Arc::new(DelegateHandler),
+        )
+        .expect("portal registry client");
+        let handler = RuntimeMcpHandler::new(
+            Arc::clone(&registry),
+            runtime_config(),
+            Arc::new(DelegateHandler),
+        )
+        .with_log_stream(
+            Arc::new(crate::logging::LogStreamBroadcaster::new()),
+            client.notifier(),
+        );
+
+        let start = handler
+            .handle_request(
+                "tools/call",
+                json!({
+                    "name": "start_logs",
+                    "arguments": { "filter": "info,light_pingora::security=debug" }
+                }),
+            )
+            .await;
+        assert_eq!(start["supported"], true);
+        assert_eq!(start["status"], "success");
+        assert_eq!(start["streaming"], true);
+
+        let stop = handler
+            .handle_request("tools/call", json!({ "name": "stop_logs" }))
+            .await;
+        assert_eq!(stop["supported"], true);
+        assert_eq!(stop["status"], "success");
+        assert_eq!(stop["streaming"], false);
     }
 
     #[tokio::test]

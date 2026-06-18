@@ -1,7 +1,9 @@
 pub mod client;
 pub mod protocol;
 
-pub use client::{PortalRegistryClient, RegistrationState, RegistryHandler};
+pub use client::{
+    PortalRegistryClient, PortalRegistryNotifier, RegistrationState, RegistryHandler,
+};
 pub use protocol::{
     DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, JsonRpcMessage, RegistrationResponse,
     ServiceMetadataUpdate, ServiceRegistrationParams,

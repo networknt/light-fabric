@@ -2589,6 +2589,7 @@ async fn main() -> Result<()> {
         .with_external_config_dir(EXTERNAL_CONFIG_DIR)
         .with_cache_registry(cache_registry)
         .with_logging_control(tracing_guard.logging_control())
+        .with_log_stream(tracing_guard.log_stream())
         .build();
 
     let running = runtime

@@ -2293,6 +2293,7 @@ async fn main() -> anyhow::Result<()> {
         .with_external_config_dir(EXTERNAL_CONFIG_DIR)
         .with_registry_handler(registry_handler)
         .with_logging_control(tracing_guard.logging_control())
+        .with_log_stream(tracing_guard.log_stream())
         .build();
 
     let running = runtime

@@ -291,6 +291,32 @@ pub struct PortalRegistryClient {
     heartbeat_interval: Duration,
 }
 
+#[derive(Clone)]
+pub struct PortalRegistryNotifier {
+    outbound_tx: Arc<Mutex<Option<mpsc::Sender<Message>>>>,
+}
+
+impl PortalRegistryNotifier {
+    pub async fn send_notification(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let payload = JsonRpcMessage::new_notification(method, params);
+        let message = Message::Text(serde_json::to_string(&payload)?.into());
+
+        let tx = {
+            let guard = self.outbound_tx.lock().await;
+            guard.clone()
+        };
+
+        let tx = tx.ok_or_else(|| anyhow::anyhow!("registry client is not connected"))?;
+        tx.send(message)
+            .await
+            .map_err(|_| anyhow::anyhow!("registry client connection is closed"))
+    }
+}
+
 impl fmt::Debug for PortalRegistryClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PortalRegistryClient")
@@ -377,6 +403,12 @@ impl PortalRegistryClient {
 
     pub fn subscribe_registration(&self) -> watch::Receiver<RegistrationState> {
         self.registration_tx.subscribe()
+    }
+
+    pub fn notifier(&self) -> PortalRegistryNotifier {
+        PortalRegistryNotifier {
+            outbound_tx: Arc::clone(&self.outbound_tx),
+        }
     }
 
     pub async fn send_metadata_update(&self, update: ServiceMetadataUpdate) -> anyhow::Result<()> {

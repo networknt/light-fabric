@@ -26,7 +26,7 @@ use crate::config::{
     RemoteBootstrapResult, RuntimeConfig, ServerConfig, ServiceIdentity, default_accept_header,
     default_environment,
 };
-use crate::logging::{LoggingControl, register_logging_module};
+use crate::logging::{LogStreamBroadcaster, LoggingControl, register_logging_module};
 use crate::module_registry::{ModuleRegistry, ReloadContext, RuntimeMcpHandler};
 use crate::transport::{BoundTransport, TransportRuntime};
 
@@ -96,6 +96,7 @@ where
     module_registry: Arc<ModuleRegistry>,
     cache_registry: Option<Arc<CacheRegistry>>,
     logging_control: Option<Arc<LoggingControl>>,
+    log_stream: Option<Arc<LogStreamBroadcaster>>,
     registration_timeout: Duration,
     registry_handler: Arc<dyn RegistryHandler>,
     registry_client: Option<Arc<PortalRegistryClient>>,
@@ -116,6 +117,7 @@ where
             module_registry: Arc::new(ModuleRegistry::new()),
             cache_registry: None,
             logging_control: None,
+            log_stream: None,
             registration_timeout: Duration::from_secs(5),
             registry_handler: Arc::new(NoopRegistryHandler),
             registry_client: None,
@@ -162,6 +164,11 @@ where
         self
     }
 
+    pub fn with_log_stream(mut self, log_stream: Arc<LogStreamBroadcaster>) -> Self {
+        self.log_stream = Some(log_stream);
+        self
+    }
+
     pub fn with_registration_timeout(mut self, registration_timeout: Duration) -> Self {
         self.registration_timeout = registration_timeout;
         self
@@ -188,6 +195,7 @@ where
             module_registry: self.module_registry,
             cache_registry: self.cache_registry,
             logging_control: self.logging_control,
+            log_stream: self.log_stream,
             registration_timeout: self.registration_timeout,
             registry_handler: self.registry_handler,
             registry_client: self.registry_client,
@@ -209,6 +217,7 @@ where
     module_registry: Arc<ModuleRegistry>,
     cache_registry: Option<Arc<CacheRegistry>>,
     logging_control: Option<Arc<LoggingControl>>,
+    log_stream: Option<Arc<LogStreamBroadcaster>>,
     registration_timeout: Duration,
     registry_handler: Arc<dyn RegistryHandler>,
     registry_client: Option<Arc<PortalRegistryClient>>,
@@ -690,18 +699,6 @@ where
         let portal_url = Url::parse(&portal_registry.portal_url)?;
         let ws_url = to_microservice_ws_url(&portal_url)?;
         let token = portal_token(&portal_registry).ok_or(RuntimeError::MissingPortalToken)?;
-        let mut runtime_handler = RuntimeMcpHandler::new(
-            Arc::clone(&self.module_registry),
-            runtime_config.clone(),
-            Arc::clone(&self.registry_handler),
-        );
-        if let Some(cache_registry) = self.cache_registry.as_ref() {
-            runtime_handler = runtime_handler.with_cache_registry(Arc::clone(cache_registry));
-        }
-        if let Some(logging_control) = self.logging_control.as_ref() {
-            runtime_handler = runtime_handler.with_logging_control(Arc::clone(logging_control));
-        }
-        let registry_handler: Arc<dyn RegistryHandler> = Arc::new(runtime_handler);
         let mut registration = RegistrationBuilder::new(
             &runtime_config.service_identity.service_id,
             &runtime_config.service_identity.version,
@@ -749,7 +746,6 @@ where
             .or(self.registry_client.as_ref());
         let client = if let Some(client) = shared_registry_client {
             client.set_registration_params(registration).await;
-            client.set_handler(Arc::clone(&registry_handler)).await;
             client
                 .configure_connection(&ws_url, ca_certificate, verify_hostname)
                 .await
@@ -760,13 +756,14 @@ where
                 })?;
             Arc::clone(client)
         } else {
-            let mut client =
-                PortalRegistryClient::new(&ws_url, registration, Arc::clone(&registry_handler))
-                    .map_err(|e| {
-                        RuntimeError::Unsupported(format!(
-                            "failed to build portal registry client: {e}"
-                        ))
-                    })?;
+            let mut client = PortalRegistryClient::new(
+                &ws_url,
+                registration,
+                Arc::clone(&self.registry_handler),
+            )
+            .map_err(|e| {
+                RuntimeError::Unsupported(format!("failed to build portal registry client: {e}"))
+            })?;
 
             if let Some(ca_certificate) = ca_certificate {
                 client = client.with_ca_certificate(ca_certificate);
@@ -774,6 +771,23 @@ where
             client = client.with_verify_hostname(verify_hostname);
             Arc::new(client)
         };
+        let mut runtime_handler = RuntimeMcpHandler::new(
+            Arc::clone(&self.module_registry),
+            runtime_config.clone(),
+            Arc::clone(&self.registry_handler),
+        );
+        if let Some(cache_registry) = self.cache_registry.as_ref() {
+            runtime_handler = runtime_handler.with_cache_registry(Arc::clone(cache_registry));
+        }
+        if let Some(logging_control) = self.logging_control.as_ref() {
+            runtime_handler = runtime_handler.with_logging_control(Arc::clone(logging_control));
+        }
+        if let Some(log_stream) = self.log_stream.as_ref() {
+            runtime_handler =
+                runtime_handler.with_log_stream(Arc::clone(log_stream), client.notifier());
+        }
+        let registry_handler: Arc<dyn RegistryHandler> = Arc::new(runtime_handler);
+        client.set_handler(registry_handler).await;
         let mut registration_rx = client.subscribe_registration();
         let task_client = Arc::clone(&client);
         let registration_task = tokio::spawn(async move {
