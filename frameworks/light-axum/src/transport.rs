@@ -68,9 +68,7 @@ where
             config.server.http_port
         };
 
-        let addr: SocketAddr = format!("{}:{desired_port}", config.server.ip)
-            .parse()
-            .map_err(|e| RuntimeError::Unsupported(format!("invalid bind address: {e}")))?;
+        let addr = bind_addr(config.server.ip.as_str(), desired_port)?;
         let handle = Handle::new();
         let context = ServerContext {
             runtime_config: Arc::new(config.clone()),
@@ -163,14 +161,21 @@ fn resolve_advertised_address(
     Ok(bound_ip.to_string())
 }
 
+fn bind_addr(ip: &str, port: u16) -> Result<SocketAddr, RuntimeError> {
+    let parsed_ip = ip
+        .parse::<IpAddr>()
+        .map_err(|e| RuntimeError::Unsupported(format!("invalid server.ip `{ip}`: {e}")))?;
+    Ok(SocketAddr::new(parsed_ip, port))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::resolve_advertised_address;
+    use super::{bind_addr, resolve_advertised_address};
     use light_runtime::{
         BootstrapConfig, DirectRegistryConfig, ModuleRegistry, RuntimeConfig, RuntimeError,
         ServerConfig, ServiceIdentity,
     };
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -212,6 +217,34 @@ mod tests {
             .expect("resolve advertised address");
 
         assert_eq!(address, "0.0.0.0");
+    }
+
+    #[test]
+    fn builds_ipv4_bind_address() {
+        let addr = bind_addr("0.0.0.0", 8080).expect("ipv4 bind address");
+
+        assert_eq!(
+            addr,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8080)
+        );
+    }
+
+    #[test]
+    fn builds_ipv6_bind_address() {
+        let addr = bind_addr("::", 8080).expect("ipv6 bind address");
+
+        assert_eq!(
+            addr,
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 8080)
+        );
+        assert_eq!(addr.to_string(), "[::]:8080");
+    }
+
+    #[test]
+    fn rejects_invalid_bind_ip() {
+        let error = bind_addr("not an ip", 8080).expect_err("invalid bind ip should fail");
+
+        assert!(matches!(error, RuntimeError::Unsupported(_)));
     }
 
     #[test]
