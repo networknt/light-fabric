@@ -1,0 +1,3 @@
+enabled: ${cors.enabled:true}
+allowedOrigins: ${cors.allowedOrigins:[]}
+allowedMethods: ${cors.allowedMethods:[]}
