@@ -1,0 +1,4 @@
+http2Enabled: ${router.http2Enabled:true}
+httpsEnabled: ${router.httpsEnabled:true}
+maxRequestTime: ${router.maxRequestTime:30000}
+serviceTargets: ${router.serviceTargets:{}}

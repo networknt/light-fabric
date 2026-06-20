@@ -1,0 +1,2 @@
+enabled: ${pathPrefixService.enabled:true}
+mapping: ${pathPrefixService.mapping:{}}
