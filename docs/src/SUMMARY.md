@@ -60,7 +60,7 @@
 
 # Framework
 - [Light-Axum](framework/light-axum.md)
-
+  - [IPv6 Support](framework/light-axum/ipv6-support.md)
 - [Light-Pingora](framework/light-pingora.md)
   - [MSAL Exchange](framework/light-pingora/msal-exchange.md)
 # Product
