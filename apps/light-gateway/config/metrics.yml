@@ -1,0 +1,15 @@
+enabled: ${metrics.enabled:true}
+enableJvmMonitor: ${metrics.enableJvmMonitor:false}
+serverProtocol: ${metrics.serverProtocol:http}
+serverHost: ${metrics.serverHost:localhost}
+serverPath: ${metrics.serverPath:/apm/metricFeed}
+serverPort: ${metrics.serverPort:8086}
+serverName: ${metrics.serverName:metrics}
+serverUser: ${metrics.serverUser:admin}
+serverPass: ${metrics.serverPass:admin}
+reportInMinutes: ${metrics.reportInMinutes:1}
+productName: ${metrics.productName:light-gateway}
+sendScopeClientId: ${metrics.sendScopeClientId:false}
+sendCallerId: ${metrics.sendCallerId:false}
+sendIssuer: ${metrics.sendIssuer:false}
+issuerRegex: ${metrics.issuerRegex:}

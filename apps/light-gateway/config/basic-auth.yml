@@ -1,0 +1,5 @@
+enabled: ${basic-auth.enabled:false}
+enableAD: ${basic-auth.enableAD:true}
+allowAnonymous: ${basic-auth.allowAnonymous:false}
+allowBearerToken: ${basic-auth.allowBearerToken:false}
+users: ${basic-auth.users:[]}

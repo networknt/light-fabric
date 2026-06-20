@@ -1,0 +1,3 @@
+enabled: ${apikey.enabled:true}
+hashEnabled: ${apikey.hashEnabled:false}
+pathPrefixAuths: ${apikey.pathPrefixAuths:[]}

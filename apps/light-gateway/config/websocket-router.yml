@@ -1,0 +1,8 @@
+defaultProtocol: ${websocket-router.defaultProtocol:http}
+defaultEnvTag: ${websocket-router.defaultEnvTag:}
+pathPrefixService: ${websocket-router.pathPrefixService:{}}
+preserveRoutingHeaders: ${websocket-router.preserveRoutingHeaders:false}
+idleTimeoutMs: ${websocket-router.idleTimeoutMs:3600000}
+maxConnectionDurationMs: ${websocket-router.maxConnectionDurationMs:}
+maxActiveConnections: ${websocket-router.maxActiveConnections:}
+maxUpgradeRequestsPerSecond: ${websocket-router.maxUpgradeRequestsPerSecond:}

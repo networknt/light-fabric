@@ -1,0 +1,4 @@
+enabled: ${correlation.enabled:true}
+autogenCorrelationId: ${correlation.autogenCorrelationId:true}
+correlationMdcField: ${correlation.correlationMdcField:cId}
+traceabilityMdcField: ${correlation.traceabilityMdcField:tId}

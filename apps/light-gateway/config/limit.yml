@@ -1,0 +1,11 @@
+enabled: ${limit.enabled:false}
+concurrentRequest: ${limit.concurrentRequest:0}
+queueSize: ${limit.queueSize:0}
+errorCode: ${limit.errorCode:503}
+rateLimit: ${limit.rateLimit:[]}
+headersAlwaysSet: ${limit.headersAlwaysSet:false}
+key: ${limit.key:server}
+server: ${limit.server:{}}
+address: ${limit.address:{}}
+client: ${limit.client:{}}
+user: ${limit.user:{}}
