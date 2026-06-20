@@ -323,9 +323,10 @@ fn required_non_empty_path(
 }
 
 fn listen_addr(config: &RuntimeConfig, port: u16) -> Result<String, RuntimeError> {
-    let addr: SocketAddr = format!("{}:{port}", config.server.ip)
-        .parse()
-        .map_err(|e| RuntimeError::Unsupported(format!("invalid bind address: {e}")))?;
+    let ip = config.server.ip.parse::<IpAddr>().map_err(|e| {
+        RuntimeError::Unsupported(format!("invalid server.ip `{}`: {e}", config.server.ip))
+    })?;
+    let addr = SocketAddr::new(ip, port);
     Ok(addr.to_string())
 }
 
@@ -431,6 +432,13 @@ impl ShutdownSignalWatch for ControlledShutdown {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use light_runtime::config::ClientConfig;
+    use light_runtime::{
+        BootstrapConfig, DirectRegistryConfig, ModuleRegistry, PortalRegistryConfig,
+        ServiceIdentity,
+    };
+    use std::collections::HashMap;
+    use std::sync::Arc;
 
     fn server_config_with_https(
         tls_cert_path: Option<PathBuf>,
@@ -448,6 +456,28 @@ mod tests {
         match error {
             RuntimeError::Unsupported(message) => message,
             other => panic!("expected RuntimeError::Unsupported, got {other:?}"),
+        }
+    }
+
+    fn runtime_config_with_ip(ip: &str) -> RuntimeConfig {
+        RuntimeConfig {
+            bootstrap: BootstrapConfig::default(),
+            server: ServerConfig {
+                ip: ip.to_string(),
+                ..Default::default()
+            },
+            client: None::<ClientConfig>,
+            portal_registry: None::<PortalRegistryConfig>,
+            direct_registry: DirectRegistryConfig::default(),
+            service_identity: ServiceIdentity::default(),
+            config_dir: PathBuf::from("config"),
+            external_config_dir: PathBuf::from("config"),
+            resolved_values: HashMap::new(),
+            default_config_dir: None,
+            embedded_config: &[],
+            module_registry: Arc::new(ModuleRegistry::new()),
+            cache_registry: None,
+            registry_client: None,
         }
     }
 
@@ -510,6 +540,36 @@ mod tests {
         assert_eq!(
             paths,
             Some(("server.pem".to_string(), "server-key.pem".to_string()))
+        );
+    }
+
+    #[test]
+    fn listen_addr_builds_ipv4_bind_address() {
+        let config = runtime_config_with_ip("0.0.0.0");
+
+        let address = listen_addr(&config, 8443).expect("ipv4 bind address");
+
+        assert_eq!(address, "0.0.0.0:8443");
+    }
+
+    #[test]
+    fn listen_addr_builds_ipv6_bind_address() {
+        let config = runtime_config_with_ip("::");
+
+        let address = listen_addr(&config, 8443).expect("ipv6 bind address");
+
+        assert_eq!(address, "[::]:8443");
+    }
+
+    #[test]
+    fn listen_addr_rejects_invalid_bind_ip() {
+        let config = runtime_config_with_ip("not an ip");
+
+        let error = listen_addr(&config, 8443).expect_err("invalid bind ip");
+
+        assert_eq!(
+            unsupported_message(error),
+            "invalid server.ip `not an ip`: invalid IP address syntax"
         );
     }
 }
