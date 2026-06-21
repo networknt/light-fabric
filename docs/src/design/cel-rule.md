@@ -308,6 +308,127 @@ The default response-filter actions should stay declarative:
 - `ResponseColumnFilterAction`: applies permission-defined column keep or remove
   lists.
 
+Rule bodies should keep using the `actions[].actionClassName` field even when
+the runtime is Rust. In Rust this value is not a Java class name. It is a stable
+action registry key that selects the Rust action implementation. The Rust
+gateway registers both the Java-compatible fully qualified names and short
+aliases:
+
+- `com.networknt.rule.ResponseRowFilterAction`
+- `ResponseRowFilterAction`
+- `com.networknt.rule.ResponseColumnFilterAction`
+- `ResponseColumnFilterAction`
+- `com.networknt.rule.ResponseCelRowFilterAction`
+- `ResponseCelRowFilterAction`
+
+For portal-authored and exported rules, prefer the fully qualified
+Java-compatible names. They preserve compatibility with existing yaml-rule
+configuration, schemas, import/export flows, and any Java runtime that reads the
+same rule bodies:
+
+```yaml
+ruleBodies:
+  rowFilterByJwtClaims:
+    common: Y
+    ruleId: rowFilterByJwtClaims
+    ruleName: Row filter by JWT claims
+    ruleType: res-fil
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+    expression: >
+      row != null
+      && (
+        ("role" in row && "role" in auditInfo.subject_claims.ClaimsMap)
+        || ("group" in row
+            && ("grp" in auditInfo.subject_claims.ClaimsMap
+                || "group" in auditInfo.subject_claims.ClaimsMap))
+        || ("position" in row
+            && ("pos" in auditInfo.subject_claims.ClaimsMap
+                || "position" in auditInfo.subject_claims.ClaimsMap))
+        || ("attribute" in row
+            && ("att" in auditInfo.subject_claims.ClaimsMap
+                || "attribute" in auditInfo.subject_claims.ClaimsMap))
+      )
+    actions:
+      - actionClassName: com.networknt.rule.ResponseRowFilterAction
+
+  colFilterByJwtClaims:
+    common: Y
+    ruleId: colFilterByJwtClaims
+    ruleName: Column filter by JWT claims
+    ruleType: res-fil
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+    expression: >
+      col != null
+      && (
+        ("role" in col && "role" in auditInfo.subject_claims.ClaimsMap)
+        || ("group" in col
+            && ("grp" in auditInfo.subject_claims.ClaimsMap
+                || "group" in auditInfo.subject_claims.ClaimsMap))
+        || ("position" in col
+            && ("pos" in auditInfo.subject_claims.ClaimsMap
+                || "position" in auditInfo.subject_claims.ClaimsMap))
+        || ("attribute" in col
+            && ("att" in auditInfo.subject_claims.ClaimsMap
+                || "attribute" in auditInfo.subject_claims.ClaimsMap))
+      )
+    actions:
+      - actionClassName: com.networknt.rule.ResponseColumnFilterAction
+```
+
+The rule-level CEL expression only decides whether the response-filter action
+runs. The action reads the endpoint `permission.row` or `permission.col`
+configuration and matches it against JWT claims. The response-filter action
+understands these permission dimensions:
+
+- `role`: matched against the JWT `role` claim
+- `group`: matched against `grp` or `group`
+- `position`: matched against `pos` or `position`
+- `attribute`: matched against `att` or `attribute`
+- `user`: matched against `uid`, `user_id`, or `sub`
+
+For example:
+
+```yaml
+endpointRules:
+  /v1/accounts@get:
+    res-fil:
+      - rowFilterByJwtClaims
+      - colFilterByJwtClaims
+    permission:
+      row:
+        role:
+          manager:
+            - colName: status
+              operator: =
+              colValue: ACTIVE
+        group:
+          finance:
+            - colName: department
+              operator: =
+              colValue: FIN
+        position:
+          director:
+            - colName: level
+              operator: ">="
+              colValue: "5"
+        attribute:
+          region-east:
+            - colName: region
+              operator: =
+              colValue: EAST
+      col:
+        role:
+          manager: id,name,status,department
+        group:
+          finance: id,name,balance,status
+        position:
+          director: id,name,balance,status,level
+        attribute:
+          region-east: id,name,region,status
+```
+
 If a row predicate needs CEL, add an explicit CEL-aware action rather than
 turning rule-level CEL into a JSON transformation DSL:
 
