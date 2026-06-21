@@ -86,12 +86,12 @@ Java request behavior:
 
 - `exchangePath`, normally `/auth/ms/exchange`, requires
   `Authorization: Bearer <microsoft-token>`.
-- Missing bearer token returns `ERR11000`.
+- Missing bearer token returns `ERR11647`.
 - The handler verifies the Microsoft token with `security-msal.yml`.
 - Verification failure returns `ERR10000`.
 - The handler generates a CSRF value and sends an OAuth token-exchange request
   with the Microsoft token as `subject_token`.
-- Token-exchange failure returns `ERR11001`.
+- Token-exchange failure returns `ERR11648`.
 - On success, the handler sets the same BFF cookies as the stateless handler
   and returns JSON containing `scopes`.
 - `logoutPath`, normally `/auth/ms/logout`, clears BFF cookies and ends the
@@ -99,12 +99,12 @@ Java request behavior:
 - Subsequent requests use the same cookie, CSRF, refresh, and downstream
   `Authorization` injection flow as the stateless handler.
 
-Java error codes to preserve:
+Error codes aligned:
 
 | Code | Meaning |
 | --- | --- |
-| `ERR11000` | Microsoft bearer token is missing |
-| `ERR11001` | Internal token exchange failed |
+| `ERR11647` | Microsoft bearer token is missing |
+| `ERR11648` | Internal token exchange failed |
 | `ERR10000` | Incoming Microsoft token or returned internal token is invalid |
 | `ERR10036` | CSRF token is missing from request |
 | `ERR10038` | CSRF claim is missing from JWT |

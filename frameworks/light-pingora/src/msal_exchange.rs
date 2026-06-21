@@ -186,7 +186,7 @@ impl MsalExchangeRuntime {
     ) -> Result<String, crate::HandlerRejection> {
         let token = request_cookie(session, self.config.msal_access_token_cookie.as_str())
             .ok_or_else(|| {
-                crate::HandlerRejection::new(401, "ERR11000", "Microsoft access token is missing")
+                crate::HandlerRejection::new(401, "ERR11647", "Microsoft access token is missing")
             })?;
         self.verify_msal_token(token.as_str()).await?;
         Ok(token)
@@ -218,7 +218,7 @@ impl MsalExchangeRuntime {
         session: &mut Session,
     ) -> Result<MsalExchangeOutcome, crate::HandlerRejection> {
         let microsoft_token = bearer_token(session).ok_or_else(|| {
-            crate::HandlerRejection::new(401, "ERR11000", "Microsoft bearer token is missing")
+            crate::HandlerRejection::new(401, "ERR11647", "Microsoft bearer token is missing")
         })?;
         self.verify_msal_token(microsoft_token.as_str()).await?;
 
@@ -231,7 +231,7 @@ impl MsalExchangeRuntime {
                     .ok_or_else(|| {
                         crate::HandlerRejection::new(
                             401,
-                            "ERR11000",
+                            "ERR11647",
                             "Microsoft access token is missing",
                         )
                     })?;
@@ -254,7 +254,7 @@ impl MsalExchangeRuntime {
             )
             .await
             .map_err(|error| {
-                crate::HandlerRejection::new(error.status, "ERR11001", error.message)
+                crate::HandlerRejection::new(error.status, "ERR11648", error.message)
             })?;
         let (scopes, headers) = self
             .session
@@ -647,5 +647,22 @@ msalAccessTokenHeader: X-Light-Token
                 .to_string()
                 .contains("msalAccessTokenHeader must be different from lightTokenHeader")
         );
+    }
+
+    #[test]
+    fn test_msal_access_cookie_max_age() {
+        let principal = crate::AuthPrincipal {
+            claims: serde_json::json!({
+                "exp": now_seconds() + 500
+            }),
+            ..Default::default()
+        };
+        assert_eq!(msal_access_cookie_max_age(&principal, 1000), 500);
+
+        let principal_no_exp = crate::AuthPrincipal {
+            claims: serde_json::json!({}),
+            ..Default::default()
+        };
+        assert_eq!(msal_access_cookie_max_age(&principal_no_exp, 1000), 1000);
     }
 }

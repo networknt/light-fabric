@@ -417,8 +417,8 @@ Important error codes:
 
 | Code | Meaning |
 | --- | --- |
-| `ERR11000` | Required Azure MSAL bearer token is missing on the exchange endpoint or in the MSAL access-token cookie. |
-| `ERR11001` | light-oauth token exchange failed. |
+| `ERR11647` | Required Azure MSAL bearer token is missing on the exchange endpoint or in the MSAL access-token cookie. |
+| `ERR11648` | light-oauth token exchange failed. |
 | `ERR10000` | Azure MSAL token or light-oauth token verification failed. |
 | `ERR10036` | CSRF token is missing from the request. |
 | `ERR10038` | CSRF claim is missing from the light-oauth token. |
