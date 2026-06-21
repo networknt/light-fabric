@@ -17,6 +17,7 @@
 - [LightAPI Description](design/lightapi-description.md)
 - [Light-Rule](design/light-rule.md)
 - [CEL Rule Conditions](design/cel-rule.md)
+- [Access Control Handler](design/access-control.md)
 - [Centralized Skills](design/centralized-agent-skills.md)
 - [Skill Workflow Orchestration](design/skill-workflow-orchestration.md)
 - [Hindsight Memory](design/hindsight-memory.md)

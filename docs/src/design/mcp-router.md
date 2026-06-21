@@ -629,6 +629,210 @@ Response filtering should be implemented as a second policy stage:
   parent path entries such as `/v1/accounts@get` for
   `/v1/accounts/123@get`.
 
+### `req-acc` And `res-fil` Rule Design
+
+The MCP router should treat endpoint rules as two separate policy stages:
+
+- `req-acc`: request access rules. These run before backend tool execution.
+  They decide whether the caller can invoke the tool at all.
+- `res-fil`: response filter rules. These run after backend tool execution and
+  before the JSON-RPC result is sent back to the caller. They can remove rows,
+  remove columns, or otherwise reduce the returned payload.
+
+Both stages use Light-Rule with CEL rule conditions. Light-Fabric only supports
+CEL conditions for new rule execution. The old native condition-row format is a
+legacy Java yaml-rule format and is not the Light-Fabric runtime contract. CEL
+keeps the rule predicate explicit while still letting the Java-compatible action
+classes perform the stable role, row, and column filter behavior. In this model,
+CEL decides whether a rule is eligible to run, and `permission` carries the
+endpoint-specific role, row, and column policy values.
+
+The endpoint key must be stable and should not include the query string. For
+example, the demo request:
+
+```bash
+curl -s "http://127.0.0.1:8086/offers?segment=premium&state=ON&category=travel"
+```
+
+maps to the endpoint rule key `/offers@get`. The query parameters are part of
+the tool arguments and can be inspected by CEL through `toolArguments`.
+
+For the offer demo, the backend should return enough rows to prove filtering,
+for example:
+
+```json
+[
+  {
+    "offerId": "OFFER-TRAVEL-01",
+    "title": "Premium travel credit",
+    "segment": "premium",
+    "state": "ON",
+    "category": "travel",
+    "priority": 1,
+    "active": true
+  },
+  {
+    "offerId": "OFFER-TRAVEL-50",
+    "title": "Premium lounge bundle",
+    "segment": "premium",
+    "state": "ON",
+    "category": "travel",
+    "priority": 50,
+    "active": true
+  },
+  {
+    "offerId": "OFFER-TRAVEL-OLD",
+    "title": "Retired companion fare",
+    "segment": "premium",
+    "state": "ON",
+    "category": "travel",
+    "priority": 10,
+    "active": false
+  }
+]
+```
+
+Two roles are enough to demonstrate the behavior:
+
+- `offer-viewer`: can invoke the offer tool, but can only see rows where
+  `priority < 50` and `active == true`. The `active` column must not be
+  returned.
+- `offer-admin`: can invoke the offer tool and can see every row and every
+  column, including inactive offers and all priorities.
+
+Example rule mapping:
+
+```yaml
+ruleBodies:
+  allowOfferSearch:
+    common: Y
+    ruleId: allowOfferSearch
+    ruleName: Allow offer search
+    ruleType: req-acc
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+    expression: >
+      auditInfo.subject_claims.ClaimsMap.role != null
+    actions:
+      - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
+
+  filterOfferRows:
+    common: Y
+    ruleId: filterOfferRows
+    ruleName: Filter offer rows
+    ruleType: res-fil
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+    expression: >
+      statusCode == 200
+      && responseBody != ""
+      && auditInfo.subject_claims.ClaimsMap.role != null
+    actions:
+      - actionClassName: com.networknt.rule.ResponseRowFilterAction
+
+  filterOfferColumns:
+    common: Y
+    ruleId: filterOfferColumns
+    ruleName: Filter offer columns
+    ruleType: res-fil
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+    expression: >
+      statusCode == 200
+      && responseBody != ""
+      && auditInfo.subject_claims.ClaimsMap.role != null
+    actions:
+      - actionClassName: com.networknt.rule.ResponseColumnFilterAction
+
+endpointRules:
+  /offers@get:
+    req-acc:
+      - allowOfferSearch
+    res-fil:
+      - filterOfferRows
+      - filterOfferColumns
+    permission:
+      roles: offer-viewer offer-admin
+      row:
+        role:
+          offer-viewer:
+            - colName: priority
+              operator: "<"
+              colValue: 50
+            - colName: active
+              operator: "="
+              colValue: true
+      col:
+        role:
+          offer-viewer: offerId,title,segment,state,category,priority
+```
+
+`res-fil` order matters. Row filtering must run before column filtering when a
+row predicate depends on a column that may be hidden from the final response.
+In the example above, `active` is needed to select rows but is then removed for
+`offer-viewer`.
+
+`res-fil` always executes as a sequential pipeline. `accessRuleLogic` only
+controls how multiple `req-acc` rules are combined; it does not apply to
+response filters. The pipeline should parse the MCP result JSON once, pass the
+same mutable JSON value through each `res-fil` action, and serialize it back
+into the MCP result once after all filters complete.
+
+The current compatibility actions support the existing permission model:
+
+- `roles` is used by `RoleBasedAccessControlAction`.
+- `row.role`, `row.group`, `row.position`, `row.attribute`, and `row.user`
+  provide row filters for the matching caller claim.
+- Row filters support `=`, `!=`, `<`, `>`, `<=`, `>=`, `in`, and `not in`.
+- `col.role`, `col.group`, `col.position`, `col.attribute`, and `col.user`
+  provide the returned field list for the matching caller claim. A field list
+  prefixed with `!` is a remove list; otherwise it is a keep list.
+- Column filtering must apply to top-level JSON objects as well as top-level
+  arrays and object payloads containing `items`. Row filtering applies only to
+  arrays or `items` arrays.
+
+This should remain the default design for Java and Rust parity. If a later
+policy needs arbitrary per-row CEL predicates, add a new explicit filter action
+such as `ResponseCelRowFilterAction` instead of changing the meaning of the
+Java-compatible `ResponseRowFilterAction`.
+
+CEL must not directly manipulate the MCP result JSON. The rule-level CEL
+expression decides whether a `res-fil` rule applies; the action performs the
+mutation. This keeps result extraction, `structuredContent` handling,
+text-content handling, single-pass JSON parsing, failure behavior, and audit
+logging inside tested Rust pipeline and action code.
+
+A CEL-aware row action can be added when the permission row-filter format is not
+expressive enough:
+
+```yaml
+ruleBodies:
+  filterOfferRowsWithCel:
+    ruleId: filterOfferRowsWithCel
+    ruleType: res-fil
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+    expression: >
+      statusCode == 200 && responseBody != ""
+    actions:
+      - actionClassName: com.networknt.rule.ResponseCelRowFilterAction
+        actionValues:
+          rowExpression: >
+            auditInfo.subject_claims.ClaimsMap.role == "offer-admin"
+            || (row.priority < 50 && row.active == true)
+```
+
+Even in that case, CEL only returns a boolean for each row. The action owns row
+iteration and mutation of the parsed response value; the response-filter
+pipeline owns final serialization and updating the MCP response.
+
+The row action should not deep-clone the full rule context for every response
+row. It should use a child CEL context that shadows `row`, or reuse one mutable
+context and update only the `row` binding for each evaluation. If a row-level CEL
+evaluation fails because the row is missing a referenced field, the action should
+drop that row and continue. Invalid action configuration, such as an expression
+that fails to compile, should fail the whole filter action closed.
+
 Masking and tokenization handling:
 
 - Preserve Java schema extensions: `x-mask`, `x-mask-pattern`, and

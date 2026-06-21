@@ -15,6 +15,7 @@ Primary uses:
 - fine-grained authorization
 - request transformation
 - response transformation
+- response row and column filtering
 - workflow assertions
 - business validation
 - permission and filter injection
@@ -79,23 +80,42 @@ Each rule can contain:
 
 - `ruleId`
 - `ruleDesc`
+- `ruleType`
 - `version`
 - `author`
 - `updatedAt`
 - `conditions`
+- `conditionLanguage`
+- `conditionSecurityProfile`
+- `expression`
 - `actions`
 
 Each endpoint mapping can contain:
 
 - `req-tra`: request transformation rules
 - `res-tra`: response transformation rules
-- `access-control`: access control rules
+- `req-acc`: request access rules
+- `res-fil`: response filter rules
+- `access-control`: legacy or compatibility access control rules
 - `permission`: permission values injected into context
 - `x-*`: extension rule phases
 
 ## Rule Conditions
 
 Conditions evaluate fields in the input context.
+
+Light-Fabric supports CEL rule conditions only. A Light-Fabric rule uses
+`conditionLanguage: cel` and a single boolean `expression`, with an optional
+`conditionSecurityProfile`.
+
+The native condition-row format with `operand`, `operator`, `expected`, and
+`joinCode` is a legacy format from the Java yaml-rule implementation. It can be
+documented for migration and compatibility, but it is not supported by
+Light-Fabric rule execution. Keep the detailed CEL contract in
+[CEL Rule Conditions](cel-rule.md); this page documents how CEL fits into the
+broader Light-Rule model.
+
+### Legacy Native Conditions
 
 Supported operand forms:
 
@@ -139,6 +159,39 @@ is evaluated as:
 
 If explicit grouping is required, split logic into multiple rules and combine them through endpoint mapping or workflow orchestration.
 
+These native condition rows are included here only to document the legacy Java
+yaml-rule shape. New Light-Fabric rules must use CEL.
+
+### CEL Conditions
+
+CEL rules use `conditionLanguage: cel` and store the predicate in `expression`.
+The expression must evaluate to a boolean. If it evaluates to false, the rule
+actions do not run.
+
+```yaml
+ruleBodies:
+  allowOfferSearch:
+    ruleId: allowOfferSearch
+    ruleType: req-acc
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+    expression: >
+      auditInfo.subject_claims.ClaimsMap.role != null
+      && toolArguments.category == "travel"
+    actions:
+      - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
+```
+
+CEL expressions should be used for rule eligibility and business predicates.
+Endpoint-specific role lists, row filters, column filters, and similar policy
+values should still live under `permission` so API owners can change policy data
+without editing the reusable rule body.
+
+CEL must not be used as a general JSON mutation language. A CEL expression can
+answer whether a rule applies, or whether a specific row should be kept when an
+action provides a row-scoped CEL context. It should not directly rewrite
+`responseBody`, add or remove fields, or execute side effects.
+
 ## Rule Actions
 
 Actions execute plugin logic after conditions pass.
@@ -162,6 +215,19 @@ Typical action plugins:
 
 Actions are intentionally plugin-based so the schema remains stable while implementation logic can evolve.
 
+For response filtering, standard actions remain the transformation boundary.
+`ResponseRowFilterAction` and `ResponseColumnFilterAction` own row and column
+mutation, shape-specific handling, failure behavior, and audit logging. If a use
+case needs richer row predicates, add a CEL-aware action such as
+`ResponseCelRowFilterAction` that evaluates a CEL predicate for each row. Do not
+expose raw response-body mutation functions to CEL.
+
+Response filtering should parse the response JSON once for the whole `res-fil`
+phase, pass the mutable JSON value through the ordered action pipeline, and
+serialize once at the end. Individual actions should not repeatedly parse and
+serialize `responseBody` when multiple filters are configured on the same
+endpoint.
+
 ## Endpoint Rule Phases
 
 Endpoint mappings define when rules run.
@@ -174,9 +240,25 @@ Endpoint mappings define when rules run.
 
 `res-tra` rules run after the service produces a response. They can filter, redact, or reshape response data.
 
-### Access Control
+### Request Access
 
-`access-control` rules validate whether a request is allowed. These rules normally run in parallel because they should not mutate shared state.
+`req-acc` rules validate whether a request is allowed before the target handler
+or backend service runs. These rules normally run in parallel because they
+should not mutate shared state.
+
+`access-control` can be accepted as a compatibility phase by runtimes that need
+to load older configuration, but new endpoint mappings should use `req-acc`.
+
+### Response Filtering
+
+`res-fil` rules run after the target service produces a response and before the
+caller receives it. They are used for row filters, column filters, response
+masking, and other response-reduction policies that should not be implemented
+inside the business API.
+
+`res-fil` rules always execute as a sequential pipeline in the order listed on
+the endpoint. `accessRuleLogic` applies only to `req-acc`; it does not change
+response-filter execution semantics.
 
 ### Permission Injection
 
@@ -204,6 +286,10 @@ Sequential phases such as `req-tra` and `res-tra` should run with `all` semantic
 
 Access control can run in parallel because it should be a validation step rather than a mutation step.
 
+Response filtering should run sequentially when multiple filters can depend on
+the same fields. For example, a row filter that checks `active == true` must run
+before a column filter that removes the `active` field from the final response.
+
 ## Why Not Replace With Cedar Or Casbin
 
 Cedar and Casbin are strong policy engines, but Light-Rule has a different role in this platform.
@@ -221,7 +307,7 @@ Light-Rule supports:
 
 Cedar is excellent for authorization policy, but it does not naturally cover transformation, row filter, and column filter use cases. Casbin is strong for policy enforcement, but it introduces a different policy storage and matching model.
 
-Light-Rule should remain the native rule engine for Light-Fabric service configuration and workflow assertions. External policy engines can still be integrated as action plugins if needed.
+Light-Rule should remain the built-in rule engine for Light-Fabric service configuration and workflow assertions. External policy engines can still be integrated as action plugins if needed.
 
 ## Governance
 

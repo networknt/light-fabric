@@ -1,26 +1,20 @@
 # CEL Rule Conditions
 
-Light-Rule should support both the existing native condition schema and CEL
-expressions. The two forms solve different problems and should share the same
-rule lifecycle, endpoint mapping, action execution, config loading, testing, and
-governance model.
+Light-Fabric supports CEL rule conditions only. A Light-Fabric rule uses
+`conditionLanguage: cel` and one rule-level CEL boolean `expression`.
 
-The native condition schema remains the default because it is easy to render in
-Light-Portal, simple to validate, and suitable for most API-owner use cases. CEL
-is an advanced condition form for customers that need richer boolean logic,
-grouping, list predicates, or compatibility with existing CEL-based policy
-assets.
+The old native condition schema with condition rows, operators, and `joinCode`
+is a legacy Java yaml-rule format. It can still be documented for migration and
+Java compatibility, but it is not a supported Light-Fabric runtime condition
+format.
 
-Each rule should choose one condition language: `native` or `cel`. Mixing native
-condition rows and CEL expressions inside the same rule is not recommended as the
-canonical model because it makes portal authoring, validation, and runtime
-dispatch harder to reason about.
+Each Light-Fabric rule should therefore use CEL. Mixing native condition rows and
+CEL expressions inside the same rule is not a canonical model because it makes
+portal authoring, validation, and runtime dispatch harder to reason about.
 
 ## Goals
 
-- keep existing rule YAML and portal-authored rules compatible
-- support CEL expressions as a rule-level condition language
-- evaluate native and CEL rules in the same `RuleEngine`
+- support CEL expressions as the Light-Fabric rule-level condition language
 - reuse the existing rule context for gateway, workflow, and test execution
 - preserve existing `actions`, `endpointRules`, and rule phase semantics
 - let Light-Portal choose the correct editor from rule metadata without parsing
@@ -30,18 +24,20 @@ dispatch harder to reason about.
 
 ## Non-Goals
 
-- replacing the native Light-Rule condition schema
 - replacing actions with CEL
 - allowing CEL expressions to perform I/O, network calls, mutation, or service
   lookups
-- making every native operator available as a custom CEL function on day one
-- requiring business users to write CEL for common rules
+- allowing CEL expressions to directly mutate `responseBody` or perform general
+  JSON transformations
+- supporting the legacy Java yaml-rule native condition-row format in
+  Light-Fabric
 - supporting mixed native and CEL condition blocks in the canonical portal
   authoring flow
 
 ## Current Model
 
-Today a rule contains an optional flat list of native conditions:
+The legacy Java yaml-rule model contains an optional flat list of native
+conditions:
 
 ```yaml
 ruleBodies:
@@ -57,16 +53,16 @@ ruleBodies:
       - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
 ```
 
-Each native condition contains:
+Each legacy native condition contains:
 
 - `operator`
 - `operand`
 - `expected`
 - `joinCode`
 
-The engine evaluates conditions left-to-right. `joinCode` combines each
-condition with the accumulated result. If the final condition result is true,
-actions run as they do today.
+The Java yaml-rule engine evaluates conditions left-to-right. `joinCode`
+combines each condition with the accumulated result. This format is shown here
+only as migration context.
 
 Portal persistence stores rule metadata in `rule_t` and the executable rule JSON
 in `rule_t.rule_body`. Today there is no dedicated column that tells the portal
@@ -74,24 +70,22 @@ which condition editor to render, so the UI would have to inspect `rule_body`.
 
 ## Proposed Rule Shape
 
-Add a rule-level condition language flag. Use `native` for existing condition
-rows and `cel` for a single CEL expression.
+Use a rule-level condition language flag. Light-Fabric accepts `cel` for a
+single CEL expression. `native` is reserved for legacy Java yaml-rule data and
+must not be emitted to Light-Fabric runtime configuration.
 
 Persist the flag in both places:
 
 - `rule_t.condition_language`: indexed/listable portal metadata
 - `ruleBody.conditionLanguage`: self-contained exported runtime configuration
 
-Recommended values:
+Recommended Light-Fabric value:
 
 ```text
-native
 cel
 ```
 
-Existing rules without the field are interpreted as `native`.
-
-Native rule body:
+Legacy Java yaml-rule native rule body:
 
 ```yaml
 ruleBodies:
@@ -130,14 +124,14 @@ Recommended database shape:
 
 ```sql
 ALTER TABLE rule_t
-ADD COLUMN condition_language VARCHAR(16) DEFAULT 'native' NOT NULL;
+ADD COLUMN condition_language VARCHAR(16) DEFAULT 'cel' NOT NULL;
 
 ALTER TABLE rule_t
 ADD COLUMN condition_security_profile VARCHAR(32);
 
 ALTER TABLE rule_t
 ADD CONSTRAINT rule_t_condition_language_check
-CHECK (condition_language IN ('native', 'cel'));
+CHECK (condition_language IN ('cel'));
 
 ALTER TABLE rule_t
 ADD CONSTRAINT rule_t_condition_security_profile_check
@@ -149,12 +143,10 @@ CHECK (
 
 Recommended schema rules:
 
-- `conditionLanguage` is optional and defaults to `native`
-- `conditionLanguage: native` allows `conditions` and rejects `expression`
+- `conditionLanguage` is optional and defaults to `cel`
 - `conditionLanguage: cel` requires `expression` and rejects `conditions`
 - `conditionSecurityProfile` is optional and names a runtime-defined profile
-- native conditions continue to require `operator` or `operatorCode`
-- native conditions continue to require `operand` or `propertyPath`
+- `conditionLanguage: native` is rejected by Light-Fabric runtime config
 - unknown rule and condition fields should continue to be rejected by the schema
 - command handlers should reject requests where the DB metadata and rule body
   condition language disagree
@@ -174,8 +166,9 @@ allOf:
       not:
         required: [conditions]
     else:
-      not:
-        required: [expression]
+      properties:
+        conditionLanguage:
+          const: cel
 ```
 
 The Rust model can add optional fields to `Rule`:
@@ -197,12 +190,12 @@ than a `light-fabric`-only feature.
 
 | Area | Required work |
 | --- | --- |
-| `rule-specification` | Add `conditionLanguage`, `conditionSecurityProfile`, `expression`, native rule and CEL rule schema branches, and mode/profile-specific validation rules. |
-| `portal-db` | Add `rule_t.condition_language` with default `native`, optional `rule_t.condition_security_profile`, check constraints, and pending rule-change approval state if workflow task payloads are not sufficient. Keep existing rows valid without rewriting `rule_body`. |
+| `rule-specification` | Add `conditionLanguage`, `conditionSecurityProfile`, `expression`, CEL rule schema validation, and explicit rejection of native condition rows for Light-Fabric runtime config. |
+| `portal-db` | Add `rule_t.condition_language` with default `cel`, optional `rule_t.condition_security_profile`, check constraints, and pending rule-change approval state if workflow task payloads are not sufficient. |
 | `light-portal` | Update persistence and projection code so rule create/update/read/export/import paths carry `conditionLanguage` and `conditionSecurityProfile`; ensure endpoint rule config generation emits only approved, self-contained rule bodies; integrate stronger-profile requests with worklist and assistant-task approval. |
-| `rule-command` | Accept `conditionLanguage`, `conditionSecurityProfile`, and `expression`, normalize old/native payloads, validate mode/profile-specific shape, publish `strict` changes immediately, route stronger profile requests through approval, and write both DB metadata and rule body consistently after approval. |
+| `rule-command` | Accept `conditionLanguage`, `conditionSecurityProfile`, and `expression`, reject native condition-row payloads for Light-Fabric rules, validate mode/profile-specific shape, publish `strict` changes immediately, route stronger profile requests through approval, and write both DB metadata and rule body consistently after approval. |
 | `rule-query` | Return `conditionLanguage`, `conditionSecurityProfile`, and approval status for list/detail APIs, include selected/effective profiles in test-case execution payloads, and surface CEL parse/type/missing-field/profile errors from Java and Rust runners. |
-| `portal-view` | Render either the native condition builder or a CEL expression editor based on `conditionLanguage`; show a controlled profile selector for CEL rules; submit `strict` directly and route `standard` or `internal-admin` to worklist approval; do not require the UI to infer mode from `ruleBody`. |
+| `portal-view` | Render the CEL expression editor for Light-Fabric rules; keep any native condition builder scoped to legacy Java yaml-rule authoring; show a controlled profile selector for CEL rules; submit `strict` directly and route `standard` or `internal-admin` to worklist approval; do not require the UI to infer mode from `ruleBody`. |
 | workflow and assistant task | Use the existing human-in-the-loop worklist flow for stronger profile approval, route tasks to `admin` and `rule-admin`, and attach an advisory assistant-task risk summary for the approver. |
 | `light-fabric` | Add `conditionLanguage`, `conditionSecurityProfile`, and `expression` to `crates/light-rule`, dispatch in `RuleEngine`, add policy-driven CEL evaluator/caching, and update gateway/workflow tests. |
 | `yaml-rule` | Add Java runtime parity for `conditionLanguage: cel` and named profile enforcement if Java services need to execute the same rules; otherwise reject CEL rules explicitly with a clear runtime-capability error. |
@@ -224,9 +217,9 @@ conditions:
       || roles.exists(r, r == "approver")
 ```
 
-This has one advantage: it can be implemented with a small Rust model change
-because `operator`, `operand`, and `expected` already exist. It is useful as a
-compatibility alias or import format.
+This has one advantage for legacy Java yaml-rule imports: `operator`, `operand`,
+and `expected` already exist. It is not useful as the Light-Fabric runtime
+contract because Light-Fabric does not support native condition rows.
 
 It should not be the canonical schema because:
 
@@ -235,22 +228,21 @@ It should not be the canonical schema because:
 - `operand` becomes ignored or artificial
 - the UI still has to draw a condition-row editor even though the rule is really
   a single expression
-- the rule schema still needs to change because the operator enum must include
-  `cel` and native `operand` requirements must be relaxed
-- future expression languages would continue overloading native condition fields
+- future expression languages would continue overloading legacy native condition
+  fields
 
 The recommended contract is therefore:
 
 - canonical form: `conditionLanguage: cel` plus rule-level `expression`
-- optional compatibility form: `operatorCode: cel` plus string `expected`
-- normalize compatibility imports to the canonical rule-level model before
-  persistence or runtime evaluation
+- reject `operatorCode: cel` for Light-Fabric runtime config
+- normalize any legacy import to the canonical rule-level CEL model before
+  persistence or runtime export
 
 ## Mixed Conditions Alternative
 
 Another possible shape is to allow native and CEL conditions in the same
-`conditions` array. The runtime can support this if needed, but it should not be
-the default authoring model.
+`conditions` array. Light-Fabric should not support this. Native condition rows
+belong to the legacy Java yaml-rule model only.
 
 Reasons to avoid canonical mixed rules:
 
@@ -261,9 +253,9 @@ Reasons to avoid canonical mixed rules:
   native `joinCode` remains left-to-right
 - runtime dispatch is simpler and faster when the rule selects one evaluator
 
-If mixed rules are ever accepted for import or advanced API use, `joinCode`
-should still apply left-to-right to the accumulated result regardless of which
-evaluator handled the current or previous condition.
+If mixed rules are accepted from an import path, they must be normalized to a
+single rule-level CEL expression before they are persisted or exported to
+Light-Fabric runtime configuration.
 
 ## Execution Model
 
@@ -271,8 +263,6 @@ Rule execution should dispatch by `conditionLanguage` once per rule:
 
 ```text
 RuleEngine::execute_rule
-  -> conditionLanguage == native
-     -> evaluate native conditions
   -> conditionLanguage == cel
      -> evaluate rule expression
   -> execute actions when conditions pass
@@ -288,13 +278,83 @@ The outer behavior stays unchanged:
 - `req-tra` and `res-tra` continue to run sequentially
 - access-control rules can still be evaluated independently
 
-Runtime should treat a missing `conditionLanguage` as `native` for backward
-compatibility.
+Runtime should treat a missing `conditionLanguage` as `cel` only when an
+`expression` is present. Native condition-row payloads must be rejected by
+Light-Fabric config validation.
+
+## CEL And Response Filtering
+
+CEL is the rule predicate language, not the response mutation engine. A rule-level
+CEL expression decides whether a `res-fil` rule applies. The response body is
+then transformed by a standard action.
+
+This keeps the contract narrow:
+
+- CEL expressions are side-effect free and return booleans.
+- Actions own mutation of `responseBody`.
+- Actions decide how JSON arrays, JSON objects, and malformed payloads are
+  handled.
+- Actions provide stable audit and failure behavior.
+- The runtime can compile and cache rule-level CEL independently from
+  response-body parsing.
+- The response-filter pipeline parses JSON once, lets actions mutate the same
+  in-memory value, and serializes once after all `res-fil` actions complete.
+- The parsed mutable response value is action-owned state and must not be
+  exposed as a rule-level CEL mutation target.
+
+The default response-filter actions should stay declarative:
+
+- `ResponseRowFilterAction`: applies permission-defined row filters.
+- `ResponseColumnFilterAction`: applies permission-defined column keep or remove
+  lists.
+
+If a row predicate needs CEL, add an explicit CEL-aware action rather than
+turning rule-level CEL into a JSON transformation DSL:
+
+```yaml
+ruleBodies:
+  filterOfferRows:
+    ruleId: filterOfferRows
+    ruleType: res-fil
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+    expression: >
+      statusCode == 200 && responseBody != ""
+    actions:
+      - actionClassName: com.networknt.rule.ResponseCelRowFilterAction
+        actionValues:
+          rowExpression: >
+            auditInfo.subject_claims.ClaimsMap.role == "offer-admin"
+            || (row.priority < 50 && row.active == true)
+```
+
+`ResponseCelRowFilterAction` would compile `rowExpression` at rule-load time and
+evaluate it once per candidate row with a curated context containing `row`,
+`auditInfo`, `headers`, `endpoint`, `permission`, and request metadata. The
+implementation should avoid deep-cloning the full base context for every row.
+Use a child CEL context that shadows `row`, or reuse one mutable evaluation
+context and replace only the `row` variable before each evaluation.
+
+Row-level CEL evaluation errors should be row-local by default. If a row is
+missing a referenced field or its predicate evaluation returns an error, drop
+that row and emit debug or trace diagnostics with the rule id and field error.
+Only configuration errors, such as an invalid `rowExpression` that fails to
+compile, should fail the entire action closed.
+
+Column filtering should remain declarative unless there is a proven use case for
+dynamic column predicates. Role, group, attribute, user, and position based field
+lists are easier to review, safer to render in Portal, and cheaper to execute
+than arbitrary column-level CEL.
+
+Column filtering must also support top-level JSON objects, not only arrays or
+objects containing `items`. Single-object responses such as `GET /offers/123`
+still need field hiding. Row filtering applies only to arrays or object payloads
+with an `items` array.
 
 ## Rule Context
 
-CEL should evaluate against the same JSON context used by native conditions.
-For gateway access-control and response filtering, this includes fields such as:
+CEL should evaluate against the rule engine JSON context. For gateway
+access-control and response filtering, this includes fields such as:
 
 - `auditInfo`
 - `headers`
@@ -310,8 +370,7 @@ keys. For example, `permission.roles` in `endpointRules` is available to
 conditions as `roles`, response row filters are available as `row`, and column
 filters are available as `col`. A future runtime can also expose a namespaced
 `permission` object as an additive convenience, but CEL support should not
-require that shape to preserve compatibility with existing native rules and
-actions.
+require that shape to preserve compatibility with existing actions.
 
 For `standard` and `internal-admin` profiles, the CEL environment can expose
 variables in two ways:
@@ -321,9 +380,9 @@ variables in two ways:
 - the full root object as `context`, so expressions can use explicit paths such
   as `context.toolArguments.amount`
 
-Direct variables keep expressions concise and close to the native condition path
-style. The `context` variable is safer for generated expressions, collision
-avoidance, and future fields that are not valid CEL identifiers.
+Direct variables keep expressions concise. The `context` variable is safer for
+generated expressions, collision avoidance, and future fields that are not valid
+CEL identifiers.
 
 For the `strict` profile, the runtime should expose only curated root variables
 such as `auditInfo`, `headers`, `toolArguments`, endpoint metadata, and
@@ -382,6 +441,8 @@ Recommended approach:
 - if eager conversion is required, convert only the variables exposed to CEL and
   avoid parsing large string fields such as `responseBody` unless an expression
   explicitly needs structured access to them
+- for per-row CEL, avoid cloning the full base context for each row; use a child
+  context or reusable mutable context that changes only the `row` binding
 - benchmark access-control and response-filter scenarios before enabling CEL by
   default in high-throughput paths
 
@@ -400,10 +461,10 @@ Recommended validation points:
 - rule test API
 - runtime config reload
 
-Validation must enforce mode-specific shape:
+Validation must enforce the Light-Fabric rule shape:
 
-- `native`: `conditions` is allowed, `expression` is rejected
 - `cel`: `expression` is required, `conditions` is rejected
+- `native`: rejected by Light-Fabric runtime config
 - persisted `rule_t.condition_language` must match `ruleBody.conditionLanguage`
 - persisted `rule_t.condition_security_profile` must match
   `ruleBody.conditionSecurityProfile` when either side is present
@@ -458,10 +519,10 @@ This keeps Light-Rule from leaking third-party crate types through its public
 model and allows the implementation to change if CEL crate maturity, feature
 flags, or Java parity requirements change.
 
-## Native Operator Parity
+## Legacy Operator Migration
 
-The native evaluator includes operators that may not map one-to-one to the
-selected CEL runtime. Examples include:
+Legacy Java yaml-rule native conditions include operators that may not map
+one-to-one to the selected CEL runtime. Examples include:
 
 - `containsIgnoreCase`
 - `matches` and `notMatch`
@@ -469,9 +530,9 @@ selected CEL runtime. Examples include:
 - `containsAny`, `containsAll`, and `containsNone`
 - date-style comparisons such as `before`, `after`, and `on`
 
-Before encouraging migration from native conditions to CEL, the implementation
-should define a small compatibility function registry for any gaps. Candidate
-pure helper functions include:
+Before importing legacy native rules into Light-Fabric, the implementation
+should define a small compatibility function registry for any gaps and convert
+the rule to CEL. Candidate pure helper functions include:
 
 ```cel
 contains_ignore_case(value, substring)
@@ -563,8 +624,9 @@ Not allowed:
 - random values
 - mutation of the rule context
 - action execution from inside CEL
+- response-body mutation or field removal from CEL
 
-Custom functions should be added conservatively. Native Light-Rule actions
+Custom functions should be added conservatively. Standard Light-Rule actions
 remain the extension point for side effects and transformations.
 
 The core runtime object should be a policy-driven condition evaluator rather
@@ -620,23 +682,22 @@ evaluation.
 
 ## Portal Experience
 
-Light-Portal should use `conditionLanguage` to choose the rule editor. This
-keeps the form predictable and avoids mixing two mental models on the same
-screen.
+Light-Portal should use `conditionLanguage` to choose the rule editor. For
+Light-Fabric, the only supported editor is the CEL editor. Any native condition
+builder must be scoped to legacy Java yaml-rule authoring and must not export
+native condition rows to Light-Fabric runtime config.
 
 Recommended authoring modes:
 
-- `Builder`: native condition rows with operand, operator, expected, and join
-  controls
-- `CEL`: advanced text area for one rule-level CEL expression
+- `CEL`: advanced text area for one rule-level CEL expression.
+- `Builder`: legacy Java yaml-rule-only condition rows with operand, operator,
+  expected, and join controls.
 
 Recommended behavior:
 
-- default new rules to `native`
-- render condition subforms only for `conditionLanguage: native`
+- default new Light-Fabric rules to `cel`
 - render a CEL expression text area only for `conditionLanguage: cel`
-- hide native condition controls when CEL is selected
-- hide CEL expression controls when native is selected
+- reject `conditionLanguage: native` for Light-Fabric rule publishing
 - require confirmation when switching modes if the existing mode has content
 - do not try to round-trip arbitrary CEL into native builder rows
 - store the selected mode in `rule_t.condition_language` and in the JSON rule
@@ -704,25 +765,26 @@ Recommended approval rules:
 
 ## Compatibility
 
-Existing rule YAML remains valid.
+Existing Light-Fabric rule YAML must use CEL conditions.
 
-Rules without `conditionLanguage` are treated as `native`. The database
-migration should add `rule_t.condition_language` with default `native`, so
-existing rows do not need their `rule_body` rewritten immediately.
+Rules without `conditionLanguage` can be treated as `cel` only when a valid
+`expression` is present. Rules containing legacy native `conditions` must be
+rejected by Light-Fabric runtime config validation or converted to CEL before
+publish. The database migration should add `rule_t.condition_language` with
+default `cel`.
 
 Rules without `conditionSecurityProfile` use the runtime default CEL profile.
-The field is meaningful only for CEL rules; native rules do not need a condition
-security profile.
+The field is meaningful only for CEL rules.
 
-Native condition aliases must continue to work:
+Native condition aliases are legacy Java yaml-rule import details only:
 
 - `operatorCode` as alias for `operator`
 - `propertyPath` as alias for `operand`
 - `actionClassName` as alias for `actionRef`
 
-CEL introduces a new capability. If the Java yaml-rule runtime needs to execute
-the same rules, it must implement the same CEL rule shape. Until then, Java
-runtimes must fail closed with a clear capability error, such as
+CEL is the Light-Fabric capability. If the Java yaml-rule runtime needs to
+execute the same rules, it must implement the same CEL rule shape. Until then,
+Java runtimes must fail closed with a clear capability error, such as
 `UnsupportedConditionLanguageException`, when loading or executing a rule with
 `conditionLanguage: cel`. A runtime must not silently ignore a CEL rule because
 that can fail open for access-control rules.
@@ -784,16 +846,17 @@ ruleBodies:
 
 ## Rollout Plan
 
-1. Add `rule_t.condition_language` with default `native`, optional
+1. Add `rule_t.condition_language` with default `cel`, optional
    `rule_t.condition_security_profile`, and check constraints.
-2. Extend the rule specification with native and CEL rule branches plus
-   optional `conditionSecurityProfile`.
+2. Extend the rule specification with CEL rule validation plus optional
+   `conditionSecurityProfile`, and reject native condition rows for
+   Light-Fabric runtime config.
 3. Add `conditionLanguage`, `conditionSecurityProfile`, and `expression` fields
    to the Rust `Rule` model.
 4. Update command/query APIs so the portal can persist and read the condition
    language, security profile, and approval state without parsing `ruleBody`.
-5. Optionally accept `operatorCode: cel` as an import/compatibility alias and
-   normalize it to the rule-level CEL shape.
+5. Reject `operatorCode: cel` in runtime config and normalize any legacy import
+   to the rule-level CEL shape before publishing.
 6. Choose and pin the Rust CEL crate behind an internal evaluator abstraction.
 7. Add runtime-owned CEL security profiles and policy-driven context building.
 8. Add approval workflow integration for `standard` and `internal-admin`
@@ -802,21 +865,20 @@ ruleBodies:
 10. Compile and cache CEL expressions during rule config load.
 11. Add unit tests for CEL true, CEL false, invalid expression, mode validation,
    and missing-field behavior.
-12. Add tests for custom native-parity helper functions.
+12. Add tests for custom legacy-operator compatibility helper functions.
 13. Add performance tests for context conversion with large `toolArguments` and
    response payloads.
 14. Add gateway integration tests using the existing rule context and the
    `context` root variable.
 15. Add rule test API support so Light-Portal can validate CEL before publish.
-16. Add portal mode-based rule editing, a controlled CEL profile selector, and
-   approval UX for stronger profile requests.
+16. Add CEL rule editing, a controlled CEL profile selector, and approval UX for
+   stronger profile requests.
 17. Document runtime compatibility and Java parity requirements.
 
 ## Decision
 
-Support both condition languages. Native Light-Rule conditions remain the
-stable, portal-friendly default. CEL becomes an optional advanced expression
-language inside the same rule engine for customers that need richer policy
-expressions. A rule should select one condition language through
-`conditionLanguage`; mixed native/CEL condition arrays are not the canonical
-authoring model.
+Support CEL conditions as the only Light-Fabric rule condition language. Native
+condition rows remain a legacy Java yaml-rule format and must not be emitted to
+Light-Fabric runtime configuration. A Light-Fabric rule should use
+`conditionLanguage: cel`; mixed native/CEL condition arrays are not a supported
+authoring or runtime model.
