@@ -23,6 +23,7 @@ pub const RULE_CONFIG_NAME: &str = "rule";
 const REQUEST_ACCESS: &str = "req-acc";
 const RESPONSE_FILTER: &str = "res-fil";
 const RESPONSE_BODY: &str = "responseBody";
+const RESPONSE_BODY_JSON: &str = "responseBodyJson";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -180,8 +181,8 @@ impl AccessControlRuntime {
         if rule_ids.is_empty() {
             return result;
         }
-        let Some(target) = FilterTarget::from_result(&result) else {
-            return result;
+        let Ok(target) = FilterTarget::from_result(&result) else {
+            return mcp_filter_error_result("Access control response filter failed");
         };
 
         let permission = permission_for(endpoint_rules);
@@ -197,26 +198,23 @@ impl AccessControlRuntime {
         if let JsonValue::Object(map) = &mut context {
             map.insert(
                 RESPONSE_BODY.to_string(),
-                JsonValue::String(target.response_body.clone()),
+                JsonValue::String(target.response_body_string()),
             );
+            map.insert(RESPONSE_BODY_JSON.to_string(), target.body.clone());
             map.insert("statusCode".to_string(), json!(200));
         }
 
         for rule_id in rule_ids {
             let Some(rule) = self.rules.rule_bodies.get(rule_id.as_str()) else {
-                return result;
+                return mcp_filter_error_result("Access control response filter failed");
             };
             let Ok(true) = self.engine.execute_rule(rule, &mut context).await else {
-                return result;
+                return mcp_filter_error_result("Access control response filter failed");
             };
         }
 
-        let Some(filtered_body) = context
-            .get(RESPONSE_BODY)
-            .and_then(JsonValue::as_str)
-            .map(str::to_string)
-        else {
-            return result;
+        let Some(filtered_body) = context.get(RESPONSE_BODY_JSON).cloned() else {
+            return mcp_filter_error_result("Access control response filter failed");
         };
         target.apply(result, filtered_body)
     }
@@ -419,6 +417,13 @@ fn default_action_registry() -> ActionRegistry {
     let row = Arc::new(ResponseRowFilterAction);
     registry.register("com.networknt.rule.ResponseRowFilterAction", row.clone());
     registry.register("ResponseRowFilterAction", row);
+
+    let cel_row = Arc::new(ResponseCelRowFilterAction::default());
+    registry.register(
+        "com.networknt.rule.ResponseCelRowFilterAction",
+        cel_row.clone(),
+    );
+    registry.register("ResponseCelRowFilterAction", cel_row);
     registry
 }
 
@@ -611,7 +616,7 @@ fn path_template_matches(pattern: &str, path: &str) -> bool {
 #[derive(Debug)]
 struct FilterTarget {
     kind: FilterTargetKind,
-    response_body: String,
+    body: JsonValue,
 }
 
 #[derive(Debug)]
@@ -621,38 +626,41 @@ enum FilterTargetKind {
 }
 
 impl FilterTarget {
-    fn from_result(result: &JsonValue) -> Option<Self> {
-        let object = result.as_object()?;
+    fn from_result(result: &JsonValue) -> Result<Self, ()> {
+        let object = result.as_object().ok_or(())?;
         if let Some(structured) = object.get("structuredContent") {
-            return Some(Self {
+            return Ok(Self {
                 kind: FilterTargetKind::Structured,
-                response_body: serde_json::to_string(structured).ok()?,
+                body: structured.clone(),
             });
         }
-        let content = object.get("content")?.as_array()?;
+        let content = object.get("content").ok_or(())?.as_array().ok_or(())?;
         if content.len() != 1 {
-            return None;
+            return Err(());
         }
-        let item = content[0].as_object()?;
+        let item = content[0].as_object().ok_or(())?;
         if item.get("type").and_then(JsonValue::as_str) != Some("text") {
-            return None;
+            return Err(());
         }
-        Some(Self {
+        let text = item.get("text").ok_or(())?.as_str().ok_or(())?;
+        Ok(Self {
             kind: FilterTargetKind::Text(0),
-            response_body: item.get("text")?.as_str()?.to_string(),
+            body: serde_json::from_str::<JsonValue>(text).map_err(|_| ())?,
         })
     }
 
-    fn apply(&self, mut result: JsonValue, filtered_body: String) -> JsonValue {
+    fn response_body_string(&self) -> String {
+        serde_json::to_string(&self.body).unwrap_or_default()
+    }
+
+    fn apply(&self, mut result: JsonValue, filtered_body: JsonValue) -> JsonValue {
+        let filtered_text = serde_json::to_string(&filtered_body).unwrap_or_default();
         match self.kind {
             FilterTargetKind::Structured => {
-                let Ok(filtered) = serde_json::from_str::<JsonValue>(&filtered_body) else {
-                    return result;
-                };
                 if let JsonValue::Object(map) = &mut result {
-                    map.insert("structuredContent".to_string(), filtered);
+                    map.insert("structuredContent".to_string(), filtered_body);
                 }
-                update_text_content(&mut result, filtered_body);
+                update_text_content(&mut result, filtered_text);
                 result
             }
             FilterTargetKind::Text(index) => {
@@ -662,12 +670,24 @@ impl FilterTarget {
                     .and_then(|content| content.get_mut(index))
                     .and_then(JsonValue::as_object_mut)
                 {
-                    item.insert("text".to_string(), JsonValue::String(filtered_body));
+                    item.insert("text".to_string(), JsonValue::String(filtered_text));
                 }
                 result
             }
         }
     }
+}
+
+fn mcp_filter_error_result(message: &str) -> JsonValue {
+    json!({
+        "isError": true,
+        "content": [
+            {
+                "type": "text",
+                "text": message
+            }
+        ]
+    })
 }
 
 fn update_text_content(result: &mut JsonValue, text: String) {
@@ -712,16 +732,11 @@ impl RuleActionPlugin for ResponseColumnFilterAction {
         let Some(col_config) = rule_context.get("col").cloned() else {
             return Ok(false);
         };
-        let Some(response_body) = rule_context.get(RESPONSE_BODY).and_then(JsonValue::as_str)
-        else {
+        let filter_specs = matching_column_filters(rule_context, &col_config);
+        let Some(body) = response_body_json_mut(rule_context) else {
             return Ok(false);
         };
-        let mut body = match serde_json::from_str::<JsonValue>(response_body) {
-            Ok(body) => body,
-            Err(_) => return Ok(true),
-        };
-        apply_column_filters(&mut body, rule_context, &col_config);
-        set_response_body(rule_context, &body);
+        apply_column_filter_specs(body, &filter_specs);
         Ok(true)
     }
 }
@@ -738,41 +753,71 @@ impl RuleActionPlugin for ResponseRowFilterAction {
         let Some(row_config) = rule_context.get("row").cloned() else {
             return Ok(false);
         };
-        let Some(response_body) = rule_context.get(RESPONSE_BODY).and_then(JsonValue::as_str)
-        else {
+        let filter_groups = matching_row_filters(rule_context, &row_config);
+        let Some(body) = response_body_json_mut(rule_context) else {
             return Ok(false);
         };
-        let mut body = match serde_json::from_str::<JsonValue>(response_body) {
-            Ok(body) => body,
-            Err(_) => return Ok(true),
-        };
-        apply_row_filters(&mut body, rule_context, &row_config);
-        set_response_body(rule_context, &body);
+        apply_row_filter_groups(body, &filter_groups);
         Ok(true)
     }
 }
 
-fn set_response_body(context: &mut JsonValue, body: &JsonValue) {
-    if let JsonValue::Object(map) = context {
-        map.insert(
-            RESPONSE_BODY.to_string(),
-            JsonValue::String(serde_json::to_string(body).unwrap_or_default()),
-        );
+struct ResponseCelRowFilterAction {
+    engine: RuleEngine,
+}
+
+impl Default for ResponseCelRowFilterAction {
+    fn default() -> Self {
+        Self {
+            engine: RuleEngine::new(Arc::new(ActionRegistry::new())),
+        }
     }
 }
 
-fn apply_column_filters(body: &mut JsonValue, context: &JsonValue, col_config: &JsonValue) {
-    let items = if body.is_array() {
-        body.as_array_mut().unwrap()
-    } else if let Some(obj) = body.as_object_mut() {
-        if let Some(arr) = obj.get_mut("items").and_then(|v| v.as_array_mut()) {
-            arr
-        } else {
-            return;
-        }
-    } else {
-        return;
-    };
+#[async_trait]
+impl RuleActionPlugin for ResponseCelRowFilterAction {
+    async fn execute(
+        &self,
+        rule_context: &mut JsonValue,
+        action_values: &Option<JsonValue>,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(row_expression) = action_values
+            .as_ref()
+            .and_then(|values| values.get("rowExpression"))
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(false);
+        };
+        let condition_security_profile = action_values
+            .as_ref()
+            .and_then(|values| values.get("conditionSecurityProfile"))
+            .and_then(JsonValue::as_str);
+        let base_context = row_expression_base_context(rule_context);
+        let Some(body) = response_body_json_mut(rule_context) else {
+            return Ok(false);
+        };
+        apply_cel_row_filter(
+            body,
+            &base_context,
+            &self.engine,
+            row_expression,
+            condition_security_profile,
+        )?;
+        Ok(true)
+    }
+}
+
+fn response_body_json_mut(context: &mut JsonValue) -> Option<&mut JsonValue> {
+    context.as_object_mut()?.get_mut(RESPONSE_BODY_JSON)
+}
+
+fn matching_column_filters(
+    context: &JsonValue,
+    col_config: &JsonValue,
+) -> Vec<(bool, Vec<String>)> {
+    let mut specs = Vec::new();
     for dimension in ["role", "group", "position", "attribute", "user"] {
         let Some(claim) = claim_for_dimension(context, dimension) else {
             continue;
@@ -787,31 +832,48 @@ fn apply_column_filters(body: &mut JsonValue, context: &JsonValue, col_config: &
             let Some((remove, field_names)) = column_field_list(fields) else {
                 continue;
             };
-            for item in items.iter_mut().filter_map(JsonValue::as_object_mut) {
-                if remove {
-                    for field in &field_names {
-                        item.remove(field);
-                    }
-                } else {
-                    item.retain(|key, _| field_names.iter().any(|field| field == key));
-                }
+            specs.push((remove, field_names));
+        }
+    }
+    specs
+}
+
+fn apply_column_filter_specs(body: &mut JsonValue, specs: &[(bool, Vec<String>)]) {
+    if let Some(items) = body.as_array_mut() {
+        for item in items.iter_mut().filter_map(JsonValue::as_object_mut) {
+            apply_column_specs_to_object(item, specs);
+        }
+        return;
+    }
+    let Some(obj) = body.as_object_mut() else {
+        return;
+    };
+    if let Some(items) = obj.get_mut("items").and_then(JsonValue::as_array_mut) {
+        for item in items.iter_mut().filter_map(JsonValue::as_object_mut) {
+            apply_column_specs_to_object(item, specs);
+        }
+        return;
+    }
+    apply_column_specs_to_object(obj, specs);
+}
+
+fn apply_column_specs_to_object(
+    item: &mut JsonMap<String, JsonValue>,
+    specs: &[(bool, Vec<String>)],
+) {
+    for (remove, field_names) in specs {
+        if *remove {
+            for field in field_names {
+                item.remove(field);
             }
+        } else {
+            item.retain(|key, _| field_names.iter().any(|field| field == key));
         }
     }
 }
 
-fn apply_row_filters(body: &mut JsonValue, context: &JsonValue, row_config: &JsonValue) {
-    let items = if body.is_array() {
-        body.as_array_mut().unwrap()
-    } else if let Some(obj) = body.as_object_mut() {
-        if let Some(arr) = obj.get_mut("items").and_then(|v| v.as_array_mut()) {
-            arr
-        } else {
-            return;
-        }
-    } else {
-        return;
-    };
+fn matching_row_filters(context: &JsonValue, row_config: &JsonValue) -> Vec<Vec<RowFilter>> {
+    let mut filter_groups = Vec::new();
     for dimension in ["role", "group", "position", "attribute", "user"] {
         let Some(claim) = claim_for_dimension(context, dimension) else {
             continue;
@@ -823,13 +885,33 @@ fn apply_row_filters(body: &mut JsonValue, context: &JsonValue, row_config: &Jso
             if !permission_matches(Some(claim.as_str()), permission) {
                 continue;
             }
-            let filters = row_filter_list(filters);
-            items.retain(|item| row_matches(item, context, &filters));
+            filter_groups.push(row_filter_list(filters, context));
         }
     }
+    filter_groups
 }
 
-fn row_matches(item: &JsonValue, context: &JsonValue, filters: &[RowFilter]) -> bool {
+fn apply_row_filter_groups(body: &mut JsonValue, filter_groups: &[Vec<RowFilter>]) {
+    let Some(items) = row_filter_items_mut(body) else {
+        return;
+    };
+    items.retain(|item| {
+        filter_groups
+            .iter()
+            .all(|filters| row_matches(item, filters))
+    });
+}
+
+fn row_filter_items_mut(body: &mut JsonValue) -> Option<&mut Vec<JsonValue>> {
+    if body.is_array() {
+        return body.as_array_mut();
+    }
+    body.as_object_mut()?
+        .get_mut("items")
+        .and_then(JsonValue::as_array_mut)
+}
+
+fn row_matches(item: &JsonValue, filters: &[RowFilter]) -> bool {
     let Some(map) = item.as_object() else {
         return true;
     };
@@ -837,13 +919,51 @@ fn row_matches(item: &JsonValue, context: &JsonValue, filters: &[RowFilter]) -> 
         let Some(value) = map.get(filter.col_name.as_str()) else {
             return true;
         };
-        let expected = filter
-            .col_value
-            .strip_prefix('@')
-            .and_then(|claim| claim_value(context, &[claim]))
-            .unwrap_or_else(|| filter.col_value.clone());
-        compare_row_value(value, filter.operator.as_str(), expected.as_str())
+        compare_row_value(value, filter.operator.as_str(), filter.col_value.as_str())
     })
+}
+
+fn apply_cel_row_filter(
+    body: &mut JsonValue,
+    base_context: &JsonValue,
+    engine: &RuleEngine,
+    row_expression: &str,
+    condition_security_profile: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let Some(items) = row_filter_items_mut(body) else {
+        return Ok(());
+    };
+    engine.retain_cel_predicate_rows(
+        "ResponseCelRowFilterAction",
+        row_expression,
+        condition_security_profile,
+        RESPONSE_FILTER,
+        base_context,
+        items,
+    )
+}
+
+fn row_expression_base_context(context: &JsonValue) -> JsonValue {
+    let mut base = JsonMap::new();
+    let Some(map) = context.as_object() else {
+        return JsonValue::Object(base);
+    };
+    for key in [
+        "auditInfo",
+        "headers",
+        "endpoint",
+        "toolName",
+        "toolArguments",
+        "correlationId",
+        "permission",
+        "roles",
+        "col",
+    ] {
+        if let Some(value) = map.get(key) {
+            base.insert(key.to_string(), value.clone());
+        }
+    }
+    JsonValue::Object(base)
 }
 
 fn compare_row_value(value: &JsonValue, operator: &str, expected: &str) -> bool {
@@ -878,13 +998,18 @@ struct RowFilter {
     col_value: String,
 }
 
-fn row_filter_list(value: &JsonValue) -> Vec<RowFilter> {
+fn row_filter_list(value: &JsonValue, context: &JsonValue) -> Vec<RowFilter> {
     let Some(filters) = value.as_array() else {
         return Vec::new();
     };
     filters
         .iter()
         .filter_map(|filter| {
+            let col_value = value_to_string(filter.get("colValue")?)?;
+            let col_value = col_value
+                .strip_prefix('@')
+                .and_then(|claim| claim_value(context, &[claim]))
+                .unwrap_or(col_value);
             Some(RowFilter {
                 col_name: filter.get("colName")?.as_str()?.to_string(),
                 operator: filter
@@ -892,7 +1017,7 @@ fn row_filter_list(value: &JsonValue) -> Vec<RowFilter> {
                     .and_then(JsonValue::as_str)
                     .unwrap_or("=")
                     .to_string(),
-                col_value: value_to_string(filter.get("colValue")?)?,
+                col_value,
             })
         })
         .collect()
@@ -1024,9 +1149,9 @@ ruleBodies:
     ruleId: filter
     ruleName: Filter
     ruleType: res-fil
-    conditions:
-      - operatorCode: isNotNull
-        propertyPath: {rule_type}
+    expression: "{rule_type} != null"
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
     actions:
       - actionClassName: com.networknt.rule.Response{}FilterAction
 endpointRules:
@@ -1037,6 +1162,49 @@ endpointRules:
 {permission_yaml}
 "#,
                     if rule_type == "col" { "Column" } else { "Row" }
+                )
+                .as_str(),
+            )
+            .expect("rule config"),
+        )
+    }
+
+    fn policy_for_cel_row_filter(
+        row_expression: &str,
+        permission: JsonValue,
+    ) -> AccessControlRuntime {
+        let permission_yaml = serde_yaml::to_string(&permission)
+            .expect("permission yaml")
+            .lines()
+            .map(|line| format!("      {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        AccessControlRuntime::new(
+            Some(AccessControlConfig::default()),
+            serde_yaml::from_str::<RuleFileConfig>(
+                format!(
+                    r#"
+ruleBodies:
+  filter:
+    common: Y
+    ruleId: filter
+    ruleName: Filter
+    ruleType: res-fil
+    expression: "true"
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+    actions:
+      - actionClassName: com.networknt.rule.ResponseCelRowFilterAction
+        actionValues:
+          rowExpression: "{row_expression}"
+          conditionSecurityProfile: strict
+endpointRules:
+  /v1/accounts@get:
+    res-fil:
+      - filter
+    permission:
+{permission_yaml}
+"#
                 )
                 .as_str(),
             )
@@ -1082,9 +1250,9 @@ allow-account-role:
   ruleId: allow-account-role
   ruleName: Allow account role
   ruleType: req-acc
-  conditions:
-    - operatorCode: isNotNull
-      propertyPath: auditInfo.subject_claims.ClaimsMap.role
+  expression: "'role' in auditInfo.subject_claims.ClaimsMap"
+  conditionLanguage: cel
+  conditionSecurityProfile: strict
   actions:
     - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
 "#,
@@ -1239,6 +1407,52 @@ allow-account-role:
     }
 
     #[tokio::test]
+    async fn response_column_filter_handles_top_level_objects() {
+        let policy = policy_for_filter(
+            "col",
+            json!({
+                "col": {
+                    "role": {
+                        "mcp-reader": "[\"id\",\"name\"]"
+                    }
+                }
+            }),
+        );
+
+        let result = policy
+            .filter_mcp_response(
+                "accounts",
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("mcp-reader")),
+                &json!({}),
+                None,
+                json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "{\"id\":1,\"name\":\"acct\",\"active\":true}"
+                        }
+                    ],
+                    "structuredContent": {
+                        "id": 1,
+                        "name": "acct",
+                        "active": true
+                    }
+                }),
+            )
+            .await;
+
+        assert_eq!(result["structuredContent"]["id"], 1);
+        assert_eq!(result["structuredContent"]["name"], "acct");
+        assert!(result["structuredContent"].get("active").is_none());
+        assert_eq!(
+            result["content"][0]["text"],
+            JsonValue::String("{\"id\":1,\"name\":\"acct\"}".to_string())
+        );
+    }
+
+    #[tokio::test]
     async fn response_row_filter_updates_text_content() {
         let policy = policy_for_filter(
             "row",
@@ -1279,6 +1493,44 @@ allow-account-role:
         assert_eq!(
             result["content"][0]["text"],
             JsonValue::String("[{\"status\":\"O\"}]".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn response_cel_row_filter_drops_non_matching_and_error_rows() {
+        let policy = policy_for_cel_row_filter(
+            "row.priority < 50 && row.active == true",
+            json!({
+                "row": {
+                    "role": {
+                        "mcp-reader": []
+                    }
+                }
+            }),
+        );
+
+        let result = policy
+            .filter_mcp_response(
+                "accounts",
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("mcp-reader")),
+                &json!({}),
+                None,
+                json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "[{\"id\":1,\"priority\":10,\"active\":true},{\"id\":2,\"priority\":75,\"active\":true},{\"id\":3,\"priority\":20},{\"id\":4,\"priority\":20,\"active\":false}]"
+                        }
+                    ]
+                }),
+            )
+            .await;
+
+        assert_eq!(
+            result["content"][0]["text"],
+            JsonValue::String("[{\"active\":true,\"id\":1,\"priority\":10}]".to_string())
         );
     }
 

@@ -45,17 +45,10 @@ fn build_test_config() -> (RuleConfig, Arc<RuleEngine>) {
         version: None,
         author: None,
         updated_at: None,
-        condition_language: None,
-        condition_security_profile: None,
-        expression: None,
-        conditions: Some(vec![RuleCondition {
-            condition_id: None,
-            condition_desc: None,
-            operator: Some("==".into()),
-            operand: Some("role".into()),
-            expected: Some(json!("admin")),
-            join_code: None,
-        }]),
+        condition_language: Some("cel".into()),
+        condition_security_profile: Some("standard".into()),
+        expression: Some("role == 'admin'".into()),
+        conditions: None,
         actions: Some(vec![RuleAction {
             action_id: None,
             action_desc: None,
@@ -74,17 +67,10 @@ fn build_test_config() -> (RuleConfig, Arc<RuleEngine>) {
         version: None,
         author: None,
         updated_at: None,
-        condition_language: None,
-        condition_security_profile: None,
-        expression: None,
-        conditions: Some(vec![RuleCondition {
-            condition_id: None,
-            condition_desc: None,
-            operator: Some("==".into()),
-            operand: Some("client_status".into()),
-            expected: Some(json!("verified")),
-            join_code: None,
-        }]),
+        condition_language: Some("cel".into()),
+        condition_security_profile: Some("standard".into()),
+        expression: Some("client_status == 'verified'".into()),
+        conditions: None,
         actions: None,
     };
 
@@ -177,7 +163,7 @@ async fn test_sequential_logic_all() {
 }
 
 #[tokio::test]
-async fn test_typed_expected_values_and_expanded_operators() {
+async fn test_legacy_native_conditions_are_rejected() {
     let mut registry = ActionRegistry::new();
     registry.register("mock-action", Arc::new(MockAction));
     let engine = RuleEngine::new(Arc::new(registry));
@@ -301,11 +287,16 @@ async fn test_typed_expected_values_and_expanded_operators() {
         }
     });
 
-    assert!(engine.execute_rule(&rule, &mut context).await.unwrap());
+    let error = engine.execute_rule(&rule, &mut context).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Unsupported conditionLanguage: native")
+    );
 }
 
 #[tokio::test]
-async fn test_join_code_left_to_right_or() {
+async fn test_cel_replaces_join_code_or() {
     let registry = ActionRegistry::new();
     let engine = RuleEngine::new(Arc::new(registry));
 
@@ -319,27 +310,10 @@ async fn test_join_code_left_to_right_or() {
         version: None,
         author: None,
         updated_at: None,
-        condition_language: None,
-        condition_security_profile: None,
-        expression: None,
-        conditions: Some(vec![
-            RuleCondition {
-                condition_id: Some("first".into()),
-                condition_desc: None,
-                operator: Some("==".into()),
-                operand: Some("role".into()),
-                expected: Some(json!("admin")),
-                join_code: None,
-            },
-            RuleCondition {
-                condition_id: Some("second".into()),
-                condition_desc: None,
-                operator: Some("==".into()),
-                operand: Some("role".into()),
-                expected: Some(json!("operator")),
-                join_code: Some("OR".into()),
-            },
-        ]),
+        condition_language: Some("cel".into()),
+        condition_security_profile: Some("standard".into()),
+        expression: Some("role == 'admin' || role == 'operator'".into()),
+        conditions: None,
         actions: None,
     };
 

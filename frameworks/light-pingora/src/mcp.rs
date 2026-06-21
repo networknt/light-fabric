@@ -4454,9 +4454,9 @@ ruleBodies:
     ruleId: allow
     ruleName: Allow MCP reader
     ruleType: req-acc
-    conditions:
-      - operatorCode: isNotNull
-        propertyPath: auditInfo.subject_claims.ClaimsMap.role
+    expression: "'role' in auditInfo.subject_claims.ClaimsMap"
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
     actions:
       - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
 endpointRules:
