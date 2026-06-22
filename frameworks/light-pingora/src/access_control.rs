@@ -38,6 +38,8 @@ pub struct AccessControlConfig {
     pub access_rule_logic: String,
     #[serde(default = "default_true")]
     pub default_deny: bool,
+    #[serde(default)]
+    pub default_include: bool,
     #[serde(default, deserialize_with = "deserialize_string_list")]
     pub skip_path_prefixes: Vec<String>,
 }
@@ -48,6 +50,7 @@ impl Default for AccessControlConfig {
             enabled: true,
             access_rule_logic: default_access_rule_logic(),
             default_deny: true,
+            default_include: false,
             skip_path_prefixes: Vec::new(),
         }
     }
@@ -74,6 +77,7 @@ impl fmt::Debug for AccessControlRuntime {
         f.debug_struct("AccessControlRuntime")
             .field("access_enabled", &self.authorization_enabled())
             .field("default_deny", &self.default_deny())
+            .field("default_include", &self.default_include())
             .field("rule_count", &self.rules.rule_bodies.len())
             .field("endpoint_count", &self.rules.endpoint_rules.len())
             .finish()
@@ -103,6 +107,13 @@ impl AccessControlRuntime {
         self.access
             .as_ref()
             .map(|config| config.default_deny)
+            .unwrap_or(false)
+    }
+
+    pub fn default_include(&self) -> bool {
+        self.access
+            .as_ref()
+            .map(|config| config.default_include)
             .unwrap_or(false)
     }
 
@@ -211,6 +222,7 @@ impl AccessControlRuntime {
             );
             map.insert(RESPONSE_BODY_JSON.to_string(), target.body.clone());
             map.insert("statusCode".to_string(), json!(200));
+            insert_access_control_context(map, config_default_include(self.access.as_ref()));
         }
 
         for rule_id in rule_ids {
@@ -271,7 +283,10 @@ impl AccessControlRuntime {
         let Some(actions) = rule.actions.as_ref() else {
             return 2;
         };
-        if actions.iter().any(|action| is_row_filter_action(&action.action_ref)) {
+        if actions
+            .iter()
+            .any(|action| is_row_filter_action(&action.action_ref))
+        {
             return 0;
         }
         if actions
@@ -404,6 +419,14 @@ pub fn load_access_control_runtime(
     {
         return Ok(None);
     }
+    if access_config
+        .as_ref()
+        .is_some_and(|config| config.enabled && config.default_include)
+    {
+        warn!(
+            "access-control defaultInclude is enabled; unmatched response row-filter claims will retain all rows"
+        );
+    }
 
     Ok(Some(AccessControlRuntime::new(access_config, rule_config)))
 }
@@ -529,6 +552,19 @@ fn build_rule_context(
         }
     }
     JsonValue::Object(context)
+}
+
+fn insert_access_control_context(context: &mut JsonMap<String, JsonValue>, default_include: bool) {
+    context.insert(
+        "accessControl".to_string(),
+        json!({
+            "defaultInclude": default_include
+        }),
+    );
+}
+
+fn config_default_include(config: Option<&AccessControlConfig>) -> bool {
+    config.map(|config| config.default_include).unwrap_or(false)
 }
 
 fn audit_info(auth: Option<&AuthPrincipal>, correlation_id: Option<&str>) -> JsonValue {
@@ -827,13 +863,17 @@ impl RuleActionPlugin for ResponseRowFilterAction {
         _action_values: &Option<JsonValue>,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         let Some(row_config) = rule_context.get("row").cloned() else {
-            return Ok(false);
+            return Ok(true);
         };
         let filter_groups = matching_row_filters(rule_context, &row_config);
+        let default_include = rule_context
+            .pointer("/accessControl/defaultInclude")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false);
         let Some(body) = response_body_json_mut(rule_context) else {
             return Ok(false);
         };
-        apply_row_filter_groups(body, &filter_groups);
+        apply_row_filter_groups(body, &filter_groups, default_include);
         Ok(true)
     }
 }
@@ -967,10 +1007,20 @@ fn matching_row_filters(context: &JsonValue, row_config: &JsonValue) -> Vec<Vec<
     filter_groups
 }
 
-fn apply_row_filter_groups(body: &mut JsonValue, filter_groups: &[Vec<RowFilter>]) {
+fn apply_row_filter_groups(
+    body: &mut JsonValue,
+    filter_groups: &[Vec<RowFilter>],
+    default_include: bool,
+) {
     let Some(items) = row_filter_items_mut(body) else {
         return;
     };
+    if filter_groups.is_empty() {
+        if !default_include {
+            items.clear();
+        }
+        return;
+    }
     items.retain(|item| {
         filter_groups
             .iter()
@@ -1208,6 +1258,14 @@ mod tests {
     }
 
     fn policy_for_filter(rule_type: &str, permission: JsonValue) -> AccessControlRuntime {
+        policy_for_filter_with_access(rule_type, permission, AccessControlConfig::default())
+    }
+
+    fn policy_for_filter_with_access(
+        rule_type: &str,
+        permission: JsonValue,
+        access_config: AccessControlConfig,
+    ) -> AccessControlRuntime {
         let permission_yaml = serde_yaml::to_string(&permission)
             .expect("permission yaml")
             .lines()
@@ -1215,7 +1273,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         AccessControlRuntime::new(
-            Some(AccessControlConfig::default()),
+            Some(access_config),
             serde_yaml::from_str::<RuleFileConfig>(
                 format!(
                     r#"
@@ -1569,6 +1627,265 @@ allow-account-role:
         assert_eq!(
             result["content"][0]["text"],
             JsonValue::String("[{\"status\":\"O\"}]".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn response_row_filter_default_include_false_returns_empty_when_no_claim_matches() {
+        let policy = policy_for_filter(
+            "row",
+            json!({
+                "row": {
+                    "role": {
+                        "teller": [
+                            {
+                                "colName": "accountType",
+                                "operator": "=",
+                                "colValue": "C"
+                            }
+                        ]
+                    }
+                }
+            }),
+        );
+
+        let result = policy
+            .filter_mcp_response(
+                "accounts",
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("manager")),
+                &json!({}),
+                None,
+                json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": r#"[{"accountType":"C"},{"accountType":"S"}]"#
+                        }
+                    ],
+                    "structuredContent": [
+                        {
+                            "accountType": "C"
+                        },
+                        {
+                            "accountType": "S"
+                        }
+                    ]
+                }),
+            )
+            .await;
+
+        assert_eq!(result["structuredContent"], json!([]));
+        assert_eq!(
+            result["content"][0]["text"],
+            JsonValue::String("[]".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn response_row_filter_default_include_true_preserves_legacy_include_all() {
+        let policy = policy_for_filter_with_access(
+            "row",
+            json!({
+                "row": {
+                    "role": {
+                        "teller": [
+                            {
+                                "colName": "accountType",
+                                "operator": "=",
+                                "colValue": "C"
+                            }
+                        ]
+                    }
+                }
+            }),
+            AccessControlConfig {
+                default_include: true,
+                ..AccessControlConfig::default()
+            },
+        );
+
+        let result = policy
+            .filter_mcp_response(
+                "accounts",
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("manager")),
+                &json!({}),
+                None,
+                json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": r#"[{"accountType":"C"},{"accountType":"S"}]"#
+                        }
+                    ],
+                    "structuredContent": [
+                        {
+                            "accountType": "C"
+                        },
+                        {
+                            "accountType": "S"
+                        }
+                    ]
+                }),
+            )
+            .await;
+
+        assert_eq!(
+            result["structuredContent"],
+            json!([
+                {
+                    "accountType": "C"
+                },
+                {
+                    "accountType": "S"
+                }
+            ])
+        );
+        assert_eq!(
+            result["content"][0]["text"],
+            JsonValue::String(r#"[{"accountType":"C"},{"accountType":"S"}]"#.to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn response_row_filter_matching_claim_still_filters_rows() {
+        let policy = policy_for_filter(
+            "row",
+            json!({
+                "row": {
+                    "role": {
+                        "teller": [
+                            {
+                                "colName": "accountType",
+                                "operator": "=",
+                                "colValue": "C"
+                            }
+                        ]
+                    }
+                }
+            }),
+        );
+
+        let result = policy
+            .filter_mcp_response(
+                "accounts",
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("teller")),
+                &json!({}),
+                None,
+                json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": r#"[{"accountType":"C"},{"accountType":"S"}]"#
+                        }
+                    ],
+                    "structuredContent": [
+                        {
+                            "accountType": "C"
+                        },
+                        {
+                            "accountType": "S"
+                        }
+                    ]
+                }),
+            )
+            .await;
+
+        assert_eq!(
+            result["structuredContent"],
+            json!([
+                {
+                    "accountType": "C"
+                }
+            ])
+        );
+        assert_eq!(
+            result["content"][0]["text"],
+            JsonValue::String(r#"[{"accountType":"C"}]"#.to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn response_row_filter_no_permission_row_block_does_not_empty_response() {
+        let policy = AccessControlRuntime::new(
+            Some(AccessControlConfig::default()),
+            serde_yaml::from_str::<RuleFileConfig>(
+                r#"
+ruleBodies:
+  allow-all:
+    common: Y
+    ruleId: allow-all
+    ruleName: Allow all
+    ruleType: req-acc
+    expression: "true"
+  row-filter:
+    common: Y
+    ruleId: row-filter
+    ruleName: Row filter
+    ruleType: res-fil
+    actions:
+      - actionClassName: com.networknt.rule.ResponseRowFilterAction
+endpointRules:
+  /v1/accounts@get:
+    req-acc:
+      - allow-all
+    res-fil:
+      - row-filter
+    permission:
+      column:
+        role:
+          teller: ["accountType"]
+"#,
+            )
+            .expect("rule config"),
+        );
+
+        let result = policy
+            .filter_mcp_response(
+                "accounts",
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("manager")),
+                &json!({}),
+                None,
+                json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": r#"[{"accountType":"C"},{"accountType":"S"}]"#
+                        }
+                    ],
+                    "structuredContent": [
+                        {
+                            "accountType": "C"
+                        },
+                        {
+                            "accountType": "S"
+                        }
+                    ]
+                }),
+            )
+            .await;
+
+        assert_eq!(
+            result["structuredContent"],
+            json!([
+                {
+                    "accountType": "C"
+                },
+                {
+                    "accountType": "S"
+                }
+            ])
+        );
+        assert_eq!(
+            result["content"][0]["text"],
+            JsonValue::String(r#"[{"accountType":"C"},{"accountType":"S"}]"#.to_string())
         );
     }
 

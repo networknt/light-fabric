@@ -5302,4 +5302,288 @@ endpointRules:
             "session must be removed after DELETE"
         );
     }
+
+    #[tokio::test]
+    async fn mcp_response_row_filter_default_include_false_returns_empty() {
+        let (base, _received) = spawn_http_server(http_json_response(json!([
+            {"accountType": "C"},
+            {"accountType": "S"}
+        ]))).await;
+
+        let policy = Arc::new(crate::access_control::AccessControlRuntime::new(
+            Some(crate::access_control::AccessControlConfig::default()),
+            serde_yaml::from_str::<crate::access_control::RuleFileConfig>(
+                r#"
+ruleBodies:
+  allow:
+    common: Y
+    ruleId: allow
+    ruleName: Allow teller
+    ruleType: req-acc
+    expression: "true"
+    actions:
+      - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
+  row_filter:
+    common: Y
+    ruleId: row_filter
+    ruleName: Filter rows
+    ruleType: res-fil
+    actions:
+      - actionClassName: com.networknt.rule.ResponseRowFilterAction
+endpointRules:
+  accounts@call:
+    req-acc:
+      - allow
+    res-fil:
+      - row_filter
+    permission:
+      roles: teller, manager
+      row:
+        role:
+          teller:
+            - colName: accountType
+              operator: "="
+              colValue: "C"
+"#,
+            )
+            .expect("rule config"),
+        ));
+
+        let runtime = McpRouterRuntime::new_with_policy(
+            McpRouterConfig {
+                tools: vec![test_tool(
+                    "accounts",
+                    "List accounts",
+                    base.as_str(),
+                    McpHttpMethod::Get,
+                    Some("accounts@call"),
+                    default_input_schema(),
+                )],
+                ..McpRouterConfig::default()
+            },
+            Some(policy),
+        )
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request_with_context(
+                McpHttpRequest {
+                    method: "POST".to_string(),
+                    path: "/mcp".to_string(),
+                    headers: accept_json_with_session(&runtime),
+                    body: br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"accounts","arguments":{}}}"#.to_vec(),
+                },
+                McpRequestContext {
+                    auth: Some(AuthPrincipal {
+                        role: Some("manager".to_string()),
+                        claims: json!({"role": "manager"}),
+                        ..AuthPrincipal::default()
+                    }),
+                    correlation_id: Some("corr-1".to_string()),
+                },
+            )
+            .await
+            .expect("handle")
+            .expect("response");
+
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let result = &body["result"];
+        assert_eq!(result["structuredContent"], json!({"items": []}));
+        assert_eq!(result["content"][0]["text"], r#"{"items":[]}"#);
+    }
+
+    #[tokio::test]
+    async fn mcp_response_row_filter_default_include_true_includes_all() {
+        let (base, _received) = spawn_http_server(http_json_response(json!([
+            {"accountType": "C"},
+            {"accountType": "S"}
+        ]))).await;
+
+        let policy = Arc::new(crate::access_control::AccessControlRuntime::new(
+            Some(crate::access_control::AccessControlConfig {
+                default_include: true,
+                ..crate::access_control::AccessControlConfig::default()
+            }),
+            serde_yaml::from_str::<crate::access_control::RuleFileConfig>(
+                r#"
+ruleBodies:
+  allow:
+    common: Y
+    ruleId: allow
+    ruleName: Allow teller
+    ruleType: req-acc
+    expression: "true"
+    actions:
+      - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
+  row_filter:
+    common: Y
+    ruleId: row_filter
+    ruleName: Filter rows
+    ruleType: res-fil
+    actions:
+      - actionClassName: com.networknt.rule.ResponseRowFilterAction
+endpointRules:
+  accounts@call:
+    req-acc:
+      - allow
+    res-fil:
+      - row_filter
+    permission:
+      roles: teller, manager
+      row:
+        role:
+          teller:
+            - colName: accountType
+              operator: "="
+              colValue: "C"
+"#,
+            )
+            .expect("rule config"),
+        ));
+
+        let runtime = McpRouterRuntime::new_with_policy(
+            McpRouterConfig {
+                tools: vec![test_tool(
+                    "accounts",
+                    "List accounts",
+                    base.as_str(),
+                    McpHttpMethod::Get,
+                    Some("accounts@call"),
+                    default_input_schema(),
+                )],
+                ..McpRouterConfig::default()
+            },
+            Some(policy),
+        )
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request_with_context(
+                McpHttpRequest {
+                    method: "POST".to_string(),
+                    path: "/mcp".to_string(),
+                    headers: accept_json_with_session(&runtime),
+                    body: br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"accounts","arguments":{}}}"#.to_vec(),
+                },
+                McpRequestContext {
+                    auth: Some(AuthPrincipal {
+                        role: Some("manager".to_string()),
+                        claims: json!({"role": "manager"}),
+                        ..AuthPrincipal::default()
+                    }),
+                    correlation_id: Some("corr-1".to_string()),
+                },
+            )
+            .await
+            .expect("handle")
+            .expect("response");
+
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let result = &body["result"];
+        assert_eq!(
+            result["structuredContent"],
+            json!({
+                "items": [
+                    {"accountType": "C"},
+                    {"accountType": "S"}
+                ]
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_response_row_filter_matching_claim_filters_rows() {
+        let (base, _received) = spawn_http_server(http_json_response(json!([
+            {"accountType": "C"},
+            {"accountType": "S"}
+        ]))).await;
+
+        let policy = Arc::new(crate::access_control::AccessControlRuntime::new(
+            Some(crate::access_control::AccessControlConfig::default()),
+            serde_yaml::from_str::<crate::access_control::RuleFileConfig>(
+                r#"
+ruleBodies:
+  allow:
+    common: Y
+    ruleId: allow
+    ruleName: Allow teller
+    ruleType: req-acc
+    expression: "true"
+    actions:
+      - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
+  row_filter:
+    common: Y
+    ruleId: row_filter
+    ruleName: Filter rows
+    ruleType: res-fil
+    actions:
+      - actionClassName: com.networknt.rule.ResponseRowFilterAction
+endpointRules:
+  accounts@call:
+    req-acc:
+      - allow
+    res-fil:
+      - row_filter
+    permission:
+      roles: teller
+      row:
+        role:
+          teller:
+            - colName: accountType
+              operator: "="
+              colValue: "C"
+"#,
+            )
+            .expect("rule config"),
+        ));
+
+        let runtime = McpRouterRuntime::new_with_policy(
+            McpRouterConfig {
+                tools: vec![test_tool(
+                    "accounts",
+                    "List accounts",
+                    base.as_str(),
+                    McpHttpMethod::Get,
+                    Some("accounts@call"),
+                    default_input_schema(),
+                )],
+                ..McpRouterConfig::default()
+            },
+            Some(policy),
+        )
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request_with_context(
+                McpHttpRequest {
+                    method: "POST".to_string(),
+                    path: "/mcp".to_string(),
+                    headers: accept_json_with_session(&runtime),
+                    body: br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"accounts","arguments":{}}}"#.to_vec(),
+                },
+                McpRequestContext {
+                    auth: Some(AuthPrincipal {
+                        role: Some("teller".to_string()),
+                        claims: json!({"role": "teller"}),
+                        ..AuthPrincipal::default()
+                    }),
+                    correlation_id: Some("corr-1".to_string()),
+                },
+            )
+            .await
+            .expect("handle")
+            .expect("response");
+
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let result = &body["result"];
+        assert_eq!(
+            result["structuredContent"],
+            json!({
+                "items": [
+                    {"accountType": "C"}
+                ]
+            })
+        );
+        assert_eq!(result["content"][0]["text"], r#"{"items":[{"accountType":"C"}]}"#);
+    }
 }

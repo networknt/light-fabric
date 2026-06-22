@@ -127,6 +127,7 @@ servers, use `apiType: http` or omit it when the default is acceptable.
 enabled: true
 accessRuleLogic: any
 defaultDeny: true
+defaultInclude: false
 skipPathPrefixes: []
 ```
 
@@ -136,6 +137,9 @@ Fields:
 - `accessRuleLogic`: `any` (allow if any rule passes) or `all` (allow only if
   every rule passes) for `req-acc` rule IDs on an endpoint.
 - `defaultDeny`: when `true`, deny calls with no matching endpoint rule.
+- `defaultInclude`: when `false`, a response row filter with no matching caller
+  role, group, position, attribute, or user entry returns no rows. Set `true`
+  only to preserve the legacy include-all row-filter behavior.
 - `skipPathPrefixes`: endpoint prefixes that bypass access control entirely.
 
 The file name is `access-control.yml`. The loader also accepts
@@ -329,6 +333,9 @@ config-server delivers the resolved files.
   handler blocks the request.
 - If `access-control.yml` is enabled and `defaultDeny: true`, a tool call with
   no matching `req-acc` endpoint rule is denied.
+- If `access-control.yml` is enabled and `defaultInclude: false`, a `res-fil`
+  row filter with no matching caller claim returns no rows rather than all
+  rows.
 - If the `security` handler does not run before `mcp`, JWT claims are absent
   and CEL expressions that reference `auditInfo` will deny.
 - Rule execution is local to the gateway. No database call is made per request.

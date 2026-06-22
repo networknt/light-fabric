@@ -1477,6 +1477,7 @@ pathPrefixService:
                 enabled: true,
                 access_rule_logic: "any".to_string(),
                 default_deny: true,
+                default_include: false,
                 skip_path_prefixes: Vec::new(),
             }),
             crate::access_control::RuleFileConfig::default(),

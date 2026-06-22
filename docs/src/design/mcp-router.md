@@ -649,14 +649,16 @@ Fine-grained tool authorization should be added after the base router:
 
 - Reuse the existing light-4j `access-control.yml` model as the compatibility
   contract. `access-control.yml` controls `enabled`, `accessRuleLogic`,
-  `defaultDeny`, and `skipPathPrefixes`; `rule.yml` provides `ruleBodies` and
-  `endpointRules`.
+  `defaultDeny`, `defaultInclude`, and `skipPathPrefixes`; `rule.yml` provides
+  `ruleBodies` and `endpointRules`.
 - Make the access policy endpoint stable. Java uses the tool `endpoint` field,
   such as `/weather@get`; when omitted, Rust derives `{path}@{method}`.
 - Include correlation id, caller claims, request headers, tool name, endpoint,
   and arguments in the policy input.
 - Support default deny when access control is enabled and no `req-acc` rule
   matches.
+- Support fail-closed row filtering when response filtering is enabled and no
+  caller claim matches a configured row-filter entry.
 - Provide built-in Rust actions compatible with the Java class names used by
   current config: `RoleBasedAccessControlAction`,
   `ResponseColumnFilterAction`, and `ResponseRowFilterAction`.
@@ -824,6 +826,10 @@ The current compatibility actions support the existing permission model:
 - `roles` is used by `RoleBasedAccessControlAction`.
 - `row.role`, `row.group`, `row.position`, `row.attribute`, and `row.user`
   provide row filters for the matching caller claim.
+- If `permission.row` exists but no row-filter entry matches the caller's
+  claims, `access-control.defaultInclude` decides the miss behavior.
+  `defaultInclude: false` returns no rows and is the secure default.
+  `defaultInclude: true` keeps the legacy include-all behavior.
 - Row filters support `=`, `!=`, `<`, `>`, `<=`, `>=`, `in`, and `not in`.
 - `col.role`, `col.group`, `col.position`, `col.attribute`, and `col.user`
   provide the returned field list for the matching caller claim. A field list
@@ -842,6 +848,21 @@ expression decides whether a `res-fil` rule applies; the action performs the
 mutation. This keeps result extraction, `structuredContent` handling,
 text-content handling, single-pass JSON parsing, failure behavior, and audit
 logging inside tested Rust pipeline and action code.
+
+For MCP, `defaultInclude` is evaluated inside the same response-filter pipeline
+as HTTP access-control. The router must apply it before the final JSON-RPC
+result is emitted:
+
+1. Execute the backend tool call.
+2. Extract the response payload from `structuredContent` or supported text
+   content.
+3. Run `res-fil` actions in order.
+4. If `ResponseRowFilterAction` sees configured row filters but no matching
+   caller claim, retain no rows when `defaultInclude: false`.
+5. Serialize the filtered result back into the MCP response.
+
+This makes direct HTTP endpoints and MCP-routed tools share the same row-filter
+security behavior.
 
 A CEL-aware row action can be added when the permission row-filter format is not
 expressive enough:

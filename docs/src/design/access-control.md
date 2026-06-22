@@ -131,6 +131,7 @@ Endpoint matching order should remain:
 enabled: true
 accessRuleLogic: any
 defaultDeny: true
+defaultInclude: false
 skipPathPrefixes:
   - /health
   - /adm
@@ -145,6 +146,10 @@ Fields:
   `req-acc`; it does not apply to `res-fil`.
 - `defaultDeny`: when true, a request with no matching endpoint rule or no
   `req-acc` rule is denied.
+- `defaultInclude`: controls response row-filter behavior when a row filter is
+  configured but no caller claim matches any configured row-filter entry. When
+  `false`, the row filter returns no rows. When `true`, the row filter preserves
+  the legacy include-all behavior.
 - `skipPathPrefixes`: endpoint prefixes that bypass access-control entirely.
 
 `rule.yml` contains the reusable rules and endpoint policy:
@@ -216,8 +221,12 @@ endpointRules:
 
 In this example, `offer-viewer` can call `GET /offers` but only receives active
 offers with priority below 50, and the `active` field is removed from the final
-payload. `offer-admin` can call the same endpoint and receives all rows and
-columns because no row or column filter is configured for that role.
+payload. With `defaultInclude: false`, `offer-admin` can call the same endpoint
+only if a matching row-filter entry exists or the endpoint omits row filtering.
+If an endpoint has a `row` block but no row entry matches the caller's role,
+group, position, attribute, or user claim, the filtered result is empty. Set
+`defaultInclude: true` only when a deployment intentionally wants the legacy
+include-all behavior for unmatched row-filter claims.
 
 ## Rule Context
 
@@ -335,6 +344,43 @@ The default model should remain declarative:
 - `ResponseRowFilterAction` applies permission-defined row filters.
 - `ResponseColumnFilterAction` applies permission-defined field keep or remove
   lists.
+
+### Row Filter Default Behavior
+
+Row filtering must fail closed by default. If `ResponseRowFilterAction` runs for
+an endpoint with a configured `permission.row` block, but the caller has no
+matching entry under any supported dimension (`role`, `group`, `position`,
+`attribute`, or `user`), the action must return an empty row set when
+`defaultInclude: false`.
+
+This prevents a common policy gap:
+
+```yaml
+permission:
+  row:
+    role:
+      teller:
+        - colName: accountType
+          operator: "="
+          colValue: C
+```
+
+In the legacy include-all behavior, a caller without the `teller` role would
+match no row-filter entry and receive every row. With `defaultInclude: false`,
+the same caller receives no rows. A caller with the `teller` role receives only
+rows where `accountType == "C"`.
+
+`defaultInclude` applies only to row-filter miss behavior:
+
+- `false`: unmatched row-filter dimensions retain no rows. This is the secure
+  default and should be used for new deployments.
+- `true`: unmatched row-filter dimensions retain all rows. This is a
+  compatibility mode for deployments that relied on the old behavior.
+
+If a row-filter entry matches the caller, normal row predicate evaluation still
+applies. If multiple dimensions match, the configured filter groups are combined
+with the existing sequential `all` behavior so a row must satisfy every matched
+group.
 
 If an API needs a richer row predicate, add a CEL-aware action rather than
 making rule-level CEL mutate JSON:

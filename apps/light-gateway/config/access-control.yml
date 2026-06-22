@@ -1,4 +1,5 @@
 enabled: ${access-control.enabled:true}
 accessRuleLogic: ${access-control.accessRuleLogic:any}
 defaultDeny: ${access-control.defaultDeny:true}
+defaultInclude: ${access-control.defaultInclude:false}
 skipPathPrefixes: ${access-control.skipPathPrefixes:[]}
