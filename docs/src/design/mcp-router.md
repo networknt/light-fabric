@@ -362,12 +362,53 @@ The frontend session is created during client `initialize`:
 5. A client `DELETE` request, explicit expiry, or gateway shutdown should close
    all backend sessions associated with the frontend session.
 
-The in-memory gateway store uses a 30-minute idle timeout, a configurable
-maximum frontend session count, and a configurable per-client frontend session
-count. Expired sessions are purged lazily during later MCP requests, and any
-mapped backend MCP sessions are closed during that purge. If the store is still
-full after lazy purge, or the client already owns the maximum allowed sessions,
-new `initialize` requests fail without issuing another session id.
+### Session Duration And Limits
+
+Frontend MCP sessions last until one of these events happens:
+
+- The session is idle for 30 minutes.
+- The client sends `DELETE` to the MCP endpoint with the gateway
+  `Mcp-Session-Id`.
+- The gateway process exits.
+
+The 30-minute value is an idle timeout, not a fixed session lifetime. Each
+valid session-bound request refreshes `last_accessed`, so an active client can
+keep using the same frontend MCP session for longer than 30 minutes. Once the
+session has been idle for 30 minutes, the next validation or lazy purge removes
+it and later requests with that session id fail as an unknown session.
+
+The idle timeout is currently compiled into `light-pingora` as
+`MCP_SESSION_IDLE_TIMEOUT` and is not configurable from `mcp-router.yml`. The
+lazy purge throttle is also compiled in as `MCP_SESSION_PURGE_INTERVAL` with a
+60-second interval. Expired sessions may therefore remain in memory briefly
+until another MCP request triggers validation or purge, but they are rejected
+when used after the idle timeout.
+
+The configurable session settings are capacity limits:
+
+```yaml
+enabled: ${mcp-router.enabled:true}
+path: ${mcp-router.path:/mcp}
+maxSessions: ${mcp-router.maxSessions:10000}
+maxSessionsPerClient: ${mcp-router.maxSessionsPerClient:100}
+tools: ${mcp-router.tools:[]}
+```
+
+- `maxSessions` limits the total number of frontend MCP sessions held by one
+  gateway process. The default is `10000`.
+- `maxSessionsPerClient` limits sessions for one client key. The default is
+  `100`.
+
+Both capacity values must be greater than zero. When a new `initialize` request
+would exceed either limit, the router first forces an expired-session purge. If
+the limit is still reached, the request fails without issuing another
+`Mcp-Session-Id`: total store exhaustion returns `503`, and per-client
+exhaustion returns `429`.
+
+Expired sessions are purged lazily during later MCP requests, and any mapped
+backend MCP sessions are closed during that purge. If a frontend session is
+deleted or expires, the gateway also terminates every backend MCP session mapped
+to that frontend session.
 
 The per-client key is derived from the authenticated principal when available,
 preferring `client_id`, then `user_id`, `email`, and `host`. If no security
