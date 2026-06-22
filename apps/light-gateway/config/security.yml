@@ -1,6 +1,6 @@
 enableVerifyJwt: ${security.enableVerifyJwt:true}
 enableVerifyScope: ${security.enableVerifyScope:false}
-ignoreJwtExpiry: ${security.ignoreJwtExpiry:true}
+ignoreJwtExpiry: ${security.ignoreJwtExpiry:false}
 enableRelaxedKeyValidation: ${security.enableRelaxedKeyValidation:false}
 issuer: ${security.issuer:}
 audience: ${security.audience:[]}
