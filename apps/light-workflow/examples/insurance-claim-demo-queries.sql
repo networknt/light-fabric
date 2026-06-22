@@ -133,12 +133,10 @@ SELECT name,
 FROM tool_t
 WHERE host_id = :'host_id'::uuid
   AND name IN (
-    'getCustomerProfile',
-    'getCustomerPreferences',
-    'getCustomerPolicies',
-    'getCoveredVehicle',
-    'listPriorClaims',
-    'triageClaim',
-    'recommendSettlement'
+    'evaluateCoverage',
+    'classifyLiability',
+    'scoreClaimRisk',
+    'listRequiredDocuments',
+    'generateCustomerSummary'
   )
 ORDER BY name;

@@ -15,10 +15,11 @@ portal workflow definition table and started from the portal UI or command API.
   insurance endpoints.
 - For `insurance-claim-headless-v1.yaml`, the same REST services and agent
   catalog are available. This workflow does not create human task assignments.
-- For `insurance-claim-mcp-v1.yaml`, `light-gateway` is running and `tools/list`
-  exposes `getCustomerProfile`, `getCustomerPreferences`, `getCustomerPolicies`,
-  `getCoveredVehicle`, `listPriorClaims`, `triageClaim`, and
-  `recommendSettlement`.
+- For `insurance-claim-mcp-v1.yaml`, `demo-customer-profile-api`,
+  `demo-offer-decision-api`, `demo-insurance-claim-mcp-server`, and
+  `light-gateway` are running. `tools/list` exposes `evaluateCoverage`,
+  `classifyLiability`, `scoreClaimRisk`, `listRequiredDocuments`, and
+  `generateCustomerSummary`.
 - For `personalized-offer-mcp-v1.yaml`, `light-gateway` is running and the MCP
   tools are visible in the control plane:
   `getCustomerProfile`, `getCustomerPreferences`, `searchOffers`, and
@@ -131,15 +132,16 @@ helpers.
 1. Start the local portal stack with Postgres, `workflow-command`,
    `workflow-query`, and `light-gateway`.
 2. Start `light-workflow` with the same `DATABASE_URL` as the portal stack.
-3. Start `demo-customer-profile-api` and `demo-offer-decision-api`.
+3. Start `demo-customer-profile-api`, `demo-offer-decision-api`, and
+   `demo-insurance-claim-mcp-server`.
 4. Upload or refresh the phase 2 OpenAPI specs for both demo APIs.
 5. Import `agent-catalog-events.json` through `event-importer`.
 6. Verify the roles `claimant`, `claims-adjuster`, `siu-investigator`, and
    `customer-service` exist in the host used for the demo.
 7. Create workflow definitions for `insurance-claim-rest-v1.yaml`,
    `insurance-claim-mcp-v1.yaml`, and `insurance-claim-headless-v1.yaml`.
-8. Confirm `tools/list` exposes the seven insurance tools before running the
-   MCP workflow.
+8. Confirm `tools/list` exposes the five insurance claim MCP gap tools before
+   running the MCP workflow.
 
 Use this query to capture the workflow ids needed by curl or Postman:
 
@@ -242,7 +244,7 @@ imported agent catalog data, and uploaded API metadata intact.
 | `loadCustomerProfile` fails | Verify `demo-customer-profile-api` is reachable from `light-workflow`; Docker runs should use the Compose service name. |
 | `triageClaim` or `recommendSettlement` fails | Verify `demo-offer-decision-api` is running and the phase 2 endpoints are present. |
 | Agent task fails before a human task | Confirm `agent-catalog-events.json` was imported for the same `hostId`; inspect `_agentAudit` with `insurance-claim-demo-queries.sql`. |
-| MCP task fails with tool not found | Call `tools/list` on `light-gateway` and confirm the seven insurance tool names match the workflow YAML exactly. |
+| MCP task fails with tool not found | Call `tools/list` on `light-gateway` and confirm the five insurance claim MCP tool names match the workflow YAML exactly. |
 | Human task is not visible | Confirm the role assignment row in `task_asst_t`, the user's role membership, and that the task status is `W` or assignment status is `ASSIGNED`. |
 | Headless workflow creates an assignment | You started the REST or MCP definition instead of `insurance-claim-headless-v1`. |
 
@@ -418,9 +420,11 @@ Human task completion values:
 
 ### `insurance-claim-mcp-v1.yaml`
 
-Runs the same claim workflow as `insurance-claim-rest-v1.yaml`, but calls the
-domain APIs through MCP tools exposed by `light-gateway`. Agent tasks and human
-tasks are intentionally identical to the REST workflow.
+Runs the same claim workflow as `insurance-claim-rest-v1.yaml`, but deliberately
+mixes REST APIs and MCP tools. Existing customer, triage, and settlement
+capabilities stay on the REST demo APIs. MCP is used only for the coverage,
+liability, risk, document, and customer-summary gaps exposed by
+`demo-insurance-claim-mcp-server` through `light-gateway`.
 
 Use the same input as `insurance-claim-rest-v1.yaml`.
 
@@ -428,19 +432,16 @@ Expected MCP tools:
 
 | Tool | Context export |
 | ---- | -------------- |
-| `getCustomerProfile` | `customer` from `structuredContent` |
-| `getCustomerPreferences` | `preferences` from `structuredContent` |
-| `getCustomerPolicies` | `policies` from `structuredContent.policies` |
-| `getCoveredVehicle` | `vehicle` from `structuredContent` |
-| `listPriorClaims` | `priorClaims` from `structuredContent` |
-| `triageClaim` | `triage` from `structuredContent` |
-| `recommendSettlement` | `settlement` from `structuredContent` |
+| `evaluateCoverage` | `coverage` from `structuredContent` |
+| `classifyLiability` | `liability` from `structuredContent` |
+| `scoreClaimRisk` | `risk` from `structuredContent` |
+| `listRequiredDocuments` | `requiredDocuments` from `structuredContent` |
+| `generateCustomerSummary` | `customerSummary` from `structuredContent` |
 
 Expected behavior matches the REST workflow for the same seeded inputs.
-`assertMcpClaimContext`, `assertMcpTriage`, and `assertMcpSettlement` fail fast
-if a tool returns malformed output or omits required `structuredContent` fields.
-If a tool is missing, the current MCP task fails and the process status becomes
-`F`.
+`assertMcpTriage` and `assertMcpSettlement` fail fast if a REST or MCP call
+returns malformed output or omits required fields. If a tool is missing, the
+current MCP task fails and the process status becomes `F`.
 
 ### `insurance-claim-headless-v1.yaml`
 

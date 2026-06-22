@@ -45,6 +45,11 @@
 - [Release Workflow](design/release-workflow.md)
 - [Light-Workflow Runner](design/light-workflow-runner.md)
 
+# Implementation
+
+- [Light-Axum](implementation/light-axum.md)
+  - [Insurance Claim MCP Server](implementation/light-axum/insurance-claim-mcp-server.md)
+
 # Crate
 
 - [Asymmetric Decryptor](crate/asymmetric-decryptor.md)
@@ -61,7 +66,9 @@
 
 # Framework
 - [Light-Axum](framework/light-axum.md)
+  - [Rest API](framework/light-axum/rest-api.md)
   - [IPv6 Support](framework/light-axum/ipv6-support.md)
+
 - [Light-Pingora](framework/light-pingora.md)
   - [MSAL Exchange](framework/light-pingora/msal-exchange.md)
 # Product

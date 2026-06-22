@@ -920,31 +920,95 @@ Java runtimes.
 
 ```yaml
 ruleBodies:
-  allowApprovedTransfer:
+  allowEndpointClaims:
     common: Y
-    ruleId: allowApprovedTransfer
-    ruleName: Allow approved transfer
+    ruleId: allowEndpointClaims
+    ruleName: Allow request when endpoint permission matches JWT claims
     ruleType: req-acc
     conditionLanguage: cel
     conditionSecurityProfile: strict
     expression: >
-      auditInfo.subject_claims.ClaimsMap.role in roles
-      && (
-        toolArguments.amount < 1000
-        || "transfer.approve" in auditInfo.subject_claims.ClaimsMap.scope
+      (
+        !("role" in permission)
+        || (
+          ("roles" in auditInfo.subject_claims.ClaimsMap
+            && permission.role in auditInfo.subject_claims.ClaimsMap.roles)
+          || ("role" in auditInfo.subject_claims.ClaimsMap
+            && permission.role == auditInfo.subject_claims.ClaimsMap.role)
+        )
       )
-    actions:
-      - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
+      && (
+        !("group" in permission)
+        || (
+          ("groups" in auditInfo.subject_claims.ClaimsMap
+            && permission.group in auditInfo.subject_claims.ClaimsMap.groups)
+          || ("scp" in auditInfo.subject_claims.ClaimsMap
+            && permission.group in auditInfo.subject_claims.ClaimsMap.scp)
+          || ("group" in auditInfo.subject_claims.ClaimsMap
+            && permission.group == auditInfo.subject_claims.ClaimsMap.group)
+          || ("grp" in auditInfo.subject_claims.ClaimsMap
+            && permission.group == auditInfo.subject_claims.ClaimsMap.grp)
+        )
+      )
+      && (
+        !("position" in permission)
+        || (
+          ("positions" in auditInfo.subject_claims.ClaimsMap
+            && permission.position in auditInfo.subject_claims.ClaimsMap.positions)
+          || ("position" in auditInfo.subject_claims.ClaimsMap
+            && permission.position == auditInfo.subject_claims.ClaimsMap.position)
+          || ("pos" in auditInfo.subject_claims.ClaimsMap
+            && permission.position == auditInfo.subject_claims.ClaimsMap.pos)
+        )
+      )
+      && (
+        !("attribute" in permission)
+        || (
+          ("attributes" in auditInfo.subject_claims.ClaimsMap
+            && permission.attribute.key
+              in auditInfo.subject_claims.ClaimsMap.attributes
+            && auditInfo.subject_claims.ClaimsMap.attributes[
+              permission.attribute.key
+            ] == permission.attribute.value)
+          || ("attribute" in auditInfo.subject_claims.ClaimsMap
+            && permission.attribute.value
+              == auditInfo.subject_claims.ClaimsMap.attribute)
+          || ("att" in auditInfo.subject_claims.ClaimsMap
+            && permission.attribute.value == auditInfo.subject_claims.ClaimsMap.att)
+        )
+      )
+    actions: []
 
 endpointRules:
-  /transfer@post:
+  /v1/claims/{claimId}@post:
     req-acc:
-      - allowApprovedTransfer
+      - allowEndpointClaims
     permission:
-      roles:
-        - teller
-        - approver
+      role: claims-approver
+      group: claims.write
+      position: adjuster
+      attribute:
+        key: region
+        value: east
 ```
+
+The endpoint above matches a caller JWT with claims like:
+
+```json
+{
+  "roles": ["claims-approver"],
+  "groups": ["claims.write"],
+  "positions": ["adjuster"],
+  "attributes": {
+    "region": "east"
+  }
+}
+```
+
+With this reusable `req-acc` rule, the technical rule body stays stable and API
+owners define the required authorization dimensions at the endpoint. The example
+above allows the request only when all configured endpoint permissions match
+claims from the caller JWT.
 
 ## Example: Response Filter Guard
 

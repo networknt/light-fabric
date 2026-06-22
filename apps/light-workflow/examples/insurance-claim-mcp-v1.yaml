@@ -186,57 +186,55 @@ do:
           channel: .output.channel
           claim: .output.claim
   - loadCustomerProfile:
-      call: mcp
+      call: http
       with:
-        session: gateway
-        tool: getCustomerProfile
-        arguments:
-          customerId: "${ .claim.customerId }"
+        method: GET
+        endpoint:
+          uri: http://demo-customer-profile-api:8085/customers/${ .claim.customerId }
+        output: content
       export:
         as:
-          customer: .output.structuredContent
+          customer: .output
   - loadCustomerPreferences:
-      call: mcp
+      call: http
       with:
-        session: gateway
-        tool: getCustomerPreferences
-        arguments:
-          customerId: "${ .claim.customerId }"
-          channel: "${ .channel }"
+        method: GET
+        endpoint:
+          uri: http://demo-customer-profile-api:8085/customers/${ .claim.customerId }/preferences?channel=${ .channel }
+        output: content
       export:
         as:
-          preferences: .output.structuredContent
+          preferences: .output
   - loadCustomerPolicies:
-      call: mcp
+      call: http
       with:
-        session: gateway
-        tool: getCustomerPolicies
-        arguments:
-          customerId: "${ .claim.customerId }"
+        method: GET
+        endpoint:
+          uri: http://demo-customer-profile-api:8085/customers/${ .claim.customerId }/policies
+        output: content
       export:
         as:
-          policies: .output.structuredContent.policies
+          policies: .output.policies
   - loadCoveredVehicle:
-      call: mcp
+      call: http
       with:
-        session: gateway
-        tool: getCoveredVehicle
-        arguments:
-          customerId: "${ .claim.customerId }"
-          vehicleId: "${ .claim.vehicleId }"
+        method: GET
+        endpoint:
+          uri: http://demo-customer-profile-api:8085/customers/${ .claim.customerId }/vehicles/${ .claim.vehicleId }
+        output: content
       export:
         as:
-          vehicle: .output.structuredContent
+          vehicle: .output
   - loadPriorClaims:
-      call: mcp
+      call: http
       with:
-        session: gateway
-        tool: listPriorClaims
-        arguments:
-          customerId: "${ .claim.customerId }"
+        method: GET
+        endpoint:
+          uri: http://demo-customer-profile-api:8085/customers/${ .claim.customerId }/prior-claims
+        output: content
       export:
         as:
-          priorClaims: .output.structuredContent
+          priorClaims: .output
   - assertMcpClaimContext:
       assert:
         json:
@@ -292,7 +290,7 @@ do:
             when: .intake.requiresHumanInput == true
             then: askMissingInfo
         - default:
-            then: runCoverageAndLiabilityAgent
+            then: evaluateCoverage
   - askMissingInfo:
       ask:
         prompt: Collect missing first-notice-of-loss details before claim review continues.
@@ -311,51 +309,75 @@ do:
       export:
         as:
           missingInfo: .output
-      then: runCoverageAndLiabilityAgent
-  - runCoverageAndLiabilityAgent:
-      call: agent
+      then: evaluateCoverage
+  - evaluateCoverage:
+      call: mcp
       with:
-        agent: coverage-liability-agent
-        skill: coverage-review
-        input:
+        session: gateway
+        tool: evaluateCoverage
+        arguments:
+          claim: "${ .claim }"
+          policies:
+            policies: "${ .policies }"
+          vehicle: "${ .vehicle }"
+      export:
+        as:
+          coverage: .output.structuredContent
+  - classifyLiability:
+      call: mcp
+      with:
+        session: gateway
+        tool: classifyLiability
+        arguments:
           claim: "${ .claim }"
           customer: "${ .customer }"
-          preferences: "${ .preferences }"
-          policies: "${ .policies }"
           vehicle: "${ .vehicle }"
+      export:
+        as:
+          liability: .output.structuredContent
+  - scoreClaimRisk:
+      call: mcp
+      with:
+        session: gateway
+        tool: scoreClaimRisk
+        arguments:
+          claim: "${ .claim }"
           priorClaims: "${ .priorClaims }"
-          intake: "${ .intake }"
-        outputSchemaRef: coverageReview
-        mockOutput:
-          coverageStatus: covered
-          liabilityStatus: unclear
-          riskLevel: medium
-          estimatedLoss: 3200
-          deductible: 500
-          requiresAdjusterReview: true
-          requiresSiuReview: false
-          reason: Vehicle is not drivable; adjuster review is required before settlement.
-        onInvalidOutput:
-          retry: 1
-          then: requestAdjusterApproval
+          coverage: "${ .coverage }"
+          liability: "${ .liability }"
+      export:
+        as:
+          risk: .output.structuredContent
+  - assembleCoverageReview:
+      set:
+        coverageStatus: "${ .coverage.coverageStatus }"
+        liabilityStatus: "${ .liability.liabilityStatus }"
+        riskLevel: "${ .risk.riskLevel }"
+        estimatedLoss: "${ .risk.estimatedLoss }"
+        deductible: "${ .coverage.deductible }"
+        requiresAdjusterReview: "${ .coverage.requiresAdjusterReview || .liability.requiresAdjusterReview || .risk.requiresAdjusterReview }"
+        requiresSiuReview: "${ .risk.requiresSiuReview }"
+        reason: "${ .coverage.reason } ${ .liability.reason } ${ .risk.reason }"
       export:
         as:
           coverageReview: .output
   - triageClaim:
-      call: mcp
+      call: http
       with:
-        session: gateway
-        tool: triageClaim
-        arguments:
+        method: POST
+        endpoint:
+          uri: http://demo-offer-decision-api:8086/claim-triage
+        body:
           claim: "${ .claim }"
           customer: "${ .customer }"
           policies:
             policies: "${ .policies }"
           vehicle: "${ .vehicle }"
           priorClaims: "${ .priorClaims }"
+        output: content
       export:
         as:
-          triage: .output.structuredContent
+          triage: .output
   - assertMcpTriage:
       assert:
         json:
@@ -512,19 +534,47 @@ do:
         as:
           settlementDraft: .output
   - recommendSettlement:
-      call: mcp
+      call: http
       with:
-        session: gateway
-        tool: recommendSettlement
-        arguments:
+        method: POST
+        endpoint:
+          uri: http://demo-offer-decision-api:8086/settlement-recommendations
+        body:
           claim: "${ .claim }"
           coverageReview: "${ .coverageReview }"
           triage: "${ .triage }"
           approval: "${ .approval }"
           idempotencyKey: "insurance-claim-mcp-v1:${ .claim.claimId }"
+        output: content
       export:
         as:
-          settlement: .output.structuredContent
+          settlement: .output
+  - listRequiredDocuments:
+      call: mcp
+      with:
+        session: gateway
+        tool: listRequiredDocuments
+        arguments:
+          claim: "${ .claim }"
+          triage: "${ .triage }"
+          recommendedPath: "${ .settlement.recommendedPath }"
+      export:
+        as:
+          requiredDocuments: .output.structuredContent
+  - generateCustomerSummary:
+      call: mcp
+      with:
+        session: gateway
+        tool: generateCustomerSummary
+        arguments:
+          claim: "${ .claim }"
+          coverageReview: "${ .coverageReview }"
+          triage: "${ .triage }"
+          documents: "${ .requiredDocuments }"
+          settlement: "${ .settlement }"
+      export:
+        as:
+          customerSummary: .output.structuredContent
   - assertMcpSettlement:
       assert:
         json:
@@ -532,7 +582,7 @@ do:
             exists: true
           settlement.recommendedPath:
             exists: true
-          settlement.customerSummary:
+          customerSummary.customerSummary:
             exists: true
   - requestCustomerResponse:
       ask:
@@ -608,6 +658,6 @@ do:
         customerId: "${ .claim.customerId }"
         claimId: "${ .claim.claimId }"
         decisionId: "${ .settlement.decisionId }"
-        customerSummary: "${ .settlement.customerSummary }"
+        customerSummary: "${ .customerSummary.customerSummary }"
         reason: Claim settlement recommendation accepted by claimant.
       end: true
