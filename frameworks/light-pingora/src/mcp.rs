@@ -1103,8 +1103,9 @@ impl McpRouterRuntime {
             }
         };
 
-        let result = if let Some(policy) = self.policy.as_ref() {
-            policy
+        let backend_result_is_error = is_mcp_error_result(&result);
+        let (result, status) = if let Some(policy) = self.policy.as_ref() {
+            let filtered = policy
                 .filter_mcp_response(
                     tool.name.as_str(),
                     endpoint.as_str(),
@@ -1114,15 +1115,29 @@ impl McpRouterRuntime {
                     context.correlation_id.as_deref(),
                     result,
                 )
-                .await
+                .await;
+            if !backend_result_is_error && is_mcp_error_result(&filtered) {
+                tracing::warn!(
+                    target: "light_pingora::mcp",
+                    toolName = %tool.name,
+                    endpoint = %endpoint,
+                    policyOutcome = %policy_outcome,
+                    correlationId = ?context.correlation_id,
+                    error = %mcp_error_result_text(&filtered),
+                    "mcp response filter returned error result"
+                );
+                (filtered, "filter_error")
+            } else {
+                (filtered, "success")
+            }
         } else {
-            result
+            (result, "success")
         };
         log_mcp_tool_call(
             tool,
             endpoint.as_str(),
             started,
-            "success",
+            status,
             policy_outcome,
             context,
         );
@@ -2028,6 +2043,24 @@ fn log_mcp_tool_call(
         correlationId = ?context.correlation_id,
         "mcp tool call"
     );
+}
+
+fn is_mcp_error_result(result: &JsonValue) -> bool {
+    result
+        .get("isError")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false)
+}
+
+fn mcp_error_result_text(result: &JsonValue) -> String {
+    result
+        .get("content")
+        .and_then(JsonValue::as_array)
+        .and_then(|content| content.first())
+        .and_then(|item| item.get("text"))
+        .and_then(JsonValue::as_str)
+        .unwrap_or("MCP error result")
+        .to_string()
 }
 
 fn error_chain(error: &(dyn StdError + 'static)) -> String {

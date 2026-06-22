@@ -9,6 +9,7 @@ use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::Arc;
+use tracing::{error, warn};
 
 pub const ACCESS_CONTROL_FILE: &str = "access-control.yml";
 pub const ACCESS_CONTROL_LEGACY_FILE: &str = "access-control.yaml";
@@ -24,6 +25,9 @@ const REQUEST_ACCESS: &str = "req-acc";
 const RESPONSE_FILTER: &str = "res-fil";
 const RESPONSE_BODY: &str = "responseBody";
 const RESPONSE_BODY_JSON: &str = "responseBodyJson";
+const RESPONSE_COLUMN_FILTER_ACTION: &str = "ResponseColumnFilterAction";
+const RESPONSE_ROW_FILTER_ACTION: &str = "ResponseRowFilterAction";
+const RESPONSE_CEL_ROW_FILTER_ACTION: &str = "ResponseCelRowFilterAction";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -177,11 +181,16 @@ impl AccessControlRuntime {
         let Some((service_entry, endpoint_rules)) = self.find_service_entry(endpoint) else {
             return result;
         };
-        let rule_ids = rule_ids_for(endpoint_rules, RESPONSE_FILTER);
+        let rule_ids = self.response_filter_rule_ids(endpoint_rules);
         if rule_ids.is_empty() {
             return result;
         }
         let Ok(target) = FilterTarget::from_result(&result) else {
+            warn!(
+                tool_name,
+                endpoint,
+                "Access control response filter failed: MCP result is not a filterable JSON payload"
+            );
             return mcp_filter_error_result("Access control response filter failed");
         };
 
@@ -206,17 +215,72 @@ impl AccessControlRuntime {
 
         for rule_id in rule_ids {
             let Some(rule) = self.rules.rule_bodies.get(rule_id.as_str()) else {
+                warn!(
+                    tool_name,
+                    endpoint,
+                    rule_id = rule_id.as_str(),
+                    "Access control response filter failed: rule body not found"
+                );
                 return mcp_filter_error_result("Access control response filter failed");
             };
-            let Ok(true) = self.engine.execute_rule(rule, &mut context).await else {
-                return mcp_filter_error_result("Access control response filter failed");
-            };
+            match self.engine.execute_rule(rule, &mut context).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    warn!(
+                        tool_name,
+                        endpoint,
+                        rule_id = rule_id.as_str(),
+                        "Access control response filter failed: rule returned false"
+                    );
+                    return mcp_filter_error_result("Access control response filter failed");
+                }
+                Err(error) => {
+                    error!(
+                        tool_name,
+                        endpoint,
+                        rule_id = rule_id.as_str(),
+                        error = %error,
+                        "Access control response filter failed: rule execution error"
+                    );
+                    return mcp_filter_error_result("Access control response filter failed");
+                }
+            }
         }
 
         let Some(filtered_body) = context.get(RESPONSE_BODY_JSON).cloned() else {
+            warn!(
+                tool_name,
+                endpoint,
+                "Access control response filter failed: filtered response body missing from rule context"
+            );
             return mcp_filter_error_result("Access control response filter failed");
         };
         target.apply(result, filtered_body)
+    }
+
+    fn response_filter_rule_ids(&self, endpoint_rules: &HashMap<String, JsonValue>) -> Vec<String> {
+        let mut rule_ids = rule_ids_for(endpoint_rules, RESPONSE_FILTER);
+        rule_ids.sort_by_key(|rule_id| self.response_filter_priority(rule_id));
+        rule_ids
+    }
+
+    fn response_filter_priority(&self, rule_id: &str) -> u8 {
+        let Some(rule) = self.rules.rule_bodies.get(rule_id) else {
+            return 2;
+        };
+        let Some(actions) = rule.actions.as_ref() else {
+            return 2;
+        };
+        if actions.iter().any(|action| is_row_filter_action(&action.action_ref)) {
+            return 0;
+        }
+        if actions
+            .iter()
+            .any(|action| is_column_filter_action(&action.action_ref))
+        {
+            return 1;
+        }
+        2
     }
 
     async fn execute_rule_ids(
@@ -532,6 +596,18 @@ fn rule_ids_for(endpoint_rules: &HashMap<String, JsonValue>, rule_type: &str) ->
             .unwrap_or_default(),
         _ => Vec::new(),
     }
+}
+
+fn is_row_filter_action(action_ref: &str) -> bool {
+    action_ref == RESPONSE_ROW_FILTER_ACTION
+        || action_ref == RESPONSE_CEL_ROW_FILTER_ACTION
+        || action_ref.ends_with(&format!(".{RESPONSE_ROW_FILTER_ACTION}"))
+        || action_ref.ends_with(&format!(".{RESPONSE_CEL_ROW_FILTER_ACTION}"))
+}
+
+fn is_column_filter_action(action_ref: &str) -> bool {
+    action_ref == RESPONSE_COLUMN_FILTER_ACTION
+        || action_ref.ends_with(&format!(".{RESPONSE_COLUMN_FILTER_ACTION}"))
 }
 
 fn parse_string_rule_ids(value: &str) -> Vec<String> {
@@ -1493,6 +1569,80 @@ allow-account-role:
         assert_eq!(
             result["content"][0]["text"],
             JsonValue::String("[{\"status\":\"O\"}]".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn response_filters_apply_row_before_column_even_when_configured_after_column() {
+        let policy = AccessControlRuntime::new(
+            Some(AccessControlConfig::default()),
+            serde_yaml::from_str::<RuleFileConfig>(
+                r#"
+ruleBodies:
+  column:
+    common: Y
+    ruleId: column
+    ruleName: Column Filter
+    ruleType: res-fil
+    expression: "col != null"
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+    actions:
+      - actionClassName: com.networknt.rule.ResponseColumnFilterAction
+  row:
+    common: Y
+    ruleId: row
+    ruleName: Row Filter
+    ruleType: res-fil
+    expression: "row != null"
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+    actions:
+      - actionClassName: com.networknt.rule.ResponseRowFilterAction
+endpointRules:
+  /v1/offers@get:
+    res-fil:
+      - column
+      - row
+    permission:
+      col:
+        role:
+          teller: '["offerId","title"]'
+      row:
+        role:
+          teller:
+            - colName: active
+              operator: "="
+              colValue: "true"
+"#,
+            )
+            .expect("rule config"),
+        );
+
+        let result = policy
+            .filter_mcp_response(
+                "offers",
+                "/v1/offers@get",
+                &[],
+                Some(&auth("teller")),
+                &json!({}),
+                None,
+                json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": r#"[{"offerId":1,"title":"A","active":true},{"offerId":2,"title":"B","active":false},{"offerId":3,"title":"C","active":true}]"#
+                        }
+                    ]
+                }),
+            )
+            .await;
+
+        assert_eq!(
+            result["content"][0]["text"],
+            JsonValue::String(
+                r#"[{"offerId":1,"title":"A"},{"offerId":3,"title":"C"}]"#.to_string()
+            )
         );
     }
 
