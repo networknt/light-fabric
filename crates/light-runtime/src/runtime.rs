@@ -17,7 +17,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use url::Url;
 
 use crate::cache::CacheRegistry;
@@ -890,8 +890,10 @@ async fn fetch_remote_bootstrap_if_needed(
                     Ok(files) => result.cached_files.extend(files),
                     Err(error) => warn!(
                         context_root,
-                        "remote bootstrap file download failed; continuing with available local/cache files: {:?}",
-                        error
+                        config_server_uri,
+                        query = ?query,
+                        error = ?error,
+                        "remote bootstrap file download failed; continuing with available local/cache files"
                     ),
                 }
             }
@@ -899,9 +901,11 @@ async fn fetch_remote_bootstrap_if_needed(
             Ok(result)
         }
         Err(error) => {
-            warn!(
-                "remote bootstrap values download failed; continuing with available local/cache config: {:?}",
-                error
+            error!(
+                config_server_uri,
+                query = ?query,
+                error = ?error,
+                "remote bootstrap values download failed; attempting to continue with local/cache config"
             );
             Ok(RemoteBootstrapResult::default())
         }
