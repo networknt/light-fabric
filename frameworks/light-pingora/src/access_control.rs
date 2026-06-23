@@ -179,6 +179,149 @@ impl AccessControlRuntime {
         }
     }
 
+    pub async fn authorize_http_endpoint(
+        &self,
+        endpoint: &str,
+        headers: &[(String, String)],
+        auth: Option<&AuthPrincipal>,
+        request_data: &JsonValue,
+        correlation_id: Option<&str>,
+        extra_context: Option<&JsonValue>,
+    ) -> AccessDecision {
+        let Some(config) = self.access.as_ref().filter(|config| config.enabled) else {
+            return AccessDecision::Allowed;
+        };
+        if config
+            .skip_path_prefixes
+            .iter()
+            .any(|prefix| endpoint.starts_with(prefix.as_str()))
+        {
+            return AccessDecision::Allowed;
+        }
+
+        let Some((_service_entry, endpoint_rules)) = self.find_service_entry(endpoint) else {
+            return if config.default_deny {
+                AccessDecision::Denied(format!(
+                    "Access denied: no access control rule defined for {endpoint}"
+                ))
+            } else {
+                AccessDecision::Allowed
+            };
+        };
+        let rule_ids = rule_ids_for(endpoint_rules, REQUEST_ACCESS);
+        if rule_ids.is_empty() {
+            return if config.default_deny {
+                AccessDecision::Denied(format!(
+                    "Access denied: no access control rule defined for {endpoint}"
+                ))
+            } else {
+                AccessDecision::Allowed
+            };
+        }
+
+        let permission = permission_for(endpoint_rules);
+        let mut context = build_rule_context(
+            "http",
+            endpoint,
+            headers,
+            auth,
+            request_data,
+            correlation_id,
+            permission.as_ref(),
+        );
+        merge_extra_context(&mut context, extra_context);
+        let allowed = self
+            .execute_rule_ids(&rule_ids, config.access_rule_logic.as_str(), &mut context)
+            .await;
+        if allowed {
+            AccessDecision::Allowed
+        } else {
+            AccessDecision::Denied(format!(
+                "Access denied by access control rule for {endpoint}"
+            ))
+        }
+    }
+
+    pub fn has_response_filter(&self, endpoint: &str) -> bool {
+        self.find_service_entry(endpoint)
+            .map(|(_, endpoint_rules)| !self.response_filter_rule_ids(endpoint_rules).is_empty())
+            .unwrap_or(false)
+    }
+
+    pub async fn filter_http_response(
+        &self,
+        endpoint: &str,
+        headers: &[(String, String)],
+        auth: Option<&AuthPrincipal>,
+        request_data: &JsonValue,
+        correlation_id: Option<&str>,
+        extra_context: Option<&JsonValue>,
+        status_code: u16,
+        response_body: &[u8],
+    ) -> Option<Vec<u8>> {
+        let Some((service_entry, endpoint_rules)) = self.find_service_entry(endpoint) else {
+            return None;
+        };
+        let rule_ids = self.response_filter_rule_ids(endpoint_rules);
+        if rule_ids.is_empty() {
+            return None;
+        }
+        let body_json = serde_json::from_slice::<JsonValue>(response_body).ok()?;
+        let permission = permission_for(endpoint_rules);
+        let mut context = build_rule_context(
+            "http",
+            service_entry,
+            headers,
+            auth,
+            request_data,
+            correlation_id,
+            permission.as_ref(),
+        );
+        merge_extra_context(&mut context, extra_context);
+        if let JsonValue::Object(map) = &mut context {
+            map.insert(
+                RESPONSE_BODY.to_string(),
+                JsonValue::String(String::from_utf8_lossy(response_body).into_owned()),
+            );
+            map.insert(RESPONSE_BODY_JSON.to_string(), body_json);
+            map.insert("statusCode".to_string(), json!(status_code));
+            insert_access_control_context(map, config_default_include(self.access.as_ref()));
+        }
+
+        for rule_id in rule_ids {
+            let Some(rule) = self.rules.rule_bodies.get(rule_id.as_str()) else {
+                warn!(
+                    endpoint,
+                    rule_id = rule_id.as_str(),
+                    "Access control response filter skipped: rule body not found"
+                );
+                return None;
+            };
+            match self.engine.execute_rule(rule, &mut context).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    warn!(
+                        endpoint,
+                        rule_id = rule_id.as_str(),
+                        "Access control response filter skipped: rule returned false"
+                    );
+                    return None;
+                }
+                Err(error) => {
+                    error!(
+                        endpoint,
+                        rule_id = rule_id.as_str(),
+                        error = %error,
+                        "Access control response filter skipped: rule execution error"
+                    );
+                    return None;
+                }
+            }
+        }
+        let filtered_body = context.get(RESPONSE_BODY_JSON)?;
+        serde_json::to_vec(filtered_body).ok()
+    }
+
     pub async fn filter_mcp_response(
         &self,
         tool_name: &str,
@@ -561,6 +704,18 @@ fn insert_access_control_context(context: &mut JsonMap<String, JsonValue>, defau
             "defaultInclude": default_include
         }),
     );
+}
+
+fn merge_extra_context(context: &mut JsonValue, extra_context: Option<&JsonValue>) {
+    let Some(JsonValue::Object(extra)) = extra_context else {
+        return;
+    };
+    let Some(context) = context.as_object_mut() else {
+        return;
+    };
+    for (key, value) in extra {
+        context.insert(key.clone(), value.clone());
+    }
 }
 
 fn config_default_include(config: Option<&AccessControlConfig>) -> bool {
@@ -1344,6 +1499,89 @@ endpointRules:
             )
             .expect("rule config"),
         )
+    }
+
+    #[tokio::test]
+    async fn authorize_http_endpoint_uses_endpoint_rule() {
+        let policy = AccessControlRuntime::new(
+            Some(AccessControlConfig::default()),
+            serde_yaml::from_str::<RuleFileConfig>(
+                r#"
+ruleBodies:
+  allow-role:
+    common: Y
+    ruleId: allow-role
+    ruleName: Allow Role
+    ruleType: req-acc
+    expression: "true"
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+endpointRules:
+  lightapi.net/service/getApi/0.1.0:
+    req-acc:
+      - allow-role
+    permission:
+      roles: api-admin
+"#,
+            )
+            .expect("rule config"),
+        );
+
+        let decision = policy
+            .authorize_http_endpoint(
+                "lightapi.net/service/getApi/0.1.0",
+                &[],
+                Some(&auth("api-admin")),
+                &json!({"hostId":"host-1"}),
+                None,
+                Some(&json!({"hostId":"host-1", "transport":"hybrid", "portal":true})),
+            )
+            .await;
+        assert_eq!(decision, AccessDecision::Allowed);
+
+        let denied = policy
+            .authorize_http_endpoint(
+                "lightapi.net/service/deleteApi/0.1.0",
+                &[],
+                Some(&auth("api-admin")),
+                &json!({"hostId":"host-1"}),
+                None,
+                Some(&json!({"hostId":"host-1", "transport":"hybrid", "portal":true})),
+            )
+            .await;
+        assert!(matches!(denied, AccessDecision::Denied(_)));
+    }
+
+    #[tokio::test]
+    async fn filter_http_response_applies_column_filter_for_endpoint() {
+        let policy = policy_for_filter(
+            "col",
+            json!({
+                "col": {
+                    "role": {
+                        "teller": "[\"accountNo\",\"firstName\"]"
+                    }
+                }
+            }),
+        );
+
+        let filtered = policy
+            .filter_http_response(
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("teller")),
+                &json!({}),
+                None,
+                None,
+                200,
+                br#"[{"accountNo":"1","firstName":"A","ssn":"secret"}]"#,
+            )
+            .await
+            .expect("filtered response");
+        let value = serde_json::from_slice::<JsonValue>(&filtered).expect("json");
+        assert_eq!(value[0]["accountNo"], "1");
+        assert_eq!(value[0]["firstName"], "A");
+        assert!(value[0].get("ssn").is_none());
     }
 
     fn runtime_config_with_values(values: HashMap<String, YamlValue>) -> (TempDir, RuntimeConfig) {

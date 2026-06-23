@@ -3,28 +3,29 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use light_pingora::{
-    AccessDecision, ActiveHandlerSet, ApiKeyConfig, AuthPrincipal, BasicAuthConfig,
-    CorrelationConfig, CorrelationState, CorsConfig, CorsRequestOutcome, CorsResponseHeaders,
-    HandlerBuildContext, HandlerMetricsLogLevel, HandlerRejection, HeaderConfig, McpHttpRequest,
-    McpHttpResponse, McpRequestContext, McpRouterRuntime, MetricsConfig, MetricsRecorder,
-    MsalExchangeOutcome, MsalExchangeRuntime, PathPrefixServiceConfig, PiiTokenizationRuntime,
-    PingoraApp, PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerKind,
-    PingoraHandlerRegistry, PingoraTransport, ProxyRoute, ProxyTarget, RateLimitHeaders,
-    RateLimitRuntime, RouterDecision, RouterRoute, SecurityRuntime, SpaAuthResponse,
-    StatelessAuthOutcome, StatelessAuthRuntime, StaticResolution, StaticResourceSet, TokenRuntime,
-    UnifiedSecurityConfig, WebSocketConnectionPermit, WebSocketRouteDecision, WebSocketRouteError,
-    WebSocketRouterRuntime, apply_correlation_request, apply_correlation_response,
-    apply_cors_response, apply_header_request, apply_header_response, apply_path_prefix_service,
-    apply_rate_limit_headers, apply_router_upstream_request, apply_token_request,
-    apply_websocket_upstream_request, build_metrics_event, check_rate_limit,
-    correlation_id_for_upstream, evaluate_cors_request, load_active_handlers, load_api_key_config,
-    load_basic_auth_config, load_correlation_config, load_cors_config, load_header_config,
-    load_mcp_router_runtime, load_metrics_config, load_msal_exchange_runtime,
-    load_path_prefix_service_config, load_pii_tokenization_runtime, load_proxy_route,
-    load_rate_limit_runtime, load_router_route, load_security_runtime, load_stateless_auth_runtime,
-    load_static_resources, load_token_runtime, load_unified_security_config,
-    load_websocket_router_runtime, merge_extra_response_headers, select_router_target,
-    verify_api_key, verify_basic_auth, verify_jwt_request, verify_unified_security,
+    AccessControlRuntime, AccessDecision, ActiveHandlerSet, ApiKeyConfig, AuthPrincipal,
+    BasicAuthConfig, CorrelationConfig, CorrelationState, CorsConfig, CorsRequestOutcome,
+    CorsResponseHeaders, HandlerBuildContext, HandlerMetricsLogLevel, HandlerRejection,
+    HeaderConfig, McpHttpRequest, McpHttpResponse, McpRequestContext, McpRouterRuntime,
+    MetricsConfig, MetricsRecorder, MsalExchangeOutcome, MsalExchangeRuntime,
+    PathPrefixServiceConfig, PiiTokenizationRuntime, PingoraApp, PingoraHandler,
+    PingoraHandlerDescriptor, PingoraHandlerKind, PingoraHandlerRegistry, PingoraTransport,
+    ProxyRoute, ProxyTarget, RateLimitHeaders, RateLimitRuntime, RouterDecision, RouterRoute,
+    SecurityRuntime, SpaAuthResponse, StatelessAuthOutcome, StatelessAuthRuntime, StaticResolution,
+    StaticResourceSet, TokenRuntime, UnifiedSecurityConfig, WebSocketConnectionPermit,
+    WebSocketRouteDecision, WebSocketRouteError, WebSocketRouterRuntime, apply_correlation_request,
+    apply_correlation_response, apply_cors_response, apply_header_request, apply_header_response,
+    apply_path_prefix_service, apply_rate_limit_headers, apply_router_upstream_request,
+    apply_token_request, apply_websocket_upstream_request, build_metrics_event, check_rate_limit,
+    correlation_id_for_upstream, evaluate_cors_request, load_access_control_runtime,
+    load_active_handlers, load_api_key_config, load_basic_auth_config, load_correlation_config,
+    load_cors_config, load_header_config, load_mcp_router_runtime, load_metrics_config,
+    load_msal_exchange_runtime, load_path_prefix_service_config, load_pii_tokenization_runtime,
+    load_proxy_route, load_rate_limit_runtime, load_router_route, load_security_runtime,
+    load_stateless_auth_runtime, load_static_resources, load_token_runtime,
+    load_unified_security_config, load_websocket_router_runtime, merge_extra_response_headers,
+    select_router_target, verify_api_key, verify_basic_auth, verify_jwt_request,
+    verify_unified_security,
 };
 use light_runtime::{
     CacheRegistry, ConfigManager, LightRuntimeBuilder, ReloadContext, ReloadOutcome,
@@ -34,6 +35,7 @@ use pingora::http::ResponseHeader;
 use pingora::prelude::{HttpPeer, ProxyHttp, Session};
 use pingora::utils::tls::CertKey;
 use pingora::{Error, ErrorType};
+use serde_json::{Value as JsonValue, json};
 use std::collections::BTreeMap;
 use std::io::BufReader;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -41,6 +43,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
 use tracing::{debug, info};
+use url::form_urlencoded;
 
 mod embedded_config {
     include!(concat!(env!("OUT_DIR"), "/embedded_config.rs"));
@@ -50,6 +53,7 @@ const CONFIG_DIR: &str = "config";
 const DEFAULT_CONFIG_DIR: &str = "config-defaults";
 const EXTERNAL_CONFIG_DIR: &str = "config-cache";
 const HEALTH_PATH: &str = "/health";
+const ACCESS_CONTROL_MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
 
 #[derive(Clone)]
 struct GatewayApp;
@@ -78,6 +82,7 @@ struct GatewayProxy {
     stateless_auth: Arc<ConfigManager<Option<StatelessAuthRuntime>>>,
     msal_exchange: Arc<ConfigManager<Option<MsalExchangeRuntime>>>,
     pii_tokenization: Arc<ConfigManager<Option<PiiTokenizationRuntime>>>,
+    access_control: Arc<ConfigManager<Option<AccessControlRuntime>>>,
     mcp_router: Arc<ConfigManager<Option<McpRouterRuntime>>>,
     websocket_router: Arc<ConfigManager<Option<WebSocketRouterRuntime>>>,
     metrics_recorder: Arc<MetricsRecorder>,
@@ -157,6 +162,10 @@ impl GatewayProxy {
             config,
             handler_active(&active_handlers, &["tokenize", "detokenize"]),
         )?;
+        let access_control = load_access_control_runtime(
+            config,
+            active_handlers.is_handler_active("access-control"),
+        )?;
         let mcp_router = load_mcp_router_runtime(config, active_handlers.is_handler_active("mcp"))?;
         let websocket_router =
             load_websocket_router_runtime(config, active_handlers.is_handler_active("websocket"))?;
@@ -178,6 +187,7 @@ impl GatewayProxy {
         let stateless_auth = Arc::new(ConfigManager::new(stateless_auth));
         let msal_exchange = Arc::new(ConfigManager::new(msal_exchange));
         let pii_tokenization = Arc::new(ConfigManager::new(pii_tokenization));
+        let access_control = Arc::new(ConfigManager::new(access_control));
         let mcp_router = Arc::new(ConfigManager::new(mcp_router));
         let websocket_router = Arc::new(ConfigManager::new(websocket_router));
         let router_route = Arc::new(ConfigManager::new(router_route));
@@ -203,6 +213,7 @@ impl GatewayProxy {
                 stateless_auth: Arc::clone(&stateless_auth),
                 msal_exchange: Arc::clone(&msal_exchange),
                 pii_tokenization: Arc::clone(&pii_tokenization),
+                access_control: Arc::clone(&access_control),
                 mcp_router: Arc::clone(&mcp_router),
                 websocket_router: Arc::clone(&websocket_router),
                 router_route: Arc::clone(&router_route),
@@ -352,6 +363,7 @@ impl GatewayProxy {
         );
         let access_control_reloader: Arc<dyn ReloadableModule> = Arc::new(AccessControlReloader {
             active_handlers: Arc::clone(&active_handlers),
+            access_control: Arc::clone(&access_control),
             mcp_router: Arc::clone(&mcp_router),
             websocket_router: Arc::clone(&websocket_router),
         });
@@ -405,6 +417,7 @@ impl GatewayProxy {
             stateless_auth,
             msal_exchange,
             pii_tokenization,
+            access_control,
             mcp_router,
             websocket_router,
             metrics_recorder,
@@ -1100,6 +1113,7 @@ struct HandlerReloader {
     stateless_auth: Arc<ConfigManager<Option<StatelessAuthRuntime>>>,
     msal_exchange: Arc<ConfigManager<Option<MsalExchangeRuntime>>>,
     pii_tokenization: Arc<ConfigManager<Option<PiiTokenizationRuntime>>>,
+    access_control: Arc<ConfigManager<Option<AccessControlRuntime>>>,
     mcp_router: Arc<ConfigManager<Option<McpRouterRuntime>>>,
     websocket_router: Arc<ConfigManager<Option<WebSocketRouterRuntime>>>,
     router_route: Arc<ConfigManager<Option<RouterRoute>>>,
@@ -1181,6 +1195,10 @@ impl ReloadableModule for HandlerReloader {
             &ctx.runtime_config,
             handler_active(&active_handlers, &["tokenize", "detokenize"]),
         )?;
+        let access_control = load_access_control_runtime(
+            &ctx.runtime_config,
+            active_handlers.is_handler_active("access-control"),
+        )?;
         let mcp_router = load_mcp_router_runtime_preserving_state(
             &ctx.runtime_config,
             active_handlers.is_handler_active("mcp"),
@@ -1211,6 +1229,7 @@ impl ReloadableModule for HandlerReloader {
         self.stateless_auth.store(stateless_auth);
         self.msal_exchange.store(msal_exchange);
         self.pii_tokenization.store(pii_tokenization);
+        self.access_control.store(access_control);
         self.mcp_router.store(mcp_router);
         self.websocket_router.store(websocket_router);
         self.router_route.store(router_route);
@@ -1532,6 +1551,7 @@ impl ReloadableModule for WebSocketRouterReloader {
 
 struct AccessControlReloader {
     active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    access_control: Arc<ConfigManager<Option<AccessControlRuntime>>>,
     mcp_router: Arc<ConfigManager<Option<McpRouterRuntime>>>,
     websocket_router: Arc<ConfigManager<Option<WebSocketRouterRuntime>>>,
 }
@@ -1540,6 +1560,10 @@ struct AccessControlReloader {
 impl ReloadableModule for AccessControlReloader {
     async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
         let active_handlers = self.active_handlers.load();
+        let access_control = load_access_control_runtime(
+            &ctx.runtime_config,
+            active_handlers.is_handler_active("access-control"),
+        )?;
         let mcp_router = load_mcp_router_runtime_preserving_state(
             &ctx.runtime_config,
             active_handlers.is_handler_active("mcp"),
@@ -1550,6 +1574,7 @@ impl ReloadableModule for AccessControlReloader {
             active_handlers.is_handler_active("websocket"),
             &self.websocket_router,
         )?;
+        self.access_control.store(access_control);
         self.mcp_router.store(mcp_router);
         self.websocket_router.store(websocket_router);
         Ok(ReloadOutcome::success("access-control/rule.yml reloaded"))
@@ -1866,6 +1891,65 @@ impl ProxyHttp for GatewayProxy {
                             return self.write_rejection_response(session, ctx, rejection).await;
                         }
                         ctx.detokenize_active = true;
+                    }
+                }
+                "access-control" => {
+                    let runtime = self.access_control.load();
+                    let Some(runtime) = runtime.as_ref().as_ref() else {
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                        continue;
+                    };
+                    if request_header(session, "content-encoding").is_some()
+                        && method_has_request_body(&method)
+                    {
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                        return self
+                            .write_rejection_response(
+                                session,
+                                ctx,
+                                HandlerRejection::new(
+                                    415,
+                                    "ERR13021",
+                                    "access-control handler does not support encoded request bodies",
+                                ),
+                            )
+                            .await;
+                    }
+                    if method_has_request_body(&method) {
+                        ctx.access_control_active = true;
+                    } else {
+                        let exchange = access_control_exchange(
+                            ctx.endpoint.as_str(),
+                            ctx.request_path.as_str(),
+                            session.req_header().uri.query(),
+                            None,
+                            ctx.auth.as_ref(),
+                        )
+                        .map_err(handler_rejection_error)?;
+                        match runtime
+                            .authorize_http_endpoint(
+                                exchange.endpoint.as_str(),
+                                &agent_headers(session),
+                                ctx.auth.as_ref(),
+                                &exchange.request_data,
+                                ctx.correlation.correlation_id.as_deref(),
+                                Some(&exchange.extra_context),
+                            )
+                            .await
+                        {
+                            AccessDecision::Allowed => {
+                                let has_response_filter =
+                                    runtime.has_response_filter(exchange.endpoint.as_str());
+                                ctx.access_control_exchange = Some(exchange);
+                                ctx.access_control_response_active = has_response_filter;
+                            }
+                            AccessDecision::Denied(message) => {
+                                ctx.record_handler_duration(&handler_id, started.elapsed());
+                                return self
+                                    .write_string_response(session, ctx, 403, message)
+                                    .await;
+                            }
+                        }
                     }
                 }
                 "stateless" | "google" | "facebook" | "github" => {
@@ -2262,6 +2346,9 @@ impl ProxyHttp for GatewayProxy {
                 rewrite_upstream_path(upstream_request, &target.path_prefix)?;
             }
         }
+        if ctx.access_control_active || ctx.access_control_response_active {
+            upstream_request.remove_header("accept-encoding");
+        }
         upstream_request.insert_header("x-light-gateway", "light-pingora")?;
         if let Some(correlation_id) = correlation_id_for_upstream(&ctx.correlation) {
             upstream_request.insert_header(light_pingora::CORRELATION_ID_HEADER, correlation_id)?;
@@ -2337,6 +2424,56 @@ impl ProxyHttp for GatewayProxy {
                 *body = None;
             }
         }
+        if ctx.access_control_active {
+            buffer_body_chunk(
+                &mut ctx.access_control_request_body,
+                body,
+                ACCESS_CONTROL_MAX_BODY_SIZE,
+                "access-control request",
+            )?;
+            if end_of_stream {
+                let input = std::mem::take(&mut ctx.access_control_request_body);
+                let exchange = access_control_exchange(
+                    ctx.endpoint.as_str(),
+                    ctx.request_path.as_str(),
+                    session.req_header().uri.query(),
+                    Some(input.as_slice()),
+                    ctx.auth.as_ref(),
+                )
+                .map_err(handler_rejection_error)?;
+                let runtime = self.access_control.load();
+                let Some(runtime) = runtime.as_ref().as_ref() else {
+                    return Err(Error::explain(
+                        ErrorType::InternalError,
+                        "access-control is not configured",
+                    ));
+                };
+                match runtime
+                    .authorize_http_endpoint(
+                        exchange.endpoint.as_str(),
+                        &agent_headers(session),
+                        ctx.auth.as_ref(),
+                        &exchange.request_data,
+                        ctx.correlation.correlation_id.as_deref(),
+                        Some(&exchange.extra_context),
+                    )
+                    .await
+                {
+                    AccessDecision::Allowed => {
+                        let has_response_filter =
+                            runtime.has_response_filter(exchange.endpoint.as_str());
+                        ctx.access_control_exchange = Some(exchange);
+                        ctx.access_control_response_active = has_response_filter;
+                        *body = Some(Bytes::from(input));
+                    }
+                    AccessDecision::Denied(message) => {
+                        return Err(access_control_status_error(403, message));
+                    }
+                }
+            } else {
+                *body = None;
+            }
+        }
         Ok(())
     }
 
@@ -2382,6 +2519,40 @@ impl ProxyHttp for GatewayProxy {
                 *body = None;
             }
         }
+        if ctx.access_control_response_active {
+            buffer_body_chunk(
+                &mut ctx.access_control_response_body,
+                body,
+                ACCESS_CONTROL_MAX_BODY_SIZE,
+                "access-control response",
+            )?;
+            if end_of_stream {
+                let input = std::mem::take(&mut ctx.access_control_response_body);
+                let Some(exchange) = ctx.access_control_exchange.as_ref() else {
+                    *body = Some(Bytes::from(input));
+                    return Ok(None);
+                };
+                let runtime = self.access_control.load();
+                let Some(runtime) = runtime.as_ref().as_ref() else {
+                    return Err(Error::explain(
+                        ErrorType::InternalError,
+                        "access-control is not configured",
+                    ));
+                };
+                let transformed = block_on_access_control_response(
+                    runtime,
+                    exchange,
+                    &agent_headers(session),
+                    ctx.auth.as_ref(),
+                    ctx.correlation.correlation_id.as_deref(),
+                    ctx.upstream_status.unwrap_or(200),
+                    input.as_slice(),
+                );
+                *body = Some(Bytes::from(transformed.unwrap_or(input)));
+            } else {
+                *body = None;
+            }
+        }
         Ok(None)
     }
 
@@ -2394,12 +2565,25 @@ impl ProxyHttp for GatewayProxy {
     where
         Self::CTX: Send + Sync,
     {
+        ctx.upstream_status = Some(upstream_response.status.as_u16());
         if ctx.detokenize_active {
             if upstream_response.headers.get("content-encoding").is_some() {
                 return Err(handler_rejection_error(HandlerRejection::new(
                     415,
                     "ERR13018",
                     "detokenize handler does not support encoded response bodies",
+                )));
+            }
+            upstream_response.remove_header("content-length");
+            upstream_response.remove_header("etag");
+            upstream_response.remove_header("last-modified");
+        }
+        if ctx.access_control_response_active {
+            if upstream_response.headers.get("content-encoding").is_some() {
+                return Err(handler_rejection_error(HandlerRejection::new(
+                    415,
+                    "ERR13022",
+                    "access-control handler does not support encoded response bodies",
                 )));
             }
             upstream_response.remove_header("content-length");
@@ -2478,8 +2662,14 @@ struct GatewayRequestContext {
     auth: Option<AuthPrincipal>,
     tokenize_active: bool,
     detokenize_active: bool,
+    access_control_active: bool,
+    access_control_response_active: bool,
     tokenize_request_body: Vec<u8>,
     detokenize_response_body: Vec<u8>,
+    access_control_request_body: Vec<u8>,
+    access_control_response_body: Vec<u8>,
+    access_control_exchange: Option<AccessControlExchange>,
+    upstream_status: Option<u16>,
     rate_limit_headers: Option<RateLimitHeaders>,
     extra_response_headers: Vec<(String, String)>,
     metrics_enabled: bool,
@@ -2513,8 +2703,14 @@ impl Default for GatewayRequestContext {
             auth: None,
             tokenize_active: false,
             detokenize_active: false,
+            access_control_active: false,
+            access_control_response_active: false,
             tokenize_request_body: Vec::new(),
             detokenize_response_body: Vec::new(),
+            access_control_request_body: Vec::new(),
+            access_control_response_body: Vec::new(),
+            access_control_exchange: None,
+            upstream_status: None,
             rate_limit_headers: None,
             extra_response_headers: Vec::new(),
             metrics_enabled: false,
@@ -2549,8 +2745,14 @@ impl GatewayRequestContext {
         self.auth = None;
         self.tokenize_active = false;
         self.detokenize_active = false;
+        self.access_control_active = false;
+        self.access_control_response_active = false;
         self.tokenize_request_body.clear();
         self.detokenize_response_body.clear();
+        self.access_control_request_body.clear();
+        self.access_control_response_body.clear();
+        self.access_control_exchange = None;
+        self.upstream_status = None;
         self.rate_limit_headers = None;
         self.extra_response_headers.clear();
         self.metrics_enabled = false;
@@ -2570,6 +2772,13 @@ impl GatewayRequestContext {
 struct HandlerTiming {
     handler_id: String,
     duration: Duration,
+}
+
+#[derive(Debug, Clone)]
+struct AccessControlExchange {
+    endpoint: String,
+    request_data: JsonValue,
+    extra_context: JsonValue,
 }
 
 #[tokio::main]
@@ -2723,6 +2932,241 @@ fn agent_headers(session: &Session) -> Vec<(String, String)> {
                 .map(|value| (name.as_str().to_string(), value.to_string()))
         })
         .collect()
+}
+
+fn method_has_request_body(method: &str) -> bool {
+    matches!(
+        method.to_ascii_uppercase().as_str(),
+        "POST" | "PUT" | "PATCH" | "DELETE"
+    )
+}
+
+fn access_control_exchange(
+    endpoint: &str,
+    request_path: &str,
+    query: Option<&str>,
+    body: Option<&[u8]>,
+    auth: Option<&AuthPrincipal>,
+) -> Result<AccessControlExchange, HandlerRejection> {
+    if is_portal_hybrid_path(request_path) {
+        return portal_access_control_exchange(request_path, query, body, auth);
+    }
+    let request_data = body
+        .filter(|body| !body.is_empty())
+        .and_then(|body| serde_json::from_slice::<JsonValue>(body).ok())
+        .unwrap_or_else(|| JsonValue::Object(Default::default()));
+    Ok(AccessControlExchange {
+        endpoint: endpoint.to_string(),
+        request_data: request_data.clone(),
+        extra_context: json!({
+            "serviceId": endpoint,
+            "transport": "http",
+            "portal": false,
+            "requestData": request_data,
+            "jwt": jwt_context(auth)
+        }),
+    })
+}
+
+fn portal_access_control_exchange(
+    request_path: &str,
+    query: Option<&str>,
+    body: Option<&[u8]>,
+    auth: Option<&AuthPrincipal>,
+) -> Result<AccessControlExchange, HandlerRejection> {
+    let envelope = if let Some(body) = body.filter(|body| !body.is_empty()) {
+        serde_json::from_slice::<JsonValue>(body).map_err(|error| {
+            HandlerRejection::new(
+                400,
+                "ERR13023",
+                format!("invalid hybrid portal request body: {error}"),
+            )
+        })?
+    } else {
+        hybrid_envelope_from_query(query)
+    };
+    let host = required_text(&envelope, "host")?;
+    let service = required_text(&envelope, "service")?;
+    let action_name = required_text(&envelope, "action")?;
+    let version = required_text(&envelope, "version")?;
+    let endpoint = format!("{host}/{service}/{action_name}/{version}");
+    let request_data = envelope
+        .get("data")
+        .cloned()
+        .unwrap_or_else(|| JsonValue::Object(Default::default()));
+    let host_id = request_data
+        .get("hostId")
+        .and_then(JsonValue::as_str)
+        .map(str::to_string);
+    let action_kind = portal_action_kind(&action_name);
+    let jwt = jwt_context(auth);
+    Ok(AccessControlExchange {
+        endpoint: endpoint.clone(),
+        request_data: request_data.clone(),
+        extra_context: json!({
+            "serviceId": endpoint,
+            "transport": "hybrid",
+            "portal": true,
+            "hostId": host_id,
+            "entity": service,
+            "action": action_kind,
+            "actionName": action_name,
+            "jwt": jwt,
+            "requestData": request_data,
+            "handlerMetadata": {
+                "host": host,
+                "service": service,
+                "action": action_name,
+                "version": version,
+                "path": request_path
+            }
+        }),
+    })
+}
+
+fn is_portal_hybrid_path(request_path: &str) -> bool {
+    matches!(request_path, "/portal/query" | "/portal/command")
+}
+
+fn hybrid_envelope_from_query(query: Option<&str>) -> JsonValue {
+    let mut envelope = serde_json::Map::new();
+    let mut data = serde_json::Map::new();
+    if let Some(query) = query {
+        for (key, value) in form_urlencoded::parse(query.as_bytes()) {
+            match key.as_ref() {
+                "host" | "service" | "action" | "version" => {
+                    envelope.insert(key.into_owned(), JsonValue::String(value.into_owned()));
+                }
+                "data" => {
+                    if let Ok(value) = serde_json::from_str::<JsonValue>(&value) {
+                        envelope.insert("data".to_string(), value);
+                    }
+                }
+                _ => {
+                    data.insert(key.into_owned(), JsonValue::String(value.into_owned()));
+                }
+            }
+        }
+    }
+    if !envelope.contains_key("data") {
+        envelope.insert("data".to_string(), JsonValue::Object(data));
+    }
+    JsonValue::Object(envelope)
+}
+
+fn required_text(envelope: &JsonValue, field: &str) -> Result<String, HandlerRejection> {
+    envelope
+        .get(field)
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            HandlerRejection::new(
+                400,
+                "ERR13024",
+                format!("hybrid portal request is missing `{field}`"),
+            )
+        })
+}
+
+fn portal_action_kind(action_name: &str) -> &'static str {
+    for prefix in ["create", "update", "delete", "get", "query", "list"] {
+        if action_name.starts_with(prefix) {
+            return prefix;
+        }
+    }
+    "call"
+}
+
+fn jwt_context(auth: Option<&AuthPrincipal>) -> JsonValue {
+    let Some(auth) = auth else {
+        return json!({});
+    };
+    let claims = auth.claims.as_object();
+    json!({
+        "userId": auth.user_id.clone().or_else(|| claim_text(claims, &["uid", "userId", "sub"])),
+        "roles": claim_tokens(claims, &["role", "roles"]),
+        "positions": claim_tokens(claims, &["pos", "position", "positions"]),
+        "groups": claim_tokens(claims, &["grp", "group", "groups"]),
+        "attributes": claims
+            .and_then(|claims| claims.get("att").or_else(|| claims.get("attribute")).or_else(|| claims.get("attributes")))
+            .cloned()
+            .unwrap_or_else(|| JsonValue::Object(Default::default()))
+    })
+}
+
+fn claim_text(
+    claims: Option<&serde_json::Map<String, JsonValue>>,
+    names: &[&str],
+) -> Option<String> {
+    names
+        .iter()
+        .find_map(|name| claims?.get(*name).and_then(json_text))
+}
+
+fn claim_tokens(
+    claims: Option<&serde_json::Map<String, JsonValue>>,
+    names: &[&str],
+) -> Vec<String> {
+    let Some(value) = names.iter().find_map(|name| claims?.get(*name)) else {
+        return Vec::new();
+    };
+    match value {
+        JsonValue::Array(values) => values.iter().filter_map(json_text).collect(),
+        _ => json_text(value)
+            .map(|text| {
+                text.split([',', ' ', '\n', '\t'])
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }
+}
+
+fn json_text(value: &JsonValue) -> Option<String> {
+    match value {
+        JsonValue::String(value) => Some(value.clone()),
+        JsonValue::Number(value) => Some(value.to_string()),
+        JsonValue::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn block_on_access_control_response(
+    runtime: &AccessControlRuntime,
+    exchange: &AccessControlExchange,
+    headers: &[(String, String)],
+    auth: Option<&AuthPrincipal>,
+    correlation_id: Option<&str>,
+    status_code: u16,
+    body: &[u8],
+) -> Option<Vec<u8>> {
+    let future = runtime.filter_http_response(
+        exchange.endpoint.as_str(),
+        headers,
+        auth,
+        &exchange.request_data,
+        correlation_id,
+        Some(&exchange.extra_context),
+        status_code,
+        body,
+    );
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(future))
+    } else {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .ok()?
+            .block_on(future)
+    }
+}
+
+fn access_control_status_error(status: u16, message: String) -> Box<Error> {
+    Error::explain(ErrorType::HTTPStatus(status), message)
 }
 
 async fn read_request_body(session: &mut Session) -> pingora::Result<Vec<u8>> {
@@ -3171,6 +3615,7 @@ const GATEWAY_HANDLER_DESCRIPTORS: &[(&str, PingoraHandlerKind)] = &[
     ("basic", PingoraHandlerKind::Security),
     ("unified-security", PingoraHandlerKind::Security),
     ("unified", PingoraHandlerKind::Security),
+    ("access-control", PingoraHandlerKind::Security),
     ("body", PingoraHandlerKind::Traffic),
     ("audit", PingoraHandlerKind::Observability),
     ("sanitizer", PingoraHandlerKind::Security),
@@ -3297,6 +3742,35 @@ mod tests {
             cache_registry: None,
             registry_client: None,
         }
+    }
+
+    #[test]
+    fn portal_access_control_exchange_derives_logical_hybrid_endpoint() {
+        let body = br#"{
+            "host":"lightapi.net",
+            "service":"service",
+            "action":"getApi",
+            "version":"0.1.0",
+            "data":{"hostId":"host-1","apiId":"api-1"}
+        }"#;
+        let exchange = access_control_exchange(
+            "/portal/query@post",
+            "/portal/query",
+            None,
+            Some(body),
+            None,
+        )
+        .expect("hybrid exchange");
+        assert_eq!(exchange.endpoint, "lightapi.net/service/getApi/0.1.0");
+        assert_eq!(exchange.request_data["hostId"], "host-1");
+        assert_eq!(exchange.extra_context["transport"], "hybrid");
+        assert_eq!(exchange.extra_context["portal"], true);
+        assert_eq!(exchange.extra_context["entity"], "service");
+        assert_eq!(exchange.extra_context["action"], "get");
+        assert_eq!(
+            exchange.extra_context["serviceId"],
+            "lightapi.net/service/getApi/0.1.0"
+        );
     }
 
     #[derive(Debug, Clone)]
