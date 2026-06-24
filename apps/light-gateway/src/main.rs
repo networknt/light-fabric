@@ -42,7 +42,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use url::form_urlencoded;
 
 mod embedded_config {
@@ -1944,6 +1944,25 @@ impl ProxyHttp for GatewayProxy {
                                 ctx.access_control_response_active = has_response_filter;
                             }
                             AccessDecision::Denied(message) => {
+                                warn!(
+                                    endpoint = exchange.endpoint.as_str(),
+                                    request_path = ctx.request_path.as_str(),
+                                    method = ctx.method.as_str(),
+                                    client_id = ctx
+                                        .auth
+                                        .as_ref()
+                                        .and_then(|auth| auth.client_id.as_deref())
+                                        .unwrap_or(""),
+                                    user_id = ctx
+                                        .auth
+                                        .as_ref()
+                                        .and_then(|auth| auth.user_id.as_deref())
+                                        .unwrap_or(""),
+                                    correlation_id =
+                                        ctx.correlation.correlation_id.as_deref().unwrap_or(""),
+                                    reason = message.as_str(),
+                                    "access-control denied request"
+                                );
                                 ctx.record_handler_duration(&handler_id, started.elapsed());
                                 return self
                                     .write_string_response(session, ctx, 403, message)
@@ -2467,6 +2486,25 @@ impl ProxyHttp for GatewayProxy {
                         *body = Some(Bytes::from(input));
                     }
                     AccessDecision::Denied(message) => {
+                        warn!(
+                            endpoint = exchange.endpoint.as_str(),
+                            request_path = ctx.request_path.as_str(),
+                            method = ctx.method.as_str(),
+                            client_id = ctx
+                                .auth
+                                .as_ref()
+                                .and_then(|auth| auth.client_id.as_deref())
+                                .unwrap_or(""),
+                            user_id = ctx
+                                .auth
+                                .as_ref()
+                                .and_then(|auth| auth.user_id.as_deref())
+                                .unwrap_or(""),
+                            correlation_id =
+                                ctx.correlation.correlation_id.as_deref().unwrap_or(""),
+                            reason = message.as_str(),
+                            "access-control denied request"
+                        );
                         return Err(access_control_status_error(403, message));
                     }
                 }
