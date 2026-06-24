@@ -2983,7 +2983,7 @@ fn portal_access_control_exchange(
             )
         })?
     } else {
-        hybrid_envelope_from_query(query)
+        hybrid_envelope_from_query(query)?
     };
     let host = required_text(&envelope, "host")?;
     let service = required_text(&envelope, "service")?;
@@ -3028,12 +3028,29 @@ fn is_portal_hybrid_path(request_path: &str) -> bool {
     matches!(request_path, "/portal/query" | "/portal/command")
 }
 
-fn hybrid_envelope_from_query(query: Option<&str>) -> JsonValue {
+fn hybrid_envelope_from_query(query: Option<&str>) -> Result<JsonValue, HandlerRejection> {
     let mut envelope = serde_json::Map::new();
     let mut data = serde_json::Map::new();
     if let Some(query) = query {
         for (key, value) in form_urlencoded::parse(query.as_bytes()) {
             match key.as_ref() {
+                "cmd" => {
+                    let parsed = serde_json::from_str::<JsonValue>(&value).map_err(|error| {
+                        HandlerRejection::new(
+                            400,
+                            "ERR13023",
+                            format!("invalid hybrid portal request cmd: {error}"),
+                        )
+                    })?;
+                    if !parsed.is_object() {
+                        return Err(HandlerRejection::new(
+                            400,
+                            "ERR13023",
+                            "invalid hybrid portal request cmd: expected JSON object",
+                        ));
+                    }
+                    return Ok(parsed);
+                }
                 "host" | "service" | "action" | "version" => {
                     envelope.insert(key.into_owned(), JsonValue::String(value.into_owned()));
                 }
@@ -3051,7 +3068,7 @@ fn hybrid_envelope_from_query(query: Option<&str>) -> JsonValue {
     if !envelope.contains_key("data") {
         envelope.insert("data".to_string(), JsonValue::Object(data));
     }
-    JsonValue::Object(envelope)
+    Ok(JsonValue::Object(envelope))
 }
 
 fn required_text(envelope: &JsonValue, field: &str) -> Result<String, HandlerRejection> {
@@ -3770,6 +3787,66 @@ mod tests {
         assert_eq!(
             exchange.extra_context["serviceId"],
             "lightapi.net/service/getApi/0.1.0"
+        );
+    }
+
+    #[test]
+    fn portal_access_control_exchange_derives_endpoint_from_get_cmd() {
+        let cmd = r#"{"host":"lightapi.net","service":"user","action":"getUnreadPrivateMessageCount","version":"0.1.0","data":{"hostId":"01964b05-552a-7c4b-9184-6857e7f3dc5f","userId":"01964b05-5532-7c79-8cde-191dcbd421b8"}}"#;
+        let query = format!(
+            "cmd={}",
+            form_urlencoded::byte_serialize(cmd.as_bytes()).collect::<String>()
+        );
+
+        let exchange = access_control_exchange(
+            "/portal/query@get",
+            "/portal/query",
+            Some(&query),
+            None,
+            None,
+        )
+        .expect("hybrid exchange from cmd");
+
+        assert_eq!(
+            exchange.endpoint,
+            "lightapi.net/user/getUnreadPrivateMessageCount/0.1.0"
+        );
+        assert_eq!(
+            exchange.request_data["hostId"],
+            "01964b05-552a-7c4b-9184-6857e7f3dc5f"
+        );
+        assert_eq!(
+            exchange.extra_context["serviceId"],
+            "lightapi.net/user/getUnreadPrivateMessageCount/0.1.0"
+        );
+        assert_eq!(
+            exchange.extra_context["handlerMetadata"]["host"],
+            "lightapi.net"
+        );
+    }
+
+    #[test]
+    fn portal_access_control_exchange_rejects_non_object_get_cmd() {
+        let cmd = r#"["lightapi.net","user"]"#;
+        let query = format!(
+            "cmd={}",
+            form_urlencoded::byte_serialize(cmd.as_bytes()).collect::<String>()
+        );
+
+        let rejection = access_control_exchange(
+            "/portal/query@get",
+            "/portal/query",
+            Some(&query),
+            None,
+            None,
+        )
+        .expect_err("non-object cmd should fail");
+
+        assert_eq!(rejection.status, 400);
+        assert_eq!(rejection.code, "ERR13023");
+        assert_eq!(
+            rejection.message,
+            "invalid hybrid portal request cmd: expected JSON object"
         );
     }
 
