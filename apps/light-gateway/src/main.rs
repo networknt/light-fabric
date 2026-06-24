@@ -1895,7 +1895,11 @@ impl ProxyHttp for GatewayProxy {
                 }
                 "access-control" => {
                     let runtime = self.access_control.load();
-                    let Some(runtime) = runtime.as_ref().as_ref() else {
+                    let Some(runtime) = runtime
+                        .as_ref()
+                        .as_ref()
+                        .filter(|runtime| runtime.authorization_enabled())
+                    else {
                         ctx.record_handler_duration(&handler_id, started.elapsed());
                         continue;
                     };
@@ -2452,6 +2456,15 @@ impl ProxyHttp for GatewayProxy {
             )?;
             if end_of_stream {
                 let input = std::mem::take(&mut ctx.access_control_request_body);
+                let runtime = self.access_control.load();
+                let Some(runtime) = runtime
+                    .as_ref()
+                    .as_ref()
+                    .filter(|runtime| runtime.authorization_enabled())
+                else {
+                    *body = Some(Bytes::from(input));
+                    return Ok(());
+                };
                 let exchange = access_control_exchange(
                     ctx.endpoint.as_str(),
                     ctx.request_path.as_str(),
@@ -2460,13 +2473,6 @@ impl ProxyHttp for GatewayProxy {
                     ctx.auth.as_ref(),
                 )
                 .map_err(handler_rejection_error)?;
-                let runtime = self.access_control.load();
-                let Some(runtime) = runtime.as_ref().as_ref() else {
-                    return Err(Error::explain(
-                        ErrorType::InternalError,
-                        "access-control is not configured",
-                    ));
-                };
                 match runtime
                     .authorize_http_endpoint(
                         exchange.endpoint.as_str(),
@@ -2993,6 +2999,10 @@ fn access_control_exchange(
         .filter(|body| !body.is_empty())
         .and_then(|body| serde_json::from_slice::<JsonValue>(body).ok())
         .unwrap_or_else(|| JsonValue::Object(Default::default()));
+    let host_id = request_data
+        .get("hostId")
+        .and_then(JsonValue::as_str)
+        .map(str::to_string);
     Ok(AccessControlExchange {
         endpoint: endpoint.to_string(),
         request_data: request_data.clone(),
@@ -3000,6 +3010,7 @@ fn access_control_exchange(
             "serviceId": endpoint,
             "transport": "http",
             "portal": false,
+            "hostId": host_id,
             "requestData": request_data,
             "jwt": jwt_context(auth)
         }),
@@ -3013,13 +3024,14 @@ fn portal_access_control_exchange(
     auth: Option<&AuthPrincipal>,
 ) -> Result<AccessControlExchange, HandlerRejection> {
     let envelope = if let Some(body) = body.filter(|body| !body.is_empty()) {
-        serde_json::from_slice::<JsonValue>(body).map_err(|error| {
+        let parsed = serde_json::from_slice::<JsonValue>(body).map_err(|error| {
             HandlerRejection::new(
                 400,
                 "ERR13023",
                 format!("invalid hybrid portal request body: {error}"),
             )
-        })?
+        })?;
+        normalize_hybrid_body_envelope(parsed)?
     } else {
         hybrid_envelope_from_query(query)?
     };
@@ -3060,6 +3072,41 @@ fn portal_access_control_exchange(
             }
         }),
     })
+}
+
+fn normalize_hybrid_body_envelope(envelope: JsonValue) -> Result<JsonValue, HandlerRejection> {
+    if envelope.get("host").and_then(JsonValue::as_str).is_some()
+        && envelope
+            .get("service")
+            .and_then(JsonValue::as_str)
+            .is_some()
+        && envelope.get("action").and_then(JsonValue::as_str).is_some()
+        && envelope
+            .get("version")
+            .and_then(JsonValue::as_str)
+            .is_some()
+    {
+        return Ok(envelope);
+    }
+
+    let Some(method) = envelope.get("method").and_then(JsonValue::as_str) else {
+        return Ok(envelope);
+    };
+    let parts: Vec<&str> = method.split('/').collect();
+    if parts.len() != 4 || parts.iter().any(|part| part.trim().is_empty()) {
+        return Ok(envelope);
+    }
+
+    Ok(json!({
+        "host": parts[0],
+        "service": parts[1],
+        "action": parts[2],
+        "version": parts[3],
+        "data": envelope
+            .get("params")
+            .cloned()
+            .unwrap_or_else(|| JsonValue::Object(Default::default()))
+    }))
 }
 
 fn is_portal_hybrid_path(request_path: &str) -> bool {
@@ -3861,6 +3908,29 @@ mod tests {
             exchange.extra_context["handlerMetadata"]["host"],
             "lightapi.net"
         );
+    }
+
+    #[test]
+    fn portal_access_control_exchange_derives_endpoint_from_json_rpc_body() {
+        let body = br#"{
+            "jsonrpc":"2.0",
+            "method":"lightapi.net/rule/createRule/0.1.0",
+            "params":{"hostId":"host-1","ruleId":"rule-1"},
+            "id":"request-1"
+        }"#;
+        let exchange = access_control_exchange(
+            "/portal/command@post",
+            "/portal/command",
+            None,
+            Some(body),
+            None,
+        )
+        .expect("hybrid exchange from json-rpc body");
+
+        assert_eq!(exchange.endpoint, "lightapi.net/rule/createRule/0.1.0");
+        assert_eq!(exchange.request_data["hostId"], "host-1");
+        assert_eq!(exchange.extra_context["requestData"]["hostId"], "host-1");
+        assert_eq!(exchange.extra_context["entity"], "rule");
     }
 
     #[test]
