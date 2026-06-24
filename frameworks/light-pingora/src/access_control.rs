@@ -186,7 +186,6 @@ impl AccessControlRuntime {
         auth: Option<&AuthPrincipal>,
         request_data: &JsonValue,
         correlation_id: Option<&str>,
-        extra_context: Option<&JsonValue>,
     ) -> AccessDecision {
         let Some(config) = self.access.as_ref().filter(|config| config.enabled) else {
             return AccessDecision::Allowed;
@@ -229,7 +228,6 @@ impl AccessControlRuntime {
             correlation_id,
             permission.as_ref(),
         );
-        merge_extra_context(&mut context, extra_context);
         let allowed = self
             .execute_rule_ids(&rule_ids, config.access_rule_logic.as_str(), &mut context)
             .await;
@@ -255,7 +253,6 @@ impl AccessControlRuntime {
         auth: Option<&AuthPrincipal>,
         request_data: &JsonValue,
         correlation_id: Option<&str>,
-        extra_context: Option<&JsonValue>,
         status_code: u16,
         response_body: &[u8],
     ) -> Option<Vec<u8>> {
@@ -277,7 +274,6 @@ impl AccessControlRuntime {
             correlation_id,
             permission.as_ref(),
         );
-        merge_extra_context(&mut context, extra_context);
         if let JsonValue::Object(map) = &mut context {
             map.insert(
                 RESPONSE_BODY.to_string(),
@@ -706,17 +702,7 @@ fn insert_access_control_context(context: &mut JsonMap<String, JsonValue>, defau
     );
 }
 
-fn merge_extra_context(context: &mut JsonValue, extra_context: Option<&JsonValue>) {
-    let Some(JsonValue::Object(extra)) = extra_context else {
-        return;
-    };
-    let Some(context) = context.as_object_mut() else {
-        return;
-    };
-    for (key, value) in extra {
-        context.insert(key.clone(), value.clone());
-    }
-}
+
 
 fn config_default_include(config: Option<&AccessControlConfig>) -> bool {
     config.map(|config| config.default_include).unwrap_or(false)
@@ -1534,7 +1520,6 @@ endpointRules:
                 Some(&auth("api-admin")),
                 &json!({"hostId":"host-1"}),
                 None,
-                Some(&json!({"hostId":"host-1", "transport":"hybrid", "portal":true})),
             )
             .await;
         assert_eq!(decision, AccessDecision::Allowed);
@@ -1546,7 +1531,6 @@ endpointRules:
                 Some(&auth("api-admin")),
                 &json!({"hostId":"host-1"}),
                 None,
-                Some(&json!({"hostId":"host-1", "transport":"hybrid", "portal":true})),
             )
             .await;
         assert!(matches!(denied, AccessDecision::Denied(_)));
@@ -1571,7 +1555,6 @@ endpointRules:
                 &[],
                 Some(&auth("teller")),
                 &json!({}),
-                None,
                 None,
                 200,
                 br#"[{"accountNo":"1","firstName":"A","ssn":"secret"}]"#,

@@ -1937,7 +1937,6 @@ impl ProxyHttp for GatewayProxy {
                                 ctx.auth.as_ref(),
                                 &exchange.request_data,
                                 ctx.correlation.correlation_id.as_deref(),
-                                Some(&exchange.extra_context),
                             )
                             .await
                         {
@@ -2480,7 +2479,6 @@ impl ProxyHttp for GatewayProxy {
                         ctx.auth.as_ref(),
                         &exchange.request_data,
                         ctx.correlation.correlation_id.as_deref(),
-                        Some(&exchange.extra_context),
                     )
                     .await
                 {
@@ -2822,7 +2820,6 @@ struct HandlerTiming {
 struct AccessControlExchange {
     endpoint: String,
     request_data: JsonValue,
-    extra_context: JsonValue,
 }
 
 #[tokio::main]
@@ -2990,38 +2987,24 @@ fn access_control_exchange(
     request_path: &str,
     query: Option<&str>,
     body: Option<&[u8]>,
-    auth: Option<&AuthPrincipal>,
+    _auth: Option<&AuthPrincipal>,
 ) -> Result<AccessControlExchange, HandlerRejection> {
     if is_portal_hybrid_path(request_path) {
-        return portal_access_control_exchange(request_path, query, body, auth);
+        return portal_access_control_exchange(query, body);
     }
     let request_data = body
         .filter(|body| !body.is_empty())
         .and_then(|body| serde_json::from_slice::<JsonValue>(body).ok())
         .unwrap_or_else(|| JsonValue::Object(Default::default()));
-    let host_id = request_data
-        .get("hostId")
-        .and_then(JsonValue::as_str)
-        .map(str::to_string);
     Ok(AccessControlExchange {
         endpoint: endpoint.to_string(),
         request_data: request_data.clone(),
-        extra_context: json!({
-            "serviceId": endpoint,
-            "transport": "http",
-            "portal": false,
-            "hostId": host_id,
-            "requestData": request_data,
-            "jwt": jwt_context(auth)
-        }),
     })
 }
 
 fn portal_access_control_exchange(
-    request_path: &str,
     query: Option<&str>,
     body: Option<&[u8]>,
-    auth: Option<&AuthPrincipal>,
 ) -> Result<AccessControlExchange, HandlerRejection> {
     let envelope = if let Some(body) = body.filter(|body| !body.is_empty()) {
         let parsed = serde_json::from_slice::<JsonValue>(body).map_err(|error| {
@@ -3044,33 +3027,9 @@ fn portal_access_control_exchange(
         .get("data")
         .cloned()
         .unwrap_or_else(|| JsonValue::Object(Default::default()));
-    let host_id = request_data
-        .get("hostId")
-        .and_then(JsonValue::as_str)
-        .map(str::to_string);
-    let action_kind = portal_action_kind(&action_name);
-    let jwt = jwt_context(auth);
     Ok(AccessControlExchange {
         endpoint: endpoint.clone(),
         request_data: request_data.clone(),
-        extra_context: json!({
-            "serviceId": endpoint,
-            "transport": "hybrid",
-            "portal": true,
-            "hostId": host_id,
-            "entity": service,
-            "action": action_kind,
-            "actionName": action_name,
-            "jwt": jwt,
-            "requestData": request_data,
-            "handlerMetadata": {
-                "host": host,
-                "service": service,
-                "action": action_name,
-                "version": version,
-                "path": request_path
-            }
-        }),
     })
 }
 
@@ -3172,70 +3131,7 @@ fn required_text(envelope: &JsonValue, field: &str) -> Result<String, HandlerRej
         })
 }
 
-fn portal_action_kind(action_name: &str) -> &'static str {
-    for prefix in ["create", "update", "delete", "get", "query", "list"] {
-        if action_name.starts_with(prefix) {
-            return prefix;
-        }
-    }
-    "call"
-}
 
-fn jwt_context(auth: Option<&AuthPrincipal>) -> JsonValue {
-    let Some(auth) = auth else {
-        return json!({});
-    };
-    let claims = auth.claims.as_object();
-    json!({
-        "userId": auth.user_id.clone().or_else(|| claim_text(claims, &["uid", "userId", "sub"])),
-        "roles": claim_tokens(claims, &["role", "roles"]),
-        "positions": claim_tokens(claims, &["pos", "position", "positions"]),
-        "groups": claim_tokens(claims, &["grp", "group", "groups"]),
-        "attributes": claims
-            .and_then(|claims| claims.get("att").or_else(|| claims.get("attribute")).or_else(|| claims.get("attributes")))
-            .cloned()
-            .unwrap_or_else(|| JsonValue::Object(Default::default()))
-    })
-}
-
-fn claim_text(
-    claims: Option<&serde_json::Map<String, JsonValue>>,
-    names: &[&str],
-) -> Option<String> {
-    names
-        .iter()
-        .find_map(|name| claims?.get(*name).and_then(json_text))
-}
-
-fn claim_tokens(
-    claims: Option<&serde_json::Map<String, JsonValue>>,
-    names: &[&str],
-) -> Vec<String> {
-    let Some(value) = names.iter().find_map(|name| claims?.get(*name)) else {
-        return Vec::new();
-    };
-    match value {
-        JsonValue::Array(values) => values.iter().filter_map(json_text).collect(),
-        _ => json_text(value)
-            .map(|text| {
-                text.split([',', ' ', '\n', '\t'])
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default(),
-    }
-}
-
-fn json_text(value: &JsonValue) -> Option<String> {
-    match value {
-        JsonValue::String(value) => Some(value.clone()),
-        JsonValue::Number(value) => Some(value.to_string()),
-        JsonValue::Bool(value) => Some(value.to_string()),
-        _ => None,
-    }
-}
 
 fn block_on_access_control_response(
     runtime: &AccessControlRuntime,
@@ -3252,7 +3148,6 @@ fn block_on_access_control_response(
         auth,
         &exchange.request_data,
         correlation_id,
-        Some(&exchange.extra_context),
         status_code,
         body,
     );
@@ -3865,14 +3760,6 @@ mod tests {
         .expect("hybrid exchange");
         assert_eq!(exchange.endpoint, "lightapi.net/service/getApi/0.1.0");
         assert_eq!(exchange.request_data["hostId"], "host-1");
-        assert_eq!(exchange.extra_context["transport"], "hybrid");
-        assert_eq!(exchange.extra_context["portal"], true);
-        assert_eq!(exchange.extra_context["entity"], "service");
-        assert_eq!(exchange.extra_context["action"], "get");
-        assert_eq!(
-            exchange.extra_context["serviceId"],
-            "lightapi.net/service/getApi/0.1.0"
-        );
     }
 
     #[test]
@@ -3900,14 +3787,6 @@ mod tests {
             exchange.request_data["hostId"],
             "01964b05-552a-7c4b-9184-6857e7f3dc5f"
         );
-        assert_eq!(
-            exchange.extra_context["serviceId"],
-            "lightapi.net/user/getUnreadPrivateMessageCount/0.1.0"
-        );
-        assert_eq!(
-            exchange.extra_context["handlerMetadata"]["host"],
-            "lightapi.net"
-        );
     }
 
     #[test]
@@ -3929,8 +3808,6 @@ mod tests {
 
         assert_eq!(exchange.endpoint, "lightapi.net/rule/createRule/0.1.0");
         assert_eq!(exchange.request_data["hostId"], "host-1");
-        assert_eq!(exchange.extra_context["requestData"]["hostId"], "host-1");
-        assert_eq!(exchange.extra_context["entity"], "rule");
     }
 
     #[test]
