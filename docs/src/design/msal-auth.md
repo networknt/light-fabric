@@ -78,6 +78,118 @@ jwt:
 - **Logout (`/auth/ms/logout`)**: Clears the `accessToken` and `csrf` cookies and returns a success response.
 - **Session Validation (any path with cookies)**: Reads the `accessToken` cookie. Validates the JWT with expiry enforcement. Checks that the CSRF request value matches the CSRF cookie. If valid, it sets the gateway auth principal and forwards the `accessToken` downstream in the `Authorization: Bearer` header.
 
+## Frontend Integration
+
+The Single Page Application (SPA) must coordinate with the gateway for session creation and destruction.
+
+### Login Request
+
+When the SPA acquires an access token from Microsoft Entra ID (e.g., using MSAL.js), it must send that token to the gateway's login endpoint to establish the secure HTTP-only cookies. Both the login and logout requests are `POST` requests, but neither requires any payload in the body. You can simply send an empty JSON object `{}`.
+
+```javascript
+async function gatewayLogin(entraIdToken) {
+  const response = await fetch('/auth/ms/login', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${entraIdToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({})
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to create gateway session');
+  }
+  
+  console.log('Gateway session established');
+}
+```
+
+### Logout Request
+
+When the user logs out, the SPA must call the gateway's logout endpoint to clear the HTTP-only session cookies. This is also a `POST` request with an empty body. Note that the browser will automatically include the HTTP-only `accessToken` cookie, but you must manually include the `X-CSRF-TOKEN` header read from the `csrf` cookie.
+
+```javascript
+// Helper to read the csrf cookie
+function getCookie(name) {
+  const value = `; ${document.cookie}`;
+  const parts = value.split(`; ${name}=`);
+  if (parts.length === 2) return parts.pop().split(';').shift();
+}
+
+async function gatewayLogout() {
+  const csrfToken = getCookie('csrf');
+  
+  const response = await fetch('/auth/ms/logout', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRF-TOKEN': csrfToken
+    },
+    body: JSON.stringify({})
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to clear gateway session');
+  }
+  
+  console.log('Gateway session cleared');
+}
+```
+
+### API Request
+
+For standard API calls to backend services, the browser will automatically include the HTTP-only `accessToken` cookie. However, any request that modifies state or requires CSRF protection must include the CSRF token. The SPA must read the `csrf` cookie and append it as the `X-CSRF-TOKEN` header.
+
+```javascript
+async function callBackendApi(endpoint, data) {
+  const csrfToken = getCookie('csrf');
+  
+  const response = await fetch(endpoint, {
+    method: 'POST', // or PUT, DELETE, etc.
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRF-TOKEN': csrfToken
+    },
+    body: JSON.stringify(data)
+  });
+
+  if (!response.ok) {
+    throw new Error('API call failed');
+  }
+
+  return response.json();
+}
+```
+
+### WebSocket Connection
+
+The browser's native `WebSocket` API does not allow setting custom HTTP headers. To pass the CSRF token during the WebSocket handshake upgrade, the SPA must pass it as a subprotocol string prefixed with `csrf.`. The gateway will extract and validate it.
+
+```javascript
+function connectWebSocket(path) {
+  const csrfToken = getCookie('csrf');
+  
+  // Create a subprotocol string that the gateway recognizes
+  const csrfProtocol = `csrf.${csrfToken}`;
+  
+  // Note: Depending on your WebSocket server, you may also need to pass 
+  // the actual subprotocol you intend to use (e.g., 'wamp', 'graphql-ws')
+  // alongside the csrf protocol.
+  const ws = new WebSocket(`wss://api.example.com${path}`, [csrfProtocol]);
+
+  ws.onopen = () => {
+    console.log('WebSocket connected securely');
+  };
+
+  ws.onerror = (error) => {
+    console.error('WebSocket connection failed (possible CSRF or Auth issue)', error);
+  };
+
+  return ws;
+}
+```
+
 ## Double Submit Cookie CSRF
 
 Because an Entra ID token cannot be minted with a custom CSRF claim by this gateway, `msal-auth` enforces CSRF protections using the double-submit cookie pattern. The SPA reads the generated `csrf` cookie and submits it back.
