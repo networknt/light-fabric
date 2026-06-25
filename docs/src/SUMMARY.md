@@ -88,6 +88,7 @@
   - [Deploy Kubernetes](product/light-gateway/deploy-kubernetes.md)
   - [Kubernetes Gateway API](product/light-gateway/k8s-gateway-api.md)
   - [IPv6 Support](product/light-gateway/ipv6-support.md)
+  - [Call MCP Server with Curl](product/light-gateway/curl-mcp.md)
 - [Light-Workflow](product/light-workflow.md)
   - [Start Workflow](product/light-workflow/start-workflow.md)
   - [Native Agent Call](product/light-workflow/native-agent-call.md)
