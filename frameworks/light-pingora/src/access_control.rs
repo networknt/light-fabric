@@ -702,8 +702,6 @@ fn insert_access_control_context(context: &mut JsonMap<String, JsonValue>, defau
     );
 }
 
-
-
 fn config_default_include(config: Option<&AccessControlConfig>) -> bool {
     config.map(|config| config.default_include).unwrap_or(false)
 }

@@ -9,6 +9,7 @@ mod handler;
 mod header;
 mod mcp;
 mod metrics;
+mod msal_auth;
 mod msal_exchange;
 mod pii_tokenization;
 mod proxy;
@@ -83,6 +84,10 @@ pub use mcp::{
 pub use metrics::{
     METRICS_CONFIG_NAME, METRICS_FILE, METRICS_MODULE_ID, MetricCounts, MetricsConfig,
     MetricsEvent, MetricsRecorder, build_metrics_event, classify_status, load_metrics_config,
+};
+pub use msal_auth::{
+    MSAL_AUTH_CONFIG_NAME, MSAL_AUTH_FILE, MSAL_AUTH_MODULE_ID, MsalAuthConfig, MsalAuthRuntime,
+    load_msal_auth_config, load_msal_auth_runtime,
 };
 pub use msal_exchange::{
     MSAL_EXCHANGE_CONFIG_NAME, MSAL_EXCHANGE_FILE, MSAL_EXCHANGE_LEGACY_FILE,

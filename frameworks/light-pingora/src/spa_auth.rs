@@ -584,7 +584,7 @@ fn validate_csrf(session: &Session, claims: &JsonValue) -> Result<(), HandlerRej
     Ok(())
 }
 
-fn request_csrf(session: &Session) -> Option<String> {
+pub(crate) fn request_csrf(session: &Session) -> Option<String> {
     request_header(session, CSRF_HEADER)
         .filter(|value| !value.trim().is_empty())
         .or_else(|| websocket_protocol_csrf(session))
@@ -637,7 +637,7 @@ fn request_header(session: &Session, name: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn request_cookies(session: &Session) -> BTreeMap<String, String> {
+pub(crate) fn request_cookies(session: &Session) -> BTreeMap<String, String> {
     let mut cookies = BTreeMap::new();
     for value in session.req_header().headers.get_all("cookie") {
         let Ok(value) = value.to_str() else {
@@ -738,7 +738,7 @@ fn session_cookie_headers(
     headers
 }
 
-fn push_cookie(
+pub(crate) fn push_cookie(
     headers: &mut Vec<(String, String)>,
     config: &SpaCookieConfig,
     name: &str,

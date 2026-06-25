@@ -5308,7 +5308,8 @@ endpointRules:
         let (base, _received) = spawn_http_server(http_json_response(json!([
             {"accountType": "C"},
             {"accountType": "S"}
-        ]))).await;
+        ])))
+        .await;
 
         let policy = Arc::new(crate::access_control::AccessControlRuntime::new(
             Some(crate::access_control::AccessControlConfig::default()),
@@ -5397,7 +5398,8 @@ endpointRules:
         let (base, _received) = spawn_http_server(http_json_response(json!([
             {"accountType": "C"},
             {"accountType": "S"}
-        ]))).await;
+        ])))
+        .await;
 
         let policy = Arc::new(crate::access_control::AccessControlRuntime::new(
             Some(crate::access_control::AccessControlConfig {
@@ -5496,7 +5498,8 @@ endpointRules:
         let (base, _received) = spawn_http_server(http_json_response(json!([
             {"accountType": "C"},
             {"accountType": "S"}
-        ]))).await;
+        ])))
+        .await;
 
         let policy = Arc::new(crate::access_control::AccessControlRuntime::new(
             Some(crate::access_control::AccessControlConfig::default()),
@@ -5584,6 +5587,9 @@ endpointRules:
                 ]
             })
         );
-        assert_eq!(result["content"][0]["text"], r#"{"items":[{"accountType":"C"}]}"#);
+        assert_eq!(
+            result["content"][0]["text"],
+            r#"{"items":[{"accountType":"C"}]}"#
+        );
     }
 }
