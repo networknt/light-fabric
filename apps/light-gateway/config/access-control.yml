@@ -1,4 +1,4 @@
-enabled: ${access-control.enabled:true}
+enabled: ${access-control.enabled:false}
 accessRuleLogic: ${access-control.accessRuleLogic:any}
 defaultDeny: ${access-control.defaultDeny:true}
 defaultInclude: ${access-control.defaultInclude:false}

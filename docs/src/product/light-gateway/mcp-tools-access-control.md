@@ -104,6 +104,46 @@ A `req-acc` rule decides whether the MCP tool call can proceed. When
 `defaultDeny` is `true`, a tool call with no matching endpoint rule or no
 `req-acc` rules is denied.
 
+`defaultDeny` only controls the fallback behavior when the MCP router cannot
+find request access rules for a tool endpoint. It does not disable
+access-control globally and it does not bypass configured rules.
+
+When `defaultDeny` is `true`, the MCP router fails closed:
+
+- If the tool endpoint has no entry in `rule.endpointRules`, the tool call is
+  denied.
+- If the tool endpoint has an `endpointRules` entry but no `req-acc` rule IDs,
+  the tool call is denied.
+- If `req-acc` rules are configured, the rule result decides whether the tool
+  call is allowed.
+
+When `defaultDeny` is `false`, the MCP router permits tool calls that do not
+have request access rules:
+
+- If the tool endpoint has no entry in `rule.endpointRules`, the tool call is
+  allowed.
+- If the tool endpoint has an `endpointRules` entry but no `req-acc` rule IDs,
+  the tool call is allowed.
+- If `req-acc` rules are configured, the rule result still decides whether the
+  tool call is allowed.
+
+Use `defaultDeny: false` when the gateway should expose protected MCP tools
+without fine-grained authorization rules for every tool endpoint. This avoids
+creating no-op `req-acc` rules only to make unrouted tools callable. Keep
+`defaultDeny: true` when every MCP tool must have an explicit access-control
+policy.
+
+For example, this configuration keeps access-control enabled but allows MCP
+tool calls that have no matching `rule.endpointRules` entry:
+
+```yaml
+enabled: true
+accessRuleLogic: any
+defaultDeny: false
+defaultInclude: false
+skipPathPrefixes: []
+```
+
 ```yaml
 ruleBodies:
   allow-account-reader:
