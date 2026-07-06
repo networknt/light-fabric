@@ -33,10 +33,15 @@ When `access-control.enabled` is `true`, the MCP router evaluates configured
 matching endpoint has `res-fil` rules, the router also applies response row or
 column filters before returning the MCP result.
 
-`skipPathPrefixes` bypasses the same two phases for matching endpoint keys.
-For example, if `skipPathPrefixes` contains `accounts`, then an `accounts@call`
-tool endpoint is allowed without `req-acc` evaluation and its result is returned
-without `res-fil` filtering.
+`skipPathPrefixes` bypasses the same two phases for matching MCP tool names or
+matching endpoint keys. For example, if `skipPathPrefixes` contains
+`local_mcp`, then tool names such as `local_mcp_echo` are allowed without
+`req-acc` evaluation and their results are returned without `res-fil` filtering,
+even when the policy endpoint key is something else, such as `accounts@call`.
+
+Endpoint-key prefixes still work. If `skipPathPrefixes` contains `accounts`,
+then an `accounts@call` endpoint is also allowed without `req-acc` evaluation
+and returned without `res-fil` filtering.
 
 When `access-control.enabled` is `false`, the MCP router bypasses both phases:
 

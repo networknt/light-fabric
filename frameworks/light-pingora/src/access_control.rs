@@ -119,14 +119,29 @@ impl AccessControlRuntime {
 
     fn active_config_for_endpoint(&self, endpoint: &str) -> Option<&AccessControlConfig> {
         let config = self.access.as_ref().filter(|config| config.enabled)?;
-        if config
-            .skip_path_prefixes
-            .iter()
-            .any(|prefix| endpoint.starts_with(prefix.as_str()))
-        {
+        if Self::config_skips_target(config, endpoint) {
             return None;
         }
         Some(config)
+    }
+
+    fn active_config_for_mcp_tool(
+        &self,
+        tool_name: &str,
+        endpoint: &str,
+    ) -> Option<&AccessControlConfig> {
+        let config = self.active_config_for_endpoint(endpoint)?;
+        if Self::config_skips_target(config, tool_name) {
+            return None;
+        }
+        Some(config)
+    }
+
+    fn config_skips_target(config: &AccessControlConfig, target: &str) -> bool {
+        config
+            .skip_path_prefixes
+            .iter()
+            .any(|prefix| target.starts_with(prefix.as_str()))
     }
 
     pub async fn authorize_tool(
@@ -138,7 +153,7 @@ impl AccessControlRuntime {
         arguments: &JsonValue,
         correlation_id: Option<&str>,
     ) -> AccessDecision {
-        let Some(config) = self.active_config_for_endpoint(endpoint) else {
+        let Some(config) = self.active_config_for_mcp_tool(tool_name, endpoint) else {
             return AccessDecision::Allowed;
         };
 
@@ -332,7 +347,10 @@ impl AccessControlRuntime {
         correlation_id: Option<&str>,
         result: JsonValue,
     ) -> JsonValue {
-        if self.active_config_for_endpoint(endpoint).is_none() {
+        if self
+            .active_config_for_mcp_tool(tool_name, endpoint)
+            .is_none()
+        {
             return result;
         }
         let Some((service_entry, endpoint_rules)) = self.find_service_entry(endpoint) else {
@@ -1689,6 +1707,89 @@ endpointRules:
         let result = policy
             .filter_mcp_response(
                 "accounts",
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("teller")),
+                &json!({}),
+                None,
+                json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "[{\"accountNo\":\"1\",\"firstName\":\"A\",\"ssn\":\"secret\"}]"
+                        }
+                    ],
+                    "structuredContent": [
+                        {
+                            "accountNo": "1",
+                            "firstName": "A",
+                            "ssn": "secret"
+                        }
+                    ]
+                }),
+            )
+            .await;
+
+        assert_eq!(result["structuredContent"][0]["ssn"], "secret");
+        assert_eq!(
+            result["content"][0]["text"],
+            JsonValue::String(
+                "[{\"accountNo\":\"1\",\"firstName\":\"A\",\"ssn\":\"secret\"}]".to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn skipped_mcp_tool_name_disables_mcp_access_control_only() {
+        let policy = policy_for_filter_with_access(
+            "col",
+            json!({
+                "col": {
+                    "role": {
+                        "teller": "[\"accountNo\",\"firstName\"]"
+                    }
+                }
+            }),
+            AccessControlConfig {
+                skip_path_prefixes: vec!["local_mcp".to_string()],
+                ..AccessControlConfig::default()
+            },
+        );
+
+        assert!(policy.authorization_enabled());
+        assert!(policy.has_response_filter("/v1/accounts@get"));
+        assert_eq!(
+            policy
+                .authorize_tool(
+                    "local_mcp_echo",
+                    "/v1/accounts@get",
+                    &[],
+                    Some(&auth("teller")),
+                    &json!({}),
+                    None,
+                )
+                .await,
+            AccessDecision::Allowed
+        );
+
+        let http_filtered = policy
+            .filter_http_response(
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("teller")),
+                &json!({}),
+                None,
+                200,
+                br#"[{"accountNo":"1","firstName":"A","ssn":"secret"}]"#,
+            )
+            .await
+            .expect("http response remains filtered by endpoint");
+        let http_value = serde_json::from_slice::<JsonValue>(&http_filtered).expect("json");
+        assert!(http_value[0].get("ssn").is_none());
+
+        let result = policy
+            .filter_mcp_response(
+                "local_mcp_echo",
                 "/v1/accounts@get",
                 &[],
                 Some(&auth("teller")),
