@@ -89,6 +89,7 @@
   - [Kubernetes Gateway API](product/light-gateway/k8s-gateway-api.md)
   - [IPv6 Support](product/light-gateway/ipv6-support.md)
   - [Call MCP Server with Curl](product/light-gateway/curl-mcp.md)
+  - [MCP Tools Access Control](product/light-gateway/mcp-tools-access-control.md)
 - [Light-Workflow](product/light-workflow.md)
   - [Start Workflow](product/light-workflow/start-workflow.md)
   - [Native Agent Call](product/light-workflow/native-agent-call.md)

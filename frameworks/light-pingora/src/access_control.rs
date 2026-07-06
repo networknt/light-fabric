@@ -117,6 +117,18 @@ impl AccessControlRuntime {
             .unwrap_or(false)
     }
 
+    fn active_config_for_endpoint(&self, endpoint: &str) -> Option<&AccessControlConfig> {
+        let config = self.access.as_ref().filter(|config| config.enabled)?;
+        if config
+            .skip_path_prefixes
+            .iter()
+            .any(|prefix| endpoint.starts_with(prefix.as_str()))
+        {
+            return None;
+        }
+        Some(config)
+    }
+
     pub async fn authorize_tool(
         &self,
         tool_name: &str,
@@ -126,16 +138,9 @@ impl AccessControlRuntime {
         arguments: &JsonValue,
         correlation_id: Option<&str>,
     ) -> AccessDecision {
-        let Some(config) = self.access.as_ref().filter(|config| config.enabled) else {
+        let Some(config) = self.active_config_for_endpoint(endpoint) else {
             return AccessDecision::Allowed;
         };
-        if config
-            .skip_path_prefixes
-            .iter()
-            .any(|prefix| endpoint.starts_with(prefix.as_str()))
-        {
-            return AccessDecision::Allowed;
-        }
 
         let Some((_service_entry, endpoint_rules)) = self.find_service_entry(endpoint) else {
             return if config.default_deny {
@@ -187,16 +192,9 @@ impl AccessControlRuntime {
         request_data: &JsonValue,
         correlation_id: Option<&str>,
     ) -> AccessDecision {
-        let Some(config) = self.access.as_ref().filter(|config| config.enabled) else {
+        let Some(config) = self.active_config_for_endpoint(endpoint) else {
             return AccessDecision::Allowed;
         };
-        if config
-            .skip_path_prefixes
-            .iter()
-            .any(|prefix| endpoint.starts_with(prefix.as_str()))
-        {
-            return AccessDecision::Allowed;
-        }
 
         let Some((_service_entry, endpoint_rules)) = self.find_service_entry(endpoint) else {
             return if config.default_deny {
@@ -241,6 +239,9 @@ impl AccessControlRuntime {
     }
 
     pub fn has_response_filter(&self, endpoint: &str) -> bool {
+        if self.active_config_for_endpoint(endpoint).is_none() {
+            return false;
+        }
         self.find_service_entry(endpoint)
             .map(|(_, endpoint_rules)| !self.response_filter_rule_ids(endpoint_rules).is_empty())
             .unwrap_or(false)
@@ -256,6 +257,9 @@ impl AccessControlRuntime {
         status_code: u16,
         response_body: &[u8],
     ) -> Option<Vec<u8>> {
+        if self.active_config_for_endpoint(endpoint).is_none() {
+            return None;
+        }
         let Some((service_entry, endpoint_rules)) = self.find_service_entry(endpoint) else {
             return None;
         };
@@ -328,6 +332,9 @@ impl AccessControlRuntime {
         correlation_id: Option<&str>,
         result: JsonValue,
     ) -> JsonValue {
+        if self.active_config_for_endpoint(endpoint).is_none() {
+            return result;
+        }
         let Some((service_entry, endpoint_rules)) = self.find_service_entry(endpoint) else {
             return result;
         };
@@ -1563,6 +1570,155 @@ endpointRules:
         assert_eq!(value[0]["accountNo"], "1");
         assert_eq!(value[0]["firstName"], "A");
         assert!(value[0].get("ssn").is_none());
+    }
+
+    #[tokio::test]
+    async fn disabled_access_control_disables_response_filters() {
+        let policy = policy_for_filter_with_access(
+            "col",
+            json!({
+                "col": {
+                    "role": {
+                        "teller": "[\"accountNo\",\"firstName\"]"
+                    }
+                }
+            }),
+            AccessControlConfig {
+                enabled: false,
+                ..AccessControlConfig::default()
+            },
+        );
+
+        assert!(!policy.authorization_enabled());
+        assert!(!policy.has_response_filter("/v1/accounts@get"));
+
+        let filtered = policy
+            .filter_http_response(
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("teller")),
+                &json!({}),
+                None,
+                200,
+                br#"[{"accountNo":"1","firstName":"A","ssn":"secret"}]"#,
+            )
+            .await;
+        assert!(filtered.is_none());
+
+        let result = policy
+            .filter_mcp_response(
+                "accounts",
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("teller")),
+                &json!({}),
+                None,
+                json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "[{\"accountNo\":\"1\",\"firstName\":\"A\",\"ssn\":\"secret\"}]"
+                        }
+                    ],
+                    "structuredContent": [
+                        {
+                            "accountNo": "1",
+                            "firstName": "A",
+                            "ssn": "secret"
+                        }
+                    ]
+                }),
+            )
+            .await;
+
+        assert_eq!(result["structuredContent"][0]["ssn"], "secret");
+        assert_eq!(
+            result["content"][0]["text"],
+            JsonValue::String(
+                "[{\"accountNo\":\"1\",\"firstName\":\"A\",\"ssn\":\"secret\"}]".to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn skipped_endpoint_disables_response_filters() {
+        let policy = policy_for_filter_with_access(
+            "col",
+            json!({
+                "col": {
+                    "role": {
+                        "teller": "[\"accountNo\",\"firstName\"]"
+                    }
+                }
+            }),
+            AccessControlConfig {
+                skip_path_prefixes: vec!["/v1/accounts".to_string()],
+                ..AccessControlConfig::default()
+            },
+        );
+
+        assert!(policy.authorization_enabled());
+        assert_eq!(
+            policy
+                .authorize_tool(
+                    "accounts",
+                    "/v1/accounts@get",
+                    &[],
+                    Some(&auth("teller")),
+                    &json!({}),
+                    None,
+                )
+                .await,
+            AccessDecision::Allowed
+        );
+        assert!(!policy.has_response_filter("/v1/accounts@get"));
+
+        let filtered = policy
+            .filter_http_response(
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("teller")),
+                &json!({}),
+                None,
+                200,
+                br#"[{"accountNo":"1","firstName":"A","ssn":"secret"}]"#,
+            )
+            .await;
+        assert!(filtered.is_none());
+
+        let result = policy
+            .filter_mcp_response(
+                "accounts",
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("teller")),
+                &json!({}),
+                None,
+                json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "[{\"accountNo\":\"1\",\"firstName\":\"A\",\"ssn\":\"secret\"}]"
+                        }
+                    ],
+                    "structuredContent": [
+                        {
+                            "accountNo": "1",
+                            "firstName": "A",
+                            "ssn": "secret"
+                        }
+                    ]
+                }),
+            )
+            .await;
+
+        assert_eq!(result["structuredContent"][0]["ssn"], "secret");
+        assert_eq!(
+            result["content"][0]["text"],
+            JsonValue::String(
+                "[{\"accountNo\":\"1\",\"firstName\":\"A\",\"ssn\":\"secret\"}]".to_string()
+            )
+        );
     }
 
     fn runtime_config_with_values(values: HashMap<String, YamlValue>) -> (TempDir, RuntimeConfig) {
