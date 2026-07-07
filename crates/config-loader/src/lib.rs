@@ -576,6 +576,9 @@ impl ConfigLoader {
         if trimmed.eq_ignore_ascii_case("false") {
             return Value::Bool(false);
         }
+        if trimmed.eq_ignore_ascii_case("null") || trimmed == "~" {
+            return Value::Null;
+        }
         if let Ok(parsed) = trimmed.parse::<i64>() {
             return serde_yaml::to_value(parsed)
                 .unwrap_or_else(|_| Value::String(input.to_string()));
@@ -768,6 +771,8 @@ mod tests {
 
         let mut bool_value = Value::String("${enabled:false}".to_string());
         let mut number_value = Value::String("${port:8081}".to_string());
+        let mut null_value = Value::String("${tlsVersion:null}".to_string());
+        let mut tilde_null_value = Value::String("${tlsVersion:~}".to_string());
         let mut sequence_value = Value::String("${items:[]}".to_string());
         let mut mapping_value = Value::String("${settings:{}}".to_string());
 
@@ -775,6 +780,10 @@ mod tests {
         loader
             .resolve_value(&mut number_value)
             .expect("resolve number");
+        loader.resolve_value(&mut null_value).expect("resolve null");
+        loader
+            .resolve_value(&mut tilde_null_value)
+            .expect("resolve tilde null");
         loader
             .resolve_value(&mut sequence_value)
             .expect("resolve sequence");
@@ -787,6 +796,8 @@ mod tests {
             number_value,
             serde_yaml::to_value(8081).expect("yaml number")
         );
+        assert_eq!(null_value, Value::Null);
+        assert_eq!(tilde_null_value, Value::Null);
         assert_eq!(sequence_value, Value::Sequence(Vec::new()));
         assert_eq!(mapping_value, Value::Mapping(Mapping::new()));
     }

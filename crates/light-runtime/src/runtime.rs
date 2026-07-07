@@ -1866,6 +1866,30 @@ shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
         );
     }
 
+    #[test]
+    fn gateway_client_template_resolves_with_default_placeholders() {
+        let loader = ConfigLoader::new("", None, None).expect("loader");
+        let file = EmbeddedConfigFile {
+            name: CLIENT_FILE,
+            content: include_str!("../../../apps/light-gateway/config/client.yml"),
+        };
+        let mut value = loader
+            .load_embedded_file(&file)
+            .expect("load gateway client template");
+
+        loader
+            .resolve_value(&mut value)
+            .expect("resolve gateway client template placeholders");
+        let client: ClientConfig =
+            serde_yaml::from_value(value).expect("parse gateway client template");
+
+        assert_eq!(client.tls.tls_version, None);
+        assert_eq!(client.request.error_threshold, 2);
+        assert_eq!(client.request.reset_timeout, 7_000);
+        assert_eq!(client.oauth.sign.uri, "/oauth2/sign");
+        assert_eq!(client.oauth.deref.uri, "/oauth2/deref");
+    }
+
     #[tokio::test]
     async fn reload_context_fetches_remote_values_into_external_cache() {
         let listener = TcpListener::bind("127.0.0.1:0")
