@@ -391,22 +391,10 @@ validation, supports `serviceIdQueryParameter`, and removes router selection
 headers before forwarding upstream. It also applies Java-style URL, method,
 query-parameter, and header rewrite rules.
 
-Rust adds `serviceTargets` as an interim improvement for `service_id` routing:
-
-```yaml
-serviceTargets:
-  com.networknt.petstore-1.0.0:
-    - http://localhost:8080
-  com.networknt.petstore-1.0.0|dev:
-    - https://petstore-dev.example.com
-```
-
-This lets sidecar-style router flows run in local/static deployments and acts
-as the fallback when controller discovery is unavailable.
-
 Phase 6 adds the sidecar path-prefix and token flow. Phase 7 adds
 controller-backed `service_id` discovery while keeping the same request
-contract and the same static fallback.
+contract. For local/static deployments, use `direct-registry.yml` as the
+fallback service map.
 
 ### Sidecar Path Prefix And Token Config
 
@@ -919,10 +907,9 @@ Fixed proxy target behavior:
   supports them
 
 `router.yml` selects from request metadata. Phase 5 implements direct
-`service_url` targets, static `serviceTargets` for `service_id`, host whitelist
-enforcement, and rewrite behavior. Phase 7 adds controller-backed
-`service_id` lookup through the runtime portal-registry client and keeps static
-`serviceTargets` as a local fallback.
+`service_url` targets, host whitelist enforcement, and rewrite behavior. Phase
+7 adds controller-backed `service_id` lookup through the runtime
+portal-registry client with `direct-registry.yml` as the static fallback.
 
 Router target behavior:
 
@@ -932,7 +919,7 @@ Router target behavior:
   `serviceIdQueryParameter` is true
 - resolve `service_id` from controller discovery when the portal-registry
   client is connected
-- fall back to `router.serviceTargets` for local/static deployments or
+- fall back to `direct-registry.directUrls` for local/static deployments or
   controller lookup failures
 - support URL, method, query-parameter, and header rewrite rules
 - remove `service_url` and `service_id` headers before forwarding
@@ -1107,7 +1094,7 @@ Unit tests in `light-pingora`:
 - parse and validate `router.yml` rewrite-rule config
 - select router targets from direct `service_url`
 - reject direct router targets that do not match `hostWhitelist`
-- select router targets from controller discovery and static `serviceTargets`
+- select router targets from controller discovery and `direct-registry.yml`
 - apply router URL, method, query-parameter, and header rewrites
 - parse `pathPrefixService.yml` and avoid partial-segment path matches
 - parse `token.yml` and the client credentials subset of `client.yml`
@@ -1187,8 +1174,6 @@ Phase 5: Sidecar router (implemented)
 - load and register `router.yml`
 - implement dynamic target selection by `service_url` or `service_id`
 - enforce `hostWhitelist`
-- support static `serviceTargets` for `service_id` routing until runtime
-  discovery is available
 - support router URL, method, query-parameter, and header rewrites
 - apply router request mutation in `upstream_request_filter`
 - remove router selection headers before forwarding
@@ -1214,7 +1199,7 @@ Phase 7: Discovery and control plane (implemented)
 - expose the runtime portal-registry client to framework transports
 - add `discovery/lookup` support to the portal-registry client
 - resolve router `service_id` targets through controller discovery
-- keep static `router.serviceTargets` as a fallback for local/static profiles
+- fall back to `direct-registry.yml` for local/static profiles
 - discover token service endpoints from `client.yml` token `serviceId`
 - expose active capabilities, hosts, paths, handlers, and chains through
   `get_service_info`

@@ -4398,25 +4398,12 @@ defaultHandlers:
 "#,
         )
         .expect("write handler config");
-        std::fs::write(
-            config_dir.path().join(light_pingora::ROUTER_FILE),
-            r#"
-serviceTargets:
-  com.networknt.petstore-1.0.0:
-    - https://api.example.com/base
-"#,
-        )
-        .expect("write router config");
         let config = runtime_config(&config_dir, &external_dir, HashMap::new());
 
         let proxy = GatewayProxy::from_runtime_config(&config).expect("build proxy");
 
         let router = proxy.current_router_route();
-        let router = router.as_ref().as_ref().expect("router route");
-        assert_eq!(
-            router.service_targets["com.networknt.petstore-1.0.0"][0].address,
-            "api.example.com:443"
-        );
+        assert!(router.as_ref().as_ref().is_some());
         assert!(
             config
                 .module_registry

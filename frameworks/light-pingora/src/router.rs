@@ -1,6 +1,4 @@
-use crate::config_util::{
-    deserialize_string_list, deserialize_typed_map, parse_string_list, request_header,
-};
+use crate::config_util::{deserialize_string_list, deserialize_typed_map, request_header};
 use crate::direct_registry::direct_registry_target;
 use crate::proxy::ProxyTarget;
 use crate::security::HandlerRejection;
@@ -49,7 +47,7 @@ pub struct RouterConfig {
     pub reuse_x_forwarded: bool,
     #[serde(default = "default_max_connection_retries")]
     pub max_connection_retries: usize,
-    #[serde(default)]
+    #[serde(default, alias = "preResolveFQDN2IP")]
     pub pre_resolve_fqdn2_ip: bool,
     #[serde(default, deserialize_with = "deserialize_string_list")]
     pub host_whitelist: Vec<String>,
@@ -67,8 +65,6 @@ pub struct RouterConfig {
     pub metrics_injection: bool,
     #[serde(default = "default_metrics_name")]
     pub metrics_name: String,
-    #[serde(default, deserialize_with = "deserialize_service_targets")]
-    pub service_targets: BTreeMap<String, Vec<String>>,
 }
 
 impl Default for RouterConfig {
@@ -93,7 +89,6 @@ impl Default for RouterConfig {
             header_rewrite_rules: BTreeMap::new(),
             metrics_injection: false,
             metrics_name: default_metrics_name(),
-            service_targets: BTreeMap::new(),
         }
     }
 }
@@ -131,7 +126,6 @@ pub struct QueryHeaderRewriteRule {
 pub struct RouterRoute {
     pub config: RouterConfig,
     pub direct_registry: DirectRegistryConfig,
-    pub service_targets: BTreeMap<String, Vec<ProxyTarget>>,
     #[serde(skip_serializing)]
     pub registry_client: Option<Arc<PortalRegistryClient>>,
 }
@@ -158,8 +152,6 @@ pub fn load_router_route(
         Err(RuntimeError::MissingConfig(file)) if file == ROUTER_FILE => RouterConfig::default(),
         Err(error) => return Err(error),
     };
-    let service_targets = parse_service_targets(&config.service_targets)?;
-
     runtime_config.module_registry.register_loaded_config(
         ROUTER_MODULE_ID,
         ROUTER_CONFIG_NAME,
@@ -174,7 +166,6 @@ pub fn load_router_route(
     Ok(Some(RouterRoute {
         config,
         direct_registry: runtime_config.direct_registry.clone(),
-        service_targets,
         registry_client: runtime_config.registry_client.clone(),
     }))
 }
@@ -219,17 +210,41 @@ pub async fn select_router_target(
         .ok_or_else(|| {
             HandlerRejection::new(502, "ERR10080", "router requires service_url or service_id")
         })?;
+    let target = select_service_id_target(route, service_id, env_tag.as_deref(), index).await?;
+    Ok(RouterDecision {
+        target,
+        remove_service_id_query,
+    })
+}
+
+async fn select_service_id_target(
+    route: &RouterRoute,
+    service_id: &str,
+    env_tag: Option<&str>,
+    index: usize,
+) -> Result<ProxyTarget, HandlerRejection> {
     let key = env_tag
-        .as_deref()
         .filter(|value| !value.trim().is_empty())
         .map(|env_tag| format!("{service_id}|{env_tag}"))
         .unwrap_or_else(|| service_id.to_string());
-    match direct_registry_target(&route.direct_registry, service_id, env_tag.as_deref(), None) {
+    match discovery_targets(route, service_id, env_tag).await {
+        Ok(Some(targets)) if !targets.is_empty() => {
+            return Ok(targets[index % targets.len()].clone());
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(
+                target: "light_pingora::router",
+                serviceId = %service_id,
+                envTag = env_tag.unwrap_or_default(),
+                error = %error,
+                "router portal-registry discovery failed; falling back to direct-registry"
+            );
+        }
+    }
+    match direct_registry_target(&route.direct_registry, service_id, env_tag, None) {
         Ok(Some(target)) => {
-            return Ok(RouterDecision {
-                target,
-                remove_service_id_query,
-            });
+            return Ok(target);
         }
         Ok(None) => {}
         Err(error) => {
@@ -240,40 +255,13 @@ pub async fn select_router_target(
             ));
         }
     }
-    let discovery_error = match discovery_targets(route, service_id, env_tag.as_deref()).await {
-        Ok(Some(targets)) if !targets.is_empty() => {
-            return Ok(RouterDecision {
-                target: targets[index % targets.len()].clone(),
-                remove_service_id_query,
-            });
-        }
-        Ok(_) => None,
-        Err(error) => Some(error),
-    };
-    let targets = route.service_targets.get(&key).or_else(|| {
-        env_tag
-            .as_deref()
-            .and_then(|_| route.service_targets.get(service_id))
-    });
-    let targets = targets.ok_or_else(|| {
-        let message = discovery_error.map_or_else(
-            || format!("router service target `{key}` is not configured"),
-            |error| format!("router discovery lookup failed for `{key}`: {error}"),
-        );
-        HandlerRejection::new(502, "ERR10080", message)
-    })?;
-    if targets.is_empty() {
-        return Err(HandlerRejection::new(
-            502,
-            "ERR10080",
-            format!("router service target `{key}` has no hosts"),
-        ));
-    }
-
-    Ok(RouterDecision {
-        target: targets[index % targets.len()].clone(),
-        remove_service_id_query,
-    })
+    Err(HandlerRejection::new(
+        502,
+        "ERR10080",
+        format!(
+            "router service target `{key}` is not available from portal-registry or direct-registry"
+        ),
+    ))
 }
 
 async fn discovery_targets(
@@ -340,22 +328,6 @@ pub fn apply_router_upstream_request(
     upstream_request.remove_header(SERVICE_URL_HEADER);
     upstream_request.remove_header(SERVICE_ID_HEADER);
     Ok(())
-}
-
-pub(crate) fn parse_service_targets(
-    service_targets: &BTreeMap<String, Vec<String>>,
-) -> Result<BTreeMap<String, Vec<ProxyTarget>>, RuntimeError> {
-    let mut parsed = BTreeMap::new();
-    for (key, values) in service_targets {
-        let mut targets = Vec::new();
-        for value in values {
-            targets.push(parse_router_target(value)?);
-        }
-        if !targets.is_empty() {
-            parsed.insert(key.clone(), targets);
-        }
-    }
-    Ok(parsed)
 }
 
 pub(crate) fn parse_router_target(raw_host: &str) -> Result<ProxyTarget, RuntimeError> {
@@ -865,93 +837,6 @@ fn parse_endpoint_rule_map(
     }
 }
 
-fn deserialize_service_targets<'de, D>(
-    deserializer: D,
-) -> Result<BTreeMap<String, Vec<String>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    struct ServiceTargetsVisitor;
-
-    impl<'de> Visitor<'de> for ServiceTargetsVisitor {
-        type Value = BTreeMap<String, Vec<String>>;
-
-        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            formatter.write_str("a service target map")
-        }
-
-        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-        where
-            E: DeError,
-        {
-            let value = value.trim();
-            if value.is_empty() {
-                return Ok(BTreeMap::new());
-            }
-            let yaml = serde_yaml::from_str::<YamlValue>(value).map_err(E::custom)?;
-            parse_service_target_map(yaml).map_err(E::custom)
-        }
-
-        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
-        where
-            E: DeError,
-        {
-            self.visit_str(value.as_str())
-        }
-
-        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-        where
-            A: MapAccess<'de>,
-        {
-            let mut values = BTreeMap::new();
-            while let Some((key, value)) = map.next_entry::<String, YamlValue>()? {
-                values.insert(
-                    key,
-                    parse_service_target_value(value).map_err(A::Error::custom)?,
-                );
-            }
-            Ok(values)
-        }
-    }
-
-    deserializer.deserialize_any(ServiceTargetsVisitor)
-}
-
-fn parse_service_target_map(value: YamlValue) -> Result<BTreeMap<String, Vec<String>>, String> {
-    match value {
-        YamlValue::Mapping(map) => {
-            let mut values = BTreeMap::new();
-            for (key, value) in map {
-                let key = key
-                    .as_str()
-                    .ok_or_else(|| "serviceTargets key must be a string".to_string())?
-                    .to_string();
-                values.insert(key, parse_service_target_value(value)?);
-            }
-            Ok(values)
-        }
-        YamlValue::Null => Ok(BTreeMap::new()),
-        other => Err(format!("expected serviceTargets map, got {other:?}")),
-    }
-}
-
-fn parse_service_target_value(value: YamlValue) -> Result<Vec<String>, String> {
-    match value {
-        YamlValue::String(value) => Ok(parse_string_list(value.as_str())),
-        YamlValue::Sequence(values) => values
-            .into_iter()
-            .map(|value| {
-                value
-                    .as_str()
-                    .map(str::to_string)
-                    .ok_or_else(|| "serviceTargets values must be strings".to_string())
-            })
-            .collect(),
-        YamlValue::Null => Ok(Vec::new()),
-        other => Err(format!("unsupported serviceTargets value: {other:?}")),
-    }
-}
-
 fn host_for_authority(host: Host<&str>) -> String {
     match host {
         Host::Domain(domain) => domain.to_string(),
@@ -1004,40 +889,15 @@ fn default_metrics_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use light_runtime::config::ClientConfig;
-    use light_runtime::{
-        BootstrapConfig, DirectRegistryConfig, ModuleRegistry, PortalRegistryConfig, ServerConfig,
-        ServiceIdentity,
-    };
-    use std::collections::HashMap;
-    use std::sync::Arc;
-    use tempfile::TempDir;
-
-    fn runtime_config(config_dir: &TempDir) -> RuntimeConfig {
-        RuntimeConfig {
-            bootstrap: BootstrapConfig::default(),
-            server: ServerConfig::default(),
-            client: None::<ClientConfig>,
-            portal_registry: None::<PortalRegistryConfig>,
-            direct_registry: DirectRegistryConfig::default(),
-            service_identity: ServiceIdentity::default(),
-            config_dir: config_dir.path().to_path_buf(),
-            external_config_dir: config_dir.path().join("external"),
-            resolved_values: HashMap::new(),
-            default_config_dir: None,
-            embedded_config: &[],
-            module_registry: Arc::new(ModuleRegistry::new()),
-            cache_registry: None,
-            registry_client: None,
-        }
-    }
+    use light_runtime::DirectRegistryConfig;
 
     #[test]
-    fn router_config_accepts_java_rule_shapes_and_service_targets() {
+    fn router_config_accepts_java_rule_shapes() {
         let config: RouterConfig = serde_yaml::from_str(
             r#"
 hostWhitelist: '["api\\.example\\.com"]'
 serviceIdQueryParameter: true
+preResolveFQDN2IP: true
 urlRewriteRules:
   - /v1/listings/(.*)$ /listing.html?listing=$1
 methodRewriteRules: '["/v1/pets/{petId} POST PATCH"]'
@@ -1046,13 +906,12 @@ headerRewriteRules:
   /v1/pets/{petId}:
     - oldK: x-old
       newK: x-new
-serviceTargets:
-  com.networknt.petstore-1.0.0: https://api.example.com/base
 "#,
         )
         .expect("parse router config");
 
         assert!(config.service_id_query_parameter);
+        assert!(config.pre_resolve_fqdn2_ip);
         assert_eq!(
             config.url_rewrite_rules[0].replace,
             "/listing.html?listing=$1"
@@ -1064,40 +923,26 @@ serviceTargets:
                 .as_deref(),
             Some("new")
         );
-        assert_eq!(
-            config.service_targets["com.networknt.petstore-1.0.0"][0],
-            "https://api.example.com/base"
-        );
     }
 
-    #[test]
-    fn router_loads_static_service_targets() {
-        let config_dir = TempDir::new().expect("config temp dir");
-        std::fs::write(
-            config_dir.path().join(ROUTER_FILE),
-            r#"
-serviceTargets:
-  com.networknt.petstore-1.0.0:
-    - https://api.example.com/base
-"#,
-        )
-        .expect("write router config");
-        let runtime = runtime_config(&config_dir);
+    #[tokio::test]
+    async fn router_falls_back_to_direct_registry_when_portal_registry_is_absent() {
+        let route = RouterRoute {
+            config: RouterConfig::default(),
+            direct_registry: DirectRegistryConfig {
+                direct_urls: BTreeMap::from([(
+                    "com.networknt.petstore-1.0.0".to_string(),
+                    "https://api.example.com/base".to_string(),
+                )]),
+            },
+            registry_client: None,
+        };
 
-        let route = load_router_route(&runtime, true)
-            .expect("load router")
-            .expect("router route");
-
-        let target = &route.service_targets["com.networknt.petstore-1.0.0"][0];
+        let target = select_service_id_target(&route, "com.networknt.petstore-1.0.0", None, 0)
+            .await
+            .expect("target");
         assert_eq!(target.address, "api.example.com:443");
         assert_eq!(target.path_prefix, "/base");
-        assert!(
-            runtime
-                .module_registry
-                .module_summaries()
-                .iter()
-                .any(|entry| entry.module_id == ROUTER_MODULE_ID && entry.active)
-        );
     }
 
     #[test]
@@ -1117,7 +962,6 @@ queryParamRewriteRules:
             )
             .expect("parse router config"),
             direct_registry: DirectRegistryConfig::default(),
-            service_targets: BTreeMap::new(),
             registry_client: None,
         };
         let decision = RouterDecision {

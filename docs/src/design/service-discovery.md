@@ -196,13 +196,11 @@ Resolution order:
 
 1. `service_url` request routing, when configured and present.
 2. `service_id` from query/header/path-prefix logic.
-3. `direct-registry.directUrls` using `serviceId|envTag`, then `serviceId`.
-4. Controller discovery with `serviceId` and optional `envTag`.
-5. Legacy static `router.serviceTargets` fallback.
+3. Controller discovery with `serviceId` and optional `envTag`.
+4. `direct-registry.directUrls` using `serviceId|envTag`, then `serviceId`.
 
-Direct registry is the standard static service map. `router.serviceTargets`
-remains a deprecated compatibility fallback for old Rust gateway configs. New
-product configs should not maintain both maps.
+Direct registry is the standard static fallback service map when the controller
+cannot resolve the target.
 
 ### WebSocket Router
 
@@ -261,9 +259,10 @@ shared direct URL map is `direct-registry.directUrls`.
 
 Static fallback is handler-specific:
 
-- `direct-registry.directUrls` is checked before controller discovery.
-- `router.serviceTargets` is deprecated and only remains as a legacy router
-  fallback.
+- The router checks portal-registry discovery before
+  `direct-registry.directUrls`.
+- Other service-id paths can check `direct-registry.directUrls` before
+  controller discovery when they need local/static overrides.
 - MCP, token, SPA auth, JWK, and WebSocket service-id routing can use
   `direct-registry.directUrls` without per-handler duplicate maps.
 

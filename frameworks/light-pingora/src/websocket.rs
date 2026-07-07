@@ -2,7 +2,6 @@ use crate::access_control::{AccessControlRuntime, AccessDecision};
 use crate::config_util::deserialize_optional_u64;
 use crate::direct_registry::direct_registry_target;
 use crate::proxy::ProxyTarget;
-use crate::router::{RouterConfig, parse_service_targets};
 use crate::security::AuthPrincipal;
 use async_trait::async_trait;
 use light_runtime::{
@@ -215,7 +214,6 @@ pub struct WebSocketRouterRuntime {
     config: WebSocketRouterConfig,
     discovery: Option<Arc<dyn WebSocketDiscoveryResolver>>,
     direct_registry: DirectRegistryConfig,
-    static_targets: BTreeMap<String, Vec<ProxyTarget>>,
     policy: Option<Arc<AccessControlRuntime>>,
     state: Arc<WebSocketRuntimeState>,
 }
@@ -229,7 +227,6 @@ impl fmt::Debug for WebSocketRouterRuntime {
                 "direct_registry_entries",
                 &self.direct_registry.direct_urls.len(),
             )
-            .field("static_target_count", &self.static_targets.len())
             .field("policy", &self.policy.is_some())
             .field(
                 "active_connections",
@@ -309,12 +306,11 @@ impl WebSocketRouterRuntime {
         config: WebSocketRouterConfig,
         discovery: Option<Arc<dyn WebSocketDiscoveryResolver>>,
     ) -> Result<Self, RuntimeError> {
-        Self::new_with_discovery_policy_and_static_targets(
+        Self::new_with_discovery_policy_and_direct_registry(
             config,
             discovery,
             None,
             DirectRegistryConfig::default(),
-            BTreeMap::new(),
         )
     }
 
@@ -322,57 +318,38 @@ impl WebSocketRouterRuntime {
         config: WebSocketRouterConfig,
         policy: Option<Arc<AccessControlRuntime>>,
     ) -> Result<Self, RuntimeError> {
-        Self::new_with_discovery_policy_and_static_targets(
+        Self::new_with_discovery_policy_and_direct_registry(
             config,
             None,
             policy,
             DirectRegistryConfig::default(),
-            BTreeMap::new(),
         )
     }
 
-    pub fn new_with_discovery_and_static_targets(
-        config: WebSocketRouterConfig,
-        discovery: Option<Arc<dyn WebSocketDiscoveryResolver>>,
-        static_targets: BTreeMap<String, Vec<ProxyTarget>>,
-    ) -> Result<Self, RuntimeError> {
-        Self::new_with_discovery_policy_and_static_targets(
-            config,
-            discovery,
-            None,
-            DirectRegistryConfig::default(),
-            static_targets,
-        )
-    }
-
-    pub fn new_with_discovery_direct_registry_and_static_targets(
+    pub fn new_with_discovery_and_direct_registry(
         config: WebSocketRouterConfig,
         discovery: Option<Arc<dyn WebSocketDiscoveryResolver>>,
         direct_registry: DirectRegistryConfig,
-        static_targets: BTreeMap<String, Vec<ProxyTarget>>,
     ) -> Result<Self, RuntimeError> {
-        Self::new_with_discovery_policy_and_static_targets(
+        Self::new_with_discovery_policy_and_direct_registry(
             config,
             discovery,
             None,
             direct_registry,
-            static_targets,
         )
     }
 
-    fn new_with_discovery_policy_and_static_targets(
+    fn new_with_discovery_policy_and_direct_registry(
         config: WebSocketRouterConfig,
         discovery: Option<Arc<dyn WebSocketDiscoveryResolver>>,
         policy: Option<Arc<AccessControlRuntime>>,
         direct_registry: DirectRegistryConfig,
-        static_targets: BTreeMap<String, Vec<ProxyTarget>>,
     ) -> Result<Self, RuntimeError> {
         validate_config(&config)?;
         Ok(Self {
             config,
             discovery,
             direct_registry,
-            static_targets,
             policy,
             state: Arc::new(WebSocketRuntimeState::default()),
         })
@@ -538,17 +515,6 @@ impl WebSocketRouterRuntime {
         decision: &WebSocketRouteDecision,
         index: usize,
     ) -> Result<ProxyTarget, WebSocketRouteError> {
-        match direct_registry_target(
-            &self.direct_registry,
-            decision.service_id.as_str(),
-            decision.env_tag.as_deref(),
-            Some(decision.protocol.as_str()),
-        ) {
-            Ok(Some(target)) => return Ok(target),
-            Ok(None) => {}
-            Err(error) => return Err(WebSocketRouteError::DiscoveryFailed(error.to_string())),
-        }
-
         let mut discovery_unavailable = false;
         let mut discovery_error = None;
         if let Some(discovery) = self.discovery.as_ref() {
@@ -582,10 +548,15 @@ impl WebSocketRouterRuntime {
             discovery_unavailable = true;
         }
 
-        if let Some(targets) = static_targets_for_decision(&self.static_targets, decision)
-            && !targets.is_empty()
-        {
-            return Ok(targets[index % targets.len()].clone());
+        match direct_registry_target(
+            &self.direct_registry,
+            decision.service_id.as_str(),
+            decision.env_tag.as_deref(),
+            Some(decision.protocol.as_str()),
+        ) {
+            Ok(Some(target)) => return Ok(target),
+            Ok(None) => {}
+            Err(error) => return Err(WebSocketRouteError::DiscoveryFailed(error.to_string())),
         }
 
         if discovery_unavailable {
@@ -624,13 +595,11 @@ pub fn load_websocket_router_runtime(
         None,
         true,
     )?;
-    let static_targets = load_router_static_targets(runtime_config)?;
     Ok(Some(
-        WebSocketRouterRuntime::new_with_discovery_direct_registry_and_static_targets(
+        WebSocketRouterRuntime::new_with_discovery_and_direct_registry(
             config,
             discovery_resolver(runtime_config.registry_client.clone()),
             runtime_config.direct_registry.clone(),
-            static_targets,
         )?,
     ))
 }
@@ -679,33 +648,6 @@ fn discovery_resolver(
     client: Option<Arc<PortalRegistryClient>>,
 ) -> Option<Arc<dyn WebSocketDiscoveryResolver>> {
     client.map(|client| client as Arc<dyn WebSocketDiscoveryResolver>)
-}
-
-fn load_router_static_targets(
-    runtime_config: &RuntimeConfig,
-) -> Result<BTreeMap<String, Vec<ProxyTarget>>, RuntimeError> {
-    let config = match runtime_config
-        .module_registry
-        .load_config::<RouterConfig>(runtime_config, crate::router::ROUTER_FILE)
-    {
-        Ok(config) => config,
-        Err(RuntimeError::MissingConfig(file)) if file == crate::router::ROUTER_FILE => {
-            RouterConfig::default()
-        }
-        Err(error) => return Err(error),
-    };
-    parse_service_targets(&config.service_targets)
-}
-
-fn static_targets_for_decision<'a>(
-    targets: &'a BTreeMap<String, Vec<ProxyTarget>>,
-    decision: &WebSocketRouteDecision,
-) -> Option<&'a Vec<ProxyTarget>> {
-    decision
-        .env_tag
-        .as_ref()
-        .and_then(|env_tag| targets.get(&format!("{}|{}", decision.service_id, env_tag)))
-        .or_else(|| targets.get(&decision.service_id))
 }
 
 fn discovery_node_to_target(node: &DiscoveryNode) -> Option<ProxyTarget> {
@@ -1551,8 +1493,8 @@ pathPrefixService:
     }
 
     #[tokio::test]
-    async fn select_target_uses_static_target_when_discovery_is_unavailable() {
-        let runtime = WebSocketRouterRuntime::new_with_discovery_and_static_targets(
+    async fn select_target_uses_direct_registry_when_discovery_is_unavailable() {
+        let runtime = WebSocketRouterRuntime::new_with_discovery_and_direct_registry(
             serde_yaml::from_str(
                 r#"
 pathPrefixService:
@@ -1564,16 +1506,12 @@ pathPrefixService:
             )
             .expect("parse config"),
             None,
-            BTreeMap::from([(
-                "com.networknt.controller-1.0.0|dev".to_string(),
-                vec![ProxyTarget {
-                    address: "controller:8438".to_string(),
-                    tls: true,
-                    sni: "controller".to_string(),
-                    host_header: "controller:8438".to_string(),
-                    path_prefix: String::new(),
-                }],
-            )]),
+            DirectRegistryConfig {
+                direct_urls: BTreeMap::from([(
+                    "com.networknt.controller-1.0.0|dev".to_string(),
+                    "https://controller:8438".to_string(),
+                )]),
+            },
         )
         .expect("runtime");
         let decision = runtime
@@ -1590,34 +1528,32 @@ pathPrefixService:
     }
 
     #[tokio::test]
-    async fn select_target_uses_direct_registry_before_discovery() {
+    async fn select_target_uses_discovery_before_direct_registry() {
         let resolver = Arc::new(FakeDiscovery::new(discovery_snapshot(
             "com.networknt.controller-1.0.0",
             Some("dev"),
         )));
         let discovery: Arc<dyn WebSocketDiscoveryResolver> = resolver.clone();
-        let runtime =
-            WebSocketRouterRuntime::new_with_discovery_direct_registry_and_static_targets(
-                serde_yaml::from_str(
-                    r#"
+        let runtime = WebSocketRouterRuntime::new_with_discovery_and_direct_registry(
+            serde_yaml::from_str(
+                r#"
 pathPrefixService:
   /ctrl/mcp:
     serviceId: com.networknt.controller-1.0.0
     protocol: https
     envTag: dev
 "#,
-                )
-                .expect("parse config"),
-                Some(discovery),
-                DirectRegistryConfig {
-                    direct_urls: BTreeMap::from([(
-                        "com.networknt.controller-1.0.0|dev".to_string(),
-                        "https://controller:8438".to_string(),
-                    )]),
-                },
-                BTreeMap::new(),
             )
-            .expect("runtime");
+            .expect("parse config"),
+            Some(discovery),
+            DirectRegistryConfig {
+                direct_urls: BTreeMap::from([(
+                    "com.networknt.controller-1.0.0|dev".to_string(),
+                    "https://controller:8438".to_string(),
+                )]),
+            },
+        )
+        .expect("runtime");
         let decision = runtime
             .resolve("/ctrl/mcp", None, std::iter::empty::<(&str, &str)>())
             .expect("resolve");
@@ -1627,9 +1563,9 @@ pathPrefixService:
             .await
             .expect("select target");
 
-        assert_eq!(target.address, "controller:8438");
+        assert_eq!(target.address, "api1.example.com:9443");
         assert!(target.tls);
-        assert!(resolver.lookups.lock().expect("lookup lock").is_empty());
+        assert_eq!(resolver.lookups.lock().expect("lookup lock").len(), 1);
     }
 
     #[test]

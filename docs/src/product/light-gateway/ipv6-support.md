@@ -67,14 +67,6 @@ For `proxy.hosts`:
 hosts: https://[fdd0:0:0:1::20]:8443
 ```
 
-For router `serviceTargets`:
-
-```yaml
-serviceTargets:
-  com.example.orders-1.0.0:
-    - https://[fdd0:0:0:1::21]:8443
-```
-
 For `direct-registry.directUrls`:
 
 ```yaml
