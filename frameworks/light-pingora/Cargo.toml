@@ -19,6 +19,8 @@ rand = "0.8"
 regex = "1"
 reqwest = { workspace = true }
 ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

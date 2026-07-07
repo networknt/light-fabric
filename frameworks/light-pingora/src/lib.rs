@@ -36,6 +36,8 @@ use pingora::server::Server;
 use pingora::server::configuration::ServerConf;
 #[cfg(unix)]
 use pingora::server::{RunArgs, ShutdownSignal, ShutdownSignalWatch};
+use std::fs::File;
+use std::io::BufReader;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::thread::JoinHandle;
@@ -236,6 +238,7 @@ where
             service.add_tcp(&listen_addr(config, config.server.http_port)?);
         }
         if let Some((cert_path, key_path)) = https_listener_tls_paths(&config.server)? {
+            validate_https_listener_tls(&cert_path, &key_path)?;
             let mut tls = TlsSettings::intermediate(&cert_path, &key_path)
                 .map_err(|e| RuntimeError::Unsupported(format!("invalid TLS config: {e}")))?;
             tls.enable_h2();
@@ -316,6 +319,63 @@ fn https_listener_tls_paths(
         cert_path.to_string_lossy().to_string(),
         key_path.to_string_lossy().to_string(),
     )))
+}
+
+fn validate_https_listener_tls(cert_path: &str, key_path: &str) -> Result<(), RuntimeError> {
+    let cert_file = File::open(cert_path).map_err(|source| {
+        RuntimeError::Unsupported(format!(
+            "failed to read server.tlsCertPath `{cert_path}`: {source}"
+        ))
+    })?;
+    let mut cert_reader = BufReader::new(cert_file);
+    let certs = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| {
+            RuntimeError::Unsupported(format!(
+                "failed to parse server.tlsCertPath `{cert_path}`: {source}"
+            ))
+        })?;
+    if certs.is_empty() {
+        return Err(RuntimeError::Unsupported(format!(
+            "server.tlsCertPath `{cert_path}` contains no certificates"
+        )));
+    }
+
+    let key_file = File::open(key_path).map_err(|source| {
+        RuntimeError::Unsupported(format!(
+            "failed to read server.tlsKeyPath `{key_path}`: {source}"
+        ))
+    })?;
+    let mut key_reader = BufReader::new(key_file);
+    let key = rustls_pemfile::private_key(&mut key_reader)
+        .map_err(|source| {
+            RuntimeError::Unsupported(format!(
+                "failed to parse server.tlsKeyPath `{key_path}`: {source}"
+            ))
+        })?
+        .ok_or_else(|| {
+            RuntimeError::Unsupported(format!(
+                "server.tlsKeyPath `{key_path}` contains no private key"
+            ))
+        })?;
+
+    // Preflight the same cert/key consistency check Pingora's Rustls listener
+    // performs later. This temporary config does not define listener TLS policy.
+    let builder = rustls::ServerConfig::builder_with_provider(
+        rustls::crypto::ring::default_provider().into(),
+    )
+    .with_protocol_versions(&[&rustls::version::TLS12, &rustls::version::TLS13])
+    .map_err(|source| {
+        RuntimeError::Unsupported(format!(
+            "invalid server TLS protocol configuration: {source}"
+        ))
+    })?;
+
+    builder.with_no_client_auth().with_single_cert(certs, key).map(|_| ()).map_err(|source| {
+        RuntimeError::Unsupported(format!(
+            "invalid server TLS certificate/key pair cert=`{cert_path}` key=`{key_path}`: {source}"
+        ))
+    })
 }
 
 fn required_non_empty_path(
@@ -444,7 +504,89 @@ mod tests {
         ServiceIdentity,
     };
     use std::collections::HashMap;
+    use std::fs;
     use std::sync::Arc;
+
+    const TEST_CERT_1: &str = r#"-----BEGIN CERTIFICATE-----
+MIIDCTCCAfGgAwIBAgIUKbn3AHRPATPzdLlwrGlzg/gN2powDQYJKoZIhvcNAQEL
+BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDcwNzE0NTExM1oXDTI2MDcw
+ODE0NTExM1owFDESMBAGA1UEAwwJbG9jYWxob3N0MIIBIjANBgkqhkiG9w0BAQEF
+AAOCAQ8AMIIBCgKCAQEAjZO9WLGi3Mcb1CW6VeV3fhulxYxPWIwB86BsM45CY5xv
+Uksa8UOXeaU/vXOWRs5O4lWLj5IPhQz3s0lvznzDBYTy6Dw1MahH4T9oqTWAsWK2
+4g8aJLZCSYCkfEOxliAOszYLmJGd8G7n0kYLY2PmtfVNC9e1bzpKABCax/8F7R0a
+ef3ZxubjJzQnZmqlEBFh3Ge1RSNwqGlORVNC0VYqTb4lE2ud/OoMoK2akeSZOsPT
++0wXPE+hRphLXXGjdnGOh5bCk4hzq3ZznQ8OAzi76RV80UJmQ9h2uXSE/QFrweXo
+vmqu3uyE9oNYQY6GIimqE6iv7Kisy1PAQwgulCaWRwIDAQABo1MwUTAdBgNVHQ4E
+FgQUlrniLoesAvzVg+7g8gzIKXrEmrswHwYDVR0jBBgwFoAUlrniLoesAvzVg+7g
+8gzIKXrEmrswDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAdZ4t
+XGoY8Cik5OdcEpKDmWWNe26HIPGmcGMiqrHTarkh0JqXKd8+IdnqI1hxVvfIsUFU
+yH11pZ5sEJNoMRRdWRgcw2764M/FRBHpHv8c8GXJ1fkoYESblAkyOnJrhAkwVQ39
+8seMKnriIjH7+VnkDMZhJDdLTNAnLdwSlVDeTbmT/KwsPUtGPax20VqHn5Gp5eY8
+LJVBrDowPwVRSx4sOYF2N74ETd9IUha+FMugv/aYs+b/xhPDyf6ELMUcKGVs6PcI
+2y3mjK5e7xzXtjRgw0xsQvzbCT8jzPIBJ2Uhhox9TjwhDe4BRaUcUoJJINPlrN4o
+TqQCN+AqCe94f2E2tg==
+-----END CERTIFICATE-----
+"#;
+
+    const TEST_KEY_1: &str = r#"-----BEGIN PRIVATE KEY-----
+MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCNk71YsaLcxxvU
+JbpV5Xd+G6XFjE9YjAHzoGwzjkJjnG9SSxrxQ5d5pT+9c5ZGzk7iVYuPkg+FDPez
+SW/OfMMFhPLoPDUxqEfhP2ipNYCxYrbiDxoktkJJgKR8Q7GWIA6zNguYkZ3wbufS
+RgtjY+a19U0L17VvOkoAEJrH/wXtHRp5/dnG5uMnNCdmaqUQEWHcZ7VFI3CoaU5F
+U0LRVipNviUTa5386gygrZqR5Jk6w9P7TBc8T6FGmEtdcaN2cY6HlsKTiHOrdnOd
+Dw4DOLvpFXzRQmZD2Ha5dIT9AWvB5ei+aq7e7IT2g1hBjoYiKaoTqK/sqKzLU8BD
+CC6UJpZHAgMBAAECggEAFMFM59zFexz2wnIe0ArfgAL+RBNev89pVdWgfH+60dmU
+JE9TDX2S45111l3vRkVmdnMuDjJ5HftEW5SaKdOhJNpUYKFloaMBmU7va/xQ99r4
+jp7CKWb4GXMc1K7OhlYAHFusSttGI9ejxUV0KUedrJ01L1WZ3qAqoGR5ccpm4azD
+uo3EmuBXEaeJnF7rzC6+wNImwzqTeOdXl8v4LO1f2fe8DwCiHVFZkJOB99XX790Q
+JjV7BwqstFbsRE9z1G+qIB7WHMVASctcXD6nXJI2YrIOifjAl99KFu8YWqguJvcH
+inUAmesQh5m32B2JAXqyknnS8qnYY8daj/9ebyYgkQKBgQDEZsl6eUegPSTYi4zm
+3yxOK7Ra1r3kXTKSN9T4NhwKCUYq9fMLDwruq4eniJTE64w+JdNJKoVpK546GGo4
+hKSLV2BTgjNDhoPnEPyKKU3J+xZFM0AqOnF3RJ/se72CCDHpRFl0Ur1LcVJL9NVH
+iqkoHoYqL5RyiJr95F33IP7xmQKBgQC4ifxAu4/8dIUMA1OL7RgxgA67O5DmLrwd
+9kCgOIJOL6SbektBgtVivX4zv7aiIE/3KYe6nQLY7Xw9nDhckWAyC6f7PeabrxPe
+kDO1OmBj4rSM9i3vh7Iadb/N/SSpvLECUuSa4bUR/w+dLxoCKODUUFcge2UPM+wv
+RN14h9xy3wKBgAQaRZEqYWWmgVOIrrvP46QKY60WGUdg7wKA6hD5SGKpSO7yzk3n
+1YmgyaelQb5PUVGnBp/bpIfK4nZCNk3R74H9pER6TsnVUIIOJ8hXDonulcuCQ4/e
+QqqEI3cUKqRBuZEu3VOBuvSNfHObvKzO57Ov14ugDNDLq7ksAQ59gPXZAoGAVm5S
+VmNCygQs+HZqYAQZK74FqE36zMSg2QuoMyKkbUhFOYjqzHEhzlBgVo55VK/7pBCw
+gIffeIiqgxSzFTAFtQrej37rjolOrhQuE7iWwtHArLD0zNZqZZg20Jy62kEFSshW
+R/Bk5VvoDT+tV8ubmfVTCWSh7Z/tBCql7Dj92FMCgYBZBLaiRHmB4yTIFyTfxAXW
+Oqwwuywl1dVDFhUtzmDprSf6k/hyDxCl+lNcpLp2DnrTWCra0SmY9LBMQWND6l7F
+xRqItVSXlV9A/bWJjdF487EAE1wVPpESsc/jvb5JN/ddhxydMu40H+3SAnvLzPfZ
+PbCnOBiT3odV8W7MMwf/4A==
+-----END PRIVATE KEY-----
+"#;
+
+    const TEST_KEY_2: &str = r#"-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCz92FXZOAlYJYP
+Q0VZt3TRHHEMr+ZRcLc1ldNJH9RAJaeO4tWkREShSVhM88LbjTQ8ZMVaNRVozEXg
+W3IjO0qJJZMbOQCMp3bjINq4RauTK3SIX6UCCmOW5Y/FXCna63bdTaZkl6KDBe2j
+gTYLBFO4sbDaS1S8WGuiQAaMBV6eWyfu4I38/dXhpA25DcDpIfFeg7ztV7aGiFvx
+LKa7tITTPNMLmQN3r0kwceXOb1rQw+DNvxySWM4SJrR7vkXkqJh6tFZaVZ6UQYti
+K6jmRX9f9uB1HkdRpuJeCIJQKvOr28qQ/x3HJCrMzJN4ys+qZoskW/87yxu1Bgbw
+LItjIvxpAgMBAAECggEAAiTxEBpjuNJKK2+i4ocm8UxoVO0+HmuMRUtOF42VaPfB
+47gUcVb+ZdkSwCT55gWMUSlmuBTQlt1zOjGAvkZ5NIHh+zWuSd6/cgSc0owC97eR
+dYQFOm1fAyfkUwbOeV0rnwarNEDhxvOhwZxbJV21dSqJ18oEvhNEIgxm/5FbT6Hz
+f+xt3bE3riPC8lUFX6iRywddX/yyFf677aUH4cgJcqh8dYKvodPvp/s0jTDkNras
+04MC3csjkSNUfwodNzRvSBdxmnX1zV4TmYy8iJmEMNn7h8K50EsqLR6UWBA9jK8+
+9+ynASobMl/uHVIPs+vKCcrNBBMcwM0jZg+R5dgUwQKBgQD4jfM54wwiTjLeuSy/
+jN8mjYZnRITF7F15U+gGCzh9qn2g30jjWf7D4tI9JhHRffR4xWY7Tn7uLLG7ZsIc
+8NZgt8p1di3Wvdc+aJq1AWQRE7EO9iCWAlfA85WgkcI5EaWkXIBHVjuP04cAdhnn
+qXJ1OOJ9YoRBfjhfoADxuSAmKQKBgQC5W3WIMAu5cR7JQd3nxW7xeA2NmrQuYMXl
+PF1UZ+UlyfuFR+08WK2I0EVzqft2Wz9Zi+d8+EhmyuUXHzGYhHiZh788mBOISypC
+m0jiFKWBWxdtWA7rsw+KOwiNMmUV7gABg2x2CPKmX09+rzLi2JdSLJplFLI8D5SV
+1N9uvuBsQQKBgQDtVBUnc81VQFfAZQ3+RNOaa04ncrxYhE3omJ6WjsY877sPDcT6
+GSdzATR/4MbowpzZaJsqC9SVNSXr671zht8b8MInkFVKk3BgDd+S76YNzECnKYqJ
+0ejau3tmm2bZuSjxnMV72DH9Lhvc6+fmVNyOY2eYE6Z3Jr9LR2s/Y+X3qQKBgElW
+YHhT2i+zDCVBBFWRjkXH5ETksumurF34tkyRFt8OvY+MV9cKlw6MqQ4McUvw6m25
+pwuRCMRy/pVZaDwaHcVRKl8FJKVGaCAWZI3e8WTu76P5tV2YaUud89I54Dj/A82V
+fDJvc+JTz5YmJ5INdEG1GBlqSOLunzFxGj4tE4qBAoGBAMHC7kKGBIAQyjfciHm4
+XcD1un6e3h5ch0RyHRAEicZiDXAjSzcCX1XcvUPBy/o4npyRzj5iCFLPCQREq7Ug
+Les3kFc19cancBPV2fNXTbpZhSpuCADyjkaG/UA5cXAhm+hCeuRCtD+z96WSPa0D
+iSPqLa2C/InN2hYeU+v8gzdT
+-----END PRIVATE KEY-----
+"#;
 
     fn server_config_with_https(
         tls_cert_path: Option<PathBuf>,
@@ -546,6 +688,62 @@ mod tests {
         assert_eq!(
             paths,
             Some(("server.pem".to_string(), "server-key.pem".to_string()))
+        );
+    }
+
+    #[test]
+    fn validate_https_listener_tls_accepts_matching_cert_and_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let cert_path = temp_dir.path().join("server.pem");
+        let key_path = temp_dir.path().join("server-key.pem");
+        fs::write(&cert_path, TEST_CERT_1).expect("write cert");
+        fs::write(&key_path, TEST_KEY_1).expect("write key");
+
+        validate_https_listener_tls(
+            cert_path.to_str().expect("cert path"),
+            key_path.to_str().expect("key path"),
+        )
+        .expect("valid tls pair");
+    }
+
+    #[test]
+    fn validate_https_listener_tls_rejects_mismatched_cert_and_key() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let cert_path = temp_dir.path().join("server.pem");
+        let key_path = temp_dir.path().join("server-key.pem");
+        fs::write(&cert_path, TEST_CERT_1).expect("write cert");
+        fs::write(&key_path, TEST_KEY_2).expect("write key");
+
+        let error = validate_https_listener_tls(
+            cert_path.to_str().expect("cert path"),
+            key_path.to_str().expect("key path"),
+        )
+        .expect_err("mismatched tls pair");
+
+        let message = unsupported_message(error);
+        assert!(message.contains("invalid server TLS certificate/key pair"));
+    }
+
+    #[test]
+    fn validate_https_listener_tls_rejects_empty_cert_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let cert_path = temp_dir.path().join("server.pem");
+        let key_path = temp_dir.path().join("server-key.pem");
+        fs::write(&cert_path, "").expect("write cert");
+        fs::write(&key_path, TEST_KEY_1).expect("write key");
+
+        let error = validate_https_listener_tls(
+            cert_path.to_str().expect("cert path"),
+            key_path.to_str().expect("key path"),
+        )
+        .expect_err("empty cert file");
+
+        assert_eq!(
+            unsupported_message(error),
+            format!(
+                "server.tlsCertPath `{}` contains no certificates",
+                cert_path.display()
+            )
         );
     }
 
