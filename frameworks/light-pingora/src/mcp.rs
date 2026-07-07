@@ -1,4 +1,7 @@
-use crate::access_control::{AccessControlRuntime, AccessDecision, load_access_control_runtime};
+use crate::access_control::{
+    AccessControlRuntime, AccessDecision, ToolVisibility, ToolsListAccessControlConfig,
+    ToolsListAccessControlMode, load_access_control_runtime,
+};
 use crate::config_util::deserialize_typed_list;
 use crate::direct_registry::{direct_registry_match, validate_direct_registry_protocol};
 use crate::security::AuthPrincipal;
@@ -15,7 +18,8 @@ use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Value as JsonValue, json};
 use serde_yaml::Value as YamlValue;
-use std::collections::{BTreeMap, BTreeSet};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error as StdError;
 use std::fmt;
 use std::sync::Arc;
@@ -443,6 +447,54 @@ enum McpResponseMode {
     EventStream,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ToolsListVisibilityCache {
+    max_entries: usize,
+    entries: BTreeMap<String, Vec<String>>,
+    order: VecDeque<String>,
+}
+
+impl ToolsListVisibilityCache {
+    fn new(max_entries: usize) -> Self {
+        Self {
+            max_entries,
+            entries: BTreeMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn get(&mut self, key: &str) -> Option<Vec<String>> {
+        let value = self.entries.get(key).cloned()?;
+        self.touch(key);
+        Some(value)
+    }
+
+    fn insert(&mut self, key: String, value: Vec<String>) {
+        if self.max_entries == 0 {
+            return;
+        }
+        self.entries.insert(key.clone(), value);
+        self.touch(key.as_str());
+        while self.entries.len() > self.max_entries {
+            let Some(expired) = self.order.pop_front() else {
+                break;
+            };
+            if self.entries.remove(expired.as_str()).is_some() {
+                continue;
+            }
+        }
+    }
+
+    fn touch(&mut self, key: &str) {
+        self.order.retain(|candidate| candidate != key);
+        self.order.push_back(key.to_string());
+    }
+}
+
 #[derive(Clone)]
 pub struct McpRouterRuntime {
     config: McpRouterConfig,
@@ -452,6 +504,7 @@ pub struct McpRouterRuntime {
     discovery: Option<Arc<dyn McpDiscoveryResolver>>,
     policy: Option<Arc<AccessControlRuntime>>,
     sessions: Arc<AsyncMutex<McpSessionStore>>,
+    tools_list_cache: Arc<AsyncMutex<ToolsListVisibilityCache>>,
     last_session_purge: Arc<AsyncMutex<Option<Instant>>>,
     next_backend_request_id: Arc<AtomicU64>,
 }
@@ -467,6 +520,14 @@ impl fmt::Debug for McpRouterRuntime {
             )
             .field("discovery", &self.discovery.is_some())
             .field("policy", &self.policy.is_some())
+            .field(
+                "tools_list_cache_entries",
+                &self
+                    .tools_list_cache
+                    .try_lock()
+                    .ok()
+                    .map(|cache| cache.len()),
+            )
             .field(
                 "session_count",
                 &self.sessions.try_lock().ok().map(|store| store.len()),
@@ -560,6 +621,10 @@ impl McpRouterRuntime {
             .map_err(|error| {
                 RuntimeError::Unsupported(format!("invalid MCP HTTP client: {error}"))
             })?;
+        let tools_list_cache_entries = policy
+            .as_ref()
+            .map(|policy| policy.tools_list_access_control().max_cache_entries)
+            .unwrap_or_else(|| ToolsListAccessControlConfig::default().max_cache_entries);
         Ok(Self {
             config,
             tools,
@@ -568,6 +633,9 @@ impl McpRouterRuntime {
             discovery,
             policy,
             sessions: Arc::new(AsyncMutex::new(McpSessionStore::default())),
+            tools_list_cache: Arc::new(AsyncMutex::new(ToolsListVisibilityCache::new(
+                tools_list_cache_entries,
+            ))),
             last_session_purge: Arc::new(AsyncMutex::new(None)),
             next_backend_request_id: Arc::new(AtomicU64::new(1)),
         })
@@ -747,7 +815,13 @@ impl McpRouterRuntime {
                 initialize_response(response_mode, 200, id, result, session_id)
             }
             "tools/list" => response_with_protocol_version(
-                rpc_result_response(response_mode, 200, id, self.tools_list_result(message)),
+                rpc_result_response(
+                    response_mode,
+                    200,
+                    id,
+                    self.tools_list_result(message, &request.headers, context)
+                        .await,
+                ),
                 frontend_session
                     .as_ref()
                     .map(|session| session.protocol_version.as_str()),
@@ -977,13 +1051,25 @@ impl McpRouterRuntime {
         })
     }
 
-    fn tools_list_result(&self, message: &serde_json::Map<String, JsonValue>) -> JsonValue {
+    async fn tools_list_result(
+        &self,
+        message: &serde_json::Map<String, JsonValue>,
+        agent_headers: &[(String, String)],
+        context: &McpRequestContext,
+    ) -> JsonValue {
         let query = message
             .get("params")
             .and_then(|params| params.get("query").or_else(|| params.get("intent")))
             .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
             .map(|value| value.to_ascii_lowercase());
-        let tools = self
+        if let Some(cache_key) = self.tools_list_cache_key(query.as_deref(), agent_headers, context)
+            && let Some(tool_names) = self.tools_list_cache.lock().await.get(cache_key.as_str())
+        {
+            return self.tools_list_response_from_names(tool_names);
+        }
+        let candidates = self
             .tools
             .values()
             .filter(|tool| {
@@ -992,6 +1078,34 @@ impl McpRouterRuntime {
                         || tool.description.to_ascii_lowercase().contains(query)
                 })
             })
+            .collect::<Vec<_>>();
+        let mut visible_tools = Vec::new();
+        for (index, tool) in candidates.into_iter().enumerate() {
+            if self
+                .tool_visible_for_list(tool, index, agent_headers, context)
+                .await
+            {
+                visible_tools.push(tool);
+            }
+        }
+        let visible_tool_names = visible_tools
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<Vec<_>>();
+        if let Some(cache_key) = self.tools_list_cache_key(query.as_deref(), agent_headers, context)
+        {
+            self.tools_list_cache
+                .lock()
+                .await
+                .insert(cache_key, visible_tool_names.clone());
+        }
+        self.tools_list_response_from_names(visible_tool_names)
+    }
+
+    fn tools_list_response_from_names(&self, tool_names: Vec<String>) -> JsonValue {
+        let tools = tool_names
+            .into_iter()
+            .filter_map(|tool_name| self.tools.get(tool_name.as_str()))
             .map(|tool| {
                 json!({
                     "name": tool.name,
@@ -1001,6 +1115,81 @@ impl McpRouterRuntime {
             })
             .collect::<Vec<_>>();
         json!({ "tools": tools })
+    }
+
+    fn tools_list_cache_key(
+        &self,
+        query: Option<&str>,
+        agent_headers: &[(String, String)],
+        context: &McpRequestContext,
+    ) -> Option<String> {
+        let policy = self.policy.as_ref()?;
+        let tools_list_config = policy.tools_list_access_control();
+        if tools_list_config.mode == ToolsListAccessControlMode::None
+            || tools_list_config.max_cache_entries == 0
+        {
+            return None;
+        }
+        let claims = policy.normalized_claims_for_visibility(context.auth.as_ref());
+        let subject = json!({
+            "clientId": context.auth.as_ref().and_then(|auth| auth.client_id.as_deref()),
+            "userId": context.auth.as_ref().and_then(|auth| auth.user_id.as_deref()),
+            "issuer": context.auth.as_ref().and_then(|auth| auth.issuer.as_deref()),
+            "claims": claims,
+            "headers": normalized_header_pairs(agent_headers),
+        });
+        Some(format!(
+            "{:?}|{}|{}",
+            tools_list_config.mode,
+            query.unwrap_or_default(),
+            stable_json_hash(&subject)
+        ))
+    }
+
+    async fn tool_visible_for_list(
+        &self,
+        tool: &McpToolConfig,
+        index: usize,
+        agent_headers: &[(String, String)],
+        context: &McpRequestContext,
+    ) -> bool {
+        let Some(policy) = self.policy.as_ref() else {
+            return true;
+        };
+        let endpoint = tool_endpoint(tool);
+        let tools_list_config = policy.tools_list_access_control();
+        match tools_list_config.mode {
+            ToolsListAccessControlMode::None => true,
+            ToolsListAccessControlMode::Permission => matches!(
+                policy.tool_visible(tool.name.as_str(), endpoint.as_str(), context.auth.as_ref()),
+                ToolVisibility::Visible
+            ),
+            ToolsListAccessControlMode::Cel => {
+                if index >= tools_list_config.max_cel_evaluations {
+                    tracing::warn!(
+                        target: "light_pingora::mcp",
+                        toolName = %tool.name,
+                        endpoint = %endpoint,
+                        maxCelEvaluations = tools_list_config.max_cel_evaluations,
+                        "mcp tools/list access-control skipped tool after maxCelEvaluations limit"
+                    );
+                    return false;
+                }
+                matches!(
+                    policy
+                        .authorize_tool(
+                            tool.name.as_str(),
+                            endpoint.as_str(),
+                            agent_headers,
+                            context.auth.as_ref(),
+                            &json!({}),
+                            context.correlation_id.as_deref(),
+                        )
+                        .await,
+                    AccessDecision::Allowed
+                )
+            }
+        }
     }
 
     async fn handle_tool_call(
@@ -2282,6 +2471,21 @@ fn json_value_to_query(value: &JsonValue) -> String {
     }
 }
 
+fn stable_json_hash(value: &JsonValue) -> String {
+    let bytes = serde_json::to_vec(value).unwrap_or_default();
+    let digest = Sha256::digest(bytes);
+    format!("{digest:x}")
+}
+
+fn normalized_header_pairs(headers: &[(String, String)]) -> Vec<(String, String)> {
+    let mut pairs = headers
+        .iter()
+        .map(|(name, value)| (name.to_ascii_lowercase(), value.clone()))
+        .collect::<Vec<_>>();
+    pairs.sort();
+    pairs
+}
+
 fn outbound_headers(headers: &[(String, String)]) -> Result<HeaderMap, McpExecutionError> {
     let mut outbound = HeaderMap::new();
     for (name, value) in headers {
@@ -3065,6 +3269,297 @@ tools:
 
         let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
         assert_eq!(body["result"]["tools"][0]["name"], "weather");
+    }
+
+    #[tokio::test]
+    async fn tools_list_filters_tools_by_access_control_permission() {
+        let policy = Arc::new(crate::access_control::AccessControlRuntime::new(
+            Some(crate::access_control::AccessControlConfig {
+                tools_list_access_control: crate::access_control::ToolsListAccessControlConfig {
+                    mode: crate::access_control::ToolsListAccessControlMode::Permission,
+                    ..crate::access_control::ToolsListAccessControlConfig::default()
+                },
+                ..crate::access_control::AccessControlConfig::default()
+            }),
+            serde_yaml::from_str::<crate::access_control::RuleFileConfig>(
+                r#"
+ruleBodies:
+  allow-role:
+    common: Y
+    ruleId: allow-role
+    ruleName: Allow role
+    ruleType: req-acc
+    expression: "'role' in auditInfo.subject_claims.ClaimsMap && 'roles' in permission && permission.roles in auditInfo.subject_claims.ClaimsMap.role"
+    actions:
+      - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
+  allow-group:
+    common: Y
+    ruleId: allow-group
+    ruleName: Allow group
+    ruleType: req-acc
+    expression: "'scp' in auditInfo.subject_claims.ClaimsMap && 'groups' in permission && permission.groups in auditInfo.subject_claims.ClaimsMap.scp"
+endpointRules:
+  echo@call:
+    req-acc:
+      - allow-role
+    permission:
+      roles: account-manager
+  getRandomNumber@call:
+    req-acc:
+      - allow-role
+    permission:
+      roles: category-admin
+  /offers@get:
+    req-acc:
+      - allow-group
+    permission:
+      groups: portal.w
+"#,
+            )
+            .expect("rule config"),
+        ));
+        let runtime = McpRouterRuntime::new_with_policy(
+            McpRouterConfig {
+                tools: vec![
+                    test_tool(
+                        "local_mcp_echo",
+                        "Echo",
+                        "http://127.0.0.1:8080",
+                        McpHttpMethod::Call,
+                        Some("echo@call"),
+                        default_input_schema(),
+                    ),
+                    test_tool(
+                        "local_mcp_get_random_number",
+                        "Random number",
+                        "http://127.0.0.1:8080",
+                        McpHttpMethod::Call,
+                        Some("getRandomNumber@call"),
+                        default_input_schema(),
+                    ),
+                    test_tool(
+                        "demo_offer_decision_api_search_offers",
+                        "Search offers",
+                        "http://127.0.0.1:8080",
+                        McpHttpMethod::Get,
+                        Some("/offers@get"),
+                        default_input_schema(),
+                    ),
+                ],
+                ..McpRouterConfig::default()
+            },
+            Some(policy),
+        )
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request_with_context(
+                McpHttpRequest {
+                    method: "POST".to_string(),
+                    path: "/mcp".to_string(),
+                    headers: accept_json_with_session(&runtime),
+                    body: br#"{"jsonrpc":"2.0","id":"1","method":"tools/list"}"#.to_vec(),
+                },
+                McpRequestContext {
+                    auth: Some(AuthPrincipal {
+                        role: Some("account-manager".to_string()),
+                        claims: json!({
+                            "role": "account-manager",
+                            "scp": ["portal.w"]
+                        }),
+                        ..AuthPrincipal::default()
+                    }),
+                    correlation_id: Some("corr-1".to_string()),
+                },
+            )
+            .await
+            .expect("handle")
+            .expect("response");
+
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let names = body["result"]["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("name"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec!["demo_offer_decision_api_search_offers", "local_mcp_echo"]
+        );
+    }
+
+    #[tokio::test]
+    async fn tools_list_cel_mode_evaluates_request_access_rules() {
+        let policy = Arc::new(crate::access_control::AccessControlRuntime::new(
+            Some(crate::access_control::AccessControlConfig {
+                tools_list_access_control: crate::access_control::ToolsListAccessControlConfig {
+                    mode: crate::access_control::ToolsListAccessControlMode::Cel,
+                    ..crate::access_control::ToolsListAccessControlConfig::default()
+                },
+                ..crate::access_control::AccessControlConfig::default()
+            }),
+            serde_yaml::from_str::<crate::access_control::RuleFileConfig>(
+                r#"
+ruleBodies:
+  allow:
+    common: Y
+    ruleId: allow
+    ruleName: Allow
+    ruleType: req-acc
+    expression: "'role' in auditInfo.subject_claims.ClaimsMap && auditInfo.subject_claims.ClaimsMap.role == 'account-manager'"
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+  deny:
+    common: Y
+    ruleId: deny
+    ruleName: Deny
+    ruleType: req-acc
+    expression: "false"
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+endpointRules:
+  echo@call:
+    req-acc:
+      - allow
+  getRandomNumber@call:
+    req-acc:
+      - deny
+"#,
+            )
+            .expect("rule config"),
+        ));
+        let runtime = McpRouterRuntime::new_with_policy(
+            McpRouterConfig {
+                tools: vec![
+                    test_tool(
+                        "local_mcp_echo",
+                        "Echo",
+                        "http://127.0.0.1:8080",
+                        McpHttpMethod::Call,
+                        Some("echo@call"),
+                        default_input_schema(),
+                    ),
+                    test_tool(
+                        "local_mcp_get_random_number",
+                        "Random number",
+                        "http://127.0.0.1:8080",
+                        McpHttpMethod::Call,
+                        Some("getRandomNumber@call"),
+                        default_input_schema(),
+                    ),
+                ],
+                ..McpRouterConfig::default()
+            },
+            Some(policy),
+        )
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request_with_context(
+                McpHttpRequest {
+                    method: "POST".to_string(),
+                    path: "/mcp".to_string(),
+                    headers: accept_json_with_session(&runtime),
+                    body: br#"{"jsonrpc":"2.0","id":"1","method":"tools/list"}"#.to_vec(),
+                },
+                McpRequestContext {
+                    auth: Some(AuthPrincipal {
+                        role: Some("account-manager".to_string()),
+                        claims: json!({"role": "account-manager"}),
+                        ..AuthPrincipal::default()
+                    }),
+                    correlation_id: Some("corr-1".to_string()),
+                },
+            )
+            .await
+            .expect("handle")
+            .expect("response");
+
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let names = body["result"]["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("name"))
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["local_mcp_echo"]);
+    }
+
+    #[tokio::test]
+    async fn tools_list_cel_mode_hides_tools_after_evaluation_limit() {
+        let policy = Arc::new(crate::access_control::AccessControlRuntime::new(
+            Some(crate::access_control::AccessControlConfig {
+                tools_list_access_control: crate::access_control::ToolsListAccessControlConfig {
+                    mode: crate::access_control::ToolsListAccessControlMode::Cel,
+                    max_cel_evaluations: 1,
+                    ..crate::access_control::ToolsListAccessControlConfig::default()
+                },
+                default_deny: false,
+                ..crate::access_control::AccessControlConfig::default()
+            }),
+            crate::access_control::RuleFileConfig::default(),
+        ));
+        let runtime = McpRouterRuntime::new_with_policy(
+            McpRouterConfig {
+                tools: vec![
+                    test_tool(
+                        "alpha",
+                        "Alpha",
+                        "http://127.0.0.1:8080",
+                        McpHttpMethod::Get,
+                        Some("alpha@call"),
+                        default_input_schema(),
+                    ),
+                    test_tool(
+                        "beta",
+                        "Beta",
+                        "http://127.0.0.1:8080",
+                        McpHttpMethod::Get,
+                        Some("beta@call"),
+                        default_input_schema(),
+                    ),
+                ],
+                ..McpRouterConfig::default()
+            },
+            Some(policy),
+        )
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":"1","method":"tools/list"}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let names = body["result"]["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("name"))
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["alpha"]);
+    }
+
+    #[test]
+    fn tools_list_visibility_cache_is_bounded_lru() {
+        let mut cache = ToolsListVisibilityCache::new(2);
+        cache.insert("a".to_string(), vec!["alpha".to_string()]);
+        cache.insert("b".to_string(), vec!["beta".to_string()]);
+        assert_eq!(cache.get("a"), Some(vec!["alpha".to_string()]));
+
+        cache.insert("c".to_string(), vec!["gamma".to_string()]);
+
+        assert_eq!(cache.get("b"), None);
+        assert_eq!(cache.get("a"), Some(vec!["alpha".to_string()]));
+        assert_eq!(cache.get("c"), Some(vec!["gamma".to_string()]));
+        assert_eq!(cache.len(), 2);
     }
 
     #[tokio::test]

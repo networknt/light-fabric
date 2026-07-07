@@ -1479,6 +1479,7 @@ pathPrefixService:
                 default_deny: true,
                 default_include: false,
                 skip_path_prefixes: Vec::new(),
+                ..crate::access_control::AccessControlConfig::default()
             }),
             crate::access_control::RuleFileConfig::default(),
         ));

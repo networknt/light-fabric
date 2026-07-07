@@ -45,7 +45,8 @@ use tokio::sync::watch;
 pub use access_control::{
     ACCESS_CONTROL_CONFIG_NAME, ACCESS_CONTROL_FILE, ACCESS_CONTROL_LEGACY_FILE,
     ACCESS_CONTROL_MODULE_ID, AccessControlConfig, AccessControlRuntime, AccessDecision,
-    RULE_CONFIG_NAME, RULE_FILE, RULE_LEGACY_FILE, RULE_MODULE_ID, RuleFileConfig,
+    RULE_CONFIG_NAME, RULE_FILE, RULE_LEGACY_FILE, RULE_MODULE_ID, RuleFileConfig, ToolVisibility,
+    ToolsListAccessControlConfig, ToolsListAccessControlMode, ToolsListUnknownRuleFallback,
     load_access_control_runtime,
 };
 pub use apikey::{

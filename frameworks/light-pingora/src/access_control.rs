@@ -1,12 +1,12 @@
 use crate::config_util::{deserialize_string_list, deserialize_typed_map};
 use crate::security::AuthPrincipal;
 use async_trait::async_trait;
-use light_rule::{ActionRegistry, EndpointConfig, Rule, RuleActionPlugin, RuleEngine};
+use light_rule::{ActionRegistry, EndpointConfig, Rule, RuleAction, RuleActionPlugin, RuleEngine};
 use light_runtime::{ModuleKind, RuntimeConfig, RuntimeError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::Arc;
 use tracing::{error, warn};
@@ -28,6 +28,7 @@ const RESPONSE_BODY_JSON: &str = "responseBodyJson";
 const RESPONSE_COLUMN_FILTER_ACTION: &str = "ResponseColumnFilterAction";
 const RESPONSE_ROW_FILTER_ACTION: &str = "ResponseRowFilterAction";
 const RESPONSE_CEL_ROW_FILTER_ACTION: &str = "ResponseCelRowFilterAction";
+const ROLE_BASED_ACCESS_CONTROL_ACTION: &str = "RoleBasedAccessControlAction";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,6 +43,8 @@ pub struct AccessControlConfig {
     pub default_include: bool,
     #[serde(default, deserialize_with = "deserialize_string_list")]
     pub skip_path_prefixes: Vec<String>,
+    #[serde(default, alias = "toolsListAccessControl")]
+    pub tools_list_access_control: ToolsListAccessControlConfig,
 }
 
 impl Default for AccessControlConfig {
@@ -52,8 +55,56 @@ impl Default for AccessControlConfig {
             default_deny: true,
             default_include: false,
             skip_path_prefixes: Vec::new(),
+            tools_list_access_control: ToolsListAccessControlConfig::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolsListAccessControlConfig {
+    #[serde(default)]
+    pub mode: ToolsListAccessControlMode,
+    #[serde(default)]
+    pub unknown_rule_fallback: ToolsListUnknownRuleFallback,
+    #[serde(default = "default_max_cel_evaluations", alias = "maxCelEvaluations")]
+    pub max_cel_evaluations: usize,
+    #[serde(
+        default = "default_tools_list_max_cache_entries",
+        alias = "maxCacheEntries"
+    )]
+    pub max_cache_entries: usize,
+    #[serde(default, alias = "claimMappings")]
+    pub claim_mappings: BTreeMap<String, Vec<String>>,
+}
+
+impl Default for ToolsListAccessControlConfig {
+    fn default() -> Self {
+        Self {
+            mode: ToolsListAccessControlMode::None,
+            unknown_rule_fallback: ToolsListUnknownRuleFallback::Hidden,
+            max_cel_evaluations: default_max_cel_evaluations(),
+            max_cache_entries: default_tools_list_max_cache_entries(),
+            claim_mappings: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToolsListAccessControlMode {
+    #[default]
+    None,
+    Permission,
+    Cel,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToolsListUnknownRuleFallback {
+    #[default]
+    Hidden,
+    Visible,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -90,6 +141,12 @@ pub enum AccessDecision {
     Denied(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolVisibility {
+    Visible,
+    Hidden,
+}
+
 impl AccessControlRuntime {
     pub fn new(access: Option<AccessControlConfig>, rules: RuleFileConfig) -> Self {
         Self {
@@ -115,6 +172,17 @@ impl AccessControlRuntime {
             .as_ref()
             .map(|config| config.default_include)
             .unwrap_or(false)
+    }
+
+    pub fn tools_list_access_control(&self) -> ToolsListAccessControlConfig {
+        self.access
+            .as_ref()
+            .map(|config| config.tools_list_access_control.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn normalized_claims_for_visibility(&self, auth: Option<&AuthPrincipal>) -> JsonValue {
+        normalized_claims(auth)
     }
 
     fn active_config_for_endpoint(&self, endpoint: &str) -> Option<&AccessControlConfig> {
@@ -196,6 +264,89 @@ impl AccessControlRuntime {
             AccessDecision::Denied(format!(
                 "Access denied by access control rule for {endpoint}"
             ))
+        }
+    }
+
+    pub fn tool_visible(
+        &self,
+        tool_name: &str,
+        endpoint: &str,
+        auth: Option<&AuthPrincipal>,
+    ) -> ToolVisibility {
+        let Some(config) = self.active_config_for_mcp_tool(tool_name, endpoint) else {
+            return ToolVisibility::Visible;
+        };
+        if config.tools_list_access_control.mode == ToolsListAccessControlMode::None {
+            return ToolVisibility::Visible;
+        }
+
+        let Some((_service_entry, endpoint_rules)) = self.find_service_entry(endpoint) else {
+            return if config.default_deny {
+                ToolVisibility::Hidden
+            } else {
+                ToolVisibility::Visible
+            };
+        };
+
+        if let Some(visibility) = endpoint_rules.get("visibility") {
+            return if permission_matches_claims(
+                visibility,
+                auth,
+                &config.tools_list_access_control.claim_mappings,
+            ) {
+                ToolVisibility::Visible
+            } else {
+                ToolVisibility::Hidden
+            };
+        }
+
+        let rule_ids = rule_ids_for(endpoint_rules, REQUEST_ACCESS);
+        if rule_ids.is_empty() {
+            return if config.default_deny {
+                ToolVisibility::Hidden
+            } else {
+                ToolVisibility::Visible
+            };
+        }
+
+        let permission = permission_for(endpoint_rules)
+            .map(JsonValue::Object)
+            .unwrap_or_else(|| json!({}));
+        let mut outcomes = Vec::new();
+        for rule_id in rule_ids {
+            let Some(rule) = self.rules.rule_bodies.get(rule_id.as_str()) else {
+                outcomes.push(unknown_rule_visible(config));
+                continue;
+            };
+            match rule_visibility_match(
+                rule,
+                &permission,
+                auth,
+                &config.tools_list_access_control.claim_mappings,
+            ) {
+                RuleVisibilityMatch::Matched(value) => outcomes.push(value),
+                RuleVisibilityMatch::Ignored => {}
+                RuleVisibilityMatch::Unknown => outcomes.push(unknown_rule_visible(config)),
+            }
+        }
+
+        if outcomes.is_empty() {
+            return if config.default_deny {
+                ToolVisibility::Hidden
+            } else {
+                ToolVisibility::Visible
+            };
+        }
+
+        let visible = if config.access_rule_logic.eq_ignore_ascii_case("all") {
+            outcomes.iter().all(|allowed| *allowed)
+        } else {
+            outcomes.iter().any(|allowed| *allowed)
+        };
+        if visible {
+            ToolVisibility::Visible
+        } else {
+            ToolVisibility::Hidden
         }
     }
 
@@ -623,10 +774,41 @@ fn values_config_value(runtime_config: &RuntimeConfig, config_name: &str) -> Opt
         if field_name.is_empty() {
             continue;
         }
-        config.insert(YamlValue::String(field_name.to_string()), value.clone());
+        insert_values_config_field(&mut config, field_name, value.clone());
     }
 
     (!config.is_empty()).then_some(YamlValue::Mapping(config))
+}
+
+fn insert_values_config_field(config: &mut YamlMapping, field_name: &str, value: YamlValue) {
+    let path = field_name
+        .split('.')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    if path.is_empty() {
+        return;
+    }
+    insert_nested_yaml_value(config, path.as_slice(), value);
+}
+
+fn insert_nested_yaml_value(mapping: &mut YamlMapping, path: &[&str], value: YamlValue) {
+    let key = YamlValue::String(path[0].to_string());
+    if path.len() == 1 {
+        mapping.insert(key, value);
+        return;
+    }
+    if !mapping.contains_key(&key) {
+        mapping.insert(key.clone(), YamlValue::Mapping(YamlMapping::new()));
+    }
+    let Some(child) = mapping.get_mut(&key) else {
+        return;
+    };
+    if !child.is_mapping() {
+        *child = YamlValue::Mapping(YamlMapping::new());
+    }
+    if let YamlValue::Mapping(child) = child {
+        insert_nested_yaml_value(child, &path[1..], value);
+    }
 }
 
 fn load_config_any<T>(
@@ -838,6 +1020,178 @@ fn permission_for(
         .get("permission")
         .and_then(JsonValue::as_object)
         .cloned()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuleVisibilityMatch {
+    Matched(bool),
+    Ignored,
+    Unknown,
+}
+
+fn rule_visibility_match(
+    rule: &Rule,
+    permission: &JsonValue,
+    auth: Option<&AuthPrincipal>,
+    claim_mappings: &BTreeMap<String, Vec<String>>,
+) -> RuleVisibilityMatch {
+    if rule.rule_type != REQUEST_ACCESS {
+        return RuleVisibilityMatch::Ignored;
+    }
+    if !rule_has_authorizing_effect(rule) {
+        return RuleVisibilityMatch::Ignored;
+    }
+    if is_role_access_rule(rule) {
+        let claim_names = claim_names_for_permission("roles", claim_mappings);
+        return RuleVisibilityMatch::Matched(permission_dimension_matches(
+            permission,
+            "roles",
+            auth,
+            claim_names,
+        ));
+    }
+    if is_group_access_rule(rule) {
+        let claim_names = claim_names_for_permission("groups", claim_mappings);
+        return RuleVisibilityMatch::Matched(permission_dimension_matches(
+            permission,
+            "groups",
+            auth,
+            claim_names,
+        ));
+    }
+    RuleVisibilityMatch::Unknown
+}
+
+fn rule_has_authorizing_effect(rule: &Rule) -> bool {
+    !matches!(
+        rule.access_control_effect
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("telemetry" | "none")
+    )
+}
+
+fn is_role_access_rule(rule: &Rule) -> bool {
+    rule.rule_id.contains("role")
+        || rule
+            .expression
+            .as_deref()
+            .is_some_and(|expression| expression.contains("permission.roles"))
+        || rule_has_action(rule, ROLE_BASED_ACCESS_CONTROL_ACTION)
+}
+
+fn is_group_access_rule(rule: &Rule) -> bool {
+    rule.rule_id.contains("group")
+        || rule.rule_id.contains("scp")
+        || rule
+            .expression
+            .as_deref()
+            .is_some_and(|expression| expression.contains("permission.groups"))
+}
+
+fn rule_has_action(rule: &Rule, action_name: &str) -> bool {
+    rule.actions.as_ref().is_some_and(|actions| {
+        actions
+            .iter()
+            .any(|action| action_matches(action, action_name))
+    })
+}
+
+fn action_matches(action: &RuleAction, action_name: &str) -> bool {
+    action.action_ref == action_name || action.action_ref.ends_with(&format!(".{action_name}"))
+}
+
+fn permission_matches_claims(
+    permission: &JsonValue,
+    auth: Option<&AuthPrincipal>,
+    claim_mappings: &BTreeMap<String, Vec<String>>,
+) -> bool {
+    let checks = ["roles", "groups", "positions", "attributes", "users"];
+    let mut matched_any_dimension = false;
+    for permission_key in checks {
+        if permission.get(permission_key).is_some() {
+            matched_any_dimension = true;
+            let claim_names = claim_names_for_permission(permission_key, claim_mappings);
+            if !permission_dimension_matches(permission, permission_key, auth, claim_names) {
+                return false;
+            }
+        }
+    }
+    matched_any_dimension
+}
+
+fn permission_dimension_matches(
+    permission: &JsonValue,
+    permission_key: &str,
+    auth: Option<&AuthPrincipal>,
+    claim_names: Vec<String>,
+) -> bool {
+    let permission_values = permission
+        .get(permission_key)
+        .map(values_to_token_set)
+        .unwrap_or_default();
+    if permission_values.is_empty() {
+        return false;
+    }
+    let claims = normalized_claims(auth);
+    let claim_values = claim_names
+        .iter()
+        .filter_map(|name| claims.get(name.as_str()))
+        .flat_map(values_to_token_set)
+        .collect::<BTreeSet<_>>();
+    !claim_values.is_empty()
+        && permission_values
+            .iter()
+            .any(|permission| claim_values.contains(permission))
+}
+
+fn claim_names_for_permission(
+    permission_key: &str,
+    claim_mappings: &BTreeMap<String, Vec<String>>,
+) -> Vec<String> {
+    let configured = claim_mappings
+        .get(permission_key)
+        .into_iter()
+        .flatten()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if !configured.is_empty() {
+        return configured;
+    }
+    default_claim_names_for_permission(permission_key)
+        .iter()
+        .map(|value| (*value).to_string())
+        .collect()
+}
+
+fn default_claim_names_for_permission(permission_key: &str) -> &'static [&'static str] {
+    match permission_key {
+        "roles" => &["role", "roles"],
+        "groups" => &["scp", "grp", "group", "groups"],
+        "positions" => &["pos", "position", "positions"],
+        "attributes" => &["att", "attribute", "attributes"],
+        "users" => &["uid", "user_id", "sub"],
+        _ => &[],
+    }
+}
+
+fn values_to_token_set(value: &JsonValue) -> BTreeSet<String> {
+    match value {
+        JsonValue::Array(values) => values.iter().flat_map(values_to_token_set).collect(),
+        JsonValue::String(value) => list_tokens(value).into_iter().collect(),
+        JsonValue::Number(_) | JsonValue::Bool(_) => value_to_string(value)
+            .map(|value| BTreeSet::from([value]))
+            .unwrap_or_default(),
+        JsonValue::Object(_) | JsonValue::Null => BTreeSet::new(),
+    }
+}
+
+fn unknown_rule_visible(config: &AccessControlConfig) -> bool {
+    config.tools_list_access_control.unknown_rule_fallback == ToolsListUnknownRuleFallback::Visible
 }
 
 fn endpoint_pattern_matches(pattern: &str, endpoint: &str) -> bool {
@@ -1404,6 +1758,14 @@ fn default_access_rule_logic() -> String {
     "any".to_string()
 }
 
+fn default_max_cel_evaluations() -> usize {
+    100
+}
+
+fn default_tools_list_max_cache_entries() -> usize {
+    2000
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1819,6 +2181,329 @@ endpointRules:
             JsonValue::String(
                 "[{\"accountNo\":\"1\",\"firstName\":\"A\",\"ssn\":\"secret\"}]".to_string()
             )
+        );
+    }
+
+    #[test]
+    fn tool_visibility_permission_mode_matches_role_and_group_rules() {
+        let policy = AccessControlRuntime::new(
+            Some(AccessControlConfig {
+                tools_list_access_control: ToolsListAccessControlConfig {
+                    mode: ToolsListAccessControlMode::Permission,
+                    ..ToolsListAccessControlConfig::default()
+                },
+                ..AccessControlConfig::default()
+            }),
+            serde_yaml::from_str::<RuleFileConfig>(
+                r#"
+ruleBodies:
+  allow-role:
+    common: Y
+    ruleId: allow-role
+    ruleName: Allow role
+    ruleType: req-acc
+    expression: "'role' in auditInfo.subject_claims.ClaimsMap && 'roles' in permission && permission.roles in auditInfo.subject_claims.ClaimsMap.role"
+    actions:
+      - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
+  allow-group:
+    common: Y
+    ruleId: allow-group
+    ruleName: Allow group
+    ruleType: req-acc
+    expression: "'scp' in auditInfo.subject_claims.ClaimsMap && 'groups' in permission && permission.groups in auditInfo.subject_claims.ClaimsMap.scp"
+endpointRules:
+  echo@call:
+    req-acc:
+      - allow-role
+    permission:
+      roles: account-manager
+  /offers@get:
+    req-acc:
+      - allow-group
+    permission:
+      groups: portal.w
+"#,
+            )
+            .expect("rule config"),
+        );
+        let principal = AuthPrincipal {
+            role: Some("account-manager".to_string()),
+            claims: json!({
+                "role": "account-manager",
+                "scp": ["portal.w"]
+            }),
+            ..AuthPrincipal::default()
+        };
+
+        assert_eq!(
+            policy.tool_visible("local_mcp_echo", "echo@call", Some(&principal)),
+            ToolVisibility::Visible
+        );
+        assert_eq!(
+            policy.tool_visible(
+                "demo_offer_decision_api_search_offers",
+                "/offers@get",
+                Some(&principal)
+            ),
+            ToolVisibility::Visible
+        );
+        assert_eq!(
+            policy.tool_visible(
+                "local_mcp_get_random_number",
+                "getRandomNumber@call",
+                Some(&principal)
+            ),
+            ToolVisibility::Hidden
+        );
+    }
+
+    #[test]
+    fn access_control_config_accepts_tools_list_access_control() {
+        let config = serde_yaml::from_str::<AccessControlConfig>(
+            r#"
+enabled: true
+toolsListAccessControl:
+  mode: cel
+  unknownRuleFallback: visible
+  maxCelEvaluations: 25
+  maxCacheEntries: 50
+  claimMappings:
+    roles:
+      - custom_roles
+    groups:
+      - custom_scope
+"#,
+        )
+        .expect("config");
+
+        assert_eq!(
+            config.tools_list_access_control.mode,
+            ToolsListAccessControlMode::Cel
+        );
+        assert_eq!(
+            config.tools_list_access_control.unknown_rule_fallback,
+            ToolsListUnknownRuleFallback::Visible
+        );
+        assert_eq!(config.tools_list_access_control.max_cel_evaluations, 25);
+        assert_eq!(config.tools_list_access_control.max_cache_entries, 50);
+        assert_eq!(
+            config
+                .tools_list_access_control
+                .claim_mappings
+                .get("roles")
+                .expect("roles mapping"),
+            &vec!["custom_roles".to_string()]
+        );
+    }
+
+    #[test]
+    fn load_access_control_runtime_reads_tools_list_access_control_from_values() {
+        let mut values = HashMap::new();
+        values.insert("access-control.enabled".to_string(), YamlValue::Bool(true));
+        values.insert(
+            "access-control.toolsListAccessControl.mode".to_string(),
+            YamlValue::String("permission".to_string()),
+        );
+        values.insert(
+            "access-control.toolsListAccessControl.maxCelEvaluations".to_string(),
+            YamlValue::Number(serde_yaml::Number::from(25)),
+        );
+        values.insert(
+            "access-control.toolsListAccessControl.maxCacheEntries".to_string(),
+            YamlValue::Number(serde_yaml::Number::from(75)),
+        );
+
+        let (_config_dir, runtime_config) = runtime_config_with_values(values);
+        let policy = load_access_control_runtime(&runtime_config, true)
+            .expect("load policy")
+            .expect("policy");
+
+        let config = policy.tools_list_access_control();
+        assert_eq!(config.mode, ToolsListAccessControlMode::Permission);
+        assert_eq!(config.max_cel_evaluations, 25);
+        assert_eq!(config.max_cache_entries, 75);
+    }
+
+    #[test]
+    fn tool_visibility_uses_default_deny_fallbacks() {
+        let rules = serde_yaml::from_str::<RuleFileConfig>(
+            r#"
+endpointRules:
+  /health@get:
+    permission: {}
+"#,
+        )
+        .expect("rule config");
+        let deny_policy = AccessControlRuntime::new(
+            Some(AccessControlConfig {
+                tools_list_access_control: ToolsListAccessControlConfig {
+                    mode: ToolsListAccessControlMode::Permission,
+                    ..ToolsListAccessControlConfig::default()
+                },
+                ..AccessControlConfig::default()
+            }),
+            rules.clone(),
+        );
+        let allow_policy = AccessControlRuntime::new(
+            Some(AccessControlConfig {
+                default_deny: false,
+                tools_list_access_control: ToolsListAccessControlConfig {
+                    mode: ToolsListAccessControlMode::Permission,
+                    ..ToolsListAccessControlConfig::default()
+                },
+                ..AccessControlConfig::default()
+            }),
+            rules,
+        );
+
+        assert_eq!(
+            deny_policy.tool_visible("missing", "/missing@get", None),
+            ToolVisibility::Hidden
+        );
+        assert_eq!(
+            allow_policy.tool_visible("missing", "/missing@get", None),
+            ToolVisibility::Visible
+        );
+        assert_eq!(
+            deny_policy.tool_visible("health", "/health@get", None),
+            ToolVisibility::Hidden
+        );
+        assert_eq!(
+            allow_policy.tool_visible("health", "/health@get", None),
+            ToolVisibility::Visible
+        );
+    }
+
+    #[test]
+    fn tool_visibility_uses_explicit_visibility_metadata() {
+        let policy = AccessControlRuntime::new(
+            Some(AccessControlConfig {
+                tools_list_access_control: ToolsListAccessControlConfig {
+                    mode: ToolsListAccessControlMode::Permission,
+                    ..ToolsListAccessControlConfig::default()
+                },
+                ..AccessControlConfig::default()
+            }),
+            serde_yaml::from_str::<RuleFileConfig>(
+                r#"
+ruleBodies:
+  custom:
+    common: Y
+    ruleId: custom
+    ruleName: Custom
+    ruleType: req-acc
+    expression: "toolArguments.accountId == auditInfo.subject_claims.ClaimsMap.uid"
+endpointRules:
+  accounts@call:
+    req-acc:
+      - custom
+    visibility:
+      groups: portal.w
+"#,
+            )
+            .expect("rule config"),
+        );
+        let principal = AuthPrincipal {
+            claims: json!({"scp": "portal.w"}),
+            ..AuthPrincipal::default()
+        };
+
+        assert_eq!(
+            policy.tool_visible("accounts", "accounts@call", Some(&principal)),
+            ToolVisibility::Visible
+        );
+    }
+
+    #[test]
+    fn tool_visibility_uses_configured_claim_mappings() {
+        let policy = AccessControlRuntime::new(
+            Some(AccessControlConfig {
+                tools_list_access_control: ToolsListAccessControlConfig {
+                    mode: ToolsListAccessControlMode::Permission,
+                    claim_mappings: BTreeMap::from([(
+                        "roles".to_string(),
+                        vec!["custom_roles".to_string()],
+                    )]),
+                    ..ToolsListAccessControlConfig::default()
+                },
+                ..AccessControlConfig::default()
+            }),
+            serde_yaml::from_str::<RuleFileConfig>(
+                r#"
+ruleBodies:
+  allow-role:
+    common: Y
+    ruleId: allow-role
+    ruleName: Allow role
+    ruleType: req-acc
+    expression: "'custom_roles' in auditInfo.subject_claims.ClaimsMap && 'roles' in permission"
+endpointRules:
+  reports@call:
+    req-acc:
+      - allow-role
+    permission:
+      roles: auditor
+"#,
+            )
+            .expect("rule config"),
+        );
+        let principal = AuthPrincipal {
+            claims: json!({"custom_roles": "auditor"}),
+            ..AuthPrincipal::default()
+        };
+
+        assert_eq!(
+            policy.tool_visible("reports", "reports@call", Some(&principal)),
+            ToolVisibility::Visible
+        );
+    }
+
+    #[test]
+    fn tool_visibility_ignores_non_authorizing_rules() {
+        let policy = AccessControlRuntime::new(
+            Some(AccessControlConfig {
+                default_deny: false,
+                tools_list_access_control: ToolsListAccessControlConfig {
+                    mode: ToolsListAccessControlMode::Permission,
+                    ..ToolsListAccessControlConfig::default()
+                },
+                ..AccessControlConfig::default()
+            }),
+            serde_yaml::from_str::<RuleFileConfig>(
+                r#"
+ruleBodies:
+  audit-only:
+    common: Y
+    ruleId: audit-only
+    ruleName: Audit only
+    ruleType: req-acc
+    accessControlEffect: telemetry
+    expression: "false"
+  unknown-authorizing:
+    common: Y
+    ruleId: unknown-authorizing
+    ruleName: Unknown authorizing
+    ruleType: req-acc
+    expression: "false"
+endpointRules:
+  audit@call:
+    req-acc:
+      - audit-only
+  protected@call:
+    req-acc:
+      - unknown-authorizing
+"#,
+            )
+            .expect("rule config"),
+        );
+
+        assert_eq!(
+            policy.tool_visible("audit", "audit@call", None),
+            ToolVisibility::Visible
+        );
+        assert_eq!(
+            policy.tool_visible("protected", "protected@call", None),
+            ToolVisibility::Hidden
         );
     }
 

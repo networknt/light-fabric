@@ -35,6 +35,7 @@ pub struct Rule {
     pub updated_at: Option<String>,
     pub condition_language: Option<String>,
     pub condition_security_profile: Option<String>,
+    pub access_control_effect: Option<String>,
     pub expression: Option<String>,
     pub conditions: Option<Vec<RuleCondition>>,
     pub actions: Option<Vec<RuleAction>>,

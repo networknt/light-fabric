@@ -47,6 +47,7 @@ fn build_test_config() -> (RuleConfig, Arc<RuleEngine>) {
         updated_at: None,
         condition_language: Some("cel".into()),
         condition_security_profile: Some("standard".into()),
+        access_control_effect: None,
         expression: Some("role == 'admin'".into()),
         conditions: None,
         actions: Some(vec![RuleAction {
@@ -69,6 +70,7 @@ fn build_test_config() -> (RuleConfig, Arc<RuleEngine>) {
         updated_at: None,
         condition_language: Some("cel".into()),
         condition_security_profile: Some("standard".into()),
+        access_control_effect: None,
         expression: Some("client_status == 'verified'".into()),
         conditions: None,
         actions: None,
@@ -180,6 +182,7 @@ async fn test_legacy_native_conditions_are_rejected() {
         updated_at: None,
         condition_language: None,
         condition_security_profile: None,
+        access_control_effect: None,
         expression: None,
         conditions: Some(vec![
             RuleCondition {
@@ -312,6 +315,7 @@ async fn test_cel_replaces_join_code_or() {
         updated_at: None,
         condition_language: Some("cel".into()),
         condition_security_profile: Some("standard".into()),
+        access_control_effect: None,
         expression: Some("role == 'admin' || role == 'operator'".into()),
         conditions: None,
         actions: None,
@@ -338,6 +342,7 @@ async fn test_cel_condition_language() {
         updated_at: None,
         condition_language: Some("cel".into()),
         condition_security_profile: Some("standard".into()),
+        access_control_effect: None,
         expression: Some(
             "context.user.age >= 18 && contains_ignore_case(context.user.name, 'hu') && 'admin' in context.user.roles"
                 .into(),
@@ -380,6 +385,7 @@ async fn test_strict_cel_profile_uses_curated_roots() {
         updated_at: None,
         condition_language: Some("cel".into()),
         condition_security_profile: Some("strict".into()),
+        access_control_effect: None,
         expression: Some(
             "auditInfo.subject_claims.ClaimsMap.role == 'admin' && contains_ignore_case(headers.owner, 'hu')"
                 .into(),
@@ -424,6 +430,7 @@ async fn test_strict_cel_profile_rejects_context_alias() {
         updated_at: None,
         condition_language: Some("cel".into()),
         condition_security_profile: None,
+        access_control_effect: None,
         expression: Some("context.user.age >= 18".into()),
         conditions: None,
         actions: None,
@@ -456,6 +463,7 @@ async fn test_strict_cel_profile_rejects_regex() {
         updated_at: None,
         condition_language: Some("cel".into()),
         condition_security_profile: Some("strict".into()),
+        access_control_effect: None,
         expression: Some("headers.path.matches('^/admin')".into()),
         conditions: None,
         actions: None,
@@ -488,6 +496,7 @@ async fn test_response_phase_caps_standard_cel_to_strict() {
         updated_at: None,
         condition_language: Some("cel".into()),
         condition_security_profile: Some("standard".into()),
+        access_control_effect: None,
         expression: Some("context.responseBody.items.size() > 0".into()),
         conditions: None,
         actions: None,
@@ -520,6 +529,7 @@ async fn test_internal_admin_cel_profile_is_disabled_by_default() {
         updated_at: None,
         condition_language: Some("cel".into()),
         condition_security_profile: Some("internal-admin".into()),
+        access_control_effect: None,
         expression: Some("context.user.age >= 18".into()),
         conditions: None,
         actions: None,
@@ -550,6 +560,7 @@ async fn test_strict_cel_profile_list_matching() {
         updated_at: None,
         condition_language: Some("cel".into()),
         condition_security_profile: Some("strict".into()),
+        access_control_effect: None,
         expression: Some("'portal.w' in auditInfo.subject_claims.ClaimsMap.scp".into()),
         conditions: None,
         actions: None,
@@ -585,6 +596,7 @@ async fn test_strict_cel_profile_missing_scp() {
         updated_at: None,
         condition_language: Some("cel".into()),
         condition_security_profile: Some("strict".into()),
+        access_control_effect: None,
         expression: Some(
             "'scp' in auditInfo.subject_claims.ClaimsMap && 'portal.w' in auditInfo.subject_claims.ClaimsMap.scp".into(),
         ),
@@ -626,6 +638,7 @@ async fn test_strict_cel_profile_endpoint_permission() {
         updated_at: None,
         condition_language: Some("cel".into()),
         condition_security_profile: Some("strict".into()),
+        access_control_effect: None,
         expression: Some(
             "'scp' in auditInfo.subject_claims.ClaimsMap && permission.groups in auditInfo.subject_claims.ClaimsMap.scp".into(),
         ),
@@ -666,6 +679,7 @@ async fn test_strict_cel_profile_missing_permission_variable() {
         updated_at: None,
         condition_language: Some("cel".into()),
         condition_security_profile: Some("strict".into()),
+        access_control_effect: None,
         expression: Some(
             "'scp' in auditInfo.subject_claims.ClaimsMap && 'groups' in permission && permission.groups in auditInfo.subject_claims.ClaimsMap.scp".into(),
         ),
