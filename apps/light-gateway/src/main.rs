@@ -2031,7 +2031,6 @@ impl ProxyHttp for GatewayProxy {
                             .await;
                     }
                     if method_has_request_body(&method) {
-                        session.req_header_mut().remove_header("content-length");
                         ctx.access_control_active = true;
                     } else {
                         let exchange = access_control_exchange(
@@ -2586,7 +2585,7 @@ impl ProxyHttp for GatewayProxy {
                     .map_err(handler_rejection_error)?;
                 *body = Some(Bytes::from(transformed));
             } else {
-                *body = None;
+                *body = Some(Bytes::new());
             }
         }
         if ctx.access_control_active {
@@ -2656,7 +2655,7 @@ impl ProxyHttp for GatewayProxy {
                     }
                 }
             } else {
-                *body = None;
+                *body = Some(Bytes::new());
             }
         }
         Ok(())
