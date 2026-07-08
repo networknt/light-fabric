@@ -1,9 +1,9 @@
 ip: ${server.ip:0.0.0.0}
 advertisedAddress: ${server.advertisedAddress:127.0.0.1}
 httpPort: ${server.httpPort:8080}
-enableHttp: ${server.enableHttp:true}
+enableHttp: ${server.enableHttp:false}
 httpsPort: ${server.httpsPort:8443}
-enableHttps: ${server.enableHttps:false}
+enableHttps: ${server.enableHttps:true}
 tlsCertPath: ${server.tlsCertPath:}
 tlsKeyPath: ${server.tlsKeyPath:}
 serviceId: ${server.serviceId:com.networknt.light-gateway-1.0.0}
