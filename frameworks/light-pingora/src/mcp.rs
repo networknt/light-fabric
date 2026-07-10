@@ -16,12 +16,13 @@ use regex::Regex;
 use reqwest::header::{ACCEPT, HeaderMap, HeaderName, HeaderValue};
 use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::{Value as JsonValue, json};
+use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use serde_yaml::Value as YamlValue;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error as StdError;
 use std::fmt;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -1064,19 +1065,33 @@ impl McpRouterRuntime {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(|value| value.to_ascii_lowercase());
-        if let Some(cache_key) = self.tools_list_cache_key(query.as_deref(), agent_headers, context)
-            && let Some(tool_names) = self.tools_list_cache.lock().await.get(cache_key.as_str())
-        {
-            return self.tools_list_response_from_names(tool_names);
+        let cache_key = self.tools_list_cache_key(query.as_deref(), agent_headers, context);
+        if let Some(cache_key) = cache_key.as_deref() {
+            let cached = self.tools_list_cache.lock().await.get(cache_key);
+            if let Some(tool_names) = cached {
+                tracing::debug!(
+                    target: "light_pingora::mcp",
+                    cacheKey = %cache_key,
+                    query = ?query,
+                    toolCount = tool_names.len(),
+                    "mcp tools/list visibility cache hit"
+                );
+                return self.tools_list_response_from_names(tool_names);
+            }
+            tracing::debug!(
+                target: "light_pingora::mcp",
+                cacheKey = %cache_key,
+                query = ?query,
+                "mcp tools/list visibility cache miss"
+            );
         }
         let candidates = self
             .tools
             .values()
             .filter(|tool| {
-                query.as_deref().is_none_or(|query| {
-                    tool.name.to_ascii_lowercase().contains(query)
-                        || tool.description.to_ascii_lowercase().contains(query)
-                })
+                query
+                    .as_deref()
+                    .is_none_or(|query| tool_matches_tools_list_query(tool, query))
             })
             .collect::<Vec<_>>();
         let mut visible_tools = Vec::new();
@@ -1092,8 +1107,14 @@ impl McpRouterRuntime {
             .iter()
             .map(|tool| tool.name.clone())
             .collect::<Vec<_>>();
-        if let Some(cache_key) = self.tools_list_cache_key(query.as_deref(), agent_headers, context)
-        {
+        if let Some(cache_key) = cache_key {
+            tracing::debug!(
+                target: "light_pingora::mcp",
+                cacheKey = %cache_key,
+                query = ?query,
+                toolCount = visible_tool_names.len(),
+                "mcp tools/list visibility cache store"
+            );
             self.tools_list_cache
                 .lock()
                 .await
@@ -1353,43 +1374,44 @@ impl McpRouterRuntime {
     ) -> Result<JsonValue, McpExecutionError> {
         let mut url = self.tool_target_url(tool).await?;
 
-        let mut path_params = std::collections::HashMap::new();
-        let mut query_params = std::collections::HashMap::new();
-        let mut header_params = std::collections::HashMap::new();
-        let mut cookie_params = std::collections::HashMap::new();
+        let mut path_params = BTreeMap::new();
+        let mut query_params = BTreeMap::new();
+        let mut header_params = BTreeMap::new();
+        let mut cookie_params = BTreeMap::new();
         let mut body_val: Option<&JsonValue> = None;
+        let path_placeholders =
+            openapi_path_placeholders(tool.path.as_str()).map_err(|message| {
+                McpExecutionError::execution_failed(format!(
+                    "tool `{}` path `{}` is invalid: {message}",
+                    tool.name, tool.path
+                ))
+            })?;
 
-        let mut has_mapping = false;
-        let mapping = tool
-            .tool_metadata
-            .get("routing")
-            .and_then(|r| r.get("parameters"))
-            .and_then(|p| p.as_object());
+        let mapping = tool_parameter_mapping(tool);
+        let has_mapping = mapping.is_some();
+        validate_path_placeholder_mapping(tool, mapping, &path_placeholders)?;
 
-        if let Some(mapping) = mapping {
-            has_mapping = true;
-            if let Some(args_obj) = arguments.as_object() {
-                for (key, val) in args_obj {
-                    if let Some(loc) = mapping.get(key).and_then(|l| l.as_str()) {
-                        match loc {
-                            "path" => {
-                                path_params.insert(key.clone(), val);
-                            }
-                            "query" => {
-                                query_params.insert(key.clone(), val);
-                            }
-                            "header" => {
-                                header_params.insert(key.clone(), val);
-                            }
-                            "cookie" => {
-                                cookie_params.insert(key.clone(), val);
-                            }
-                            "body" => {
-                                body_val = Some(val);
-                            }
-                            _ => {}
-                        }
-                    } else {
+        if let Some(mapping) = mapping
+            && let Some(args_obj) = arguments.as_object()
+        {
+            for (key, val) in args_obj {
+                match parameter_mapping_location(mapping, key, tool.name.as_str())? {
+                    Some(ParameterLocation::Path) => {
+                        path_params.insert(key.clone(), val);
+                    }
+                    Some(ParameterLocation::Query) => {
+                        query_params.insert(key.clone(), val);
+                    }
+                    Some(ParameterLocation::Header) => {
+                        header_params.insert(key.clone(), val);
+                    }
+                    Some(ParameterLocation::Cookie) => {
+                        cookie_params.insert(key.clone(), val);
+                    }
+                    Some(ParameterLocation::Body) => {
+                        body_val = Some(val);
+                    }
+                    None => {
                         if key == "body" {
                             body_val = Some(val);
                         } else if matches!(method, McpHttpMethod::Get | McpHttpMethod::Head) {
@@ -1400,8 +1422,27 @@ impl McpRouterRuntime {
             }
         }
 
-        // 1. Substitute path parameters in URL path
-        if has_mapping && !path_params.is_empty() {
+        if !path_placeholders.is_empty() {
+            let placeholder_names = path_placeholders
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            for key in path_params.keys() {
+                if !placeholder_names.contains(key.as_str()) {
+                    return Err(McpExecutionError::execution_failed(format!(
+                        "tool `{}` maps `{key}` to path, but path `{}` has no `{{{key}}}` placeholder",
+                        tool.name, tool.path
+                    )));
+                }
+            }
+            for placeholder in &path_placeholders {
+                if !path_params.contains_key(placeholder) {
+                    return Err(McpExecutionError::invalid_params(format!(
+                        "tool `{}` requires path argument `{placeholder}`",
+                        tool.name
+                    )));
+                }
+            }
             let mut path = url.path().to_string();
             for (key, val) in path_params {
                 let val_str = match val {
@@ -1413,11 +1454,22 @@ impl McpRouterRuntime {
                 path = path.replace(&placeholder1, &encoded_val);
                 let placeholder2 = format!("%7B{}%7D", key);
                 path = path.replace(&placeholder2, &encoded_val);
+                let placeholder3 = format!("%7b{}%7d", key);
+                path = path.replace(&placeholder3, &encoded_val);
             }
             url.set_path(&path);
+        } else if !path_params.is_empty() {
+            let mapped = path_params
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(McpExecutionError::execution_failed(format!(
+                "tool `{}` maps path parameters [{mapped}], but path `{}` has no supported placeholders",
+                tool.name, tool.path
+            )));
         }
 
-        // 2. Query parameters
         if has_mapping {
             if !query_params.is_empty() {
                 let mut query_pairs = url.query_pairs_mut();
@@ -1435,7 +1487,6 @@ impl McpRouterRuntime {
         let request_url = url.to_string();
         let request_method = method.as_reqwest();
 
-        // 3. Headers & Cookies
         let mut request_headers = outbound_headers(agent_headers)?;
         if has_mapping {
             for (key, val) in header_params {
@@ -1443,11 +1494,14 @@ impl McpRouterRuntime {
                     continue;
                 }
                 let val_str = json_value_to_query(val);
-                if let Ok(header_name) = reqwest::header::HeaderName::from_bytes(key.as_bytes()) {
-                    if let Ok(header_val) = reqwest::header::HeaderValue::from_str(&val_str) {
-                        request_headers.insert(header_name, header_val);
-                    }
-                }
+                let header_name = mapped_header_name(tool.name.as_str(), key.as_str())?;
+                let header_val = HeaderValue::from_str(&val_str).map_err(|error| {
+                    McpExecutionError::execution_failed(format!(
+                        "tool `{}` mapped header `{key}` has invalid value: {error}",
+                        tool.name
+                    ))
+                })?;
+                request_headers.insert(header_name, header_val);
             }
             if !cookie_params.is_empty() {
                 let mut cookies = Vec::new();
@@ -1455,52 +1509,73 @@ impl McpRouterRuntime {
                     if val.is_null() {
                         continue;
                     }
+                    validate_mapped_cookie_name(tool.name.as_str(), key.as_str())?;
                     let val_str = json_value_to_query(val);
-                    cookies.push(format!("{}={}", key, val_str));
+                    let encoded_val = Self::percent_encode_path_segment(&val_str);
+                    cookies.push(format!("{}={}", key, encoded_val));
                 }
                 if !cookies.is_empty() {
                     let cookie_header_val = cookies.join("; ");
-                    if let Ok(header_val) =
-                        reqwest::header::HeaderValue::from_str(&cookie_header_val)
-                    {
-                        request_headers.insert(reqwest::header::COOKIE, header_val);
-                    }
+                    let header_val =
+                        HeaderValue::from_str(&cookie_header_val).map_err(|error| {
+                            McpExecutionError::execution_failed(format!(
+                                "tool `{}` mapped cookie header is invalid: {error}",
+                                tool.name
+                            ))
+                        })?;
+                    request_headers.insert(reqwest::header::COOKIE, header_val);
                 }
             }
         }
+
+        let final_body = if method.sends_json_body() {
+            if has_mapping {
+                if let Some(body) = body_val {
+                    Some(body.clone())
+                } else if let Some(mapping) = mapping {
+                    let mut body_obj = serde_json::Map::new();
+                    if let Some(args_obj) = arguments.as_object() {
+                        for (key, val) in args_obj {
+                            let mapped_loc =
+                                parameter_mapping_location(mapping, key, tool.name.as_str())?;
+                            if !matches!(
+                                mapped_loc,
+                                Some(
+                                    ParameterLocation::Path
+                                        | ParameterLocation::Query
+                                        | ParameterLocation::Header
+                                        | ParameterLocation::Cookie
+                                        | ParameterLocation::Body
+                                )
+                            ) {
+                                body_obj.insert(key.clone(), val.clone());
+                            }
+                        }
+                    }
+                    if !body_obj.is_empty() {
+                        Some(JsonValue::Object(body_obj))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                Some(arguments.clone())
+            }
+        } else {
+            None
+        };
+
+        validate_target_host_resolution(tool, &url).await?;
 
         let mut request = self
             .client
             .request(request_method.clone(), url)
             .headers(request_headers);
 
-        // 4. Request Body
-        if method.sends_json_body() {
-            let mut final_body = None;
-            if has_mapping {
-                if let Some(body) = body_val {
-                    final_body = Some(body.clone());
-                } else if let Some(mapping) = mapping {
-                    let mut body_obj = serde_json::Map::new();
-                    if let Some(args_obj) = arguments.as_object() {
-                        for (key, val) in args_obj {
-                            let mapped_loc = mapping.get(key).and_then(|l| l.as_str());
-                            if !matches!(mapped_loc, Some("path" | "query" | "header" | "cookie")) {
-                                body_obj.insert(key.clone(), val.clone());
-                            }
-                        }
-                    }
-                    if !body_obj.is_empty() {
-                        final_body = Some(JsonValue::Object(body_obj));
-                    }
-                }
-            } else {
-                final_body = Some(arguments.clone());
-            }
-
-            if let Some(body) = final_body {
-                request = request.json(&body);
-            }
+        if let Some(body) = final_body {
+            request = request.json(&body);
         }
 
         let response = request.send().await.map_err(|error| {
@@ -1578,6 +1653,7 @@ impl McpRouterRuntime {
         }
 
         let url = self.tool_target_url(tool).await?;
+        validate_target_host_resolution(tool, &url).await?;
         let backend_session = self
             .ensure_backend_session(frontend_session_id, &url, agent_headers)
             .await?;
@@ -1892,7 +1968,11 @@ impl McpRouterRuntime {
             .as_deref()
             .filter(|value| !value.trim().is_empty())
         {
-            return parse_base_url(target_host, &tool.name);
+            return parse_base_url(
+                target_host,
+                &tool.name,
+                tool_allows_private_target_host(tool),
+            );
         }
 
         let service_id = tool
@@ -1910,7 +1990,7 @@ impl McpRouterRuntime {
         {
             validate_direct_registry_protocol(matched, tool.protocol.as_deref())
                 .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
-            return parse_base_url(matched.url.trim(), &tool.name);
+            return parse_base_url(matched.url.trim(), &tool.name, true);
         }
         let discovery = self.discovery.as_ref().ok_or_else(|| {
             McpExecutionError::execution_failed(format!(
@@ -1936,7 +2016,7 @@ impl McpRouterRuntime {
                     "MCP tool service `{service_id}` has no usable discovery nodes"
                 ))
             })?;
-        parse_base_url(discovery_node_base_url(node).as_str(), &tool.name)
+        parse_base_url(discovery_node_base_url(node).as_str(), &tool.name, true)
     }
 
     fn get_tool(&self, requested_name: &str) -> Option<&McpToolConfig> {
@@ -2344,7 +2424,321 @@ fn discovery_resolver(
     })
 }
 
-fn parse_base_url(base: &str, tool_name: &str) -> Result<Url, McpExecutionError> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParameterLocation {
+    Path,
+    Query,
+    Header,
+    Cookie,
+    Body,
+}
+
+impl ParameterLocation {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "path" => Some(Self::Path),
+            "query" => Some(Self::Query),
+            "header" => Some(Self::Header),
+            "cookie" => Some(Self::Cookie),
+            "body" => Some(Self::Body),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Path => "path",
+            Self::Query => "query",
+            Self::Header => "header",
+            Self::Cookie => "cookie",
+            Self::Body => "body",
+        }
+    }
+}
+
+fn tool_routing_metadata(tool: &McpToolConfig) -> Option<&JsonMap<String, JsonValue>> {
+    tool_metadata_section(tool, &["routing"])
+}
+
+fn tool_safety_metadata(tool: &McpToolConfig) -> Option<&JsonMap<String, JsonValue>> {
+    tool_metadata_section(tool, &["safety"])
+}
+
+fn tool_runtime_metadata(tool: &McpToolConfig) -> Option<&JsonMap<String, JsonValue>> {
+    tool_metadata_section(tool, &["runtime"])
+}
+
+fn tool_lifecycle_metadata(tool: &McpToolConfig) -> Option<&JsonMap<String, JsonValue>> {
+    tool_metadata_section(tool, &["lifecycle"])
+}
+
+fn tool_metadata_section<'a>(
+    tool: &'a McpToolConfig,
+    keys: &[&str],
+) -> Option<&'a JsonMap<String, JsonValue>> {
+    let metadata = tool.tool_metadata.as_object()?;
+    metadata_field(metadata, keys).and_then(JsonValue::as_object)
+}
+
+fn metadata_field<'a>(
+    metadata: &'a JsonMap<String, JsonValue>,
+    keys: &[&str],
+) -> Option<&'a JsonValue> {
+    keys.iter().find_map(|key| metadata.get(*key))
+}
+
+fn metadata_string<'a>(
+    metadata: Option<&'a JsonMap<String, JsonValue>>,
+    keys: &[&str],
+) -> Option<&'a str> {
+    metadata
+        .and_then(|metadata| metadata_field(metadata, keys))
+        .and_then(JsonValue::as_str)
+}
+
+fn metadata_bool(metadata: Option<&JsonMap<String, JsonValue>>, keys: &[&str]) -> Option<bool> {
+    metadata
+        .and_then(|metadata| metadata_field(metadata, keys))
+        .and_then(JsonValue::as_bool)
+}
+
+fn tool_parameter_mapping(tool: &McpToolConfig) -> Option<&JsonMap<String, JsonValue>> {
+    tool_routing_metadata(tool)
+        .and_then(|routing| {
+            metadata_field(
+                routing,
+                &["parameters", "parameterMapping", "parameter_mapping"],
+            )
+        })
+        .and_then(JsonValue::as_object)
+}
+
+fn tool_endpoint_id(tool: &McpToolConfig) -> Option<&str> {
+    tool.tool_metadata
+        .as_object()
+        .and_then(|metadata| metadata_string(Some(metadata), &["endpointId", "endpoint_id"]))
+        .or_else(|| {
+            tool_routing_metadata(tool)
+                .and_then(|routing| metadata_string(Some(routing), &["endpointId", "endpoint_id"]))
+        })
+}
+
+fn tool_allows_private_target_host(tool: &McpToolConfig) -> bool {
+    metadata_bool(
+        tool_runtime_metadata(tool),
+        &["allowPrivateTargetHost", "allow_private_target_host"],
+    )
+    .or_else(|| {
+        metadata_bool(
+            tool.tool_metadata.as_object(),
+            &["allowPrivateTargetHost", "allow_private_target_host"],
+        )
+    })
+    .unwrap_or(false)
+}
+
+fn parameter_mapping_location(
+    mapping: &JsonMap<String, JsonValue>,
+    parameter: &str,
+    tool_name: &str,
+) -> Result<Option<ParameterLocation>, McpExecutionError> {
+    let Some(value) = mapping.get(parameter) else {
+        return Ok(None);
+    };
+    let Some(raw_location) = value.as_str() else {
+        return Err(McpExecutionError::execution_failed(format!(
+            "tool `{tool_name}` parameter mapping `{parameter}` must be a string"
+        )));
+    };
+    let Some(location) = ParameterLocation::parse(raw_location) else {
+        return Err(McpExecutionError::execution_failed(format!(
+            "tool `{tool_name}` parameter mapping `{parameter}` has unsupported location `{raw_location}`"
+        )));
+    };
+    Ok(Some(location))
+}
+
+fn validate_path_placeholder_mapping(
+    tool: &McpToolConfig,
+    mapping: Option<&JsonMap<String, JsonValue>>,
+    placeholders: &[String],
+) -> Result<(), McpExecutionError> {
+    if placeholders.is_empty() {
+        return Ok(());
+    }
+    let Some(mapping) = mapping else {
+        return Err(McpExecutionError::execution_failed(format!(
+            "tool `{}` path `{}` has placeholders but no toolMetadata.routing.parameters mapping",
+            tool.name, tool.path
+        )));
+    };
+    for placeholder in placeholders {
+        match parameter_mapping_location(mapping, placeholder, tool.name.as_str())? {
+            Some(ParameterLocation::Path) => {}
+            Some(location) => {
+                return Err(McpExecutionError::execution_failed(format!(
+                    "tool `{}` path placeholder `{placeholder}` must map to `path`, found `{}`",
+                    tool.name,
+                    location.as_str()
+                )));
+            }
+            None => {
+                return Err(McpExecutionError::execution_failed(format!(
+                    "tool `{}` path placeholder `{placeholder}` requires toolMetadata.routing.parameters.{placeholder}=path",
+                    tool.name
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn openapi_path_placeholders(path: &str) -> Result<Vec<String>, String> {
+    let regex = Regex::new(r"\{([A-Za-z0-9_.-]+)\}").expect("valid path placeholder regex");
+    let mut ranges = Vec::new();
+    let mut names = BTreeSet::new();
+    for capture in regex.captures_iter(path) {
+        if let Some(full_match) = capture.get(0) {
+            ranges.push(full_match.start()..full_match.end());
+        }
+        if let Some(name) = capture.get(1) {
+            names.insert(name.as_str().to_string());
+        }
+    }
+    for (index, byte) in path.bytes().enumerate() {
+        if matches!(byte, b'{' | b'}') && !ranges.iter().any(|range| range.contains(&index)) {
+            return Err(
+                "only OpenAPI `{name}` placeholders with letters, numbers, `_`, `.`, or `-` are supported"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(names.into_iter().collect())
+}
+
+fn mapped_header_name(tool_name: &str, header: &str) -> Result<HeaderName, McpExecutionError> {
+    let normalized = header.to_ascii_lowercase();
+    if should_regenerate_header(header)
+        || matches!(
+            normalized.as_str(),
+            "authorization" | "cookie" | "set-cookie" | "www-authenticate"
+        )
+    {
+        return Err(McpExecutionError::execution_failed(format!(
+            "tool `{tool_name}` cannot map argument to protected header `{header}`"
+        )));
+    }
+    HeaderName::from_bytes(header.as_bytes()).map_err(|error| {
+        McpExecutionError::execution_failed(format!(
+            "tool `{tool_name}` mapped header `{header}` is invalid: {error}"
+        ))
+    })
+}
+
+fn validate_mapped_cookie_name(tool_name: &str, cookie: &str) -> Result<(), McpExecutionError> {
+    if cookie.starts_with('$') || !is_http_token(cookie) {
+        return Err(McpExecutionError::execution_failed(format!(
+            "tool `{tool_name}` mapped cookie name `{cookie}` is invalid"
+        )));
+    }
+    Ok(())
+}
+
+fn is_http_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| {
+            matches!(
+                byte,
+                b'0'..=b'9'
+                    | b'A'..=b'Z'
+                    | b'a'..=b'z'
+                    | b'!'
+                    | b'#'
+                    | b'$'
+                    | b'%'
+                    | b'&'
+                    | b'\''
+                    | b'*'
+                    | b'+'
+                    | b'-'
+                    | b'.'
+                    | b'^'
+                    | b'_'
+                    | b'`'
+                    | b'|'
+                    | b'~'
+            )
+        })
+}
+
+fn tool_matches_tools_list_query(tool: &McpToolConfig, query: &str) -> bool {
+    contains_query(tool.name.as_str(), query)
+        || contains_query(tool.description.as_str(), query)
+        || tool_endpoint_id(tool).is_some_and(|endpoint_id| contains_query(endpoint_id, query))
+        || tool_routing_metadata(tool).is_some_and(|routing| routing_matches_query(routing, query))
+        || tool_safety_metadata(tool).is_some_and(|safety| metadata_matches_query(safety, query))
+        || tool_lifecycle_metadata(tool)
+            .is_some_and(|lifecycle| metadata_matches_query(lifecycle, query))
+}
+
+fn routing_matches_query(routing: &JsonMap<String, JsonValue>, query: &str) -> bool {
+    metadata_any_string_matches(
+        routing,
+        &[
+            "domain",
+            "semanticNamespace",
+            "semantic_namespace",
+            "semanticDescription",
+            "semantic_description",
+            "sourceProtocol",
+            "source_protocol",
+            "sensitivityTier",
+            "sensitivity_tier",
+        ],
+        query,
+    ) || metadata_field(routing, &["semanticKeywords", "semantic_keywords"])
+        .and_then(JsonValue::as_array)
+        .is_some_and(|keywords| {
+            keywords
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .any(|keyword| contains_query(keyword, query))
+        })
+}
+
+fn metadata_any_string_matches(
+    metadata: &JsonMap<String, JsonValue>,
+    keys: &[&str],
+    query: &str,
+) -> bool {
+    keys.iter()
+        .filter_map(|key| metadata.get(*key).and_then(JsonValue::as_str))
+        .any(|value| contains_query(value, query))
+}
+
+fn metadata_matches_query(metadata: &JsonMap<String, JsonValue>, query: &str) -> bool {
+    metadata.values().any(|value| match value {
+        JsonValue::String(value) => contains_query(value, query),
+        JsonValue::Bool(value) => value.to_string().contains(query),
+        JsonValue::Number(value) => value.to_string().contains(query),
+        JsonValue::Array(values) => values.iter().any(|value| match value {
+            JsonValue::String(value) => contains_query(value, query),
+            _ => false,
+        }),
+        JsonValue::Object(_) | JsonValue::Null => false,
+    })
+}
+
+fn contains_query(value: &str, query: &str) -> bool {
+    value.to_ascii_lowercase().contains(query)
+}
+
+fn parse_base_url(
+    base: &str,
+    tool_name: &str,
+    allow_private_host: bool,
+) -> Result<Url, McpExecutionError> {
+    let base = base.trim();
     let url = Url::parse(base).map_err(|error| {
         McpExecutionError::execution_failed(format!(
             "tool `{tool_name}` target `{base}` is invalid: {error}"
@@ -2355,7 +2749,136 @@ fn parse_base_url(base: &str, tool_name: &str) -> Result<Url, McpExecutionError>
             "tool `{tool_name}` target `{base}` must use http or https"
         )));
     }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(McpExecutionError::execution_failed(format!(
+            "tool `{tool_name}` target `{base}` must not include userinfo"
+        )));
+    }
+    if url.host_str().is_none() {
+        return Err(McpExecutionError::execution_failed(format!(
+            "tool `{tool_name}` target `{base}` must include a host"
+        )));
+    }
+    if !allow_private_host {
+        validate_public_target_host(&url, tool_name, base)?;
+    }
     Ok(url)
+}
+
+fn validate_public_target_host(
+    url: &Url,
+    tool_name: &str,
+    base: &str,
+) -> Result<(), McpExecutionError> {
+    if let Some(host) = url.host() {
+        match host {
+            url::Host::Ipv4(address) => {
+                if is_blocked_target_ip(IpAddr::V4(address)) {
+                    return Err(blocked_target_host_error(tool_name, base));
+                }
+            }
+            url::Host::Ipv6(address) => {
+                if is_blocked_target_ip(IpAddr::V6(address)) {
+                    return Err(blocked_target_host_error(tool_name, base));
+                }
+            }
+            url::Host::Domain(domain) => {
+                let normalized = domain.trim_end_matches('.').to_ascii_lowercase();
+                if matches!(
+                    normalized.as_str(),
+                    "localhost" | "metadata.google.internal"
+                ) || normalized.ends_with(".localhost")
+                {
+                    return Err(blocked_target_host_error(tool_name, base));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn validate_target_host_resolution(
+    tool: &McpToolConfig,
+    url: &Url,
+) -> Result<(), McpExecutionError> {
+    let Some(configured_target) = tool
+        .target_host
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(());
+    };
+    if tool_allows_private_target_host(tool) {
+        return Ok(());
+    }
+    if !matches!(url.host(), Some(url::Host::Domain(_))) {
+        return Ok(());
+    }
+    let host = url.host_str().ok_or_else(|| {
+        McpExecutionError::execution_failed(format!(
+            "tool `{}` targetHost `{configured_target}` must include a host",
+            tool.name
+        ))
+    })?;
+    let port = url.port_or_known_default().ok_or_else(|| {
+        McpExecutionError::execution_failed(format!(
+            "tool `{}` targetHost `{configured_target}` must include a port or use a known scheme",
+            tool.name
+        ))
+    })?;
+    let addrs = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|error| {
+            McpExecutionError::execution_failed(format!(
+                "tool `{}` targetHost `{configured_target}` DNS lookup failed: {error}",
+                tool.name
+            ))
+        })?;
+    let mut checked = false;
+    for addr in addrs {
+        checked = true;
+        if is_blocked_target_ip(addr.ip()) {
+            return Err(blocked_target_host_error(&tool.name, configured_target));
+        }
+    }
+    if !checked {
+        return Err(McpExecutionError::execution_failed(format!(
+            "tool `{}` targetHost `{configured_target}` DNS lookup returned no addresses",
+            tool.name
+        )));
+    }
+    Ok(())
+}
+
+fn blocked_target_host_error(tool_name: &str, base: &str) -> McpExecutionError {
+    McpExecutionError::execution_failed(format!(
+        "tool `{tool_name}` targetHost `{base}` resolves to a loopback, private, link-local, or metadata host; set toolMetadata.runtime.allowPrivateTargetHost=true only for approved internal targets"
+    ))
+}
+
+fn is_blocked_target_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(address) => {
+            let octets = address.octets();
+            address.is_loopback()
+                || address.is_private()
+                || address.is_link_local()
+                || address.is_unspecified()
+                || octets == [169, 254, 169, 254]
+                || octets[0] == 0
+                || octets[0] >= 224
+                || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+                || (octets[0] == 198 && matches!(octets[1], 18 | 19))
+        }
+        IpAddr::V6(address) => {
+            let segment = address.segments()[0];
+            address.is_loopback()
+                || address.is_unspecified()
+                || address.is_multicast()
+                || (segment & 0xfe00) == 0xfc00
+                || (segment & 0xffc0) == 0xfe80
+        }
+    }
 }
 
 fn apply_tool_path(mut url: Url, tool: &McpToolConfig) -> Url {
@@ -3272,6 +3795,48 @@ tools:
     }
 
     #[tokio::test]
+    async fn tools_list_supports_metadata_query_filter() {
+        let mut tool = test_tool(
+            "demo_offer_decision_api_search_offers",
+            "Search active offers",
+            "https://example.com",
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        );
+        tool.tool_metadata = json!({
+            "routing": {
+                "domain": "Offers",
+                "semanticNamespace": "API0005",
+                "semanticKeywords": ["offers", "Search active offers"],
+                "sourceProtocol": "openapi"
+            }
+        });
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![tool],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":"1","method":"tools/list","params":{"query":"api0005"}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(
+            body["result"]["tools"][0]["name"],
+            "demo_offer_decision_api_search_offers"
+        );
+    }
+
+    #[tokio::test]
     async fn tools_list_filters_tools_by_access_control_permission() {
         let policy = Arc::new(crate::access_control::AccessControlRuntime::new(
             Some(crate::access_control::AccessControlConfig {
@@ -3842,7 +4407,7 @@ endpointRules:
                     api_type: McpToolType::Http,
                     input_schema: default_input_schema(),
                     input_schema_configured: true,
-                    tool_metadata: default_object(),
+                    tool_metadata: allow_private_target_metadata(),
                 }],
                 ..McpRouterConfig::default()
             },
@@ -3899,7 +4464,7 @@ endpointRules:
                     api_type: McpToolType::Http,
                     input_schema: default_input_schema(),
                     input_schema_configured: true,
-                    tool_metadata: default_object(),
+                    tool_metadata: allow_private_target_metadata(),
                 }],
                 ..McpRouterConfig::default()
             },
@@ -3963,7 +4528,7 @@ endpointRules:
                         "required": ["apiName"]
                     }),
                     input_schema_configured: true,
-                    tool_metadata: default_object(),
+                    tool_metadata: allow_private_target_metadata(),
                 }],
                 ..McpRouterConfig::default()
             },
@@ -4033,7 +4598,7 @@ endpointRules:
                 api_type: McpToolType::Mcp,
                 input_schema: default_input_schema(),
                 input_schema_configured: true,
-                tool_metadata: default_object(),
+                tool_metadata: allow_private_target_metadata(),
             }],
             ..McpRouterConfig::default()
         })
@@ -4130,7 +4695,7 @@ endpointRules:
                 api_type: McpToolType::Mcp,
                 input_schema: default_input_schema(),
                 input_schema_configured: true,
-                tool_metadata: default_object(),
+                tool_metadata: allow_private_target_metadata(),
             }],
             ..McpRouterConfig::default()
         })
@@ -4197,7 +4762,7 @@ endpointRules:
                 api_type: McpToolType::Mcp,
                 input_schema: default_input_schema(),
                 input_schema_configured: true,
-                tool_metadata: default_object(),
+                tool_metadata: allow_private_target_metadata(),
             }],
             ..McpRouterConfig::default()
         })
@@ -4256,7 +4821,7 @@ endpointRules:
                 api_type: McpToolType::Mcp,
                 input_schema: default_input_schema(),
                 input_schema_configured: true,
-                tool_metadata: default_object(),
+                tool_metadata: allow_private_target_metadata(),
             }],
             ..McpRouterConfig::default()
         })
@@ -4322,7 +4887,7 @@ endpointRules:
                     "required": ["message"]
                 }),
                 input_schema_configured: true,
-                tool_metadata: default_object(),
+                tool_metadata: allow_private_target_metadata(),
             }],
             ..McpRouterConfig::default()
         })
@@ -4400,7 +4965,7 @@ endpointRules:
                     }
                 }),
                 input_schema_configured: true,
-                tool_metadata: default_object(),
+                tool_metadata: allow_private_target_metadata(),
             }],
             ..McpRouterConfig::default()
         })
@@ -4469,7 +5034,7 @@ endpointRules:
                     }
                 }),
                 input_schema_configured: true,
-                tool_metadata: default_object(),
+                tool_metadata: allow_private_target_metadata(),
             }],
             ..McpRouterConfig::default()
         })
@@ -4579,7 +5144,7 @@ endpointRules:
                 api_type: McpToolType::Mcp,
                 input_schema: default_input_schema(),
                 input_schema_configured: true,
-                tool_metadata: default_object(),
+                tool_metadata: allow_private_target_metadata(),
             }],
             ..McpRouterConfig::default()
         })
@@ -4653,7 +5218,7 @@ endpointRules:
                 api_type: McpToolType::Mcp,
                 input_schema: default_input_schema(),
                 input_schema_configured: true,
-                tool_metadata: default_object(),
+                tool_metadata: allow_private_target_metadata(),
             }],
             ..McpRouterConfig::default()
         })
@@ -4903,7 +5468,7 @@ endpointRules:
                 api_type: McpToolType::Mcp,
                 input_schema: default_input_schema(),
                 input_schema_configured: false,
-                tool_metadata: default_object(),
+                tool_metadata: allow_private_target_metadata(),
             }],
             ..McpRouterConfig::default()
         })
@@ -5199,8 +5764,16 @@ endpointRules:
             api_type: McpToolType::Http,
             input_schema,
             input_schema_configured: true,
-            tool_metadata: default_object(),
+            tool_metadata: allow_private_target_metadata(),
         }
+    }
+
+    fn allow_private_target_metadata() -> JsonValue {
+        json!({
+            "runtime": {
+                "allowPrivateTargetHost": true
+            }
+        })
     }
 
     fn accept_json() -> (String, String) {
@@ -5564,6 +6137,133 @@ endpointRules:
     }
 
     #[tokio::test]
+    async fn tool_call_rejects_private_target_host_without_explicit_allow() {
+        let mut tool = test_tool(
+            "weather",
+            "Get weather",
+            "http://127.0.0.1:8080",
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        );
+        tool.tool_metadata = default_object();
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![tool],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather","arguments":{}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["error"]["code"], -32000);
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("allowPrivateTargetHost")
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_call_rejects_missing_path_parameter_mapping() {
+        let mut tool = test_tool(
+            "getCustomerProfile",
+            "Get customer profile",
+            "https://example.com",
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        );
+        tool.path = "/customers/{customerId}".to_string();
+        tool.tool_metadata = json!({
+            "routing": {
+                "parameters": {
+                    "channel": "query"
+                }
+            }
+        });
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![tool],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"getCustomerProfile","arguments":{"customerId":"CUST-1001","channel":"portal"}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["error"]["code"], -32000);
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("requires toolMetadata.routing.parameters.customerId=path")
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_call_rejects_protected_mapped_header() {
+        let mut tool = test_tool(
+            "searchOffers",
+            "Search offers",
+            "https://example.com",
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        );
+        tool.tool_metadata = json!({
+            "routing": {
+                "parameters": {
+                    "Authorization": "header"
+                }
+            }
+        });
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![tool],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"searchOffers","arguments":{"Authorization":"Bearer token"}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["error"]["code"], -32000);
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("protected header `Authorization`")
+        );
+    }
+
+    #[tokio::test]
     async fn tool_call_performs_openapi_parameter_mapping() {
         let (base, received) =
             spawn_http_server(http_json_response(json!({"success": true}))).await;
@@ -5578,6 +6278,9 @@ endpointRules:
         );
         tool.path = "/users/{userId}".to_string();
         tool.tool_metadata = json!({
+            "runtime": {
+                "allowPrivateTargetHost": true
+            },
             "routing": {
                 "parameters": {
                     "userId": "path",
@@ -5651,6 +6354,9 @@ endpointRules:
         );
         tool.path = "/offers".to_string();
         tool.tool_metadata = json!({
+            "runtime": {
+                "allowPrivateTargetHost": true
+            },
             "routing": {
                 "parameters": {
                     "segment": "query",
