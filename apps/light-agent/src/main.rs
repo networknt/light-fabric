@@ -50,6 +50,7 @@ const MAX_SESSION_MESSAGES: usize = 40;
 const DEFAULT_CATALOG_CACHE_TTL_SECONDS: u64 = 60;
 const DEFAULT_CATALOG_STALE_ON_ERROR_SECONDS: u64 = 300;
 const DEFAULT_CATALOG_SELECTION_LIMIT: usize = 12;
+const DEFAULT_SEMANTIC_CATALOG_LIMIT: usize = 50;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -225,6 +226,27 @@ fn duration_from_env_seconds(name: &str, default_seconds: u64) -> Duration {
         .filter(|seconds| *seconds > 0)
         .map(Duration::from_secs)
         .unwrap_or_else(|| Duration::from_secs(default_seconds))
+}
+
+fn bool_from_env(name: &str, default_value: bool) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(default_value)
+}
+
+fn usize_from_env(name: &str, default_value: usize, max_value: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .map(|value| value.min(max_value))
+        .unwrap_or(default_value)
 }
 
 fn to_portal_query_url(portal_url: &str) -> anyhow::Result<String> {
@@ -412,6 +434,10 @@ struct CatalogTool {
     semantic_weight: Option<f32>,
     semantic_score: Option<f32>,
     vector_score: Option<f32>,
+    keyword_score: Option<f32>,
+    combined_score: Option<f32>,
+    vector_distance: Option<f32>,
+    semantic_rank: Option<u32>,
     source_protocol: Option<String>,
     target_personas: Option<String>,
     read_only: Option<bool>,
@@ -447,6 +473,10 @@ struct CatalogToolDiagnostic {
     score: Option<f32>,
     semantic_score: Option<f32>,
     vector_score: Option<f32>,
+    keyword_score: Option<f32>,
+    combined_score: Option<f32>,
+    vector_distance: Option<f32>,
+    semantic_rank: Option<u32>,
     lifecycle_status: Option<String>,
     sensitivity_tier: Option<String>,
     cost_tier: Option<String>,
@@ -475,6 +505,34 @@ struct PortalQueryClient {
     url: String,
     token: String,
     client: reqwest::Client,
+}
+
+fn build_effective_catalog_data(
+    host_id: Uuid,
+    agent_def_id: Uuid,
+    service_id: &str,
+    env_tag: Option<&str>,
+    semantic_query: Option<&str>,
+    semantic_limit: Option<usize>,
+) -> serde_json::Value {
+    let mut data = serde_json::json!({
+        "hostId": host_id,
+        "agentDefId": agent_def_id,
+        "serviceId": service_id,
+    });
+    if let Some(env_tag) = env_tag.filter(|value| !value.trim().is_empty()) {
+        data["envTag"] = serde_json::json!(env_tag);
+    }
+    if let Some(query) = semantic_query
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        data["semanticQuery"] = serde_json::json!(query);
+    }
+    if let Some(limit) = semantic_limit.filter(|value| *value > 0) {
+        data["semanticLimit"] = serde_json::json!(limit);
+    }
+    data
 }
 
 #[derive(Clone)]
@@ -597,15 +655,17 @@ impl PortalQueryClient {
         agent_def_id: Uuid,
         service_id: &str,
         env_tag: Option<&str>,
+        semantic_query: Option<&str>,
+        semantic_limit: Option<usize>,
     ) -> Result<EffectiveAgentCatalog> {
-        let mut data = serde_json::json!({
-            "hostId": host_id,
-            "agentDefId": agent_def_id,
-            "serviceId": service_id,
-        });
-        if let Some(env_tag) = env_tag {
-            data["envTag"] = serde_json::json!(env_tag);
-        }
+        let data = build_effective_catalog_data(
+            host_id,
+            agent_def_id,
+            service_id,
+            env_tag,
+            semantic_query,
+            semantic_limit,
+        );
         let request = serde_json::json!({
             "host": "lightapi.net",
             "service": "genai",
@@ -884,11 +944,26 @@ struct AgentState {
     env_tag: Option<String>,
     catalog_cache_ttl: Duration,
     catalog_stale_on_error: Duration,
+    catalog_semantic_search_enabled: bool,
+    catalog_semantic_limit: usize,
 }
 
 impl AgentState {
     async fn catalog_selection(&self, prompt: &str) -> Option<CatalogSelection> {
-        let catalog = self.effective_catalog().await?;
+        let catalog = if self.catalog_semantic_search_enabled {
+            match self.semantic_effective_catalog(prompt).await {
+                Ok(Some(catalog)) => catalog,
+                Ok(None) => self.effective_catalog().await?,
+                Err(err) => {
+                    warn!(
+                        "Semantic effective catalog refresh failed; falling back to cached keyword catalog: {err}"
+                    );
+                    self.effective_catalog().await?
+                }
+            }
+        } else {
+            self.effective_catalog().await?
+        };
         Some(select_catalog_tools(
             &catalog,
             prompt,
@@ -931,10 +1006,40 @@ impl AgentState {
                 agent_def_id,
                 &self.service_id,
                 self.env_tag.as_deref(),
+                None,
+                None,
             )
             .await?;
         self.catalog_cache.set(catalog.clone()).await;
         Ok(Some(catalog))
+    }
+
+    async fn semantic_effective_catalog(
+        &self,
+        prompt: &str,
+    ) -> Result<Option<EffectiveAgentCatalog>> {
+        let Some(client) = self.portal_query_client.as_ref() else {
+            return Ok(None);
+        };
+        let Some(agent_def_id) = self.agent_def_id else {
+            return Ok(None);
+        };
+        let semantic_query = prompt.trim();
+        if semantic_query.is_empty() {
+            return Ok(None);
+        }
+
+        client
+            .get_effective_agent_catalog(
+                self.host_id,
+                agent_def_id,
+                &self.service_id,
+                self.env_tag.as_deref(),
+                Some(semantic_query),
+                Some(self.catalog_semantic_limit),
+            )
+            .await
+            .map(Some)
     }
 }
 
@@ -1174,16 +1279,19 @@ fn select_catalog_tools(
                 + routing_score
                 + priority)
                 * semantic_weight;
-            if base_score <= 0.0 {
+            let portal_semantic_score = tool
+                .combined_score
+                .or(tool.semantic_score)
+                .or(tool.vector_score)
+                .map(|score| score.max(0.0))
+                .unwrap_or(0.0);
+            if base_score <= 0.0 && portal_semantic_score <= 0.0 {
                 continue;
             }
-            let mut score = base_score;
+            let mut score = base_score + portal_semantic_score;
             score += lifecycle_score_adjustment(tool);
             if informational_prompt {
                 score += informational_safety_bonus(tool);
-            }
-            if let Some(semantic_score) = tool.semantic_score.or(tool.vector_score) {
-                score += semantic_score.max(0.0);
             }
             if score > 0.0 {
                 scored_tools.push(ScoredCatalogTool {
@@ -1384,8 +1492,12 @@ fn tool_diagnostic(
         selected,
         reason,
         score,
-        semantic_score: tool.semantic_score,
+        semantic_score: tool.semantic_score.or(tool.combined_score),
         vector_score: tool.vector_score,
+        keyword_score: tool.keyword_score,
+        combined_score: tool.combined_score,
+        vector_distance: tool.vector_distance,
+        semantic_rank: tool.semantic_rank,
         lifecycle_status: tool.lifecycle_status.clone(),
         sensitivity_tier: effective_sensitivity_tier(tool),
         cost_tier: tool.cost_tier.clone(),
@@ -2620,6 +2732,13 @@ async fn build_agent_state(
     if catalog_stale_on_error < catalog_cache_ttl {
         catalog_stale_on_error = catalog_cache_ttl;
     }
+    let catalog_semantic_search_enabled =
+        bool_from_env("LIGHT_AGENT_ENABLE_SEMANTIC_CATALOG_SEARCH", false);
+    let catalog_semantic_limit = usize_from_env(
+        "LIGHT_AGENT_SEMANTIC_CATALOG_LIMIT",
+        DEFAULT_SEMANTIC_CATALOG_LIMIT,
+        100,
+    );
 
     let state = Arc::new(AgentState {
         provider: model_provider.provider,
@@ -2635,6 +2754,8 @@ async fn build_agent_state(
         env_tag,
         catalog_cache_ttl,
         catalog_stale_on_error,
+        catalog_semantic_search_enabled,
+        catalog_semantic_limit,
     });
 
     if let Err(err) = state.refresh_effective_catalog().await {
@@ -2767,14 +2888,15 @@ mod tests {
     use super::{
         AgentCatalogCache, CatalogSkill, CatalogTool, CatalogToolPolicy, ChatMessage,
         EffectiveAgentCatalog, MAX_SESSION_MESSAGES, ModelProviderConfig,
-        agent_ca_cert_path_from_config, choose_model, collect_catalog_tool_names,
-        collect_policy_diagnostics, filter_gateway_tools, normalize_provider_id,
-        rollback_last_user_message, select_catalog_tools, trim_history,
+        agent_ca_cert_path_from_config, build_effective_catalog_data, choose_model,
+        collect_catalog_tool_names, collect_policy_diagnostics, filter_gateway_tools,
+        normalize_provider_id, rollback_last_user_message, select_catalog_tools, trim_history,
     };
     use light_runtime::config::{BootstrapConfig, ClientConfig};
     use mcp_client::McpTool;
     use std::path::PathBuf;
     use std::time::Duration;
+    use uuid::Uuid;
 
     #[test]
     fn trim_history_keeps_recent_messages() {
@@ -2816,6 +2938,37 @@ mod tests {
 
         assert_eq!(history.len(), 2);
         assert_eq!(history[1].content, "previous reply");
+    }
+
+    #[test]
+    fn effective_catalog_request_data_adds_semantic_fields_only_when_enabled() {
+        let host_id = Uuid::parse_str("019ec75c-72c5-702e-8e42-59dcf1e68cc2").unwrap();
+        let agent_def_id = Uuid::parse_str("019ec75c-72c3-71fc-875b-b918d6277702").unwrap();
+
+        let default_data = build_effective_catalog_data(
+            host_id,
+            agent_def_id,
+            "com.networknt.agent-1.0.0",
+            None,
+            None,
+            None,
+        );
+
+        assert!(default_data.get("semanticQuery").is_none());
+        assert!(default_data.get("semanticLimit").is_none());
+
+        let semantic_data = build_effective_catalog_data(
+            host_id,
+            agent_def_id,
+            "com.networknt.agent-1.0.0",
+            Some("dev"),
+            Some("  find customer preferences  "),
+            Some(25),
+        );
+
+        assert_eq!(semantic_data["envTag"], "dev");
+        assert_eq!(semantic_data["semanticQuery"], "find customer preferences");
+        assert_eq!(semantic_data["semanticLimit"], 25);
     }
 
     #[tokio::test]
@@ -3056,6 +3209,44 @@ mod tests {
         assert_eq!(selection.selected_tools[0].tool_name, "get_customer_lookup");
         assert_eq!(selection.selected_tools[0].read_only, Some(true));
         assert_eq!(selection.selected_tools[0].idempotent, Some(true));
+    }
+
+    #[test]
+    fn catalog_selection_uses_portal_combined_score_when_present() {
+        let catalog = EffectiveAgentCatalog {
+            skills: vec![CatalogSkill {
+                name: "operations".into(),
+                tools: vec![
+                    CatalogTool {
+                        name: "semantic_match".into(),
+                        description: Some("Profile data".into()),
+                        combined_score: Some(0.95),
+                        vector_score: Some(0.90),
+                        keyword_score: Some(0.05),
+                        vector_distance: Some(0.10),
+                        semantic_rank: Some(1),
+                        ..Default::default()
+                    },
+                    CatalogTool {
+                        name: "semantic_tail".into(),
+                        description: Some("Profile data".into()),
+                        combined_score: Some(0.05),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let selection = select_catalog_tools(&catalog, "find preference", 2);
+
+        assert_eq!(selection.selected_tools[0].tool_name, "semantic_match");
+        assert_eq!(selection.selected_tools[0].semantic_score, Some(0.95));
+        assert_eq!(selection.selected_tools[0].vector_score, Some(0.90));
+        assert_eq!(selection.selected_tools[0].keyword_score, Some(0.05));
+        assert_eq!(selection.selected_tools[0].vector_distance, Some(0.10));
+        assert_eq!(selection.selected_tools[0].semantic_rank, Some(1));
     }
 
     #[test]
