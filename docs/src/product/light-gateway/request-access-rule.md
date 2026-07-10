@@ -609,6 +609,37 @@ permission.role in auditInfo.subject_claims.ClaimsMap.roles
 && permission.role in auditInfo.subject_claims.ClaimsMap.roles
 ```
 
+### Guard collection macros against `null`
+
+The CEL collection macros `.exists()`, `.all()`, `.existsOne()`, `.map()`, and
+`.filter()` require a list or map receiver. Check both key presence and the
+value before invoking one:
+
+```cel
+'roles' in permission
+&& permission.roles != null
+&& permission.roles.exists(r, r == auditInfo.subject_claims.ClaimsMap.role)
+```
+
+For map fields, the `has()` macro is an equivalent presence check:
+
+```cel
+has(permission.roles)
+&& permission.roles != null
+&& permission.roles.exists(r, r == auditInfo.subject_claims.ClaimsMap.role)
+```
+
+`has(permission.roles)` checks whether the field is present; it does not check
+whether the present value is `null`, so keep the explicit null guard.
+
+If CEL evaluation fails, `light-rule` logs the rule expression together with
+the exposed `evaluationContext`, including bounded property values. For example,
+it shows `"permission":{"roles":null}` for a null roles receiver. Large
+strings, collections, deeply nested values, and the total number of copied JSON
+nodes are limited; `evaluationContextTruncated` reports when the snapshot was
+shortened. The `candidateNullPaths` field separately lists each null property
+path to make the failing field easy to locate.
+
 ### Avoid `.split()` on array claims
 
 OAuth `scp` can be issued as a JSON array.  Do **not** call `.split(' ')` on

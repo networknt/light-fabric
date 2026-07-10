@@ -115,7 +115,9 @@ ruleBodies:
     conditionSecurityProfile: strict
     expression: >
       auditInfo.subject_claims.ClaimsMap.role != null
-      && roles.exists(r, r == auditInfo.subject_claims.ClaimsMap.role)
+      && 'roles' in permission
+      && permission.roles != null
+      && permission.roles.exists(r, r == auditInfo.subject_claims.ClaimsMap.role)
     actions:
       - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
 ```
@@ -214,7 +216,9 @@ conditions:
   - operatorCode: cel
     expected: >
       context.toolArguments.amount < 1000
-      || roles.exists(r, r == "approver")
+      || ('roles' in context.permission
+          && context.permission.roles != null
+          && context.permission.roles.exists(r, r == "approver"))
 ```
 
 This has one advantage for legacy Java yaml-rule imports: `operator`, `operand`,
@@ -624,9 +628,9 @@ leak memory through stale expression hashes.
 
 ## Rust CEL Library
 
-`cel-interpreter` is a practical first candidate for the Rust implementation. It
-provides `Program::compile(...)`, `Program::execute(...)`, a `Context` for
-variables and functions, and compiled `Program` values that are `Send + Sync`.
+Light-Rule uses the `cel` crate for the Rust implementation. It provides
+`Program::compile(...)`, `Program::execute(...)`, a `Context` for variables and
+functions, and compiled `Program` values that are `Send + Sync`.
 
 Implementation should still be isolated behind a small internal trait:
 
@@ -677,8 +681,8 @@ language, not arbitrary Rust or JavaScript execution, and expressions can only
 resolve variables and functions registered in the CEL context. The CEL context
 is therefore the primary sandbox boundary.
 
-For the Rust `cel-interpreter` integration, context construction should be
-explicit. `Context::default()` exposes standard pure CEL functions such as
+For the Rust `cel` integration, context construction should be explicit.
+`Context::default()` exposes standard pure CEL functions such as
 `size`, `contains`, string helpers, type conversions, regex `matches`, and time
 parsing helpers depending on enabled crate features. If a service accepts
 tenant-authored or otherwise untrusted CEL, prefer `Context::empty()` and add

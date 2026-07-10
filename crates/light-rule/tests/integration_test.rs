@@ -580,6 +580,113 @@ async fn test_strict_cel_profile_list_matching() {
 }
 
 #[tokio::test]
+async fn test_null_comprehension_returns_evaluation_error_without_panicking() {
+    let registry = ActionRegistry::new();
+    let engine = RuleEngine::new(Arc::new(registry));
+
+    let rule = Rule {
+        rule_id: "rule_cel_null_collection_01".into(),
+        rule_name: "Null CEL collection".into(),
+        rule_type: "access-control".into(),
+        common: "Y".into(),
+        host_id: None,
+        rule_desc: None,
+        version: None,
+        author: None,
+        updated_at: None,
+        condition_language: Some("cel".into()),
+        condition_security_profile: Some("strict".into()),
+        access_control_effect: None,
+        expression: Some("permission.roles.exists(r, r == 'admin')".into()),
+        conditions: None,
+        actions: None,
+    };
+
+    let mut context = json!({
+        "permission": {
+            "roles": null
+        }
+    });
+
+    let error = engine.execute_rule(&rule, &mut context).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Failed to evaluate CEL expression"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn test_guarded_null_comprehension_evaluates_to_false() {
+    let registry = ActionRegistry::new();
+    let engine = RuleEngine::new(Arc::new(registry));
+
+    for (suffix, expression) in [
+        (
+            "membership",
+            "'roles' in permission && permission.roles != null && permission.roles.exists(r, r == 'admin')",
+        ),
+        (
+            "has",
+            "has(permission.roles) && permission.roles != null && permission.roles.exists(r, r == 'admin')",
+        ),
+    ] {
+        let rule = Rule {
+            rule_id: format!("rule_cel_null_collection_02_{suffix}"),
+            rule_name: "Guarded null CEL collection".into(),
+            rule_type: "access-control".into(),
+            common: "Y".into(),
+            host_id: None,
+            rule_desc: None,
+            version: None,
+            author: None,
+            updated_at: None,
+            condition_language: Some("cel".into()),
+            condition_security_profile: Some("strict".into()),
+            access_control_effect: None,
+            expression: Some(expression.into()),
+            conditions: None,
+            actions: None,
+        };
+
+        let mut context = json!({
+            "permission": {
+                "roles": null
+            }
+        });
+
+        assert!(
+            !engine.execute_rule(&rule, &mut context).await.unwrap(),
+            "guard {suffix} should evaluate to false for an explicit null"
+        );
+    }
+}
+
+#[test]
+fn test_null_row_collection_is_dropped_without_panicking() {
+    let registry = ActionRegistry::new();
+    let engine = RuleEngine::new(Arc::new(registry));
+    let mut items = vec![
+        json!({"id": 1, "tags": null}),
+        json!({"id": 2, "tags": ["visible"]}),
+    ];
+
+    engine
+        .retain_cel_predicate_rows(
+            "row-null-collection",
+            "row.tags.exists(tag, tag == 'visible')",
+            Some("strict"),
+            "res-fil",
+            &json!({}),
+            &mut items,
+        )
+        .unwrap();
+
+    assert_eq!(items, vec![json!({"id": 2, "tags": ["visible"]})]);
+}
+
+#[tokio::test]
 async fn test_strict_cel_profile_missing_scp() {
     let registry = ActionRegistry::new();
     let engine = RuleEngine::new(Arc::new(registry));
