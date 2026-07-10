@@ -447,6 +447,8 @@ struct CatalogTool {
     cost_tier: Option<String>,
     estimated_latency_ms: Option<u64>,
     cache_ttl_seconds: Option<u64>,
+    retry_policy: Option<serde_json::Value>,
+    rate_limit: Option<serde_json::Value>,
     policy: Option<CatalogToolPolicy>,
 }
 
@@ -482,6 +484,8 @@ struct CatalogToolDiagnostic {
     cost_tier: Option<String>,
     estimated_latency_ms: Option<u64>,
     cache_ttl_seconds: Option<u64>,
+    retry_policy: Option<serde_json::Value>,
+    rate_limit: Option<serde_json::Value>,
     source_protocol: Option<String>,
     routing_domain: Option<String>,
     semantic_namespace: Option<String>,
@@ -1503,6 +1507,8 @@ fn tool_diagnostic(
         cost_tier: tool.cost_tier.clone(),
         estimated_latency_ms: tool.estimated_latency_ms,
         cache_ttl_seconds: tool.cache_ttl_seconds,
+        retry_policy: tool.retry_policy.clone(),
+        rate_limit: tool.rate_limit.clone(),
         source_protocol: tool.source_protocol.clone(),
         routing_domain: tool.routing_domain.clone(),
         semantic_namespace: tool.semantic_namespace.clone(),
@@ -1643,6 +1649,8 @@ fn collect_policy_diagnostics(catalog: &EffectiveAgentCatalog) -> Vec<serde_json
                 "costTier": tool.cost_tier.clone(),
                 "estimatedLatencyMs": tool.estimated_latency_ms,
                 "cacheTtlSeconds": tool.cache_ttl_seconds,
+                "retryPolicy": tool.retry_policy.clone(),
+                "rateLimit": tool.rate_limit.clone(),
             }));
         }
     }
@@ -3225,6 +3233,13 @@ mod tests {
                         keyword_score: Some(0.05),
                         vector_distance: Some(0.10),
                         semantic_rank: Some(1),
+                        retry_policy: Some(serde_json::json!({
+                            "enabled": true,
+                            "maxAttempts": 2
+                        })),
+                        rate_limit: Some(serde_json::json!({
+                            "bucket": "customer-read"
+                        })),
                         ..Default::default()
                     },
                     CatalogTool {
@@ -3247,6 +3262,19 @@ mod tests {
         assert_eq!(selection.selected_tools[0].keyword_score, Some(0.05));
         assert_eq!(selection.selected_tools[0].vector_distance, Some(0.10));
         assert_eq!(selection.selected_tools[0].semantic_rank, Some(1));
+        assert_eq!(
+            selection.selected_tools[0].retry_policy,
+            Some(serde_json::json!({
+                "enabled": true,
+                "maxAttempts": 2
+            }))
+        );
+        assert_eq!(
+            selection.selected_tools[0].rate_limit,
+            Some(serde_json::json!({
+                "bucket": "customer-read"
+            }))
+        );
     }
 
     #[test]

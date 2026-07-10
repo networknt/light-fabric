@@ -45,6 +45,9 @@ const DEFAULT_MCP_MAX_FRONTEND_SESSIONS_PER_CLIENT: usize = 100;
 const JSON_CONTENT_TYPE: &str = "application/json";
 const EVENT_STREAM_CONTENT_TYPE: &str = "text/event-stream";
 const TEXT_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
+const MAX_TOOL_RETRY_ATTEMPTS: usize = 5;
+const MAX_TOOL_RETRY_BACKOFF: Duration = Duration::from_secs(1);
+const RETRYABLE_STATUS_CODES: &[u16] = &[408, 425, 429, 500, 502, 503, 504];
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -429,6 +432,29 @@ struct McpBackendSession {
     session_id: Option<String>,
     protocol_version: String,
     agent_headers: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone)]
+struct ToolRetryPolicy {
+    max_attempts: usize,
+    status_codes: BTreeSet<u16>,
+    retry_on_timeout: bool,
+    retry_on_connect: bool,
+    backoff: Duration,
+}
+
+impl ToolRetryPolicy {
+    fn should_retry_status(&self, attempt: usize, status: u16) -> bool {
+        attempt < self.max_attempts && self.status_codes.contains(&status)
+    }
+
+    fn should_retry_error(&self, attempt: usize, error: &reqwest::Error) -> bool {
+        if attempt >= self.max_attempts {
+            return false;
+        }
+        (self.retry_on_timeout && error.is_timeout())
+            || (self.retry_on_connect && error.is_connect())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1568,60 +1594,106 @@ impl McpRouterRuntime {
         };
 
         validate_target_host_resolution(tool, &url).await?;
+        let retry_policy = tool_retry_policy(tool, arguments);
+        let mut attempt = 1;
 
-        let mut request = self
-            .client
-            .request(request_method.clone(), url)
-            .headers(request_headers);
+        loop {
+            let mut request = self
+                .client
+                .request(request_method.clone(), url.clone())
+                .headers(request_headers.clone());
 
-        if let Some(body) = final_body {
-            request = request.json(&body);
-        }
+            if let Some(body) = final_body.as_ref() {
+                request = request.json(body);
+            }
 
-        let response = request.send().await.map_err(|error| {
-            let detail = error_chain(&error);
-            tracing::warn!(
-                target: "light_pingora::mcp",
-                toolName = %tool.name,
-                method = %request_method,
-                url = %request_url,
-                error = %detail,
-                "mcp backend request failed"
-            );
-            McpExecutionError::execution_failed(detail)
-        })?;
-        let status = response.status();
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
-        let body = response
-            .bytes()
-            .await
-            .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
-        if !status.is_success() {
-            return Err(McpExecutionError::execution_failed(format!(
-                "tool `{}` returned HTTP {}: {}",
-                tool.name,
-                status.as_u16(),
-                String::from_utf8_lossy(&body)
-            )));
+            let response = match request.send().await {
+                Ok(response) => response,
+                Err(error) => {
+                    if retry_policy
+                        .as_ref()
+                        .is_some_and(|policy| policy.should_retry_error(attempt, &error))
+                    {
+                        log_mcp_tool_retry(
+                            tool,
+                            attempt,
+                            retry_policy
+                                .as_ref()
+                                .map_or(1, |policy| policy.max_attempts),
+                            "transport",
+                            error_chain(&error).as_str(),
+                        );
+                        if let Some(policy) = retry_policy.as_ref() {
+                            sleep_retry_backoff(policy).await;
+                        }
+                        attempt += 1;
+                        continue;
+                    }
+                    let detail = error_chain(&error);
+                    tracing::warn!(
+                        target: "light_pingora::mcp",
+                        toolName = %tool.name,
+                        method = %request_method,
+                        url = %request_url,
+                        error = %detail,
+                        "mcp backend request failed"
+                    );
+                    return Err(McpExecutionError::execution_failed(detail));
+                }
+            };
+            let status = response.status();
+            let content_type = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
+            let body = response
+                .bytes()
+                .await
+                .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
+            if !status.is_success() {
+                if retry_policy
+                    .as_ref()
+                    .is_some_and(|policy| policy.should_retry_status(attempt, status.as_u16()))
+                {
+                    let status_detail = status.as_u16().to_string();
+                    log_mcp_tool_retry(
+                        tool,
+                        attempt,
+                        retry_policy
+                            .as_ref()
+                            .map_or(1, |policy| policy.max_attempts),
+                        "status",
+                        status_detail.as_str(),
+                    );
+                    if let Some(policy) = retry_policy.as_ref() {
+                        sleep_retry_backoff(policy).await;
+                    }
+                    attempt += 1;
+                    continue;
+                }
+                return Err(McpExecutionError::execution_failed(format!(
+                    "tool `{}` returned HTTP {}: {}",
+                    tool.name,
+                    status.as_u16(),
+                    String::from_utf8_lossy(&body)
+                )));
+            }
+            if body.is_empty() {
+                return Ok(mcp_text_result("success"));
+            }
+            if content_type
+                .as_deref()
+                .is_some_and(|value| value.to_ascii_lowercase().contains("json"))
+                && let Ok(value) = serde_json::from_slice::<JsonValue>(&body)
+            {
+                return Ok(mcp_json_result(value));
+            }
+            if let Ok(value) = serde_json::from_slice::<JsonValue>(&body) {
+                return Ok(mcp_json_result(value));
+            }
+            return Ok(mcp_text_result(String::from_utf8_lossy(&body).to_string()));
         }
-        if body.is_empty() {
-            return Ok(mcp_text_result("success"));
-        }
-        if content_type
-            .as_deref()
-            .is_some_and(|value| value.to_ascii_lowercase().contains("json"))
-            && let Ok(value) = serde_json::from_slice::<JsonValue>(&body)
-        {
-            return Ok(mcp_json_result(value));
-        }
-        if let Ok(value) = serde_json::from_slice::<JsonValue>(&body) {
-            return Ok(mcp_json_result(value));
-        }
-        Ok(mcp_text_result(String::from_utf8_lossy(&body).to_string()))
     }
 
     fn percent_encode_path_segment(input: &str) -> String {
@@ -1674,28 +1746,77 @@ impl McpRouterRuntime {
             }
         });
         let url_for_log = url.to_string();
-        let response = self
-            .client
-            .post(url)
-            .headers(backend_headers(
-                agent_headers,
-                backend_session.session_id.as_deref(),
-                Some(backend_session.protocol_version.as_str()),
-            )?)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
-        let (status, content_type, _headers, body) =
-            read_backend_mcp_response(response, "tools/call", &url_for_log).await?;
-        if !status.is_success() {
-            return Err(McpExecutionError::execution_failed(format!(
-                "MCP tool `{}` returned HTTP {}: {}",
-                tool.name,
-                status.as_u16(),
-                String::from_utf8_lossy(&body)
-            )));
-        }
+        let retry_policy = tool_retry_policy(tool, arguments);
+        let mut attempt = 1;
+        let (content_type, body) = loop {
+            let response = match self
+                .client
+                .post(url.clone())
+                .headers(backend_headers(
+                    agent_headers,
+                    backend_session.session_id.as_deref(),
+                    Some(backend_session.protocol_version.as_str()),
+                )?)
+                .json(&request)
+                .send()
+                .await
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    if retry_policy
+                        .as_ref()
+                        .is_some_and(|policy| policy.should_retry_error(attempt, &error))
+                    {
+                        log_mcp_tool_retry(
+                            tool,
+                            attempt,
+                            retry_policy
+                                .as_ref()
+                                .map_or(1, |policy| policy.max_attempts),
+                            "transport",
+                            error_chain(&error).as_str(),
+                        );
+                        if let Some(policy) = retry_policy.as_ref() {
+                            sleep_retry_backoff(policy).await;
+                        }
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(McpExecutionError::execution_failed(error.to_string()));
+                }
+            };
+            let (status, content_type, _headers, body) =
+                read_backend_mcp_response(response, "tools/call", &url_for_log).await?;
+            if !status.is_success() {
+                if retry_policy
+                    .as_ref()
+                    .is_some_and(|policy| policy.should_retry_status(attempt, status.as_u16()))
+                {
+                    let status_detail = status.as_u16().to_string();
+                    log_mcp_tool_retry(
+                        tool,
+                        attempt,
+                        retry_policy
+                            .as_ref()
+                            .map_or(1, |policy| policy.max_attempts),
+                        "status",
+                        status_detail.as_str(),
+                    );
+                    if let Some(policy) = retry_policy.as_ref() {
+                        sleep_retry_backoff(policy).await;
+                    }
+                    attempt += 1;
+                    continue;
+                }
+                return Err(McpExecutionError::execution_failed(format!(
+                    "MCP tool `{}` returned HTTP {}: {}",
+                    tool.name,
+                    status.as_u16(),
+                    String::from_utf8_lossy(&body)
+                )));
+            }
+            break (content_type, body);
+        };
         let message = parse_mcp_backend_response(&body, content_type.as_deref())
             .map_err(McpExecutionError::execution_failed)?;
         if let Some(error) = message.get("error") {
@@ -2500,6 +2621,207 @@ fn metadata_bool(metadata: Option<&JsonMap<String, JsonValue>>, keys: &[&str]) -
     metadata
         .and_then(|metadata| metadata_field(metadata, keys))
         .and_then(JsonValue::as_bool)
+}
+
+fn metadata_u64(metadata: Option<&JsonMap<String, JsonValue>>, keys: &[&str]) -> Option<u64> {
+    metadata
+        .and_then(|metadata| metadata_field(metadata, keys))
+        .and_then(|value| {
+            value.as_u64().or_else(|| {
+                value
+                    .as_str()
+                    .and_then(|raw| raw.trim().parse::<u64>().ok())
+            })
+        })
+}
+
+fn tool_retry_policy(tool: &McpToolConfig, arguments: &JsonValue) -> Option<ToolRetryPolicy> {
+    let runtime = tool_runtime_metadata(tool)?;
+    let retry = metadata_field(runtime, &["retry", "retryPolicy", "retry_policy"])
+        .and_then(JsonValue::as_object)?;
+    if !metadata_bool(Some(retry), &["enabled"]).unwrap_or(false) {
+        return None;
+    }
+    if !tool_metadata_bool(tool, &["idempotent"]).unwrap_or(false) {
+        tracing::warn!(
+            target: "light_pingora::mcp",
+            toolName = %tool.name,
+            "runtime retry ignored because safety.idempotent is not true"
+        );
+        return None;
+    }
+    if tool_metadata_bool(tool, &["destructive"]).unwrap_or(false)
+        && !arguments_include_idempotency_key(arguments)
+    {
+        tracing::warn!(
+            target: "light_pingora::mcp",
+            toolName = %tool.name,
+            "runtime retry ignored because destructive tool arguments do not include an idempotency key"
+        );
+        return None;
+    }
+
+    let max_attempts = metadata_u64(Some(retry), &["maxAttempts", "max_attempts"])
+        .and_then(|value| usize::try_from(value).ok())
+        .map(|value| value.min(MAX_TOOL_RETRY_ATTEMPTS))
+        .unwrap_or(1);
+    if max_attempts < 2 {
+        tracing::warn!(
+            target: "light_pingora::mcp",
+            toolName = %tool.name,
+            "runtime retry ignored because maxAttempts is missing or less than 2"
+        );
+        return None;
+    }
+
+    let status_codes = retry_status_codes(retry);
+    let retry_on_timeout = retry_event_enabled(retry, "timeout")
+        || metadata_bool(
+            Some(retry),
+            &["retryOnTimeout", "retry_on_timeout", "onTimeout"],
+        )
+        .unwrap_or(false);
+    let retry_on_connect = retry_event_enabled(retry, "connect")
+        || retry_event_enabled(retry, "connection")
+        || metadata_bool(
+            Some(retry),
+            &["retryOnConnect", "retry_on_connect", "onConnect"],
+        )
+        .unwrap_or(false);
+    if status_codes.is_empty() && !retry_on_timeout && !retry_on_connect {
+        tracing::warn!(
+            target: "light_pingora::mcp",
+            toolName = %tool.name,
+            "runtime retry ignored because no supported retryStatusCodes or retryOn events are configured"
+        );
+        return None;
+    }
+
+    let backoff = metadata_u64(
+        Some(retry),
+        &["backoffMs", "backoffMillis", "delayMs", "backoff_ms"],
+    )
+    .map(Duration::from_millis)
+    .unwrap_or(Duration::ZERO)
+    .min(MAX_TOOL_RETRY_BACKOFF);
+
+    Some(ToolRetryPolicy {
+        max_attempts,
+        status_codes,
+        retry_on_timeout,
+        retry_on_connect,
+        backoff,
+    })
+}
+
+fn tool_metadata_bool(tool: &McpToolConfig, keys: &[&str]) -> Option<bool> {
+    metadata_bool(tool_safety_metadata(tool), keys)
+        .or_else(|| metadata_bool(tool.tool_metadata.as_object(), keys))
+}
+
+fn retry_status_codes(retry: &JsonMap<String, JsonValue>) -> BTreeSet<u16> {
+    metadata_field(
+        retry,
+        &[
+            "retryStatusCodes",
+            "retry_status_codes",
+            "statusCodes",
+            "status_codes",
+        ],
+    )
+    .map(status_code_values)
+    .unwrap_or_default()
+    .into_iter()
+    .filter(|status| RETRYABLE_STATUS_CODES.contains(status))
+    .collect()
+}
+
+fn status_code_values(value: &JsonValue) -> BTreeSet<u16> {
+    match value {
+        JsonValue::Array(values) => values.iter().filter_map(status_code_value).collect(),
+        JsonValue::String(raw) => raw
+            .split(',')
+            .filter_map(|part| part.trim().parse::<u16>().ok())
+            .collect(),
+        _ => status_code_value(value).into_iter().collect(),
+    }
+}
+
+fn status_code_value(value: &JsonValue) -> Option<u16> {
+    value
+        .as_u64()
+        .and_then(|number| u16::try_from(number).ok())
+        .or_else(|| {
+            value
+                .as_str()
+                .and_then(|raw| raw.trim().parse::<u16>().ok())
+        })
+}
+
+fn retry_event_enabled(retry: &JsonMap<String, JsonValue>, event: &str) -> bool {
+    let Some(value) = metadata_field(retry, &["retryOn", "retry_on", "events"]) else {
+        return false;
+    };
+    match value {
+        JsonValue::Array(values) => values.iter().any(|value| retry_event_matches(value, event)),
+        JsonValue::String(_) => retry_event_matches(value, event),
+        _ => false,
+    }
+}
+
+fn retry_event_matches(value: &JsonValue, event: &str) -> bool {
+    value.as_str().is_some_and(|raw| {
+        raw.split(',')
+            .any(|part| part.trim().eq_ignore_ascii_case(event))
+    })
+}
+
+fn arguments_include_idempotency_key(arguments: &JsonValue) -> bool {
+    arguments
+        .as_object()
+        .is_some_and(|arguments| object_contains_idempotency_key(arguments))
+}
+
+fn object_contains_idempotency_key(arguments: &JsonMap<String, JsonValue>) -> bool {
+    arguments.iter().any(|(key, value)| {
+        is_idempotency_key_name(key)
+            || value
+                .as_object()
+                .is_some_and(object_contains_idempotency_key)
+    })
+}
+
+fn is_idempotency_key_name(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    normalized == "idempotencykey"
+}
+
+async fn sleep_retry_backoff(policy: &ToolRetryPolicy) {
+    if !policy.backoff.is_zero() {
+        tokio::time::sleep(policy.backoff).await;
+    }
+}
+
+fn log_mcp_tool_retry(
+    tool: &McpToolConfig,
+    attempt: usize,
+    max_attempts: usize,
+    reason: &str,
+    detail: &str,
+) {
+    tracing::warn!(
+        target: "light_pingora::mcp",
+        toolName = %tool.name,
+        attempt,
+        maxAttempts = max_attempts,
+        retryReason = reason,
+        detail = %detail,
+        "retrying mcp tool call"
+    );
 }
 
 fn tool_parameter_mapping(tool: &McpToolConfig) -> Option<&JsonMap<String, JsonValue>> {
@@ -5776,6 +6098,22 @@ endpointRules:
         })
     }
 
+    fn retry_target_metadata(status_codes: &[u16]) -> JsonValue {
+        json!({
+            "safety": {
+                "idempotent": true
+            },
+            "runtime": {
+                "allowPrivateTargetHost": true,
+                "retry": {
+                    "enabled": true,
+                    "maxAttempts": 2,
+                    "retryStatusCodes": status_codes
+                }
+            }
+        })
+    }
+
     fn accept_json() -> (String, String) {
         (
             "accept".to_string(),
@@ -6134,6 +6472,159 @@ endpointRules:
                 .flatten()
         });
         content_length.is_none_or(|content_length| body_len >= content_length)
+    }
+
+    #[tokio::test]
+    async fn http_tool_retries_configured_retryable_status() {
+        let (base, received) = spawn_http_sequence_server(vec![
+            http_json_response_with_status(500, json!({"error": "temporary"})),
+            http_json_response(json!({"ok": true})),
+        ])
+        .await;
+        let mut tool = test_tool(
+            "weather",
+            "Get weather",
+            &base,
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        );
+        tool.tool_metadata = retry_target_metadata(&[500]);
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![tool],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather","arguments":{}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["result"]["structuredContent"]["ok"], true);
+        let requests = received.await.expect("server requests");
+        assert_eq!(requests.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn http_tool_does_not_retry_destructive_call_without_idempotency_key() {
+        let (base, received) = spawn_http_server(http_json_response_with_status(
+            500,
+            json!({"error": "temporary"}),
+        ))
+        .await;
+        let mut tool = test_tool(
+            "recordDecision",
+            "Record decision",
+            &base,
+            McpHttpMethod::Post,
+            None,
+            default_input_schema(),
+        );
+        tool.tool_metadata = json!({
+            "safety": {
+                "idempotent": true,
+                "destructive": true
+            },
+            "runtime": {
+                "allowPrivateTargetHost": true,
+                "retry": {
+                    "enabled": true,
+                    "maxAttempts": 2,
+                    "retryStatusCodes": [500]
+                }
+            }
+        });
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![tool],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"recordDecision","arguments":{"customerId":"CUST-1001"}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["error"]["code"], -32000);
+        let request = received.await.expect("server request");
+        assert!(request.contains("POST /weather HTTP/1.1"));
+    }
+
+    #[tokio::test]
+    async fn mcp_proxy_tool_retries_configured_retryable_status() {
+        let backend_result = json!({
+            "jsonrpc": "2.0",
+            "id": "retry-success",
+            "result": mcp_text_result("ok")
+        });
+        let (base, received) = spawn_http_sequence_server(vec![
+            backend_initialize_response("backend-session"),
+            http_empty_response(202),
+            http_json_response_with_status(503, json!({"error": "temporary"})),
+            http_json_response(backend_result),
+        ])
+        .await;
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![McpToolConfig {
+                name: "weather".to_string(),
+                endpoint_name: None,
+                description: "Get weather".to_string(),
+                protocol: None,
+                service_id: None,
+                env_tag: None,
+                target_host: Some(base),
+                path: "/mcp".to_string(),
+                method: McpHttpMethod::Call,
+                endpoint: None,
+                api_type: McpToolType::Mcp,
+                input_schema: default_input_schema(),
+                input_schema_configured: true,
+                tool_metadata: retry_target_metadata(&[503]),
+            }],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather","arguments":{}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["result"]["content"][0]["text"], "ok");
+        let requests = received.await.expect("server requests");
+        assert_eq!(requests.len(), 4);
+        assert_eq!(request_json_body(&requests[0])["method"], "initialize");
+        assert_eq!(
+            request_json_body(&requests[1])["method"],
+            "notifications/initialized"
+        );
+        assert_eq!(request_json_body(&requests[2])["method"], "tools/call");
+        assert_eq!(request_json_body(&requests[3])["method"], "tools/call");
     }
 
     #[tokio::test]
