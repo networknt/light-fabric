@@ -31,6 +31,7 @@ use sqlx::{PgPool, Row};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tower_http::services::ServeDir;
 use tracing::{error, info, warn};
@@ -46,6 +47,9 @@ const DEFAULT_CONFIG_DIR: &str = "config-defaults";
 const EXTERNAL_CONFIG_DIR: &str = "config-cache";
 const MODEL_PROVIDER_FILE: &str = "model-provider.yml";
 const MAX_SESSION_MESSAGES: usize = 40;
+const DEFAULT_CATALOG_CACHE_TTL_SECONDS: u64 = 60;
+const DEFAULT_CATALOG_STALE_ON_ERROR_SECONDS: u64 = 300;
+const DEFAULT_CATALOG_SELECTION_LIMIT: usize = 12;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -214,6 +218,15 @@ fn optional_uuid_env_var(names: &[&str]) -> anyhow::Result<Option<Uuid>> {
     Ok(None)
 }
 
+fn duration_from_env_seconds(name: &str, default_seconds: u64) -> Duration {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(default_seconds))
+}
+
 fn to_portal_query_url(portal_url: &str) -> anyhow::Result<String> {
     let mut url = Url::parse(portal_url)
         .with_context(|| format!("Invalid portal query URL: {portal_url}"))?;
@@ -265,7 +278,13 @@ fn portal_query_base_url(config: &PortalRegistryConfig) -> String {
 
 #[derive(Clone)]
 struct AgentCatalogCache {
-    inner: Arc<RwLock<Option<EffectiveAgentCatalog>>>,
+    inner: Arc<RwLock<Option<CachedAgentCatalog>>>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedAgentCatalog {
+    catalog: EffectiveAgentCatalog,
+    fetched_at: Instant,
 }
 
 impl AgentCatalogCache {
@@ -275,17 +294,74 @@ impl AgentCatalogCache {
         }
     }
 
-    async fn get(&self) -> Option<EffectiveAgentCatalog> {
-        self.inner.read().await.clone()
+    async fn get_fresh(&self, ttl: Duration) -> Option<EffectiveAgentCatalog> {
+        self.get_with_max_age(ttl, false).await
+    }
+
+    async fn get_stale(&self, max_age: Duration) -> Option<EffectiveAgentCatalog> {
+        self.get_with_max_age(max_age, true).await
+    }
+
+    async fn get_with_max_age(
+        &self,
+        max_age: Duration,
+        mark_stale: bool,
+    ) -> Option<EffectiveAgentCatalog> {
+        let entry = self.inner.read().await.clone()?;
+        if entry.fetched_at.elapsed() > max_age {
+            return None;
+        }
+        let mut catalog = entry.catalog;
+        if mark_stale {
+            catalog.stale = true;
+        }
+        Some(catalog)
+    }
+
+    async fn diagnostics(
+        &self,
+        ttl: Duration,
+        stale_on_error: Duration,
+    ) -> CatalogCacheDiagnostics {
+        let entry = self.inner.read().await.clone();
+        let age_seconds = entry
+            .as_ref()
+            .map(|entry| entry.fetched_at.elapsed().as_secs());
+        let fresh = entry
+            .as_ref()
+            .is_some_and(|entry| entry.fetched_at.elapsed() <= ttl);
+        let usable_on_error = entry
+            .as_ref()
+            .is_some_and(|entry| entry.fetched_at.elapsed() <= stale_on_error);
+        CatalogCacheDiagnostics {
+            ttl_seconds: ttl.as_secs(),
+            stale_on_error_seconds: stale_on_error.as_secs(),
+            age_seconds,
+            fresh,
+            usable_on_error,
+        }
     }
 
     async fn set(&self, catalog: EffectiveAgentCatalog) {
-        *self.inner.write().await = Some(catalog);
+        *self.inner.write().await = Some(CachedAgentCatalog {
+            catalog,
+            fetched_at: Instant::now(),
+        });
     }
 
     async fn clear(&self) {
         *self.inner.write().await = None;
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogCacheDiagnostics {
+    ttl_seconds: u64,
+    stale_on_error_seconds: u64,
+    age_seconds: Option<u64>,
+    fresh: bool,
+    usable_on_error: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -327,15 +403,24 @@ struct CatalogSkill {
 struct CatalogTool {
     name: String,
     description: Option<String>,
+    lifecycle_status: Option<String>,
+    semantic_description: Option<String>,
+    semantic_keywords: Vec<String>,
     routing_domain: Option<String>,
     semantic_namespace: Option<String>,
     sensitivity_tier: Option<String>,
     semantic_weight: Option<f32>,
+    semantic_score: Option<f32>,
+    vector_score: Option<f32>,
     source_protocol: Option<String>,
     target_personas: Option<String>,
     read_only: Option<bool>,
+    idempotent: Option<bool>,
     destructive: Option<bool>,
     requires_approval: Option<bool>,
+    cost_tier: Option<String>,
+    estimated_latency_ms: Option<u64>,
+    cache_ttl_seconds: Option<u64>,
     policy: Option<CatalogToolPolicy>,
 }
 
@@ -352,10 +437,37 @@ struct CatalogToolPolicy {
     approval_configured: Option<bool>,
 }
 
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct CatalogToolDiagnostic {
+    skill: String,
+    tool_name: String,
+    selected: bool,
+    reason: String,
+    score: Option<f32>,
+    semantic_score: Option<f32>,
+    vector_score: Option<f32>,
+    lifecycle_status: Option<String>,
+    sensitivity_tier: Option<String>,
+    cost_tier: Option<String>,
+    estimated_latency_ms: Option<u64>,
+    cache_ttl_seconds: Option<u64>,
+    source_protocol: Option<String>,
+    routing_domain: Option<String>,
+    semantic_namespace: Option<String>,
+    read_only: Option<bool>,
+    idempotent: Option<bool>,
+    destructive: Option<bool>,
+    requires_approval: Option<bool>,
+    approval_configured: Option<bool>,
+}
+
 #[derive(Debug, Clone)]
 struct CatalogSelection {
     tool_names: HashSet<String>,
     context: Option<String>,
+    selected_tools: Vec<CatalogToolDiagnostic>,
+    hidden_tools: Vec<CatalogToolDiagnostic>,
 }
 
 #[derive(Clone)]
@@ -770,49 +882,59 @@ struct AgentState {
     agent_def_id: Option<Uuid>,
     service_id: String,
     env_tag: Option<String>,
+    catalog_cache_ttl: Duration,
+    catalog_stale_on_error: Duration,
 }
 
 impl AgentState {
     async fn catalog_selection(&self, prompt: &str) -> Option<CatalogSelection> {
         let catalog = self.effective_catalog().await?;
-        Some(select_catalog_tools(&catalog, prompt, 12))
+        Some(select_catalog_tools(
+            &catalog,
+            prompt,
+            DEFAULT_CATALOG_SELECTION_LIMIT,
+        ))
     }
 
     async fn effective_catalog(&self) -> Option<EffectiveAgentCatalog> {
-        if let Some(catalog) = self.catalog_cache.get().await {
+        if let Some(catalog) = self.catalog_cache.get_fresh(self.catalog_cache_ttl).await {
             return Some(catalog);
         }
 
+        match self.refresh_effective_catalog().await {
+            Ok(catalog) => catalog,
+            Err(err) => {
+                warn!(
+                    "Effective agent catalog refresh failed; trying bounded stale catalog fallback: {err}"
+                );
+                self.catalog_cache
+                    .get_stale(self.catalog_stale_on_error)
+                    .await
+            }
+        }
+    }
+
+    async fn refresh_effective_catalog(&self) -> Result<Option<EffectiveAgentCatalog>> {
         let Some(client) = self.portal_query_client.as_ref() else {
-            return None;
+            return Ok(None);
         };
         let Some(agent_def_id) = self.agent_def_id else {
             warn!(
                 "LIGHT_AGENT_AGENT_DEF_ID is not configured; using gateway tools/list without portal catalog filtering"
             );
-            return None;
+            return Ok(None);
         };
 
-        match client
+        let catalog = client
             .get_effective_agent_catalog(
                 self.host_id,
                 agent_def_id,
                 &self.service_id,
                 self.env_tag.as_deref(),
             )
-            .await
-        {
-            Ok(catalog) => {
-                self.catalog_cache.set(catalog.clone()).await;
-                Some(catalog)
-            }
-            Err(err) => {
-                warn!(
-                    "Effective agent catalog lookup failed; using gateway tools/list fallback: {err}"
-                );
-                None
-            }
-        }
+            .await?;
+        self.catalog_cache.set(catalog.clone()).await;
+        Ok(Some(catalog))
     }
 }
 
@@ -849,16 +971,30 @@ struct ToolDiagnosticsResponse {
     catalog_hash: Option<String>,
     catalog_version: Option<u64>,
     catalog_stale: bool,
+    catalog_cache: CatalogCacheDiagnostics,
     catalog_tools: Vec<String>,
+    selected_tools: Vec<CatalogToolDiagnostic>,
+    hidden_tools: Vec<CatalogToolDiagnostic>,
     gateway_available: bool,
     gateway_tools: Vec<String>,
     missing_from_gateway: Vec<String>,
     extra_gateway_tools: Vec<String>,
     policy_blocked: Vec<serde_json::Value>,
+    catalog_error: Option<String>,
     gateway_error: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ToolDiagnosticsQuery {
+    #[serde(default)]
+    refresh: Option<bool>,
+    #[serde(default, alias = "query")]
+    prompt: Option<String>,
+}
+
 async fn tool_diagnostics(
+    Query(params): Query<ToolDiagnosticsQuery>,
     headers: HeaderMap,
     State(state): State<Arc<AgentState>>,
 ) -> Json<ToolDiagnosticsResponse> {
@@ -866,7 +1002,27 @@ async fn tool_diagnostics(
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
-    let catalog = state.effective_catalog().await;
+    let (catalog, catalog_error) = if params.refresh.unwrap_or(false) {
+        match state.refresh_effective_catalog().await {
+            Ok(catalog) => (catalog, None),
+            Err(err) => (
+                state
+                    .catalog_cache
+                    .get_stale(state.catalog_stale_on_error)
+                    .await,
+                Some(err.to_string()),
+            ),
+        }
+    } else {
+        (state.effective_catalog().await, None)
+    };
+    let diagnostic_selection = catalog.as_ref().map(|catalog| {
+        select_catalog_tools(
+            catalog,
+            params.prompt.as_deref().unwrap_or_default(),
+            DEFAULT_CATALOG_SELECTION_LIMIT,
+        )
+    });
     let (catalog_tools, policy_blocked) = catalog
         .as_ref()
         .map(|catalog| {
@@ -910,12 +1066,24 @@ async fn tool_diagnostics(
             .and_then(|catalog| catalog.catalog_hash.clone()),
         catalog_version: catalog.as_ref().and_then(|catalog| catalog.catalog_version),
         catalog_stale: catalog.as_ref().is_some_and(|catalog| catalog.stale),
+        catalog_cache: state
+            .catalog_cache
+            .diagnostics(state.catalog_cache_ttl, state.catalog_stale_on_error)
+            .await,
         catalog_tools,
+        selected_tools: diagnostic_selection
+            .as_ref()
+            .map(|selection| selection.selected_tools.clone())
+            .unwrap_or_default(),
+        hidden_tools: diagnostic_selection
+            .map(|selection| selection.hidden_tools)
+            .unwrap_or_default(),
         gateway_available,
         gateway_tools,
         missing_from_gateway,
         extra_gateway_tools,
         policy_blocked,
+        catalog_error,
         gateway_error,
     })
 }
@@ -966,13 +1134,25 @@ fn rollback_last_user_message(history: &mut Vec<ChatMessage>, expected_text: &st
     }
 }
 
+#[derive(Debug, Clone)]
+struct ScoredCatalogTool {
+    score: f32,
+    sequence: usize,
+    cost_rank: u8,
+    latency_ms: u64,
+    tool_name: String,
+    diagnostic: CatalogToolDiagnostic,
+}
+
 fn select_catalog_tools(
     catalog: &EffectiveAgentCatalog,
     prompt: &str,
     limit: usize,
 ) -> CatalogSelection {
     let query_terms = tokenize(prompt);
-    let mut scored_tools: Vec<(f32, usize, String)> = Vec::new();
+    let informational_prompt = prompt_is_informational(prompt);
+    let mut scored_tools = Vec::new();
+    let mut hidden_tools = Vec::new();
 
     for (skill_index, skill) in catalog.skills.iter().enumerate() {
         let skill_text = searchable_skill_text(skill);
@@ -981,32 +1161,57 @@ fn select_catalog_tools(
             if tool.name.trim().is_empty() {
                 continue;
             }
-            if !catalog_tool_allowed(tool) {
+            if let Some(reason) = catalog_tool_hidden_reason(tool) {
+                hidden_tools.push(tool_diagnostic(skill, tool, false, reason, None));
                 continue;
             }
             let tool_text = searchable_tool_text(tool);
             let routing_score = routing_score(&query_terms, tool);
             let priority = skill.priority.unwrap_or_default().max(0) as f32 / 10.0;
             let semantic_weight = tool.semantic_weight.unwrap_or(1.0).max(0.1);
-            let score = ((skill_score * 0.75)
+            let base_score = ((skill_score * 0.75)
                 + (keyword_score(&query_terms, &tool_text) * 1.5)
                 + routing_score
                 + priority)
                 * semantic_weight;
+            if base_score <= 0.0 {
+                continue;
+            }
+            let mut score = base_score;
+            score += lifecycle_score_adjustment(tool);
+            if informational_prompt {
+                score += informational_safety_bonus(tool);
+            }
+            if let Some(semantic_score) = tool.semantic_score.or(tool.vector_score) {
+                score += semantic_score.max(0.0);
+            }
             if score > 0.0 {
-                scored_tools.push((
+                scored_tools.push(ScoredCatalogTool {
                     score,
-                    skill.sequence_id.unwrap_or(skill_index as i32).max(0) as usize,
-                    tool.name.clone(),
-                ));
+                    sequence: skill.sequence_id.unwrap_or(skill_index as i32).max(0) as usize,
+                    cost_rank: cost_rank(tool.cost_tier.as_deref()),
+                    latency_ms: tool.estimated_latency_ms.unwrap_or(u64::MAX),
+                    tool_name: tool.name.clone(),
+                    diagnostic: tool_diagnostic(
+                        skill,
+                        tool,
+                        true,
+                        "selected".to_string(),
+                        Some(score),
+                    ),
+                });
             }
         }
     }
 
     scored_tools.sort_by(|a, b| {
-        b.0.partial_cmp(&a.0)
+        b.score
+            .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.cost_rank.cmp(&b.cost_rank))
+            .then_with(|| a.latency_ms.cmp(&b.latency_ms))
+            .then_with(|| a.sequence.cmp(&b.sequence))
+            .then_with(|| a.tool_name.cmp(&b.tool_name))
     });
 
     if scored_tools.is_empty() {
@@ -1015,14 +1220,33 @@ fn select_catalog_tools(
                 if tool.name.trim().is_empty() {
                     continue;
                 }
-                if !catalog_tool_allowed(tool) {
+                if catalog_tool_hidden_reason(tool).is_some() {
                     continue;
                 }
-                scored_tools.push((
-                    0.1,
-                    skill.sequence_id.unwrap_or(skill_index as i32).max(0) as usize,
-                    tool.name.clone(),
-                ));
+                let score = 0.1
+                    + lifecycle_score_adjustment(tool)
+                    + if informational_prompt {
+                        informational_safety_bonus(tool)
+                    } else {
+                        0.0
+                    };
+                if score <= 0.0 {
+                    continue;
+                }
+                scored_tools.push(ScoredCatalogTool {
+                    score,
+                    sequence: skill.sequence_id.unwrap_or(skill_index as i32).max(0) as usize,
+                    cost_rank: cost_rank(tool.cost_tier.as_deref()),
+                    latency_ms: tool.estimated_latency_ms.unwrap_or(u64::MAX),
+                    tool_name: tool.name.clone(),
+                    diagnostic: tool_diagnostic(
+                        skill,
+                        tool,
+                        true,
+                        "selected".to_string(),
+                        Some(score),
+                    ),
+                });
             }
             if scored_tools.len() >= limit {
                 break;
@@ -1030,11 +1254,22 @@ fn select_catalog_tools(
         }
     }
 
-    let selected: Vec<_> = scored_tools.into_iter().take(limit).collect();
-    let tool_names = selected
-        .iter()
-        .map(|(_, _, tool_name)| tool_name.clone())
-        .collect::<HashSet<_>>();
+    let mut tool_names = HashSet::new();
+    let mut selected_tools = Vec::new();
+    let mut selected_count = 0;
+    for scored in scored_tools {
+        if selected_count >= limit {
+            let mut diagnostic = scored.diagnostic;
+            diagnostic.selected = false;
+            diagnostic.reason = "not_selected_ranked_below_limit".to_string();
+            hidden_tools.push(diagnostic);
+            continue;
+        }
+        if tool_names.insert(scored.tool_name.clone()) {
+            selected_count += 1;
+            selected_tools.push(scored.diagnostic);
+        }
+    }
 
     let context = if tool_names.is_empty() {
         None
@@ -1080,6 +1315,8 @@ fn select_catalog_tools(
     CatalogSelection {
         tool_names,
         context,
+        selected_tools,
+        hidden_tools,
     }
 }
 
@@ -1094,9 +1331,25 @@ fn excerpt(value: &str, max_chars: usize) -> String {
 }
 
 fn catalog_tool_allowed(tool: &CatalogTool) -> bool {
+    catalog_tool_hidden_reason(tool).is_none()
+}
+
+fn catalog_tool_hidden_reason(tool: &CatalogTool) -> Option<String> {
+    if tool
+        .lifecycle_status
+        .as_deref()
+        .is_some_and(|status| status.eq_ignore_ascii_case("retired"))
+    {
+        return Some("lifecycle_retired".to_string());
+    }
+
     let policy = tool.policy.as_ref();
     if policy.and_then(|policy| policy.allowed) == Some(false) {
-        return false;
+        return Some(
+            policy
+                .and_then(|policy| policy.reason.clone())
+                .unwrap_or_else(|| "policy_denied".to_string()),
+        );
     }
 
     let approval_configured = policy
@@ -1111,7 +1364,129 @@ fn catalog_tool_allowed(tool: &CatalogTool) -> bool {
         .or_else(|| policy.and_then(|policy| policy.requires_approval))
         .unwrap_or(false);
 
-    !(destructive || requires_approval) || approval_configured
+    if (destructive || requires_approval) && !approval_configured {
+        return Some("approval_required_missing_workflow".to_string());
+    }
+
+    None
+}
+
+fn tool_diagnostic(
+    skill: &CatalogSkill,
+    tool: &CatalogTool,
+    selected: bool,
+    reason: String,
+    score: Option<f32>,
+) -> CatalogToolDiagnostic {
+    CatalogToolDiagnostic {
+        skill: skill.name.clone(),
+        tool_name: tool.name.clone(),
+        selected,
+        reason,
+        score,
+        semantic_score: tool.semantic_score,
+        vector_score: tool.vector_score,
+        lifecycle_status: tool.lifecycle_status.clone(),
+        sensitivity_tier: effective_sensitivity_tier(tool),
+        cost_tier: tool.cost_tier.clone(),
+        estimated_latency_ms: tool.estimated_latency_ms,
+        cache_ttl_seconds: tool.cache_ttl_seconds,
+        source_protocol: tool.source_protocol.clone(),
+        routing_domain: tool.routing_domain.clone(),
+        semantic_namespace: tool.semantic_namespace.clone(),
+        read_only: effective_read_only(tool),
+        idempotent: effective_idempotent(tool),
+        destructive: effective_destructive(tool),
+        requires_approval: effective_requires_approval(tool),
+        approval_configured: effective_approval_configured(tool),
+    }
+}
+
+fn lifecycle_score_adjustment(tool: &CatalogTool) -> f32 {
+    match tool
+        .lifecycle_status
+        .as_deref()
+        .unwrap_or("active")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "active" => 0.25,
+        "deprecated" => -0.25,
+        "retired" => -10.0,
+        _ => 0.0,
+    }
+}
+
+fn informational_safety_bonus(tool: &CatalogTool) -> f32 {
+    let read_only = effective_read_only(tool).unwrap_or(false);
+    let idempotent = effective_idempotent(tool).unwrap_or(false);
+    match (read_only, idempotent) {
+        (true, true) => 0.5,
+        (true, false) | (false, true) => 0.25,
+        (false, false) => 0.0,
+    }
+}
+
+fn cost_rank(cost_tier: Option<&str>) -> u8 {
+    match cost_tier.unwrap_or("medium").to_ascii_lowercase().as_str() {
+        "free" | "none" | "low" => 0,
+        "medium" => 1,
+        "high" => 2,
+        "premium" | "expensive" => 3,
+        _ => 1,
+    }
+}
+
+fn prompt_is_informational(prompt: &str) -> bool {
+    let terms = tokenize(prompt);
+    if terms.is_empty() {
+        return true;
+    }
+    let mutating = [
+        "add", "approve", "cancel", "change", "create", "delete", "modify", "record", "remove",
+        "send", "submit", "update", "write",
+    ];
+    let informational = [
+        "describe", "explain", "fetch", "find", "get", "how", "list", "lookup", "read", "search",
+        "show", "what", "when", "where", "who",
+    ];
+    informational.iter().any(|term| terms.contains(*term))
+        || !mutating.iter().any(|term| terms.contains(*term))
+}
+
+fn effective_read_only(tool: &CatalogTool) -> Option<bool> {
+    tool.read_only
+        .or_else(|| tool.policy.as_ref().and_then(|policy| policy.read_only))
+}
+
+fn effective_idempotent(tool: &CatalogTool) -> Option<bool> {
+    tool.idempotent
+}
+
+fn effective_destructive(tool: &CatalogTool) -> Option<bool> {
+    tool.destructive
+        .or_else(|| tool.policy.as_ref().and_then(|policy| policy.destructive))
+}
+
+fn effective_requires_approval(tool: &CatalogTool) -> Option<bool> {
+    tool.requires_approval.or_else(|| {
+        tool.policy
+            .as_ref()
+            .and_then(|policy| policy.requires_approval)
+    })
+}
+
+fn effective_approval_configured(tool: &CatalogTool) -> Option<bool> {
+    tool.policy
+        .as_ref()
+        .and_then(|policy| policy.approval_configured)
+}
+
+fn effective_sensitivity_tier(tool: &CatalogTool) -> Option<String> {
+    tool.policy
+        .as_ref()
+        .and_then(|policy| policy.sensitivity_tier.clone())
+        .or_else(|| tool.sensitivity_tier.clone())
 }
 
 fn collect_catalog_tool_names(catalog: &EffectiveAgentCatalog) -> Vec<String> {
@@ -1140,29 +1515,22 @@ fn collect_policy_diagnostics(catalog: &EffectiveAgentCatalog) -> Vec<serde_json
             diagnostics.push(serde_json::json!({
                 "skill": skill.name,
                 "toolName": tool.name,
-                "reason": tool
-                    .policy
-                    .as_ref()
-                    .and_then(|policy| policy.reason.clone())
+                "reason": catalog_tool_hidden_reason(tool)
                     .unwrap_or_else(|| "local_policy_guard".to_string()),
-                "sensitivityTier": tool
-                    .policy
-                    .as_ref()
-                    .and_then(|policy| policy.sensitivity_tier.clone())
-                    .or_else(|| tool.sensitivity_tier.clone()),
+                "lifecycleStatus": tool.lifecycle_status.clone(),
+                "sensitivityTier": effective_sensitivity_tier(tool),
                 "maxSensitivityTier": tool
                     .policy
                     .as_ref()
                     .and_then(|policy| policy.max_sensitivity_tier.clone()),
-                "readOnly": tool
-                    .read_only
-                    .or_else(|| tool.policy.as_ref().and_then(|policy| policy.read_only)),
-                "destructive": tool
-                    .destructive
-                    .or_else(|| tool.policy.as_ref().and_then(|policy| policy.destructive)),
-                "requiresApproval": tool
-                    .requires_approval
-                    .or_else(|| tool.policy.as_ref().and_then(|policy| policy.requires_approval)),
+                "readOnly": effective_read_only(tool),
+                "idempotent": effective_idempotent(tool),
+                "destructive": effective_destructive(tool),
+                "requiresApproval": effective_requires_approval(tool),
+                "approvalConfigured": effective_approval_configured(tool),
+                "costTier": tool.cost_tier.clone(),
+                "estimatedLatencyMs": tool.estimated_latency_ms,
+                "cacheTtlSeconds": tool.cache_ttl_seconds,
             }));
         }
     }
@@ -1227,17 +1595,24 @@ fn keyword_score(query_terms: &HashSet<String>, text: &str) -> f32 {
 }
 
 fn routing_score(query_terms: &HashSet<String>, tool: &CatalogTool) -> f32 {
-    [
+    let field_score = [
         tool.routing_domain.as_deref(),
         tool.semantic_namespace.as_deref(),
         tool.sensitivity_tier.as_deref(),
         tool.source_protocol.as_deref(),
+        tool.lifecycle_status.as_deref(),
+        tool.cost_tier.as_deref(),
     ]
     .into_iter()
     .flatten()
     .map(|value| keyword_score(query_terms, value))
-    .sum::<f32>()
-        * 2.0
+    .sum::<f32>();
+    let keyword_score = tool
+        .semantic_keywords
+        .iter()
+        .map(|value| keyword_score(query_terms, value))
+        .sum::<f32>();
+    (field_score + keyword_score) * 2.0
 }
 
 fn searchable_skill_text(skill: &CatalogSkill) -> String {
@@ -1259,6 +1634,11 @@ fn searchable_tool_text(tool: &CatalogTool) -> String {
     append_search_text(&mut text, tool.description.as_deref().unwrap_or_default());
     append_search_text(
         &mut text,
+        tool.semantic_description.as_deref().unwrap_or_default(),
+    );
+    append_search_text(&mut text, &tool.semantic_keywords.join(" "));
+    append_search_text(
+        &mut text,
         tool.routing_domain.as_deref().unwrap_or_default(),
     );
     append_search_text(
@@ -1273,6 +1653,11 @@ fn searchable_tool_text(tool: &CatalogTool) -> String {
         &mut text,
         tool.source_protocol.as_deref().unwrap_or_default(),
     );
+    append_search_text(
+        &mut text,
+        tool.lifecycle_status.as_deref().unwrap_or_default(),
+    );
+    append_search_text(&mut text, tool.cost_tier.as_deref().unwrap_or_default());
     append_search_text(
         &mut text,
         tool.target_personas.as_deref().unwrap_or_default(),
@@ -2224,7 +2609,19 @@ async fn build_agent_state(
         .map_err(|e| RuntimeError::Config(format!("failed to build portal query client: {e}")))?,
     );
 
-    Ok(Arc::new(AgentState {
+    let catalog_cache_ttl = duration_from_env_seconds(
+        "LIGHT_AGENT_CATALOG_CACHE_TTL_SECONDS",
+        DEFAULT_CATALOG_CACHE_TTL_SECONDS,
+    );
+    let mut catalog_stale_on_error = duration_from_env_seconds(
+        "LIGHT_AGENT_CATALOG_STALE_ON_ERROR_SECONDS",
+        DEFAULT_CATALOG_STALE_ON_ERROR_SECONDS,
+    );
+    if catalog_stale_on_error < catalog_cache_ttl {
+        catalog_stale_on_error = catalog_cache_ttl;
+    }
+
+    let state = Arc::new(AgentState {
         provider: model_provider.provider,
         model: model_provider.model,
         temperature: model_provider.temperature,
@@ -2236,7 +2633,17 @@ async fn build_agent_state(
         agent_def_id,
         service_id: runtime_config.service_identity.service_id.clone(),
         env_tag,
-    }))
+        catalog_cache_ttl,
+        catalog_stale_on_error,
+    });
+
+    if let Err(err) = state.refresh_effective_catalog().await {
+        warn!(
+            "Initial effective agent catalog refresh failed; continuing with lazy refresh: {err}"
+        );
+    }
+
+    Ok(state)
 }
 
 fn read_agent_ca_cert_bundle(
@@ -2358,14 +2765,16 @@ impl RegistryHandler for AgentRegistryHandler {
 #[cfg(test)]
 mod tests {
     use super::{
-        CatalogSkill, CatalogTool, CatalogToolPolicy, ChatMessage, EffectiveAgentCatalog,
-        MAX_SESSION_MESSAGES, ModelProviderConfig, agent_ca_cert_path_from_config, choose_model,
-        collect_catalog_tool_names, collect_policy_diagnostics, filter_gateway_tools,
-        normalize_provider_id, rollback_last_user_message, select_catalog_tools, trim_history,
+        AgentCatalogCache, CatalogSkill, CatalogTool, CatalogToolPolicy, ChatMessage,
+        EffectiveAgentCatalog, MAX_SESSION_MESSAGES, ModelProviderConfig,
+        agent_ca_cert_path_from_config, choose_model, collect_catalog_tool_names,
+        collect_policy_diagnostics, filter_gateway_tools, normalize_provider_id,
+        rollback_last_user_message, select_catalog_tools, trim_history,
     };
     use light_runtime::config::{BootstrapConfig, ClientConfig};
     use mcp_client::McpTool;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     #[test]
     fn trim_history_keeps_recent_messages() {
@@ -2407,6 +2816,28 @@ mod tests {
 
         assert_eq!(history.len(), 2);
         assert_eq!(history[1].content, "previous reply");
+    }
+
+    #[tokio::test]
+    async fn catalog_cache_marks_stale_after_fresh_ttl() {
+        let cache = AgentCatalogCache::new();
+        cache
+            .set(EffectiveAgentCatalog {
+                catalog_hash: Some("abc".into()),
+                stale: false,
+                ..Default::default()
+            })
+            .await;
+
+        assert!(cache.get_fresh(Duration::from_secs(60)).await.is_some());
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        assert!(cache.get_fresh(Duration::from_secs(0)).await.is_none());
+        let stale = cache
+            .get_stale(Duration::from_secs(60))
+            .await
+            .expect("stale catalog");
+        assert!(stale.stale);
+        assert_eq!(stale.catalog_hash.as_deref(), Some("abc"));
     }
 
     #[test]
@@ -2543,6 +2974,88 @@ mod tests {
 
         assert!(selection.tool_names.contains("get_invoice"));
         assert!(!selection.tool_names.contains("delete_invoice"));
+    }
+
+    #[test]
+    fn catalog_selection_excludes_retired_and_penalizes_deprecated_tools() {
+        let catalog = EffectiveAgentCatalog {
+            skills: vec![CatalogSkill {
+                name: "offers".into(),
+                tools: vec![
+                    CatalogTool {
+                        name: "old_offer_search".into(),
+                        description: Some("Search active offers".into()),
+                        lifecycle_status: Some("deprecated".into()),
+                        cost_tier: Some("high".into()),
+                        estimated_latency_ms: Some(2_000),
+                        semantic_weight: Some(1.0),
+                        ..Default::default()
+                    },
+                    CatalogTool {
+                        name: "new_offer_search".into(),
+                        description: Some("Search active offers".into()),
+                        lifecycle_status: Some("active".into()),
+                        cost_tier: Some("low".into()),
+                        estimated_latency_ms: Some(50),
+                        semantic_weight: Some(1.0),
+                        ..Default::default()
+                    },
+                    CatalogTool {
+                        name: "retired_offer_search".into(),
+                        description: Some("Search active offers".into()),
+                        lifecycle_status: Some("retired".into()),
+                        semantic_weight: Some(1.0),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let selection = select_catalog_tools(&catalog, "search offers", 2);
+
+        assert_eq!(selection.selected_tools[0].tool_name, "new_offer_search");
+        assert!(selection.tool_names.contains("old_offer_search"));
+        assert!(!selection.tool_names.contains("retired_offer_search"));
+        assert!(selection.hidden_tools.iter().any(|tool| {
+            tool.tool_name == "retired_offer_search" && tool.reason == "lifecycle_retired"
+        }));
+    }
+
+    #[test]
+    fn catalog_selection_prefers_read_only_idempotent_for_informational_prompt() {
+        let catalog = EffectiveAgentCatalog {
+            skills: vec![CatalogSkill {
+                name: "customer".into(),
+                tools: vec![
+                    CatalogTool {
+                        name: "record_customer_lookup".into(),
+                        description: Some("Customer lookup".into()),
+                        read_only: Some(false),
+                        idempotent: Some(false),
+                        semantic_weight: Some(1.0),
+                        ..Default::default()
+                    },
+                    CatalogTool {
+                        name: "get_customer_lookup".into(),
+                        description: Some("Customer lookup".into()),
+                        read_only: Some(true),
+                        idempotent: Some(true),
+                        semantic_weight: Some(1.0),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let selection = select_catalog_tools(&catalog, "get customer lookup", 2);
+
+        assert_eq!(selection.selected_tools[0].tool_name, "get_customer_lookup");
+        assert_eq!(selection.selected_tools[0].read_only, Some(true));
+        assert_eq!(selection.selected_tools[0].idempotent, Some(true));
     }
 
     #[test]
