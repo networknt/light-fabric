@@ -64,6 +64,14 @@ impl Default for PersistenceMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentExecutionMode {
+    Native,
+    Runner,
+    AgentService,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkflowSecurityPolicy {
@@ -90,6 +98,8 @@ pub struct WorkflowSecurityPolicy {
     pub approval_required: bool,
     #[serde(default)]
     pub protected_paths: Vec<String>,
+    #[serde(default)]
+    pub agent_mode: Option<AgentExecutionMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -217,6 +227,10 @@ pub enum PolicyError {
     ProtectedPathMissing { profile: String, path: String },
     #[error("failed to compute policy digest: {0}")]
     Digest(String),
+    #[error("agentMode is valid only for call.agent")]
+    AgentModeOnNonAgent,
+    #[error("agentMode conflicts with explicit placement")]
+    AgentPlacementConflict,
 }
 
 pub fn parse_security_policy(
@@ -252,15 +266,38 @@ pub fn resolve_policy(
     security: Option<&WorkflowSecurityPolicy>,
     profiles: &BTreeMap<String, ExecutionProfile>,
 ) -> Result<ResolvedExecutionPolicy, PolicyError> {
-    let action_kind = action_kind(task_kind).to_string();
+    let agent_mode = security.and_then(|policy| policy.agent_mode);
+    if task_kind != TaskKind::CallAgent && agent_mode.is_some() {
+        return Err(PolicyError::AgentModeOnNonAgent);
+    }
+    let action_kind = match (task_kind, agent_mode.unwrap_or(AgentExecutionMode::Native)) {
+        (TaskKind::CallAgent, AgentExecutionMode::Runner) => "call.agent.runner",
+        (TaskKind::CallAgent, AgentExecutionMode::AgentService) => "call.agent-service",
+        _ => action_kind(task_kind),
+    }
+    .to_string();
     let default_placement = default_placement(task_kind);
-    let requested_placement = if is_pure_orchestration(task_kind) {
+    let requested_placement = if task_kind == TaskKind::CallAgent {
+        match agent_mode.unwrap_or(AgentExecutionMode::Native) {
+            AgentExecutionMode::Runner => ExecutionPlacement::Runner,
+            AgentExecutionMode::Native | AgentExecutionMode::AgentService => {
+                ExecutionPlacement::Host
+            }
+        }
+    } else if is_pure_orchestration(task_kind) {
         ExecutionPlacement::Host
     } else {
         security
             .and_then(|security| security.placement)
             .unwrap_or(default_placement)
     };
+    if task_kind == TaskKind::CallAgent
+        && security
+            .and_then(|policy| policy.placement)
+            .is_some_and(|placement| placement != requested_placement)
+    {
+        return Err(PolicyError::AgentPlacementConflict);
+    }
     if requires_runner(task_kind) && requested_placement != ExecutionPlacement::Runner {
         return Err(PolicyError::RunnerRequired(action_kind));
     }
@@ -639,6 +676,7 @@ mod tests {
             artifact_export: false,
             approval_required: false,
             protected_paths: Vec::new(),
+            agent_mode: None,
         };
 
         let resolved = resolve_policy(TaskKind::Set, Some(&policy), &profiles).unwrap();
@@ -661,6 +699,7 @@ mod tests {
             artifact_export: false,
             approval_required: false,
             protected_paths: Vec::new(),
+            agent_mode: None,
         };
 
         assert!(matches!(
@@ -704,6 +743,7 @@ metadata:
             artifact_export: false,
             approval_required: false,
             protected_paths: vec![".github/workflows".into()],
+            agent_mode: None,
         };
 
         let first = resolve_policy(TaskKind::RunShell, Some(&policy), &profiles).unwrap();
@@ -730,6 +770,7 @@ metadata:
             artifact_export: false,
             approval_required: false,
             protected_paths: Vec::new(),
+            agent_mode: None,
         };
 
         assert!(matches!(

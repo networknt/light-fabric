@@ -117,15 +117,48 @@ pub fn from_backend_error(
 
 fn normalize_output(bytes: Vec<u8>, maximum: u64) -> NormalizedOutput {
     let original_bytes = bytes.len() as u64;
+    let redacted = redact(&String::from_utf8_lossy(&bytes));
+    let bytes = redacted.as_bytes();
     let maximum = usize::try_from(maximum).unwrap_or(usize::MAX);
     let truncated = bytes.len() > maximum;
-    let retained = if truncated { &bytes[..maximum] } else { &bytes };
+    let retained = if truncated { &bytes[..maximum] } else { bytes };
+    let mut inline = String::from_utf8_lossy(retained).to_string();
+    if truncated {
+        inline.push_str("\n[TRUNCATED BY TRUSTED RUNNER]");
+    }
     NormalizedOutput {
-        inline: Some(String::from_utf8_lossy(retained).to_string()),
+        inline: Some(inline),
         reference: None,
         truncated,
         original_bytes,
     }
+}
+
+fn redact(value: &str) -> String {
+    value
+        .lines()
+        .map(|line| {
+            let lower = line.to_ascii_lowercase();
+            if [
+                "authorization:",
+                "bearer ",
+                "access_token",
+                "refresh_token",
+                "api_key",
+                "client_secret",
+                "password=",
+                "private key",
+            ]
+            .iter()
+            .any(|marker| lower.contains(marker))
+            {
+                "[REDACTED BY TRUSTED RUNNER]".to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn empty_output() -> NormalizedOutput {
@@ -151,8 +184,20 @@ mod tests {
     #[test]
     fn output_is_bounded_with_original_size_evidence() {
         let output = normalize_output(b"abcdef".to_vec(), 3);
-        assert_eq!(output.inline.as_deref(), Some("abc"));
+        assert_eq!(
+            output.inline.as_deref(),
+            Some("abc\n[TRUNCATED BY TRUSTED RUNNER]")
+        );
         assert!(output.truncated);
         assert_eq!(output.original_bytes, 6);
+    }
+
+    #[test]
+    fn output_is_redacted_before_normalization() {
+        let output = normalize_output(b"Authorization: Bearer secret".to_vec(), 1024);
+        assert_eq!(
+            output.inline.as_deref(),
+            Some("[REDACTED BY TRUSTED RUNNER]")
+        );
     }
 }

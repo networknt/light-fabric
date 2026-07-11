@@ -27,7 +27,8 @@
         "persistence": { "enum": ["ephemeral", "session"], "default": "ephemeral" },
         "artifactExport": { "type": "boolean", "default": false },
         "approvalRequired": { "type": "boolean", "default": false },
-        "protectedPaths": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true, "default": [] }
+        "protectedPaths": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true, "default": [] },
+        "agentMode": { "type": "string", "enum": ["native", "runner", "agent-service"] }
       },
       "allOf": [
         {

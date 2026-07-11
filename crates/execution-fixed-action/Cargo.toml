@@ -1,0 +1,13 @@
+[package]
+name="execution-fixed-action"
+version.workspace=true
+edition.workspace=true
+license.workspace=true
+[dependencies]
+execution-security={path="../execution-security"}
+hex.workspace=true
+serde.workspace=true
+sha2.workspace=true
+thiserror.workspace=true
+url.workspace=true
+uuid.workspace=true

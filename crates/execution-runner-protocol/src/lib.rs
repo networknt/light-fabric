@@ -531,6 +531,7 @@ pub struct ExecutionInput {
     pub media_type: String,
     pub mount_target: String,
     pub read_only: bool,
+    pub executable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

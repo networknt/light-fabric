@@ -39,6 +39,8 @@ pub struct StagedInput {
     pub media_type: String,
     pub size: u64,
     pub read_only: bool,
+    pub executable: bool,
+    pub mount_options: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -102,6 +104,23 @@ pub struct Checkpoint {
     pub digest: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LogCursor {
+    pub stream: String,
+    pub offset: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LogChunk {
+    pub cursor: LogCursor,
+    pub next_cursor: Option<LogCursor>,
+    pub bytes: Vec<u8>,
+    pub truncated: bool,
+    pub end_of_stream: bool,
+}
+
 #[async_trait]
 pub trait ExecutionBackend: Send + Sync {
     fn capability(&self) -> BackendCapability;
@@ -139,6 +158,17 @@ pub trait ExecutionBackend: Send + Sync {
     async fn checkpoint(&self, _backend_operation_id: &str) -> Result<Checkpoint, BackendError> {
         Err(BackendError::Unsupported(
             "backend does not support checkpoint".to_string(),
+        ))
+    }
+
+    async fn read_logs(
+        &self,
+        _backend_operation_id: &str,
+        _cursor: &LogCursor,
+        _maximum_bytes: u64,
+    ) -> Result<LogChunk, BackendError> {
+        Err(BackendError::Unsupported(
+            "backend does not support cursor log streaming".into(),
         ))
     }
 

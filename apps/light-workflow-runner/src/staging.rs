@@ -132,6 +132,17 @@ fn stage_one(root: &Path, input: &ExecutionInput) -> Result<StagedInput, String>
         media_type: input.media_type.clone(),
         size: copied,
         read_only: true,
+        executable: input.executable,
+        mount_options: if input.executable {
+            vec!["ro".into(), "nodev".into(), "nosuid".into()]
+        } else {
+            vec![
+                "ro".into(),
+                "nodev".into(),
+                "nosuid".into(),
+                "noexec".into(),
+            ]
+        },
     })
 }
 
@@ -220,6 +231,7 @@ mod tests {
             media_type: "text/plain".into(),
             mount_target: "/inputs/source.txt".into(),
             read_only: true,
+            executable: false,
         };
         fs::create_dir_all(&root).unwrap();
         assert!(stage_one(&root, &input).is_err());

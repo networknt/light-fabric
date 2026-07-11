@@ -52,6 +52,13 @@ pub struct WorkflowStartedPayload {
     pub input: Option<Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessInfoDeletedPayload {
+    pub host_id: Uuid,
+    pub process_id: Uuid,
+}
+
 #[cfg(test)]
 mod tests {
     use super::WorkflowStartedPayload;

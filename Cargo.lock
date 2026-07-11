@@ -1293,6 +1293,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "execution-backend-cube"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "execution-backend",
+ "execution-runner-protocol",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "execution-backend-mock"
 version = "0.1.0"
 dependencies = [
@@ -1307,6 +1322,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "execution-fixed-action"
+version = "0.1.0"
+dependencies = [
+ "execution-security",
+ "hex",
+ "serde",
+ "sha2",
+ "thiserror 2.0.18",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "execution-runner-protocol"
 version = "0.1.0"
 dependencies = [
@@ -1316,6 +1344,19 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "execution-security"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "serde",
+ "sha2",
+ "thiserror 2.0.18",
+ "url",
  "uuid",
 ]
 
@@ -2974,6 +3015,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "immutable-package"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "sha2",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "indexmap"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3568,6 +3621,7 @@ dependencies = [
  "chrono",
  "execution-runner-protocol",
  "futures-util",
+ "hex",
  "light-rule",
  "light-runtime",
  "model-provider",
@@ -3576,6 +3630,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
@@ -5830,6 +5885,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 
 [[package]]
+name = "tar"
+version = "0.4.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+dependencies = [
+ "filetime",
+ "libc",
+ "xattr",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7130,6 +7196,16 @@ dependencies = [
  "rusticata-macros",
  "thiserror 1.0.69",
  "time",
+]
+
+[[package]]
+name = "xattr"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
+dependencies = [
+ "libc",
+ "rustix",
 ]
 
 [[package]]

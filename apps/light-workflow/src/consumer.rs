@@ -1,4 +1,4 @@
-use crate::events::{CloudEventEnvelope, WorkflowStartedPayload};
+use crate::events::{CloudEventEnvelope, ProcessInfoDeletedPayload, WorkflowStartedPayload};
 use crate::repositories::{NewProcess, NewTask, WorkflowRepository};
 use execution_runner_protocol::canonical_sha256;
 use serde_json::{Value, from_str, json};
@@ -256,7 +256,7 @@ impl EventConsumer {
         };
 
         if ce.r#type == "WorkflowStartedEvent" {
-            if let Some(data) = ce.data {
+            if let Some(data) = ce.data.clone() {
                 let payload: WorkflowStartedPayload = match serde_json::from_value(data) {
                     Ok(p) => p,
                     Err(e) => {
@@ -394,6 +394,18 @@ impl EventConsumer {
                 );
 
                 info!(">>> Workflow instance started: {}", wf_instance_id);
+            }
+        }
+
+        if ce.r#type == "ProcessInfoDeletedEvent" {
+            if let Some(data) = ce.data.clone() {
+                let payload: ProcessInfoDeletedPayload = serde_json::from_value(data)?;
+                let envelope_host: Uuid = event.host_id.parse()?;
+                if payload.host_id != envelope_host {
+                    return Err("ProcessInfoDeletedEvent host mismatch".into());
+                }
+                sqlx::query("UPDATE workflow_artifact_t SET deletion_state='DELETE_PENDING',deletion_next_retry_ts=now(),deletion_evidence=COALESCE(deletion_evidence,'{}'::jsonb)||jsonb_build_object('processDeletedEvent',$3),updated_ts=now() WHERE host_id=$1 AND process_id=$2 AND legal_hold=FALSE AND deletion_state='RETAINED'")
+                    .bind(payload.host_id).bind(payload.process_id).bind(&ce.id).execute(&mut **tx).await?;
             }
         }
 
