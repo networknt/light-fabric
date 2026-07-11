@@ -2,6 +2,7 @@ use crate::protocol::{
     JsonRpcRequest, JsonRpcResponse, McpTool, McpToolCallResult, McpToolsListResult,
 };
 use anyhow::{Context, Result, anyhow, bail};
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::json;
 use tracing::debug;
@@ -9,7 +10,10 @@ use tracing::debug;
 pub struct McpGatewayClient {
     url: String,
     client: Client,
+    max_response_bytes: usize,
 }
+
+const DEFAULT_MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
 impl McpGatewayClient {
     pub fn new(url: &str) -> Result<Self> {
@@ -37,6 +41,26 @@ impl McpGatewayClient {
         verify_hostname: bool,
         timeout_ms: u64,
     ) -> Result<Self> {
+        Self::with_tls_options_and_response_limit(
+            url,
+            ca_cert_pem,
+            verify_hostname,
+            timeout_ms,
+            DEFAULT_MAX_RESPONSE_BYTES,
+        )
+    }
+
+    /// Create a client with explicit TLS options and a hard response-body limit.
+    pub fn with_tls_options_and_response_limit(
+        url: &str,
+        ca_cert_pem: Option<&[u8]>,
+        verify_hostname: bool,
+        timeout_ms: u64,
+        max_response_bytes: usize,
+    ) -> Result<Self> {
+        if max_response_bytes == 0 {
+            bail!("MCP gateway max_response_bytes must be greater than zero");
+        }
         let mut builder = Client::builder();
         builder = builder
             .timeout(std::time::Duration::from_millis(timeout_ms))
@@ -64,6 +88,7 @@ impl McpGatewayClient {
         Ok(Self {
             url: url.to_string(),
             client,
+            max_response_bytes,
         })
     }
 
@@ -120,17 +145,19 @@ impl McpGatewayClient {
             .send()
             .await
             .context("HTTP request to MCP gateway failed")?;
+        let status = resp.status();
+        let body = read_limited_body(resp, self.max_response_bytes).await?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            bail!("MCP gateway returned HTTP {}: {}", status, body);
+        if !status.is_success() {
+            bail!(
+                "MCP gateway returned HTTP {}: {}",
+                status,
+                String::from_utf8_lossy(&body)
+            );
         }
 
-        let rpc_resp: JsonRpcResponse = resp
-            .json()
-            .await
-            .context("Failed to parse JSON-RPC response")?;
+        let rpc_resp: JsonRpcResponse =
+            serde_json::from_slice(&body).context("Failed to parse JSON-RPC response")?;
 
         if let Some(err) = rpc_resp.error {
             bail!("MCP error ({}): {}", err.code, err.message);
@@ -138,6 +165,31 @@ impl McpGatewayClient {
 
         Ok(rpc_resp)
     }
+}
+
+async fn read_limited_body(response: reqwest::Response, limit: usize) -> Result<Vec<u8>> {
+    if response
+        .content_length()
+        .is_some_and(|content_length| content_length > limit as u64)
+    {
+        bail!("MCP gateway response exceeds {limit} bytes");
+    }
+
+    let mut body = Vec::with_capacity(
+        response
+            .content_length()
+            .unwrap_or_default()
+            .min(limit as u64) as usize,
+    );
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("Failed to read MCP gateway response")?;
+        if body.len().saturating_add(chunk.len()) > limit {
+            bail!("MCP gateway response exceeds {limit} bytes");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 #[cfg(test)]
@@ -255,6 +307,20 @@ mod tests {
 
         assert!(error.contains("HTTP 502"));
         assert!(error.contains("bad gateway"));
+    }
+
+    #[tokio::test]
+    async fn rejects_response_larger_than_configured_limit() {
+        let body = "x".repeat(256);
+        let response = http_response("HTTP/1.1 200 OK", "application/json", &body);
+        let (url, _) = spawn_test_server(response).await;
+        let client =
+            McpGatewayClient::with_tls_options_and_response_limit(&url, None, true, 1_000, 128)
+                .unwrap();
+
+        let error = client.list_tools(None).await.unwrap_err();
+
+        assert!(error.to_string().contains("response exceeds 128 bytes"));
     }
 
     #[tokio::test]

@@ -5,9 +5,15 @@
 ---
 
 ## 1. Executive Summary
-Currently, most AI agent frameworks rely on localized Markdown (`.md`) files to define agent "skills." While Markdown is highly LLM-native and human-readable, it creates significant bottlenecks at an enterprise scale regarding strict typing, API integration, and context window limits. 
+Currently, most AI agent frameworks rely on localized Markdown (`.md`) files to define agent "skills." While Markdown is highly LLM-native and human-readable, it creates significant bottlenecks at an enterprise scale regarding strict typing, API integration, and context window limits.
 
 This document proposes transitioning to an **Agentic Control Plane (Centralized Skill Registry)** backed by a database. By decoupling skill *metadata*, *schemas*, and *instructions*, and by utilizing dynamic routing, we will achieve hierarchical structuring, strict schema enforcement, and progressive disclosure of tools to agents.
+
+The registry serves enterprise business agents, native workflow agents, coding
+agents, and personal assistants. It stores governed content and immutable
+package references; profile-specific runtime hosts materialize the selected
+skill. See [Light-Agent Execution](light-agent-execution.md) for those runtime
+and isolation boundaries.
 
 ---
 
@@ -26,7 +32,10 @@ To solve the limitations of purely text-based skills, we will adopt a hybrid, st
 *   **JSON Schema:** Used strictly for defining parameters, inputs, and tool shapes. Natively supported by OpenAI/Anthropic/Google tool-calling APIs.
 *   **LightAPI Description (YAML/JSON):** Used to map endpoint-level API capabilities to skills across REST, JSON-RPC, gRPC, and MCP.
 *   **OpenAPI / OpenRPC / Protobuf:** Referenced by LightAPI where protocol-native specifications already exist.
-*   **Executable Code (Python/JS) / URI:** Stores the actual execution logic or the endpoint reference.
+*   **Immutable Execution Artifact / Endpoint Reference:** API skills reference
+    a governed endpoint. Scripted skills reference a signed, content-addressed
+    package and entrypoint; mutable source code is not executed directly from a
+    database row.
 *   **Markdown:** Retained *only* for the `instructions` or `prompt` fields, as LLMs excel at parsing markdown headers and lists for constraints and persona instructions.
 
 LightAPI is the preferred source format for API-backed skills because it describes endpoint identity, protocol invocation, input schema, request mapping, result shape, examples, and behavior notes in one agent-oriented document. See [LightAPI Description Design](lightapi-description.md) for the endpoint description model.
@@ -79,6 +88,46 @@ Light Portal stores skills in structured catalog tables. Below is a representati
 }
 ```
 
+### 3.2 Skill Authority And Executable Packages
+
+A skill is discovery and guidance content. Assignment of a skill never grants
+tools, credentials, network, filesystem, workflow, or model-provider access.
+The effective capability is always the intersection of caller authority,
+agent-definition policy, skill policy, live gateway/controller policy, and the
+selected execution profile.
+
+Each tool link resolves to a stable internal tool reference with a server-owned
+execution placement (`gateway`, `runner`, `workflow`, or `fixed-service`),
+model-facing alias, and schema digest. Materialization cannot change that
+placement. Gateway tools intersect live gateway `tools/list`; runner tools
+intersect execution policy, lease `allowedTools`, the approved runtime-tool
+manifest, and live local availability. The independently authorized sets may be
+combined only after alias collisions are rejected or resolved by deterministic
+server-owned aliases. One placement never grants another placement's tool by
+name coincidence.
+
+Keep `skill_t.content_markdown` as the instruction source. Add a separate
+`skill_package_t` only for skills that require scripts, binaries, templates, or
+other runtime assets. A package record should contain:
+
+- host, skill, semantic version, package ID, and immutable artifact URI;
+- SHA-256 digest, media type, size, and entrypoint;
+- supported runtime profiles and required capability names;
+- minimum sandbox boundary, network, workspace, and credential requirements;
+- provenance/attestation reference, signer, scanner result, and review state;
+- created, deprecated, revoked, and retention state.
+
+The package bytes belong in immutable artifact storage, not a `TEXT` column.
+The portal may store authoring source separately, but only a reviewed, signed,
+scanned, active package can be materialized for execution. The runtime host
+verifies the package, lease, policy digest, and entrypoint before mounting it
+read-only.
+
+Existing `tool_t.script_content` is a legacy authoring/runtime shortcut. It
+must not become the production execution path for untrusted Python or
+JavaScript. Publication should compile or package that source into an immutable
+artifact and require runner placement.
+
 ---
 
 ## 4. Hierarchical Structure & Progressive Disclosure
@@ -109,12 +158,54 @@ The agent is booted with only two "meta-tools" designed for discovery.
 For highly complex systems with thousands of skills:
 1.  Tool descriptions are embedded into a Vector Database (e.g., `pgvector`).
 2.  When the user prompts the system (e.g., "Reset my AWS password"), portal-query or the agent's local cache performs semantic search and retrieves the Top-3 most relevant JSON Schemas.
-3.  The agent boots with *only* those 3 tools in its context. 
+3.  The agent boots with *only* those 3 tools in its context.
 
 #### Pattern C: Multi-Agent Orchestration (Supervisor / Worker)
 Hierarchy is mapped to agent teams.
 1.  A **Supervisor Agent** holds routing tools (e.g., `delegate_to_finance`, `delegate_to_devops`).
 2.  When `delegate_to_devops` is triggered, the supervisor routes to a **DevOps Worker Agent**, loading only the specific DevOps JSON schemas into its context.
+
+### 4.3 Runtime Profiles And Materialization
+
+One centrally assigned skill can serve several agent products without forcing
+every runtime to consume the same physical format.
+
+| Runtime profile | Materialized skill input | Execution boundary |
+| --- | --- | --- |
+| Enterprise business agent | Bounded Markdown instructions and selected API/MCP schemas | Long-lived light-agent plus light-gateway |
+| Native workflow agent | Instructions, structured task input, and output schema | light-workflow, with no local tools |
+| Coding agent | Read-only `SKILL.md`, references, and verified package assets | light-agent-worker inside a runner sandbox |
+| Personal assistant | Instructions, connector mappings, schedule/notification policy, and optional reviewed package | light-agent plus gateway or personal edge runner |
+| External agent adapter | Adapter-specific files generated from the immutable skill version | Same sandbox as the selected runtime adapter |
+
+Materializers are deterministic and versioned. Their output digest becomes
+part of the turn/runtime policy snapshot. Runtime-specific rendering may adapt
+file names or metadata, but it cannot add a tool or capability absent from the
+effective catalog.
+
+For sandboxed profiles, the materializer emits immutable skill-package
+references, digests, sizes, and mount/entrypoint policy; it does not fetch from
+inside the sandbox. Trusted `light-workflow-runner` code downloads each package
+before sandbox creation, verifies digest/signature/provenance/scan bindings and
+archive safety, and stages it as a read-only mount with `nodev`, `nosuid`, and
+`noexec` unless a reviewed entrypoint requires execution. The worker may
+revalidate the mounted manifest, but neither the worker nor generated code
+receives artifact-store credentials or package-download egress. Verification
+or staging failure prevents the sandbox from starting.
+
+Use the following content precedence, from strongest to weakest:
+
+1. server and execution policy;
+2. signed platform/tenant skill versions assigned to the agent;
+3. reviewed user-specific skill configuration;
+4. repository or workspace-local instructions;
+5. prompts, retrieved data, messages, and tool output.
+
+Repository-local and user-generated skills are useful context but untrusted.
+An agent-generated skill is stored as an inactive proposal. It becomes usable
+only after schema validation, security scanning, human or policy review,
+immutable packaging, and explicit assignment. Self-modification never
+hot-activates new authority in the current turn.
 
 ---
 
@@ -142,6 +233,14 @@ By centralizing skills in a database, the platform gains enterprise-grade operat
 *   **A/B Testing:** Portal catalog metadata can route 50% of an agent's requests to `skill_v1` and 50% to `skill_v2` to measure prompt/tool efficacy.
 *   **Audit Logging:** Catalog disclosure and gateway execution can be logged separately, preserving a compliance trail without moving tool execution into the registry.
 *   **Distilled Memory RAG:** Following the "Hindsight" pattern, raw conversation history (`agent_session_history_t`) is separated from RAG-optimized memory (`session_memory_t`). This prevents the "noisy context" problem while maintaining a perfect audit trail.
+*   **Profile Reuse Without Privilege Reuse:** The same logical skill can be
+    rendered for enterprise, coding, workflow, or personal-assistant runtimes,
+    while each runtime receives only its independently authorized tools and
+    execution capabilities.
+*   **Supply-Chain Controls:** Executable packages are content-addressed,
+    signed, scanned, reviewable, revocable, staged by the trusted runner before
+    sandbox creation, mounted read-only, and always run through an approved
+    sandbox profile.
 
 ## 7. LightAPI As Skill Source
 
@@ -221,3 +320,16 @@ effective prompt preview, and workflow link configuration.
 12. Add publishing from LightAPI endpoint descriptions into the skill registry.
 13. Migrate existing file-based skills into structured catalog payloads, keeping instructions in Markdown and converting parameters to JSON Schema.
 14. Implement Pattern B (Semantic Tool RAG) after indexed catalog fields and embeddings are ready for production search.
+15. Add runtime-profile compatibility, stable tool references, server-owned
+    gateway/runner/workflow/fixed-service placement, schema/alias digests, and
+    deterministic materializer metadata without overloading
+    `content_markdown` or relying on a tool name as authority.
+16. Add `skill_package_t`, immutable artifact publication, signature and scan
+    verification, revocation, trusted runner-side download/safe extraction,
+    read-only staging, and runner-only package execution. Workers receive no
+    artifact-store credential or package-download authority.
+17. Add reviewed proposal lifecycle for repository-local and agent-generated
+    skills; never activate generated content automatically.
+18. Add materializer conformance fixtures proving that enterprise, workflow,
+    coding, personal-assistant, and external-adapter outputs preserve the same
+    skill version and cannot widen its effective capability set.

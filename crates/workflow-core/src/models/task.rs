@@ -1688,6 +1688,10 @@ impl ScriptProcessDefinition {
 /// Represents the definition of a shell process
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShellProcessDefinition {
+    /// Gets/sets the operator-managed command template used by isolated runners.
+    #[serde(rename = "commandTemplateId", skip_serializing_if = "Option::is_none")]
+    pub command_template_id: Option<String>,
+
     /// Gets/sets the shell command to run
     #[serde(rename = "command")]
     pub command: String,
@@ -1707,6 +1711,7 @@ impl ShellProcessDefinition {
         environment: Option<HashMap<String, String>>,
     ) -> Self {
         Self {
+            command_template_id: None,
             command: command.to_string(),
             arguments,
             environment,

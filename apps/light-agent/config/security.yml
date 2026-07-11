@@ -1,0 +1,10 @@
+enableVerifyJwt: ${security.enableVerifyJwt:true}
+enableVerifyScope: ${security.enableVerifyScope:false}
+ignoreJwtExpiry: ${security.ignoreJwtExpiry:false}
+enableRelaxedKeyValidation: ${security.enableRelaxedKeyValidation:false}
+issuer: ${security.issuer:}
+audience: ${security.audience:[]}
+jwt:
+  clockSkewInSeconds: ${security.jwt.clockSkewInSeconds:60}
+bootstrapFromKeyService: ${security.bootstrapFromKeyService:false}
+providerId: ${security.providerId:}

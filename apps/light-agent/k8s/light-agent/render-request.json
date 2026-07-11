@@ -25,6 +25,7 @@
       "url": "postgres://postgres:<password>@192.168.5.85:5432/configserver"
     },
     "lightAgentHostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+    "lightAgentDefId": "<agent-definition-uuid>",
     "light4jConfigPassword": "DEV",
     "lightPortalAuthorization": "Bearer <token>",
     "bootstrapCaPemBase64": "<base64-ca-pem>",

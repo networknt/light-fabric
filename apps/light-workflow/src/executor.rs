@@ -1,3 +1,5 @@
+use crate::repositories::{NewTask, TerminalAttempt, WorkflowRepository};
+use execution_runner_protocol::canonical_sha256;
 use light_rule::{ActionRegistry, MultiThreadRuleExecutor, RuleConfig, RuleEngine};
 use model_provider::{
     AnthropicProvider, ChatMessage, ChatRequest, CompatibleProvider, GeminiProvider,
@@ -7,7 +9,7 @@ use regex::Regex;
 use serde_json::{Map as JsonMap, Number, Value, json};
 use serde_yaml::Value as YamlValue;
 use sqlx::{PgPool, Postgres, Transaction};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::io;
 use std::sync::{Arc, LazyLock};
@@ -21,6 +23,7 @@ use workflow_core::models::task::{
     McpServerDefinition, OpenRpcArguments, SetValue, TaskDefinition, TaskDefinitionFields,
 };
 use workflow_core::models::workflow::WorkflowDefinition;
+use workflow_policy::{ExecutionProfile, TaskKind, parse_security_policy, resolve_policy};
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 static TEMPLATE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -102,6 +105,7 @@ pub struct TaskExecutor {
     pool: PgPool,
     http_client: reqwest::Client,
     rule_executor: Arc<MultiThreadRuleExecutor>,
+    execution_profiles: BTreeMap<String, ExecutionProfile>,
 }
 
 impl TaskExecutor {
@@ -112,7 +116,31 @@ impl TaskExecutor {
             TaskDefinition::Call(_) => Some("call"),
             TaskDefinition::Set(_) => Some("set"),
             TaskDefinition::Switch(_) => Some("switch"),
+            TaskDefinition::Run(_) => Some("run"),
             _ => None,
+        }
+    }
+
+    fn policy_task_kind(task_def: &TaskDefinition) -> Result<TaskKind, sqlx::Error> {
+        match task_def {
+            TaskDefinition::Ask(_) => Ok(TaskKind::Ask),
+            TaskDefinition::Assert(_) => Ok(TaskKind::Assert),
+            TaskDefinition::Set(_) => Ok(TaskKind::Set),
+            TaskDefinition::Switch(_) => Ok(TaskKind::Switch),
+            TaskDefinition::Call(call) => match call {
+                CallTaskDefinition::Agent(_) => Ok(TaskKind::CallAgent),
+                CallTaskDefinition::Mcp(_) => Ok(TaskKind::CallMcp),
+                _ => Ok(TaskKind::CallHttp),
+            },
+            TaskDefinition::Run(run) if run.run.shell.is_some() => Ok(TaskKind::RunShell),
+            TaskDefinition::Run(run) if run.run.container.is_some() => Ok(TaskKind::RunContainer),
+            TaskDefinition::Run(run) if run.run.script.is_some() => Ok(TaskKind::RunScript),
+            TaskDefinition::Run(_) => Err(sqlx::Error::Protocol(
+                "run.workflow is not supported by the execution runner".to_string(),
+            )),
+            _ => Err(sqlx::Error::Protocol(
+                "task type is not supported by light-workflow".to_string(),
+            )),
         }
     }
 
@@ -131,7 +159,16 @@ impl TaskExecutor {
             pool,
             http_client,
             rule_executor,
+            execution_profiles: BTreeMap::new(),
         }
+    }
+
+    pub fn with_execution_profiles(
+        mut self,
+        execution_profiles: BTreeMap<String, ExecutionProfile>,
+    ) -> Self {
+        self.execution_profiles = execution_profiles;
+        self
     }
 
     pub async fn run(&self) -> Result<(), DynError> {
@@ -182,6 +219,93 @@ impl TaskExecutor {
         Ok(true)
     }
 
+    pub(crate) async fn reconcile_runner_attempt(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        attempt: &TerminalAttempt,
+    ) -> Result<bool, DynError> {
+        if !WorkflowRepository::conditionally_accept_terminal_attempt(tx, attempt).await? {
+            return Ok(false);
+        }
+        let claimed = self.load_runner_task(tx, attempt).await?;
+        let succeeded = attempt.state == "SUCCEEDED";
+        let task_output = if succeeded {
+            attempt
+                .normalized_result
+                .clone()
+                .and_then(|result| result.get("structuredOutput").cloned().or(Some(result)))
+                .unwrap_or_else(|| json!({}))
+        } else {
+            json!({
+                "executionId": attempt.execution_id,
+                "state": attempt.state,
+                "error": attempt.normalized_error
+            })
+        };
+        self.finish_task(
+            tx,
+            &claimed,
+            TaskExecutionResult {
+                status_code: if succeeded { "C" } else { "F" },
+                task_output,
+                next_task: None,
+                context_data: None,
+            },
+        )
+        .await?;
+        Ok(true)
+    }
+
+    async fn load_runner_task(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        attempt: &TerminalAttempt,
+    ) -> Result<ClaimedTask, DynError> {
+        let task = sqlx::query_as::<_, ActiveTask>(
+            "SELECT host_id, task_id, task_type, process_id, wf_instance_id,
+                    wf_task_id, status_code, result_code
+             FROM task_info_t
+             WHERE host_id = $1 AND task_id = $2 AND process_id = $3
+               AND execution_placement = 'runner' AND status_code = 'A'
+               AND accepted_attempt = $4
+             FOR UPDATE",
+        )
+        .bind(attempt.host_id)
+        .bind(attempt.task_id)
+        .bind(attempt.process_id)
+        .bind(attempt.attempt_number)
+        .fetch_one(&mut **tx)
+        .await?;
+        let (context_data, wf_def_id, definition_snapshot) = self
+            .get_context_data(tx, &task.host_id, &task.process_id)
+            .await?;
+        let (definition, raw_definition) = if let Some(snapshot) = definition_snapshot {
+            (
+                serde_json::from_value::<WorkflowDefinition>(snapshot.clone())?,
+                serde_yaml::to_value(snapshot)?,
+            )
+        } else {
+            warn!(
+                host_id = %task.host_id,
+                process_id = %task.process_id,
+                "runner result used mutable legacy definition because no snapshot exists"
+            );
+            let dsl_yaml = self
+                .get_workflow_definition(tx, &task.host_id, &wf_def_id)
+                .await?;
+            (
+                serde_yaml::from_str(&dsl_yaml)?,
+                serde_yaml::from_str(&dsl_yaml)?,
+            )
+        };
+        Ok(ClaimedTask {
+            task,
+            context_data,
+            definition,
+            raw_definition,
+        })
+    }
+
     async fn claim_next_task(&self) -> Result<Option<ClaimedTask>, DynError> {
         let mut tx = self.pool.begin().await?;
 
@@ -200,6 +324,7 @@ impl TaskExecutor {
                         AND (task_output IS NULL OR task_output->>'status' = 'waiting_for_input')
                     )
                   )
+                  AND execution_placement = 'host'
                   AND (
                     locked = 'N'
                     OR (locked = 'Y' AND update_ts < CURRENT_TIMESTAMP - make_interval(mins => $1::int))
@@ -223,14 +348,27 @@ impl TaskExecutor {
             }
         };
 
-        let (context_data, wf_def_id) = self
+        let (context_data, wf_def_id, definition_snapshot) = self
             .get_context_data(&mut tx, &task.host_id, &task.process_id)
             .await?;
-        let dsl_yaml = self
-            .get_workflow_definition(&mut tx, &task.host_id, &wf_def_id)
-            .await?;
-        let definition: WorkflowDefinition = serde_yaml::from_str(&dsl_yaml)?;
-        let raw_definition: YamlValue = serde_yaml::from_str(&dsl_yaml)?;
+        let (definition, raw_definition) = if let Some(snapshot) = definition_snapshot {
+            let definition = serde_json::from_value::<WorkflowDefinition>(snapshot.clone())?;
+            let raw_definition = serde_yaml::to_value(snapshot)?;
+            (definition, raw_definition)
+        } else {
+            warn!(
+                host_id = %task.host_id,
+                process_id = %task.process_id,
+                "workflow process has no definition snapshot; using mutable legacy definition"
+            );
+            let dsl_yaml = self
+                .get_workflow_definition(&mut tx, &task.host_id, &wf_def_id)
+                .await?;
+            (
+                serde_yaml::from_str(&dsl_yaml)?,
+                serde_yaml::from_str(&dsl_yaml)?,
+            )
+        };
         tx.commit().await?;
 
         Ok(Some(ClaimedTask {
@@ -2278,32 +2416,56 @@ impl TaskExecutor {
                     }
                 };
                 let new_task_id = Uuid::new_v4();
-
-                sqlx::query(
-                    r#"
-                    INSERT INTO task_info_t (
-                        host_id, task_id, task_type, process_id, wf_instance_id,
-                        wf_task_id, status_code, started_ts, locked, priority, task_input
-                    )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, $8, $9, $10)
-                    "#,
+                let task_kind = Self::policy_task_kind(next_def)?;
+                let security = parse_security_policy(raw_definition)
+                    .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+                let resolved_policy =
+                    resolve_policy(task_kind, security.as_ref(), &self.execution_profiles)
+                        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+                let definition_digest: Option<String> = sqlx::query_scalar(
+                    "SELECT definition_digest FROM process_info_t
+                     WHERE host_id = $1 AND process_id = $2",
                 )
                 .bind(task.host_id)
-                .bind(new_task_id)
-                .bind(next_type)
                 .bind(task.process_id)
-                .bind(&task.wf_instance_id)
-                .bind(&next_name)
-                .bind("A")
-                .bind("N")
-                .bind(1)
-                .bind(&new_context)
-                .execute(&mut **tx)
+                .fetch_one(&mut **tx)
+                .await?;
+                let definition_digest = match definition_digest {
+                    Some(definition_digest) => definition_digest,
+                    None => {
+                        let definition_value = serde_json::to_value(raw_definition)
+                            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+                        canonical_sha256(&definition_value)
+                            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?
+                    }
+                };
+                WorkflowRepository::store_policy_snapshot(
+                    tx,
+                    task.host_id,
+                    &definition_digest,
+                    &resolved_policy,
+                    "light-workflow",
+                )
+                .await?;
+                WorkflowRepository::insert_task(
+                    tx,
+                    &NewTask {
+                        host_id: task.host_id,
+                        task_id: new_task_id,
+                        task_type: next_type,
+                        process_id: task.process_id,
+                        wf_instance_id: task.wf_instance_id.clone(),
+                        wf_task_id: &next_name,
+                        task_input: &new_context,
+                        placement: resolved_policy.placement,
+                        policy_digest: &resolved_policy.policy_digest,
+                    },
+                )
                 .await?;
 
                 info!(
-                    ">>> Transitioned to Next Task: {} ({})",
-                    next_name, next_type
+                    ">>> Transitioned to Next Task: {} ({}, {:?})",
+                    next_name, next_type, resolved_policy.placement
                 );
             } else {
                 let message = format!(
@@ -2467,9 +2629,10 @@ impl TaskExecutor {
         tx: &mut Transaction<'_, Postgres>,
         host_id: &Uuid,
         process_id: &Uuid,
-    ) -> Result<(Value, Uuid), sqlx::Error> {
-        let row: (Option<Value>, Uuid) = sqlx::query_as(
-            "SELECT context_data, wf_def_id FROM process_info_t WHERE host_id = $1 AND process_id = $2",
+    ) -> Result<(Value, Uuid, Option<Value>), sqlx::Error> {
+        let row: (Option<Value>, Uuid, Option<Value>) = sqlx::query_as(
+            "SELECT context_data, wf_def_id, definition_snapshot
+             FROM process_info_t WHERE host_id = $1 AND process_id = $2",
         )
         .bind(host_id)
         .bind(process_id)
@@ -2479,7 +2642,7 @@ impl TaskExecutor {
             Some(Value::Null) | None => json!({}),
             Some(value) => value,
         };
-        Ok((context_data, row.1))
+        Ok((context_data, row.1, row.2))
     }
 
     async fn get_workflow_definition(

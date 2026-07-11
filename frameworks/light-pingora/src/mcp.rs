@@ -2376,6 +2376,15 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
                 "mcp-router tool `{name}` path must start with `/`"
             )));
         }
+        let path_placeholders =
+            openapi_path_placeholders(tool.path.as_str()).map_err(|message| {
+                RuntimeError::Unsupported(format!(
+                    "mcp-router tool `{name}` path `{}` is invalid: {message}",
+                    tool.path
+                ))
+            })?;
+        validate_path_placeholder_mapping(tool, tool_parameter_mapping(tool), &path_placeholders)
+            .map_err(|error| RuntimeError::Unsupported(error.message))?;
         let has_target_host = tool
             .target_host
             .as_deref()
@@ -3916,6 +3925,69 @@ tools:
 
         let error = McpRouterRuntime::new(config).expect_err("duplicate tool name");
         assert!(error.to_string().contains("duplicate mcp-router tool"));
+    }
+
+    #[test]
+    fn runtime_rejects_unmapped_openapi_path_placeholders() {
+        let config = serde_yaml::from_str::<McpRouterConfig>(
+            r#"
+tools:
+  - name: get_pet
+    targetHost: http://127.0.0.1:8080
+    path: /pets/{petId}
+    method: get
+    inputSchema:
+      type: object
+      properties:
+        petId:
+          type: string
+"#,
+        )
+        .expect("parse config");
+
+        let error = McpRouterRuntime::new(config).expect_err("missing path mapping");
+
+        assert!(
+            error
+                .to_string()
+                .contains("path `/pets/{petId}` has placeholders")
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("no toolMetadata.routing.parameters mapping")
+        );
+    }
+
+    #[test]
+    fn runtime_rejects_non_path_mapping_for_openapi_placeholder() {
+        let config = serde_yaml::from_str::<McpRouterConfig>(
+            r#"
+tools:
+  - name: get_pet
+    targetHost: http://127.0.0.1:8080
+    path: /pets/{petId}
+    method: get
+    inputSchema:
+      type: object
+      properties:
+        petId:
+          type: string
+    toolMetadata:
+      routing:
+        parameters:
+          petId: query
+"#,
+        )
+        .expect("parse config");
+
+        let error = McpRouterRuntime::new(config).expect_err("incorrect path mapping");
+
+        assert!(
+            error
+                .to_string()
+                .contains("path placeholder `petId` must map to `path`, found `query`")
+        );
     }
 
     #[test]
@@ -6665,8 +6737,8 @@ endpointRules:
         );
     }
 
-    #[tokio::test]
-    async fn tool_call_rejects_missing_path_parameter_mapping() {
+    #[test]
+    fn runtime_rejects_missing_path_parameter_mapping() {
         let mut tool = test_tool(
             "getCustomerProfile",
             "Get customer profile",
@@ -6683,29 +6755,15 @@ endpointRules:
                 }
             }
         });
-        let runtime = McpRouterRuntime::new(McpRouterConfig {
+        let error = McpRouterRuntime::new(McpRouterConfig {
             tools: vec![tool],
             ..McpRouterConfig::default()
         })
-        .expect("runtime");
+        .expect_err("missing path parameter mapping");
 
-        let response = runtime
-            .handle_request(McpHttpRequest {
-                method: "POST".to_string(),
-                path: "/mcp".to_string(),
-                headers: accept_json_with_session(&runtime),
-                body: br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"getCustomerProfile","arguments":{"customerId":"CUST-1001","channel":"portal"}}}"#.to_vec(),
-            })
-            .await
-            .expect("handle")
-            .expect("response");
-
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
-        assert_eq!(body["error"]["code"], -32000);
         assert!(
-            body["error"]["message"]
-                .as_str()
-                .unwrap_or_default()
+            error
+                .to_string()
                 .contains("requires toolMetadata.routing.parameters.customerId=path")
         );
     }

@@ -14,6 +14,8 @@ serde_yaml = { workspace = true }
 workflow-core = { path = "../../crates/workflow-core" }
 light-rule = { path = "../../crates/light-rule" }
 light-runtime = { path = "../../crates/light-runtime" }
+execution-runner-protocol = { path = "../../crates/execution-runner-protocol" }
+workflow-policy = { path = "../../crates/workflow-policy" }
 model-provider = { path = "../../crates/model-provider" }
 sqlx = { version = "0.8", features = ["chrono", "json", "postgres", "runtime-tokio-rustls", "uuid"] }
 thiserror = { workspace = true }

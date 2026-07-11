@@ -1,6 +1,6 @@
 # Database Design
 
-The Light-Fabric utilizes a robust PostgreSQL schema to manage the entire lifecycle of agentic workflows, skills, and the biomimetic Hindsight memory system. The schema is organized into four logical layers:
+The Light-Fabric utilizes a robust PostgreSQL schema to manage the entire lifecycle of agentic workflows, skills, agent execution, channels, and the biomimetic Hindsight memory system. The schema is organized into five logical layers:
 
 ## 1. Workflow Engine
 These tables manage the definition and execution of long-running agentic workflows.
@@ -20,16 +20,34 @@ Manage task assignments and visibility for human-in-the-loop interactions.
 These tables define the identity, expertise, and capabilities of individual agents.
 
 ### `agent_definition_t`
-Defines the agent's persona, model provider (OpenAI, Anthropic, etc.), and runtime parameters like temperature and max tokens.
+Defines the agent's persona, product profile, model policy, default execution
+profile, data boundary, and runtime limits. Enterprise, coding, and
+personal-assistant definitions share this table; a definition does not own a
+process or sandbox.
 
 ### `skill_t`
 Stores the "Expertise" of an agent in Markdown format. Skills are hierarchical and versioned.
 
 ### `tool_t` & `tool_param_t`
-The "Hands" of the agent. Defines executable functions, including REST endpoints, MCP server calls, or WASM scripts.
+The "Hands" of the agent. Defines governed REST/MCP capabilities and typed
+execution metadata. A tool row or script field is not authority to execute
+code; untrusted executable assets require an immutable reviewed package and an
+approved runner sandbox. The target model adds or derives a stable internal
+tool reference and records a server-owned `gateway`, `runner`, `workflow`, or
+`fixed-service` placement, model alias, schema digest, effect class, and
+dispatch-policy binding. Existing rows with proven current gateway-config
+linkage migrate as `gateway`. Ambiguous legacy script rows remain undisclosed
+until reviewed.
 
 ### `agent_skill_t` & `skill_tool_t`
 Maps agents to skills and skills to tools, implementing the **Progressive Disclosure** pattern where agents only see the tools required for their current skill context.
+
+### `skill_package_t` (proposed)
+
+References immutable signed/scanned skill assets for coding, personal, or
+external runtime adapters. Package bytes live in object storage. The row binds
+digest, provenance, entrypoint, compatible profiles, required capabilities,
+review, revocation, and retention.
 
 ---
 
@@ -47,10 +65,61 @@ A Knowledge Graph layer that resolves entities and causal/semantic relationships
 
 ---
 
-## 4. Session Management
+## 4. Agent Session And Execution
+
+### `agent_session_t`, `agent_turn_t`, `agent_action_attempt_t`, and `agent_approval_t` (proposed)
+
+Store authenticated session ownership, durable FIFO turns, effectful action
+attempts, policy snapshots, budgets, bound single-use approvals,
+reconciliation, and terminal results. Runner-backed actions reference the
+shared `execution_attempt_t`, but agent-domain fields remain owned by
+light-agent. Post-approval dispatch creates a new numbered agent action and a
+new common execution attempt; it never reopens the pre-approval attempt.
+
+### Shared runner execution records (proposed)
+
+`runner_scheduling_request_t`, `execution_attempt_t`, `execution_session_t`,
+`execution_session_cleanup_request_t`, and `execution_input_t` store
+origin-neutral capacity, fencing, normalized results, bounded session cleanup,
+immutable staged inputs, and session state/version/fencing. Reused sessions can
+enter a bounded `IDLE_APPROVAL_HOLD` with hold ID/expiry, cost policy, and
+checkpoint/patch evidence while the action lease and credentials are gone.
+Zero active attempts does not imply cleanup for a valid held session; the hold
+cannot extend idle/max expiry or override close/revocation. Origin services
+retain their own workflow or agent state. A terminal-attempt transaction emits
+an identifiers-only wakeup;
+origins query the authoritative row and use startup/periodic catch-up rather
+than treating notification delivery as durable state.
+
+### `agent_session_event_t` (proposed)
+
+An append-only authoritative ledger for accepted user messages, model results,
+actions, approvals, and terminal turn events. It is the source used to rebuild
+conversation context after a projection conflict.
 
 ### `agent_session_history_t`
-The "Source of Truth" for active conversations, linking specific sessions to their respective Hindsight memory banks.
+The materialized transcript used for active conversation context, linked to the
+session's Hindsight memory bank. It is not the authoritative proof of an
+effectful tool action. Agent action attempts and append-only session events
+survive history-version conflicts and can rebuild this projection. See
+[Light-Agent Execution](light-agent-execution.md#history-conflict-after-an-effect).
+
+## 5. Personal Assistant Channels And Triggers
+
+### `agent_channel_binding_t` and `agent_channel_delivery_t` (proposed)
+
+Bind a verified messaging identity to a principal and agent, and deduplicate
+inbound events/outbound responses. They store credential references rather than
+channel secrets and do not replace agent turns.
+
+### `agent_trigger_t` (proposed)
+
+Stores scheduled or connector-triggered turn policy, including timezone, quiet
+hours, rate/cost limits, notification destination, idempotency, and maximum
+delay.
+
+See [Light-Agent Execution](light-agent-execution.md) and the dedicated
+Light-Agent runtime implementation plan for constraints and phased rollout.
 
 ---
 
@@ -244,7 +313,7 @@ CREATE TABLE agent_definition_t (
 
 
 -- Skills: Stores Instructions and Domain Knowledge (The "Expertise")
--- Note: Use entity_tag_t and entity_category_t with entity_type = 'skill' 
+-- Note: Use entity_tag_t and entity_category_t with entity_type = 'skill'
 -- for flat tagging and hierarchical folder structure of skills.
 CREATE TABLE skill_t (
     host_id             UUID NOT NULL,

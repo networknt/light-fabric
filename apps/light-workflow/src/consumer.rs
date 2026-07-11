@@ -1,12 +1,20 @@
 use crate::events::{CloudEventEnvelope, WorkflowStartedPayload};
+use crate::repositories::{NewProcess, NewTask, WorkflowRepository};
+use execution_runner_protocol::canonical_sha256;
 use serde_json::{Value, from_str, json};
 use serde_yaml;
 use sqlx::{PgPool, Postgres, Transaction, postgres::PgListener};
+use std::collections::BTreeMap;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, error, info};
 use uuid::Uuid;
+use workflow_core::models::task::{CallTaskDefinition, TaskDefinition};
 use workflow_core::models::workflow::WorkflowDefinition;
+use workflow_policy::{
+    ExecutionPlacement, ExecutionProfile, ResolvedExecutionPolicy, TaskKind, parse_security_policy,
+    resolve_policy,
+};
 
 #[derive(sqlx::FromRow)]
 pub struct RawEvent {
@@ -21,6 +29,7 @@ pub struct EventConsumer {
     partition_id: i32,
     total_partitions: i32,
     batch_size: i64,
+    execution_profiles: BTreeMap<String, ExecutionProfile>,
 }
 
 impl EventConsumer {
@@ -33,7 +42,31 @@ impl EventConsumer {
             workflow_core::models::task::TaskDefinition::Call(_) => Some("call"),
             workflow_core::models::task::TaskDefinition::Set(_) => Some("set"),
             workflow_core::models::task::TaskDefinition::Switch(_) => Some("switch"),
+            workflow_core::models::task::TaskDefinition::Run(_) => Some("run"),
             _ => None,
+        }
+    }
+
+    fn policy_task_kind(task_def: &TaskDefinition) -> Result<TaskKind, sqlx::Error> {
+        match task_def {
+            TaskDefinition::Ask(_) => Ok(TaskKind::Ask),
+            TaskDefinition::Assert(_) => Ok(TaskKind::Assert),
+            TaskDefinition::Set(_) => Ok(TaskKind::Set),
+            TaskDefinition::Switch(_) => Ok(TaskKind::Switch),
+            TaskDefinition::Call(call) => match call {
+                CallTaskDefinition::Agent(_) => Ok(TaskKind::CallAgent),
+                CallTaskDefinition::Mcp(_) => Ok(TaskKind::CallMcp),
+                _ => Ok(TaskKind::CallHttp),
+            },
+            TaskDefinition::Run(run) if run.run.shell.is_some() => Ok(TaskKind::RunShell),
+            TaskDefinition::Run(run) if run.run.container.is_some() => Ok(TaskKind::RunContainer),
+            TaskDefinition::Run(run) if run.run.script.is_some() => Ok(TaskKind::RunScript),
+            TaskDefinition::Run(_) => Err(sqlx::Error::Protocol(
+                "run.workflow is not supported by the execution runner".to_string(),
+            )),
+            _ => Err(sqlx::Error::Protocol(
+                "task type is not supported by light-workflow".to_string(),
+            )),
         }
     }
 
@@ -50,7 +83,16 @@ impl EventConsumer {
             partition_id,
             total_partitions,
             batch_size,
+            execution_profiles: BTreeMap::new(),
         }
+    }
+
+    pub fn with_execution_profiles(
+        mut self,
+        execution_profiles: BTreeMap<String, ExecutionProfile>,
+    ) -> Self {
+        self.execution_profiles = execution_profiles;
+        self
     }
 
     pub async fn run(&self) -> Result<(), sqlx::Error> {
@@ -237,6 +279,22 @@ impl EventConsumer {
                     return Ok(());
                 }
 
+                if let Some(existing_process_id) = WorkflowRepository::find_process_by_source_event(
+                    tx,
+                    host_id,
+                    payload.wf_def_id,
+                    &ce.id,
+                )
+                .await?
+                {
+                    info!(
+                        source_event_id = %ce.id,
+                        process_id = %existing_process_id,
+                        "WorkflowStartedEvent was already projected"
+                    );
+                    return Ok(());
+                }
+
                 info!(
                     ">>> Workflow Triggered: host_id={}, wf_def_id={}",
                     host_id, payload.wf_def_id
@@ -247,48 +305,93 @@ impl EventConsumer {
                     .get_workflow_definition(tx, &host_id, &payload.wf_def_id)
                     .await?;
                 let definition: WorkflowDefinition = serde_yaml::from_str(&dsl_yaml)?;
+                let raw_definition: serde_yaml::Value = serde_yaml::from_str(&dsl_yaml)?;
+                let definition_snapshot: Value = serde_yaml::from_str(&dsl_yaml)?;
+                let definition_digest = canonical_sha256(&definition_snapshot)
+                    .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+
+                let (task_name, task_def) = definition
+                    .do_
+                    .entries
+                    .first()
+                    .and_then(|entry| entry.iter().next())
+                    .ok_or_else(|| {
+                        sqlx::Error::Protocol("workflow has no initial task".to_string())
+                    })?;
+                let task_type = Self::supported_task_type(task_def).ok_or_else(|| {
+                    let message = format!(
+                        "unsupported initial task type for workflow {}: first task '{}' must be ask/assert/call/set/switch/run",
+                        payload.wf_def_id, task_name
+                    );
+                    error!("{}", message);
+                    sqlx::Error::Protocol(message)
+                })?;
+                let task_kind = Self::policy_task_kind(task_def)?;
+                let security = parse_security_policy(&raw_definition)
+                    .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+                let resolved_policy: ResolvedExecutionPolicy =
+                    resolve_policy(task_kind, security.as_ref(), &self.execution_profiles)
+                        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+                let policy_snapshot_id = WorkflowRepository::store_policy_snapshot(
+                    tx,
+                    host_id,
+                    &definition_digest,
+                    &resolved_policy,
+                    ce.user.as_deref().unwrap_or("light-workflow"),
+                )
+                .await?;
+                let execution_profile_id = resolved_policy
+                    .profile
+                    .as_ref()
+                    .map(|profile| profile.id.as_str())
+                    .unwrap_or("host");
 
                 // 3. Persist to process_info_t (Generic Projection)
-                self.persist_process_info(
+                let inserted = self
+                    .persist_process_info(
+                        tx,
+                        &host_id,
+                        &process_id,
+                        &payload.wf_def_id,
+                        &wf_instance_id,
+                        ce.source.as_str(),
+                        &input_data,
+                        &definition_snapshot,
+                        &definition_digest,
+                        policy_snapshot_id,
+                        &resolved_policy.policy_digest,
+                        &ce.id,
+                        execution_profile_id,
+                    )
+                    .await?;
+                if !inserted {
+                    info!(
+                        source_event_id = %ce.id,
+                        "WorkflowStartedEvent lost an idempotent insert race"
+                    );
+                    return Ok(());
+                }
+
+                // 4. Identify and Initialize First Task
+                let task_id = Uuid::new_v4();
+                self.persist_task_info(
                     tx,
                     &host_id,
+                    &task_id,
+                    task_type,
                     &process_id,
-                    &payload.wf_def_id,
                     &wf_instance_id,
-                    ce.source.as_str(),
+                    task_name,
                     &input_data,
+                    resolved_policy.placement,
+                    &resolved_policy.policy_digest,
                 )
                 .await?;
 
-                // 4. Identify and Initialize First Task
-                if let Some(entry) = definition.do_.entries.first() {
-                    // Map key is task name, value is TaskDefinition
-                    if let Some((task_name, task_def)) = entry.iter().next() {
-                        let task_id = Uuid::new_v4();
-                        let task_type = Self::supported_task_type(task_def).ok_or_else(|| {
-                            let message = format!(
-                                "unsupported initial task type for workflow {}: first task '{}' must be one of ask/assert/call/set/switch",
-                                payload.wf_def_id, task_name
-                            );
-                            error!("{}", message);
-                            sqlx::Error::Protocol(message)
-                        })?;
-
-                        self.persist_task_info(
-                            tx,
-                            &host_id,
-                            &task_id,
-                            task_type,
-                            &process_id,
-                            &wf_instance_id,
-                            task_name,
-                            &input_data,
-                        )
-                        .await?;
-
-                        info!(">>> First Task initialized: {} ({})", task_name, task_type);
-                    }
-                }
+                info!(
+                    ">>> First Task initialized: {} ({}, {:?})",
+                    task_name, task_type, resolved_policy.placement
+                );
 
                 info!(">>> Workflow instance started: {}", wf_instance_id);
             }
@@ -306,29 +409,31 @@ impl EventConsumer {
         wf_instance_id: &Uuid,
         app_id: &str,
         input_data: &Value,
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            r#"
-            INSERT INTO process_info_t (
-                host_id, process_id, wf_def_id, wf_instance_id, app_id, 
-                process_type, status_code, started_ts, ex_trigger_ts, 
-                input_data, context_data
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $8, $9)
-            "#,
+        definition_snapshot: &Value,
+        definition_digest: &str,
+        policy_snapshot_id: Uuid,
+        policy_digest: &str,
+        source_event_id: &str,
+        execution_profile_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        WorkflowRepository::insert_process_if_absent(
+            tx,
+            &NewProcess {
+                host_id: *host_id,
+                process_id: *process_id,
+                wf_def_id: *wf_def_id,
+                wf_instance_id: wf_instance_id.to_string(),
+                app_id,
+                input_data,
+                definition_snapshot,
+                definition_digest,
+                policy_snapshot_id,
+                policy_digest,
+                source_event_id,
+                execution_profile_id,
+            },
         )
-        .bind(host_id)
-        .bind(process_id)
-        .bind(wf_def_id)
-        .bind(wf_instance_id.to_string())
-        .bind(app_id)
-        .bind("Workflow") // process_type
-        .bind("A") // status_code (Active)
-        .bind(input_data)
-        .bind(input_data) // Initial context is the input
-        .execute(&mut **tx)
-        .await?;
-        Ok(())
+        .await
     }
 
     async fn get_workflow_definition(
@@ -357,29 +462,23 @@ impl EventConsumer {
         wf_instance_id: &Uuid,
         wf_task_id: &str,
         task_input: &Value,
+        placement: ExecutionPlacement,
+        policy_digest: &str,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            r#"
-            INSERT INTO task_info_t (
-                host_id, task_id, task_type, process_id, wf_instance_id, 
-                wf_task_id, status_code, started_ts, locked, priority, 
-                task_input
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, $8, $9, $10)
-            "#,
+        WorkflowRepository::insert_task(
+            tx,
+            &NewTask {
+                host_id: *host_id,
+                task_id: *task_id,
+                task_type,
+                process_id: *process_id,
+                wf_instance_id: wf_instance_id.to_string(),
+                wf_task_id,
+                task_input,
+                placement,
+                policy_digest,
+            },
         )
-        .bind(host_id)
-        .bind(task_id)
-        .bind(task_type)
-        .bind(process_id)
-        .bind(wf_instance_id.to_string())
-        .bind(wf_task_id)
-        .bind("A") // status_code (Active)
-        .bind("N") // locked ('N')
-        .bind(1) // priority
-        .bind(task_input)
-        .execute(&mut **tx)
-        .await?;
-        Ok(())
+        .await
     }
 }

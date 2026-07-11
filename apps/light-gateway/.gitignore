@@ -21,3 +21,4 @@ target
 #.idea/
 
 light-gateway.env
+config-cache/

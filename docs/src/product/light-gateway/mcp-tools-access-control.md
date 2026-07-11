@@ -193,3 +193,22 @@ ruleBodies:
 `defaultInclude` affects row filtering when no caller claim matches a configured
 row-filter entry. Keep it `false` to fail closed and return no rows. Set it to
 `true` only when the desired compatibility behavior is to keep all rows.
+
+### Response Filtering And Call Caches
+
+The current MCP router has a `tools/list` visibility cache but no gateway
+`tools/call` response cache. If call-result caching is added later, access
+control wraps the cache rather than being cached with the result:
+
+1. Authenticate and run `req-acc` before using a cache entry.
+2. Cache only the normalized backend MCP result before `res-fil`.
+3. Run the current caller's `res-fil` rules on every hit and miss.
+4. Never place a post-filter caller view in a shared call-result cache.
+
+The pre-filter cache is sensitive because it may contain rows or columns that
+the current caller cannot receive. It must remain tenant/principal scoped by
+default, use a key covering every downstream request dimension, be bounded and
+short-lived, and be unavailable to tenant code or diagnostics that expose
+payloads. Cross-principal reuse requires explicit proof that the backend result
+is principal-invariant. If the gateway cannot rerun current authorization and
+filtering on a hit, caching is disabled for that tool.

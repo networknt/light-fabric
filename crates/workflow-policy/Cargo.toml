@@ -1,0 +1,13 @@
+[package]
+name = "workflow-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Strict workflow execution placement and sandbox policy"
+
+[dependencies]
+execution-runner-protocol = { path = "../execution-runner-protocol" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }

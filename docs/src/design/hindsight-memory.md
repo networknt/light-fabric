@@ -52,7 +52,7 @@ The Hindsight system is fully integrated into the portal's multi-tenant schema:
 | `agent_memory_link_t` | Defines causal and semantic relationships between memories (causes, enables, etc.). |
 | `agent_memory_directive_t`| "Hard rules" that override probabilistic learning. |
 | `agent_memory_reflection_t`| Synthesized high-level insights generated during the "Reflect" phase. |
-| `agent_session_history_t`| The live record of active conversations, linked to a specific bank for context. |
+| `agent_session_history_t`| The materialized conversation context for active sessions, linked to a specific bank. Effectful action attempts and append-only session events remain authoritative when history projection is delayed or conflicted. |
 
 ---
 
@@ -71,12 +71,24 @@ Isolation is managed at the **Bank** level using three scoping tiers:
     - Can be scoped further by `agent_def_id` to provide user-specific memory within a particular agent persona.
     - Used for personal preferences, private history, and individualized learning.
 
+Memory-bank identity is not proof of access. Every recall, retain, reflection,
+export, resume, and deletion operation must derive host, principal, agent, and
+retention authority from authenticated server-side state. Personal-assistant
+profiles should default to a private user-and-agent bank unless an explicit
+sharing policy selects a broader scope.
+
+Recalled memory is untrusted model context, not a system instruction or
+authorization grant. It cannot add tools, skills, credentials, network access,
+filesystem access, channel destinations, or execution capabilities.
+
 ---
 
 ## 5. Implementation Guide
 
 To implement a "Learning Agent," follow this sequence in your application logic:
 
-1.  **Ingestion**: After every tool call or user interaction, call `retain` to update the bank.
+1.  **Ingestion**: After an interaction or action result is durably accepted
+    into the agent session event stream, call `retain` with its source class and
+    correlation. Never let a memory-write failure retry an effectful action.
 2.  **Context Loading**: Before calling the LLM, call `recall` to fetch the most relevant 3-5 memories for the current prompt.
 3.  **Scheduled Reflection**: Run the `reflect` operation during idle time to compress raw experiences into high-level mental models.

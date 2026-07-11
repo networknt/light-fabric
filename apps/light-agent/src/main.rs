@@ -6,8 +6,8 @@ use axum::{
         Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::HeaderMap,
-    response::IntoResponse,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     routing::get,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -17,6 +17,10 @@ use light_runtime::{
     LightRuntimeBuilder, MaskSpec, ModuleKind, RuntimeConfig, RuntimeError, TracingOptions,
     config::{BootstrapConfig, ClientConfig, PortalRegistryConfig},
     init_tracing,
+};
+use light_security::{
+    AuthPrincipal, HandlerRejection, JwtExpiryMode, SecurityRuntime, load_security_runtime,
+    verify_jwt_token,
 };
 use mcp_client::{McpContent, McpGatewayClient, McpTool};
 use model_provider::{
@@ -51,6 +55,105 @@ const DEFAULT_CATALOG_CACHE_TTL_SECONDS: u64 = 60;
 const DEFAULT_CATALOG_STALE_ON_ERROR_SECONDS: u64 = 300;
 const DEFAULT_CATALOG_SELECTION_LIMIT: usize = 12;
 const DEFAULT_SEMANTIC_CATALOG_LIMIT: usize = 50;
+const DEFAULT_MAX_TURN_SECONDS: u64 = 120;
+const DEFAULT_MAX_MODEL_CALLS: usize = 10;
+const DEFAULT_MAX_ACTION_CALLS: usize = 20;
+const DEFAULT_MAX_USER_MESSAGE_BYTES: usize = 64 * 1024;
+const DEFAULT_MAX_TOOL_ARGUMENT_BYTES: usize = 64 * 1024;
+const DEFAULT_MAX_TOOL_OUTPUT_BYTES: usize = 64 * 1024;
+const DEFAULT_MAX_GATEWAY_RESPONSE_BYTES: usize = 1024 * 1024;
+const DEFAULT_MAX_RESPONSE_BYTES: usize = 64 * 1024;
+const DEFAULT_MAX_OUTPUT_DEPTH: usize = 16;
+const DEFAULT_MAX_OUTPUT_ITEMS: usize = 1024;
+const DEFAULT_MAX_TURN_TOKENS: u64 = 64 * 1024;
+
+#[derive(Debug, Clone)]
+struct AgentLimits {
+    turn_timeout: Duration,
+    max_model_calls: usize,
+    max_action_calls: usize,
+    max_user_message_bytes: usize,
+    max_tool_argument_bytes: usize,
+    max_tool_output_bytes: usize,
+    max_gateway_response_bytes: usize,
+    max_response_bytes: usize,
+    max_output_depth: usize,
+    max_output_items: usize,
+    max_turn_tokens: u64,
+}
+
+impl AgentLimits {
+    fn from_env() -> Self {
+        Self {
+            turn_timeout: duration_from_env_seconds(
+                "LIGHT_AGENT_MAX_TURN_SECONDS",
+                DEFAULT_MAX_TURN_SECONDS,
+            ),
+            max_model_calls: usize_from_env(
+                "LIGHT_AGENT_MAX_MODEL_CALLS",
+                DEFAULT_MAX_MODEL_CALLS,
+                100,
+            ),
+            max_action_calls: usize_from_env(
+                "LIGHT_AGENT_MAX_ACTION_CALLS",
+                DEFAULT_MAX_ACTION_CALLS,
+                1_000,
+            ),
+            max_user_message_bytes: usize_from_env(
+                "LIGHT_AGENT_MAX_USER_MESSAGE_BYTES",
+                DEFAULT_MAX_USER_MESSAGE_BYTES,
+                1024 * 1024,
+            ),
+            max_tool_argument_bytes: usize_from_env(
+                "LIGHT_AGENT_MAX_TOOL_ARGUMENT_BYTES",
+                DEFAULT_MAX_TOOL_ARGUMENT_BYTES,
+                1024 * 1024,
+            ),
+            max_tool_output_bytes: usize_from_env(
+                "LIGHT_AGENT_MAX_TOOL_OUTPUT_BYTES",
+                DEFAULT_MAX_TOOL_OUTPUT_BYTES,
+                4 * 1024 * 1024,
+            ),
+            max_gateway_response_bytes: usize_from_env(
+                "LIGHT_AGENT_MAX_GATEWAY_RESPONSE_BYTES",
+                DEFAULT_MAX_GATEWAY_RESPONSE_BYTES,
+                8 * 1024 * 1024,
+            ),
+            max_response_bytes: usize_from_env(
+                "LIGHT_AGENT_MAX_RESPONSE_BYTES",
+                DEFAULT_MAX_RESPONSE_BYTES,
+                1024 * 1024,
+            ),
+            max_output_depth: usize_from_env(
+                "LIGHT_AGENT_MAX_OUTPUT_DEPTH",
+                DEFAULT_MAX_OUTPUT_DEPTH,
+                64,
+            ),
+            max_output_items: usize_from_env(
+                "LIGHT_AGENT_MAX_OUTPUT_ITEMS",
+                DEFAULT_MAX_OUTPUT_ITEMS,
+                10_000,
+            ),
+            max_turn_tokens: u64_from_env(
+                "LIGHT_AGENT_MAX_TURN_TOKENS",
+                DEFAULT_MAX_TURN_TOKENS,
+                10_000_000,
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionOwner {
+    principal_id: Uuid,
+    agent_def_id: Uuid,
+}
+
+#[derive(Debug, Clone)]
+struct AuthenticatedRequest {
+    authorization: String,
+    owner: SessionOwner,
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -244,6 +347,15 @@ fn usize_from_env(name: &str, default_value: usize, max_value: usize) -> usize {
     std::env::var(name)
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .map(|value| value.min(max_value))
+        .unwrap_or(default_value)
+}
+
+fn u64_from_env(name: &str, default_value: u64, max_value: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
         .filter(|value| *value > 0)
         .map(|value| value.min(max_value))
         .unwrap_or(default_value)
@@ -711,6 +823,7 @@ trait MemoryStore: Send + Sync {
         host_id: Uuid,
         bank_id: Uuid,
         session_id: Uuid,
+        owner: SessionOwner,
     ) -> Result<()>;
     async fn load_session_history(
         &self,
@@ -779,8 +892,9 @@ impl MemoryStore for DirectPgMemoryStore {
         host_id: Uuid,
         bank_id: Uuid,
         session_id: Uuid,
+        owner: SessionOwner,
     ) -> Result<()> {
-        insert_session_memory_bank(&self.pool, host_id, bank_id, session_id).await
+        insert_session_memory_bank(&self.pool, host_id, bank_id, session_id, owner).await
     }
 
     async fn load_session_history(
@@ -835,13 +949,20 @@ impl MemoryStore for PortalCommandMemoryStore {
         host_id: Uuid,
         bank_id: Uuid,
         session_id: Uuid,
+        owner: SessionOwner,
     ) -> Result<()> {
+        if let Some(existing) = load_session_owner(&self.pool, host_id, bank_id).await? {
+            return validate_session_owner(existing, owner);
+        }
+
         self.command_client
             .call(
                 "createAgentMemoryBank",
                 serde_json::json!({
                     "hostId": host_id,
                     "bankId": bank_id,
+                    "agentDefId": owner.agent_def_id,
+                    "userId": owner.principal_id,
                     "bankName": format!("session-{session_id}")
                 }),
             )
@@ -860,7 +981,10 @@ impl MemoryStore for PortalCommandMemoryStore {
                 )
                 .await?;
         }
-        Ok(())
+        let persisted = load_session_owner(&self.pool, host_id, bank_id)
+            .await?
+            .context("created session memory bank is not visible")?;
+        validate_session_owner(persisted, owner)
     }
 
     async fn load_session_history(
@@ -942,8 +1066,10 @@ struct AgentState {
     portal_query_client: Option<PortalQueryClient>,
     catalog_cache: AgentCatalogCache,
     memory: Arc<dyn MemoryStore>,
+    security: Arc<SecurityRuntime>,
+    limits: AgentLimits,
     host_id: Uuid,
-    agent_def_id: Option<Uuid>,
+    agent_def_id: Uuid,
     service_id: String,
     env_tag: Option<String>,
     catalog_cache_ttl: Duration,
@@ -997,17 +1123,10 @@ impl AgentState {
         let Some(client) = self.portal_query_client.as_ref() else {
             return Ok(None);
         };
-        let Some(agent_def_id) = self.agent_def_id else {
-            warn!(
-                "LIGHT_AGENT_AGENT_DEF_ID is not configured; using gateway tools/list without portal catalog filtering"
-            );
-            return Ok(None);
-        };
-
         let catalog = client
             .get_effective_agent_catalog(
                 self.host_id,
-                agent_def_id,
+                self.agent_def_id,
                 &self.service_id,
                 self.env_tag.as_deref(),
                 None,
@@ -1025,9 +1144,6 @@ impl AgentState {
         let Some(client) = self.portal_query_client.as_ref() else {
             return Ok(None);
         };
-        let Some(agent_def_id) = self.agent_def_id else {
-            return Ok(None);
-        };
         let semantic_query = prompt.trim();
         if semantic_query.is_empty() {
             return Ok(None);
@@ -1036,7 +1152,7 @@ impl AgentState {
         client
             .get_effective_agent_catalog(
                 self.host_id,
-                agent_def_id,
+                self.agent_def_id,
                 &self.service_id,
                 self.env_tag.as_deref(),
                 Some(semantic_query),
@@ -1106,11 +1222,11 @@ async fn tool_diagnostics(
     Query(params): Query<ToolDiagnosticsQuery>,
     headers: HeaderMap,
     State(state): State<Arc<AgentState>>,
-) -> Json<ToolDiagnosticsResponse> {
-    let authorization = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+) -> Response {
+    let authenticated = match authenticate_request(&headers, &state).await {
+        Ok(authenticated) => authenticated,
+        Err(rejection) => return rejection_response(rejection),
+    };
     let (catalog, catalog_error) = if params.refresh.unwrap_or(false) {
         match state.refresh_effective_catalog().await {
             Ok(catalog) => (catalog, None),
@@ -1142,7 +1258,10 @@ async fn tool_diagnostics(
         })
         .unwrap_or_default();
 
-    let gateway_result = state.mcp_client.list_tools(authorization.as_deref()).await;
+    let gateway_result = state
+        .mcp_client
+        .list_tools(Some(authenticated.authorization.as_str()))
+        .await;
     let (gateway_available, gateway_tools, gateway_error) = match gateway_result {
         Ok(tools) => {
             let mut names = tools
@@ -1195,6 +1314,115 @@ async fn tool_diagnostics(
         catalog_error,
         gateway_error,
     })
+    .into_response()
+}
+
+fn rejection_response(rejection: HandlerRejection) -> Response {
+    let status = StatusCode::from_u16(rejection.status).unwrap_or(StatusCode::UNAUTHORIZED);
+    let mut response = (
+        status,
+        Json(serde_json::json!({
+            "code": rejection.code,
+            "message": rejection.message
+        })),
+    )
+        .into_response();
+    for (name, value) in rejection.headers {
+        if let (Ok(name), Ok(value)) = (
+            name.parse::<axum::http::HeaderName>(),
+            value.parse::<axum::http::HeaderValue>(),
+        ) {
+            response.headers_mut().insert(name, value);
+        }
+    }
+    response
+}
+
+fn bearer_token(headers: &HeaderMap) -> Result<&str, HandlerRejection> {
+    let authorization = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| HandlerRejection::unauthorized("missing bearer token"))?;
+    let (scheme, token) = authorization
+        .split_once(' ')
+        .ok_or_else(|| HandlerRejection::unauthorized("invalid authorization header"))?;
+    if !scheme.eq_ignore_ascii_case("bearer") || token.trim().is_empty() {
+        return Err(HandlerRejection::unauthorized(
+            "authorization header must use Bearer",
+        ));
+    }
+    Ok(token.trim())
+}
+
+fn claim_string<'a>(principal: &'a AuthPrincipal, names: &[&str]) -> Option<&'a str> {
+    names
+        .iter()
+        .find_map(|name| {
+            principal
+                .claims
+                .get(*name)
+                .and_then(serde_json::Value::as_str)
+        })
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn bind_authenticated_principal(
+    principal: &AuthPrincipal,
+    expected_host_id: Uuid,
+    expected_service_id: &str,
+    agent_def_id: Uuid,
+) -> Result<SessionOwner, HandlerRejection> {
+    let host_id = principal
+        .host
+        .as_deref()
+        .or_else(|| claim_string(principal, &["host_id", "hostId"]))
+        .ok_or_else(|| HandlerRejection::forbidden("token is not bound to a host"))?;
+    let host_id = Uuid::parse_str(host_id)
+        .map_err(|_| HandlerRejection::forbidden("token host is invalid"))?;
+    if host_id != expected_host_id {
+        return Err(HandlerRejection::forbidden(
+            "token is not valid for this host",
+        ));
+    }
+
+    let service_id = claim_string(principal, &["sid", "service_id", "serviceId"])
+        .ok_or_else(|| HandlerRejection::forbidden("token is not bound to an agent service"))?;
+    if service_id != expected_service_id {
+        return Err(HandlerRejection::forbidden(
+            "token is not valid for this agent service",
+        ));
+    }
+
+    let principal_id = principal
+        .user_id
+        .as_deref()
+        .or(principal.client_id.as_deref())
+        .ok_or_else(|| HandlerRejection::forbidden("token has no principal identity"))?;
+    let principal_id = Uuid::parse_str(principal_id)
+        .map_err(|_| HandlerRejection::forbidden("token principal identity is invalid"))?;
+
+    Ok(SessionOwner {
+        principal_id,
+        agent_def_id,
+    })
+}
+
+async fn authenticate_request(
+    headers: &HeaderMap,
+    state: &AgentState,
+) -> Result<AuthenticatedRequest, HandlerRejection> {
+    let token = bearer_token(headers)?;
+    let principal = verify_jwt_token(&state.security, token, JwtExpiryMode::Enforce).await?;
+    let owner = bind_authenticated_principal(
+        &principal,
+        state.host_id,
+        &state.service_id,
+        state.agent_def_id,
+    )?;
+    Ok(AuthenticatedRequest {
+        authorization: format!("Bearer {token}"),
+        owner,
+    })
 }
 
 async fn ws_handler(
@@ -1202,13 +1430,29 @@ async fn ws_handler(
     Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
     State(state): State<Arc<AgentState>>,
-) -> impl IntoResponse {
-    let session_id = params.get("sessionId").cloned();
-    let authorization = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-    ws.on_upgrade(move |socket| handle_socket(socket, state, session_id, authorization))
+) -> Response {
+    let authenticated = match authenticate_request(&headers, &state).await {
+        Ok(authenticated) => authenticated,
+        Err(rejection) => return rejection_response(rejection),
+    };
+    let session_id = match params.get("sessionId") {
+        Some(session_id) => match Uuid::parse_str(session_id) {
+            Ok(session_id) => session_id,
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "code": "INVALID_SESSION_ID",
+                        "message": "sessionId must be a UUID"
+                    })),
+                )
+                    .into_response();
+            }
+        },
+        None => Uuid::new_v4(),
+    };
+    ws.on_upgrade(move |socket| handle_socket(socket, state, session_id, authenticated))
+        .into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1801,6 +2045,14 @@ fn build_model_provider(
     let provider_id = normalize_provider_id(&config.provider);
     let temperature = config.temperature;
 
+    if is_local_cli_provider(&provider_id)
+        && !bool_from_env("LIGHT_AGENT_ALLOW_LOCAL_CLI_PROVIDERS", false)
+    {
+        return Err(RuntimeError::Unsupported(format!(
+            "local CLI model provider `{provider_id}` is disabled; run it only in an isolated runner profile or explicitly opt in for local development with LIGHT_AGENT_ALLOW_LOCAL_CLI_PROVIDERS=true"
+        )));
+    }
+
     let selection = match provider_id.as_str() {
         "ollama" => {
             let provider_config: OllamaConfig = load_agent_registered_config(
@@ -2204,6 +2456,13 @@ fn normalize_provider_id(provider: &str) -> String {
         .replace(['_', ' '], "-")
 }
 
+fn is_local_cli_provider(provider_id: &str) -> bool {
+    matches!(
+        provider_id,
+        "claude-code" | "claudecode" | "gemini-cli" | "geminicli" | "kilo-cli" | "kilocli" | "kilo"
+    )
+}
+
 fn optional_str(value: &Option<String>) -> Option<&str> {
     value
         .as_deref()
@@ -2239,31 +2498,27 @@ fn optional_bool(value: &Option<String>, key: &str) -> Result<Option<bool>, Runt
 async fn handle_socket(
     socket: WebSocket,
     state: Arc<AgentState>,
-    initial_session_id: Option<String>,
-    authorization: Option<String>,
+    session_id: Uuid,
+    authenticated: AuthenticatedRequest,
 ) {
     let (mut sender, mut receiver) = socket.split();
+    let session_id_string = session_id.to_string();
 
-    // Immediate Session Initialization
-    let session_id = initial_session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let _ = sender
         .send(Message::Text(
             serde_json::to_string(&ServerMessage::Session {
-                session_id: session_id.clone(),
+                session_id: session_id_string.clone(),
             })
             .unwrap()
             .into(),
         ))
         .await;
 
-    let current_session_id: String = session_id;
-
     // 1. Load or Initialize Session
-    let session_uuid = Uuid::parse_str(&current_session_id).unwrap_or_else(|_| Uuid::new_v4());
-    let bank_id = session_uuid; // Using session as bank for simplicity
+    let bank_id = session_id; // Using session as bank for simplicity
     if let Err(e) = state
         .memory
-        .ensure_session_memory_bank(state.host_id, bank_id, session_uuid)
+        .ensure_session_memory_bank(state.host_id, bank_id, session_id, authenticated.owner)
         .await
     {
         error!("Failed to initialize session memory bank: {}", e);
@@ -2283,17 +2538,25 @@ async fn handle_socket(
         return;
     }
 
-    let mut history = state
+    let mut history = match state
         .memory
-        .load_session_history(state.host_id, bank_id, session_uuid)
+        .load_session_history(state.host_id, bank_id, session_id)
         .await
-        .unwrap_or_else(|e| {
-            warn!(
+    {
+        Ok(history) => history,
+        Err(e) => {
+            error!(
                 "Failed to load session history for host_id={}, bank_id={}, session_id={}: {}",
-                state.host_id, bank_id, session_uuid, e
+                state.host_id, bank_id, session_id, e
             );
-            Vec::new()
-        });
+            if let Ok(payload) = serde_json::to_string(&ServerMessage::Error {
+                message: "Failed to load session history".to_string(),
+            }) {
+                let _ = sender.send(Message::Text(payload.into())).await;
+            }
+            return;
+        }
+    };
 
     while let Some(Ok(msg)) = receiver.next().await {
         if let Message::Text(text) = msg {
@@ -2316,28 +2579,52 @@ async fn handle_socket(
                     continue;
                 }
             };
+            if client_msg.text.trim().is_empty()
+                || client_msg.text.len() > state.limits.max_user_message_bytes
+            {
+                let message = if client_msg.text.trim().is_empty() {
+                    "Message text must not be empty".to_string()
+                } else {
+                    format!(
+                        "Message text exceeds {} bytes",
+                        state.limits.max_user_message_bytes
+                    )
+                };
+                if let Ok(payload) = serde_json::to_string(&ServerMessage::Error { message }) {
+                    let _ = sender.send(Message::Text(payload.into())).await;
+                }
+                continue;
+            }
 
             let user_text = client_msg.text.clone();
             history.push(ChatMessage::user(user_text.clone()));
             trim_history(&mut history);
 
-            match run_agent_loop(
+            let turn = run_agent_loop(
                 &state,
                 history.clone(),
-                authorization.as_deref(),
-                &current_session_id,
+                Some(authenticated.authorization.as_str()),
+                &session_id_string,
                 bank_id,
-            )
-            .await
-            {
-                Ok(response) => {
+            );
+            match tokio::time::timeout(state.limits.turn_timeout, turn).await {
+                Err(_) => {
+                    rollback_last_user_message(&mut history, &user_text);
+                    let payload = serde_json::to_string(&ServerMessage::Error {
+                        message: "Turn deadline exceeded".to_string(),
+                    });
+                    if let Ok(payload) = payload {
+                        let _ = sender.send(Message::Text(payload.into())).await;
+                    }
+                }
+                Ok(Ok(response)) => {
                     if let Some(text) = response.text {
                         history.push(ChatMessage::assistant(text.clone()));
                         trim_history(&mut history);
 
                         if let Err(e) = state
                             .memory
-                            .persist_session_history(state.host_id, bank_id, session_uuid, &history)
+                            .persist_session_history(state.host_id, bank_id, session_id, &history)
                             .await
                         {
                             warn!("Failed to persist session history: {}", e);
@@ -2353,7 +2640,7 @@ async fn handle_socket(
                         }
                     }
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     error!("Agent loop error: {}", e);
                     rollback_last_user_message(&mut history, &user_text);
                     match serde_json::to_string(&ServerMessage::Error {
@@ -2380,19 +2667,73 @@ async fn insert_session_memory_bank(
     host_id: Uuid,
     bank_id: Uuid,
     session_id: Uuid,
+    owner: SessionOwner,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO agent_memory_bank_t (host_id, bank_id, bank_name)
-         VALUES ($1, $2, $3)
+        "INSERT INTO agent_memory_bank_t
+         (host_id, bank_id, agent_def_id, user_id, bank_name)
+         VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (host_id, bank_id) DO NOTHING",
     )
     .bind(host_id)
     .bind(bank_id)
+    .bind(owner.agent_def_id)
+    .bind(owner.principal_id)
     .bind(format!("session-{session_id}"))
     .execute(db)
     .await
     .context("failed to create session memory bank")?;
 
+    let persisted = load_session_owner(db, host_id, bank_id)
+        .await?
+        .context("created session memory bank is not visible")?;
+    validate_session_owner(persisted, owner)
+}
+
+async fn load_session_owner(
+    db: &PgPool,
+    host_id: Uuid,
+    bank_id: Uuid,
+) -> Result<Option<SessionOwner>> {
+    let row = sqlx::query(
+        "SELECT agent_def_id, user_id, active
+         FROM agent_memory_bank_t
+         WHERE host_id = $1 AND bank_id = $2",
+    )
+    .bind(host_id)
+    .bind(bank_id)
+    .fetch_optional(db)
+    .await
+    .context("failed to load session memory bank owner")?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let active: bool = row
+        .try_get("active")
+        .context("session memory bank active flag is invalid")?;
+    if !active {
+        bail!("session memory bank is inactive");
+    }
+    let agent_def_id: Option<Uuid> = row
+        .try_get("agent_def_id")
+        .context("session memory bank agent owner is invalid")?;
+    let principal_id: Option<Uuid> = row
+        .try_get("user_id")
+        .context("session memory bank principal owner is invalid")?;
+    match (principal_id, agent_def_id) {
+        (Some(principal_id), Some(agent_def_id)) => Ok(Some(SessionOwner {
+            principal_id,
+            agent_def_id,
+        })),
+        _ => bail!("session memory bank has no complete owner binding"),
+    }
+}
+
+fn validate_session_owner(actual: SessionOwner, expected: SessionOwner) -> Result<()> {
+    if actual != expected {
+        bail!("session is not owned by the authenticated principal and agent definition");
+    }
     Ok(())
 }
 
@@ -2438,7 +2779,8 @@ async fn load_session_history_from_db(
         return Ok(Vec::new());
     };
     let messages: serde_json::Value = row.get("messages");
-    Ok(serde_json::from_value::<Vec<ChatMessage>>(messages).unwrap_or_default())
+    serde_json::from_value::<Vec<ChatMessage>>(messages)
+        .context("session history contains invalid messages")
 }
 
 async fn persist_session_history_to_db(
@@ -2468,6 +2810,319 @@ async fn persist_session_history_to_db(
     Ok(())
 }
 
+fn validate_json_limits(
+    value: &serde_json::Value,
+    depth: usize,
+    item_count: &mut usize,
+    max_depth: usize,
+    max_items: usize,
+) -> Result<()> {
+    if depth > max_depth {
+        bail!("tool arguments exceed maximum nesting depth {max_depth}");
+    }
+    match value {
+        serde_json::Value::Array(values) => {
+            *item_count = item_count.saturating_add(values.len());
+            if *item_count > max_items {
+                bail!("tool arguments exceed maximum item count {max_items}");
+            }
+            for value in values {
+                validate_json_limits(value, depth + 1, item_count, max_depth, max_items)?;
+            }
+        }
+        serde_json::Value::Object(values) => {
+            *item_count = item_count.saturating_add(values.len());
+            if *item_count > max_items {
+                bail!("tool arguments exceed maximum item count {max_items}");
+            }
+            for value in values.values() {
+                validate_json_limits(value, depth + 1, item_count, max_depth, max_items)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_json_schema_subset(
+    path: &str,
+    schema: &serde_json::Value,
+    value: &serde_json::Value,
+) -> Result<(), String> {
+    if let Some(enum_values) = schema.get("enum").and_then(serde_json::Value::as_array)
+        && !enum_values.iter().any(|candidate| candidate == value)
+    {
+        return Err(format!("{path} is not one of the allowed values"));
+    }
+
+    if let Some(schema_type) = schema.get("type").and_then(serde_json::Value::as_str) {
+        let type_matches = match schema_type {
+            "object" => value.is_object(),
+            "array" => value.is_array(),
+            "string" => value.is_string(),
+            "boolean" => value.is_boolean(),
+            "number" => value.is_number(),
+            "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+            "null" => value.is_null(),
+            unsupported => {
+                return Err(format!("{path} uses unsupported schema type {unsupported}"));
+            }
+        };
+        if !type_matches {
+            return Err(format!("{path} must be {schema_type}"));
+        }
+    }
+
+    if let Some(required) = schema.get("required").and_then(serde_json::Value::as_array) {
+        let object = value
+            .as_object()
+            .ok_or_else(|| format!("{path} required fields need an object"))?;
+        for field in required.iter().filter_map(serde_json::Value::as_str) {
+            if !object.contains_key(field)
+                || object.get(field).is_some_and(serde_json::Value::is_null)
+            {
+                return Err(format!("{path} is missing required field {field}"));
+            }
+        }
+    }
+
+    if let Some(object) = value.as_object() {
+        let properties = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object);
+        if schema
+            .get("additionalProperties")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
+        {
+            for field in object.keys() {
+                if !properties.is_some_and(|properties| properties.contains_key(field)) {
+                    return Err(format!("{path} contains unsupported field {field}"));
+                }
+            }
+        }
+        if let Some(properties) = properties {
+            for (property, property_schema) in properties {
+                if let Some(property_value) = object.get(property) {
+                    validate_json_schema_subset(
+                        &format!("{path}.{property}"),
+                        property_schema,
+                        property_value,
+                    )?;
+                }
+            }
+        }
+    }
+
+    if let (Some(items_schema), Some(values)) = (schema.get("items"), value.as_array()) {
+        for (index, item) in values.iter().enumerate() {
+            validate_json_schema_subset(&format!("{path}[{index}]"), items_schema, item)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_tool_arguments(
+    arguments: &str,
+    schema: &serde_json::Value,
+    limits: &AgentLimits,
+) -> Result<serde_json::Value> {
+    if arguments.len() > limits.max_tool_argument_bytes {
+        bail!(
+            "tool arguments exceed {} bytes",
+            limits.max_tool_argument_bytes
+        );
+    }
+    let arguments: serde_json::Value =
+        serde_json::from_str(arguments).context("tool arguments are not valid JSON")?;
+    if !arguments.is_object() {
+        bail!("tool arguments must be a JSON object");
+    }
+    let mut item_count = 0;
+    validate_json_limits(
+        &arguments,
+        0,
+        &mut item_count,
+        limits.max_output_depth,
+        limits.max_output_items,
+    )?;
+    validate_json_schema_subset("$", schema, &arguments)
+        .map_err(|message| anyhow!("tool arguments failed schema validation: {message}"))?;
+    Ok(arguments)
+}
+
+fn sensitive_key(key: &str) -> bool {
+    let key = key
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    matches!(
+        key.as_str(),
+        "authorization"
+            | "accesstoken"
+            | "refreshtoken"
+            | "token"
+            | "apikey"
+            | "password"
+            | "passwd"
+            | "secret"
+            | "clientsecret"
+            | "privatekey"
+            | "credential"
+            | "cookie"
+            | "setcookie"
+    ) || key.ends_with("token")
+        || key.ends_with("secret")
+        || key.ends_with("password")
+}
+
+fn redact_and_bound_json(
+    value: &serde_json::Value,
+    depth: usize,
+    item_count: &mut usize,
+    limits: &AgentLimits,
+    truncated: &mut bool,
+) -> serde_json::Value {
+    if depth > limits.max_output_depth {
+        *truncated = true;
+        return serde_json::Value::String("[TRUNCATED: maximum depth]".to_string());
+    }
+    match value {
+        serde_json::Value::Array(values) => {
+            let mut output = Vec::new();
+            for value in values {
+                if *item_count >= limits.max_output_items {
+                    *truncated = true;
+                    output.push(serde_json::Value::String(
+                        "[TRUNCATED: maximum items]".to_string(),
+                    ));
+                    break;
+                }
+                *item_count += 1;
+                output.push(redact_and_bound_json(
+                    value,
+                    depth + 1,
+                    item_count,
+                    limits,
+                    truncated,
+                ));
+            }
+            serde_json::Value::Array(output)
+        }
+        serde_json::Value::Object(values) => {
+            let mut output = serde_json::Map::new();
+            for (key, value) in values {
+                if *item_count >= limits.max_output_items {
+                    *truncated = true;
+                    output.insert(
+                        "_truncated".to_string(),
+                        serde_json::Value::String("maximum items".to_string()),
+                    );
+                    break;
+                }
+                *item_count += 1;
+                let value = if sensitive_key(key) {
+                    serde_json::Value::String("<REDACTED>".to_string())
+                } else {
+                    redact_and_bound_json(value, depth + 1, item_count, limits, truncated)
+                };
+                output.insert(key.clone(), value);
+            }
+            serde_json::Value::Object(output)
+        }
+        value => value.clone(),
+    }
+}
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> (String, bool) {
+    if value.len() <= max_bytes {
+        return (value.to_string(), false);
+    }
+    const MARKER: &str = "\n[TRUNCATED]";
+    if max_bytes <= MARKER.len() {
+        return (MARKER[..max_bytes].to_string(), true);
+    }
+    let target = max_bytes.saturating_sub(MARKER.len());
+    let mut end = target.min(value.len());
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut output = value[..end].to_string();
+    output.push_str(MARKER);
+    (output, true)
+}
+
+fn redact_plain_text(value: &str) -> String {
+    value
+        .lines()
+        .map(|line| {
+            let normalized = line.to_ascii_lowercase();
+            if [
+                "authorization",
+                "access_token",
+                "accesstoken",
+                "refresh_token",
+                "api_key",
+                "apikey",
+                "client_secret",
+                "password",
+                "private_key",
+                "set-cookie",
+                "bearer ",
+            ]
+            .iter()
+            .any(|marker| normalized.contains(marker))
+            {
+                "<REDACTED>".to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn bound_untrusted_text(value: &str, limits: &AgentLimits, max_bytes: usize) -> (String, bool) {
+    let (redacted, mut truncated) = match serde_json::from_str::<serde_json::Value>(value) {
+        Ok(value) => {
+            let mut item_count = 0;
+            let mut truncated = false;
+            let value = redact_and_bound_json(&value, 0, &mut item_count, limits, &mut truncated);
+            (
+                serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string()),
+                truncated,
+            )
+        }
+        Err(_) => (redact_plain_text(value), false),
+    };
+    let (redacted, size_truncated) = truncate_utf8(&redacted, max_bytes);
+    truncated |= size_truncated;
+    (redacted, truncated)
+}
+
+fn tool_result_message(
+    tool_call_id: &str,
+    tool_name: &str,
+    content: &str,
+    is_error: bool,
+    truncated: bool,
+) -> ChatMessage {
+    ChatMessage {
+        role: "tool".into(),
+        content: serde_json::to_string(&serde_json::json!({
+            "tool_call_id": tool_call_id,
+            "tool_name": tool_name,
+            "content": content,
+            "is_error": is_error,
+            "truncated": truncated,
+            "untrusted": true
+        }))
+        .unwrap_or_else(|_| "{\"is_error\":true}".to_string()),
+    }
+}
+
 async fn run_agent_loop(
     state: &AgentState,
     mut messages: Vec<ChatMessage>,
@@ -2492,6 +3147,11 @@ async fn run_agent_loop(
         for mem in relevant_memories {
             context_msg.push_str(&format!("- {}\n", mem.content));
         }
+        let (context_msg, _) = bound_untrusted_text(
+            &context_msg,
+            &state.limits,
+            state.limits.max_tool_output_bytes,
+        );
         // Inject as a system hint or prefix to the user message
         if let Some(msg) = messages.last_mut() {
             msg.content = format!("{}\n\n{}", context_msg, msg.content);
@@ -2511,6 +3171,7 @@ async fn run_agent_loop(
     }
 
     let mut tool_specs: Vec<ToolSpec> = Vec::new();
+    let mut accepted_tools = HashMap::new();
     let mcp_tools = state
         .mcp_client
         .list_tools(authorization)
@@ -2520,17 +3181,23 @@ async fn run_agent_loop(
             Vec::new()
         });
     for t in filter_gateway_tools(mcp_tools, catalog_selection.as_ref()) {
+        if t.name.trim().is_empty() || accepted_tools.contains_key(&t.name) {
+            continue;
+        }
         tool_specs.push(ToolSpec {
-            name: t.name,
-            description: t.description,
-            parameters: t.input_schema,
+            name: t.name.clone(),
+            description: t.description.clone(),
+            parameters: t.input_schema.clone(),
         });
+        accepted_tools.insert(t.name.clone(), t);
     }
 
     // 3. Main LLM Loop
     let mut final_response = None;
-    for _ in 0..10 {
-        let response = {
+    let mut action_count = 0usize;
+    let mut turn_tokens = 0u64;
+    for _ in 0..state.limits.max_model_calls {
+        let mut response = {
             let request = ChatRequest {
                 messages: &messages,
                 tools: if tool_specs.is_empty() {
@@ -2545,9 +3212,33 @@ async fn run_agent_loop(
                 .await?
         };
 
+        if let Some(usage) = response.usage.as_ref() {
+            turn_tokens = turn_tokens
+                .saturating_add(usage.input_tokens.unwrap_or_default())
+                .saturating_add(usage.output_tokens.unwrap_or_default());
+            if turn_tokens > state.limits.max_turn_tokens {
+                bail!(
+                    "turn token budget exceeded ({} > {})",
+                    turn_tokens,
+                    state.limits.max_turn_tokens
+                );
+            }
+        }
+
         if response.tool_calls.is_empty() {
+            if let Some(text) = response.text.take() {
+                let (text, _) =
+                    bound_untrusted_text(&text, &state.limits, state.limits.max_response_bytes);
+                response.text = Some(text);
+            }
             final_response = Some(response);
             break;
+        }
+
+        let serialized_tool_calls = serde_json::to_string(&response.tool_calls)
+            .context("failed to serialize model tool calls")?;
+        if serialized_tool_calls.len() > state.limits.max_response_bytes {
+            bail!("model tool-call response exceeds configured response limit");
         }
 
         // Add assistant message with tool calls
@@ -2560,8 +3251,35 @@ async fn run_agent_loop(
         });
 
         for tool_call in &response.tool_calls {
-            let args: serde_json::Value =
-                serde_json::from_str(&tool_call.arguments).unwrap_or_default();
+            action_count = action_count.saturating_add(1);
+            if action_count > state.limits.max_action_calls {
+                bail!("turn action limit exceeded");
+            }
+            let Some(tool) = accepted_tools.get(&tool_call.name) else {
+                messages.push(tool_result_message(
+                    &tool_call.id,
+                    &tool_call.name,
+                    "Model requested a tool that was not in the accepted tool set",
+                    true,
+                    false,
+                ));
+                continue;
+            };
+            let args =
+                match parse_tool_arguments(&tool_call.arguments, &tool.input_schema, &state.limits)
+                {
+                    Ok(arguments) => arguments,
+                    Err(error) => {
+                        messages.push(tool_result_message(
+                            &tool_call.id,
+                            &tool_call.name,
+                            &error.to_string(),
+                            true,
+                            false,
+                        ));
+                        continue;
+                    }
+                };
             match state
                 .mcp_client
                 .call_tool(authorization, &tool_call.name, args)
@@ -2571,30 +3289,39 @@ async fn run_agent_loop(
                     let mut text_result = String::new();
                     for content in result.content {
                         if let McpContent::Text { text } = content {
+                            if !text_result.is_empty() {
+                                text_result.push('\n');
+                            }
                             text_result.push_str(&text);
                         }
                     }
-                    messages.push(ChatMessage {
-                        role: "tool".into(),
-                        content: serde_json::to_string(&serde_json::json!({
-                            "tool_call_id": tool_call.id,
-                            "tool_name": tool_call.name,
-                            "content": text_result
-                        }))
-                        .unwrap(),
-                    });
+                    let (text_result, truncated) = bound_untrusted_text(
+                        &text_result,
+                        &state.limits,
+                        state.limits.max_tool_output_bytes,
+                    );
+                    messages.push(tool_result_message(
+                        &tool_call.id,
+                        &tool_call.name,
+                        &text_result,
+                        result.is_error,
+                        truncated,
+                    ));
                 }
                 Err(e) => {
                     warn!("Tool call failed: {}", e);
-                    messages.push(ChatMessage {
-                        role: "tool".into(),
-                        content: serde_json::to_string(&serde_json::json!({
-                            "tool_call_id": tool_call.id,
-                            "tool_name": tool_call.name,
-                            "content": format!("Error: {}", e)
-                        }))
-                        .unwrap(),
-                    });
+                    let (error, truncated) = bound_untrusted_text(
+                        &format!("Error: {e}"),
+                        &state.limits,
+                        state.limits.max_tool_output_bytes,
+                    );
+                    messages.push(tool_result_message(
+                        &tool_call.id,
+                        &tool_call.name,
+                        &error,
+                        true,
+                        truncated,
+                    ));
                 }
             }
         }
@@ -2655,6 +3382,7 @@ async fn build_agent_state(
         mcp_config.gateway_url.trim_end_matches('/'),
         mcp_config.path.trim_start_matches('/')
     );
+    let limits = AgentLimits::from_env();
 
     let ca_cert = read_agent_ca_cert_bundle(runtime_config)?;
     let verify_hostname: bool = runtime_config
@@ -2668,11 +3396,12 @@ async fn build_agent_state(
         );
     }
 
-    let mcp_client = McpGatewayClient::with_tls_options(
+    let mcp_client = McpGatewayClient::with_tls_options_and_response_limit(
         &mcp_gateway_url,
         ca_cert.as_deref(),
         verify_hostname,
         mcp_config.timeout_ms,
+        limits.max_gateway_response_bytes,
     )
     .map_err(|e| RuntimeError::Config(format!("failed to build MCP gateway client: {e}")))?;
 
@@ -2686,7 +3415,21 @@ async fn build_agent_state(
         .map_err(|e| RuntimeError::Config(e.to_string()))?;
     let agent_def_id =
         optional_uuid_env_var(&["LIGHT_AGENT_AGENT_DEF_ID", "LIGHT_AGENT_API_VERSION_ID"])
-            .map_err(|e| RuntimeError::Config(e.to_string()))?;
+            .map_err(|e| RuntimeError::Config(e.to_string()))?
+            .ok_or_else(|| {
+                RuntimeError::Config(
+                    "LIGHT_AGENT_AGENT_DEF_ID or LIGHT_AGENT_API_VERSION_ID is required"
+                        .to_string(),
+                )
+            })?;
+    let security = load_security_runtime(runtime_config, true)?
+        .ok_or_else(|| RuntimeError::Config("JWT verification must be enabled".to_string()))?;
+    security.bootstrap().await.map_err(|rejection| {
+        RuntimeError::Config(format!(
+            "failed to bootstrap light-agent JWT verification: {}",
+            rejection.message
+        ))
+    })?;
     let env_tag = runtime_config.service_identity.env_tag.clone();
     let portal_token =
         registry_token(&portal_registry_config).ok_or(RuntimeError::MissingPortalToken)?;
@@ -2756,6 +3499,8 @@ async fn build_agent_state(
         portal_query_client,
         catalog_cache,
         memory,
+        security: Arc::new(security),
+        limits,
         host_id,
         agent_def_id,
         service_id: runtime_config.service_identity.service_id.clone(),
@@ -2894,17 +3639,36 @@ impl RegistryHandler for AgentRegistryHandler {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentCatalogCache, CatalogSkill, CatalogTool, CatalogToolPolicy, ChatMessage,
-        EffectiveAgentCatalog, MAX_SESSION_MESSAGES, ModelProviderConfig,
-        agent_ca_cert_path_from_config, build_effective_catalog_data, choose_model,
-        collect_catalog_tool_names, collect_policy_diagnostics, filter_gateway_tools,
-        normalize_provider_id, rollback_last_user_message, select_catalog_tools, trim_history,
+        AgentCatalogCache, AgentLimits, CatalogSkill, CatalogTool, CatalogToolPolicy, ChatMessage,
+        EffectiveAgentCatalog, MAX_SESSION_MESSAGES, ModelProviderConfig, SessionOwner,
+        agent_ca_cert_path_from_config, bind_authenticated_principal, bound_untrusted_text,
+        build_effective_catalog_data, choose_model, collect_catalog_tool_names,
+        collect_policy_diagnostics, filter_gateway_tools, is_local_cli_provider,
+        normalize_provider_id, parse_tool_arguments, rollback_last_user_message,
+        select_catalog_tools, trim_history, validate_session_owner,
     };
     use light_runtime::config::{BootstrapConfig, ClientConfig};
+    use light_security::AuthPrincipal;
     use mcp_client::McpTool;
     use std::path::PathBuf;
     use std::time::Duration;
     use uuid::Uuid;
+
+    fn test_limits() -> AgentLimits {
+        AgentLimits {
+            turn_timeout: Duration::from_secs(1),
+            max_model_calls: 2,
+            max_action_calls: 2,
+            max_user_message_bytes: 1024,
+            max_tool_argument_bytes: 1024,
+            max_tool_output_bytes: 128,
+            max_gateway_response_bytes: 1024,
+            max_response_bytes: 128,
+            max_output_depth: 4,
+            max_output_items: 8,
+            max_turn_tokens: 100,
+        }
+    }
 
     #[test]
     fn trim_history_keeps_recent_messages() {
@@ -3005,6 +3769,107 @@ mod tests {
     fn provider_id_normalization_accepts_common_spellings() {
         assert_eq!(normalize_provider_id("Azure_OpenAI"), "azure-openai");
         assert_eq!(normalize_provider_id(" gemini cli "), "gemini-cli");
+        assert!(is_local_cli_provider("gemini-cli"));
+        assert!(!is_local_cli_provider("gemini"));
+    }
+
+    #[test]
+    fn strict_tool_arguments_reject_malformed_hidden_and_extra_fields() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["accountId"],
+            "additionalProperties": false,
+            "properties": {
+                "accountId": {"type": "string"}
+            }
+        });
+        let limits = test_limits();
+
+        assert!(parse_tool_arguments("not-json", &schema, &limits).is_err());
+        assert!(parse_tool_arguments("{}", &schema, &limits).is_err());
+        assert!(
+            parse_tool_arguments(
+                r#"{"accountId":"a","adminOverride":true}"#,
+                &schema,
+                &limits
+            )
+            .is_err()
+        );
+        assert_eq!(
+            parse_tool_arguments(r#"{"accountId":"a"}"#, &schema, &limits).unwrap(),
+            serde_json::json!({"accountId": "a"})
+        );
+    }
+
+    #[test]
+    fn untrusted_tool_output_is_redacted_and_bounded() {
+        let limits = test_limits();
+        let value = serde_json::json!({
+            "accessToken": "secret-token",
+            "result": "x".repeat(256)
+        })
+        .to_string();
+
+        let (output, truncated) = bound_untrusted_text(&value, &limits, 96);
+
+        assert!(truncated);
+        assert!(output.contains("REDACTED"));
+        assert!(!output.contains("secret-token"));
+        assert!(output.len() <= 96);
+    }
+
+    #[test]
+    fn principal_binding_rejects_host_or_service_substitution() {
+        let host_id = Uuid::new_v4();
+        let principal_id = Uuid::new_v4();
+        let agent_def_id = Uuid::new_v4();
+        let principal = AuthPrincipal {
+            user_id: Some(principal_id.to_string()),
+            host: Some(host_id.to_string()),
+            claims: serde_json::json!({"sid": "com.networknt.agent.account-1.0.0"}),
+            ..AuthPrincipal::default()
+        };
+
+        let owner = bind_authenticated_principal(
+            &principal,
+            host_id,
+            "com.networknt.agent.account-1.0.0",
+            agent_def_id,
+        )
+        .unwrap();
+        assert_eq!(owner.principal_id, principal_id);
+        assert_eq!(owner.agent_def_id, agent_def_id);
+        assert!(
+            bind_authenticated_principal(
+                &principal,
+                Uuid::new_v4(),
+                "com.networknt.agent.account-1.0.0",
+                agent_def_id
+            )
+            .is_err()
+        );
+        assert!(
+            bind_authenticated_principal(&principal, host_id, "other-agent", agent_def_id).is_err()
+        );
+    }
+
+    #[test]
+    fn session_owner_must_match_principal_and_agent() {
+        let owner = SessionOwner {
+            principal_id: Uuid::new_v4(),
+            agent_def_id: Uuid::new_v4(),
+        };
+        assert!(validate_session_owner(owner, owner).is_ok());
+        assert!(
+            validate_session_owner(
+                SessionOwner {
+                    principal_id: Uuid::new_v4(),
+                    ..owner
+                },
+                owner
+            )
+            .is_err()
+        );
     }
 
     #[test]

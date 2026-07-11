@@ -1,0 +1,15 @@
+[package]
+name = "execution-backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+execution-runner-protocol = { path = "../execution-runner-protocol" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true

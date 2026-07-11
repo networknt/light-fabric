@@ -8,7 +8,12 @@ In this model, the **Rust Runtime** acts as a high-performance **Orchestrator**,
 
 - **Separation of Concerns**: Complex platform logic (security, retries, database connectivity, LLM integration) is implemented once in Rust. Business logic—defining agent personas, goals, and steps—is "programmed" via JSON or Database records.
 - **Hot-Reloading**: Using the `arc-swap` crate and YAML-based rule engines, agent personas, model parameters, and tool access can be updated in real-time without a server restart.
-- **Elastic Scalability**: Deploy a single, generic `light-agent` binary. At runtime, it specializes into a "Researcher," "Auditor," or "Support Specialist" based on the `workflow_id` or `agent_id` it retrieves from the registry.
+- **Elastic Scalability**: Deploy one shared agent engine and specialize it from
+  registry metadata. The public `light-agent` service owns sessions and
+  reasoning, `light-agent-worker` hosts sandboxed coding/runtime adapters, and
+  the optional `light-agent-channel` owns messaging connections. These are thin
+  trust-boundary executables over shared domain crates, not separate persona
+  engines.
 - **High Performance**: Rust's asynchronous `tokio` runtime allows a single engine instance to manage thousands of concurrent agentic sessions with minimal memory overhead.
 
 ## 2. The Core Architecture: Engine vs. Content
@@ -16,9 +21,14 @@ In this model, the **Rust Runtime** acts as a high-performance **Orchestrator**,
 To function as a generic interpreter, the Light-Fabric Engine relies on four primary components:
 
 ### A. The Tool & Skill Registry (The "Hands")
-The engine maps string identifiers in the workflow JSON (e.g., `"call": "get_customer_data"`) to executable code or remote MCP tools.
+The engine maps string identifiers in the workflow JSON (e.g., `"call": "get_customer_data"`) to governed API/MCP capabilities, fixed actions, or immutable sandbox packages.
 - **Implementation**: Uses a `ToolRegistry` with trait objects (`Box<dyn Tool>`) or dynamic dispatch to MCP (Model Context Protocol) servers.
 - **Logic**: When the LLM requests a tool call, the engine verifies permissions via **Fine-Grained Authorization**, executes the tool, and feeds the result back into the context.
+
+The registry is not an authorization or execution boundary. Mutable script
+source is never trusted because it appears in metadata; executable packages
+must be content-addressed, reviewed, and run through an approved
+`ExecutionBackend`.
 
 ### B. Hindsight State Manager (The "Memory")
 Unlike simple session storage, the state manager persists every step of the agentic interaction into biomimetic memory banks.
@@ -56,10 +66,10 @@ impl AgentEngine {
             Task::LlmCall { agent_id, prompt_template } => {
                 // Render prompt with Tera
                 let prompt = self.render_prompt(prompt_template, &context)?;
-                
+
                 // Call LLM Provider
                 let response = self.llm_provider.chat(prompt, &context).await?;
-                
+
                 // Retain turn in Hindsight
                 self.memory.retain_turn(session_id, response).await?;
             },
@@ -81,9 +91,16 @@ impl AgentEngine {
 ## 4. Operational Challenges & Solutions
 
 1.  **Tool Versioning**: As the platform evolves, tools may change. Light-Fabric handles this by versioning tool definitions in the Registry, ensuring old workflows remain compatible with the tools they were designed for.
-2.  **Safe Execution**: For dynamic "scripts" defined in metadata, Light-Fabric utilizes WebAssembly (WASM) runtimes to provide a high-performance, secure sandbox that is superior to traditional container-based isolation.
-3.  **Observability**: Because the engine is generic, tracing is built into the `light-runtime`. Every step generates OpenTelemetry traces, allowing developers to visualize the "thought process" and execution path of any agent in real-time.
+2.  **Safe Execution**: A logical agent does not automatically own a sandbox. Remote model and gateway-only work can remain in the long-lived service; shell, filesystem, browser, local MCP, CLI-model, or untrusted execution uses an approved `ExecutionBackend` such as a microVM, rootless container, Kubernetes Job, dedicated VM, or fixed external action. The effective policy must match the backend's proven boundary.
+3.  **Observability**: Because the engine is generic, tracing is built into `light-runtime`. Traces record session, turn, model-call, tool-action, policy, lease, and result metadata without treating private hidden reasoning as an observable platform contract.
 
 ## The Recommendation
 
-Light-Fabric adopts this **"Engine-first"** philosophy to ensure the platform remains sustainable. By treating the **Agentic Workflow** as data and the **Rust Runtime** as the interpreter, we achieve the perfect balance of extreme performance and business flexibility.
+Light-Fabric adopts this **"Engine-first"** philosophy to keep one durable
+agent model across enterprise, coding, and personal-assistant profiles. Agent
+definitions and skills are data; shared Rust crates implement sessions,
+policy, memory, runtime protocols, and audit; thin service, sandbox-worker, and
+channel binaries enforce their distinct lifecycles and trust boundaries.
+
+See [Light-Agent Execution](light-agent-execution.md) for the concrete
+service, session, turn, tool, runner, and sandbox boundaries.

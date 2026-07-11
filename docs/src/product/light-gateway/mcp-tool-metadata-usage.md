@@ -152,17 +152,61 @@ Use metadata in three layers:
 | Layer | Uses metadata for | Should not use metadata for |
 |-------|-------------------|-----------------------------|
 | Portal or catalog search | Ranking, assignment, filtering, disclosure, governance preview. | Direct backend execution. |
-| Agent runtime | Progressive disclosure and per-turn schema selection. | Bypassing gateway policy. |
+| Agent runtime | Progressive disclosure, placement-aware availability, and per-turn schema selection. | Bypassing the final gateway, runner-lease, workflow, or fixed-service policy for the selected placement. |
 | `light-gateway` MCP router | Deterministic routing, argument mapping, access control, response filtering, audit, diagnostics. | Letting model text decide target URLs or service routing. |
 
 The agent can use metadata to decide which tools to offer to the model. The
 gateway uses config metadata to decide how an accepted `tools/call` is executed.
 
+### Tool Source And Execution Placement
+
+Gateway discovery is only one tool source. Every effective catalog entry must
+carry a server-owned execution placement and stable internal tool reference,
+for example:
+
+- `gateway`: remote API or MCP tool executed through `light-gateway`;
+- `runner`: shell, filesystem, browser, local MCP, or other capability exposed
+  by an active runner runtime;
+- `workflow`: typed durable workflow start/status/cancel operation;
+- `fixed-service`: typed high-value action such as branch, publish, or sign.
+
+Do not intersect the whole catalog with gateway `tools/list`. Apply an
+independent live-availability intersection for each placement:
+
+```text
+gateway tools = assigned gateway catalog entries
+  intersect gateway tools/list and toolsListAccessControl
+
+runner tools = assigned runner catalog entries
+  intersect execution-profile policy
+  intersect lease allowedTools
+  intersect approved runtime capability manifest
+  intersect live worker/local-MCP enumeration where applicable
+
+effective model tools = authorized union of each placement-specific set
+```
+
+The model-facing tool definition is bound to its internal tool reference,
+placement, schema digest, and policy snapshot. A returned tool call is
+dispatched only through that bound placement; the model cannot turn a gateway
+tool into a local command or vice versa. Model-facing name collisions across
+placements fail closed or are resolved by deterministic server-owned aliases
+recorded in the snapshot. Never rely on an unqualified name alone.
+
+A local MCP server uses its sandbox-local `tools/list` under the runner lease;
+it is not expected to appear in `light-gateway` `tools/list`. The model broker,
+runner control socket, and credential broker are infrastructure channels and
+must never be advertised as local tools.
+
+The current long-lived `light-agent` exposes gateway tools only, so its existing
+catalog-to-gateway intersection remains correct. Placement-aware union is
+required before enabling coding, browser, filesystem, or personal-edge tools.
+
 ## Search And Progressive Disclosure
 
 Agents should not send every configured tool to the model. Instead, they should
 search the effective agent catalog, select a small set of likely tools, then
-intersect that set with live gateway `tools/list`.
+apply the live availability check for each candidate's execution placement.
 
 Recommended flow:
 
@@ -172,9 +216,12 @@ user prompt
   -> search metadata and schema text
   -> apply safety and policy disclosure filters
   -> select top tools for the turn
-  -> intersect selected names with gateway tools/list
+  -> partition candidates by server-owned placement
+  -> intersect gateway candidates with gateway tools/list
+  -> intersect runner candidates with lease/runtime/local capability manifests
+  -> union the independently authorized, collision-free tool definitions
   -> send only selected schemas to the model
-  -> execute selected tool through gateway tools/call
+  -> dispatch each selected tool only through its bound placement
 ```
 
 The search index should include:
@@ -259,7 +306,7 @@ remove tools that are not appropriate for the current principal and task:
 |--------|----------|
 | Agent assignment | Only include tools assigned through the effective agent catalog. |
 | Environment | Match `hostId`, `serviceId`, and `envTag`. |
-| Runtime availability | Intersect selected catalog names with live gateway `tools/list`. |
+| Runtime availability | Gateway entries intersect live gateway `tools/list`; runner entries intersect the active lease, approved runtime manifest, and any live local enumeration. Never use one source to validate another placement. |
 | Lifecycle | Hide retired tools and prefer active tools over deprecated tools. |
 | Sensitivity | Do not disclose tools above the caller or agent sensitivity allowance. |
 | Destructive flag | Hide unless an approval path or guarded workflow is configured. |
@@ -282,7 +329,7 @@ is a better place for richer semantic ranking because it can include skill
 assignment, tags, categories, prompt instructions, feedback, and non-runtime
 governance data.
 
-The recommended pattern is:
+For gateway-placed catalog entries, the recommended pattern is:
 
 ```text
 catalog search selects candidate tool names
@@ -314,7 +361,7 @@ Both are needed:
 
 ```text
 visible tools =
-  assigned catalog tools
+  assigned gateway-placed catalog tools
   intersect live gateway tools/list
   intersect gateway toolsListAccessControl result
 ```
@@ -395,6 +442,10 @@ If no mapping is present, the router falls back to method-based behavior:
 - `GET` and `HEAD` arguments become query parameters.
 - JSON-body methods send the argument object as the request body.
 
+That fallback is permitted only when the configured path contains no
+placeholder. A path containing OpenAPI `{name}` syntax must never reach the
+method-based fallback.
+
 Path-template tools should not rely on fallback behavior. For a path such as
 `/customers/{customerId}`, the OpenAPI import or catalog authoring process
 should generate:
@@ -410,6 +461,29 @@ Without that mapping, the gateway cannot safely know whether `customerId`
 belongs in the path, query string, header, cookie, or body. Importers can infer
 this from OpenAPI parameter locations, but the runtime config should carry the
 resolved mapping explicitly.
+
+The current Rust MCP router rejects a missing or incorrect path mapping when
+the tool is called. The target contract also fails earlier:
+
+- OpenAPI/LightAPI import must emit one explicit `path` mapping for every path
+  placeholder and reject an ambiguous or missing source parameter;
+- catalog/config publication must reject unsupported placeholder syntax,
+  placeholders without matching mappings, mappings whose location is not
+  `path`, and `path` mappings with no matching placeholder;
+- gateway configuration validation must repeat these checks before publishing
+  a runtime snapshot or accepting traffic;
+- runtime validation remains defense in depth and returns a stable routing
+  error without contacting the backend.
+
+Reload keeps the last known-good runtime snapshot when a newly supplied tool is
+invalid and reports the rejected tool/config digest through diagnostics. It
+must not silently omit the mapping and enable fallback behavior.
+
+Validation tests cover missing, extra, duplicate, malformed, percent-encoded,
+and incorrectly located placeholders at import/publication and gateway config
+load. Every rejected case asserts that no backend request is sent; the valid
+case asserts one percent-encoded path-segment substitution and no duplicate
+query/body placement.
 
 The supported path placeholder syntax should be OpenAPI-style `{name}`. The
 gateway should not infer Spring or Express-style `:name` segments by default;
@@ -453,18 +527,42 @@ idempotency key. Automatic retries should require `idempotent: true` and an
 explicit retry policy. Destructive tools should not be retried automatically
 unless the operation is proven idempotent and protected by an idempotency key.
 
-`cacheTtlSeconds` should only apply to results that are safe to cache for the
-current caller. Cache keys must include the tool name, normalized arguments,
-authenticated principal or tenant boundary, and any claims that affect
-authorization or response filtering. Response-filtered results must not be
-served across users with different visibility.
+`cacheTtlSeconds` should only apply to results that are safe to cache. The
+current Rust MCP router implements the bounded `tools/list` visibility cache;
+it does not yet implement a gateway `tools/call` response cache. Before adding
+one, preserve this mandatory ordering:
+
+```text
+authenticate and run req-acc
+  -> compute a raw-result cache key
+  -> load the normalized pre-res-fil MCP result, or call the backend on miss
+  -> store only the normalized pre-res-fil result when eligible
+  -> run the current caller's res-fil rules on every hit and miss
+  -> return the caller-specific filtered result
+```
+
+The shared call cache must never store a post-`res-fil` result. Reusing a
+caller-specific filtered value would couple cached data to an earlier caller's
+claims and policy. Conversely, the pre-filter value can contain more data than
+any caller may see, so the cache itself is a sensitive tenant boundary: encrypt
+or keep it process-local as policy requires, bound its entries and TTL, exclude
+it from logs, and never expose cache inspection to tenant code.
+
+The raw-result key includes tool/config digest, resolved backend and
+environment, method, normalized arguments/body, representation-affecting
+headers, authenticated tenant/principal by default, and every request dimension
+that can change the downstream response. Cross-principal reuse is allowed only
+when policy explicitly proves the backend result is principal-invariant; it
+does not follow merely from `read_only: true`. Access control, revocation, and
+`res-fil` are always reevaluated on a cache hit. Do not cache denials, filter
+errors, partial/streaming results, secret-bearing results, or unknown outcomes.
 
 There are two distinct cache types:
 
 | Cache | Purpose | Recommended owner |
 |-------|---------|-------------------|
 | `tools/list` visibility cache | Reuse the filtered list of visible tool names for the same principal, claims, headers, and query. | Gateway MCP router. |
-| `tools/call` response cache | Reuse an actual tool result for identical safe calls. | Backend service first; gateway only when explicitly configured. |
+| `tools/call` raw-result cache | Reuse a normalized pre-`res-fil` result for an identical safe backend request; run caller-specific filtering on every hit. | Backend service first; gateway only when explicitly configured. |
 
 The `tools/list` cache is a runtime optimization for discovery. It does not
 cache business data and does not change `tools/call` authorization. It should be
@@ -474,8 +572,19 @@ count.
 Gateway-level `tools/call` response caching should be opt-in and conservative.
 Start with backend-owned caching for expensive read APIs. Add gateway response
 caching only for tools with `read_only: true`, `idempotent: true`, a positive
-`cacheTtlSeconds`, and a cache key that includes all principal, tenant,
-argument, environment, and response-filter dimensions.
+`cacheTtlSeconds`, a pre-filter storage boundary, and a cache key that includes
+all tenant/principal, argument, backend, environment, request-header, and tool
+configuration dimensions that can change the raw result. If the gateway cannot
+prove those conditions or cannot rerun `res-fil` on a hit, caching stays
+disabled for that tool.
+
+Before enabling a gateway call cache, integration tests use callers with
+different claims and row/column filters against the same raw backend result.
+They prove that `req-acc` and current `res-fil` run on every hit, caller outputs
+remain distinct, revocation or policy reload takes effect without waiting for
+the raw-result TTL, backend-varying identity dimensions prevent unsafe hits,
+filter errors are not cached, and pre-filter bytes never appear in logs or
+cache diagnostics.
 
 Rate-limit and cost metadata should influence ranking and diagnostics. It can
 also prevent an agent from repeatedly selecting a tool whose backend quota is
@@ -516,8 +625,12 @@ MCP tool metadata should complement, not replace, access-control policy.
 
 The gateway applies the shared access-control runtime around `tools/call`:
 
-- `req-acc` runs before the downstream tool is invoked.
-- `res-fil` runs after the downstream result is converted to an MCP result.
+- `req-acc` runs before the downstream tool is invoked or a call-result cache
+  entry is used.
+- `res-fil` runs after the downstream or cached pre-filter result is converted
+  to an MCP result, on every cache hit and miss.
+- A future gateway call cache stores only the normalized pre-`res-fil` result;
+  a shared cache never stores caller-filtered output.
 
 Use metadata as follows:
 
@@ -623,7 +736,7 @@ Recommended field semantics:
 | `safety.idempotent` | Recommended | True when identical calls can be safely retried. |
 | `safety.destructive` | Recommended | True when the tool can delete, reset, revoke, overwrite, or cause irreversible effects. |
 | `safety.humanApprovalRequired` | Recommended | True when a workflow or approval step must precede execution. |
-| `runtime.cacheTtlSeconds` | Optional | Caller-scoped response cache TTL for safe read tools. |
+| `runtime.cacheTtlSeconds` | Optional | TTL hint for safe raw backend results. It never authorizes caching a post-`res-fil` caller view; gateway call caching remains disabled until the pre-filter contract is implemented. |
 | `runtime.retry` | Optional | Retry policy, only honored for idempotent calls. |
 | `runtime.rateLimit` | Optional | Rate-limit grouping and per-call cost units. |
 | `runtime.costTier` | Optional | Relative execution cost such as `low`, `medium`, or `high`. |
@@ -743,8 +856,10 @@ toolMetadata:
     - demo_offer_decision_api_search_offers
 ```
 
-Related tools should not bypass assignment, visibility, or `tools/list`
-intersection. They only affect ranking and prefetch.
+Related tools should not bypass assignment, visibility, or their
+placement-specific live-availability intersection. Gateway-placed entries still
+require gateway `tools/list`; runner entries require the lease/runtime/local
+manifest checks. Related links only affect ranking and prefetch.
 
 ### Sub-Agent Orchestration
 
@@ -808,12 +923,27 @@ Implement metadata usage incrementally:
    property names.
 5. Apply disclosure filters for assignment, environment, lifecycle, sensitivity,
    destructive tools, and approval-required tools.
-6. Intersect selected catalog tools with live gateway `tools/list`.
-7. Add diagnostics for selected, hidden, missing, and extra tools.
-8. Add retry, cache, rate-limit, and OpenTelemetry attributes after the core
-   disclosure path is stable.
-9. Add semantic or hybrid search after keyword behavior is proven.
-10. Feed evaluation results back into keywords and semantic weights.
+6. Add server-owned tool placement and partition selected candidates into
+   gateway, runner, workflow, and fixed-service sets. Intersect only gateway
+   candidates with live gateway `tools/list`; require runner candidates to
+   match the lease/runtime/local capability manifests.
+7. Add diagnostics for selected, hidden, missing, conflicting, and
+   placement-incompatible tools.
+8. Move the existing path-placeholder/mapping checks into importer,
+   publication, and gateway startup/reload validation while retaining runtime
+   rejection as defense in depth. In
+   `frameworks/light-pingora/src/mcp.rs`, refactor the existing
+   `openapi_path_placeholders` and mapping checks into one shared validator
+   called by both `validate_config` and request construction so startup and
+   call-time behavior cannot drift.
+9. Add retry, rate-limit, and OpenTelemetry attributes after the core
+   disclosure path is stable. If gateway `tools/call` caching is later added,
+   implement a bounded pre-`res-fil` cache and rerun `req-acc`/`res-fil` for
+   every caller and hit. In the current `handle_tool_call` pipeline, the cache
+   may replace backend execution after authorization, but it must feed the
+   existing `filter_mcp_response` call rather than bypass or follow it.
+10. Add semantic or hybrid search after keyword behavior is proven.
+11. Feed evaluation results back into keywords and semantic weights.
 
 Do not start by changing gateway `tools/call`. The gateway execution path is
 already the right boundary. The first improvement should be better catalog
@@ -839,7 +969,8 @@ Catalog search:
 2. Matches `travel` and `offers` against the offer search tool metadata and
    schema.
 3. Filters out destructive or approval-required tools.
-4. Intersects the selected names with gateway `tools/list`.
+4. Classifies both selected entries as gateway-placed and intersects their
+   names with gateway `tools/list`.
 
 Model tool disclosure:
 
@@ -871,10 +1002,10 @@ The recommended default decisions are:
 | Semantic search | Support optional semantic or hybrid vector search. Keyword plus structured filters remain the required baseline. |
 | Sensitivity tier | Set a default when API details create endpoints. Store allowed values in the `sensitivity_tier` reference table and expose normalized dropdowns in the App/GenAI/Tool pages. |
 | Destructive tools | Require workflow-backed or approval-backed execution for destructive tools. Do not expose them as direct model-callable tools unless approval is configured. |
-| List visibility | Apply both portal catalog disclosure policy and gateway `toolsListAccessControl`. The visible set is their intersection with live `tools/list`. |
+| Tool availability | Partition by server-owned execution placement. Gateway entries intersect portal policy and live gateway `tools/list`; runner entries intersect execution policy, lease allowlist, approved runtime manifest, and live local enumeration. Union only independently authorized, collision-free definitions. |
 | Semantic weight | Populate `semanticWeight` when the endpoint is created, then allow authorized updates from the App/GenAI/Tool page. |
-| Caching | Use gateway caching first for `tools/list` visibility. Keep `tools/call` response caching backend-owned by default, with gateway response caching only as explicit opt-in metadata. |
-| Path parameters | Fail closed when a path-template parameter mapping is missing. OpenAPI import should generate `toolMetadata.routing.parameters`; the gateway should not guess by default. |
+| Caching | Use gateway caching first for `tools/list` visibility. Keep `tools/call` caching backend-owned by default. A future gateway call cache stores only normalized pre-`res-fil` results, reruns `req-acc` and caller-specific `res-fil` on every hit, and remains disabled unless the raw-result key and sensitive cache boundary are proven safe. |
+| Path parameters | Fail closed at import/publication and gateway startup/reload when a path-template mapping is missing or inconsistent; retain call-time rejection as defense in depth. OpenAPI import generates `toolMetadata.routing.parameters`, and method fallback applies only to paths without placeholders. |
 
 If a future deployment needs path-template inference, add an explicit opt-in
 field such as `routing.parameterInference: pathTemplate`. The default should

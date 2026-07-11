@@ -23,6 +23,7 @@
 - [Hindsight Memory](design/hindsight-memory.md)
 - [Fine-Grained Authorization](design/fine-grained-authorization.md)
 - [Agent Engine Pattern](design/agent-engine-pattern.md)
+- [Light-Agent Execution](design/light-agent-execution.md)
 - [Database Design](design/database-design.md)
 - [Light-Deployer](design/light-deployer.md)
 - [Module Registry](design/module-registry.md)
@@ -95,7 +96,7 @@
 - [Light-Workflow](product/light-workflow.md)
   - [Start Workflow](product/light-workflow/start-workflow.md)
   - [Native Agent Call](product/light-workflow/native-agent-call.md)
-  - [Sandbox Execution](product/light-workflow/sandbox-execution.md)
+    - [Execution Backends And Sandbox Execution](product/light-workflow/sandbox-execution.md)
   - [Insurance Claim Agentic Workflow](product/light-workflow/insurance-claim-agentic-workflow.md)
   - [Light Portal Setup](product/light-workflow/light-portal-setup.md)
 

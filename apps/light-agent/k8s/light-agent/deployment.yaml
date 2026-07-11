@@ -43,6 +43,11 @@ spec:
                 secretKeyRef:
                   name: ${name:light-agent-account}-secret
                   key: light-agent-host-id
+            - name: LIGHT_AGENT_AGENT_DEF_ID
+              valueFrom:
+                secretKeyRef:
+                  name: ${name:light-agent-account}-secret
+                  key: light-agent-agent-def-id
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

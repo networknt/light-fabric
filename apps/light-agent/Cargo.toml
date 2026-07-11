@@ -8,6 +8,7 @@ license = "Apache-2.0"
 light-runtime = { path = "../../crates/light-runtime" }
 light-client = { path = "../../crates/light-client" }
 light-axum = { path = "../../frameworks/light-axum" }
+light-security = { path = "../../crates/light-security" }
 model-provider = { path = "../../crates/model-provider" }
 mcp-client = { path = "../../crates/mcp-client" }
 config-loader = { path = "../../crates/config-loader" }

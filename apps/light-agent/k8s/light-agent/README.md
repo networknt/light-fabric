@@ -15,8 +15,8 @@ The default `name` is `light-agent-account` and the default namespace is
 
 - `configmap.yaml`: bootstrap `startup.yml`. The image carries the default
   config templates under `/app/config-defaults`.
-- `secret.yaml`: portal bearer token, config password, host id, database URL,
-  and bootstrap CA certificate.
+- `secret.yaml`: portal bearer token, config password, host id, agent-definition
+  id, database URL, and bootstrap CA certificate.
 - `public-configmap.yaml`: static chat UI mounted at `/app/public`.
 - `deployment.yaml`: Rust agent container, bootstrap config, public UI, and
   writable `config-cache`.
@@ -52,6 +52,8 @@ image, or import the rebuilt image before redeploying.
 - `bootstrapCaPemBase64`: base64 content of the CA PEM used to trust
   config-server, controller, and the gateway.
 - `lightAgentHostId`: UUID used by Hindsight memory tables.
+- `lightAgentDefId`: immutable agent-definition/API-version UUID. Session
+  ownership is bound to this value and the authenticated principal.
 - `database.url`: Postgres connection string for the configserver database.
 - `configServer.uri`: config-server base URL.
 - `startup.host`, `startup.serviceId`, and `startup.envTag`: the tuple used to
@@ -62,10 +64,19 @@ the runtime overrides for `server.*`, `portalRegistry.*`, `client.*`,
 `mcp-client.*`, `model-provider.*`, and the selected provider namespace such as
 `ollama.*`, `bedrock.*`, `codex.*`, `openai.*`, or `anthropic.*`.
 
-Supported `model-provider.provider` values are `ollama`, `openai`,
+Supported shared-service `model-provider.provider` values are `ollama`, `openai`,
 `azure-openai`, `anthropic`, `bedrock`, `codex`, `compatible`, `gemini`,
-`glm`, `openrouter`, `telnyx`, `copilot`, `claude-code`, `gemini-cli`, and
-`kilo-cli`.
+`glm`, `openrouter`, `telnyx`, and `copilot`. Local CLI providers
+`claude-code`, `gemini-cli`, and `kilo-cli` are rejected by default because
+they execute host processes. They require an isolated runner profile; the
+`LIGHT_AGENT_ALLOW_LOCAL_CLI_PROVIDERS=true` override is for local development
+only.
+
+The runtime `client.*` key-provider settings and `security.*` issuer/audience
+settings must be configured so `/chat` and `/diagnostics/tools` can verify the
+caller's JWT. Tokens must bind the configured host and service (`host` and
+`sid` claims). The caller's `uid`/`user_id` is persisted as the session owner;
+`cid` is accepted for service principals when it is a UUID.
 
 Generate the CA value:
 

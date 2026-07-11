@@ -65,6 +65,40 @@ Use four endpoints for the base demo.
 The base demo should be small enough to run repeatedly while still proving
 meaningful orchestration behavior.
 
+## General Agent And Workflow Boundary
+
+The demo illustrates one direction of a bidirectional integration. The same
+boundary applies to enterprise, coding, and personal-assistant profiles:
+
+| Handoff | Owner after handoff | Intended use |
+| --- | --- | --- |
+| Agent starts workflow | light-workflow | Durable branching, retries, assertions, human tasks, long waits, regulated business processing |
+| Workflow performs native agent call | light-workflow | Bounded model reasoning with structured input/output and no interactive session or local tools |
+| Workflow submits agent-service job | light-agent | Interactive or tool-using work, coding/research jobs, memory-aware work, or runner-agent placement |
+
+The existing `call.agent` behavior remains the backward-compatible
+`native-workflow` mode. It runs inside light-workflow and validates
+schema-bound JSON. A future explicit `agent-service` mode submits a typed job
+to light-agent. The selected agent definition and policy—not the workflow
+prompt—decide whether light-agent handles the job in its service or through a
+runner sandbox.
+
+The handoff includes authenticated caller and tenant context, correlation ID,
+input and output schemas, deadline, idempotency key, cost/action budget,
+cancellation behavior, and bounded delegation depth. light-workflow never
+spawns Codex, Pi, Claude Code, Hermes, OpenClaw, or another external agent
+binary directly. Those products can only run behind a registered light-agent
+runtime adapter in an approved execution profile.
+
+Do not convert every agent turn into a workflow. Conversation history,
+streaming, interruptions, tool correction, personal channel delivery, and
+workspace-aware model loops remain agent-domain concerns. Conversely, an agent
+that starts a workflow stores the workflow reference and observes its public
+result; it does not reproduce the workflow state machine in its own context.
+
+Reject cyclic or unbounded agent/workflow delegation. A child handoff inherits
+or narrows the initiating deadline, budget, data boundary, and authorization.
+
 ## Demo Scenario
 
 The demo domain is personalized offer recommendation.
@@ -706,20 +740,21 @@ For direct REST workflow steps:
 
 1. The workflow start request records the initiating user, host, tenant,
    correlation id, and authorization context.
-2. The workflow executor builds outbound REST calls with the correct caller
-   context. If the original bearer token is safe to forward, it can be passed
-   through. Otherwise, the workflow service should use a service token with
-   on-behalf-of metadata that preserves the initiating subject.
+2. The workflow executor exchanges the initiating authorization for a
+   short-lived audience- and operation-scoped delegation token, or uses a
+   workload identity whose on-behalf-of claims preserve the initiating subject,
+   workflow instance, task, policy digest, and data boundary. It does not
+   forward the caller's unrestricted bearer token.
 3. Backend APIs enforce their normal authorization policies.
 
 For MCP workflow steps:
 
 1. `light-workflow` calls the gateway MCP endpoint with the same correlation,
-   tenant, locale, and authorization context.
+   tenant, locale, and a short-lived workflow-task-scoped delegation token.
 2. `light-gateway` validates the MCP request and runtime tool authorization.
-3. The MCP router forwards the allowed caller headers to the backend REST API
-   while regenerating transport-specific headers such as `Host`,
-   `Content-Length`, and connection management headers.
+3. The MCP router forwards only approved identity/delegation context to the
+   backend REST API while regenerating transport-specific headers such as
+   `Host`, `Content-Length`, and connection management headers.
 4. Backend APIs see the same business identity context they would see on the
    direct REST path.
 
@@ -748,11 +783,16 @@ The trace should show this propagation without exposing sensitive token values.
   workflow trace.
 - The MCP path preserves caller context through workflow, gateway, and backend
   REST calls.
+- Neither workflow path can directly launch an external agent binary; a future
+  service-mode agent task must enter light-agent through the typed job contract.
+- Agent/workflow delegation preserves correlation and cannot exceed the
+  initiating deadline, budget, authorization, or maximum delegation depth.
 
 ## Related Designs
 
 - [Agentic Workflow](agentic-workflow.md)
 - [Workflow Client Architecture](workflow-client-architecture.md)
 - [Centralized Skills](centralized-agent-skills.md)
+- [Light-Agent Execution](light-agent-execution.md)
 - [LightAPI Description](lightapi-description.md)
 - [MCP Router](mcp-router.md)
