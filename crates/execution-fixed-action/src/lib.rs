@@ -5,6 +5,64 @@ use std::{collections::BTreeMap, path::PathBuf};
 use thiserror::Error;
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum HighValueActionKind {
+    CreateBranch,
+    OpenPr,
+    PushCommit,
+    Publish,
+    Sign,
+    Deploy,
+    SendEmail,
+    CreateEvent,
+    Payment,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HighValueActionRequest {
+    pub action_id: Uuid,
+    pub kind: HighValueActionKind,
+    pub immutable_input_digest: String,
+    pub target_digest: String,
+    pub policy_digest: String,
+    pub provenance_digest: String,
+    pub approval_id: Uuid,
+    pub approval_input_digest: String,
+    pub approval_target_digest: String,
+    pub approval_policy_digest: String,
+    pub approval_nonce_digest: String,
+    pub approval_expires_at: chrono::DateTime<chrono::Utc>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructuredActionPlan {
+    pub operation: String,
+    pub immutable_input_digest: String,
+    pub target_digest: String,
+    pub credential_scope: String,
+}
+pub fn authorize_high_value_action(
+    r: &HighValueActionRequest,
+    allowed: &[HighValueActionKind],
+) -> Result<StructuredActionPlan, FixedActionError> {
+    if !allowed.contains(&r.kind) || r.approval_expires_at <= chrono::Utc::now() {
+        return Err(FixedActionError::Approval);
+    }
+    if r.immutable_input_digest != r.approval_input_digest
+        || r.target_digest != r.approval_target_digest
+        || r.policy_digest != r.approval_policy_digest
+        || r.approval_nonce_digest.len() < 32
+    {
+        return Err(FixedActionError::Approval);
+    }
+    Ok(StructuredActionPlan {
+        operation: format!("{:?}", r.kind),
+        immutable_input_digest: r.immutable_input_digest.clone(),
+        target_digest: r.target_digest.clone(),
+        credential_scope: format!("fixed:{}:{}", r.action_id, r.target_digest),
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FixedPatchRequest {
@@ -146,6 +204,8 @@ pub enum FixedActionError {
     ChangedPaths,
     #[error("protected path denied: {0}")]
     Protected(String),
+    #[error("fixed action approval is expired, mismatched, or unauthorized")]
+    Approval,
 }
 
 #[cfg(test)]
@@ -189,6 +249,30 @@ mod tests {
                 &policy
             )
             .is_err()
+        );
+    }
+    #[test]
+    fn high_value_action_binds_exact_input_target_policy_and_expiry() {
+        let now = chrono::Utc::now() + chrono::Duration::minutes(1);
+        let mut r = HighValueActionRequest {
+            action_id: Uuid::new_v4(),
+            kind: HighValueActionKind::OpenPr,
+            immutable_input_digest: "input".into(),
+            target_digest: "target".into(),
+            policy_digest: "policy".into(),
+            provenance_digest: "provenance".into(),
+            approval_id: Uuid::new_v4(),
+            approval_input_digest: "input".into(),
+            approval_target_digest: "target".into(),
+            approval_policy_digest: "policy".into(),
+            approval_nonce_digest: "n".repeat(32),
+            approval_expires_at: now,
+        };
+        assert!(authorize_high_value_action(&r, &[HighValueActionKind::OpenPr]).is_ok());
+        r.target_digest = "other".into();
+        assert_eq!(
+            authorize_high_value_action(&r, &[HighValueActionKind::OpenPr]),
+            Err(FixedActionError::Approval)
         );
     }
 }

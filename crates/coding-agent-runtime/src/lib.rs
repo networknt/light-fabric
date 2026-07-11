@@ -8,6 +8,69 @@ use thiserror::Error;
 pub const PI_RPC_ADAPTER_ID: &str = "pi-rpc";
 pub const PI_RPC_ADAPTER_VERSION: &str = "1";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CodingAdapter {
+    PiRpc,
+    CodexJsonl,
+    ClaudeStreamJson,
+    GeminiJson,
+    KiloJson,
+}
+
+impl CodingAdapter {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::PiRpc => "pi-rpc",
+            Self::CodexJsonl => "codex-jsonl",
+            Self::ClaudeStreamJson => "claude-stream-json",
+            Self::GeminiJson => "gemini-json",
+            Self::KiloJson => "kilo-json",
+        }
+    }
+    pub fn validate_launch(self, args: &[String]) -> Result<(), CodingError> {
+        let forbidden = [
+            "--dangerously-skip-permissions",
+            "--yolo",
+            "--approval-mode=full-auto",
+            "--trust-all-tools",
+            "--auto-approve",
+        ];
+        if args.iter().any(|a| forbidden.iter().any(|f| a == f)) {
+            return Err(CodingError::PermissionBypass);
+        }
+        let structured = match self {
+            Self::PiRpc => true,
+            Self::CodexJsonl => args.iter().any(|a| a == "--json"),
+            Self::ClaudeStreamJson => args
+                .windows(2)
+                .any(|a| a == ["--output-format", "stream-json"]),
+            Self::GeminiJson | Self::KiloJson => args.iter().any(|a| a == "--output-format=json"),
+        };
+        structured.then_some(()).ok_or(CodingError::Unstructured)
+    }
+}
+
+pub fn parse_adapter_event(
+    adapter: CodingAdapter,
+    line: &str,
+) -> Result<serde_json::Value, CodingError> {
+    let value: serde_json::Value =
+        serde_json::from_str(line).map_err(|_| CodingError::Unstructured)?;
+    if !value.is_object() {
+        return Err(CodingError::Unstructured);
+    }
+    let kind = value
+        .get("type")
+        .or_else(|| value.get("event"))
+        .and_then(|v| v.as_str())
+        .ok_or(CodingError::Unstructured)?;
+    if kind.len() > 64 || value.to_string().len() > 1024 * 1024 {
+        return Err(CodingError::Unstructured);
+    }
+    Ok(serde_json::json!({"adapter":adapter.id(),"kind":kind,"payload":value}))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CodingTurnSpec {
@@ -166,6 +229,10 @@ pub enum CodingError {
     Protected,
     #[error("reported paths differ from canonical patch")]
     Tampered,
+    #[error("adapter launch requests a permission bypass")]
+    PermissionBypass,
+    #[error("adapter output is not a pinned structured protocol")]
+    Unstructured,
 }
 
 #[cfg(test)]
@@ -206,6 +273,27 @@ mod tests {
                 &[".github/workflows/release.yml".into()]
             ),
             Err(CodingError::Protected)
+        );
+    }
+    #[test]
+    fn adapters_require_machine_protocols_and_forbid_bypass() {
+        assert!(
+            CodingAdapter::CodexJsonl
+                .validate_launch(&["--json".into()])
+                .is_ok()
+        );
+        assert_eq!(
+            CodingAdapter::ClaudeStreamJson.validate_launch(&[
+                "--dangerously-skip-permissions".into(),
+                "--output-format".into(),
+                "stream-json".into()
+            ]),
+            Err(CodingError::PermissionBypass)
+        );
+        assert!(parse_adapter_event(CodingAdapter::GeminiJson, r#"{"type":"progress"}"#).is_ok());
+        assert_eq!(
+            parse_adapter_event(CodingAdapter::KiloJson, "decorated terminal output"),
+            Err(CodingError::Unstructured)
         );
     }
 }

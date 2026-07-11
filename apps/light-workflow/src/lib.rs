@@ -1,3 +1,4 @@
+pub mod agent_job;
 pub mod artifact_publish;
 pub mod artifact_retention;
 pub mod command_template;
