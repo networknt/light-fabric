@@ -4,6 +4,7 @@ use std::path::{Component, Path, PathBuf};
 
 use execution_backend::StagedInput;
 use execution_runner_protocol::{ExecuteLease, ExecutionInput};
+use immutable_package::{PackageTrust, verify_and_extract_tar};
 use sha2::{Digest, Sha256};
 
 #[derive(Clone)]
@@ -124,10 +125,53 @@ fn stage_one(root: &Path, input: &ExecutionInput) -> Result<StagedInput, String>
         let _ = fs::remove_file(&target);
         return Err("staged input size or SHA-256 digest verification failed".to_string());
     }
+    let local_path = if input.kind.eq_ignore_ascii_case("skill-package") {
+        let signer = input
+            .verification
+            .get("signerBinding")
+            .filter(|v| !v.is_null())
+            .is_some();
+        let scanner = input
+            .verification
+            .get("scannerBinding")
+            .filter(|v| !v.is_null())
+            .is_some();
+        let published = input
+            .verification
+            .pointer("/revocationBinding/state")
+            .and_then(serde_json::Value::as_str)
+            == Some("PUBLISHED")
+            && input
+                .verification
+                .pointer("/revocationBinding/revokedTs")
+                .is_none_or(serde_json::Value::is_null);
+        if !published {
+            return Err("skill package is revoked or not published".into());
+        }
+        let extracted = root.join(format!("{}-package", input.input_id));
+        verify_and_extract_tar(
+            &target,
+            &extracted,
+            &PackageTrust {
+                package_digest: actual_digest.clone(),
+                maximum_bytes: input.size.saturating_mul(20).min(512 * 1024 * 1024),
+                maximum_entries: 4096,
+                signer_verified: signer,
+                scanner_approved: scanner,
+                executable_paths: Default::default(),
+            },
+        )
+        .map_err(|error| format!("skill package verification failed: {error}"))?;
+        fs::remove_file(&target)
+            .map_err(|error| format!("remove staged package archive: {error}"))?;
+        extracted
+    } else {
+        target
+    };
     Ok(StagedInput {
         input_id: input.input_id,
         source_digest: input.digest.clone(),
-        local_path: target,
+        local_path,
         mount_target: input.mount_target.clone(),
         media_type: input.media_type.clone(),
         size: copied,
@@ -232,6 +276,7 @@ mod tests {
             mount_target: "/inputs/source.txt".into(),
             read_only: true,
             executable: false,
+            verification: serde_json::Value::Null,
         };
         fs::create_dir_all(&root).unwrap();
         assert!(stage_one(&root, &input).is_err());

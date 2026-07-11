@@ -1,0 +1,15 @@
+[package]
+name = "agent-materializer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+agent-core = { path = "../agent-core" }
+agent-runtime-protocol = { path = "../agent-runtime-protocol" }
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+

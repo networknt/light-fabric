@@ -49,72 +49,123 @@ pub fn verify_and_extract_tar(
     if actual != trust.package_digest {
         return Err(PackageError::Digest);
     }
-    fs::create_dir(target)?;
+    if target.exists() {
+        return Err(PackageError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "package target already exists",
+        )));
+    }
+    let parent = target.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let temporary = tempfile::Builder::new()
+        .prefix(".light-package-")
+        .tempdir_in(parent)?;
+    let extraction_root = temporary.path();
     let mut archive = tar::Archive::new(File::open(archive_path)?);
     let mut seen = BTreeSet::new();
     let mut entries = BTreeMap::new();
     let mut total = 0u64;
-    for item in archive.entries()? {
-        let mut item = item?;
-        let kind = item.header().entry_type();
-        if !(kind.is_file() || kind.is_dir()) {
-            return Err(PackageError::Entry);
-        }
-        let path = item.path()?.into_owned();
-        let normalized = normalize(&path)?;
-        let folded = normalized.to_ascii_lowercase();
-        if !seen.insert(folded) {
-            return Err(PackageError::Collision);
-        }
-        if seen.len() > trust.maximum_entries {
-            return Err(PackageError::Limit);
-        }
-        if kind.is_dir() {
-            fs::create_dir(target.join(&normalized))?;
-            continue;
-        }
-        let declared = item.size();
-        total = total.checked_add(declared).ok_or(PackageError::Limit)?;
-        if total > trust.maximum_bytes {
-            return Err(PackageError::Limit);
-        }
-        let destination = target.join(&normalized);
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)?
-        }
-        let mut output = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&destination)?;
-        let mut hash = Sha256::new();
-        let mut written = 0u64;
-        loop {
-            let n = item.read(&mut buffer)?;
-            if n == 0 {
-                break;
+    let extraction = (|| -> Result<(), PackageError> {
+        for item in archive.entries()? {
+            let mut item = item?;
+            let kind = item.header().entry_type();
+            if !(kind.is_file() || kind.is_dir()) {
+                return Err(PackageError::Entry);
             }
-            written += n as u64;
-            if written > declared {
+            let path = item.path()?.into_owned();
+            let normalized = normalize(&path)?;
+            let folded = normalized.to_ascii_lowercase();
+            if !seen.insert(folded) {
+                return Err(PackageError::Collision);
+            }
+            if seen.len() > trust.maximum_entries {
                 return Err(PackageError::Limit);
             }
-            hash.update(&buffer[..n]);
-            output.write_all(&buffer[..n])?
+            if kind.is_dir() {
+                fs::create_dir_all(extraction_root.join(&normalized))?;
+                continue;
+            }
+            let declared = item.size();
+            total = total.checked_add(declared).ok_or(PackageError::Limit)?;
+            if total > trust.maximum_bytes {
+                return Err(PackageError::Limit);
+            }
+            let destination = extraction_root.join(&normalized);
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?
+            }
+            let mut output = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&destination)?;
+            let mut hash = Sha256::new();
+            let mut written = 0u64;
+            loop {
+                let n = item.read(&mut buffer)?;
+                if n == 0 {
+                    break;
+                }
+                written += n as u64;
+                if written > declared {
+                    return Err(PackageError::Limit);
+                }
+                hash.update(&buffer[..n]);
+                output.write_all(&buffer[..n])?
+            }
+            if written != declared {
+                return Err(PackageError::Limit);
+            }
+            output.sync_all()?;
+            entries.insert(
+                normalized,
+                format!("sha256:{}", hex::encode(hash.finalize())),
+            );
         }
-        if written != declared {
-            return Err(PackageError::Limit);
-        }
-        output.sync_all()?;
-        entries.insert(
-            normalized,
-            format!("sha256:{}", hex::encode(hash.finalize())),
-        );
+        Ok(())
+    })();
+    if let Err(error) = extraction {
+        cleanup_partial_tree(extraction_root);
+        return Err(error);
     }
-    make_read_only(target, &trust.executable_paths)?;
+    if let Err(error) = make_read_only(extraction_root, &trust.executable_paths) {
+        cleanup_partial_tree(extraction_root);
+        return Err(error);
+    }
+    let temporary_path = temporary.keep();
+    if let Err(error) = fs::rename(&temporary_path, target) {
+        cleanup_partial_tree(&temporary_path);
+        return Err(PackageError::Io(error));
+    }
     Ok(MaterializedPackage {
         package_digest: actual,
         entries,
         total_bytes: total,
     })
+}
+
+fn cleanup_partial_tree(root: &Path) {
+    #[cfg(unix)]
+    fn make_writable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(metadata) = fs::symlink_metadata(path) else {
+            return;
+        };
+        if metadata.file_type().is_symlink() {
+            return;
+        }
+        let mode = if metadata.is_dir() { 0o700 } else { 0o600 };
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+        if metadata.is_dir() {
+            if let Ok(children) = fs::read_dir(path) {
+                for child in children.flatten() {
+                    make_writable(&child.path());
+                }
+            }
+        }
+    }
+    #[cfg(unix)]
+    make_writable(root);
+    let _ = fs::remove_dir_all(root);
 }
 
 fn normalize(path: &Path) -> Result<String, PackageError> {
@@ -198,6 +249,7 @@ pub enum PackageError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Seek, SeekFrom};
     use tar::{Builder, EntryType, Header};
 
     fn archive(entries: &[(&str, EntryType, &[u8])]) -> tempfile::NamedTempFile {
@@ -266,5 +318,80 @@ mod tests {
             ),
             Err(PackageError::Collision)
         ));
+        assert!(!root.path().join("link").exists());
+        assert!(!root.path().join("collision").exists());
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn late_limit_failure_removes_all_partial_extraction() {
+        let file = archive(&[
+            ("first.txt", EntryType::Regular, b"first"),
+            ("second.txt", EntryType::Regular, b"second"),
+        ]);
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("limited");
+        let mut policy = trust(file.path());
+        policy.maximum_entries = 1;
+        assert!(matches!(
+            verify_and_extract_tar(file.path(), &target, &policy),
+            Err(PackageError::Limit)
+        ));
+        assert!(!target.exists());
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn byte_limit_and_truncated_archive_leave_no_partial_tree() {
+        let file = archive(&[
+            ("first.txt", EntryType::Regular, b"first"),
+            ("second.txt", EntryType::Regular, b"second"),
+        ]);
+        let root = tempfile::tempdir().unwrap();
+        let mut policy = trust(file.path());
+        policy.maximum_bytes = 5;
+        assert!(matches!(
+            verify_and_extract_tar(file.path(), &root.path().join("bytes"), &policy),
+            Err(PackageError::Limit)
+        ));
+
+        file.as_file().set_len(1300).unwrap();
+        let truncated_policy = trust(file.path());
+        assert!(
+            verify_and_extract_tar(
+                file.path(),
+                &root.path().join("truncated"),
+                &truncated_policy
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn traversal_header_is_rejected_without_partial_tree() {
+        let mut file = archive(&[("safe.txt", EntryType::Regular, b"safe")]);
+        let mut header = [0_u8; 512];
+        file.as_file_mut().seek(SeekFrom::Start(0)).unwrap();
+        file.as_file_mut().read_exact(&mut header).unwrap();
+        header[..100].fill(0);
+        header[..9].copy_from_slice(b"../escape");
+        header[148..156].fill(b' ');
+        let checksum: u32 = header.iter().map(|value| u32::from(*value)).sum();
+        header[148..156].copy_from_slice(format!("{checksum:06o}\0 ").as_bytes());
+        file.as_file_mut().seek(SeekFrom::Start(0)).unwrap();
+        file.as_file_mut().write_all(&header).unwrap();
+        file.as_file_mut().sync_all().unwrap();
+
+        let root = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            verify_and_extract_tar(
+                file.path(),
+                &root.path().join("traversal"),
+                &trust(file.path())
+            ),
+            Err(PackageError::Path)
+        ));
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
     }
 }

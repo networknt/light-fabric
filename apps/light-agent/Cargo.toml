@@ -8,6 +8,9 @@ license = "Apache-2.0"
 agent-core = { path = "../../crates/agent-core" }
 agent-delegation = { path = "../../crates/agent-delegation" }
 agent-runtime-protocol = { path = "../../crates/agent-runtime-protocol" }
+agent-materializer = { path = "../../crates/agent-materializer" }
+coding-agent-runtime = { path = "../../crates/coding-agent-runtime" }
+execution-runner-protocol = { path = "../../crates/execution-runner-protocol" }
 light-runtime = { path = "../../crates/light-runtime" }
 light-client = { path = "../../crates/light-client" }
 light-axum = { path = "../../frameworks/light-axum" }
@@ -31,6 +34,7 @@ portal-registry = { path = "../../crates/portal-registry" }
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
 async-trait = "0.1"
 chrono = { workspace = true }
+thiserror = { workspace = true }
 
 [build-dependencies]
 config-embed-build = { path = "../../crates/config-embed-build" }

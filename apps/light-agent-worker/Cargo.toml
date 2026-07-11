@@ -7,9 +7,13 @@ license.workspace = true
 [dependencies]
 agent-core = { path = "../../crates/agent-core" }
 agent-runtime-protocol = { path = "../../crates/agent-runtime-protocol" }
+agent-materializer = { path = "../../crates/agent-materializer" }
 anyhow = { workspace = true }
 chrono = { workspace = true }
+coding-agent-runtime = { path = "../../crates/coding-agent-runtime" }
+execution-security = { path = "../../crates/execution-security" }
 execution-runner-protocol = { path = "../../crates/execution-runner-protocol" }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }

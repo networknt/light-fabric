@@ -17,6 +17,7 @@ futures-util.workspace = true
 hex.workspace = true
 http = "1"
 light-runtime = { path = "../../crates/light-runtime" }
+immutable-package = { path = "../../crates/immutable-package" }
 libc = "0.2"
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde.workspace = true

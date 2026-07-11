@@ -69,6 +69,12 @@ pub enum RuntimeEventPayload {
         tool_ref: Uuid,
         output: Value,
     },
+    CodingPatch {
+        base_revision: String,
+        patch: String,
+        patch_digest: String,
+        changed_paths: Vec<String>,
+    },
     Checkpoint {
         reference: String,
         digest: String,
