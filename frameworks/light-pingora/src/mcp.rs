@@ -6,6 +6,7 @@ use crate::config_util::deserialize_typed_list;
 use crate::direct_registry::{direct_registry_match, validate_direct_registry_protocol};
 use crate::security::AuthPrincipal;
 use crate::token::{CLIENT_FILE, load_client_config};
+use agent_delegation::{DelegationClaims, DelegationKind};
 use async_trait::async_trait;
 use light_client::{ClientConfig, ClientFactory, EndpointOptions};
 use light_runtime::{
@@ -320,6 +321,7 @@ pub struct McpHttpResponse {
 pub struct McpRequestContext {
     pub auth: Option<AuthPrincipal>,
     pub correlation_id: Option<String>,
+    pub delegation: Option<DelegationClaims>,
 }
 
 #[derive(Debug, Clone)]
@@ -782,6 +784,36 @@ impl McpRouterRuntime {
             return Ok(accepted_response());
         }
         let method = method.unwrap_or_default();
+        if let Some(delegation) = context.delegation.as_ref() {
+            let binding = match method {
+                "tools/list" => delegation.validate_binding(
+                    "light-gateway",
+                    DelegationKind::ToolsList,
+                    None,
+                    chrono::Utc::now().timestamp(),
+                ),
+                "tools/call" => delegation.validate_binding(
+                    "light-gateway",
+                    DelegationKind::ToolCall,
+                    message
+                        .get("params")
+                        .and_then(JsonValue::as_object)
+                        .and_then(|params| params.get("name"))
+                        .and_then(JsonValue::as_str),
+                    chrono::Utc::now().timestamp(),
+                ),
+                _ => Err(agent_delegation::DelegationError::Binding),
+            };
+            if binding.is_err() {
+                return rpc_error_response(
+                    response_mode,
+                    403,
+                    id.clone().unwrap_or(JsonValue::Null),
+                    -32001,
+                    "delegated authority does not permit this MCP request",
+                );
+            }
+        }
         let frontend_session = if method == "initialize" {
             None
         } else {
@@ -4329,6 +4361,7 @@ endpointRules:
                         ..AuthPrincipal::default()
                     }),
                     correlation_id: Some("corr-1".to_string()),
+                    delegation: None,
                 },
             )
             .await
@@ -4429,6 +4462,7 @@ endpointRules:
                         ..AuthPrincipal::default()
                     }),
                     correlation_id: Some("corr-1".to_string()),
+                    delegation: None,
                 },
             )
             .await
@@ -5999,6 +6033,7 @@ endpointRules:
                         ..AuthPrincipal::default()
                     }),
                     correlation_id: Some("corr-1".to_string()),
+                    delegation: None,
                 },
             )
             .await
@@ -7131,6 +7166,7 @@ endpointRules:
                         ..AuthPrincipal::default()
                     }),
                     correlation_id: Some("corr-1".to_string()),
+                    delegation: None,
                 },
             )
             .await
@@ -7224,6 +7260,7 @@ endpointRules:
                         ..AuthPrincipal::default()
                     }),
                     correlation_id: Some("corr-1".to_string()),
+                    delegation: None,
                 },
             )
             .await
@@ -7324,6 +7361,7 @@ endpointRules:
                         ..AuthPrincipal::default()
                     }),
                     correlation_id: Some("corr-1".to_string()),
+                    delegation: None,
                 },
             )
             .await
@@ -7424,6 +7462,7 @@ endpointRules:
                         ..AuthPrincipal::default()
                     }),
                     correlation_id: Some("corr-1".to_string()),
+                    delegation: None,
                 },
             )
             .await
@@ -7521,6 +7560,7 @@ endpointRules:
                         ..AuthPrincipal::default()
                     }),
                     correlation_id: Some("corr-1".to_string()),
+                    delegation: None,
                 },
             )
             .await

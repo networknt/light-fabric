@@ -1,4 +1,12 @@
 # light-gateway
+
+## Agent delegation
+
+Set `LIGHT_GATEWAY_AGENT_DELEGATION_SECRET` to the same 32-byte-or-longer secret
+used by `light-agent`. Delegated MCP requests are signature checked, audience,
+expiry, policy, data-boundary, turn/action, stable-tool, alias, and replay bound,
+then intersected with the gateway's current access-control and tool catalog.
+Delegation does not bypass normal gateway authorization or response filtering.
 Light-gateway in rust based on light-pingora
 
 The gateway uses `light-runtime` for config-server bootstrap and controller

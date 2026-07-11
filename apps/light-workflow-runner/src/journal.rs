@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use agent_runtime_protocol::RuntimeEvent;
 use chrono::{DateTime, Utc};
 use execution_runner_protocol::{
     ExecuteLease, ExecutionId, LeaseContext, LeaseId, TerminalLeaseResult,
@@ -101,7 +102,17 @@ impl Journal {
                     updated_at TEXT NOT NULL
                  );
                  CREATE INDEX IF NOT EXISTS execution_journal_recovery_idx
-                    ON execution_journal(state, deadline);",
+                    ON execution_journal(state, deadline);
+                 CREATE TABLE IF NOT EXISTS agent_runtime_event_journal (
+                    execution_id TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    fencing_token INTEGER NOT NULL,
+                    event_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(execution_id, event_id),
+                    UNIQUE(execution_id, sequence)
+                 );",
             )
             .map_err(|error| format!("initialize journal: {error}"))?;
         // Upgrade journals created by the initial runner bootstrap. SQLite has
@@ -128,6 +139,55 @@ impl Journal {
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
         })
+    }
+
+    pub fn record_runtime_event(&self, event: &RuntimeEvent) -> Result<bool, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "journal mutex poisoned")?;
+        let lease: Option<i64> = connection
+            .query_row(
+                "SELECT fencing_token FROM execution_journal WHERE execution_id=?1",
+                params![event.execution_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("read runtime event fence: {error}"))?;
+        if lease != Some(event.fencing_token as i64) {
+            return Err("runtime event did not match the journal fence".into());
+        }
+        let changed = connection.execute(
+            "INSERT INTO agent_runtime_event_journal(execution_id,event_id,sequence,fencing_token,event_json,created_at) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(execution_id,event_id) DO NOTHING",
+            params![event.execution_id.to_string(),event.event_id.to_string(),event.sequence as i64,event.fencing_token as i64,serde_json::to_string(event).map_err(|error| format!("serialize runtime event: {error}"))?,Utc::now().to_rfc3339()],
+        ).map_err(|error| format!("record runtime event: {error}"))?;
+        Ok(changed == 1)
+    }
+
+    pub fn runtime_events_after(
+        &self,
+        execution_id: ExecutionId,
+        sequence: u64,
+    ) -> Result<Vec<RuntimeEvent>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "journal mutex poisoned")?;
+        let mut statement = connection.prepare("SELECT event_json FROM agent_runtime_event_journal WHERE execution_id=?1 AND sequence>?2 ORDER BY sequence")
+            .map_err(|error| format!("prepare runtime event replay: {error}"))?;
+        statement
+            .query_map(params![execution_id.to_string(), sequence as i64], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|error| format!("query runtime event replay: {error}"))?
+            .map(|row| {
+                row.map_err(|error| format!("read runtime event replay: {error}"))
+                    .and_then(|json| {
+                        serde_json::from_str(&json)
+                            .map_err(|error| format!("decode runtime event replay: {error}"))
+                    })
+            })
+            .collect()
     }
 
     pub fn record_intent(&self, lease: &ExecuteLease) -> Result<bool, String> {

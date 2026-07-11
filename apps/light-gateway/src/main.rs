@@ -1,3 +1,4 @@
+use agent_delegation::{DelegationClaims, DelegationVerifier, TOKEN_PREFIX};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -67,6 +68,8 @@ impl PingoraApp for GatewayApp {
 }
 
 struct GatewayProxy {
+    agent_delegation: Option<Arc<DelegationVerifier>>,
+    agent_delegation_replay: Mutex<BTreeMap<uuid::Uuid, i64>>,
     active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
     correlation_config: Arc<ConfigManager<Option<CorrelationConfig>>>,
     cors_config: Arc<ConfigManager<Option<CorsConfig>>>,
@@ -102,6 +105,57 @@ struct GatewayProxy {
 }
 
 impl GatewayProxy {
+    fn authenticate_agent_delegation(
+        &self,
+        session: &Session,
+    ) -> Option<Result<(AuthPrincipal, DelegationClaims), HandlerRejection>> {
+        let authorization = request_header(session, "authorization")?;
+        let (scheme, token) = authorization.split_once(' ')?;
+        if !scheme.eq_ignore_ascii_case("bearer") || !token.starts_with(&format!("{TOKEN_PREFIX}."))
+        {
+            return None;
+        }
+        let Some(verifier) = self.agent_delegation.as_ref() else {
+            return Some(Err(HandlerRejection::unauthorized(
+                "agent delegation is not configured",
+            )));
+        };
+        Some(
+            verifier
+                .verify_token(token)
+                .and_then(|claims| {
+                    let now = Utc::now().timestamp();
+                    let mut replay = self
+                        .agent_delegation_replay
+                        .lock()
+                        .map_err(|_| agent_delegation::DelegationError::Binding)?;
+                    replay.retain(|_, expires_at| *expires_at > now);
+                    if replay.insert(claims.replay_id, claims.expires_at).is_some() {
+                        return Err(agent_delegation::DelegationError::Binding);
+                    }
+                    Ok({
+                        let principal = AuthPrincipal {
+                            client_id: Some(claims.agent_actor.clone()),
+                            user_id: Some(claims.caller_subject.clone()),
+                            issuer: Some(claims.issuer.clone()),
+                            host: Some(claims.host_id.to_string()),
+                            role: claims
+                                .caller_claims
+                                .get("role")
+                                .and_then(JsonValue::as_str)
+                                .map(str::to_string),
+                            claims: claims.caller_claims.clone(),
+                            ..AuthPrincipal::default()
+                        };
+                        (principal, claims)
+                    })
+                })
+                .map_err(|_| {
+                    HandlerRejection::unauthorized("invalid or replayed agent delegation")
+                }),
+        )
+    }
+
     fn from_runtime_config(config: &RuntimeConfig) -> Result<Self, RuntimeError> {
         let active_handlers = load_active_handlers(config, &gateway_handler_registry())?;
         let correlation_config =
@@ -414,8 +468,23 @@ impl GatewayProxy {
 
         let (upstream_circuit_error_threshold, upstream_circuit_reset_timeout) =
             upstream_circuit_config(config);
+        let agent_delegation = std::env::var("LIGHT_GATEWAY_AGENT_DELEGATION_SECRET")
+            .ok()
+            .filter(|secret| !secret.trim().is_empty())
+            .map(|secret| {
+                DelegationVerifier::new(secret.as_bytes(), "light-agent", "light-gateway")
+                    .map(Arc::new)
+                    .map_err(|error| {
+                        RuntimeError::Config(format!(
+                            "invalid agent delegation configuration: {error}"
+                        ))
+                    })
+            })
+            .transpose()?;
 
         Ok(Self {
+            agent_delegation,
+            agent_delegation_replay: Mutex::new(BTreeMap::new()),
             active_handlers,
             correlation_config,
             cors_config,
@@ -1873,6 +1942,20 @@ impl ProxyHttp for GatewayProxy {
                     }
                 }
                 "security" | "jwt" => {
+                    if let Some(result) = self.authenticate_agent_delegation(session) {
+                        match result {
+                            Ok((principal, delegation)) => {
+                                ctx.auth = Some(principal);
+                                ctx.agent_delegation = Some(delegation);
+                                continue;
+                            }
+                            Err(rejection) => {
+                                return self
+                                    .write_rejection_response(session, ctx, rejection)
+                                    .await;
+                            }
+                        }
+                    }
                     if let Some(runtime) = self.security_runtime.load().as_ref().as_ref() {
                         match verify_jwt_request(session, runtime, &request_path).await {
                             Ok(auth) => {
@@ -1890,6 +1973,20 @@ impl ProxyHttp for GatewayProxy {
                     }
                 }
                 "unified-security" | "unified" => {
+                    if let Some(result) = self.authenticate_agent_delegation(session) {
+                        match result {
+                            Ok((principal, delegation)) => {
+                                ctx.auth = Some(principal);
+                                ctx.agent_delegation = Some(delegation);
+                                continue;
+                            }
+                            Err(rejection) => {
+                                return self
+                                    .write_rejection_response(session, ctx, rejection)
+                                    .await;
+                            }
+                        }
+                    }
                     if let Some(config) = self.unified_security_config.load().as_ref().as_ref() {
                         let basic_config = self.basic_auth_config.load();
                         let api_key_config = self.api_key_config.load();
@@ -2316,6 +2413,7 @@ impl ProxyHttp for GatewayProxy {
                             McpRequestContext {
                                 auth: ctx.auth.clone(),
                                 correlation_id: ctx.correlation.correlation_id.clone(),
+                                delegation: ctx.agent_delegation.clone(),
                             },
                         )
                         .await
@@ -2844,6 +2942,7 @@ struct GatewayRequestContext {
     correlation: CorrelationState,
     cors: Option<CorsResponseHeaders>,
     auth: Option<AuthPrincipal>,
+    agent_delegation: Option<DelegationClaims>,
     tokenize_active: bool,
     detokenize_active: bool,
     access_control_active: bool,
@@ -2885,6 +2984,7 @@ impl Default for GatewayRequestContext {
             correlation: CorrelationState::default(),
             cors: None,
             auth: None,
+            agent_delegation: None,
             tokenize_active: false,
             detokenize_active: false,
             access_control_active: false,
@@ -4671,6 +4771,7 @@ paths:
     exec:
       - msal-auth
   - path: /**
+    method: GET
     exec:
       - msal-auth
 defaultHandlers:

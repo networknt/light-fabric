@@ -42,6 +42,10 @@ use tracing::{error, info, warn};
 use url::Url;
 use uuid::Uuid;
 
+use agent_core::{AgentSessionId, PolicySnapshot, sha256_digest};
+use agent_delegation::{DelegationClaims, DelegationKind, DelegationSigner};
+use light_agent::domain::{AgentRepository, SessionSpec};
+
 mod embedded_config {
     include!(concat!(env!("OUT_DIR"), "/embedded_config.rs"));
 }
@@ -153,6 +157,8 @@ struct SessionOwner {
 struct AuthenticatedRequest {
     authorization: String,
     owner: SessionOwner,
+    caller_claims: serde_json::Value,
+    caller_subject: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -535,6 +541,11 @@ struct CatalogSkill {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 struct CatalogTool {
+    tool_id: Option<Uuid>,
+    stable_tool_ref: Option<Uuid>,
+    execution_placement: Option<String>,
+    model_alias: Option<String>,
+    schema_digest: Option<String>,
     name: String,
     description: Option<String>,
     lifecycle_status: Option<String>,
@@ -611,6 +622,7 @@ struct CatalogToolDiagnostic {
 #[derive(Debug, Clone)]
 struct CatalogSelection {
     tool_names: HashSet<String>,
+    tool_refs: HashMap<String, Uuid>,
     context: Option<String>,
     selected_tools: Vec<CatalogToolDiagnostic>,
     hidden_tools: Vec<CatalogToolDiagnostic>,
@@ -1066,6 +1078,8 @@ struct AgentState {
     portal_query_client: Option<PortalQueryClient>,
     catalog_cache: AgentCatalogCache,
     memory: Arc<dyn MemoryStore>,
+    domain: AgentRepository,
+    delegation_signer: Option<Arc<DelegationSigner>>,
     security: Arc<SecurityRuntime>,
     limits: AgentLimits,
     host_id: Uuid,
@@ -1422,6 +1436,11 @@ async fn authenticate_request(
     Ok(AuthenticatedRequest {
         authorization: format!("Bearer {token}"),
         owner,
+        caller_claims: principal.claims,
+        caller_subject: principal
+            .user_id
+            .or(principal.client_id)
+            .unwrap_or_default(),
     })
 }
 
@@ -1458,6 +1477,8 @@ async fn ws_handler(
 #[derive(Debug, Deserialize)]
 struct ClientMessage {
     pub text: String,
+    #[serde(default)]
+    pub client_message_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1494,6 +1515,7 @@ struct ScoredCatalogTool {
     cost_rank: u8,
     latency_ms: u64,
     tool_name: String,
+    tool_ref: Uuid,
     diagnostic: CatalogToolDiagnostic,
 }
 
@@ -1548,6 +1570,10 @@ fn select_catalog_tools(
                     cost_rank: cost_rank(tool.cost_tier.as_deref()),
                     latency_ms: tool.estimated_latency_ms.unwrap_or(u64::MAX),
                     tool_name: tool.name.clone(),
+                    tool_ref: tool
+                        .stable_tool_ref
+                        .or(tool.tool_id)
+                        .unwrap_or_else(Uuid::now_v7),
                     diagnostic: tool_diagnostic(
                         skill,
                         tool,
@@ -1595,6 +1621,10 @@ fn select_catalog_tools(
                     cost_rank: cost_rank(tool.cost_tier.as_deref()),
                     latency_ms: tool.estimated_latency_ms.unwrap_or(u64::MAX),
                     tool_name: tool.name.clone(),
+                    tool_ref: tool
+                        .stable_tool_ref
+                        .or(tool.tool_id)
+                        .unwrap_or_else(Uuid::now_v7),
                     diagnostic: tool_diagnostic(
                         skill,
                         tool,
@@ -1611,6 +1641,7 @@ fn select_catalog_tools(
     }
 
     let mut tool_names = HashSet::new();
+    let mut tool_refs = HashMap::new();
     let mut selected_tools = Vec::new();
     let mut selected_count = 0;
     for scored in scored_tools {
@@ -1622,6 +1653,7 @@ fn select_catalog_tools(
             continue;
         }
         if tool_names.insert(scored.tool_name.clone()) {
+            tool_refs.insert(scored.tool_name.clone(), scored.tool_ref);
             selected_count += 1;
             selected_tools.push(scored.diagnostic);
         }
@@ -1670,6 +1702,7 @@ fn select_catalog_tools(
 
     CatalogSelection {
         tool_names,
+        tool_refs,
         context,
         selected_tools,
         hidden_tools,
@@ -1917,7 +1950,8 @@ fn filter_gateway_tools(
     selection: Option<&CatalogSelection>,
 ) -> Vec<McpTool> {
     let Some(selection) = selection else {
-        return gateway_tools;
+        warn!("Portal catalog is unavailable; failing closed instead of disclosing gateway tools");
+        return Vec::new();
     };
     if selection.tool_names.is_empty() {
         return Vec::new();
@@ -2503,6 +2537,48 @@ async fn handle_socket(
 ) {
     let (mut sender, mut receiver) = socket.split();
     let session_id_string = session_id.to_string();
+    let policy_digest = |label: &str| {
+        sha256_digest(
+            format!(
+                "{}:{}:{}:{label}",
+                state.host_id, state.agent_def_id, state.model
+            )
+            .as_bytes(),
+        )
+    };
+    let durable_policy = PolicySnapshot {
+        snapshot_id: session_id,
+        definition_digest: policy_digest("definition"),
+        product_profile_digest: policy_digest("enterprise"),
+        model_digest: policy_digest("model"),
+        catalog_digest: policy_digest("catalog"),
+        memory_digest: policy_digest("memory"),
+        execution_digest: policy_digest("execution"),
+        channel_digest: policy_digest("channel"),
+        data_boundary_digest: policy_digest(&authenticated.owner.principal_id.to_string()),
+        tools: Default::default(),
+    };
+    if let Err(err) = state
+        .domain
+        .create_or_resume_session(&SessionSpec {
+            host_id: state.host_id,
+            session_id: AgentSessionId(session_id),
+            principal_id: authenticated.owner.principal_id.to_string(),
+            user_id: Some(authenticated.owner.principal_id),
+            agent_def_id: authenticated.owner.agent_def_id,
+            bank_id: None,
+            policy: durable_policy,
+            idle_expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+            maximum_expires_at: chrono::Utc::now() + chrono::Duration::hours(24),
+            resume_handle_digest: sha256_digest(
+                format!("{}:{}", session_id, authenticated.owner.principal_id).as_bytes(),
+            ),
+        })
+        .await
+    {
+        error!("Failed to create or resume durable session: {err}");
+        return;
+    }
 
     let _ = sender
         .send(Message::Text(
@@ -2597,18 +2673,83 @@ async fn handle_socket(
             }
 
             let user_text = client_msg.text.clone();
+            let client_message_id = client_msg
+                .client_message_id
+                .unwrap_or_else(|| Uuid::now_v7().to_string());
+            let admitted = match state
+                .domain
+                .admit_user_turn(
+                    state.host_id,
+                    AgentSessionId(session_id),
+                    &client_message_id,
+                    &user_text,
+                    "configured",
+                    &state.model,
+                )
+                .await
+            {
+                Ok(admitted) if admitted.duplicate => {
+                    if let Ok(payload) = serde_json::to_string(&ServerMessage::Error {
+                        message: "Duplicate client message already admitted".into(),
+                    }) {
+                        let _ = sender.send(Message::Text(payload.into())).await;
+                    }
+                    continue;
+                }
+                Ok(admitted) => admitted,
+                Err(err) => {
+                    error!("Failed to durably admit agent turn: {err}");
+                    if let Ok(payload) = serde_json::to_string(&ServerMessage::Error {
+                        message: "Failed to admit turn".into(),
+                    }) {
+                        let _ = sender.send(Message::Text(payload.into())).await;
+                    }
+                    continue;
+                }
+            };
+            match state
+                .domain
+                .activate_next_turn(state.host_id, AgentSessionId(session_id))
+                .await
+            {
+                Ok(Some(active)) if active == admitted.turn_id => {}
+                Ok(_) => {
+                    if let Ok(payload) = serde_json::to_string(&ServerMessage::Error {
+                        message: "Turn queued behind an active request".into(),
+                    }) {
+                        let _ = sender.send(Message::Text(payload.into())).await;
+                    }
+                    continue;
+                }
+                Err(err) => {
+                    error!("Failed to activate durable turn: {err}");
+                    continue;
+                }
+            }
             history.push(ChatMessage::user(user_text.clone()));
             trim_history(&mut history);
 
             let turn = run_agent_loop(
                 &state,
                 history.clone(),
-                Some(authenticated.authorization.as_str()),
+                &authenticated,
+                admitted.turn_id.0,
+                &admitted.policy_digest,
+                &admitted.data_boundary_digest,
                 &session_id_string,
                 bank_id,
             );
             match tokio::time::timeout(state.limits.turn_timeout, turn).await {
                 Err(_) => {
+                    let _ = state
+                        .domain
+                        .fail_turn(
+                            state.host_id,
+                            AgentSessionId(session_id),
+                            admitted.turn_id,
+                            "turn deadline exceeded",
+                        )
+                        .await;
                     rollback_last_user_message(&mut history, &user_text);
                     let payload = serde_json::to_string(&ServerMessage::Error {
                         message: "Turn deadline exceeded".to_string(),
@@ -2619,6 +2760,19 @@ async fn handle_socket(
                 }
                 Ok(Ok(response)) => {
                     if let Some(text) = response.text {
+                        if let Err(err) = state
+                            .domain
+                            .complete_turn(
+                                state.host_id,
+                                AgentSessionId(session_id),
+                                admitted.turn_id,
+                                &text,
+                            )
+                            .await
+                        {
+                            error!("Failed to commit durable turn result: {err}");
+                            continue;
+                        }
                         history.push(ChatMessage::assistant(text.clone()));
                         trim_history(&mut history);
 
@@ -2628,6 +2782,17 @@ async fn handle_socket(
                             .await
                         {
                             warn!("Failed to persist session history: {}", e);
+                        }
+                        if let Err(err) = state
+                            .domain
+                            .rebuild_history_projection(
+                                state.host_id,
+                                AgentSessionId(session_id),
+                                bank_id,
+                            )
+                            .await
+                        {
+                            warn!("Failed to rebuild durable history projection: {err}");
                         }
 
                         match serde_json::to_string(&ServerMessage::Text { text }) {
@@ -2642,6 +2807,15 @@ async fn handle_socket(
                 }
                 Ok(Err(e)) => {
                     error!("Agent loop error: {}", e);
+                    let _ = state
+                        .domain
+                        .fail_turn(
+                            state.host_id,
+                            AgentSessionId(session_id),
+                            admitted.turn_id,
+                            &e.to_string(),
+                        )
+                        .await;
                     rollback_last_user_message(&mut history, &user_text);
                     match serde_json::to_string(&ServerMessage::Error {
                         message: format!("Error: {}", e),
@@ -3123,10 +3297,55 @@ fn tool_result_message(
     }
 }
 
+fn gateway_authorization(
+    state: &AgentState,
+    authenticated: &AuthenticatedRequest,
+    session_id: Uuid,
+    turn_id: Uuid,
+    policy_digest: &str,
+    data_boundary_digest: &str,
+    action: Option<(Uuid, Uuid)>,
+    tool_alias: Option<&str>,
+) -> Result<String> {
+    let Some(signer) = state.delegation_signer.as_ref() else {
+        return Ok(authenticated.authorization.clone());
+    };
+    let now = chrono::Utc::now().timestamp();
+    let token = signer.mint(DelegationClaims {
+        token_id: Uuid::now_v7(),
+        kind: if action.is_some() {
+            DelegationKind::ToolCall
+        } else {
+            DelegationKind::ToolsList
+        },
+        issuer: String::new(),
+        audience: "light-gateway".into(),
+        caller_subject: authenticated.caller_subject.clone(),
+        caller_claims: authenticated.caller_claims.clone(),
+        agent_actor: state.service_id.clone(),
+        host_id: state.host_id,
+        session_id,
+        turn_id,
+        action_attempt_id: action.map(|value| value.0),
+        tool_ref: action.map(|value| value.1),
+        tool_alias: tool_alias.map(str::to_string),
+        destination: Some("mcp".into()),
+        data_boundary_digest: data_boundary_digest.to_string(),
+        policy_digest: policy_digest.to_string(),
+        replay_id: Uuid::now_v7(),
+        issued_at: now,
+        expires_at: now + 60,
+    })?;
+    Ok(format!("Bearer {token}"))
+}
+
 async fn run_agent_loop(
     state: &AgentState,
     mut messages: Vec<ChatMessage>,
-    authorization: Option<&str>,
+    authenticated: &AuthenticatedRequest,
+    turn_id: Uuid,
+    policy_digest: &str,
+    data_boundary_digest: &str,
     session_id: &str,
     bank_id: Uuid,
 ) -> Result<ChatResponse> {
@@ -3172,9 +3391,19 @@ async fn run_agent_loop(
 
     let mut tool_specs: Vec<ToolSpec> = Vec::new();
     let mut accepted_tools = HashMap::new();
+    let list_authorization = gateway_authorization(
+        state,
+        authenticated,
+        Uuid::parse_str(session_id)?,
+        turn_id,
+        policy_digest,
+        data_boundary_digest,
+        None,
+        None,
+    )?;
     let mcp_tools = state
         .mcp_client
-        .list_tools(authorization)
+        .list_tools(Some(&list_authorization))
         .await
         .unwrap_or_else(|e| {
             warn!("Gateway tools/list failed: {}", e);
@@ -3280,12 +3509,47 @@ async fn run_agent_loop(
                         continue;
                     }
                 };
+            let stable_tool_ref = catalog_selection
+                .as_ref()
+                .and_then(|selection| selection.tool_refs.get(&tool_call.name))
+                .copied()
+                .context("accepted gateway tool has no stable catalog reference")?;
+            let (action_attempt_id, stable_tool_ref) = state
+                .domain
+                .propose_gateway_action(
+                    state.host_id,
+                    agent_core::AgentTurnId(turn_id),
+                    stable_tool_ref,
+                    &tool_call.name,
+                    &tool_call.arguments,
+                )
+                .await?;
+            let action_authorization = gateway_authorization(
+                state,
+                authenticated,
+                Uuid::parse_str(session_id)?,
+                turn_id,
+                policy_digest,
+                data_boundary_digest,
+                Some((action_attempt_id, stable_tool_ref)),
+                Some(&tool_call.name),
+            )?;
             match state
                 .mcp_client
-                .call_tool(authorization, &tool_call.name, args)
+                .call_tool(Some(&action_authorization), &tool_call.name, args)
                 .await
             {
                 Ok(result) => {
+                    state
+                        .domain
+                        .accept_gateway_result(
+                            state.host_id,
+                            agent_core::AgentTurnId(turn_id),
+                            action_attempt_id,
+                            !result.is_error,
+                            serde_json::to_value(&result)?,
+                        )
+                        .await?;
                     let mut text_result = String::new();
                     for content in result.content {
                         if let McpContent::Text { text } = content {
@@ -3310,6 +3574,16 @@ async fn run_agent_loop(
                 }
                 Err(e) => {
                     warn!("Tool call failed: {}", e);
+                    state
+                        .domain
+                        .accept_gateway_result(
+                            state.host_id,
+                            agent_core::AgentTurnId(turn_id),
+                            action_attempt_id,
+                            false,
+                            serde_json::json!({"error": e.to_string()}),
+                        )
+                        .await?;
                     let (error, truncated) = bound_untrusted_text(
                         &format!("Error: {e}"),
                         &state.limits,
@@ -3410,6 +3684,18 @@ async fn build_agent_state(
     let pool = PgPool::connect(&db_url)
         .await
         .map_err(|e| RuntimeError::Config(format!("failed to connect to database: {e}")))?;
+    let allow_broad_gateway_token = bool_from_env("LIGHT_AGENT_ALLOW_BROAD_GATEWAY_TOKEN", false);
+    let delegation_signer = match std::env::var("LIGHT_AGENT_DELEGATION_SECRET") {
+        Ok(secret) if !secret.trim().is_empty() => Some(Arc::new(
+            DelegationSigner::new(secret.as_bytes(), "light-agent")
+                .map_err(|e| RuntimeError::Config(format!("invalid delegation configuration: {e}")))?,
+        )),
+        _ if allow_broad_gateway_token => {
+            warn!("Broad caller bearer forwarding is enabled for the local compatibility profile");
+            None
+        }
+        _ => return Err(RuntimeError::Config("LIGHT_AGENT_DELEGATION_SECRET is required unless LIGHT_AGENT_ALLOW_BROAD_GATEWAY_TOKEN=true is explicitly set for local compatibility".into())),
+    };
 
     let host_id = required_uuid_env_var("LIGHT_AGENT_HOST_ID")
         .map_err(|e| RuntimeError::Config(e.to_string()))?;
@@ -3499,6 +3785,8 @@ async fn build_agent_state(
         portal_query_client,
         catalog_cache,
         memory,
+        domain: AgentRepository::new(pool.clone()),
+        delegation_signer,
         security: Arc::new(security),
         limits,
         host_id,
@@ -3510,6 +3798,7 @@ async fn build_agent_state(
         catalog_semantic_search_enabled,
         catalog_semantic_limit,
     });
+    state.domain.spawn_result_reconciler();
 
     if let Err(err) = state.refresh_effective_catalog().await {
         warn!(
