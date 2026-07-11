@@ -2,6 +2,8 @@ use serde::Deserialize;
 use std::{collections::BTreeMap, env, fs, path::Path};
 use workflow_policy::{CommandTemplate, ExecutionProfile};
 
+use crate::command_template::validate_command_template;
+
 #[derive(Debug, Clone)]
 pub struct RunnerExecutionConfig {
     pub enabled: bool,
@@ -52,6 +54,9 @@ impl RunnerExecutionConfig {
             |template| template.id.as_str(),
             "command template",
         )?;
+        for template in command_templates.values() {
+            validate_command_template(template)?;
+        }
         if enabled && (profiles.is_empty() || command_templates.is_empty()) {
             return Err(
                 "enabled runner execution requires at least one profile and command template"

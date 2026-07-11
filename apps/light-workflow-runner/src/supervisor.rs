@@ -228,12 +228,26 @@ impl Supervisor {
                     prepared.backend_operation_id.clone(),
                     output,
                 ),
-                Ok(Err(error)) => from_backend_error(
-                    &lease,
-                    prepared.backend_operation_id.clone(),
-                    started_at,
-                    &error,
-                ),
+                Ok(Err(error)) => {
+                    // The watchdog is deliberately independent of the controller
+                    // connection. If it wins the race at the lease deadline, a
+                    // backend can surface that stop as `Cancelled`; the durable
+                    // outcome is still a deadline expiry, not a user cancellation.
+                    let deadline_error;
+                    let error = if Utc::now() >= lease.lease.deadline {
+                        deadline_error =
+                            BackendError::TimedOut("execution lease deadline expired".to_string());
+                        &deadline_error
+                    } else {
+                        &error
+                    };
+                    from_backend_error(
+                        &lease,
+                        prepared.backend_operation_id.clone(),
+                        started_at,
+                        error,
+                    )
+                }
                 Err(_) => {
                     let _ = supervisor
                         .backend
@@ -262,8 +276,7 @@ impl Supervisor {
                 }
             }
             match supervisor
-                .backend
-                .cleanup(&prepared.backend_operation_id)
+                .cleanup_with_retry(&prepared.backend_operation_id)
                 .await
             {
                 Ok(evidence) => {
@@ -288,11 +301,7 @@ impl Supervisor {
                 lease: lease.lease.clone(),
                 result,
             };
-            if let Err(error) = supervisor.journal.set_state(
-                lease.lease.execution_id,
-                JournalState::TerminalPending,
-                Some(&prepared.backend_operation_id),
-            ) {
+            if let Err(error) = supervisor.journal.set_terminal(&terminal) {
                 error!(execution_id = %lease.lease.execution_id, %error, "failed to persist terminal-pending journal state");
                 return;
             }
@@ -320,11 +329,7 @@ impl Supervisor {
             lease: lease.lease.clone(),
             result,
         };
-        self.journal.set_state(
-            lease.lease.execution_id,
-            JournalState::TerminalPending,
-            None,
-        )?;
+        self.journal.set_terminal(&terminal)?;
         self.pending_results
             .insert(lease.lease.execution_id, terminal.clone());
         send_terminal(&outbound, terminal).await
@@ -459,6 +464,30 @@ impl Supervisor {
             {
                 continue;
             }
+            if let Some(terminal) = record.terminal_result.clone() {
+                self.pending_results
+                    .insert(record.execution_id, terminal.clone());
+                send_terminal(outbound, terminal).await?;
+                continue;
+            }
+
+            // The controller already accepted a TERMINAL_REPORTED result. A
+            // crash in the tiny window before CLEANUP_CONFIRMED must finish
+            // local reclamation, not invent and send a new UNKNOWN outcome.
+            if record.state == JournalState::TerminalReported {
+                if let Some(operation_id) = &record.backend_operation_id {
+                    self.cleanup_with_retry(operation_id)
+                        .await
+                        .map_err(|error| format!("recover terminal cleanup: {error}"))?;
+                }
+                self.journal.set_state(
+                    record.execution_id,
+                    JournalState::CleanupConfirmed,
+                    record.backend_operation_id.as_deref(),
+                )?;
+                continue;
+            }
+
             let lease = recovery_lease(&record);
             if let Some(operation_id) = &record.backend_operation_id {
                 match self.backend.inspect(operation_id).await {
@@ -472,7 +501,7 @@ impl Supervisor {
                     }
                     Ok(_) | Err(_) => {}
                 }
-                let _ = self.backend.cleanup(operation_id).await;
+                let _ = self.cleanup_with_retry(operation_id).await;
             }
             let mut result = from_backend_error(
                 &lease,
@@ -494,16 +523,35 @@ impl Supervisor {
                 lease: record.lease_context.clone(),
                 result,
             };
-            self.journal.set_state(
-                record.execution_id,
-                JournalState::TerminalPending,
-                record.backend_operation_id.as_deref(),
-            )?;
+            self.journal.set_terminal(&terminal)?;
             self.pending_results
                 .insert(record.execution_id, terminal.clone());
             send_terminal(outbound, terminal).await?;
         }
         Ok(())
+    }
+
+    /// Cleanup is a security operation, so transient backend errors receive a
+    /// small bounded retry budget. A persistent failure remains durable in the
+    /// terminal result and cleanup backlog for operator reconciliation.
+    async fn cleanup_with_retry(
+        &self,
+        operation_id: &str,
+    ) -> Result<execution_backend::CleanupEvidence, BackendError> {
+        const ATTEMPTS: u32 = 3;
+        let mut delay = Duration::from_millis(25);
+        for attempt in 1..=ATTEMPTS {
+            match self.backend.cleanup(operation_id).await {
+                Ok(evidence) => return Ok(evidence),
+                Err(error) if attempt == ATTEMPTS => return Err(error),
+                Err(error) => {
+                    warn!(%operation_id, attempt, %error, "backend cleanup failed; retrying");
+                    tokio::time::sleep(delay).await;
+                    delay = delay.saturating_mul(2);
+                }
+            }
+        }
+        unreachable!("cleanup retry loop always returns")
     }
 
     pub async fn run_watchdog(self: Arc<Self>) {
@@ -844,6 +892,109 @@ mod tests {
             replay_messages.recv().await,
             Some(RunnerToController::RunnerLeaseCancelled(_))
         ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn watchdog_enforces_deadline_while_controller_is_disconnected() {
+        let behavior = MockBehavior {
+            duration_ms: 5_000,
+            ..MockBehavior::default()
+        };
+        let (supervisor, root) = supervisor(behavior);
+        let mut lease = lease();
+        lease.lease.deadline = Utc::now() + ChronoDuration::milliseconds(350);
+        let (outbound, mut messages) = mpsc::channel(8);
+        supervisor
+            .accept_execute(lease.clone(), outbound)
+            .await
+            .unwrap();
+        assert!(matches!(
+            messages.recv().await,
+            Some(RunnerToController::RunnerLeaseAccepted(_))
+        ));
+        assert!(matches!(
+            messages.recv().await,
+            Some(RunnerToController::RunnerLeaseStarted(_))
+        ));
+        drop(messages); // simulate loss of the SaaS/control-plane connection
+
+        let watchdog = tokio::spawn(Arc::clone(&supervisor).run_watchdog());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !supervisor
+                .pending_results
+                .contains_key(&lease.lease.execution_id)
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("deadline watchdog did not terminate execution");
+        let terminal = supervisor
+            .pending_results
+            .get(&lease.lease.execution_id)
+            .unwrap();
+        assert_eq!(terminal.result.state, AttemptState::TimedOut);
+        assert_eq!(
+            terminal.result.failure_class.as_deref(),
+            Some("deadline_exceeded")
+        );
+        watchdog.abort();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn restart_replays_exact_unacknowledged_terminal_result() {
+        let (first, root) = supervisor(MockBehavior::default());
+        let lease = lease();
+        let (outbound, mut messages) = mpsc::channel(8);
+        first.accept_execute(lease.clone(), outbound).await.unwrap();
+        let _ = messages.recv().await;
+        let _ = messages.recv().await;
+        let original = match messages.recv().await.unwrap() {
+            RunnerToController::RunnerLeaseSucceeded(terminal) => terminal,
+            message => panic!("unexpected terminal message: {message:?}"),
+        };
+        drop(first);
+
+        let restarted = Supervisor::new(
+            Arc::new(MockExecutionBackend::new("compat", MockBehavior::default())),
+            Journal::open(&root.join("journal.sqlite")).unwrap(),
+            InputStager::new(root.join("staging"), 1024).unwrap(),
+            BTreeSet::from(["template".to_string()]),
+            1,
+        );
+        let (recovery_outbound, mut recovery_messages) = mpsc::channel(2);
+        restarted.recover(&recovery_outbound).await.unwrap();
+        let replayed = match recovery_messages.recv().await.unwrap() {
+            RunnerToController::RunnerLeaseSucceeded(terminal) => terminal,
+            message => panic!("unexpected recovery message: {message:?}"),
+        };
+        assert_eq!(replayed, original);
+        assert_eq!(restarted.cleanup_backlog(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn persistent_cleanup_failure_is_retried_and_remains_in_backlog() {
+        let behavior = MockBehavior {
+            cleanup_fails: true,
+            ..MockBehavior::default()
+        };
+        let (supervisor, root) = supervisor(behavior);
+        let lease = lease();
+        let (outbound, mut messages) = mpsc::channel(8);
+        let started = std::time::Instant::now();
+        supervisor.accept_execute(lease, outbound).await.unwrap();
+        let _ = messages.recv().await;
+        let _ = messages.recv().await;
+        let terminal = match messages.recv().await.unwrap() {
+            RunnerToController::RunnerLeaseSucceeded(terminal) => terminal,
+            message => panic!("unexpected terminal message: {message:?}"),
+        };
+        assert_eq!(terminal.result.cleanup_state, CleanupState::Failed);
+        assert!(started.elapsed() >= Duration::from_millis(70));
+        assert_eq!(supervisor.cleanup_backlog(), 1);
         let _ = fs::remove_dir_all(root);
     }
 }

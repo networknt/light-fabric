@@ -590,6 +590,13 @@ pub fn policy_snapshot(policy: &ResolvedExecutionPolicy) -> Result<Value, Policy
 mod tests {
     use super::*;
 
+    const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/v1");
+
+    fn fixture(path: &str) -> String {
+        std::fs::read_to_string(format!("{FIXTURES}/{path}"))
+            .unwrap_or_else(|error| panic!("read fixture {path}: {error}"))
+    }
+
     fn mock_profile() -> ExecutionProfile {
         ExecutionProfile {
             id: "mock-ephemeral".into(),
@@ -749,5 +756,62 @@ metadata:
             ".github/actions"
         ));
         assert!(!protected_path_covers("/workspace", "../etc/passwd"));
+    }
+
+    #[test]
+    fn published_v1_schema_and_valid_fixtures_track_rust_contract() {
+        let schema = include_str!("../schema/workflow-execution-policy-v1.schema.json");
+        let schema: serde_json::Value = serde_json::from_str(schema).unwrap();
+        assert_eq!(
+            schema["$schema"],
+            "https://json-schema.org/draft/2020-12/schema"
+        );
+        assert_eq!(
+            schema["$defs"]["workflowSecurityPolicy"]["properties"]["version"]["const"],
+            1
+        );
+        assert_eq!(
+            schema["$defs"]["commandParameterSlot"]["properties"]["pattern"]["format"],
+            "regex"
+        );
+        assert_eq!(
+            schema["$defs"]["sha256Digest"]["pattern"],
+            "^sha256:[a-fA-F0-9]{64}$"
+        );
+
+        let security: WorkflowSecurityPolicy =
+            serde_json::from_str(&fixture("valid/security-run-shell.json")).unwrap();
+        let profile: ExecutionProfile =
+            serde_json::from_str(&fixture("valid/profile-mock.json")).unwrap();
+        let template: CommandTemplate =
+            serde_json::from_str(&fixture("valid/template-print-message.json")).unwrap();
+
+        assert_eq!(security.version, POLICY_VERSION);
+        assert_eq!(profile.allowed_actions, ["run.shell"]);
+        assert_eq!(template.executable, "/usr/bin/printf");
+        let profiles = BTreeMap::from([(profile.id.clone(), profile)]);
+        resolve_policy(TaskKind::RunShell, Some(&security), &profiles).unwrap();
+    }
+
+    #[test]
+    fn invalid_v1_fixtures_are_rejected_or_fail_closed() {
+        assert!(
+            serde_json::from_str::<WorkflowSecurityPolicy>(&fixture(
+                "invalid/security-unknown-authority.json"
+            ))
+            .is_err()
+        );
+        let version: WorkflowSecurityPolicy =
+            serde_json::from_str(&fixture("invalid/security-unsupported-version.json")).unwrap();
+        assert_ne!(version.version, POLICY_VERSION);
+        assert!(
+            serde_json::from_str::<ExecutionProfile>(&fixture(
+                "invalid/profile-unknown-field.json"
+            ))
+            .is_err()
+        );
+        let template: CommandTemplate =
+            serde_json::from_str(&fixture("invalid/template-relative-executable.json")).unwrap();
+        assert!(!template.executable.starts_with('/'));
     }
 }

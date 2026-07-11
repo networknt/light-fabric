@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "placement": "runner",
+  "executionProfileId": "mock-ephemeral",
+  "minimumBoundary": "container",
+  "maximumHostExposure": "none",
+  "workloadTrust": "tenant-authored",
+  "network": "deny-all",
+  "credentialClasses": [],
+  "persistence": "ephemeral",
+  "artifactExport": false,
+  "approvalRequired": false,
+  "protectedPaths": [".github/workflows"]
+}

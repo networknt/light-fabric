@@ -33,3 +33,12 @@ LIGHT_WORKFLOW_RUNNER_CONFIG_FILE=/etc/light-workflow-runner/runner.yml \
 
 The readiness endpoint is `/readyz`; liveness and cleanup evidence are exposed
 at `/healthz` on `healthAddress`.
+
+For the credential-free local vertical slice, start from
+`config/runner.mock.yml` and use the workflow-side
+`apps/light-workflow/config/runner-execution.mock.yml` and
+`apps/light-workflow/examples/run-shell-mock-v1.yaml`. The compatibility digest
+and canonical `print-message` template digest already match across these local
+fixtures. Replace the host, JWT, and enrollment identity, then generate the
+admission document. The placeholders in `runner.example.yml` are intentionally
+not runnable.

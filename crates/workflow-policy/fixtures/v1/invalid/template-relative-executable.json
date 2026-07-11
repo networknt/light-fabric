@@ -1,0 +1,9 @@
+{
+  "id": "unsafe-shell",
+  "version": 1,
+  "executable": "bash",
+  "workingDirectory": "/workspace",
+  "wallClockTimeoutMs": 5000,
+  "stdoutLimitBytes": 16384,
+  "stderrLimitBytes": 16384
+}

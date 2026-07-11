@@ -1,0 +1,18 @@
+{
+  "id": "print-message",
+  "version": 1,
+  "executable": "/usr/bin/printf",
+  "fixedArguments": ["%s\\n"],
+  "parameterSlots": [{
+    "name": "message",
+    "argumentIndex": 1,
+    "required": true,
+    "allowedValues": ["hello from isolated runner"],
+    "maximumBytes": 64
+  }],
+  "workingDirectory": "/workspace",
+  "allowedEnvironmentNames": ["LANG"],
+  "wallClockTimeoutMs": 5000,
+  "stdoutLimitBytes": 16384,
+  "stderrLimitBytes": 16384
+}

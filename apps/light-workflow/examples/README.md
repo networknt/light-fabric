@@ -53,6 +53,21 @@ For a real model, submit update events through the portal command path or adjust
 the event data before import. In phase 1, `apiKeyRef` is resolved as an
 environment variable name such as `OPENAI_API_KEY`, or as `env:OPENAI_API_KEY`.
 
+For `run-shell-mock-v1.yaml`, enable runner execution and use the checked-in
+mock profile/template configuration:
+
+```bash
+export LIGHT_WORKFLOW_RUNNER_ENABLED=true
+export LIGHT_WORKFLOW_RUNNER_CONFIG_FILE=/home/steve/workspace/light-fabric/apps/light-workflow/config/runner-execution.mock.yml
+```
+
+The matching runner must advertise `sha256:mock-ephemeral-v1`, and its
+`allowedCommandTemplateDigests` must contain the canonical digest emitted for
+the `print-message` template. Use `light-workflow-runner print-admission` after
+placing that digest in the runner config; do not copy placeholder admission
+digests into a deployment. The example has no network, credentials, persistent
+workspace, or artifact export.
+
 The `startWorkflow` command must send `input` as a JSON object, not as a JSON
 string.
 

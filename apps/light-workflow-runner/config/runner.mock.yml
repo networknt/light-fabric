@@ -1,0 +1,26 @@
+version: 1
+runnerId: local-mock-runner
+enrollmentId: local-mock-runner-enrollment
+hostId: 00000000-0000-0000-0000-000000000000
+controllerUrl: ws://127.0.0.1:8438/ws/runner
+jwtFile: /tmp/light-workflow-runner.jwt
+dataDirectory: /tmp/light-workflow-runner
+healthAddress: 127.0.0.1:9444
+maximumConcurrency: 1
+heartbeatIntervalMs: 5000
+reconnectMaximumMs: 30000
+shutdownGraceMs: 30000
+stagingMaximumBytes: 104857600
+backend:
+  compatibilityDigest: sha256:mock-ephemeral-v1
+  availableSlots: 1
+  behavior:
+    durationMs: 10
+    stdout: "mock execution completed\n"
+    stderr: ""
+    exitCode: 0
+    outcome: success
+    loseFirstResponse: false
+    cleanupFails: false
+allowedCommandTemplateDigests:
+  - 23b66a65d1802f3491bc749d89be9c1771204824b71ffff7e70b204f4d2b63ab

@@ -101,6 +101,14 @@ kept parseable by `workflow-core`.
   with a normalized decision.
 - `examples/human-approval.yaml`: creates an `ask` approval task and is useful
   for testing the waiting-task/worklist path.
+- `examples/run-shell-mock-v1.yaml`: schedules the operator-approved
+  `print-message` template through the isolated runner. Its matching local
+  policy and template are in `config/runner-execution.mock.yml`; runner
+  execution remains disabled unless `LIGHT_WORKFLOW_RUNNER_ENABLED=true`.
+
+The versioned workflow execution policy schema and its valid/invalid
+conformance fixtures are published under
+`crates/workflow-policy/schema/` and `crates/workflow-policy/fixtures/`.
 
 For the HTTP example, run any local mock that accepts:
 

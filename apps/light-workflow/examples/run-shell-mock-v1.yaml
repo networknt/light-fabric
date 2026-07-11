@@ -1,0 +1,36 @@
+document:
+  dsl: "1.0.3"
+  namespace: light-platform
+  name: run-shell-mock-v1
+  version: "1.0.0"
+  title: Credential-free isolated command
+  summary: Runs an operator-approved direct argv template on the mock runner.
+  tags:
+    testType: local
+    dependencies: light-workflow-runner-mock
+metadata:
+  lightWorkflow:
+    security:
+      version: 1
+      placement: runner
+      executionProfileId: mock-ephemeral
+      minimumBoundary: container
+      maximumHostExposure: none
+      workloadTrust: tenant-authored
+      network: deny-all
+      credentialClasses: []
+      persistence: ephemeral
+      artifactExport: false
+      approvalRequired: false
+      protectedPaths:
+        - .github/workflows
+do:
+  - printMessage:
+      run:
+        shell:
+          commandTemplateId: print-message
+          command: print-message
+          arguments:
+            - message=hello from isolated runner
+          environment:
+            LANG: C

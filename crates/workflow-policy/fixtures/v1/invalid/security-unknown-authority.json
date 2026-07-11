@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "placement": "runner",
+  "executionProfileId": "mock-ephemeral",
+  "allowHostDockerSocket": true
+}

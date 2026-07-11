@@ -34,6 +34,31 @@ const TASK_LOCK_TIMEOUT_MINUTES: i64 = 5;
 const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_AGENT_OUTPUT_BYTES: usize = 128 * 1024;
 const AGENT_PROMPT_VERSION: u32 = 1;
+const CLAIM_NEXT_HOST_TASK_SQL: &str = r#"
+            UPDATE task_info_t
+            SET locked = 'Y', update_ts = CURRENT_TIMESTAMP
+            WHERE (host_id, task_id) IN (
+                SELECT host_id, task_id FROM task_info_t
+                WHERE (
+                    (status_code = 'A' AND task_type IN ('ask', 'assert', 'call', 'set', 'switch'))
+                    OR (
+                        status_code = 'C'
+                        AND task_type = 'ask'
+                        AND completed_ts IS NOT NULL
+                        AND (task_output IS NULL OR task_output->>'status' = 'waiting_for_input')
+                    )
+                  )
+                  AND execution_placement = 'host'
+                  AND (
+                    locked = 'N'
+                    OR (locked = 'Y' AND update_ts < CURRENT_TIMESTAMP - make_interval(mins => $1::int))
+                  )
+                ORDER BY priority DESC, started_ts ASC
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+            )
+            RETURNING host_id, task_id, task_type, process_id, wf_instance_id, wf_task_id, status_code, result_code
+            "#;
 
 #[derive(sqlx::FromRow)]
 pub struct ActiveTask {
@@ -219,7 +244,7 @@ impl TaskExecutor {
         Ok(true)
     }
 
-    pub(crate) async fn reconcile_runner_attempt(
+    pub async fn reconcile_runner_attempt(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         attempt: &TerminalAttempt,
@@ -309,36 +334,10 @@ impl TaskExecutor {
     async fn claim_next_task(&self) -> Result<Option<ClaimedTask>, DynError> {
         let mut tx = self.pool.begin().await?;
 
-        let task_res = sqlx::query_as::<_, ActiveTask>(
-            r#"
-            UPDATE task_info_t
-            SET locked = 'Y', update_ts = CURRENT_TIMESTAMP
-            WHERE (host_id, task_id) IN (
-                SELECT host_id, task_id FROM task_info_t
-                WHERE (
-                    (status_code = 'A' AND task_type IN ('ask', 'assert', 'call', 'set', 'switch'))
-                    OR (
-                        status_code = 'C'
-                        AND task_type = 'ask'
-                        AND completed_ts IS NOT NULL
-                        AND (task_output IS NULL OR task_output->>'status' = 'waiting_for_input')
-                    )
-                  )
-                  AND execution_placement = 'host'
-                  AND (
-                    locked = 'N'
-                    OR (locked = 'Y' AND update_ts < CURRENT_TIMESTAMP - make_interval(mins => $1::int))
-                  )
-                ORDER BY priority DESC, started_ts ASC
-                LIMIT 1
-                FOR UPDATE SKIP LOCKED
-            )
-            RETURNING host_id, task_id, task_type, process_id, wf_instance_id, wf_task_id, status_code, result_code
-            "#,
-        )
-        .bind(TASK_LOCK_TIMEOUT_MINUTES)
-        .fetch_optional(&mut *tx)
-        .await?;
+        let task_res = sqlx::query_as::<_, ActiveTask>(CLAIM_NEXT_HOST_TASK_SQL)
+            .bind(TASK_LOCK_TIMEOUT_MINUTES)
+            .fetch_optional(&mut *tx)
+            .await?;
 
         let task = match task_res {
             Some(task) => task,
@@ -2241,8 +2240,12 @@ impl TaskExecutor {
             );
         } else {
             sqlx::query(
-                "UPDATE process_info_t SET status_code = 'F', completed_ts = CURRENT_TIMESTAMP WHERE host_id = $1 AND process_id = $2",
+                "UPDATE process_info_t
+                 SET status_code = 'F', completed_ts = CURRENT_TIMESTAMP,
+                     error_info = $1
+                 WHERE host_id = $2 AND process_id = $3",
             )
+            .bind(result.task_output.to_string())
             .bind(claimed.task.host_id)
             .bind(claimed.task.process_id)
             .execute(&mut **tx)
@@ -2983,6 +2986,32 @@ impl TaskExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    fn executor() -> TaskExecutor {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://characterization:characterization@localhost/characterization")
+            .expect("test URL is syntactically valid");
+        TaskExecutor::new(pool)
+    }
+
+    fn claimed_from_yaml(yaml: &str, task_name: &str, task_type: &str) -> ClaimedTask {
+        ClaimedTask {
+            task: ActiveTask {
+                host_id: Uuid::nil(),
+                task_id: Uuid::nil(),
+                task_type: task_type.to_string(),
+                process_id: Uuid::nil(),
+                wf_instance_id: "characterization".to_string(),
+                wf_task_id: task_name.to_string(),
+                status_code: "A".to_string(),
+                result_code: None,
+            },
+            context_data: json!({"requestId": "REQ-1", "summary": "review"}),
+            definition: serde_yaml::from_str(yaml).expect("fixture must be a workflow"),
+            raw_definition: serde_yaml::from_str(yaml).expect("fixture must be YAML"),
+        }
+    }
 
     #[test]
     fn parse_agent_json_output_accepts_fenced_json() {
@@ -3034,5 +3063,83 @@ mod tests {
 
         assert_eq!(output["decision"], "APPROVE");
         assert_eq!(output["_agentAudit"]["attempts"], 1);
+    }
+
+    #[test]
+    fn host_claim_is_placement_scoped_and_characterizes_five_minute_reclaim() {
+        assert_eq!(TASK_LOCK_TIMEOUT_MINUTES, 5);
+        assert!(CLAIM_NEXT_HOST_TASK_SQL.contains("execution_placement = 'host'"));
+        assert!(CLAIM_NEXT_HOST_TASK_SQL.contains("make_interval(mins => $1::int)"));
+        assert!(CLAIM_NEXT_HOST_TASK_SQL.contains("FOR UPDATE SKIP LOCKED"));
+        assert!(!CLAIM_NEXT_HOST_TASK_SQL.contains("task_type IN ('run'"));
+    }
+
+    #[tokio::test]
+    async fn ask_task_waits_and_completed_answer_is_forwarded_once() {
+        let executor = executor();
+        let mut claimed = claimed_from_yaml(
+            include_str!("../examples/human-approval.yaml"),
+            "requestApproval",
+            "ask",
+        );
+
+        let waiting = executor
+            .execute_task(&claimed)
+            .await
+            .expect("ask execution is local");
+        assert_eq!(waiting.status_code, "W");
+        assert_eq!(waiting.task_output["status"], "waiting_for_input");
+
+        claimed.task.status_code = "C".to_string();
+        claimed.task.result_code = Some(r#"{"decision":"APPROVED"}"#.to_string());
+        let completed = executor.completed_ask_result(&claimed);
+        assert_eq!(completed.status_code, "C");
+        assert_eq!(completed.task_output["decision"], "APPROVED");
+    }
+
+    #[tokio::test]
+    async fn completion_merges_exports_and_selects_the_next_task() {
+        let executor = executor();
+        let yaml = include_str!("../examples/simple-set-assert.yaml");
+        let definition: WorkflowDefinition = serde_yaml::from_str(yaml).unwrap();
+        let raw: YamlValue = serde_yaml::from_str(yaml).unwrap();
+        let output = json!({"applicantId": "A-1", "status": "APPROVED"});
+
+        let merged = executor.apply_exports(
+            &raw,
+            "initializeDecision",
+            json!({"existing": true}),
+            &output,
+        );
+        assert_eq!(merged["existing"], true);
+        assert_eq!(merged["decision"], output);
+        assert_eq!(
+            executor.get_next_sequential_task(&definition, "initializeDecision"),
+            Some("verifyDecision".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_assert_is_a_terminal_task_failure() {
+        let executor = executor();
+        let yaml = include_str!("../examples/simple-set-assert.yaml");
+        let definition: WorkflowDefinition = serde_yaml::from_str(yaml).unwrap();
+        let TaskDefinition::Assert(task) = executor
+            .find_task_definition(&definition, "verifyDecision")
+            .expect("fixture has assert task")
+        else {
+            panic!("verifyDecision must be assert");
+        };
+
+        let result = executor
+            .execute_assert_task(&task.assert, &json!({"decision": {"status": "DENIED"}}))
+            .expect("a false assertion is a normalized task result");
+        assert_eq!(result.status_code, "F");
+        assert_eq!(result.task_output["status"], 400);
+        assert!(
+            result.task_output["data"]["failures"]
+                .as_array()
+                .is_some_and(|failures| !failures.is_empty())
+        );
     }
 }

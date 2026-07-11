@@ -44,7 +44,7 @@ pub fn resolve_run_shell_spec(
     let template = templates
         .get(template_id)
         .ok_or_else(|| format!("command template `{template_id}` is not configured"))?;
-    validate_template(template)?;
+    validate_command_template(template)?;
     let supplied = parse_parameters(shell.arguments.as_deref().unwrap_or_default())?;
     let arguments = materialize_arguments(template, &supplied)?;
     let environment = validate_environment(
@@ -71,7 +71,7 @@ pub fn resolve_run_shell_spec(
     })
 }
 
-fn validate_template(template: &CommandTemplate) -> Result<(), String> {
+pub fn validate_command_template(template: &CommandTemplate) -> Result<(), String> {
     if template.id.trim().is_empty() || template.version == 0 {
         return Err("command template ID and positive version are required".to_string());
     }
@@ -327,6 +327,17 @@ mod tests {
                 &["API_TOKEN".to_string()]
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn malformed_parameter_pattern_is_rejected_before_scheduling() {
+        let mut template = template();
+        template.parameter_slots[0].pattern = Some("[unterminated".into());
+        assert!(
+            validate_command_template(&template)
+                .unwrap_err()
+                .contains("pattern")
         );
     }
 

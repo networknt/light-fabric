@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lightapi.net/schema/workflow-execution-policy-v1.schema.json",
+  "title": "Light Workflow execution policy v1",
+  "description": "Versioned contract for workflow security metadata, execution profiles, and command templates.",
+  "oneOf": [
+    { "$ref": "#/$defs/workflowSecurityPolicy" },
+    { "$ref": "#/$defs/executionProfile" },
+    { "$ref": "#/$defs/commandTemplate" }
+  ],
+  "$defs": {
+    "sha256Digest": { "type": "string", "pattern": "^sha256:[a-fA-F0-9]{64}$" },
+    "compatibilityIdentifier": { "type": "string", "minLength": 16, "pattern": "^sha256:[0-9A-Za-z._:-]+$", "description": "Operator-versioned compatibility identity. It is not necessarily a content hash." },
+    "workflowSecurityPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version"],
+      "properties": {
+        "version": { "const": 1 },
+        "placement": { "enum": ["host", "runner"] },
+        "executionProfileId": { "type": "string", "minLength": 1, "maxLength": 126 },
+        "minimumBoundary": { "enum": ["process", "container", "user-namespace", "micro-vm", "remote-sandbox"] },
+        "maximumHostExposure": { "enum": ["none", "read-only-workspace", "explicit-mounts"] },
+        "workloadTrust": { "enum": ["trusted-template", "tenant-authored", "model-generated"] },
+        "network": { "enum": ["deny-all", "allowlisted"], "default": "deny-all" },
+        "credentialClasses": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true, "default": [] },
+        "persistence": { "enum": ["ephemeral", "session"], "default": "ephemeral" },
+        "artifactExport": { "type": "boolean", "default": false },
+        "approvalRequired": { "type": "boolean", "default": false },
+        "protectedPaths": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true, "default": [] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "placement": { "const": "runner" } }, "required": ["placement"] },
+          "then": { "required": ["executionProfileId"] }
+        }
+      ]
+    },
+    "executionProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "boundary", "hostExposure", "maximumWorkloadTrust", "network", "persistence", "artifactExport", "approvalSupported", "compatibilityDigest"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 126 },
+        "version": { "type": "integer", "minimum": 1 },
+        "boundary": { "enum": ["process", "container", "user-namespace", "micro-vm", "remote-sandbox"] },
+        "hostExposure": { "enum": ["none", "read-only-workspace", "explicit-mounts"] },
+        "maximumWorkloadTrust": { "enum": ["trusted-template", "tenant-authored", "model-generated"] },
+        "network": { "enum": ["deny-all", "allowlisted"] },
+        "credentialClasses": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true, "default": [] },
+        "persistence": { "enum": ["ephemeral", "session"] },
+        "artifactExport": { "type": "boolean" },
+        "approvalSupported": { "type": "boolean" },
+        "protectedPaths": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true, "default": [] },
+        "compatibilityDigest": { "$ref": "#/$defs/compatibilityIdentifier" },
+        "allowedActions": { "type": "array", "items": { "enum": ["run.shell", "run.container", "run.script"] }, "uniqueItems": true, "default": [] }
+      }
+    },
+    "commandTemplate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "executable", "workingDirectory", "wallClockTimeoutMs", "stdoutLimitBytes", "stderrLimitBytes"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 126 },
+        "version": { "type": "integer", "minimum": 1 },
+        "executable": { "type": "string", "pattern": "^/[^\\s\\u0000]+$" },
+        "fixedArguments": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "parameterSlots": { "type": "array", "items": { "$ref": "#/$defs/commandParameterSlot" }, "default": [] },
+        "workingDirectory": { "type": "string", "pattern": "^/workspace(?:/.*)?$" },
+        "allowedEnvironmentNames": { "type": "array", "items": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$" }, "uniqueItems": true, "default": [] },
+        "wallClockTimeoutMs": { "type": "integer", "minimum": 1 },
+        "stdoutLimitBytes": { "type": "integer", "minimum": 1 },
+        "stderrLimitBytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "commandParameterSlot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "argumentIndex", "required", "maximumBytes"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "argumentIndex": { "type": "integer", "minimum": 0 },
+        "required": { "type": "boolean" },
+        "allowedValues": { "type": "array", "items": { "type": "string" }, "uniqueItems": true, "default": [] },
+        "pattern": { "type": "string", "format": "regex" },
+        "maximumBytes": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

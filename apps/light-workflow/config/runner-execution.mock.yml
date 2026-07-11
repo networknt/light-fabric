@@ -1,0 +1,36 @@
+version: 1
+profiles:
+  - id: mock-ephemeral
+    version: 1
+    boundary: container
+    hostExposure: none
+    maximumWorkloadTrust: tenant-authored
+    network: deny-all
+    credentialClasses: []
+    persistence: ephemeral
+    artifactExport: false
+    approvalSupported: false
+    protectedPaths:
+      - /workspace
+    compatibilityDigest: sha256:mock-ephemeral-v1
+    allowedActions:
+      - run.shell
+commandTemplates:
+  - id: print-message
+    version: 1
+    executable: /usr/bin/printf
+    fixedArguments:
+      - "%s\\n"
+    parameterSlots:
+      - name: message
+        argumentIndex: 1
+        required: true
+        allowedValues:
+          - hello from isolated runner
+        maximumBytes: 64
+    workingDirectory: /workspace
+    allowedEnvironmentNames:
+      - LANG
+    wallClockTimeoutMs: 5000
+    stdoutLimitBytes: 16384
+    stderrLimitBytes: 16384

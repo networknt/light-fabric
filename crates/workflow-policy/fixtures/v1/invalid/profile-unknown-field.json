@@ -1,0 +1,14 @@
+{
+  "id": "unsafe",
+  "version": 1,
+  "boundary": "container",
+  "hostExposure": "none",
+  "maximumWorkloadTrust": "tenant-authored",
+  "network": "deny-all",
+  "persistence": "ephemeral",
+  "artifactExport": false,
+  "approvalSupported": false,
+  "compatibilityDigest": "sha256:unsafe-profile",
+  "allowedActions": ["run.shell"],
+  "privileged": true
+}

@@ -1,0 +1,15 @@
+{
+  "id": "mock-ephemeral",
+  "version": 1,
+  "boundary": "container",
+  "hostExposure": "none",
+  "maximumWorkloadTrust": "tenant-authored",
+  "network": "deny-all",
+  "credentialClasses": [],
+  "persistence": "ephemeral",
+  "artifactExport": false,
+  "approvalSupported": false,
+  "protectedPaths": ["/workspace"],
+  "compatibilityDigest": "sha256:mock-ephemeral-v1",
+  "allowedActions": ["run.shell"]
+}

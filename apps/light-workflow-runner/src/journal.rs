@@ -2,7 +2,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
-use execution_runner_protocol::{ExecuteLease, ExecutionId, LeaseContext, LeaseId};
+use execution_runner_protocol::{
+    ExecuteLease, ExecutionId, LeaseContext, LeaseId, TerminalLeaseResult,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +64,7 @@ pub struct JournalRecord {
     pub definition_digest: String,
     pub command_template_digest: String,
     pub lease_context: LeaseContext,
+    pub terminal_result: Option<TerminalLeaseResult>,
 }
 
 #[derive(Clone)]
@@ -94,12 +97,34 @@ impl Journal {
                     definition_digest TEXT NOT NULL,
                     command_template_digest TEXT NOT NULL,
                     lease_context TEXT NOT NULL DEFAULT '{}',
+                    terminal_result TEXT,
                     updated_at TEXT NOT NULL
                  );
                  CREATE INDEX IF NOT EXISTS execution_journal_recovery_idx
                     ON execution_journal(state, deadline);",
             )
             .map_err(|error| format!("initialize journal: {error}"))?;
+        // Upgrade journals created by the initial runner bootstrap. SQLite has
+        // no `ADD COLUMN IF NOT EXISTS`, so inspect the schema explicitly and
+        // propagate real migration failures.
+        let has_terminal_result: bool = connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM pragma_table_info('execution_journal')
+                    WHERE name = 'terminal_result'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("inspect journal schema: {error}"))?;
+        if !has_terminal_result {
+            connection
+                .execute(
+                    "ALTER TABLE execution_journal ADD COLUMN terminal_result TEXT",
+                    [],
+                )
+                .map_err(|error| format!("upgrade journal terminal result storage: {error}"))?;
+        }
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
         })
@@ -170,6 +195,7 @@ impl Journal {
                 "UPDATE execution_journal
                  SET state = ?1,
                      backend_operation_id = COALESCE(?2, backend_operation_id),
+                     terminal_result = CASE WHEN ?1 = 'TERMINAL_REPORTED' THEN NULL ELSE terminal_result END,
                      updated_at = ?3
                  WHERE execution_id = ?4",
                 params![
@@ -189,6 +215,39 @@ impl Journal {
         Ok(())
     }
 
+    /// Persists the complete terminal payload before it may be sent. This is
+    /// what makes an acknowledgement lost across a process restart replayable
+    /// without changing the outcome to UNKNOWN.
+    pub fn set_terminal(&self, terminal: &TerminalLeaseResult) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "journal mutex poisoned")?;
+        let updated = connection
+            .execute(
+                "UPDATE execution_journal
+                 SET state = ?1, terminal_result = ?2, updated_at = ?3
+                 WHERE execution_id = ?4 AND lease_id = ?5 AND fencing_token = ?6",
+                params![
+                    JournalState::TerminalPending.as_str(),
+                    serde_json::to_string(terminal)
+                        .map_err(|error| format!("serialize terminal result: {error}"))?,
+                    Utc::now().to_rfc3339(),
+                    terminal.lease.execution_id.to_string(),
+                    terminal.lease.lease_id.to_string(),
+                    terminal.lease.fencing_token as i64,
+                ],
+            )
+            .map_err(|error| format!("persist terminal result: {error}"))?;
+        if updated != 1 {
+            return Err("terminal result did not match the journal lease fence".to_string());
+        }
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(PASSIVE);")
+            .map_err(|error| format!("checkpoint terminal result: {error}"))?;
+        Ok(())
+    }
+
     pub fn find(&self, execution_id: ExecutionId) -> Result<Option<JournalRecord>, String> {
         let connection = self
             .connection
@@ -198,7 +257,8 @@ impl Journal {
             .query_row(
                 "SELECT execution_id, lease_id, fencing_token, deadline, state,
                         backend_operation_id, policy_digest, compatibility_digest,
-                        definition_digest, command_template_digest, lease_context
+                        definition_digest, command_template_digest, lease_context,
+                        terminal_result
                  FROM execution_journal WHERE execution_id = ?1",
                 params![execution_id.to_string()],
                 row_to_record,
@@ -216,7 +276,8 @@ impl Journal {
             .prepare(
                 "SELECT execution_id, lease_id, fencing_token, deadline, state,
                         backend_operation_id, policy_digest, compatibility_digest,
-                        definition_digest, command_template_digest, lease_context
+                        definition_digest, command_template_digest, lease_context,
+                        terminal_result
                  FROM execution_journal
                  WHERE state <> 'CLEANUP_CONFIRMED'
                  ORDER BY deadline, execution_id",
@@ -303,6 +364,17 @@ fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<JournalRecord> {
                 Box::new(error),
             )
         })?,
+        terminal_result: row
+            .get::<_, Option<String>>(11)?
+            .map(|value| serde_json::from_str(&value))
+            .transpose()
+            .map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    11,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?,
     })
 }
 
@@ -356,6 +428,50 @@ mod tests {
         let mut refenced = lease.clone();
         refenced.lease.fencing_token += 1;
         assert!(journal.record_intent(&refenced).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn opening_legacy_journal_adds_terminal_result_storage() {
+        let directory =
+            std::env::temp_dir().join(format!("runner-legacy-journal-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("journal.sqlite");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE execution_journal (
+                    execution_id TEXT PRIMARY KEY,
+                    lease_id TEXT NOT NULL,
+                    fencing_token INTEGER NOT NULL,
+                    deadline TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    backend_operation_id TEXT,
+                    policy_digest TEXT NOT NULL,
+                    compatibility_digest TEXT NOT NULL,
+                    definition_digest TEXT NOT NULL,
+                    command_template_digest TEXT NOT NULL,
+                    lease_context TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL
+                 );",
+            )
+            .unwrap();
+        drop(connection);
+
+        let journal = Journal::open(&path).unwrap();
+        assert!(journal.record_intent(&lease()).unwrap());
+        let columns = journal
+            .connection
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('execution_journal')
+                 WHERE name = 'terminal_result'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(columns, 1);
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

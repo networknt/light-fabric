@@ -293,7 +293,11 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&token_path, fs::Permissions::from_mode(0o600)).unwrap();
         }
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = match TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("bind fake controller: {error}"),
+        };
         let address = listener.local_addr().unwrap();
         let config = Arc::new(RunnerConfig {
             runner_id: "runner-test".into(),
