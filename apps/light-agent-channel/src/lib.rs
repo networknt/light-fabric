@@ -47,6 +47,7 @@ pub struct WebhookVerifier {
     secret: Vec<u8>,
     seen: HashSet<String>,
     maximum_skew_seconds: i64,
+    maximum_payload_bytes: usize,
 }
 impl WebhookVerifier {
     pub fn new(secret: Vec<u8>) -> Result<Self, ChannelError> {
@@ -57,6 +58,7 @@ impl WebhookVerifier {
             secret,
             seen: HashSet::new(),
             maximum_skew_seconds: 300,
+            maximum_payload_bytes: 1024 * 1024,
         })
     }
     pub fn verify_and_normalize(
@@ -64,15 +66,21 @@ impl WebhookVerifier {
         b: &ChannelBinding,
         raw: &[u8],
         signature_hex: &str,
-        e: WebhookEnvelope,
         now: DateTime<Utc>,
     ) -> Result<NormalizedTurn, ChannelError> {
+        if raw.len() > self.maximum_payload_bytes {
+            return Err(ChannelError::Limit);
+        }
         let mut mac =
             Hmac::<Sha256>::new_from_slice(&self.secret).map_err(|_| ChannelError::Signature)?;
         mac.update(raw);
         let sig = hex_decode(signature_hex)?;
         mac.verify_slice(&sig)
             .map_err(|_| ChannelError::Signature)?;
+        // Parsing happens only after signature verification and exclusively
+        // from the authenticated bytes. Callers cannot substitute a separately
+        // constructed envelope after presenting a valid signature.
+        let e: WebhookEnvelope = serde_json::from_slice(raw).map_err(|_| ChannelError::Payload)?;
         if (now - e.timestamp).num_seconds().abs() > self.maximum_skew_seconds
             || !self.seen.insert(e.event_id.clone())
         {
@@ -126,6 +134,8 @@ pub enum ChannelError {
     Binding,
     #[error("channel payload limit exceeded")]
     Limit,
+    #[error("signed webhook payload is malformed")]
+    Payload,
 }
 #[cfg(test)]
 mod tests {
@@ -149,15 +159,6 @@ mod tests {
     #[test]
     fn signature_identity_destination_and_replay_fail_closed() {
         let secret = vec![7; 32];
-        let raw = b"event";
-        let mut mac = Hmac::<Sha256>::new_from_slice(&secret).unwrap();
-        mac.update(raw);
-        let sig = mac
-            .finalize()
-            .into_bytes()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
         let now = Utc::now();
         let event = WebhookEnvelope {
             event_id: "one".into(),
@@ -168,14 +169,50 @@ mod tests {
             text: "hi".into(),
             attachment_bytes: 0,
         };
+        let raw = serde_json::to_vec(&event).unwrap();
+        let mut mac = Hmac::<Sha256>::new_from_slice(&secret).unwrap();
+        mac.update(&raw);
+        let sig = mac
+            .finalize()
+            .into_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         let mut v = WebhookVerifier::new(secret).unwrap();
-        assert!(
-            v.verify_and_normalize(&binding(), raw, &sig, event.clone(), now)
-                .is_ok()
-        );
+        assert!(v.verify_and_normalize(&binding(), &raw, &sig, now).is_ok());
         assert_eq!(
-            v.verify_and_normalize(&binding(), raw, &sig, event, now),
+            v.verify_and_normalize(&binding(), &raw, &sig, now),
             Err(ChannelError::Replay)
+        );
+    }
+
+    #[test]
+    fn signed_bytes_are_the_only_envelope_authority() {
+        let secret = vec![9; 32];
+        let now = Utc::now();
+        let raw = serde_json::to_vec(&WebhookEnvelope {
+            event_id: "signed".into(),
+            external_identity: "attacker".into(),
+            destination: "dm".into(),
+            group: false,
+            timestamp: now,
+            text: "ignored substitute cannot be supplied".into(),
+            attachment_bytes: 0,
+        })
+        .unwrap();
+        let mut mac = Hmac::<Sha256>::new_from_slice(&secret).unwrap();
+        mac.update(&raw);
+        let sig = mac
+            .finalize()
+            .into_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            WebhookVerifier::new(secret)
+                .unwrap()
+                .verify_and_normalize(&binding(), &raw, &sig, now),
+            Err(ChannelError::Binding)
         );
     }
 }

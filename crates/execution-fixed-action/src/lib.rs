@@ -81,6 +81,8 @@ pub struct FixedPatchRequest {
 pub struct FixedPatchPlan {
     pub isolated_home: PathBuf,
     pub checkout: Vec<String>,
+    pub checkout_base: Vec<String>,
+    pub verify_base: Vec<String>,
     pub check: Vec<String>,
     pub apply: Vec<String>,
     pub environment: BTreeMap<String, String>,
@@ -138,9 +140,30 @@ pub fn validate_and_plan(
     checkout.extend([
         "clone".into(),
         "--no-checkout".into(),
+        "--no-tags".into(),
+        "--no-recurse-submodules".into(),
         "--filter=blob:none".into(),
         request.repository.clone(),
         repo.display().to_string(),
+    ]);
+    let mut checkout_base = vec!["git".into()];
+    checkout_base.extend(safe.clone());
+    checkout_base.extend([
+        "-C".into(),
+        repo.display().to_string(),
+        "checkout".into(),
+        "--detach".into(),
+        "--force".into(),
+        request.base_commit.clone(),
+    ]);
+    let mut verify_base = vec!["git".into()];
+    verify_base.extend(safe.clone());
+    verify_base.extend([
+        "-C".into(),
+        repo.display().to_string(),
+        "rev-parse".into(),
+        "--verify".into(),
+        "HEAD^{commit}".into(),
     ]);
     let mut check = vec!["git".into()];
     check.extend(safe.clone());
@@ -164,10 +187,28 @@ pub fn validate_and_plan(
     Ok(FixedPatchPlan {
         isolated_home: home,
         checkout,
+        checkout_base,
+        verify_base,
         check,
         apply,
         environment,
     })
+}
+
+/// Verifies the trusted executor's `rev-parse --verify HEAD^{commit}` output
+/// before patch inspection or application proceeds.
+pub fn verify_checked_out_base(
+    request: &FixedPatchRequest,
+    actual_head: &str,
+) -> Result<(), FixedActionError> {
+    let actual = actual_head.trim();
+    if actual != request.base_commit
+        || actual.len() != 40
+        || !actual.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return Err(FixedActionError::Commit);
+    }
+    Ok(())
 }
 
 pub fn verify_post_apply(
@@ -236,6 +277,31 @@ mod tests {
                 &policy
             )
             .is_ok()
+        );
+        let plan = validate_and_plan(
+            &request,
+            bytes,
+            &request.repository,
+            "agent/",
+            PathBuf::from("/tmp/fixed"),
+            &policy,
+        )
+        .unwrap();
+        assert!(plan.checkout_base.ends_with(&[
+            "checkout".into(),
+            "--detach".into(),
+            "--force".into(),
+            request.base_commit.clone(),
+        ]));
+        assert!(plan.verify_base.ends_with(&[
+            "rev-parse".into(),
+            "--verify".into(),
+            "HEAD^{commit}".into(),
+        ]));
+        assert!(verify_checked_out_base(&request, &format!("{}\n", request.base_commit)).is_ok());
+        assert_eq!(
+            verify_checked_out_base(&request, &"b".repeat(40)),
+            Err(FixedActionError::Commit)
         );
         assert!(verify_post_apply(&request, b"tampered", &request.changed_paths, &policy).is_err());
         request.changed_paths = vec![".github/workflows/release.yml".into()];
