@@ -107,6 +107,7 @@ async fn registers_unbound_then_sends_session_bound_heartbeat() {
         effective_config_digest: "effective-config-digest".to_string(),
         command_allowlist_digest: "command-allowlist-digest".to_string(),
         binary_digest: "sha256:test-binary".to_string(),
+        agent_worker: None,
     });
     let backend = Arc::new(MockExecutionBackend::new(
         compatibility_digest,
@@ -120,6 +121,7 @@ async fn registers_unbound_then_sends_session_bound_heartbeat() {
         stager,
         BTreeSet::from([command_digest]),
         1,
+        None,
     );
     let health = HealthState::new(supervisor.clone());
     let (shutdown_tx, shutdown_rx) = watch::channel(false);

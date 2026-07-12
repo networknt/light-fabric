@@ -321,6 +321,7 @@ mod tests {
             effective_config_digest: "sha256:effective-config".into(),
             command_allowlist_digest: "sha256:command-allowlist".into(),
             binary_digest: "sha256:runner-binary".into(),
+            agent_worker: None,
         });
         let journal = Journal::open(&temp.path().join("journal.sqlite")).unwrap();
         let stager = InputStager::new(temp.path().join("staging"), 1024).unwrap();
@@ -334,6 +335,7 @@ mod tests {
             stager,
             config.allowed_command_template_digests.clone(),
             1,
+            None,
         );
         let health = HealthState::new(Arc::clone(&supervisor));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);

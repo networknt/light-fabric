@@ -24,6 +24,12 @@ backend:
     cleanupFails: false
 allowedCommandTemplateDigests:
   - sha256:replace-with-canonical-command-template-digest
-  # Enable only in an admitted coding-runner pool whose immutable image
-  # contains the reviewed light-agent-worker binary at the fixed path.
-  # - 503c1f8879addd7dec140d9f2e703e6b7230979188bbd6f7c9e4f941e276a717
+
+# Optional and disabled when absent. Enable only in an admitted agent-runner
+# pool whose immutable image contains the reviewed binary at this fixed path.
+# The worker command template digest must also appear in the allowlist above.
+# agentWorker:
+#   originServiceId: light-agent
+#   executable: /usr/local/bin/light-agent-worker
+#   binaryDigest: sha256:replace-with-exact-worker-binary-digest
+#   capabilityDigest: sha256:replace-with-canonical-worker-capability-digest

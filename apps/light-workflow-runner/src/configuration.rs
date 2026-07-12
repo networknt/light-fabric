@@ -4,6 +4,7 @@ use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
+use crate::worker_process::WorkerProcessConfig;
 use execution_backend::ExecutionBackend;
 use execution_backend_mock::MockBehavior;
 use execution_backend_mock::MockExecutionBackend;
@@ -30,6 +31,8 @@ struct RunnerConfigFile {
     staging_maximum_bytes: u64,
     backend: MockBackendConfig,
     allowed_command_template_digests: Vec<String>,
+    #[serde(default)]
+    agent_worker: Option<WorkerProcessConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +63,7 @@ pub struct RunnerConfig {
     pub effective_config_digest: String,
     pub command_allowlist_digest: String,
     pub binary_digest: String,
+    pub agent_worker: Option<WorkerProcessConfig>,
 }
 
 #[derive(Serialize)]
@@ -76,6 +80,7 @@ struct EffectiveConfigEvidence<'a> {
     staging_maximum_bytes: u64,
     backend: &'a MockBackendConfig,
     allowed_command_template_digests: &'a BTreeSet<String>,
+    agent_worker: &'a Option<WorkerProcessConfig>,
 }
 
 impl RunnerConfig {
@@ -129,6 +134,9 @@ impl RunnerConfig {
         if allowed.is_empty() {
             return Err("allowedCommandTemplateDigests must not be empty".to_string());
         }
+        if let Some(worker) = &file.agent_worker {
+            worker.validate()?;
+        }
         let evidence = EffectiveConfigEvidence {
             version: file.version,
             runner_id: &file.runner_id,
@@ -141,6 +149,7 @@ impl RunnerConfig {
             staging_maximum_bytes: file.staging_maximum_bytes,
             backend: &file.backend,
             allowed_command_template_digests: &allowed,
+            agent_worker: &file.agent_worker,
         };
         let effective_config_digest = canonical_sha256(&evidence)
             .map_err(|error| format!("effective config digest failed: {error}"))?;
@@ -165,6 +174,7 @@ impl RunnerConfig {
             effective_config_digest,
             command_allowlist_digest,
             binary_digest,
+            agent_worker: file.agent_worker,
         })
     }
 
@@ -192,13 +202,21 @@ impl RunnerConfig {
         )
         .with_available_slots(self.backend.available_slots)
         .capability();
+        let mut origins = vec![serde_json::json!({
+            "kind": OriginKind::Workflow,
+            "serviceId": origin_service_id,
+            "allowedSubjectKinds": [SubjectKind::WorkflowTask]
+        })];
+        if let Some(worker) = &self.agent_worker {
+            origins.push(serde_json::json!({
+                "kind": OriginKind::Agent,
+                "serviceId": worker.origin_service_id,
+                "allowedSubjectKinds": [SubjectKind::AgentTurn, SubjectKind::AgentAction]
+            }));
+        }
         Ok(serde_json::json!({
             "version": 1,
-            "origins": [{
-                "kind": OriginKind::Workflow,
-                "serviceId": origin_service_id,
-                "allowedSubjectKinds": [SubjectKind::WorkflowTask]
-            }],
+            "origins": origins,
             "enrollments": [{
                 "enrollmentId": self.enrollment_id,
                 "runnerId": self.runner_id,
@@ -293,7 +311,7 @@ allowedCommandTemplateDigests: [sha256:template-digest]
 
     #[test]
     fn admission_document_uses_exact_runtime_evidence() {
-        let config = RunnerConfig {
+        let mut config = RunnerConfig {
             runner_id: "runner".into(),
             enrollment_id: "enrollment".into(),
             host_id: Uuid::nil(),
@@ -315,6 +333,7 @@ allowedCommandTemplateDigests: [sha256:template-digest]
             effective_config_digest: "sha256:effective".into(),
             command_allowlist_digest: "sha256:allowlist".into(),
             binary_digest: "sha256:binary".into(),
+            agent_worker: None,
         };
         let document = config
             .admission_document("runner-subject", "light-workflow")
@@ -325,5 +344,21 @@ allowedCommandTemplateDigests: [sha256:template-digest]
         assert_eq!(enrollment["commandAllowlistDigest"], "sha256:allowlist");
         assert_eq!(enrollment["heartbeatIntervalMs"], 1234);
         assert_eq!(enrollment["backends"][0]["maximumSlots"], 2);
+
+        config.agent_worker = Some(WorkerProcessConfig {
+            origin_service_id: "light-agent".into(),
+            executable: "/usr/local/bin/light-agent-worker".into(),
+            binary_digest: format!("sha256:{}", "1".repeat(64)),
+            capability_digest: format!("sha256:{}", "2".repeat(64)),
+        });
+        let document = config
+            .admission_document("runner-subject", "light-workflow")
+            .unwrap();
+        assert_eq!(document["origins"][1]["kind"], "agent");
+        assert_eq!(document["origins"][1]["serviceId"], "light-agent");
+        assert_eq!(
+            document["origins"][1]["allowedSubjectKinds"],
+            serde_json::json!(["agent-turn", "agent-action"])
+        );
     }
 }

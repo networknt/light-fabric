@@ -7,8 +7,8 @@ use dashmap::DashMap;
 use execution_backend::{BackendError, BackendOperationState, ExecutionBackend};
 use execution_runner_protocol::{
     ActiveLeaseSummary, AttemptState, CancelLease, CleanupState, CommandExecutionSpec,
-    ExecuteLease, ExecutionId, LeaseContext, LeaseResultAccepted, RunnerToController,
-    TerminalLeaseResult,
+    ExecuteLease, ExecutionId, LeaseContext, LeaseResultAccepted, NormalizedOutput, OriginKind,
+    RetrySafety, RunnerToController, TerminalLeaseResult,
 };
 use tokio::sync::{Semaphore, mpsc, watch};
 use tracing::{error, info, warn};
@@ -16,6 +16,7 @@ use tracing::{error, info, warn};
 use crate::journal::{Journal, JournalRecord, JournalState};
 use crate::normalization::{from_backend_error, from_backend_output};
 use crate::staging::InputStager;
+use crate::worker_process::{WorkerProcessConfig, run_worker_process};
 
 #[derive(Clone)]
 struct ActiveExecution {
@@ -34,6 +35,7 @@ pub struct Supervisor {
     capacity: Arc<Semaphore>,
     draining: AtomicBool,
     watchdog_last_tick_ms: AtomicI64,
+    agent_worker: Option<WorkerProcessConfig>,
 }
 
 impl Supervisor {
@@ -43,6 +45,7 @@ impl Supervisor {
         stager: InputStager,
         allowed_template_digests: std::collections::BTreeSet<String>,
         maximum_concurrency: u32,
+        agent_worker: Option<WorkerProcessConfig>,
     ) -> Arc<Self> {
         Arc::new(Self {
             backend,
@@ -54,6 +57,7 @@ impl Supervisor {
             capacity: Arc::new(Semaphore::new(maximum_concurrency as usize)),
             draining: AtomicBool::new(false),
             watchdog_last_tick_ms: AtomicI64::new(Utc::now().timestamp_millis()),
+            agent_worker,
         })
     }
 
@@ -144,6 +148,9 @@ impl Supervisor {
             return Ok(());
         }
 
+        if lease.lease.origin.kind == OriginKind::Agent {
+            return self.accept_agent_worker(lease, outbound).await;
+        }
         validate_command(&lease, &self.allowed_template_digests)?;
         self.journal.record_intent(&lease)?;
         outbound
@@ -311,6 +318,159 @@ impl Supervisor {
                 .insert(lease.lease.execution_id, terminal.clone());
             if let Err(error) = send_terminal(&outbound, terminal).await {
                 warn!(execution_id = %lease.lease.execution_id, %error, "terminal result queued for reconnect recovery");
+            }
+        });
+        Ok(())
+    }
+
+    async fn accept_agent_worker(
+        self: &Arc<Self>,
+        lease: ExecuteLease,
+        outbound: mpsc::Sender<RunnerToController>,
+    ) -> Result<(), String> {
+        let config = self
+            .agent_worker
+            .clone()
+            .ok_or_else(|| "agent worker execution is disabled on this runner".to_string())?;
+        if lease.lease.origin.service_id != config.origin_service_id {
+            return Err("agent lease origin is not admitted by this runner".into());
+        }
+        if !self
+            .allowed_template_digests
+            .contains(&lease.command_template_digest)
+        {
+            return Err("agent worker template digest is not admitted by the runner".into());
+        }
+        let spec = serde_json::from_value::<agent_runtime_protocol::AgentWorkerExecutionSpec>(
+            lease.command.clone(),
+        )
+        .map_err(|error| format!("invalid agent worker execution spec: {error}"))?;
+        self.journal.record_intent(&lease)?;
+        outbound
+            .send(RunnerToController::RunnerLeaseAccepted(lease.lease.clone()))
+            .await
+            .map_err(|_| "controller outbound channel closed".to_string())?;
+        let permit = self
+            .capacity
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| "runner capacity was exhausted".to_string())?;
+        let operation_id = format!("agent-worker:{}", lease.lease.execution_id);
+        let (cancel, cancellation) = watch::channel(false);
+        self.active.insert(
+            lease.lease.execution_id,
+            ActiveExecution {
+                lease: lease.clone(),
+                backend_operation_id: operation_id.clone(),
+                cancel,
+            },
+        );
+        self.journal.set_state(
+            lease.lease.execution_id,
+            JournalState::Executing,
+            Some(&operation_id),
+        )?;
+        outbound
+            .send(RunnerToController::RunnerLeaseStarted(lease.lease.clone()))
+            .await
+            .map_err(|_| "controller outbound channel closed".to_string())?;
+
+        let supervisor = Arc::clone(self);
+        tokio::spawn(async move {
+            let _permit = permit;
+            let started_at = Utc::now();
+            let execution =
+                run_worker_process(&lease, &spec, &config, &supervisor.journal, cancellation).await;
+            let finished_at = Utc::now();
+            let worker_error = execution.as_ref().err().cloned();
+            let mut result = match execution {
+                Ok(outcome) => {
+                    let (state, failure_class) = match outcome.class {
+                        agent_core::ResultClass::Success
+                        | agent_core::ResultClass::ApprovalRequired => {
+                            (AttemptState::Succeeded, None)
+                        }
+                        agent_core::ResultClass::RecoverableFailure => {
+                            (AttemptState::Failed, Some("recoverable_failure".into()))
+                        }
+                        agent_core::ResultClass::TerminalFailure => {
+                            (AttemptState::Failed, Some("terminal_failure".into()))
+                        }
+                        agent_core::ResultClass::Cancelled => {
+                            (AttemptState::Cancelled, Some("cancelled".into()))
+                        }
+                        agent_core::ResultClass::Unknown => {
+                            (AttemptState::Unknown, Some("unknown".into()))
+                        }
+                    };
+                    let mut evidence = std::collections::BTreeMap::from([
+                        ("runtimeResultClass".into(), format!("{:?}", outcome.class)),
+                        ("runtimeEventCount".into(), outcome.events.to_string()),
+                    ]);
+                    if let Some(error) = &outcome.error {
+                        evidence.insert("runtimeError".into(), error.clone());
+                    }
+                    execution_runner_protocol::NormalizedExecutionResult {
+                        execution_id: lease.lease.execution_id,
+                        origin: lease.lease.origin.clone(),
+                        subject: lease.lease.subject.clone(),
+                        attempt: lease.lease.attempt,
+                        state,
+                        failure_class,
+                        exit_code: Some(0),
+                        signal: None,
+                        started_at,
+                        finished_at,
+                        duration_ms: duration_millis(started_at, finished_at),
+                        stdout: empty_output(),
+                        stderr: empty_output(),
+                        structured_output: outcome.output,
+                        artifacts: Vec::new(),
+                        backend_operation_id: operation_id.clone(),
+                        cleanup_state: CleanupState::Confirmed,
+                        policy_digest: lease.lease.policy_digest.clone(),
+                        compatibility_digest: lease.lease.compatibility_digest.clone(),
+                        definition_digest: lease.definition_digest.clone(),
+                        command_template_digest: lease.command_template_digest.clone(),
+                        retry_safety: RetrySafety::InspectRequired,
+                        evidence,
+                    }
+                }
+                Err(error) => {
+                    let backend_error = if error.contains("deadline") {
+                        BackendError::TimedOut(error)
+                    } else if error.contains("cancelled") {
+                        BackendError::Cancelled(error)
+                    } else {
+                        BackendError::Unknown(error)
+                    };
+                    let mut result = from_backend_error(
+                        &lease,
+                        operation_id.clone(),
+                        started_at,
+                        &backend_error,
+                    );
+                    result.cleanup_state = CleanupState::Confirmed;
+                    result
+                }
+            };
+            if let Some(error) = worker_error {
+                result.evidence.insert("workerError".into(), error);
+            }
+            let terminal = TerminalLeaseResult {
+                lease: lease.lease.clone(),
+                result,
+            };
+            if let Err(error) = supervisor.journal.set_terminal(&terminal) {
+                error!(execution_id = %lease.lease.execution_id, %error, "failed to persist agent worker terminal result");
+                return;
+            }
+            supervisor.active.remove(&lease.lease.execution_id);
+            supervisor
+                .pending_results
+                .insert(lease.lease.execution_id, terminal.clone());
+            if let Err(error) = send_terminal(&outbound, terminal).await {
+                warn!(execution_id = %lease.lease.execution_id, %error, "agent terminal result queued for reconnect recovery");
             }
         });
         Ok(())
@@ -584,6 +744,25 @@ impl Supervisor {
     }
 }
 
+fn empty_output() -> NormalizedOutput {
+    NormalizedOutput {
+        inline: None,
+        reference: None,
+        truncated: false,
+        original_bytes: 0,
+    }
+}
+
+fn duration_millis(started_at: chrono::DateTime<Utc>, finished_at: chrono::DateTime<Utc>) -> u64 {
+    u64::try_from(
+        finished_at
+            .signed_duration_since(started_at)
+            .num_milliseconds()
+            .max(0),
+    )
+    .unwrap_or(u64::MAX)
+}
+
 fn validate_command(
     lease: &ExecuteLease,
     allowed_digests: &std::collections::BTreeSet<String>,
@@ -802,6 +981,7 @@ mod tests {
                 stager,
                 BTreeSet::from(["template".to_string()]),
                 1,
+                None,
             ),
             root,
         )
@@ -963,6 +1143,7 @@ mod tests {
             InputStager::new(root.join("staging"), 1024).unwrap(),
             BTreeSet::from(["template".to_string()]),
             1,
+            None,
         );
         let (recovery_outbound, mut recovery_messages) = mpsc::channel(2);
         restarted.recover(&recovery_outbound).await.unwrap();

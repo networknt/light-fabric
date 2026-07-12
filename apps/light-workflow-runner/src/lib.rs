@@ -5,3 +5,4 @@ pub mod normalization;
 pub mod staging;
 pub mod supervisor;
 pub mod transport;
+pub mod worker_process;

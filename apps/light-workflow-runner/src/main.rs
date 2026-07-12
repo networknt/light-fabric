@@ -56,6 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         stager,
         config.allowed_command_template_digests.clone(),
         config.maximum_concurrency,
+        config.agent_worker.clone(),
     );
     let health_state = health::HealthState::new(Arc::clone(&supervisor));
     let health_address = config.health_address;

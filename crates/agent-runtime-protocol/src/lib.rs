@@ -32,6 +32,22 @@ pub struct RuntimeCapabilities {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentWorkerExecutionSpec {
+    pub schema_version: u16,
+    pub template_digest: String,
+    pub expected_capability_digest: String,
+    pub session_id: AgentSessionId,
+    pub turn_id: AgentTurnId,
+    pub action_attempt_id: AgentActionAttemptId,
+    pub policy_digest: String,
+    pub input: Value,
+    pub wall_clock_timeout_ms: u64,
+    pub maximum_event_bytes: usize,
+    pub maximum_stderr_bytes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum RuntimeCommand {
     Hello {

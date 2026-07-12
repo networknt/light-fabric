@@ -3701,6 +3701,7 @@ dependencies = [
 name = "light-workflow-runner"
 version = "0.1.0"
 dependencies = [
+ "agent-core",
  "agent-runtime-protocol",
  "async-trait",
  "axum",
