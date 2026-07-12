@@ -1,7 +1,5 @@
 use std::sync::Arc;
 
-use execution_backend::ExecutionBackend;
-use execution_backend_mock::MockExecutionBackend;
 use light_workflow_runner::{
     configuration::RunnerConfig, health, journal::Journal, staging::InputStager,
     supervisor::Supervisor, transport,
@@ -43,13 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.staging_maximum_bytes,
     )
     .map_err(std::io::Error::other)?;
-    let backend: Arc<dyn ExecutionBackend> = Arc::new(
-        MockExecutionBackend::new(
-            config.backend.compatibility_digest.clone(),
-            config.backend.behavior.clone(),
-        )
-        .with_available_slots(config.backend.available_slots),
-    );
+    let backend = config.build_backend().map_err(std::io::Error::other)?;
     let supervisor = Supervisor::new(
         backend,
         journal,

@@ -8,7 +8,7 @@ use execution_runner_protocol::{
     ControllerToRunner, MessageEnvelope, RegisterAccepted, RunnerSessionId, RunnerToController,
 };
 use futures_util::{SinkExt, StreamExt};
-use light_workflow_runner::configuration::{MockBackendConfig, RunnerConfig};
+use light_workflow_runner::configuration::{MockBackendConfig, RunnerBackendConfig, RunnerConfig};
 use light_workflow_runner::health::HealthState;
 use light_workflow_runner::journal::Journal;
 use light_workflow_runner::staging::InputStager;
@@ -98,11 +98,11 @@ async fn registers_unbound_then_sends_session_bound_heartbeat() {
         reconnect_maximum: Duration::from_millis(100),
         shutdown_grace: Duration::from_secs(1),
         staging_maximum_bytes: 1024,
-        backend: MockBackendConfig {
+        backend: RunnerBackendConfig::Mock(MockBackendConfig {
             compatibility_digest: compatibility_digest.clone(),
             available_slots: 1,
             behavior: MockBehavior::default(),
-        },
+        }),
         allowed_command_template_digests: BTreeSet::from([command_digest.clone()]),
         effective_config_digest: "effective-config-digest".to_string(),
         command_allowlist_digest: "command-allowlist-digest".to_string(),

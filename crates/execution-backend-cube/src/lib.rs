@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::watch;
 
+mod http;
+pub use http::{CubeHttpClient, CubeHttpClientConfig};
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CubeCreateRequest {
@@ -81,6 +84,11 @@ pub trait CubeApi: Send + Sync {
         environment_id: &str,
         command: &CommandExecutionSpec,
     ) -> Result<CubeCommandResult, BackendError>;
+    async fn set_timeout(
+        &self,
+        environment_id: &str,
+        timeout_seconds: u64,
+    ) -> Result<(), BackendError>;
     async fn cancel(&self, environment_id: &str) -> Result<(), BackendError>;
     async fn artifacts(&self, environment_id: &str) -> Result<Vec<ArtifactEvidence>, BackendError>;
     async fn delete(&self, environment_id: &str) -> Result<(), BackendError>;
@@ -189,26 +197,31 @@ impl<C> CubeExecutionBackend<C> {
     }
 }
 
-#[async_trait]
-impl<C: CubeApi + 'static> ExecutionBackend for CubeExecutionBackend<C> {
-    fn capability(&self) -> BackendCapability {
+impl CubeBackendConfig {
+    pub fn capability(&self) -> BackendCapability {
         BackendCapability {
             backend_id: "cube".into(),
-            backend_version: "e2b-compatible-v2".into(),
+            backend_version: "cube-e2b-connect-v1".into(),
             boundary: IsolationBoundary::MicroVm,
             host_exposure: HostExposure::None,
-            actions: vec!["run.shell".into(), "agent.runtime".into()],
+            actions: vec!["run.shell".into()],
             features: vec![
                 "deny-all-egress".into(),
                 "native-ttl".into(),
-                "idempotent-create".into(),
+                "bounded-metadata-recovery".into(),
                 "bounded-tag-discovery".into(),
-                "artifacts".into(),
             ],
-            compatibility_digest: self.config.compatibility_digest.clone(),
+            compatibility_digest: self.compatibility_digest.clone(),
             healthy: true,
-            available_slots: self.config.available_slots,
+            available_slots: self.available_slots,
         }
+    }
+}
+
+#[async_trait]
+impl<C: CubeApi + 'static> ExecutionBackend for CubeExecutionBackend<C> {
+    fn capability(&self) -> BackendCapability {
+        self.config.capability()
     }
 
     fn validate(&self, lease: &ExecuteLease, staged: &[StagedInput]) -> Result<(), BackendError> {
@@ -258,13 +271,15 @@ impl<C: CubeApi + 'static> ExecutionBackend for CubeExecutionBackend<C> {
         if let Some(found) = self.client.find_by_idempotency_key(&key).await? {
             return prepared(lease, found);
         }
+        let mut tags = self.tags(lease);
+        tags.insert("light.idempotency".into(), key.clone());
         let request = CubeCreateRequest {
             idempotency_key: key.clone(),
             template_id: self.config.template_id.clone(),
             expires_at: lease.lease.deadline,
             deny_all_egress: true,
             credentials_enabled: false,
-            tags: self.tags(lease),
+            tags,
             inputs: staged
                 .iter()
                 .map(|input| CubeInputMount {
@@ -305,6 +320,17 @@ impl<C: CubeApi + 'static> ExecutionBackend for CubeExecutionBackend<C> {
     ) -> Result<BackendOutput, BackendError> {
         let command: CommandExecutionSpec = serde_json::from_value(lease.command.clone())
             .map_err(|e| BackendError::InvalidRequest(e.to_string()))?;
+        let remaining = lease
+            .lease
+            .deadline
+            .signed_duration_since(Utc::now())
+            .num_seconds();
+        if remaining <= 0 {
+            return Err(BackendError::TimedOut("Cube lease deadline expired".into()));
+        }
+        self.client
+            .set_timeout(&prepared.backend_operation_id, remaining as u64)
+            .await?;
         tokio::select! {
             result = self.client.execute(&prepared.backend_operation_id, &command) => {
                 let result = result?; let failed = result.exit_code != 0;
@@ -426,6 +452,9 @@ mod tests {
                 finished_at: now,
                 evidence: BTreeMap::new(),
             })
+        }
+        async fn set_timeout(&self, _: &str, _: u64) -> Result<(), BackendError> {
+            Ok(())
         }
         async fn cancel(&self, _: &str) -> Result<(), BackendError> {
             Ok(())

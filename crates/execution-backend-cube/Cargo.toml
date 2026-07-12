@@ -9,9 +9,13 @@ async-trait.workspace = true
 chrono.workspace = true
 execution-backend = { path = "../execution-backend" }
 execution-runner-protocol = { path = "../execution-runner-protocol" }
+futures-util.workspace = true
+prost = "0.13"
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

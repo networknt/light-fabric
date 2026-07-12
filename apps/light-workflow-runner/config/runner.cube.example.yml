@@ -1,0 +1,31 @@
+version: 1
+runnerId: cube-runner
+enrollmentId: cube-runner-enrollment
+hostId: 00000000-0000-0000-0000-000000000000
+controllerUrl: wss://controller.example/ws/runner
+jwtFile: /run/secrets/light-workflow-runner.jwt
+dataDirectory: /var/lib/light-workflow-runner
+healthAddress: 127.0.0.1:9444
+maximumConcurrency: 4
+heartbeatIntervalMs: 5000
+reconnectMaximumMs: 30000
+shutdownGraceMs: 30000
+stagingMaximumBytes: 104857600
+backend:
+  implementation: cube
+  apiUrl: https://cube-api.internal.example/
+  # Set this to the deployment's E2B_SANDBOX_URL-compatible internal proxy.
+  # When omitted, the client uses https://49983-{sandboxID}.{Cube domain}.
+  sandboxUrl: https://cube-sandbox.internal.example/
+  apiKeyFile: /run/secrets/cube-api.key
+  tlsCaFile: /run/secrets/cube-ca.pem
+  allowInsecureHttp: false
+  templateId: immutable-reviewed-template-id
+  compatibilityDigest: sha256:replace-with-approved-cube-profile-digest
+  availableSlots: 4
+  maximumNativeTtlSeconds: 900
+  discoveryPageLimit: 200
+  requestTimeoutMs: 30000
+  maximumResponseBytes: 4194304
+allowedCommandTemplateDigests:
+  - sha256:replace-with-canonical-command-template-digest

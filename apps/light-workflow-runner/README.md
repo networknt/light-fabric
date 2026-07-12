@@ -9,6 +9,28 @@ Set `LIGHT_WORKFLOW_RUNNER_CONFIG_FILE` to a runner YAML file. Start from
 `config/runner.example.yml`. The JWT file must be a regular file containing one
 token and, on Unix, must have mode `0600` or stricter.
 
+For Cube Sandbox, start from `config/runner.cube.example.yml`. Backend selection
+is configuration-driven: the legacy mock shape selects the deterministic mock;
+`implementation: cube` selects the authenticated Cube HTTP/ConnectRPC client.
+The Cube API key is read only from `apiKeyFile`, which receives the same regular
+file and private-permission validation as the runner JWT. HTTP is rejected by
+default; `allowInsecureHttp` exists only for an explicitly isolated local Cube
+development network.
+
+The Cube client creates one secure ephemeral sandbox with `onTimeout: kill`,
+public traffic disabled, IPv4/IPv6 deny-all egress, no environment secrets, and
+the complete fenced ownership metadata. It resets Cube's idle timeout to the
+remaining absolute lease duration immediately before command execution, uses
+the E2B-compatible binary ConnectRPC process service without reconstructing a
+shell command, bounds the full response plus stdout/stderr, and performs
+idempotent synchronous deletion. Metadata lookup is bounded to Cube's current
+200-item API limit; multiple idempotency matches fail as `UNKNOWN`.
+
+Runner-local staged paths cannot be mounted by the remote Cube HTTP API and
+therefore fail closed until an approved remote materializer is configured.
+Likewise, Cube artifact collection is not advertised and reports unsupported
+until a trusted export mechanism is installed.
+
 The controller admission file must contain digests calculated from the exact
 runner binary and effective configuration. Generate the complete admission
 document instead of copying or manually recreating those digests:

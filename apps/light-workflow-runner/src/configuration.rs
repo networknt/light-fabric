@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 
 use crate::worker_process::WorkerProcessConfig;
 use execution_backend::ExecutionBackend;
+use execution_backend_cube::{
+    CubeBackendConfig, CubeExecutionBackend, CubeHttpClient, CubeHttpClientConfig,
+};
 use execution_backend_mock::MockBehavior;
 use execution_backend_mock::MockExecutionBackend;
 use execution_runner_protocol::{OriginKind, SubjectKind, canonical_sha256};
@@ -29,7 +32,7 @@ struct RunnerConfigFile {
     reconnect_maximum_ms: u64,
     shutdown_grace_ms: u64,
     staging_maximum_bytes: u64,
-    backend: MockBackendConfig,
+    backend: RunnerBackendConfig,
     allowed_command_template_digests: Vec<String>,
     #[serde(default)]
     agent_worker: Option<WorkerProcessConfig>,
@@ -42,6 +45,69 @@ pub struct MockBackendConfig {
     pub available_slots: u32,
     #[serde(default)]
     pub behavior: MockBehavior,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CubeImplementation {
+    Cube,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CubeRunnerBackendConfig {
+    pub implementation: CubeImplementation,
+    pub api_url: String,
+    #[serde(default)]
+    pub sandbox_url: Option<String>,
+    pub api_key_file: PathBuf,
+    #[serde(default)]
+    pub tls_ca_file: Option<PathBuf>,
+    #[serde(default)]
+    pub allow_insecure_http: bool,
+    pub template_id: String,
+    pub compatibility_digest: String,
+    pub available_slots: u32,
+    pub maximum_native_ttl_seconds: u64,
+    #[serde(default = "default_cube_discovery_page_limit")]
+    pub discovery_page_limit: usize,
+    #[serde(default = "default_cube_request_timeout_ms")]
+    pub request_timeout_ms: u64,
+    #[serde(default = "default_cube_maximum_response_bytes")]
+    pub maximum_response_bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RunnerBackendConfig {
+    Cube(CubeRunnerBackendConfig),
+    Mock(MockBackendConfig),
+}
+
+impl RunnerBackendConfig {
+    fn available_slots(&self) -> u32 {
+        match self {
+            Self::Mock(config) => config.available_slots,
+            Self::Cube(config) => config.available_slots,
+        }
+    }
+
+    fn compatibility_digest(&self) -> &str {
+        match self {
+            Self::Mock(config) => &config.compatibility_digest,
+            Self::Cube(config) => &config.compatibility_digest,
+        }
+    }
+}
+
+fn default_cube_discovery_page_limit() -> usize {
+    200
+}
+fn default_cube_request_timeout_ms() -> u64 {
+    30_000
+}
+fn default_cube_maximum_response_bytes() -> usize {
+    4 * 1024 * 1024
 }
 
 #[derive(Debug, Clone)]
@@ -58,7 +124,7 @@ pub struct RunnerConfig {
     pub reconnect_maximum: std::time::Duration,
     pub shutdown_grace: std::time::Duration,
     pub staging_maximum_bytes: u64,
-    pub backend: MockBackendConfig,
+    pub backend: RunnerBackendConfig,
     pub allowed_command_template_digests: BTreeSet<String>,
     pub effective_config_digest: String,
     pub command_allowlist_digest: String,
@@ -78,7 +144,7 @@ struct EffectiveConfigEvidence<'a> {
     maximum_concurrency: u32,
     heartbeat_interval_ms: u64,
     staging_maximum_bytes: u64,
-    backend: &'a MockBackendConfig,
+    backend: &'a RunnerBackendConfig,
     allowed_command_template_digests: &'a BTreeSet<String>,
     agent_worker: &'a Option<WorkerProcessConfig>,
 }
@@ -114,15 +180,18 @@ impl RunnerConfig {
             || file.reconnect_maximum_ms == 0
             || file.shutdown_grace_ms == 0
             || file.staging_maximum_bytes == 0
-            || file.backend.available_slots == 0
-            || file.backend.available_slots > file.maximum_concurrency
+            || file.backend.available_slots() == 0
+            || file.backend.available_slots() > file.maximum_concurrency
         {
             return Err("runner concurrency, intervals, staging limit, and backend slots must be positive and consistent".to_string());
         }
         validate_digest(
             "backend compatibility digest",
-            &file.backend.compatibility_digest,
+            file.backend.compatibility_digest(),
         )?;
+        if let RunnerBackendConfig::Cube(cube) = &file.backend {
+            validate_cube_backend(cube)?;
+        }
         let allowed = file
             .allowed_command_template_digests
             .into_iter()
@@ -179,14 +248,57 @@ impl RunnerConfig {
     }
 
     pub fn read_jwt(&self) -> Result<String, String> {
-        validate_token_file(&self.jwt_file)?;
-        let token = fs::read_to_string(&self.jwt_file)
-            .map_err(|error| format!("failed to read jwtFile: {error}"))?;
-        let token = token.trim();
-        if token.is_empty() || token.contains(char::is_whitespace) {
-            return Err("jwtFile must contain exactly one non-empty token".to_string());
+        read_secret_file(&self.jwt_file, "jwtFile")
+    }
+
+    pub fn build_backend(&self) -> Result<std::sync::Arc<dyn ExecutionBackend>, String> {
+        match &self.backend {
+            RunnerBackendConfig::Mock(config) => Ok(std::sync::Arc::new(
+                MockExecutionBackend::new(
+                    config.compatibility_digest.clone(),
+                    config.behavior.clone(),
+                )
+                .with_available_slots(config.available_slots),
+            )),
+            RunnerBackendConfig::Cube(config) => {
+                let api_key = read_secret_file(&config.api_key_file, "backend.apiKeyFile")?;
+                let tls_ca_pem = config
+                    .tls_ca_file
+                    .as_ref()
+                    .map(|path| {
+                        fs::read(path).map_err(|error| {
+                            format!("read backend.tlsCaFile {}: {error}", path.display())
+                        })
+                    })
+                    .transpose()?;
+                let client = CubeHttpClient::new(CubeHttpClientConfig {
+                    api_url: url::Url::parse(&config.api_url)
+                        .map_err(|error| format!("invalid backend.apiUrl: {error}"))?,
+                    sandbox_url: config
+                        .sandbox_url
+                        .as_deref()
+                        .map(url::Url::parse)
+                        .transpose()
+                        .map_err(|error| format!("invalid backend.sandboxUrl: {error}"))?,
+                    api_key,
+                    request_timeout: std::time::Duration::from_millis(config.request_timeout_ms),
+                    maximum_response_bytes: config.maximum_response_bytes,
+                    allow_insecure_http: config.allow_insecure_http,
+                    tls_ca_pem,
+                })?;
+                Ok(std::sync::Arc::new(CubeExecutionBackend::new(
+                    std::sync::Arc::new(client),
+                    CubeBackendConfig {
+                        template_id: config.template_id.clone(),
+                        compatibility_digest: config.compatibility_digest.clone(),
+                        owner_runner: self.runner_id.clone(),
+                        available_slots: config.available_slots,
+                        maximum_native_ttl_seconds: config.maximum_native_ttl_seconds,
+                        discovery_page_limit: config.discovery_page_limit,
+                    },
+                )))
+            }
         }
-        Ok(token.to_string())
     }
 
     pub fn admission_document(
@@ -196,12 +308,23 @@ impl RunnerConfig {
     ) -> Result<serde_json::Value, String> {
         validate_id("authenticated subject", authenticated_subject)?;
         validate_id("origin service ID", origin_service_id)?;
-        let capability = MockExecutionBackend::new(
-            self.backend.compatibility_digest.clone(),
-            self.backend.behavior.clone(),
-        )
-        .with_available_slots(self.backend.available_slots)
-        .capability();
+        let capability = match &self.backend {
+            RunnerBackendConfig::Mock(config) => MockExecutionBackend::new(
+                config.compatibility_digest.clone(),
+                config.behavior.clone(),
+            )
+            .with_available_slots(config.available_slots)
+            .capability(),
+            RunnerBackendConfig::Cube(config) => CubeBackendConfig {
+                template_id: config.template_id.clone(),
+                compatibility_digest: config.compatibility_digest.clone(),
+                owner_runner: self.runner_id.clone(),
+                available_slots: config.available_slots,
+                maximum_native_ttl_seconds: config.maximum_native_ttl_seconds,
+                discovery_page_limit: config.discovery_page_limit,
+            }
+            .capability(),
+        };
         let mut origins = vec![serde_json::json!({
             "kind": OriginKind::Workflow,
             "serviceId": origin_service_id,
@@ -235,7 +358,7 @@ impl RunnerConfig {
                     "actions": capability.actions,
                     "features": capability.features,
                     "compatibilityDigest": capability.compatibility_digest,
-                    "maximumSlots": self.backend.available_slots
+                    "maximumSlots": self.backend.available_slots()
                 }]
             }]
         }))
@@ -264,17 +387,66 @@ fn validate_digest(name: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_cube_backend(config: &CubeRunnerBackendConfig) -> Result<(), String> {
+    if config.template_id.is_empty()
+        || config.maximum_native_ttl_seconds == 0
+        || config.discovery_page_limit == 0
+        || config.discovery_page_limit > 200
+        || config.request_timeout_ms == 0
+        || config.maximum_response_bytes == 0
+    {
+        return Err("Cube template, TTL, discovery, timeout, and response limits must be positive and bounded".into());
+    }
+    url::Url::parse(&config.api_url).map_err(|error| format!("invalid backend.apiUrl: {error}"))?;
+    if let Some(url) = &config.sandbox_url {
+        url::Url::parse(url).map_err(|error| format!("invalid backend.sandboxUrl: {error}"))?;
+    }
+    validate_secret_file(&config.api_key_file, "backend.apiKeyFile")?;
+    if let Some(path) = &config.tls_ca_file {
+        let metadata = fs::metadata(path).map_err(|error| {
+            format!(
+                "backend.tlsCaFile {} is unavailable: {error}",
+                path.display()
+            )
+        })?;
+        if !metadata.is_file() {
+            return Err(format!(
+                "backend.tlsCaFile {} is not a regular file",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_token_file(path: &Path) -> Result<(), String> {
+    validate_secret_file(path, "jwtFile")
+}
+
+fn read_secret_file(path: &Path, name: &str) -> Result<String, String> {
+    validate_secret_file(path, name)?;
+    let token = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read {name} {}: {error}", path.display()))?;
+    let token = token.trim();
+    if token.is_empty() || token.contains(char::is_whitespace) {
+        return Err(format!("{name} must contain exactly one non-empty token"));
+    }
+    Ok(token.to_string())
+}
+
+fn validate_secret_file(path: &Path, name: &str) -> Result<(), String> {
     let metadata = fs::metadata(path)
-        .map_err(|error| format!("jwtFile {} is unavailable: {error}", path.display()))?;
+        .map_err(|error| format!("{name} {} is unavailable: {error}", path.display()))?;
     if !metadata.is_file() {
-        return Err(format!("jwtFile {} is not a regular file", path.display()));
+        return Err(format!("{name} {} is not a regular file", path.display()));
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         if metadata.permissions().mode() & 0o077 != 0 {
-            return Err("jwtFile must not be accessible by group or other users".to_string());
+            return Err(format!(
+                "{name} must not be accessible by group or other users"
+            ));
         }
     }
     Ok(())
@@ -324,11 +496,11 @@ allowedCommandTemplateDigests: [sha256:template-digest]
             reconnect_maximum: std::time::Duration::from_secs(10),
             shutdown_grace: std::time::Duration::from_secs(10),
             staging_maximum_bytes: 1024,
-            backend: MockBackendConfig {
+            backend: RunnerBackendConfig::Mock(MockBackendConfig {
                 compatibility_digest: "sha256:compatibility".into(),
                 available_slots: 2,
                 behavior: MockBehavior::default(),
-            },
+            }),
             allowed_command_template_digests: BTreeSet::from(["sha256:template".into()]),
             effective_config_digest: "sha256:effective".into(),
             command_allowlist_digest: "sha256:allowlist".into(),
@@ -360,5 +532,33 @@ allowedCommandTemplateDigests: [sha256:template-digest]
             document["origins"][1]["allowedSubjectKinds"],
             serde_json::json!(["agent-turn", "agent-action"])
         );
+
+        config.backend = RunnerBackendConfig::Cube(CubeRunnerBackendConfig {
+            implementation: CubeImplementation::Cube,
+            api_url: "https://cube.example/".into(),
+            sandbox_url: Some("https://sandbox.example/".into()),
+            api_key_file: "/tmp/cube.key".into(),
+            tls_ca_file: None,
+            allow_insecure_http: false,
+            template_id: "immutable-template".into(),
+            compatibility_digest: "sha256:cube-compatible".into(),
+            available_slots: 2,
+            maximum_native_ttl_seconds: 300,
+            discovery_page_limit: 200,
+            request_timeout_ms: 30_000,
+            maximum_response_bytes: 4 * 1024 * 1024,
+        });
+        let document = config
+            .admission_document("runner-subject", "light-workflow")
+            .unwrap();
+        assert_eq!(
+            document["enrollments"][0]["backends"][0]["backendId"],
+            "cube"
+        );
+        assert_eq!(
+            document["enrollments"][0]["backends"][0]["boundary"],
+            "micro-vm"
+        );
+        assert_eq!(document["enrollments"][0]["backends"][0]["maximumSlots"], 2);
     }
 }

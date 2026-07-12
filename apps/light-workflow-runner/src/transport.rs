@@ -312,11 +312,13 @@ mod tests {
             reconnect_maximum: Duration::from_secs(1),
             shutdown_grace: Duration::from_secs(1),
             staging_maximum_bytes: 1024,
-            backend: crate::configuration::MockBackendConfig {
-                compatibility_digest: "sha256:compatibility".into(),
-                available_slots: 1,
-                behavior: MockBehavior::default(),
-            },
+            backend: crate::configuration::RunnerBackendConfig::Mock(
+                crate::configuration::MockBackendConfig {
+                    compatibility_digest: "sha256:compatibility".into(),
+                    available_slots: 1,
+                    behavior: MockBehavior::default(),
+                },
+            ),
             allowed_command_template_digests: BTreeSet::from(["sha256:template".into()]),
             effective_config_digest: "sha256:effective-config".into(),
             command_allowlist_digest: "sha256:command-allowlist".into(),
