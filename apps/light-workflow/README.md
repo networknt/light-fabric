@@ -171,6 +171,13 @@ The receipt schema is closed and contains only `providerOperationId`,
 `state: "SUCCEEDED"`, a SHA-256 `evidenceDigest`, and an optional bounded
 `resourceReference`; additional fields are rejected rather than persisted.
 
+`apps/light-github-action-provider` is the concrete repository provider. It
+uses GitHub's refs and pull-request REST APIs, an explicit repository allowlist
+and branch prefix, owner-only service/GitHub token files, and a synchronous
+SQLite intent journal. Lost create responses are reconciled by inspecting the
+approved branch SHA or head/base pull request; replaying the workflow
+idempotency key returns the stored receipt without issuing another mutation.
+
 Providers must also expose `GET fixed-actions/status` and resolve the same
 `Idempotency-Key` to `SUCCEEDED`, `FAILED`, `PENDING`, or `NOT_FOUND` evidence.
 After dispatch begins, exhausted 5xx/transport retries, a lost response,

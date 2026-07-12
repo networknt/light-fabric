@@ -75,6 +75,12 @@ message, turn, log, or database row. A revoked grant can be replaced by a new
 live grant for the binding; pending messages remain pinned to their original
 grant and therefore cannot silently switch identity.
 
+Slack `chat.postMessage` is the first concrete outbound connector. Its request
+binds the approved destination, terminal turn text, and durable channel-message
+UUID as Slack `client_msg_id`; its response receipt is persisted independently
+of turn execution. Retry therefore never reruns the agent turn, and the live
+grant is revalidated before every provider call.
+
 Personal local effects use `agent_edge_runner_binding_t`. Light-Agent verifies
 the principal, action allowlist, capabilities, compatibility digest, expiry,
 and revocation before creating an `agent-action` request pinned to the exact

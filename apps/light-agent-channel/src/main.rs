@@ -30,6 +30,10 @@ const MAX_ATTACHMENT_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ATTACHMENT_MESSAGE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SCANNER_RECEIPT_BYTES: usize = 64 * 1024;
 
+fn slack_outbound_body(destination: &str, text: &str, message_id: Uuid) -> Value {
+    json!({"channel":destination,"text":text,"client_msg_id":message_id})
+}
+
 #[derive(Clone)]
 struct AppState {
     pool: PgPool,
@@ -1019,8 +1023,17 @@ async fn delivery_pass(state: &AppState) -> Result<()> {
       updated_ts=now() WHERE host_id=$1 AND message_id=$2 AND state IN('PENDING_DELIVERY','FAILED')")
         .bind(state.host_id).bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
-    let response=state.http.post("https://slack.com/api/chat.postMessage").bearer_auth(token)
-        .json(&json!({"channel":destination,"text":payload.get("text").and_then(Value::as_str).unwrap_or(""),"client_msg_id":id})).send().await;
+    let response = state
+        .http
+        .post("https://slack.com/api/chat.postMessage")
+        .bearer_auth(token)
+        .json(&slack_outbound_body(
+            &destination,
+            payload.get("text").and_then(Value::as_str).unwrap_or(""),
+            id,
+        ))
+        .send()
+        .await;
     match response {
         Ok(response) if response.status().is_success() => {
             let receipt: Value = response.json().await?;
@@ -1111,5 +1124,15 @@ mod tests {
             ..valid
         };
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn slack_outbound_contract_binds_destination_content_and_idempotency() {
+        let id = Uuid::now_v7();
+        let body = slack_outbound_body("C123", "completed", id);
+        assert_eq!(
+            body,
+            json!({"channel":"C123","text":"completed","client_msg_id":id})
+        );
     }
 }
