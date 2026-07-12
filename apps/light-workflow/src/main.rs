@@ -1,7 +1,9 @@
+use execution_security::ProtectedPathPolicy;
 use light_runtime::{TracingOptions, init_tracing};
 use light_workflow::configuration::RunnerExecutionConfig;
 use light_workflow::consumer::EventConsumer;
 use light_workflow::executor::TaskExecutor;
+use light_workflow::fixed_action::FixedActionExecutor;
 use light_workflow::lease_reaper::LeaseReaper;
 use light_workflow::result_reconciler::ResultReconciler;
 use light_workflow::rule_api::run_rule_api;
@@ -10,6 +12,7 @@ use sqlx::postgres::PgPoolOptions;
 use std::env;
 use std::error::Error;
 use std::io;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
 
@@ -68,8 +71,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             runner_config.origin_instance_id.clone(),
         );
         let lease_reaper = LeaseReaper::new(pool.clone());
+        let fixed_actions = FixedActionExecutor::new(
+            pool.clone(),
+            PathBuf::from(
+                env::var("WORKFLOW_FIXED_ACTION_ROOT")
+                    .unwrap_or_else(|_| "/var/lib/light-workflow/fixed-actions".into()),
+            ),
+            PathBuf::from(
+                env::var("WORKFLOW_FIXED_ACTION_ARTIFACT_ROOT")
+                    .unwrap_or_else(|_| "/var/lib/light-workflow/artifacts".into()),
+            ),
+            env::var("WORKFLOW_FIXED_ACTION_BRANCH_PREFIX").unwrap_or_else(|_| "agent/".into()),
+            ProtectedPathPolicy::default_deny(),
+        );
         Some(tokio::spawn(async move {
-            tokio::try_join!(scheduler.run(), reconciler.run(), lease_reaper.run()).map(|_| ())
+            tokio::try_join!(
+                scheduler.run(),
+                reconciler.run(),
+                lease_reaper.run(),
+                fixed_actions.run()
+            )
+            .map(|_| ())
         }))
     } else {
         info!("Runner execution is disabled");

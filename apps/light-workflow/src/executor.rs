@@ -249,6 +249,19 @@ impl TaskExecutor {
         tx: &mut Transaction<'_, Postgres>,
         attempt: &TerminalAttempt,
     ) -> Result<bool, DynError> {
+        if let Some(approval_id) = sqlx::query_scalar::<_, Uuid>(
+            "SELECT approval_id FROM workflow_approval_t
+             WHERE host_id=$1 AND consuming_execution_id=$2 AND state='CONSUMED'",
+        )
+        .bind(attempt.host_id)
+        .bind(attempt.execution_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        {
+            return self
+                .reconcile_fixed_action_attempt(tx, attempt, approval_id)
+                .await;
+        }
         if !WorkflowRepository::conditionally_accept_terminal_attempt(tx, attempt).await? {
             return Ok(false);
         }
@@ -267,6 +280,39 @@ impl TaskExecutor {
                 "error": attempt.normalized_error
             })
         };
+        let approval: Option<(Value,)> = sqlx::query_as(
+            "SELECT resolved_policy FROM workflow_execution_policy_t p
+             JOIN task_info_t t ON t.host_id = p.host_id AND t.task_policy_digest = p.policy_digest
+             WHERE t.host_id = $1 AND t.task_id = $2",
+        )
+        .bind(attempt.host_id)
+        .bind(attempt.task_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let approval = approval
+            .and_then(|row| {
+                serde_json::from_value::<workflow_policy::ResolvedExecutionPolicy>(row.0).ok()
+            })
+            .filter(|policy| policy.approval_required)
+            .and_then(|policy| {
+                policy
+                    .approval
+                    .map(|binding| (policy.policy_digest, binding))
+            });
+        if succeeded {
+            if let Some((policy_digest, binding)) = approval {
+                self.finish_runner_task_waiting_approval(
+                    tx,
+                    &claimed,
+                    attempt,
+                    &task_output,
+                    &policy_digest,
+                    &binding,
+                )
+                .await?;
+                return Ok(true);
+            }
+        }
         self.finish_task(
             tx,
             &claimed,
@@ -279,6 +325,180 @@ impl TaskExecutor {
         )
         .await?;
         Ok(true)
+    }
+
+    async fn reconcile_fixed_action_attempt(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        attempt: &TerminalAttempt,
+        approval_id: Uuid,
+    ) -> Result<bool, DynError> {
+        let accepted = sqlx::query(
+            "UPDATE execution_attempt_t SET accepted_by_origin_ts=CURRENT_TIMESTAMP,
+                    updated_ts=CURRENT_TIMESTAMP
+             WHERE host_id=$1 AND execution_id=$2 AND lease_id=$3 AND fencing_token=$4
+               AND accepted_by_origin_ts IS NULL",
+        )
+        .bind(attempt.host_id)
+        .bind(attempt.execution_id)
+        .bind(attempt.lease_id)
+        .bind(attempt.fencing_token)
+        .execute(&mut **tx)
+        .await?;
+        if accepted.rows_affected() != 1 {
+            return Ok(false);
+        }
+        sqlx::query(
+            "UPDATE runner_scheduling_request_t SET state='SATISFIED',updated_ts=CURRENT_TIMESTAMP
+                    WHERE host_id=$1 AND request_id=$2 AND state='ATTEMPT_CREATED'",
+        )
+        .bind(attempt.host_id)
+        .bind(attempt.request_id)
+        .execute(&mut **tx)
+        .await?;
+        if attempt.state != "SUCCEEDED" {
+            sqlx::query("UPDATE process_info_t SET status_code='F',custom_status_code='FIXED_ACTION_FAILED',
+                        completed_ts=CURRENT_TIMESTAMP,error_info=$1 WHERE host_id=$2 AND process_id=$3")
+                .bind(attempt.normalized_error.as_ref().map(Value::to_string))
+                .bind(attempt.host_id).bind(attempt.process_id).execute(&mut **tx).await?;
+            return Ok(true);
+        }
+        let task = sqlx::query_as::<_, ActiveTask>(
+            "SELECT host_id,task_id,task_type,process_id,wf_instance_id,wf_task_id,status_code,result_code
+             FROM task_info_t WHERE host_id=$1 AND task_id=$2 AND process_id=$3 AND status_code='C'
+             FOR UPDATE",
+        ).bind(attempt.host_id).bind(attempt.task_id).bind(attempt.process_id)
+         .fetch_one(&mut **tx).await?;
+        let (context_data, wf_def_id, definition_snapshot) = self
+            .get_context_data(tx, &task.host_id, &task.process_id)
+            .await?;
+        let (definition, raw_definition) = if let Some(snapshot) = definition_snapshot {
+            (
+                serde_json::from_value(snapshot.clone())?,
+                serde_yaml::to_value(snapshot)?,
+            )
+        } else {
+            let dsl = self
+                .get_workflow_definition(tx, &task.host_id, &wf_def_id)
+                .await?;
+            (serde_yaml::from_str(&dsl)?, serde_yaml::from_str(&dsl)?)
+        };
+        let task_output: Value = sqlx::query_scalar(
+            "SELECT task_output FROM task_info_t WHERE host_id=$1 AND task_id=$2",
+        )
+        .bind(task.host_id)
+        .bind(task.task_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        sqlx::query(
+            "UPDATE process_info_t SET status_code='A',custom_status_code=NULL
+                    WHERE host_id=$1 AND process_id=$2 AND status_code='W'",
+        )
+        .bind(task.host_id)
+        .bind(task.process_id)
+        .execute(&mut **tx)
+        .await?;
+        self.handle_transition(
+            tx,
+            &task,
+            &definition,
+            &raw_definition,
+            context_data,
+            task_output,
+            None,
+            None,
+        )
+        .await?;
+        sqlx::query(
+            "UPDATE workflow_approval_t SET reason=COALESCE(reason,'fixed action completed')
+                    WHERE host_id=$1 AND approval_id=$2 AND state='CONSUMED'",
+        )
+        .bind(attempt.host_id)
+        .bind(approval_id)
+        .execute(&mut **tx)
+        .await?;
+        Ok(true)
+    }
+
+    async fn finish_runner_task_waiting_approval(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        claimed: &ClaimedTask,
+        attempt: &TerminalAttempt,
+        task_output: &Value,
+        policy_digest: &str,
+        binding: &workflow_policy::ApprovalBinding,
+    ) -> Result<(), sqlx::Error> {
+        let artifact_digests: Value = sqlx::query_scalar(
+            "SELECT COALESCE(jsonb_agg(content_digest ORDER BY content_digest), '[]'::jsonb)
+             FROM workflow_artifact_t
+             WHERE host_id = $1 AND execution_id = $2 AND verification_state = 'VERIFIED'",
+        )
+        .bind(attempt.host_id)
+        .bind(attempt.execution_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        let provenance_digest: Option<String> = sqlx::query_scalar(
+            "SELECT statement_digest FROM execution_provenance_t
+             WHERE host_id = $1 AND execution_id = $2 AND trusted_generator <> ''
+             ORDER BY created_ts DESC LIMIT 1",
+        )
+        .bind(attempt.host_id)
+        .bind(attempt.execution_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .flatten();
+        let approval_id = Uuid::now_v7();
+        sqlx::query(
+            "UPDATE task_info_t SET status_code = 'C', locked = 'N',
+                    completed_ts = CURRENT_TIMESTAMP, task_output = $1
+             WHERE host_id = $2 AND task_id = $3 AND accepted_attempt = $4",
+        )
+        .bind(task_output)
+        .bind(attempt.host_id)
+        .bind(attempt.task_id)
+        .bind(attempt.attempt_number)
+        .execute(&mut **tx)
+        .await?;
+        let new_context = self.apply_exports(
+            &claimed.raw_definition,
+            &claimed.task.wf_task_id,
+            claimed.context_data.clone(),
+            task_output,
+        );
+        sqlx::query(
+            "INSERT INTO workflow_approval_t (
+                host_id, approval_id, process_id, task_id, preceding_execution_id,
+                artifact_digest_set, provenance_digest, target, operation,
+                policy_digest, state, expires_ts
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'REQUESTED',
+                       CURRENT_TIMESTAMP + make_interval(secs => $11))",
+        )
+        .bind(attempt.host_id)
+        .bind(approval_id)
+        .bind(attempt.process_id)
+        .bind(attempt.task_id)
+        .bind(attempt.execution_id)
+        .bind(artifact_digests)
+        .bind(provenance_digest)
+        .bind(&binding.target)
+        .bind(&binding.operation)
+        .bind(policy_digest)
+        .bind(binding.ttl_seconds as i64)
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            "UPDATE process_info_t SET status_code = 'W',
+                    custom_status_code = 'WAITING_APPROVAL', context_data = $1,
+                    ex_trigger_ts = CURRENT_TIMESTAMP
+             WHERE host_id = $2 AND process_id = $3 AND status_code = 'A'",
+        )
+        .bind(new_context)
+        .bind(attempt.host_id)
+        .bind(attempt.process_id)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
     }
 
     async fn load_runner_task(

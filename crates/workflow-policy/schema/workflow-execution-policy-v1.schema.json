@@ -27,6 +27,7 @@
         "persistence": { "enum": ["ephemeral", "session"], "default": "ephemeral" },
         "artifactExport": { "type": "boolean", "default": false },
         "approvalRequired": { "type": "boolean", "default": false },
+        "approval": { "$ref": "#/$defs/approvalBinding" },
         "protectedPaths": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true, "default": [] },
         "agentMode": { "type": "string", "enum": ["native", "runner", "agent-service"] }
       },
@@ -34,8 +35,23 @@
         {
           "if": { "properties": { "placement": { "const": "runner" } }, "required": ["placement"] },
           "then": { "required": ["executionProfileId"] }
+        },
+        {
+          "if": { "properties": { "approvalRequired": { "const": true } }, "required": ["approvalRequired"] },
+          "then": { "required": ["approval"] },
+          "else": { "not": { "required": ["approval"] } }
         }
       ]
+    },
+    "approvalBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "target"],
+      "properties": {
+        "operation": { "type": "string", "minLength": 1, "maxLength": 126 },
+        "target": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "ttlSeconds": { "type": "integer", "minimum": 60, "maximum": 604800, "default": 86400 }
+      }
     },
     "executionProfile": {
       "type": "object",

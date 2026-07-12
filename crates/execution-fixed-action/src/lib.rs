@@ -1,7 +1,12 @@
 use execution_security::ProtectedPathPolicy;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -278,6 +283,138 @@ pub fn verify_post_apply(
         .map_err(|e| FixedActionError::Protected(e.to_string()))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixedPatchEvidence {
+    pub canonical_patch: Vec<u8>,
+    pub changed_paths: Vec<String>,
+    pub checked_out_commit: String,
+    pub repository_object_format: String,
+}
+
+/// Executes only the prevalidated argv plan. It never invokes a shell, inherits
+/// no runner environment, and revalidates the checkout and canonical staged
+/// patch before returning evidence to the orchestrator.
+pub fn execute_fixed_patch(
+    request: &FixedPatchRequest,
+    patch_bytes: &[u8],
+    allowed_repository: &str,
+    allowed_branch_prefix: &str,
+    workspace: &Path,
+    protected: &ProtectedPathPolicy,
+) -> Result<FixedPatchEvidence, FixedActionError> {
+    if workspace.exists() {
+        return Err(FixedActionError::Workspace);
+    }
+    let result = execute_fixed_patch_inner(
+        request,
+        patch_bytes,
+        allowed_repository,
+        allowed_branch_prefix,
+        workspace,
+        protected,
+    );
+    let cleanup = fs::remove_dir_all(workspace);
+    match (result, cleanup) {
+        (Ok(evidence), Ok(())) => Ok(evidence),
+        (Ok(_), Err(error)) => Err(FixedActionError::Io(error.to_string())),
+        (Err(error), _) => Err(error),
+    }
+}
+
+fn execute_fixed_patch_inner(
+    request: &FixedPatchRequest,
+    patch_bytes: &[u8],
+    allowed_repository: &str,
+    allowed_branch_prefix: &str,
+    workspace: &Path,
+    protected: &ProtectedPathPolicy,
+) -> Result<FixedPatchEvidence, FixedActionError> {
+    fs::create_dir_all(workspace.join("home")).map_err(|e| FixedActionError::Io(e.to_string()))?;
+    fs::create_dir_all(workspace.join("empty-hooks"))
+        .map_err(|e| FixedActionError::Io(e.to_string()))?;
+    let patch_path = workspace.join("approved.patch");
+    fs::write(&patch_path, patch_bytes).map_err(|e| FixedActionError::Io(e.to_string()))?;
+    let mut bound = request.clone();
+    bound.patch_artifact_ref = patch_path.display().to_string();
+    let plan = validate_and_plan(
+        &bound,
+        patch_bytes,
+        allowed_repository,
+        allowed_branch_prefix,
+        workspace.to_path_buf(),
+        protected,
+    )?;
+    run(&plan.checkout, &plan.environment)?;
+    run(&plan.checkout_base, &plan.environment)?;
+    let actual_format = run(&plan.verify_object_format, &plan.environment)?;
+    verify_repository_object_format(&bound, &String::from_utf8_lossy(&actual_format))?;
+    let actual_head = run(&plan.verify_base, &plan.environment)?;
+    verify_checked_out_base(&bound, &String::from_utf8_lossy(&actual_head))?;
+    run(&plan.check, &plan.environment)?;
+    run(&plan.apply, &plan.environment)?;
+
+    let repo = workspace.join("checkout");
+    let canonical_patch = run(
+        &[
+            "git".into(),
+            "-C".into(),
+            repo.display().to_string(),
+            "diff".into(),
+            "--cached".into(),
+            "--binary".into(),
+            "--full-index".into(),
+            "--no-ext-diff".into(),
+            "--no-renames".into(),
+        ],
+        &plan.environment,
+    )?;
+    let names = run(
+        &[
+            "git".into(),
+            "-C".into(),
+            repo.display().to_string(),
+            "diff".into(),
+            "--cached".into(),
+            "--name-only".into(),
+            "-z".into(),
+            "--no-renames".into(),
+        ],
+        &plan.environment,
+    )?;
+    let changed_paths = names
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| String::from_utf8(path.to_vec()).map_err(|_| FixedActionError::Output))
+        .collect::<Result<Vec<_>, _>>()?;
+    verify_post_apply(&bound, &canonical_patch, &changed_paths, protected)?;
+    Ok(FixedPatchEvidence {
+        canonical_patch,
+        changed_paths,
+        checked_out_commit: String::from_utf8_lossy(&actual_head).trim().to_string(),
+        repository_object_format: String::from_utf8_lossy(&actual_format).trim().to_string(),
+    })
+}
+
+fn run(
+    argv: &[String],
+    environment: &BTreeMap<String, String>,
+) -> Result<Vec<u8>, FixedActionError> {
+    let (program, arguments) = argv.split_first().ok_or(FixedActionError::Command)?;
+    let output = Command::new(program)
+        .args(arguments)
+        .env_clear()
+        .envs(environment)
+        .output()
+        .map_err(|e| FixedActionError::Io(e.to_string()))?;
+    if !output.status.success()
+        || output.stdout.len() > 16 * 1024 * 1024
+        || output.stderr.len() > 1024 * 1024
+    {
+        return Err(FixedActionError::Command);
+    }
+    Ok(output.stdout)
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum FixedActionError {
     #[error("repository or target branch is not authorized")]
@@ -294,6 +431,14 @@ pub enum FixedActionError {
     Protected(String),
     #[error("fixed action approval is expired, mismatched, or unauthorized")]
     Approval,
+    #[error("trusted fixed-action workspace must be fresh")]
+    Workspace,
+    #[error("trusted fixed-action command failed or exceeded its output bound")]
+    Command,
+    #[error("trusted fixed-action output was not valid UTF-8")]
+    Output,
+    #[error("trusted fixed-action I/O failed: {0}")]
+    Io(String),
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 pub mod agent_job;
+pub mod approval;
 pub mod artifact_publish;
 pub mod artifact_retention;
 pub mod command_template;
@@ -6,6 +7,7 @@ pub mod configuration;
 pub mod consumer;
 pub mod events;
 pub mod executor;
+pub mod fixed_action;
 pub mod lease_reaper;
 pub mod provenance;
 pub mod repositories;

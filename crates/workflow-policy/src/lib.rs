@@ -97,9 +97,24 @@ pub struct WorkflowSecurityPolicy {
     #[serde(default)]
     pub approval_required: bool,
     #[serde(default)]
+    pub approval: Option<ApprovalBinding>,
+    #[serde(default)]
     pub protected_paths: Vec<String>,
     #[serde(default)]
     pub agent_mode: Option<AgentExecutionMode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApprovalBinding {
+    pub operation: String,
+    pub target: String,
+    #[serde(default = "default_approval_ttl_seconds")]
+    pub ttl_seconds: u64,
+}
+
+fn default_approval_ttl_seconds() -> u64 {
+    86_400
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,6 +185,8 @@ pub struct ResolvedExecutionPolicy {
     pub persistence: PersistenceMode,
     pub artifact_export: bool,
     pub approval_required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<ApprovalBinding>,
     pub protected_paths: Vec<String>,
     pub policy_digest: String,
 }
@@ -223,6 +240,14 @@ pub enum PolicyError {
     ArtifactExportDenied(String),
     #[error("execution profile `{0}` does not support approval handoff")]
     ApprovalDenied(String),
+    #[error("approvalRequired requires an approval binding")]
+    MissingApprovalBinding,
+    #[error(
+        "approval binding requires a non-empty operation and target and a TTL between 60 and 604800 seconds"
+    )]
+    InvalidApprovalBinding,
+    #[error("approval binding is present while approvalRequired is false")]
+    UnexpectedApprovalBinding,
     #[error("protected path `{path}` is not enforced by execution profile `{profile}`")]
     ProtectedPathMissing { profile: String, path: String },
     #[error("failed to compute policy digest: {0}")]
@@ -324,6 +349,22 @@ pub fn resolve_policy(
         .unwrap_or_default();
     let artifact_export = security.is_some_and(|security| security.artifact_export);
     let approval_required = security.is_some_and(|security| security.approval_required);
+    let approval = security.and_then(|security| security.approval.clone());
+    if approval_required {
+        let binding = approval
+            .as_ref()
+            .ok_or(PolicyError::MissingApprovalBinding)?;
+        if !matches!(
+            binding.operation.as_str(),
+            "apply-patch" | "create-branch" | "push-commit" | "open-pr" | "publish" | "sign"
+        ) || binding.target.trim().is_empty()
+            || !(60..=604_800).contains(&binding.ttl_seconds)
+        {
+            return Err(PolicyError::InvalidApprovalBinding);
+        }
+    } else if approval.is_some() {
+        return Err(PolicyError::UnexpectedApprovalBinding);
+    }
     let protected_paths = normalized_strings(
         security
             .map(|security| security.protected_paths.as_slice())
@@ -370,6 +411,7 @@ pub fn resolve_policy(
         persistence,
         artifact_export,
         approval_required,
+        approval,
         protected_paths,
         policy_digest: String::new(),
     };
@@ -675,6 +717,7 @@ mod tests {
             persistence: PersistenceMode::Ephemeral,
             artifact_export: false,
             approval_required: false,
+            approval: None,
             protected_paths: Vec::new(),
             agent_mode: None,
         };
@@ -698,6 +741,7 @@ mod tests {
             persistence: PersistenceMode::Ephemeral,
             artifact_export: false,
             approval_required: false,
+            approval: None,
             protected_paths: Vec::new(),
             agent_mode: None,
         };
@@ -742,6 +786,7 @@ metadata:
             persistence: PersistenceMode::Ephemeral,
             artifact_export: false,
             approval_required: false,
+            approval: None,
             protected_paths: vec![".github/workflows".into()],
             agent_mode: None,
         };
@@ -769,6 +814,7 @@ metadata:
             persistence: PersistenceMode::Ephemeral,
             artifact_export: false,
             approval_required: false,
+            approval: None,
             protected_paths: Vec::new(),
             agent_mode: None,
         };
@@ -776,6 +822,42 @@ metadata:
         assert!(matches!(
             resolve_policy(TaskKind::RunShell, Some(&policy), &profiles),
             Err(PolicyError::BoundaryTooWeak(_))
+        ));
+    }
+
+    #[test]
+    fn approval_requires_an_exact_server_bound_operation_target_and_ttl() {
+        let mut profile = mock_profile();
+        profile.approval_supported = true;
+        let profiles = BTreeMap::from([(profile.id.clone(), profile)]);
+        let policy = WorkflowSecurityPolicy {
+            version: 1,
+            placement: Some(ExecutionPlacement::Runner),
+            execution_profile_id: Some("mock-ephemeral".into()),
+            minimum_boundary: Some(IsolationBoundary::Container),
+            maximum_host_exposure: Some(HostExposure::None),
+            workload_trust: Some(WorkloadTrust::TenantAuthored),
+            network: NetworkMode::DenyAll,
+            credential_classes: Vec::new(),
+            persistence: PersistenceMode::Ephemeral,
+            artifact_export: false,
+            approval_required: true,
+            approval: Some(ApprovalBinding {
+                operation: "apply-patch".into(),
+                target: "https://example/repo.git".into(),
+                ttl_seconds: 600,
+            }),
+            protected_paths: Vec::new(),
+            agent_mode: None,
+        };
+        let resolved = resolve_policy(TaskKind::RunShell, Some(&policy), &profiles).unwrap();
+        assert_eq!(resolved.approval, policy.approval);
+
+        let mut missing = policy;
+        missing.approval = None;
+        assert!(matches!(
+            resolve_policy(TaskKind::RunShell, Some(&missing), &profiles),
+            Err(PolicyError::MissingApprovalBinding)
         ));
     }
 
