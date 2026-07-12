@@ -25,3 +25,18 @@ Run the live shared conformance gate with a locally available pinned image:
 LIGHT_OCI_CONFORMANCE_IMAGE='repository/image@sha256:...' \
   cargo test -p execution-backend-oci --test docker_conformance -- --ignored
 ```
+
+The repeatable integration entrypoint performs the same gate with preflight
+validation and a hard timeout:
+
+```bash
+LIGHT_OCI_CONFORMANCE_IMAGE='repository/image@sha256:...' \
+  bash ci/run-execution-live-matrix.sh oci
+```
+
+`.github/workflows/execution-live-matrix.yml` compiles the ignored gate on
+relevant pull requests and executes it weekly or on demand on the dedicated
+`light-execution-integration` runner. Configure the pinned image through the
+protected `execution-integration` environment variable
+`LIGHT_OCI_CONFORMANCE_IMAGE`. Mutable tags are rejected before execution, runs
+for the same ref are serialized, and complete output is retained for 30 days.

@@ -1,0 +1,108 @@
+name: Execution live failure matrix
+
+on:
+  pull_request:
+    paths:
+      - 'ci/run-execution-live-matrix.sh'
+      - '.github/workflows/execution-live-matrix.yml'
+      - 'crates/execution-backend/**'
+      - 'crates/execution-backend-conformance/**'
+      - 'crates/execution-backend-cube/**'
+      - 'crates/execution-backend-oci/**'
+      - 'apps/light-coding-agent-fixture/**'
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Live suite to execute
+        required: true
+        type: choice
+        default: all
+        options: [all, oci, cube]
+  schedule:
+    - cron: '17 5 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: execution-live-matrix-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  compile-live-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Compile ignored integration gates
+        run: bash ci/run-execution-live-matrix.sh compile
+
+  oci-live:
+    if: github.event_name != 'pull_request' && (github.event_name == 'schedule' || inputs.suite == 'all' || inputs.suite == 'oci')
+    needs: compile-live-gates
+    runs-on: [self-hosted, linux, light-execution-integration]
+    environment: execution-integration
+    timeout-minutes: 30
+    env:
+      LIGHT_OCI_CONFORMANCE_IMAGE: ${{ vars.LIGHT_OCI_CONFORMANCE_IMAGE }}
+      LIGHT_LIVE_TEST_TIMEOUT: 20m
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run OCI live matrix
+        run: bash ci/run-execution-live-matrix.sh oci 2>&1 | tee oci-live-matrix.log
+      - name: Upload OCI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oci-live-matrix-${{ github.run_attempt }}
+          path: oci-live-matrix.log
+          if-no-files-found: error
+          retention-days: 30
+
+  cube-live:
+    if: github.event_name != 'pull_request' && (github.event_name == 'schedule' || inputs.suite == 'all' || inputs.suite == 'cube')
+    needs: compile-live-gates
+    runs-on: [self-hosted, linux, light-execution-integration]
+    environment: execution-integration
+    timeout-minutes: 45
+    env:
+      LIGHT_CUBE_TEST_API_URL: ${{ vars.LIGHT_CUBE_TEST_API_URL }}
+      LIGHT_CUBE_TEST_SANDBOX_URL: ${{ vars.LIGHT_CUBE_TEST_SANDBOX_URL }}
+      LIGHT_CUBE_TEST_TEMPLATE_ID: ${{ vars.LIGHT_CUBE_TEST_TEMPLATE_ID }}
+      LIGHT_CUBE_TEST_ALLOW_HTTP: 'false'
+      LIGHT_CUBE_TEST_API_KEY_FILE: ${{ runner.temp }}/cube-api.key
+      LIGHT_CUBE_TEST_TLS_CA_FILE: ${{ runner.temp }}/cube-ca.pem
+      LIGHT_LIVE_TEST_TIMEOUT: 25m
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Materialize short-lived Cube credentials
+        shell: bash
+        env:
+          CUBE_API_KEY: ${{ secrets.LIGHT_CUBE_TEST_API_KEY }}
+          CUBE_TLS_CA_PEM: ${{ secrets.LIGHT_CUBE_TEST_TLS_CA_PEM }}
+        run: |
+          set -euo pipefail
+          test -n "${CUBE_API_KEY}"
+          install -m 0600 /dev/null "${LIGHT_CUBE_TEST_API_KEY_FILE}"
+          printf '%s' "${CUBE_API_KEY}" > "${LIGHT_CUBE_TEST_API_KEY_FILE}"
+          install -m 0600 /dev/null "${LIGHT_CUBE_TEST_TLS_CA_FILE}"
+          printf '%s' "${CUBE_TLS_CA_PEM}" > "${LIGHT_CUBE_TEST_TLS_CA_FILE}"
+      - name: Run Cube failure and coding matrices
+        run: bash ci/run-execution-live-matrix.sh cube 2>&1 | tee cube-live-matrix.log
+      - name: Remove materialized credentials
+        if: always()
+        run: rm -f "${LIGHT_CUBE_TEST_API_KEY_FILE}" "${LIGHT_CUBE_TEST_TLS_CA_FILE}"
+      - name: Upload Cube evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cube-live-matrix-${{ github.run_attempt }}
+          path: cube-live-matrix.log
+          if-no-files-found: error
+          retention-days: 30

@@ -42,3 +42,18 @@ bundle to `/inputs/repository.bundle`, executes the fixture with deny-all
 network access, verifies the base commit inside the guest, edits one regular
 file, exports a binary-safe Git patch, independently validates its paths and
 digest on the runner, and synchronously deletes the sandbox.
+
+For repeatable execution, use `bash ci/run-execution-live-matrix.sh cube`. The
+entrypoint validates every required setting, runs both the Cube lifecycle
+failure matrix and this coding fixture serially, and applies a hard timeout to
+each test binary.
+
+The dedicated `.github/workflows/execution-live-matrix.yml` pipeline compiles
+the ignored tests on relevant pull requests and executes them weekly or through
+`workflow_dispatch` on a runner labelled `light-execution-integration`.
+Configure API and template locations as protected `execution-integration`
+environment variables and configure `LIGHT_CUBE_TEST_API_KEY` and
+`LIGHT_CUBE_TEST_TLS_CA_PEM` as environment secrets. The workflow materializes
+those values into owner-only temporary files, removes them after the test, and
+retains the test log for 30 days. The Cube template native TTL remains the
+cleanup backstop if a CI worker is killed before synchronous cleanup completes.
