@@ -33,3 +33,16 @@ allowedCommandTemplateDigests:
 #   executable: /usr/local/bin/light-agent-worker
 #   binaryDigest: sha256:replace-with-exact-worker-binary-digest
 #   capabilityDigest: sha256:replace-with-canonical-worker-capability-digest
+#   broker:
+#     socketDirectory: /run/light-workflow-runner/brokers
+#     maximumRequestBytes: 1048576
+#     requestTimeoutMs: 30000
+#     routes:
+#       - target: model-main
+#         operation: model-inference
+#         baseUrl: https://model-proxy.example.net/v1/
+#         credentialClass: model-provider
+#         credentialFile: /run/secrets/model-provider.token
+#         authHeader: authorization
+#         authScheme: Bearer
+#         costPer1kTokensMicros: 1000

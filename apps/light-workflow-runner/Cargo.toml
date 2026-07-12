@@ -8,6 +8,7 @@ license.workspace = true
 agent-runtime-protocol = { path = "../../crates/agent-runtime-protocol" }
 agent-core = { path = "../../crates/agent-core" }
 async-trait.workspace = true
+base64 = "0.22"
 axum.workspace = true
 chrono.workspace = true
 dashmap = "6"
@@ -23,6 +24,7 @@ light-runtime = { path = "../../crates/light-runtime" }
 immutable-package = { path = "../../crates/immutable-package" }
 libc = "0.2"
 rusqlite = { version = "0.31", features = ["bundled"] }
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true

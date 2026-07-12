@@ -580,6 +580,7 @@ allowedCommandTemplateDigests: [sha256:template-digest]
             executable: "/usr/local/bin/light-agent-worker".into(),
             binary_digest: format!("sha256:{}", "1".repeat(64)),
             capability_digest: format!("sha256:{}", "2".repeat(64)),
+            broker: None,
         });
         let document = config
             .admission_document("runner-subject", "light-workflow")

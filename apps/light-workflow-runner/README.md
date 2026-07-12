@@ -70,6 +70,20 @@ earlier of the worker and lease deadlines. Enabling the block also adds only
 the configured agent origin and `agent-turn`/`agent-action` subjects to the
 generated controller admission document.
 
+The optional nested `broker` block keeps model, network, and credential
+authority in the runner. A lease must carry a matching attempt grant; otherwise
+worker launch fails closed. The worker receives only a mode-`0600` Unix-socket
+path. The broker verifies the socket peer is the exact worker PID before it
+parses a request, so generated subprocesses cannot reuse the channel. Requests
+are bound to execution, lease, fence, policy, data boundary, operation, target,
+expiry, request count, response size, and model token/cost ceilings. Routes are
+operator-owned aliases, redirects are disabled, and provider credentials are
+read from owner-only regular files and injected only into the outbound request.
+Neither a bearer token nor provider endpoint authority enters the worker
+environment. Model routes must use a trusted `costPer1kTokensMicros`; the
+broker derives a conservative charge from the admitted output ceiling and
+request size rather than trusting worker-reported usage.
+
 Treat the configured executable as part of the runner's trusted computing
 base. Its file and every parent directory must be owned by the deployment
 administrator and not writable by the runner account or workload users;

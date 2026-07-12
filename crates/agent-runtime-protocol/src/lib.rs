@@ -45,6 +45,60 @@ pub struct AgentWorkerExecutionSpec {
     pub wall_clock_timeout_ms: u64,
     pub maximum_event_bytes: usize,
     pub maximum_stderr_bytes: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub broker: Option<AttemptBrokerGrant>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BrokerOperation {
+    ModelInference,
+    NetworkRequest,
+    CredentialedRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AttemptBrokerGrant {
+    pub policy_digest: String,
+    pub data_boundary_digest: String,
+    pub route_digest: String,
+    pub allowed_operations: BTreeSet<BrokerOperation>,
+    pub allowed_targets: BTreeSet<String>,
+    pub maximum_requests: u32,
+    pub maximum_tokens: u64,
+    pub maximum_cost_micros: u64,
+    pub maximum_response_bytes: usize,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BrokerRequest {
+    pub request_id: Uuid,
+    pub execution_id: ExecutionId,
+    pub lease_id: LeaseId,
+    pub fencing_token: u64,
+    pub policy_digest: String,
+    pub data_boundary_digest: String,
+    pub operation: BrokerOperation,
+    pub target: String,
+    pub method: String,
+    pub path: String,
+    pub body_base64: String,
+    pub declared_tokens: u64,
+    pub declared_cost_micros: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BrokerResponse {
+    pub request_id: Uuid,
+    pub status: u16,
+    pub body_base64: String,
+    pub consumed_requests: u32,
+    pub consumed_tokens: u64,
+    pub consumed_cost_micros: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -1,3 +1,4 @@
+use crate::broker::{AttemptBroker, AttemptBrokerConfig};
 use crate::journal::Journal;
 use agent_core::ResultClass;
 use agent_runtime_protocol::{
@@ -21,6 +22,8 @@ pub struct WorkerProcessConfig {
     pub executable: std::path::PathBuf,
     pub binary_digest: String,
     pub capability_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub broker: Option<AttemptBrokerConfig>,
 }
 
 impl WorkerProcessConfig {
@@ -44,6 +47,9 @@ impl WorkerProcessConfig {
             if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
                 return Err(format!("{name} digest must be sha256 plus 64 hex digits"));
             }
+        }
+        if let Some(broker) = &self.broker {
+            broker.validate()?;
         }
         Ok(())
     }
@@ -70,6 +76,23 @@ pub async fn run_worker_process(
         return Err("worker capability digest is not admitted by this runner".into());
     }
     verify_binary(&config.executable, &config.binary_digest).await?;
+    let identity = RuntimeIdentity {
+        execution_id: lease.lease.execution_id,
+        lease_id: lease.lease.lease_id,
+        fencing_token: lease.lease.fencing_token,
+        transport_nonce: Uuid::new_v4().simple().to_string(),
+    };
+    let broker = match (&spec.broker, &config.broker) {
+        (Some(grant), Some(config)) => {
+            Some(AttemptBroker::bind(config, grant.clone(), identity.clone()).await?)
+        }
+        (None, None) => None,
+        _ => {
+            return Err(
+                "agent broker grant and runner broker configuration must both be present".into(),
+            );
+        }
+    };
     let mut command = Command::new(&config.executable);
     command
         .env_clear()
@@ -77,11 +100,22 @@ pub async fn run_worker_process(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    if let Some(broker) = &broker {
+        command.env("LIGHT_AGENT_BROKER_SOCKET", broker.socket_path());
+    }
     #[cfg(unix)]
     command.process_group(0);
     let mut child = command
         .spawn()
         .map_err(|e| format!("spawn agent worker: {e}"))?;
+    let (broker_shutdown, broker_task) = if let Some(broker) = broker {
+        let expected_pid = child.id().ok_or("spawned worker has no process id")?;
+        let (shutdown, receiver) = watch::channel(false);
+        let task = tokio::spawn(broker.serve(expected_pid, receiver));
+        (Some(shutdown), Some(task))
+    } else {
+        (None, None)
+    };
     let admitted_duration = std::time::Duration::from_millis(spec.wall_clock_timeout_ms).min(
         lease
             .lease
@@ -115,12 +149,6 @@ pub async fn run_worker_process(
         }
         Ok::<_, String>(out)
     });
-    let identity = RuntimeIdentity {
-        execution_id: lease.lease.execution_id,
-        lease_id: lease.lease.lease_id,
-        fencing_token: lease.lease.fencing_token,
-        transport_nonce: Uuid::new_v4().simple().to_string(),
-    };
     write_command(
         &mut stdin,
         &RuntimeCommand::Hello {
@@ -183,6 +211,12 @@ pub async fn run_worker_process(
             String::from_utf8_lossy(&stderr)
         ));
     }
+    if let Some(shutdown) = broker_shutdown {
+        let _ = shutdown.send(true);
+    }
+    if let Some(task) = broker_task {
+        task.await.map_err(|e| e.to_string())??;
+    }
     Ok(outcome)
 }
 fn validate_spec(lease: &ExecuteLease, s: &AgentWorkerExecutionSpec) -> Result<(), String> {
@@ -194,6 +228,9 @@ fn validate_spec(lease: &ExecuteLease, s: &AgentWorkerExecutionSpec) -> Result<(
         || s.maximum_event_bytes > agent_runtime_protocol::MAX_FRAME_BYTES
         || s.maximum_stderr_bytes == 0
         || s.maximum_stderr_bytes > agent_runtime_protocol::MAX_FRAME_BYTES
+        || s.broker.as_ref().is_some_and(|grant| {
+            grant.policy_digest != s.policy_digest || grant.expires_at > lease.lease.deadline
+        })
     {
         return Err("invalid agent worker execution specification".into());
     }
@@ -350,6 +387,7 @@ sys.stdin.readline()
             executable,
             binary_digest: digest,
             capability_digest,
+            broker: None,
         }
     }
 
@@ -366,6 +404,7 @@ sys.stdin.readline()
             wall_clock_timeout_ms: 5_000,
             maximum_event_bytes: 16 * 1024,
             maximum_stderr_bytes: 16 * 1024,
+            broker: None,
         }
     }
 

@@ -1,3 +1,4 @@
+pub mod broker;
 pub mod configuration;
 pub mod health;
 pub mod journal;
