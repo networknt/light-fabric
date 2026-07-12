@@ -15,6 +15,7 @@ axum.workspace=true
 tokio.workspace=true
 sqlx={version="0.8",features=["chrono","json","postgres","runtime-tokio-rustls","uuid"]}
 reqwest.workspace=true
+futures-util.workspace=true
 anyhow.workspace=true
 hex.workspace=true
 light-agent={path="../light-agent"}

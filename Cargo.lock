@@ -3513,6 +3513,7 @@ dependencies = [
  "anyhow",
  "axum",
  "chrono",
+ "futures-util",
  "hex",
  "hmac",
  "light-agent",

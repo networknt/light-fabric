@@ -19,9 +19,19 @@ and list exact allowed Slack channel IDs in `allowed_destinations`.
 
 Attachments remain rejected unless both `LIGHT_AGENT_ATTACHMENT_SCANNER_URL`
 and `LIGHT_AGENT_ATTACHMENT_SCANNER_TOKEN` configure an HTTPS scanner. Slack
-downloads are origin-restricted, redirect-free, and size/digest checked. Only
-scanner-approved immutable references are placed in the turn; bytes and Slack
-credentials are not. Scan evidence is durable in `agent_channel_attachment_t`.
+downloads are origin-restricted and redirect-free. Both declared-length and
+chunked bodies are streamed through a 32 MiB per-file and 64 MiB per-message
+hard ceiling, further narrowed by the binding; scanner receipts are streamed
+through a 64 KiB ceiling. Only scanner-approved immutable references are placed
+in the turn; bytes and Slack credentials are not.
+
+Attachment messages enter a durable `PENDING` scan state. Replicas claim work
+with `FOR UPDATE SKIP LOCKED`, a random claim token, and a five-minute lease.
+Expired claims are recoverable; failures use bounded exponential retry and
+become terminal after five claims. Clean per-file evidence is idempotently
+reused only when its media type and admitted size still match. This prevents
+duplicate downloads/scans during normal concurrency and preserves recovery
+after a crash. Scan evidence remains durable in `agent_channel_attachment_t`.
 
 Signed connector events use `POST /channels/connectors/events`. The untrusted
 `triggerId` is used only to select an active trigger and its exact grant. Grant

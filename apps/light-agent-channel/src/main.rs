@@ -9,6 +9,7 @@ use axum::{
     routing::post,
 };
 use chrono::{Duration, Timelike, Utc};
+use futures_util::StreamExt;
 use hmac::{Hmac, Mac};
 use light_agent::domain::{AgentRepository, SessionSpec};
 use light_agent_channel::{
@@ -25,6 +26,9 @@ use uuid::Uuid;
 const SLACK_CONNECTOR_ALIAS: &str = "slack-api-v1";
 const SLACK_POST_MESSAGE_OPERATION: &str = "chat.postMessage";
 const SLACK_DOWNLOAD_OPERATION: &str = "files.download";
+const MAX_ATTACHMENT_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_ATTACHMENT_MESSAGE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_SCANNER_RECEIPT_BYTES: usize = 64 * 1024;
 
 #[derive(Clone)]
 struct AppState {
@@ -198,7 +202,8 @@ async fn handle_connector(state: &AppState, headers: &HeaderMap, raw: &[u8]) -> 
         external_identity: row.try_get("external_identity")?,
         allowed_destinations: serde_json::from_value(row.try_get("allowed_destinations")?)?,
         group_allowed: row.try_get("group_allowed")?,
-        maximum_attachment_bytes: row.try_get::<i64, _>("maximum_attachment_bytes")? as u64,
+        maximum_attachment_bytes: u64::try_from(row.try_get::<i64, _>("maximum_attachment_bytes")?)
+            .context("attachment limit must be non-negative")?,
         quiet_start_hour: quiet.get("startHour").and_then(Value::as_u64).unwrap_or(22) as u8,
         quiet_end_hour: quiet.get("endHour").and_then(Value::as_u64).unwrap_or(7) as u8,
         revoked_at: None,
@@ -279,7 +284,8 @@ async fn handle_slack(state: &AppState, headers: &HeaderMap, raw: &[u8]) -> Resu
         external_identity: message.external_identity.clone(),
         allowed_destinations: serde_json::from_value(row.try_get("allowed_destinations")?)?,
         group_allowed: row.try_get("group_allowed")?,
-        maximum_attachment_bytes: row.try_get::<i64, _>("maximum_attachment_bytes")? as u64,
+        maximum_attachment_bytes: u64::try_from(row.try_get::<i64, _>("maximum_attachment_bytes")?)
+            .context("attachment limit must be non-negative")?,
         quiet_start_hour: quiet.get("startHour").and_then(Value::as_u64).unwrap_or(22) as u8,
         quiet_end_hour: quiet.get("endHour").and_then(Value::as_u64).unwrap_or(7) as u8,
         revoked_at: row.try_get("revoked_ts")?,
@@ -293,48 +299,27 @@ async fn handle_slack(state: &AppState, headers: &HeaderMap, raw: &[u8]) -> Resu
     let digest = sha256_digest(raw);
     let message_id = Uuid::now_v7();
     let inserted=sqlx::query_scalar::<_,Uuid>("INSERT INTO agent_channel_message_t(host_id,message_id,binding_id,
-            external_event_id,response_destination,direction,payload_digest,state,payload)
-        VALUES($1,$2,$3,$4,$5,'INBOUND',$6,'RECEIVED',$7)
+            external_event_id,response_destination,direction,payload_digest,state,payload,attachment_scan_state,next_scan_attempt_ts)
+        VALUES($1,$2,$3,$4,$5,'INBOUND',$6,'RECEIVED',$7,$8,CASE WHEN $8='PENDING' THEN now() ELSE NULL END)
         ON CONFLICT(host_id,binding_id,external_event_id,direction) DO NOTHING RETURNING message_id")
         .bind(state.host_id).bind(message_id).bind(binding.binding_id).bind(&message.event_id)
         .bind(&message.destination).bind(digest).bind(json!({"text":message.text,"provider":"slack","eventId":message.event_id,"attachments":message.attachments}))
+        .bind(if message.attachments.is_empty(){"NOT_REQUIRED"}else{"PENDING"})
         .fetch_optional(&state.pool).await?;
     if inserted.is_none() {
         return Ok(None);
     }
-    let mut turn_text = message.text.clone();
     if !message.attachments.is_empty() {
-        let owned_state = state.clone();
-        let owned_binding = binding.clone();
-        let event_id = message.event_id.clone();
-        let attachments = message.attachments.clone();
-        tokio::spawn(async move {
-            let result = async {
-                let references =
-                    scan_slack_attachments(&owned_state, &owned_binding, message_id, &attachments)
-                        .await?;
-                turn_text.push_str("\n\nApproved scanned attachments:\n");
-                for reference in references {
-                    turn_text.push_str(&format!("- {reference}\n"));
-                }
-                admit_channel_turn(
-                    &owned_state,
-                    &owned_binding,
-                    &event_id,
-                    &turn_text,
-                    message_id,
-                )
-                .await
-            }
-            .await;
-            if let Err(error) = result {
-                tracing::warn!(%error,message_id=%message_id,"attachment processing rejected inbound message");
-                let _=sqlx::query("UPDATE agent_channel_message_t SET state='REJECTED',last_error=jsonb_build_object('class','attachment_rejected'),updated_ts=now() WHERE host_id=$1 AND message_id=$2 AND state='RECEIVED'").bind(owned_state.host_id).bind(message_id).execute(&owned_state.pool).await;
-            }
-        });
         return Ok(None);
     }
-    admit_channel_turn(state, &binding, &message.event_id, &turn_text, message_id).await?;
+    admit_channel_turn(
+        state,
+        &binding,
+        &message.event_id,
+        &message.text,
+        message_id,
+    )
+    .await?;
     Ok(None)
 }
 
@@ -355,11 +340,27 @@ async fn scan_slack_attachments(
     let mut total = 0_u64;
     let mut references = Vec::new();
     for attachment in attachments {
+        if attachment.size_bytes > MAX_ATTACHMENT_BYTES {
+            anyhow::bail!("attachment exceeds the service hard limit");
+        }
         total = total
             .checked_add(attachment.size_bytes)
             .context("attachment size overflow")?;
-        if total > binding.maximum_attachment_bytes {
+        if total
+            > binding
+                .maximum_attachment_bytes
+                .min(MAX_ATTACHMENT_MESSAGE_BYTES)
+        {
             anyhow::bail!("attachment limit exceeded");
+        }
+        if let Some(existing)=sqlx::query("SELECT media_type,size_bytes,content_digest,immutable_reference FROM agent_channel_attachment_t WHERE host_id=$1 AND message_id=$2 AND external_file_id=$3 AND scan_state='CLEAN'")
+            .bind(state.host_id).bind(message_id).bind(&attachment.external_file_id).fetch_optional(&state.pool).await? {
+            if existing.try_get::<String,_>("media_type")? != attachment.media_type
+                || existing.try_get::<i64,_>("size_bytes")? != i64::try_from(attachment.size_bytes)? {
+                anyhow::bail!("durable attachment evidence differs from the admitted metadata");
+            }
+            references.push(format!("{} ({}, {})",existing.try_get::<String,_>("immutable_reference")?,attachment.media_type,existing.try_get::<String,_>("content_digest")?));
+            continue;
         }
         let url = reqwest::Url::parse(&attachment.private_url)?;
         if url.scheme() != "https"
@@ -384,7 +385,7 @@ async fn scan_slack_attachments(
         {
             anyhow::bail!("Slack attachment download failed or exceeded its bound");
         }
-        let bytes = response.bytes().await?;
+        let bytes = read_response_bounded(response, attachment.size_bytes as usize).await?;
         if bytes.len() as u64 != attachment.size_bytes {
             anyhow::bail!("Slack attachment size differs from signed metadata");
         }
@@ -398,10 +399,11 @@ async fn scan_slack_attachments(
             .body(bytes)
             .send()
             .await?;
-        if !scan.status().is_success() || scan.content_length().is_some_and(|n| n > 64 * 1024) {
+        if !scan.status().is_success() {
             anyhow::bail!("attachment scanner failed");
         }
-        let receipt: Value = scan.json().await?;
+        let receipt_bytes = read_response_bounded(scan, MAX_SCANNER_RECEIPT_BYTES).await?;
+        let receipt: Value = serde_json::from_slice(&receipt_bytes)?;
         if receipt.get("clean").and_then(Value::as_bool) != Some(true)
             || receipt.get("contentDigest").and_then(Value::as_str) != Some(digest.as_str())
         {
@@ -424,6 +426,29 @@ async fn scan_slack_attachments(
         ));
     }
     Ok(references)
+}
+
+async fn read_response_bounded(response: reqwest::Response, maximum: usize) -> Result<Vec<u8>> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > maximum as u64)
+    {
+        anyhow::bail!("response exceeds admitted byte limit");
+    }
+    let mut bytes = Vec::with_capacity(maximum.min(64 * 1024));
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        let next = bytes
+            .len()
+            .checked_add(chunk.len())
+            .context("response size overflow")?;
+        if next > maximum {
+            anyhow::bail!("response exceeds admitted byte limit");
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 async fn consume_connector_credential(
@@ -480,15 +505,30 @@ async fn attachment_recovery_loop(state: AppState) {
 }
 
 async fn attachment_recovery_pass(state: &AppState) -> Result<()> {
-    let row=sqlx::query("SELECT m.message_id,m.external_event_id,m.payload,b.binding_id,b.principal_id,b.agent_def_id,b.adapter_id,b.external_identity,b.allowed_destinations,b.group_allowed,b.maximum_attachment_bytes,b.quiet_hours,b.revoked_ts
-      FROM agent_channel_message_t m JOIN agent_channel_binding_t b ON b.host_id=m.host_id AND b.binding_id=m.binding_id
-      WHERE m.host_id=$1 AND m.direction='INBOUND' AND m.state='RECEIVED' AND m.payload->>'provider'='slack'
-       AND jsonb_array_length(COALESCE(m.payload->'attachments','[]'::jsonb))>0 AND m.created_ts<now()-interval '5 seconds'
-      ORDER BY m.created_ts LIMIT 1").bind(state.host_id).fetch_optional(&state.pool).await?;
-    let Some(row) = row else {
+    let claim_token = Uuid::now_v7();
+    let mut claim_tx = state.pool.begin().await?;
+    let claimed=sqlx::query("WITH candidate AS(
+        SELECT host_id,message_id FROM agent_channel_message_t
+        WHERE host_id=$1 AND direction='INBOUND' AND state='RECEIVED' AND payload->>'provider'='slack'
+          AND jsonb_array_length(COALESCE(payload->'attachments','[]'::jsonb))>0
+          AND ((attachment_scan_state='PENDING' AND (next_scan_attempt_ts IS NULL OR next_scan_attempt_ts<=now()))
+            OR (attachment_scan_state='CLAIMED' AND scan_lease_expires_ts<=now()))
+        ORDER BY created_ts LIMIT 1 FOR UPDATE SKIP LOCKED)
+      UPDATE agent_channel_message_t m SET attachment_scan_state='CLAIMED',scan_claim_token=$2,
+        scan_lease_expires_ts=now()+interval '5 minutes',scan_attempt_count=scan_attempt_count+1,updated_ts=now()
+      FROM candidate c WHERE m.host_id=c.host_id AND m.message_id=c.message_id
+      RETURNING m.message_id,m.scan_attempt_count")
+        .bind(state.host_id).bind(claim_token).fetch_optional(&mut *claim_tx).await?;
+    claim_tx.commit().await?;
+    let Some(claimed) = claimed else {
         return Ok(());
     };
-    let message_id: Uuid = row.try_get("message_id")?;
+    let message_id: Uuid = claimed.try_get("message_id")?;
+    let attempt_count: i32 = claimed.try_get("scan_attempt_count")?;
+    let row=sqlx::query("SELECT m.message_id,m.external_event_id,m.payload,b.binding_id,b.principal_id,b.agent_def_id,b.adapter_id,b.external_identity,b.allowed_destinations,b.group_allowed,b.maximum_attachment_bytes,b.quiet_hours,b.revoked_ts
+      FROM agent_channel_message_t m JOIN agent_channel_binding_t b ON b.host_id=m.host_id AND b.binding_id=m.binding_id
+      WHERE m.host_id=$1 AND m.message_id=$2 AND m.state='RECEIVED' AND m.attachment_scan_state='CLAIMED' AND m.scan_claim_token=$3")
+        .bind(state.host_id).bind(message_id).bind(claim_token).fetch_one(&state.pool).await?;
     let payload: Value = row.try_get("payload")?;
     let quiet: Value = row.try_get("quiet_hours")?;
     let binding = ChannelBinding {
@@ -500,7 +540,8 @@ async fn attachment_recovery_pass(state: &AppState) -> Result<()> {
         external_identity: row.try_get("external_identity")?,
         allowed_destinations: serde_json::from_value(row.try_get("allowed_destinations")?)?,
         group_allowed: row.try_get("group_allowed")?,
-        maximum_attachment_bytes: row.try_get::<i64, _>("maximum_attachment_bytes")? as u64,
+        maximum_attachment_bytes: u64::try_from(row.try_get::<i64, _>("maximum_attachment_bytes")?)
+            .context("attachment limit must be non-negative")?,
         quiet_start_hour: quiet.get("startHour").and_then(Value::as_u64).unwrap_or(22) as u8,
         quiet_end_hour: quiet.get("endHour").and_then(Value::as_u64).unwrap_or(7) as u8,
         revoked_at: row.try_get("revoked_ts")?,
@@ -529,9 +570,18 @@ async fn attachment_recovery_pass(state: &AppState) -> Result<()> {
                 text.push_str(&format!("- {reference}\n"));
             }
             admit_channel_turn(state, &binding, &event_id, &text, message_id).await?;
+            sqlx::query("UPDATE agent_channel_message_t SET attachment_scan_state='CLEAN',scan_claim_token=NULL,scan_lease_expires_ts=NULL,next_scan_attempt_ts=NULL,updated_ts=now() WHERE host_id=$1 AND message_id=$2 AND scan_claim_token=$3")
+                .bind(state.host_id).bind(message_id).bind(claim_token).execute(&state.pool).await?;
         }
         Err(error) => {
-            sqlx::query("UPDATE agent_channel_message_t SET state='REJECTED',last_error=jsonb_build_object('class','attachment_rejected','message',$1),updated_ts=now() WHERE host_id=$2 AND message_id=$3 AND state='RECEIVED'").bind(error.to_string()).bind(state.host_id).bind(message_id).execute(&state.pool).await?;
+            let terminal = attempt_count >= 5;
+            sqlx::query("UPDATE agent_channel_message_t SET attachment_scan_state=CASE WHEN $1 THEN 'REJECTED' ELSE 'PENDING' END,
+              state=CASE WHEN $1 THEN 'REJECTED' ELSE state END,scan_claim_token=NULL,scan_lease_expires_ts=NULL,
+              next_scan_attempt_ts=CASE WHEN $1 THEN NULL ELSE now()+make_interval(secs=>LEAST(300,power(2,scan_attempt_count)::int)) END,
+              last_error=jsonb_build_object('class',CASE WHEN $1 THEN 'attachment_rejected' ELSE 'attachment_scan_retry' END),updated_ts=now()
+              WHERE host_id=$2 AND message_id=$3 AND state='RECEIVED' AND scan_claim_token=$4")
+                .bind(terminal).bind(state.host_id).bind(message_id).bind(claim_token).execute(&state.pool).await?;
+            tracing::warn!(message_id=%message_id,attempt_count,%error,"attachment scan attempt failed");
         }
     }
     Ok(())
@@ -664,7 +714,8 @@ async fn trigger_pass(state: &AppState) -> Result<()> {
         external_identity: row.try_get("external_identity")?,
         allowed_destinations: serde_json::from_value(row.try_get("allowed_destinations")?)?,
         group_allowed: row.try_get("group_allowed")?,
-        maximum_attachment_bytes: row.try_get::<i64, _>("maximum_attachment_bytes")? as u64,
+        maximum_attachment_bytes: u64::try_from(row.try_get::<i64, _>("maximum_attachment_bytes")?)
+            .context("attachment limit must be non-negative")?,
         quiet_start_hour: quiet.get("startHour").and_then(Value::as_u64).unwrap_or(22) as u8,
         quiet_end_hour: quiet.get("endHour").and_then(Value::as_u64).unwrap_or(7) as u8,
         revoked_at: None,
@@ -833,4 +884,38 @@ async fn schedule_retry(state: &AppState, id: Uuid, error: Value) -> Result<()> 
     next_attempt_ts=now()+LEAST(interval '5 minutes',make_interval(secs=>power(2,LEAST(attempt_count,8))::int)),last_error=$1,updated_ts=now()
     WHERE host_id=$2 AND message_id=$3 AND state='SENDING'").bind(error).bind(state.host_id).bind(id).execute(&state.pool).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{Router, body::Body, routing::get};
+
+    async fn chunked_body() -> Body {
+        Body::from_stream(futures_util::stream::iter([
+            Ok::<_, std::convert::Infallible>(Bytes::from(vec![b'a'; 700])),
+            Ok(Bytes::from(vec![b'b'; 700])),
+        ]))
+    }
+
+    #[tokio::test]
+    async fn chunked_responses_cannot_bypass_the_streaming_limit() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/chunked", get(chunked_body)))
+                .await
+                .unwrap();
+        });
+        let response = reqwest::get(format!("http://{address}/chunked"))
+            .await
+            .unwrap();
+        assert_eq!(
+            read_response_bounded(response, 1024)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "response exceeds admitted byte limit"
+        );
+    }
 }
