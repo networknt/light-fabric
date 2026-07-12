@@ -56,6 +56,16 @@ runner/backend. Controller refuses to reserve that request on another runner.
 The edge executable is a fixed template and receives structured JSON, never an
 inbound shell or connector credential.
 
+Every allowed edge action also requires a server-owned `action_policies` entry
+containing `stableToolRef`, `schemaDigest`, `schema`, `effectClass`, and
+`approvalRequired`. Light-Agent recomputes the schema digest and validates the
+arguments before enqueueing. Only `read-only` actions may dispatch without an
+approval. `local-mutation` and `external-effect` actions consume the fresh
+`READY` attempt created by an unexpired `agent_approval_t` whose subject,
+arguments, policy, schema, and tool identity match exactly. Controller
+revalidates that approval and the live edge binding immediately before lease
+creation, so queued work fails closed after revocation or expiry.
+
 Bot messages and message subtypes are ignored. Outbound delivery uses
 `chat.postMessage`, respects quiet hours and revocation, retries independently
 without rerunning the turn, and becomes terminal after ten failed attempts.

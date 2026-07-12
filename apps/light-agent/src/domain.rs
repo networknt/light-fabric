@@ -44,6 +44,119 @@ pub struct EdgeActionSpec {
     pub action: String,
     pub arguments: Value,
     pub schema_digest: String,
+    pub approval_id: Option<Uuid>,
+}
+
+fn validate_edge_arguments(path: &str, schema: &Value, value: &Value) -> Result<()> {
+    let schema_object = schema
+        .as_object()
+        .context("edge action schema must be an object")?;
+    const SUPPORTED: &[&str] = &[
+        "type",
+        "properties",
+        "required",
+        "additionalProperties",
+        "items",
+        "enum",
+        "minLength",
+        "maxLength",
+        "minimum",
+        "maximum",
+        "minItems",
+        "maxItems",
+    ];
+    if let Some(keyword) = schema_object
+        .keys()
+        .find(|key| !SUPPORTED.contains(&key.as_str()))
+    {
+        bail!("edge action schema uses unsupported keyword {keyword}")
+    }
+    if let Some(values) = schema.get("enum").and_then(Value::as_array)
+        && !values.contains(value)
+    {
+        bail!("{path} is not an allowed value")
+    }
+    if let Some(kind) = schema.get("type").and_then(Value::as_str) {
+        let valid = match kind {
+            "object" => value.is_object(),
+            "array" => value.is_array(),
+            "string" => value.is_string(),
+            "boolean" => value.is_boolean(),
+            "number" => value.is_number(),
+            "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+            "null" => value.is_null(),
+            _ => bail!("edge action schema type {kind} is unsupported"),
+        };
+        if !valid {
+            bail!("{path} must be {kind}")
+        }
+    }
+    if let Some(object) = value.as_object() {
+        let properties = schema.get("properties").and_then(Value::as_object);
+        if schema.get("additionalProperties").and_then(Value::as_bool) == Some(false) {
+            for key in object.keys() {
+                if !properties.is_some_and(|p| p.contains_key(key)) {
+                    bail!("{path} contains unsupported field {key}")
+                }
+            }
+        }
+        if let Some(required) = schema.get("required").and_then(Value::as_array) {
+            for key in required.iter().filter_map(Value::as_str) {
+                if !object.contains_key(key) || object.get(key).is_some_and(Value::is_null) {
+                    bail!("{path} is missing required field {key}")
+                }
+            }
+        }
+        if let Some(properties) = properties {
+            for (key, child_schema) in properties {
+                if let Some(child) = object.get(key) {
+                    validate_edge_arguments(&format!("{path}.{key}"), child_schema, child)?;
+                }
+            }
+        }
+    }
+    if let Some(items) = schema.get("items")
+        && let Some(array) = value.as_array()
+    {
+        if let Some(min) = schema.get("minItems").and_then(Value::as_u64)
+            && array.len() < min as usize
+        {
+            bail!("{path} contains fewer than {min} items")
+        }
+        if let Some(max) = schema.get("maxItems").and_then(Value::as_u64)
+            && array.len() > max as usize
+        {
+            bail!("{path} contains more than {max} items")
+        }
+        for (index, child) in array.iter().enumerate() {
+            validate_edge_arguments(&format!("{path}[{index}]"), items, child)?;
+        }
+    }
+    if let Some(text) = value.as_str() {
+        if let Some(min) = schema.get("minLength").and_then(Value::as_u64)
+            && text.chars().count() < min as usize
+        {
+            bail!("{path} is shorter than {min} characters")
+        }
+        if let Some(max) = schema.get("maxLength").and_then(Value::as_u64)
+            && text.chars().count() > max as usize
+        {
+            bail!("{path} is longer than {max} characters")
+        }
+    }
+    if let Some(number) = value.as_f64() {
+        if let Some(min) = schema.get("minimum").and_then(Value::as_f64)
+            && number < min
+        {
+            bail!("{path} is below minimum {min}")
+        }
+        if let Some(max) = schema.get("maximum").and_then(Value::as_f64)
+            && number > max
+        {
+            bail!("{path} exceeds maximum {max}")
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -281,15 +394,20 @@ impl AgentRepository {
         instance_id: &str,
         spec: &EdgeActionSpec,
     ) -> Result<Uuid> {
-        if spec.action.is_empty() || spec.action.len() > 126 || !spec.arguments.is_object() {
+        let argument_bytes = serde_json::to_vec(&spec.arguments)?;
+        if spec.action.is_empty()
+            || spec.action.len() > 126
+            || !spec.arguments.is_object()
+            || argument_bytes.len() > 64 * 1024
+        {
             bail!("edge action name or arguments are invalid")
         }
         let mut tx = self.pool.begin().await?;
-        let row=sqlx::query("SELECT t.policy_snapshot_id,t.policy_digest,s.principal_id,b.runner_id,b.backend_id,b.compatibility_digest,b.required_capabilities
+        let row=sqlx::query("SELECT t.policy_snapshot_id,t.policy_digest,s.principal_id,b.runner_id,b.backend_id,b.compatibility_digest,b.required_capabilities,b.action_policies->$5 AS action_policy
           FROM agent_turn_t t JOIN agent_session_t s ON s.host_id=t.host_id AND s.session_id=t.session_id
           JOIN agent_edge_runner_binding_t b ON b.host_id=s.host_id AND b.edge_binding_id=$4 AND b.principal_id=s.principal_id
-          WHERE t.host_id=$1 AND t.turn_id=$2 AND t.session_id=$3 AND t.state IN('RECEIVED','RUNNING_MODEL')
-            AND b.revoked_ts IS NULL AND b.expires_ts>now() AND b.allowed_actions ? $5 FOR UPDATE OF t,s,b")
+          WHERE t.host_id=$1 AND t.turn_id=$2 AND t.session_id=$3 AND t.state IN('RECEIVED','RUNNING_MODEL','WAITING_ACTION')
+            AND b.revoked_ts IS NULL AND b.expires_ts>now() AND b.allowed_actions ? $5 AND b.action_policies ? $5 FOR UPDATE OF t,s,b")
             .bind(host_id).bind(turn_id.0).bind(session_id.0).bind(spec.edge_binding_id).bind(&spec.action)
             .fetch_optional(&mut *tx).await?.context("no live principal-bound edge runner authorizes this action")?;
         let policy: String = row.try_get("policy_digest")?;
@@ -298,11 +416,75 @@ impl AgentRepository {
         let required_features: Vec<String> =
             serde_json::from_value(row.try_get("required_capabilities")?)?;
         let compatibility: String = row.try_get("compatibility_digest")?;
-        let action_attempt_id = Uuid::now_v7();
+        let action_policy: Value = row.try_get("action_policy")?;
+        let schema = action_policy
+            .get("schema")
+            .context("edge action policy has no schema")?;
+        let configured_schema_digest = action_policy
+            .get("schemaDigest")
+            .and_then(Value::as_str)
+            .context("edge action policy has no schema digest")?;
+        let computed_schema_digest = sha256_digest(&serde_json::to_vec(schema)?);
+        if configured_schema_digest != computed_schema_digest
+            || spec.schema_digest != configured_schema_digest
+        {
+            bail!("edge action schema digest does not match the binding")
+        }
+        validate_edge_arguments("$", schema, &spec.arguments)?;
+        let stable_tool_ref = Uuid::parse_str(
+            action_policy
+                .get("stableToolRef")
+                .and_then(Value::as_str)
+                .context("edge action policy has no stable tool reference")?,
+        )?;
+        let effect_class = action_policy
+            .get("effectClass")
+            .and_then(Value::as_str)
+            .context("edge action policy has no effect class")?;
+        if !matches!(
+            effect_class,
+            "read-only" | "local-mutation" | "external-effect"
+        ) {
+            bail!("edge action effect class is invalid")
+        }
+        let approval_required = action_policy
+            .get("approvalRequired")
+            .and_then(Value::as_bool)
+            .context("edge action policy has no approval requirement")?;
+        if effect_class != "read-only" && !approval_required {
+            bail!("mutating edge actions must require approval")
+        }
         let request_id = Uuid::now_v7();
-        let argument_digest = sha256_digest(&serde_json::to_vec(&spec.arguments)?);
-        sqlx::query("INSERT INTO agent_action_attempt_t(host_id,action_attempt_id,turn_id,logical_action_id,attempt_number,stable_tool_ref,model_alias,placement,schema_digest,policy_digest,argument_digest,effect_class,state) VALUES($1,$2,$3,$2,1,$4,$4,'runner',$5,$6,$7,'unknown','DISPATCHED')")
-            .bind(host_id).bind(action_attempt_id).bind(turn_id.0).bind(&spec.action).bind(&spec.schema_digest).bind(&policy).bind(&argument_digest).execute(&mut *tx).await?;
+        let argument_digest = sha256_digest(&argument_bytes);
+        let action_subject_digest = sha256_digest(spec.action.as_bytes());
+        let action_attempt_id = if approval_required {
+            let approval_id = spec
+                .approval_id
+                .context("edge action approval is required")?;
+            let approved=sqlx::query("SELECT a.consumed_action_attempt_id
+              FROM agent_approval_t a JOIN agent_action_attempt_t x ON x.host_id=a.host_id AND x.action_attempt_id=a.consumed_action_attempt_id
+              WHERE a.host_id=$1 AND a.approval_id=$2 AND a.turn_id=$3 AND a.state='APPROVED' AND a.expires_ts>now()
+                AND a.subject_digest=$4 AND a.input_digest=$5 AND a.policy_digest=$6
+                AND x.state='READY' AND x.stable_tool_ref=$7 AND x.schema_digest=$8 AND x.argument_digest=$5 AND x.policy_digest=$6
+              FOR UPDATE OF a,x")
+                .bind(host_id).bind(approval_id).bind(turn_id.0).bind(&action_subject_digest).bind(&argument_digest).bind(&policy).bind(stable_tool_ref).bind(&spec.schema_digest)
+                .fetch_optional(&mut *tx).await?.context("edge action approval is unavailable, expired, or does not bind the exact action")?;
+            let attempt: Uuid = approved.try_get("consumed_action_attempt_id")?;
+            let changed=sqlx::query("UPDATE agent_action_attempt_t SET state='DISPATCHED',effect_class=$3,updated_ts=now() WHERE host_id=$1 AND action_attempt_id=$2 AND state='READY'")
+                .bind(host_id).bind(attempt).bind(effect_class).execute(&mut *tx).await?;
+            if changed.rows_affected() != 1 {
+                bail!("approved edge action attempt was already consumed")
+            }
+            attempt
+        } else {
+            if spec.approval_id.is_some() {
+                bail!("read-only edge action cannot consume an unrelated approval")
+            }
+            let attempt = Uuid::now_v7();
+            sqlx::query("INSERT INTO agent_action_attempt_t(host_id,action_attempt_id,turn_id,logical_action_id,attempt_number,stable_tool_ref,model_alias,placement,schema_digest,policy_digest,argument_digest,effect_class,state) VALUES($1,$2,$3,$2,1,$4,$5,'runner',$6,$7,$8,$9,'DISPATCHED')")
+                .bind(host_id).bind(attempt).bind(turn_id.0).bind(stable_tool_ref).bind(&spec.action).bind(&spec.schema_digest).bind(&policy).bind(&argument_digest).bind(effect_class).execute(&mut *tx).await?;
+            attempt
+        };
         let requirements = ExecutionRequirements {
             action_kind: format!("edge.{}", spec.action),
             minimum_boundary: IsolationBoundary::UserNamespace,
@@ -1397,6 +1579,39 @@ async fn append_event(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn edge_action_arguments_fail_closed_against_server_schema() {
+        let schema = json!({
+            "type":"object",
+            "properties":{
+                "device":{"type":"string","enum":["desk-lamp"]},
+                "level":{"type":"integer","minimum":0,"maximum":100}
+            },
+            "required":["device","level"],
+            "additionalProperties":false
+        });
+        validate_edge_arguments("$", &schema, &json!({"device":"desk-lamp","level":50})).unwrap();
+        assert!(
+            validate_edge_arguments("$", &schema, &json!({"device":"front-door","level":50}))
+                .is_err()
+        );
+        assert!(
+            validate_edge_arguments("$", &schema, &json!({"device":"desk-lamp","level":101}))
+                .is_err()
+        );
+        assert!(
+            validate_edge_arguments(
+                "$",
+                &schema,
+                &json!({"device":"desk-lamp","level":50,"shell":"sh"})
+            )
+            .is_err()
+        );
+        assert!(
+            validate_edge_arguments("$", &json!({"type":"object","oneOf":[]}), &json!({})).is_err()
+        );
+    }
 
     #[tokio::test]
     async fn durable_admission_is_idempotent_fifo_and_projection_rebuildable() {
