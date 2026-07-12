@@ -1491,6 +1491,11 @@ unless the control plane has already fenced it.
   path policy before a fixed branch or pull-request action can consume a patch.
 - Publish and signing use fixed actions over immutable artifacts and require
   verified provenance, digest-bound human approval, and task-scoped isolation.
+  Light-workflow dispatches typed `publish` and `sign` requests to a dedicated
+  release-action service; branch and pull-request requests use a separate
+  repository-action service. These credential-owning services receive exact
+  immutable bindings and an idempotency key, while agents, sandboxes, runners,
+  and workflow context receive no platform or signing credential.
 - Human approval waiting occurs only in the origin service, `light-workflow` or
   `light-agent`; no action lease, model channel, action credential, or
   secret-bearing task environment remains active. An eligible non-secret

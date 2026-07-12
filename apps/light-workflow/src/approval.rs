@@ -89,9 +89,12 @@ impl WorkflowApprovalService {
                 "approval decision does not match the immutable approved subject".into(),
             ));
         }
-        if operation != "apply-patch" {
+        if !matches!(
+            operation.as_str(),
+            "apply-patch" | "create-branch" | "open-pr" | "publish" | "sign"
+        ) {
             return Err(sqlx::Error::Protocol(
-                "this deployment implements only the apply-patch fixed action".into(),
+                "approval requested an unsupported fixed action".into(),
             ));
         }
         self.revalidate_artifacts(
@@ -126,18 +129,21 @@ impl WorkflowApprovalService {
         let structured = normalized_result
             .get("structuredOutput")
             .unwrap_or(&normalized_result);
-        let base_commit = structured
-            .get("baseRevision")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                sqlx::Error::Protocol("approved fixed action lacks baseRevision".into())
-            })?;
+        let base_commit = structured.get("baseRevision").and_then(Value::as_str);
         let changed_paths = structured
             .get("changedPaths")
             .and_then(Value::as_array)
-            .ok_or_else(|| {
-                sqlx::Error::Protocol("approved fixed action lacks changedPaths".into())
-            })?;
+            .cloned()
+            .unwrap_or_default();
+        if matches!(
+            operation.as_str(),
+            "apply-patch" | "create-branch" | "open-pr"
+        ) && base_commit.is_none()
+        {
+            return Err(sqlx::Error::Protocol(
+                "approved repository fixed action lacks baseRevision".into(),
+            ));
+        }
         let (patch_artifact_reference, patch_digest): (String, String) = sqlx::query_as(
             "SELECT storage_reference, content_digest FROM workflow_artifact_t
              WHERE host_id=$1 AND execution_id=$2 AND verification_state='VERIFIED'
@@ -147,10 +153,10 @@ impl WorkflowApprovalService {
         .bind(preceding_execution_id)
         .fetch_one(&mut *tx)
         .await?;
-        let target_branch = structured
+        let target_ref = structured
             .get("targetBranch")
             .and_then(Value::as_str)
-            .unwrap_or("agent/approved");
+            .unwrap_or(&target);
         let repository_digest = execution_runner_protocol::canonical_sha256(&target)
             .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
         let execution_spec = json!({
@@ -164,11 +170,13 @@ impl WorkflowApprovalService {
             "repository": target,
             "repositoryDigest": repository_digest,
             "baseCommit": base_commit,
-            "repositoryObjectFormat": if base_commit.len() == 64 { "sha256" } else { "sha1" },
-            "targetBranch": target_branch,
+            "repositoryObjectFormat": if base_commit.is_some_and(|value| value.len() == 64) { "sha256" } else { "sha1" },
+            "targetBranch": target_ref,
             "patchArtifactReference": patch_artifact_reference,
             "patchDigest": patch_digest,
             "changedPaths": changed_paths,
+            "pullRequestBase": structured.get("pullRequestBase").and_then(Value::as_str).unwrap_or("main"),
+            "pullRequestTitle": format!("Approved automated change {}", preceding_execution_id),
             "priorExecutionSpecDigest": execution_runner_protocol::canonical_sha256(&prior_spec)
                 .map_err(|e| sqlx::Error::Protocol(e.to_string()))?
         });

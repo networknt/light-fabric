@@ -6,7 +6,7 @@ use light_workflow::artifact_store::DurableArtifactStore;
 use light_workflow::configuration::RunnerExecutionConfig;
 use light_workflow::consumer::EventConsumer;
 use light_workflow::executor::TaskExecutor;
-use light_workflow::fixed_action::FixedActionExecutor;
+use light_workflow::fixed_action::{FixedActionExecutor, HttpFixedActionProvider};
 use light_workflow::lease_reaper::LeaseReaper;
 use light_workflow::result_reconciler::ResultReconciler;
 use light_workflow::rule_api::run_rule_api;
@@ -90,6 +90,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             runner_config.origin_service_id.clone(),
             runner_config.origin_instance_id.clone(),
         );
+        let provider = |url_name: &str,
+                        token_name: &str|
+         -> Result<Option<HttpFixedActionProvider>, io::Error> {
+            let Some(url) = env::var(url_name)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+            else {
+                return Ok(None);
+            };
+            let token = env::var(token_name).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("{token_name} is required when {url_name} is configured"),
+                )
+            })?;
+            HttpFixedActionProvider::new(&url, token)
+                .map(Some)
+                .map_err(io::Error::other)
+        };
+        let repository_provider = provider(
+            "WORKFLOW_REPOSITORY_FIXED_ACTION_URL",
+            "WORKFLOW_REPOSITORY_FIXED_ACTION_TOKEN",
+        )?;
+        let release_provider = provider(
+            "WORKFLOW_RELEASE_FIXED_ACTION_URL",
+            "WORKFLOW_RELEASE_FIXED_ACTION_TOKEN",
+        )?;
         let fixed_actions = FixedActionExecutor::new(
             pool.clone(),
             PathBuf::from(
@@ -102,7 +129,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             ),
             env::var("WORKFLOW_FIXED_ACTION_BRANCH_PREFIX").unwrap_or_else(|_| "agent/".into()),
             ProtectedPathPolicy::default_deny(),
-        );
+        )
+        .with_providers(repository_provider, release_provider);
         let retention_store = artifact_store.clone();
         Some(tokio::spawn(async move {
             let retention = async move {

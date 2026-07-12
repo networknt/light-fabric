@@ -145,6 +145,32 @@ stale delete claims, and retains the database tombstone. Successful attempts
 also persist trusted execution provenance and bind its digest/reference to the
 verified artifact rows before approval creation or task transition.
 
+## Trusted fixed-action providers
+
+`apply-patch` runs locally in a fresh hook/filter/submodule-disabled trusted
+checkout. Branch/PR and publish/sign operations are sent as typed requests to
+dedicated credential-owning services; no platform or signing credential is
+placed in workflow context, a runner, an agent, or a sandbox. Configure one or
+both providers:
+
+```bash
+WORKFLOW_REPOSITORY_FIXED_ACTION_URL=https://repository-actions.example.net/v1/
+WORKFLOW_REPOSITORY_FIXED_ACTION_TOKEN=<service-to-service-token>
+WORKFLOW_RELEASE_FIXED_ACTION_URL=https://release-actions.example.net/v1/
+WORKFLOW_RELEASE_FIXED_ACTION_TOKEN=<service-to-service-token>
+```
+
+The repository service receives only `create-branch` and `open-pr`; the
+release service receives only `publish` and `sign`. Requests contain the
+consumed approval, immutable artifact and provenance digests, exact target,
+policy digest, typed specification, and durable idempotency key. Providers
+must exchange the service identity for an operation-scoped platform credential
+and return a non-secret JSON receipt no larger than 64 KiB. Redirects are
+disabled and provider URLs must use HTTPS. Unconfigured actions fail closed.
+The receipt schema is closed and contains only `providerOperationId`,
+`state: "SUCCEEDED"`, a SHA-256 `evidenceDigest`, and an optional bounded
+`resourceReference`; additional fields are rejected rather than persisted.
+
 For the HTTP example, run any local mock that accepts:
 
 ```json
