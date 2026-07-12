@@ -70,11 +70,12 @@ token, no capabilities, a read-only root filesystem, seccomp, bounded temporary
 storage, and a persistent `ReadWriteOnce` journal volume. Materialize
 `secret.example.yaml` through the deployment secret manager; never commit it as
 `secret.yaml`. Because the full-stack integration test references the sibling
-`controller-rs` checkout, build the image from their common workspace parent:
+`controller-rs` checkout. Build the production image from the Light-Fabric
+workspace root:
 
 ```bash
-docker build -f light-fabric/apps/light-workflow-runner/docker/Dockerfile \
-  -t light-workflow-runner:local /home/steve/workspace
+docker build -f apps/light-workflow-runner/docker/Dockerfile \
+  -t light-workflow-runner:local .
 kubectl kustomize apps/light-workflow-runner/k8s
 ```
 
@@ -143,7 +144,7 @@ not runnable.
 
 ## Full-stack integration test
 
-`tests/controller_cube_full_stack.rs` joins the real `controller-rs`
+`controller-rs/tests/runner_cube_full_stack.rs` joins the real `controller-rs`
 PostgreSQL scheduler and lease runtime, runner WebSocket transport, supervisor
 and SQLite journal, and the Cube execution backend around a deterministic
 in-process Cube service. It verifies reservation, fenced lease accept/start,
@@ -154,8 +155,9 @@ Run it only against a disposable Portal database with the current canonical
 schema:
 
 ```bash
+cd /home/steve/workspace/controller-rs
 DATABASE_URL=postgres://postgres:secret@localhost:5432/portal_test \
-  cargo test -p light-workflow-runner --test controller_cube_full_stack -- --nocapture
+  cargo test --test runner_cube_full_stack -- --nocapture
 ```
 
 Without `DATABASE_URL`, the test is compiled and skipped. The fixture uses

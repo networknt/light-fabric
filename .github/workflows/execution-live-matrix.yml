@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Compile ignored integration gates
@@ -49,7 +49,7 @@ jobs:
       LIGHT_OCI_CONFORMANCE_IMAGE: ${{ vars.LIGHT_OCI_CONFORMANCE_IMAGE }}
       LIGHT_LIVE_TEST_TIMEOUT: 20m
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run OCI live matrix
@@ -76,7 +76,7 @@ jobs:
       LIGHT_CUBE_TEST_ALLOW_HTTP: 'false'
       LIGHT_LIVE_TEST_TIMEOUT: 25m
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Materialize short-lived Cube credentials

@@ -18,14 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - name: Checkout controller integration dependency
-        uses: actions/checkout@v4
-        with:
-          repository: lightapi/controller-rs
-          path: controller-rs
-      - name: Place controller beside the workspace
-        run: mv controller-rs ../controller-rs
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -41,16 +34,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - name: Checkout controller image dependency
-        uses: actions/checkout@v4
-        with:
-          repository: lightapi/controller-rs
-          path: controller-rs
-      - name: Place controller beside the workspace
-        run: mv controller-rs ../controller-rs
+      - uses: actions/checkout@v5
       - name: Build runner image
-        run: docker build --file apps/light-workflow-runner/docker/Dockerfile --tag light-workflow-runner:ci ..
+        run: docker build --file apps/light-workflow-runner/docker/Dockerfile --tag light-workflow-runner:ci .
       - uses: azure/setup-kubectl@v4
       - name: Render Kubernetes resources
         run: kubectl kustomize apps/light-workflow-runner/k8s > /tmp/light-workflow-runner.yaml
