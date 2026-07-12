@@ -171,6 +171,19 @@ The receipt schema is closed and contains only `providerOperationId`,
 `state: "SUCCEEDED"`, a SHA-256 `evidenceDigest`, and an optional bounded
 `resourceReference`; additional fields are rejected rather than persisted.
 
+Providers must also expose `GET fixed-actions/status` and resolve the same
+`Idempotency-Key` to `SUCCEEDED`, `FAILED`, `PENDING`, or `NOT_FOUND` evidence.
+After dispatch begins, exhausted 5xx/transport retries, a lost response,
+malformed success evidence, or a service crash is recorded as `UNKNOWN`, never
+as an ordinary failure. A leased reconciler inspects the provider without
+reissuing the effect. `SUCCEEDED`/`FAILED` evidence closes the original
+execution attempt; pending or unavailable evidence backs off for up to 24
+hours. After that, the attempt becomes terminal `UNKNOWN`, automatic retry
+remains prohibited, and the workflow waits with `FIXED_ACTION_UNKNOWN` for an
+operator. A stale local `apply-patch` has no external status authority and
+therefore becomes operator-required `UNKNOWN` once its execution deadline
+expires.
+
 For the HTTP example, run any local mock that accepts:
 
 ```json

@@ -435,6 +435,13 @@ impl TaskExecutor {
         .bind(attempt.request_id)
         .execute(&mut **tx)
         .await?;
+        if attempt.state == "UNKNOWN" {
+            sqlx::query("UPDATE process_info_t SET status_code='W',custom_status_code='FIXED_ACTION_UNKNOWN',
+                        error_info=$1 WHERE host_id=$2 AND process_id=$3")
+                .bind(attempt.normalized_error.as_ref().map(Value::to_string))
+                .bind(attempt.host_id).bind(attempt.process_id).execute(&mut **tx).await?;
+            return Ok(true);
+        }
         if attempt.state != "SUCCEEDED" {
             sqlx::query("UPDATE process_info_t SET status_code='F',custom_status_code='FIXED_ACTION_FAILED',
                         completed_ts=CURRENT_TIMESTAMP,error_info=$1 WHERE host_id=$2 AND process_id=$3")

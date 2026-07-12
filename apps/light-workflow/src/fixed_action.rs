@@ -55,9 +55,22 @@ pub struct HttpFixedActionProvider {
 struct ProviderReceipt {
     provider_operation_id: String,
     state: String,
-    evidence_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    evidence_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resource_reference: Option<String>,
+}
+
+#[derive(Debug)]
+enum ActionFailure {
+    Failed(String),
+    Unknown(String),
+}
+
+enum ProviderInspection {
+    Succeeded(Value),
+    Failed(Value),
+    Pending,
 }
 
 impl HttpFixedActionProvider {
@@ -95,19 +108,20 @@ impl HttpFixedActionProvider {
         })
     }
 
-    async fn execute(&self, action: &ClaimedAction) -> Result<Value, String> {
-        validate_provider_action(action)?;
+    async fn execute(&self, action: &ClaimedAction) -> Result<Value, ActionFailure> {
+        validate_provider_action(action).map_err(ActionFailure::Failed)?;
         let endpoint = self
             .base_url
             .join(&format!("fixed-actions/{}", action.action_kind))
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| ActionFailure::Failed(e.to_string()))?;
         if endpoint.origin() != self.base_url.origin() {
-            return Err("fixed-action provider endpoint escaped its configured origin".into());
+            return Err(ActionFailure::Failed(
+                "fixed-action provider endpoint escaped its configured origin".into(),
+            ));
         }
-        let idempotency_key = action
-            .idempotency_key
-            .as_deref()
-            .ok_or_else(|| "provider action lacks idempotency key".to_string())?;
+        let idempotency_key = action.idempotency_key.as_deref().ok_or_else(|| {
+            ActionFailure::Failed("provider action lacks idempotency key".to_string())
+        })?;
         let body = json!({
             "fixedActionId": action.fixed_action_id,
             "executionId": action.execution_id,
@@ -145,40 +159,106 @@ impl HttpFixedActionProvider {
             }
         }
         let response = accepted.ok_or_else(|| {
-            format!(
+            ActionFailure::Unknown(format!(
                 "fixed-action provider result is unknown after idempotent retries: {last_error}"
-            )
+            ))
         })?;
         if !response.status().is_success() {
-            return Err(format!(
+            return Err(ActionFailure::Failed(format!(
                 "fixed-action provider returned {}",
                 response.status()
-            ));
+            )));
         }
         if response
             .content_length()
             .is_some_and(|size| size > 64 * 1024)
         {
-            return Err("fixed-action provider receipt exceeds 64 KiB".into());
+            return Err(ActionFailure::Unknown(
+                "fixed-action provider receipt exceeds 64 KiB".into(),
+            ));
         }
-        let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| ActionFailure::Unknown(e.to_string()))?;
         if bytes.len() > 64 * 1024 {
-            return Err("fixed-action provider receipt exceeds 64 KiB".into());
+            return Err(ActionFailure::Unknown(
+                "fixed-action provider receipt exceeds 64 KiB".into(),
+            ));
         }
-        let receipt: ProviderReceipt =
-            serde_json::from_slice(&bytes).map_err(|e| format!("invalid provider receipt: {e}"))?;
+        let receipt: ProviderReceipt = serde_json::from_slice(&bytes)
+            .map_err(|e| ActionFailure::Unknown(format!("invalid provider receipt: {e}")))?;
         if receipt.provider_operation_id.is_empty()
             || receipt.provider_operation_id.len() > 255
             || receipt.state != "SUCCEEDED"
-            || !valid_sha256_digest(&receipt.evidence_digest)
+            || !receipt
+                .evidence_digest
+                .as_deref()
+                .is_some_and(valid_sha256_digest)
             || receipt
                 .resource_reference
                 .as_ref()
                 .is_some_and(|value| value.len() > 2048)
         {
-            return Err("fixed-action provider returned an invalid receipt binding".into());
+            return Err(ActionFailure::Unknown(
+                "fixed-action provider returned an invalid receipt binding".into(),
+            ));
         }
-        serde_json::to_value(receipt).map_err(|e| e.to_string())
+        serde_json::to_value(receipt).map_err(|e| ActionFailure::Unknown(e.to_string()))
+    }
+
+    async fn inspect(&self, action: &ClaimedAction) -> Result<ProviderInspection, String> {
+        let key = action
+            .idempotency_key
+            .as_deref()
+            .ok_or("provider action lacks idempotency key")?;
+        let endpoint = self
+            .base_url
+            .join("fixed-actions/status")
+            .map_err(|e| e.to_string())?;
+        let response = self
+            .client
+            .get(endpoint)
+            .bearer_auth(&self.bearer_token)
+            .header("Idempotency-Key", key)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND
+            || response.status().is_server_error()
+        {
+            return Ok(ProviderInspection::Pending);
+        }
+        if !response.status().is_success() {
+            return Err(format!("provider status returned {}", response.status()));
+        }
+        if response.content_length().is_some_and(|n| n > 64 * 1024) {
+            return Err("provider status receipt exceeds 64 KiB".into());
+        }
+        let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+        if bytes.len() > 64 * 1024 {
+            return Err("provider status receipt exceeds 64 KiB".into());
+        }
+        let receipt: ProviderReceipt = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("invalid provider status receipt: {e}"))?;
+        if receipt.provider_operation_id.is_empty() {
+            return Err("provider status receipt is not bound".into());
+        }
+        if matches!(receipt.state.as_str(), "SUCCEEDED" | "FAILED")
+            && !receipt
+                .evidence_digest
+                .as_deref()
+                .is_some_and(valid_sha256_digest)
+        {
+            return Err("terminal provider status lacks valid evidence".into());
+        }
+        let value = serde_json::to_value(receipt).map_err(|e| e.to_string())?;
+        match value.get("state").and_then(Value::as_str) {
+            Some("SUCCEEDED") => Ok(ProviderInspection::Succeeded(value)),
+            Some("FAILED") => Ok(ProviderInspection::Failed(value)),
+            Some("PENDING" | "NOT_FOUND") => Ok(ProviderInspection::Pending),
+            _ => Err("provider status receipt has an invalid state".into()),
+        }
     }
 }
 
@@ -269,6 +349,9 @@ impl FixedActionExecutor {
     }
 
     pub async fn run_once(&self) -> Result<bool, sqlx::Error> {
+        if self.reconcile_unknown_once().await? {
+            return Ok(true);
+        }
         let mut tx = self.pool.begin().await?;
         let action = sqlx::query_as::<_, ClaimedAction>(
             "SELECT f.host_id,f.fixed_action_id,f.execution_id,f.approval_id,
@@ -313,25 +396,105 @@ impl FixedActionExecutor {
         let mut tx = self.pool.begin().await?;
         match result {
             Ok((action, evidence)) => {
-                sqlx::query("UPDATE execution_fixed_action_t SET state='SUCCEEDED',result_evidence=$1,
+                let transitioned=sqlx::query("UPDATE execution_fixed_action_t SET state='SUCCEEDED',result_evidence=$1,
                             provider_receipt=CASE WHEN action_kind<>'apply-patch' THEN $1 ELSE provider_receipt END,
                             updated_ts=CURRENT_TIMESTAMP WHERE host_id=$2 AND fixed_action_id=$3 AND state='RUNNING'")
                     .bind(&evidence).bind(action.host_id).bind(action.fixed_action_id).execute(&mut *tx).await?;
-                sqlx::query("UPDATE execution_attempt_t SET state='SUCCEEDED',terminal_ts=CURRENT_TIMESTAMP,
+                if transitioned.rows_affected() == 1 {
+                    sqlx::query("UPDATE execution_attempt_t SET state='SUCCEEDED',terminal_ts=CURRENT_TIMESTAMP,
                             normalized_result=$1,cleanup_state='NOT_REQUIRED',retry_classification='unsafe',
                             updated_ts=CURRENT_TIMESTAMP WHERE host_id=$2 AND execution_id=$3 AND state='STARTED'")
                     .bind(json!({"structuredOutput": evidence, "policyDigest": action.policy_digest}))
                     .bind(action.host_id).bind(action.execution_id).execute(&mut *tx).await?;
+                }
             }
-            Err((action, message)) => {
+            Err((action, ActionFailure::Failed(message))) => {
                 let error = json!({"failureClass":"fixed_action_failed","message":message});
-                sqlx::query("UPDATE execution_fixed_action_t SET state='FAILED',result_evidence=$1,
+                let transitioned=sqlx::query("UPDATE execution_fixed_action_t SET state='FAILED',result_evidence=$1,
                             updated_ts=CURRENT_TIMESTAMP WHERE host_id=$2 AND fixed_action_id=$3 AND state='RUNNING'")
                     .bind(&error).bind(action.host_id).bind(action.fixed_action_id).execute(&mut *tx).await?;
-                sqlx::query("UPDATE execution_attempt_t SET state='FAILED',terminal_ts=CURRENT_TIMESTAMP,
+                if transitioned.rows_affected() == 1 {
+                    sqlx::query("UPDATE execution_attempt_t SET state='FAILED',terminal_ts=CURRENT_TIMESTAMP,
                             normalized_error=$1,cleanup_state='NOT_REQUIRED',retry_classification='unsafe',
                             updated_ts=CURRENT_TIMESTAMP WHERE host_id=$2 AND execution_id=$3 AND state='STARTED'")
                     .bind(error).bind(action.host_id).bind(action.execution_id).execute(&mut *tx).await?;
+                }
+            }
+            Err((action, ActionFailure::Unknown(message))) => {
+                let evidence = json!({"failureClass":"fixed_action_unknown","message":message});
+                sqlx::query("UPDATE execution_fixed_action_t SET state='UNKNOWN',unknown_since_ts=CURRENT_TIMESTAMP,
+                            next_reconcile_ts=CURRENT_TIMESTAMP,result_evidence=$1,updated_ts=CURRENT_TIMESTAMP
+                            WHERE host_id=$2 AND fixed_action_id=$3 AND state='RUNNING'")
+                    .bind(evidence).bind(action.host_id).bind(action.fixed_action_id).execute(&mut *tx).await?;
+            }
+        }
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    async fn reconcile_unknown_once(&self) -> Result<bool, sqlx::Error> {
+        sqlx::query("UPDATE execution_fixed_action_t f SET state='UNKNOWN',unknown_since_ts=COALESCE(f.unknown_since_ts,CURRENT_TIMESTAMP),next_reconcile_ts=CURRENT_TIMESTAMP,updated_ts=CURRENT_TIMESTAMP
+          FROM execution_attempt_t e WHERE e.host_id=f.host_id AND e.execution_id=f.execution_id AND f.state='RUNNING'
+            AND ((e.lease_deadline_ts IS NOT NULL AND e.lease_deadline_ts<=CURRENT_TIMESTAMP)
+              OR (e.lease_deadline_ts IS NULL AND f.updated_ts<CURRENT_TIMESTAMP-interval '1 hour'))")
+            .execute(&self.pool).await?;
+        let token = Uuid::now_v7();
+        let mut tx = self.pool.begin().await?;
+        let action=sqlx::query_as::<_,ClaimedAction>("WITH candidate AS(
+            SELECT host_id,fixed_action_id FROM execution_fixed_action_t
+            WHERE state='UNKNOWN' AND (next_reconcile_ts IS NULL OR next_reconcile_ts<=CURRENT_TIMESTAMP)
+              AND (reconciliation_claim_token IS NULL OR reconciliation_lease_expires_ts<=CURRENT_TIMESTAMP)
+            ORDER BY unknown_since_ts,fixed_action_id LIMIT 1 FOR UPDATE SKIP LOCKED), claimed AS(
+            UPDATE execution_fixed_action_t f SET reconciliation_claim_token=$1,reconciliation_lease_expires_ts=CURRENT_TIMESTAMP+interval '1 minute',
+              reconciliation_attempt_count=reconciliation_attempt_count+1,updated_ts=CURRENT_TIMESTAMP
+            FROM candidate c WHERE f.host_id=c.host_id AND f.fixed_action_id=c.fixed_action_id
+            RETURNING f.*)
+          SELECT host_id,fixed_action_id,execution_id,approval_id,repository_reference,base_commit,repository_object_format,target_ref,
+            patch_artifact_reference,artifact_digest,policy_digest,changed_paths,action_kind,action_spec,provenance_digest,idempotency_key FROM claimed")
+            .bind(token).fetch_optional(&mut *tx).await?;
+        tx.commit().await?;
+        let Some(action) = action else {
+            return Ok(false);
+        };
+        let inspection = match action.action_kind.as_str() {
+            "create-branch" | "open-pr" => match &self.repository_provider {
+                Some(p) => p.inspect(&action).await.ok(),
+                None => None,
+            },
+            "publish" | "sign" => match &self.release_provider {
+                Some(p) => p.inspect(&action).await.ok(),
+                None => None,
+            },
+            _ => None,
+        };
+        let mut tx = self.pool.begin().await?;
+        match inspection {
+            Some(ProviderInspection::Succeeded(evidence)) => {
+                sqlx::query("UPDATE execution_fixed_action_t SET state='SUCCEEDED',provider_receipt=$1,result_evidence=$1,reconciliation_claim_token=NULL,reconciliation_lease_expires_ts=NULL,next_reconcile_ts=NULL,updated_ts=CURRENT_TIMESTAMP WHERE host_id=$2 AND fixed_action_id=$3 AND state='UNKNOWN' AND reconciliation_claim_token=$4")
+                    .bind(&evidence).bind(action.host_id).bind(action.fixed_action_id).bind(token).execute(&mut *tx).await?;
+                sqlx::query("UPDATE execution_attempt_t SET state='SUCCEEDED',terminal_ts=CURRENT_TIMESTAMP,normalized_result=$1,cleanup_state='NOT_REQUIRED',retry_classification='unsafe',updated_ts=CURRENT_TIMESTAMP WHERE host_id=$2 AND execution_id=$3 AND state='STARTED'")
+                    .bind(json!({"structuredOutput":evidence,"policyDigest":action.policy_digest})).bind(action.host_id).bind(action.execution_id).execute(&mut *tx).await?;
+            }
+            Some(ProviderInspection::Failed(evidence)) => {
+                sqlx::query("UPDATE execution_fixed_action_t SET state='FAILED',provider_receipt=$1,result_evidence=$1,reconciliation_claim_token=NULL,reconciliation_lease_expires_ts=NULL,next_reconcile_ts=NULL,updated_ts=CURRENT_TIMESTAMP WHERE host_id=$2 AND fixed_action_id=$3 AND state='UNKNOWN' AND reconciliation_claim_token=$4")
+                    .bind(&evidence).bind(action.host_id).bind(action.fixed_action_id).bind(token).execute(&mut *tx).await?;
+                sqlx::query("UPDATE execution_attempt_t SET state='FAILED',terminal_ts=CURRENT_TIMESTAMP,normalized_error=$1,cleanup_state='NOT_REQUIRED',retry_classification='unsafe',updated_ts=CURRENT_TIMESTAMP WHERE host_id=$2 AND execution_id=$3 AND state='STARTED'")
+                    .bind(json!({"failureClass":"fixed_action_provider_failed","providerEvidence":evidence})).bind(action.host_id).bind(action.execution_id).execute(&mut *tx).await?;
+            }
+            Some(ProviderInspection::Pending) | None => {
+                let unknown_since:chrono::DateTime<chrono::Utc>=sqlx::query_scalar("SELECT unknown_since_ts FROM execution_fixed_action_t WHERE host_id=$1 AND fixed_action_id=$2 AND state='UNKNOWN' AND reconciliation_claim_token=$3 FOR UPDATE")
+                    .bind(action.host_id).bind(action.fixed_action_id).bind(token).fetch_one(&mut *tx).await?;
+                let terminal = action.action_kind == "apply-patch"
+                    || chrono::Utc::now() - unknown_since > chrono::Duration::hours(24);
+                if terminal {
+                    sqlx::query("UPDATE execution_fixed_action_t SET reconciliation_claim_token=NULL,reconciliation_lease_expires_ts=NULL,next_reconcile_ts=NULL,result_evidence=jsonb_build_object('failureClass','fixed_action_unknown','operatorActionRequired',true),updated_ts=CURRENT_TIMESTAMP WHERE host_id=$1 AND fixed_action_id=$2 AND state='UNKNOWN' AND reconciliation_claim_token=$3")
+                        .bind(action.host_id).bind(action.fixed_action_id).bind(token).execute(&mut *tx).await?;
+                    sqlx::query("UPDATE execution_attempt_t SET state='UNKNOWN',terminal_ts=CURRENT_TIMESTAMP,normalized_error=jsonb_build_object('failureClass','fixed_action_unknown','operatorActionRequired',true),cleanup_state='NOT_REQUIRED',retry_classification='unsafe',updated_ts=CURRENT_TIMESTAMP WHERE host_id=$1 AND execution_id=$2 AND state='STARTED'")
+                        .bind(action.host_id).bind(action.execution_id).execute(&mut *tx).await?;
+                } else {
+                    sqlx::query("UPDATE execution_fixed_action_t SET reconciliation_claim_token=NULL,reconciliation_lease_expires_ts=NULL,next_reconcile_ts=CURRENT_TIMESTAMP+LEAST(interval '1 hour',make_interval(secs=>power(2,LEAST(reconciliation_attempt_count,12))::int)),updated_ts=CURRENT_TIMESTAMP WHERE host_id=$1 AND fixed_action_id=$2 AND state='UNKNOWN' AND reconciliation_claim_token=$3")
+                        .bind(action.host_id).bind(action.fixed_action_id).bind(token).execute(&mut *tx).await?;
+                }
             }
         }
         tx.commit().await?;
@@ -349,7 +512,7 @@ impl FixedActionExecutor {
     async fn execute(
         &self,
         action: ClaimedAction,
-    ) -> Result<(ClaimedAction, Value), (ClaimedAction, String)> {
+    ) -> Result<(ClaimedAction, Value), (ClaimedAction, ActionFailure)> {
         if action.action_kind != "apply-patch" {
             if matches!(action.action_kind.as_str(), "create-branch" | "open-pr")
                 && (!action.target_ref.starts_with(&self.branch_prefix)
@@ -358,7 +521,10 @@ impl FixedActionExecutor {
             {
                 return Err((
                     action,
-                    "repository fixed action target ref is outside the configured prefix".into(),
+                    ActionFailure::Failed(
+                        "repository fixed action target ref is outside the configured prefix"
+                            .into(),
+                    ),
                 ));
             }
             let provider = match action.action_kind.as_str() {
@@ -367,7 +533,10 @@ impl FixedActionExecutor {
                 _ => None,
             };
             let Some(provider) = provider else {
-                return Err((action, "fixed-action provider is not configured".into()));
+                return Err((
+                    action,
+                    ActionFailure::Failed("fixed-action provider is not configured".into()),
+                ));
             };
             return match provider.execute(&action).await {
                 Ok(receipt) => Ok((action, receipt)),
@@ -377,21 +546,31 @@ impl FixedActionExecutor {
         let path = match local_artifact_path(&action.patch_artifact_reference, &self.artifact_root)
         {
             Ok(path) => path,
-            Err(error) => return Err((action, error)),
+            Err(error) => return Err((action, ActionFailure::Failed(error))),
         };
         let bytes = match fs::read(&path) {
             Ok(bytes) if bytes.len() <= 16 * 1024 * 1024 => bytes,
-            Ok(_) => return Err((action, "approved patch exceeds 16 MiB".into())),
-            Err(error) => return Err((action, error.to_string())),
+            Ok(_) => {
+                return Err((
+                    action,
+                    ActionFailure::Failed("approved patch exceeds 16 MiB".into()),
+                ));
+            }
+            Err(error) => return Err((action, ActionFailure::Failed(error.to_string()))),
         };
         let changed_paths =
             match serde_json::from_value::<Vec<String>>(action.changed_paths.clone()) {
                 Ok(paths) => paths,
-                Err(error) => return Err((action, error.to_string())),
+                Err(error) => return Err((action, ActionFailure::Failed(error.to_string()))),
             };
         let base_commit = match action.base_commit.clone() {
             Some(base_commit) => base_commit,
-            None => return Err((action, "apply-patch lacks base commit".into())),
+            None => {
+                return Err((
+                    action,
+                    ActionFailure::Failed("apply-patch lacks base commit".into()),
+                ));
+            }
         };
         let request = FixedPatchRequest {
             request_id: action.fixed_action_id,
@@ -434,8 +613,8 @@ impl FixedActionExecutor {
                     "repositoryObjectFormat": evidence.repository_object_format
                 }),
             )),
-            Ok(Err(error)) => Err((action, error.to_string())),
-            Err(error) => Err((action, error.to_string())),
+            Ok(Err(error)) => Err((action, ActionFailure::Failed(error.to_string()))),
+            Err(error) => Err((action, ActionFailure::Unknown(error.to_string()))),
         }
     }
 }
@@ -457,7 +636,11 @@ fn local_artifact_path(reference: &str, artifact_root: &Path) -> Result<PathBuf,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{Json, Router, http::HeaderMap, routing::post};
+    use axum::{
+        Json, Router,
+        http::HeaderMap,
+        routing::{get, post},
+    };
 
     fn provider_action(kind: &str) -> ClaimedAction {
         let digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -538,5 +721,47 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(receipt["providerOperationId"], "branch-123");
+    }
+
+    #[tokio::test]
+    async fn uncertain_dispatch_is_unknown_and_status_is_reconciled_by_key() {
+        async fn dispatch() -> axum::http::StatusCode {
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        }
+        async fn status(headers: HeaderMap) -> Json<Value> {
+            assert_eq!(
+                headers.get("idempotency-key").unwrap(),
+                "approval:00000000-0000-0000-0000-000000000001"
+            );
+            Json(
+                json!({"providerOperationId":"branch-123","state":"SUCCEEDED","evidenceDigest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}),
+            )
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/api/fixed-actions/create-branch", post(dispatch))
+                    .route("/api/fixed-actions/status", get(status)),
+            )
+            .await
+            .unwrap();
+        });
+        let provider = HttpFixedActionProvider::new(
+            &format!("http://{address}/api/"),
+            "test-provider-token-32-bytes-long".into(),
+        )
+        .unwrap();
+        let action = provider_action("create-branch");
+        assert!(matches!(
+            provider.execute(&action).await,
+            Err(ActionFailure::Unknown(_))
+        ));
+        assert!(matches!(
+            provider.inspect(&action).await.unwrap(),
+            ProviderInspection::Succeeded(_)
+        ));
     }
 }
