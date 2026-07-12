@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use serde_json::json;
 use sqlx::{PgPool, Row};
+use std::time::Duration as StdDuration;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -15,6 +16,7 @@ pub trait ArtifactObjectStore: Send + Sync {
 #[error("artifact object store operation failed: {message}")]
 pub struct ArtifactStoreError {
     pub message: String,
+    pub retryable: bool,
 }
 
 pub struct ArtifactRetentionReconciler<S> {
@@ -76,6 +78,21 @@ impl<S: ArtifactObjectStore> ArtifactRetentionReconciler<S> {
             }
         }
         Ok(claimed.len() as u64)
+    }
+
+    pub async fn run(&self) -> Result<(), sqlx::Error> {
+        loop {
+            // A process may die after claiming but before deleting. Requeue such claims.
+            sqlx::query("UPDATE workflow_artifact_t SET deletion_state='DELETE_FAILED',deletion_next_retry_ts=now(),deletion_evidence=COALESCE(deletion_evidence,'{}'::jsonb)||jsonb_build_object('reason','stale-delete-claim'),updated_ts=now() WHERE deletion_state='DELETING' AND updated_ts < now()-interval '5 minutes'")
+                .execute(&self.pool).await?;
+            let changed = self.reconcile_once().await?;
+            tokio::time::sleep(if changed == 0 {
+                StdDuration::from_secs(30)
+            } else {
+                StdDuration::from_millis(100)
+            })
+            .await;
+        }
     }
 
     pub async fn mark_process_deleted(

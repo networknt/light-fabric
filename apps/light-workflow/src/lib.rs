@@ -2,6 +2,7 @@ pub mod agent_job;
 pub mod approval;
 pub mod artifact_publish;
 pub mod artifact_retention;
+pub mod artifact_store;
 pub mod command_template;
 pub mod configuration;
 pub mod consumer;

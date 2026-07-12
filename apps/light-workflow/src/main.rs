@@ -1,6 +1,8 @@
 use execution_security::ProtectedPathPolicy;
 use light_runtime::{TracingOptions, init_tracing};
 use light_workflow::agent_job::AgentJobReconciler;
+use light_workflow::artifact_retention::ArtifactRetentionReconciler;
+use light_workflow::artifact_store::DurableArtifactStore;
 use light_workflow::configuration::RunnerExecutionConfig;
 use light_workflow::consumer::EventConsumer;
 use light_workflow::executor::TaskExecutor;
@@ -42,6 +44,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     info!("Connected to Postgres");
     let runner_config = RunnerExecutionConfig::load().map_err(io::Error::other)?;
+    let artifact_store = DurableArtifactStore::from_environment().map_err(io::Error::other)?;
+    let artifact_retention_days = env::var("WORKFLOW_ARTIFACT_RETENTION_DAYS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(30_i64)
+        .clamp(1, 3650);
 
     // Initialize Consumer
     let consumer = EventConsumer::new(
@@ -73,6 +81,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Arc::clone(&executor),
             runner_config.origin_service_id.clone(),
             runner_config.origin_instance_id.clone(),
+            artifact_store.clone(),
+            artifact_retention_days,
         );
         let lease_reaper = LeaseReaper::new(pool.clone());
         let session_reconciler = ExecutionSessionReconciler::new(
@@ -93,13 +103,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             env::var("WORKFLOW_FIXED_ACTION_BRANCH_PREFIX").unwrap_or_else(|_| "agent/".into()),
             ProtectedPathPolicy::default_deny(),
         );
+        let retention_store = artifact_store.clone();
         Some(tokio::spawn(async move {
+            let retention = async move {
+                match retention_store {
+                    Some(store) => {
+                        ArtifactRetentionReconciler::new(pool.clone(), store, 100)
+                            .run()
+                            .await
+                    }
+                    None => std::future::pending::<Result<(), sqlx::Error>>().await,
+                }
+            };
             tokio::try_join!(
                 scheduler.run(),
                 reconciler.run(),
                 lease_reaper.run(),
                 session_reconciler.run(),
-                fixed_actions.run()
+                fixed_actions.run(),
+                retention
             )
             .map(|_| ())
         }))

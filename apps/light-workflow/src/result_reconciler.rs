@@ -1,5 +1,9 @@
+use crate::artifact_publish::promote_artifact_evidence;
+use crate::artifact_store::DurableArtifactStore;
 use crate::executor::TaskExecutor;
+use crate::provenance::persist_trusted_provenance;
 use crate::repositories::WorkflowRepository;
+use execution_runner_protocol::NormalizedExecutionResult;
 use sqlx::{PgPool, postgres::PgListener};
 use std::{sync::Arc, time::Duration};
 use tokio::time::{sleep, timeout};
@@ -10,6 +14,8 @@ pub struct ResultReconciler {
     repository: WorkflowRepository,
     executor: Arc<TaskExecutor>,
     origin_service_id: String,
+    artifact_store: Option<DurableArtifactStore>,
+    artifact_retention_days: i64,
 }
 
 impl ResultReconciler {
@@ -18,12 +24,16 @@ impl ResultReconciler {
         executor: Arc<TaskExecutor>,
         origin_service_id: String,
         _origin_instance_id: String,
+        artifact_store: Option<DurableArtifactStore>,
+        artifact_retention_days: i64,
     ) -> Self {
         Self {
             repository: WorkflowRepository::new(pool.clone()),
             pool,
             executor,
             origin_service_id,
+            artifact_store,
+            artifact_retention_days: artifact_retention_days.clamp(1, 3650),
         }
     }
 
@@ -71,7 +81,48 @@ impl ResultReconciler {
             .await?;
         let mut transitioned = false;
         for attempt in attempts {
+            let normalized = attempt
+                .normalized_result
+                .clone()
+                .map(serde_json::from_value::<NormalizedExecutionResult>)
+                .transpose()
+                .map_err(|error| {
+                    sqlx::Error::Protocol(format!("invalid normalized runner result: {error}"))
+                })?;
+            if let Some(result) = &normalized {
+                if !result.artifacts.is_empty() {
+                    let store = self.artifact_store.as_ref().ok_or_else(|| {
+                        sqlx::Error::Protocol(
+                            "runner returned artifacts but no object store is configured".into(),
+                        )
+                    })?;
+                    let retain_until =
+                        chrono::Utc::now() + chrono::Duration::days(self.artifact_retention_days);
+                    for artifact in &result.artifacts {
+                        promote_artifact_evidence(
+                            &self.pool,
+                            store,
+                            attempt.host_id,
+                            attempt.execution_id,
+                            attempt.process_id,
+                            attempt.task_id,
+                            &result.policy_digest,
+                            retain_until,
+                            artifact,
+                        )
+                        .await
+                        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+                    }
+                }
+            }
             let mut tx = self.pool.begin().await?;
+            if attempt.state == "SUCCEEDED" {
+                if let Some(result) = &normalized {
+                    persist_trusted_provenance(&mut tx, attempt.host_id, result)
+                        .await
+                        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+                }
+            }
             match self
                 .executor
                 .reconcile_runner_attempt(&mut tx, &attempt)

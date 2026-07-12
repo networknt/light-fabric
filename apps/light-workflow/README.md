@@ -110,6 +110,41 @@ The versioned workflow execution policy schema and its valid/invalid
 conformance fixtures are published under
 `crates/workflow-policy/schema/` and `crates/workflow-policy/fixtures/`.
 
+## Artifact object store
+
+Runner artifact acceptance is fail-closed. When a terminal result declares an
+artifact, `light-workflow` requires an S3-compatible object store and verifies
+the runner's staging object before accepting the attempt. Configure it with
+the standard AWS credential/workload-identity variables plus:
+
+```bash
+WORKFLOW_ARTIFACT_S3_BUCKET=workflow-artifacts
+WORKFLOW_ARTIFACT_PREFIX=light-workflow
+WORKFLOW_ARTIFACT_RETENTION_DAYS=30
+# Optional for MinIO or another S3-compatible service:
+WORKFLOW_ARTIFACT_S3_ENDPOINT=https://minio.example.net
+# Development only:
+# WORKFLOW_ARTIFACT_S3_ALLOW_HTTP=true
+```
+
+The store uses tenant-scoped `staging/<host_id>/` paths for short-lived uploads
+and `tenants/<host_id>/objects/sha256/` keys for durable bytes. Identical bytes
+from different tenants therefore never share retention or deletion authority.
+Configure a bucket lifecycle rule to
+expire abandoned `staging/` objects; the database remains authoritative for
+durable retention. Promotion streams and hashes the staged object, performs a
+provider-side copy only after the metadata row commits, re-verifies the copied
+destination, deletes the staging key, and then fences the metadata transition
+to `BOUND/VERIFIED`. Existing content-addressed destinations are also
+re-verified before reuse. A digest
+mismatch is quarantined and prevents workflow result acceptance.
+
+The retention reconciler respects legal holds, claims deletions with
+`SKIP LOCKED`, verifies object absence, retries with bounded backoff, recovers
+stale delete claims, and retains the database tombstone. Successful attempts
+also persist trusted execution provenance and bind its digest/reference to the
+verified artifact rows before approval creation or task transition.
+
 For the HTTP example, run any local mock that accepts:
 
 ```json
