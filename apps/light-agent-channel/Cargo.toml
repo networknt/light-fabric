@@ -21,3 +21,5 @@ light-agent={path="../light-agent"}
 agent-core={path="../../crates/agent-core"}
 tracing.workspace=true
 tracing-subscriber.workspace=true
+[dev-dependencies]
+tempfile="3"

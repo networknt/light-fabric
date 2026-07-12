@@ -1,4 +1,6 @@
 use chrono::{DateTime, Timelike, Utc};
+
+pub mod credential;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

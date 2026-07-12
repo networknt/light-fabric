@@ -13,13 +13,18 @@ use hmac::{Hmac, Mac};
 use light_agent::domain::{AgentRepository, SessionSpec};
 use light_agent_channel::{
     ChannelBinding,
+    credential::ConnectorCredentialStore,
     slack::{self, SlackInbound},
 };
 use serde_json::{Value, json};
 use sha2::Sha256;
 use sqlx::{PgPool, Row, postgres::PgPoolOptions};
-use std::{env, net::SocketAddr, sync::Arc, time::Duration as StdDuration};
+use std::{env, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration as StdDuration};
 use uuid::Uuid;
+
+const SLACK_CONNECTOR_ALIAS: &str = "slack-api-v1";
+const SLACK_POST_MESSAGE_OPERATION: &str = "chat.postMessage";
+const SLACK_DOWNLOAD_OPERATION: &str = "files.download";
 
 #[derive(Clone)]
 struct AppState {
@@ -27,11 +32,10 @@ struct AppState {
     repository: AgentRepository,
     host_id: Uuid,
     signing_secret: Arc<Vec<u8>>,
-    bot_token: Arc<String>,
+    connector_credentials: Arc<ConnectorCredentialStore>,
     http: reqwest::Client,
     attachment_scanner_url: Option<reqwest::Url>,
     attachment_scanner_token: Option<Arc<String>>,
-    connector_signing_secret: Option<Arc<Vec<u8>>>,
 }
 
 #[tokio::main]
@@ -62,29 +66,22 @@ async fn main() -> Result<()> {
     {
         anyhow::bail!("attachment scanner requires an HTTPS URL and token together");
     }
-    let connector_signing_secret = env::var("LIGHT_AGENT_CONNECTOR_SIGNING_SECRET")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .map(|v| v.into_bytes());
-    if connector_signing_secret
-        .as_ref()
-        .is_some_and(|v| v.len() < 32)
-    {
-        anyhow::bail!("connector signing secret must contain at least 32 bytes");
-    }
+    let connector_credentials = ConnectorCredentialStore::load(PathBuf::from(env::var(
+        "LIGHT_AGENT_CONNECTOR_CREDENTIALS_FILE",
+    )?))
+    .map_err(anyhow::Error::msg)?;
     let state = AppState {
         repository: AgentRepository::new(pool.clone()),
         pool,
         host_id,
         signing_secret: Arc::new(secret),
-        bot_token: Arc::new(env::var("SLACK_BOT_TOKEN")?),
+        connector_credentials: Arc::new(connector_credentials),
         http: reqwest::Client::builder()
             .timeout(StdDuration::from_secs(10))
             .redirect(reqwest::redirect::Policy::none())
             .build()?,
         attachment_scanner_url,
         attachment_scanner_token,
-        connector_signing_secret: connector_signing_secret.map(Arc::new),
     };
     tokio::spawn(delivery_loop(state.clone()));
     tokio::spawn(trigger_loop(state.clone()));
@@ -117,10 +114,36 @@ async fn connector_events(
 }
 
 async fn handle_connector(state: &AppState, headers: &HeaderMap, raw: &[u8]) -> Result<()> {
+    // This parse supplies only a lookup selector. No envelope field becomes
+    // authoritative until the exact raw bytes pass the selected grant's MAC.
+    let selector: Value = serde_json::from_slice(raw)?;
+    let selected_trigger_id = Uuid::parse_str(
+        selector
+            .get("triggerId")
+            .and_then(Value::as_str)
+            .context("triggerId missing")?,
+    )?;
+    let selected = sqlx::query(
+        "SELECT g.connector_alias,g.credential_reference
+         FROM agent_trigger_t t
+         JOIN agent_connector_grant_t g ON g.host_id=t.host_id AND g.grant_id=t.connector_grant_id
+         WHERE t.host_id=$1 AND t.trigger_id=$2 AND t.state='ACTIVE' AND t.trigger_kind='CONNECTOR'
+           AND g.revoked_ts IS NULL AND g.expires_ts>now() AND g.use_count<g.maximum_uses
+           AND g.allowed_operations ? 'events.receive'",
+    )
+    .bind(state.host_id)
+    .bind(selected_trigger_id)
+    .fetch_one(&state.pool)
+    .await?;
+    let connector_alias: String = selected.try_get("connector_alias")?;
+    let credential_reference: String = selected.try_get("credential_reference")?;
     let secret = state
-        .connector_signing_secret
-        .as_ref()
-        .context("connector webhook is disabled")?;
+        .connector_credentials
+        .secret(&credential_reference, &connector_alias)
+        .map_err(anyhow::Error::msg)?;
+    if secret.len() < 32 {
+        anyhow::bail!("connector grant signing secret is too short");
+    }
     let signature = headers
         .get("x-light-signature")
         .and_then(|v| v.to_str().ok())
@@ -128,7 +151,7 @@ async fn handle_connector(state: &AppState, headers: &HeaderMap, raw: &[u8]) -> 
         .strip_prefix("sha256=")
         .context("invalid connector signature scheme")?;
     let supplied = hex::decode(signature)?;
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret)?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())?;
     mac.update(raw);
     mac.verify_slice(&supplied)?;
     let body: Value = serde_json::from_slice(raw)?;
@@ -137,6 +160,9 @@ async fn handle_connector(state: &AppState, headers: &HeaderMap, raw: &[u8]) -> 
             .and_then(Value::as_str)
             .context("triggerId missing")?,
     )?;
+    if trigger_id != selected_trigger_id {
+        anyhow::bail!("authenticated connector trigger differs from selector");
+    }
     let event_id = body
         .get("eventId")
         .and_then(Value::as_str)
@@ -152,7 +178,7 @@ async fn handle_connector(state: &AppState, headers: &HeaderMap, raw: &[u8]) -> 
     let row=sqlx::query("SELECT t.binding_id,b.principal_id,b.agent_def_id,b.adapter_id,b.external_identity,b.allowed_destinations,b.group_allowed,b.maximum_attachment_bytes,b.quiet_hours,b.revoked_ts,g.grant_id
       FROM agent_trigger_t t JOIN agent_channel_binding_t b ON b.host_id=t.host_id AND b.binding_id=t.binding_id
       JOIN agent_connector_grant_t g ON g.host_id=t.host_id AND g.grant_id=t.connector_grant_id
-      WHERE t.host_id=$1 AND t.trigger_id=$2 AND t.state='ACTIVE' AND t.trigger_kind='CONNECTOR' AND b.revoked_ts IS NULL AND g.revoked_ts IS NULL AND g.expires_ts>now() AND g.use_count<g.maximum_uses")
+      WHERE t.host_id=$1 AND t.trigger_id=$2 AND t.state='ACTIVE' AND t.trigger_kind='CONNECTOR' AND b.revoked_ts IS NULL AND g.revoked_ts IS NULL AND g.expires_ts>now() AND g.use_count<g.maximum_uses AND g.allowed_operations ? 'events.receive'")
       .bind(state.host_id).bind(trigger_id).fetch_one(&state.pool).await?;
     let destination = body
         .get("destination")
@@ -188,7 +214,7 @@ async fn handle_connector(state: &AppState, headers: &HeaderMap, raw: &[u8]) -> 
     let inserted=sqlx::query("INSERT INTO agent_channel_message_t(host_id,message_id,binding_id,external_event_id,response_destination,direction,payload_digest,state,payload) VALUES($1,$2,$3,$4,$5,'INBOUND',$6,'RECEIVED',$7) ON CONFLICT(host_id,binding_id,external_event_id,direction) DO NOTHING")
       .bind(state.host_id).bind(message_id).bind(binding.binding_id).bind(&key).bind(destination).bind(sha256_digest(raw)).bind(json!({"text":text,"provider":"connector"})).execute(&mut *tx).await?;
     if inserted.rows_affected() == 1 {
-        let consumed=sqlx::query("UPDATE agent_connector_grant_t SET use_count=use_count+1 WHERE host_id=$1 AND grant_id=$2 AND revoked_ts IS NULL AND expires_ts>now() AND use_count<maximum_uses").bind(state.host_id).bind(row.try_get::<Uuid,_>("grant_id")?).execute(&mut *tx).await?;
+        let consumed=sqlx::query("UPDATE agent_connector_grant_t SET use_count=use_count+1 WHERE host_id=$1 AND grant_id=$2 AND revoked_ts IS NULL AND expires_ts>now() AND use_count<maximum_uses AND allowed_operations ? 'events.receive'").bind(state.host_id).bind(row.try_get::<Uuid,_>("grant_id")?).execute(&mut *tx).await?;
         if consumed.rows_affected() != 1 {
             tx.rollback().await?;
             anyhow::bail!("connector grant was exhausted or revoked during admission");
@@ -343,12 +369,14 @@ async fn scan_slack_attachments(
         {
             anyhow::bail!("Slack attachment URL is not authorized");
         }
-        let response = state
-            .http
-            .get(url)
-            .bearer_auth(state.bot_token.as_str())
-            .send()
-            .await?;
+        let token = consume_connector_credential(
+            state,
+            binding.binding_id,
+            SLACK_CONNECTOR_ALIAS,
+            SLACK_DOWNLOAD_OPERATION,
+        )
+        .await?;
+        let response = state.http.get(url).bearer_auth(token).send().await?;
         if !response.status().is_success()
             || response
                 .content_length()
@@ -396,6 +424,50 @@ async fn scan_slack_attachments(
         ));
     }
     Ok(references)
+}
+
+async fn consume_connector_credential(
+    state: &AppState,
+    binding_id: Uuid,
+    connector_alias: &str,
+    operation: &str,
+) -> Result<String> {
+    let mut tx = state.pool.begin().await?;
+    let row = sqlx::query(
+        "SELECT grant_id,credential_reference FROM agent_connector_grant_t
+         WHERE host_id=$1 AND binding_id=$2 AND connector_alias=$3
+           AND revoked_ts IS NULL AND expires_ts>now() AND use_count<maximum_uses
+           AND allowed_operations ? $4
+         ORDER BY created_ts DESC LIMIT 1 FOR UPDATE SKIP LOCKED",
+    )
+    .bind(state.host_id)
+    .bind(binding_id)
+    .bind(connector_alias)
+    .bind(operation)
+    .fetch_optional(&mut *tx)
+    .await?
+    .context("no live connector grant authorizes the operation")?;
+    let reference: String = row.try_get("credential_reference")?;
+    let token = state
+        .connector_credentials
+        .bearer(&reference, connector_alias)
+        .map_err(anyhow::Error::msg)?
+        .to_string();
+    let consumed = sqlx::query(
+        "UPDATE agent_connector_grant_t SET use_count=use_count+1
+         WHERE host_id=$1 AND grant_id=$2 AND revoked_ts IS NULL
+           AND expires_ts>now() AND use_count<maximum_uses AND allowed_operations ? $3",
+    )
+    .bind(state.host_id)
+    .bind(row.try_get::<Uuid, _>("grant_id")?)
+    .bind(operation)
+    .execute(&mut *tx)
+    .await?;
+    if consumed.rows_affected() != 1 {
+        anyhow::bail!("connector grant changed during credential admission");
+    }
+    tx.commit().await?;
+    Ok(token)
 }
 
 async fn attachment_recovery_loop(state: AppState) {
@@ -528,7 +600,7 @@ async fn trigger_pass(state: &AppState) -> Result<()> {
       FROM agent_trigger_t t JOIN agent_channel_binding_t b ON b.host_id=t.host_id AND b.binding_id=t.binding_id
       LEFT JOIN agent_connector_grant_t g ON g.host_id=t.host_id AND g.grant_id=t.connector_grant_id
       WHERE t.host_id=$1 AND t.state='ACTIVE' AND t.next_fire_ts<=now() AND b.revoked_ts IS NULL
-       AND (t.trigger_kind='SCHEDULE' OR (g.revoked_ts IS NULL AND g.expires_ts>now() AND g.use_count<g.maximum_uses))
+       AND (t.trigger_kind='SCHEDULE' OR (g.revoked_ts IS NULL AND g.expires_ts>now() AND g.use_count<g.maximum_uses AND g.allowed_operations ? 'triggers.fire'))
       ORDER BY t.next_fire_ts LIMIT 1 FOR UPDATE OF t SKIP LOCKED").bind(state.host_id).fetch_optional(&mut *tx).await?;
     let Some(row) = row else {
         tx.commit().await?;
@@ -548,7 +620,7 @@ async fn trigger_pass(state: &AppState) -> Result<()> {
     sqlx::query("UPDATE agent_trigger_t SET last_fire_ts=now(),last_idempotency_key=$1,fire_count=fire_count+1,next_fire_ts=$2+make_interval(secs=>$3) WHERE host_id=$4 AND trigger_id=$5")
       .bind(&key).bind(due).bind(interval as i32).bind(state.host_id).bind(trigger_id).execute(&mut *tx).await?;
     if row.try_get::<String, _>("trigger_kind")? == "CONNECTOR" {
-        let consumed=sqlx::query("UPDATE agent_connector_grant_t SET use_count=use_count+1 WHERE host_id=$1 AND grant_id=(SELECT connector_grant_id FROM agent_trigger_t WHERE host_id=$1 AND trigger_id=$2) AND revoked_ts IS NULL AND expires_ts>now() AND use_count<maximum_uses").bind(state.host_id).bind(trigger_id).execute(&mut *tx).await?;
+        let consumed=sqlx::query("UPDATE agent_connector_grant_t SET use_count=use_count+1 WHERE host_id=$1 AND grant_id=(SELECT connector_grant_id FROM agent_trigger_t WHERE host_id=$1 AND trigger_id=$2) AND revoked_ts IS NULL AND expires_ts>now() AND use_count<maximum_uses AND allowed_operations ? 'triggers.fire'").bind(state.host_id).bind(trigger_id).execute(&mut *tx).await?;
         if consumed.rows_affected() != 1 {
             sqlx::query(
                 "UPDATE agent_trigger_t SET state='PAUSED' WHERE host_id=$1 AND trigger_id=$2",
@@ -618,11 +690,18 @@ async fn delivery_loop(state: AppState) {
 
 async fn delivery_pass(state: &AppState) -> Result<()> {
     sqlx::query("INSERT INTO agent_channel_message_t(host_id,message_id,binding_id,external_event_id,
-        response_destination,direction,payload_digest,state,turn_id,payload)
+        response_destination,direction,payload_digest,state,turn_id,payload,connector_grant_id,connector_data_boundary_digest)
       SELECT m.host_id,gen_random_uuid(),m.binding_id,'reply:'||m.external_event_id,m.response_destination,
         'OUTBOUND',encode(digest(convert_to(t.terminal_result::text,'UTF8'),'sha256'),'hex'),'PENDING_DELIVERY',
-        t.turn_id,jsonb_build_object('text',COALESCE(t.terminal_result->>'text',t.terminal_result::text))
+        t.turn_id,jsonb_build_object('text',COALESCE(t.terminal_result->>'text',t.terminal_result::text)),
+        g.grant_id,g.data_boundary_digest
       FROM agent_channel_message_t m JOIN agent_turn_t t ON t.host_id=m.host_id AND t.turn_id=m.turn_id
+      JOIN agent_channel_binding_t b ON b.host_id=m.host_id AND b.binding_id=m.binding_id AND b.adapter_id='slack-events-v1'
+      JOIN LATERAL(SELECT grant_id,data_boundary_digest FROM agent_connector_grant_t
+        WHERE host_id=m.host_id AND binding_id=m.binding_id AND connector_alias='slack-api-v1'
+          AND revoked_ts IS NULL AND expires_ts>now() AND use_count<maximum_uses
+          AND allowed_operations ? 'chat.postMessage'
+        ORDER BY created_ts DESC LIMIT 1) g ON TRUE
       WHERE m.direction='INBOUND' AND m.state='TURN_CREATED' AND t.state='COMPLETED'
       ON CONFLICT(host_id,binding_id,external_event_id,direction) DO NOTHING").execute(&state.pool).await?;
     sqlx::query(
@@ -633,8 +712,11 @@ async fn delivery_pass(state: &AppState) -> Result<()> {
     .execute(&state.pool)
     .await?;
     let mut tx = state.pool.begin().await?;
-    let row=sqlx::query("SELECT m.host_id,m.message_id,m.response_destination,m.payload,m.attempt_count,b.quiet_hours,b.revoked_ts
+    let row=sqlx::query("SELECT m.host_id,m.message_id,m.response_destination,m.payload,m.attempt_count,b.quiet_hours,b.revoked_ts,
+        g.grant_id,g.connector_alias,g.allowed_operations,g.data_boundary_digest,g.credential_reference,g.expires_ts,g.revoked_ts AS grant_revoked_ts
       FROM agent_channel_message_t m JOIN agent_channel_binding_t b ON b.host_id=m.host_id AND b.binding_id=m.binding_id
+      JOIN agent_connector_grant_t g ON g.host_id=m.host_id AND g.grant_id=m.connector_grant_id
+        AND g.data_boundary_digest=m.connector_data_boundary_digest
       WHERE m.host_id=$1 AND m.direction='OUTBOUND' AND m.state IN('PENDING_DELIVERY','FAILED')
         AND (m.next_attempt_ts IS NULL OR m.next_attempt_ts<=now()) ORDER BY m.created_ts LIMIT 1 FOR UPDATE OF m SKIP LOCKED")
         .bind(state.host_id).fetch_optional(&mut *tx).await?;
@@ -672,12 +754,63 @@ async fn delivery_pass(state: &AppState) -> Result<()> {
     }
     let payload: Value = row.try_get("payload")?;
     let destination: String = row.try_get("response_destination")?;
+    let grant_id: Uuid = row.try_get("grant_id")?;
+    let connector_alias: String = row.try_get("connector_alias")?;
+    let data_boundary_digest: String = row.try_get("data_boundary_digest")?;
+    let operations: Value = row.try_get("allowed_operations")?;
+    let credential_reference: String = row.try_get("credential_reference")?;
+    let grant_invalid = connector_alias != SLACK_CONNECTOR_ALIAS
+        || row
+            .try_get::<Option<chrono::DateTime<Utc>>, _>("grant_revoked_ts")?
+            .is_some()
+        || row.try_get::<chrono::DateTime<Utc>, _>("expires_ts")? <= Utc::now()
+        || operations.as_array().is_none_or(|values| {
+            !values
+                .iter()
+                .any(|v| v.as_str() == Some(SLACK_POST_MESSAGE_OPERATION))
+        });
+    if grant_invalid {
+        sqlx::query("UPDATE agent_channel_message_t SET state='REJECTED',last_error=jsonb_build_object('class','connector_grant_invalid'),updated_ts=now() WHERE host_id=$1 AND message_id=$2")
+            .bind(state.host_id).bind(id).execute(&mut *tx).await?;
+        tx.commit().await?;
+        return Ok(());
+    }
+    let token = match state
+        .connector_credentials
+        .bearer(&credential_reference, &connector_alias)
+    {
+        Ok(token) => token.to_string(),
+        Err(_) => {
+            sqlx::query("UPDATE agent_channel_message_t SET state='REJECTED',last_error=jsonb_build_object('class','connector_credential_unavailable'),updated_ts=now() WHERE host_id=$1 AND message_id=$2")
+                .bind(state.host_id).bind(id).execute(&mut *tx).await?;
+            tx.commit().await?;
+            return Ok(());
+        }
+    };
+    let consumed = sqlx::query(
+        "UPDATE agent_connector_grant_t SET use_count=use_count+1
+      WHERE host_id=$1 AND grant_id=$2 AND connector_alias=$3 AND data_boundary_digest=$4
+        AND revoked_ts IS NULL AND expires_ts>now() AND use_count<maximum_uses
+        AND allowed_operations ? 'chat.postMessage'",
+    )
+    .bind(state.host_id)
+    .bind(grant_id)
+    .bind(&connector_alias)
+    .bind(&data_boundary_digest)
+    .execute(&mut *tx)
+    .await?;
+    if consumed.rows_affected() != 1 {
+        sqlx::query("UPDATE agent_channel_message_t SET state='REJECTED',last_error=jsonb_build_object('class','connector_grant_exhausted'),updated_ts=now() WHERE host_id=$1 AND message_id=$2")
+            .bind(state.host_id).bind(id).execute(&mut *tx).await?;
+        tx.commit().await?;
+        return Ok(());
+    }
     sqlx::query("UPDATE agent_channel_message_t SET state='SENDING',attempt_count=attempt_count+1,
       updated_ts=now() WHERE host_id=$1 AND message_id=$2 AND state IN('PENDING_DELIVERY','FAILED')")
         .bind(state.host_id).bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
-    let response=state.http.post("https://slack.com/api/chat.postMessage").bearer_auth(state.bot_token.as_str())
-        .json(&json!({"channel":destination,"text":payload.get("text").and_then(Value::as_str).unwrap_or("")})).send().await;
+    let response=state.http.post("https://slack.com/api/chat.postMessage").bearer_auth(token)
+        .json(&json!({"channel":destination,"text":payload.get("text").and_then(Value::as_str).unwrap_or(""),"client_msg_id":id})).send().await;
     match response {
         Ok(response) if response.status().is_success() => {
             let receipt: Value = response.json().await?;
