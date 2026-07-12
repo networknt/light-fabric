@@ -3995,7 +3995,7 @@ async fn build_agent_state(
     let portal_token =
         registry_token(&portal_registry_config).ok_or(RuntimeError::MissingPortalToken)?;
     let memory_write_mode = std::env::var("LIGHT_AGENT_MEMORY_WRITE_MODE")
-        .unwrap_or_else(|_| "direct-pg".to_string())
+        .unwrap_or_else(|_| "portal-command".to_string())
         .to_ascii_lowercase();
     let memory: Arc<dyn MemoryStore> = match memory_write_mode.as_str() {
         "portal-command" => {
@@ -4015,7 +4015,17 @@ async fn build_agent_state(
             })?;
             Arc::new(PortalCommandMemoryStore::new(pool.clone(), command_client))
         }
-        "direct-pg" => Arc::new(DirectPgMemoryStore::new(pool.clone())),
+        "direct-pg" if bool_from_env("LIGHT_AGENT_ALLOW_DIRECT_PG_MEMORY", false) => {
+            warn!(
+                "direct PostgreSQL memory writes explicitly enabled; use portal-command in production"
+            );
+            Arc::new(DirectPgMemoryStore::new(pool.clone()))
+        }
+        "direct-pg" => {
+            return Err(RuntimeError::Config(
+                "direct-pg memory writes require LIGHT_AGENT_ALLOW_DIRECT_PG_MEMORY=true; portal-command is the production default".to_string(),
+            ));
+        }
         other => {
             return Err(RuntimeError::Config(format!(
                 "LIGHT_AGENT_MEMORY_WRITE_MODE must be portal-command or direct-pg, got {other}"

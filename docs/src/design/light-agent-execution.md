@@ -143,9 +143,9 @@ effectful use:
 11. Local helper scripts contain default bearer-token literals. Those values
     must be removed and rotated regardless of whether they were intended only
     for development.
-12. Direct PostgreSQL memory writes remain the default. Portal-command mode
-    exists, but durable event and authorization policy are not the default
-    write path.
+12. Portal-command is the production memory-write default. Direct PostgreSQL
+    writes are retained only as an explicitly enabled local/development
+    compatibility mode.
 13. The current MCP client path forwards the caller Authorization header to
     light-gateway. It does not yet exchange it for a token narrowed to the
     agent, turn/action, tool, data boundary, and policy digest.
@@ -1268,10 +1268,10 @@ timeline from turn/action/session events. The UI may show a temporary
 history-sync state, but the accepted action and audit record remain visible.
 Projection lag or conflict is an operational error, not an action retry signal.
 
-Portal-command memory writes should become the production default after
-compatibility rollout because they preserve event, authorization, and audit
-boundaries. Direct PostgreSQL mode can remain an explicit local/development
-compatibility profile. Longer term, memory recall should also use a scoped
+Portal-command memory writes are the production default because they preserve
+event, authorization, and audit boundaries. Direct PostgreSQL mode remains an
+explicitly enabled local/development compatibility profile. Longer term,
+memory recall should also use a scoped
 service API so the general agent pod does not require a database password.
 
 ## Authentication And Session Security

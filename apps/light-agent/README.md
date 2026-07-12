@@ -12,6 +12,11 @@ the caller's broad bearer token in this mode.
 `LIGHT_AGENT_ALLOW_BROAD_GATEWAY_TOKEN=true` enables the legacy bearer-forwarding
 path for local compatibility only. It is disabled by default.
 
+Memory writes use `portal-command` by default so authorization, events, and
+auditing remain in the command boundary. `LIGHT_AGENT_MEMORY_WRITE_MODE=direct-pg`
+is a development compatibility mode and is rejected unless
+`LIGHT_AGENT_ALLOW_DIRECT_PG_MEMORY=true` is also set.
+
 Apply `portal-db/postgres/patch_20260711_light_agent_runtime.sql` after the
 workflow-runner migration before starting this version.
 

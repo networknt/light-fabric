@@ -37,6 +37,7 @@ use pingora::prelude::{HttpPeer, ProxyHttp, Session};
 use pingora::utils::tls::CertKey;
 use pingora::{Error, ErrorType};
 use serde_json::{Value as JsonValue, json};
+use sqlx::postgres::PgPoolOptions;
 use std::collections::BTreeMap;
 use std::io::BufReader;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -69,7 +70,7 @@ impl PingoraApp for GatewayApp {
 
 struct GatewayProxy {
     agent_delegation: Option<Arc<DelegationVerifier>>,
-    agent_delegation_replay: Mutex<BTreeMap<uuid::Uuid, i64>>,
+    agent_delegation_replay: Option<Arc<dyn DelegationReplayStore>>,
     active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
     correlation_config: Arc<ConfigManager<Option<CorrelationConfig>>>,
     cors_config: Arc<ConfigManager<Option<CorsConfig>>>,
@@ -104,8 +105,58 @@ struct GatewayProxy {
     server_port: u16,
 }
 
+#[async_trait]
+trait DelegationReplayStore: Send + Sync {
+    /// Atomically consumes a replay identifier. `false` means it was already consumed.
+    async fn consume(&self, claims: &DelegationClaims) -> Result<bool, String>;
+}
+
+struct PostgresDelegationReplayStore {
+    pool: sqlx::PgPool,
+    gateway_instance: String,
+}
+
+#[async_trait]
+impl DelegationReplayStore for PostgresDelegationReplayStore {
+    async fn consume(&self, claims: &DelegationClaims) -> Result<bool, String> {
+        let expires_ts =
+            DateTime::<Utc>::from_timestamp(claims.expires_at, 0).ok_or_else(|| {
+                "delegation expiry is outside the supported timestamp range".to_string()
+            })?;
+        // Keep cleanup bounded and opportunistic. The expiry index makes this
+        // cheap, while the primary key remains the authoritative replay fence.
+        sqlx::query(
+            "DELETE FROM agent_delegation_replay_t WHERE ctid IN
+             (SELECT ctid FROM agent_delegation_replay_t
+              WHERE expires_ts <= CURRENT_TIMESTAMP
+              ORDER BY expires_ts LIMIT 256)",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|error| format!("shared delegation replay cleanup failed: {error}"))?;
+        let result = sqlx::query(
+            "INSERT INTO agent_delegation_replay_t
+             (host_id,audience,replay_id,token_id,action_attempt_id,issuer,gateway_instance,expires_ts)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+             ON CONFLICT(audience,replay_id) DO NOTHING",
+        )
+        .bind(claims.host_id)
+        .bind(&claims.audience)
+        .bind(claims.replay_id)
+        .bind(claims.token_id)
+        .bind(claims.action_attempt_id)
+        .bind(&claims.issuer)
+        .bind(&self.gateway_instance)
+        .bind(expires_ts)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| format!("shared delegation replay store is unavailable: {error}"))?;
+        Ok(result.rows_affected() == 1)
+    }
+}
+
 impl GatewayProxy {
-    fn authenticate_agent_delegation(
+    async fn authenticate_agent_delegation(
         &self,
         session: &Session,
     ) -> Option<Result<(AuthPrincipal, DelegationClaims), HandlerRejection>> {
@@ -120,40 +171,47 @@ impl GatewayProxy {
                 "agent delegation is not configured",
             )));
         };
-        Some(
-            verifier
-                .verify_token(token)
-                .and_then(|claims| {
-                    let now = Utc::now().timestamp();
-                    let mut replay = self
-                        .agent_delegation_replay
-                        .lock()
-                        .map_err(|_| agent_delegation::DelegationError::Binding)?;
-                    replay.retain(|_, expires_at| *expires_at > now);
-                    if replay.insert(claims.replay_id, claims.expires_at).is_some() {
-                        return Err(agent_delegation::DelegationError::Binding);
-                    }
-                    Ok({
-                        let principal = AuthPrincipal {
-                            client_id: Some(claims.agent_actor.clone()),
-                            user_id: Some(claims.caller_subject.clone()),
-                            issuer: Some(claims.issuer.clone()),
-                            host: Some(claims.host_id.to_string()),
-                            role: claims
-                                .caller_claims
-                                .get("role")
-                                .and_then(JsonValue::as_str)
-                                .map(str::to_string),
-                            claims: claims.caller_claims.clone(),
-                            ..AuthPrincipal::default()
-                        };
-                        (principal, claims)
-                    })
-                })
-                .map_err(|_| {
-                    HandlerRejection::unauthorized("invalid or replayed agent delegation")
-                }),
-        )
+        let claims = match verifier.verify_token(token) {
+            Ok(claims) => claims,
+            Err(_) => {
+                return Some(Err(HandlerRejection::unauthorized(
+                    "invalid agent delegation",
+                )));
+            }
+        };
+        let Some(replay_store) = self.agent_delegation_replay.as_ref() else {
+            return Some(Err(HandlerRejection::unauthorized(
+                "agent delegation replay protection is not configured",
+            )));
+        };
+        match replay_store.consume(&claims).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return Some(Err(HandlerRejection::unauthorized(
+                    "invalid or replayed agent delegation",
+                )));
+            }
+            Err(error) => {
+                warn!(error = %error, "rejecting delegation because shared replay storage failed");
+                return Some(Err(HandlerRejection::unauthorized(
+                    "agent delegation replay protection is unavailable",
+                )));
+            }
+        }
+        let principal = AuthPrincipal {
+            client_id: Some(claims.agent_actor.clone()),
+            user_id: Some(claims.caller_subject.clone()),
+            issuer: Some(claims.issuer.clone()),
+            host: Some(claims.host_id.to_string()),
+            role: claims
+                .caller_claims
+                .get("role")
+                .and_then(JsonValue::as_str)
+                .map(str::to_string),
+            claims: claims.caller_claims.clone(),
+            ..AuthPrincipal::default()
+        };
+        Some(Ok((principal, claims)))
     }
 
     fn from_runtime_config(config: &RuntimeConfig) -> Result<Self, RuntimeError> {
@@ -481,10 +539,33 @@ impl GatewayProxy {
                     })
             })
             .transpose()?;
+        let agent_delegation_replay = if agent_delegation.is_some() {
+            let database_url = std::env::var("LIGHT_GATEWAY_DELEGATION_DATABASE_URL")
+                .or_else(|_| std::env::var("DATABASE_URL"))
+                .map_err(|_| RuntimeError::Config(
+                    "LIGHT_GATEWAY_DELEGATION_DATABASE_URL (or DATABASE_URL) is required when agent delegation is enabled".to_string(),
+                ))?;
+            let pool = PgPoolOptions::new()
+                .max_connections(8)
+                .connect_lazy(&database_url)
+                .map_err(|error| {
+                    RuntimeError::Config(format!("invalid delegation database URL: {error}"))
+                })?;
+            let gateway_instance = std::env::var("LIGHT_GATEWAY_INSTANCE_ID")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| config.service_identity.service_id.clone());
+            Some(Arc::new(PostgresDelegationReplayStore {
+                pool,
+                gateway_instance,
+            }) as Arc<dyn DelegationReplayStore>)
+        } else {
+            None
+        };
 
         Ok(Self {
             agent_delegation,
-            agent_delegation_replay: Mutex::new(BTreeMap::new()),
+            agent_delegation_replay,
             active_handlers,
             correlation_config,
             cors_config,
@@ -1942,7 +2023,7 @@ impl ProxyHttp for GatewayProxy {
                     }
                 }
                 "security" | "jwt" => {
-                    if let Some(result) = self.authenticate_agent_delegation(session) {
+                    if let Some(result) = self.authenticate_agent_delegation(session).await {
                         match result {
                             Ok((principal, delegation)) => {
                                 ctx.auth = Some(principal);
@@ -1973,7 +2054,7 @@ impl ProxyHttp for GatewayProxy {
                     }
                 }
                 "unified-security" | "unified" => {
-                    if let Some(result) = self.authenticate_agent_delegation(session) {
+                    if let Some(result) = self.authenticate_agent_delegation(session).await {
                         match result {
                             Ok((principal, delegation)) => {
                                 ctx.auth = Some(principal);
