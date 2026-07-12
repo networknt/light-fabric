@@ -1,11 +1,15 @@
 use chrono::{Duration, Utc};
+use execution_backend::{BackendError, ExecutionBackend};
 use execution_backend_conformance::exercise_lifecycle;
 use execution_backend_oci::{OciBackendConfig, OciExecutionBackend, OciRuntime};
 use execution_runner_protocol::{
     AuthenticatedOrigin, CommandExecutionSpec, ExecuteLease, ExecutionId, ExecutionSubject,
     LeaseContext, LeaseId, OriginKind, SchedulingRequestId,
 };
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
 use uuid::Uuid;
 
 #[tokio::test]
@@ -21,6 +25,7 @@ async fn docker_passes_shared_backend_conformance() {
         rootless: false,
         maximum_memory_bytes: 128 * 1024 * 1024,
         maximum_pids: 64,
+        owner_runner: "docker-conformance".into(),
     })
     .unwrap();
     let lease = ExecuteLease {
@@ -69,4 +74,14 @@ async fn docker_passes_shared_backend_conformance() {
         command_template_digest: "template".into(),
     };
     exercise_lifecycle(&backend, &lease, &[]).await.unwrap();
+    let orphan = backend.prepare(&lease, &[]).await.unwrap();
+    let cleaned = backend
+        .reconcile_orphans(&BTreeSet::new(), Utc::now() + Duration::minutes(2))
+        .await
+        .unwrap();
+    assert_eq!(cleaned.len(), 1);
+    assert!(matches!(
+        backend.inspect(&orphan.backend_operation_id).await,
+        Err(BackendError::NotFound(_))
+    ));
 }

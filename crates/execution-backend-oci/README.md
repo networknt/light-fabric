@@ -13,8 +13,11 @@ Docker and Podman do not provide the Cube-style native lease TTL used by this
 integration. The runner watchdog owns deadline enforcement. Operations use the
 deterministic `light-<execution-id>` name, making prepare and cleanup
 idempotent and allowing deployment reconcilers to discover stale resources by
-name and the `light.execution` label. Production enablement must include a
-host-level orphan sweeper for those resources and separate capacity controls.
+name and ownership/expiry labels. The runner performs a bounded startup and
+periodic sweep, retains every operation still present in its durable journal,
+and deletes only expired resources whose `light.runner` label exactly matches
+the current runner. Production enablement must still include separate capacity
+controls and monitoring for repeated reconciliation failures.
 
 Run the live shared conformance gate with a locally available pinned image:
 
@@ -22,4 +25,3 @@ Run the live shared conformance gate with a locally available pinned image:
 LIGHT_OCI_CONFORMANCE_IMAGE='repository/image@sha256:...' \
   cargo test -p execution-backend-oci --test docker_conformance -- --ignored
 ```
-

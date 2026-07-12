@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use async_trait::async_trait;
@@ -8,6 +8,67 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::watch;
+
+pub fn validate_artifact_manifest(
+    artifacts: &[ArtifactEvidence],
+    maximum_entries: usize,
+    maximum_total_bytes: u64,
+) -> Result<(), BackendError> {
+    if artifacts.len() > maximum_entries {
+        return Err(BackendError::InvalidRequest(
+            "artifact manifest has too many entries".into(),
+        ));
+    }
+    let mut names = BTreeSet::new();
+    let mut total = 0_u64;
+    for artifact in artifacts {
+        if artifact.file_type != "regular-file" {
+            return Err(BackendError::InvalidRequest(
+                "artifact is not a verified regular file".into(),
+            ));
+        }
+        let path = std::path::Path::new(&artifact.logical_name);
+        if artifact.logical_name.is_empty()
+            || artifact.logical_name.len() > 1024
+            || artifact.logical_name.contains(['\\', '\0'])
+            || path.is_absolute()
+            || path
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+            || !names.insert(artifact.logical_name.clone())
+        {
+            return Err(BackendError::InvalidRequest(
+                "artifact logical name is unsafe or duplicated".into(),
+            ));
+        }
+        if artifact.media_type.is_empty()
+            || artifact.media_type.len() > 255
+            || artifact.reference.is_empty()
+            || artifact.reference.len() > 4096
+        {
+            return Err(BackendError::InvalidRequest(
+                "artifact metadata is missing or oversized".into(),
+            ));
+        }
+        let digest = artifact.digest.strip_prefix("sha256:").ok_or_else(|| {
+            BackendError::InvalidRequest("artifact digest must use sha256".into())
+        })?;
+        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(BackendError::InvalidRequest(
+                "artifact digest is malformed".into(),
+            ));
+        }
+        total = total
+            .checked_add(artifact.size)
+            .ok_or_else(|| BackendError::InvalidRequest("artifact size overflow".into()))?;
+        if total > maximum_total_bytes {
+            return Err(BackendError::InvalidRequest(
+                "artifact bytes exceed the admitted total".into(),
+            ));
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Error)]
 pub enum BackendError {
@@ -179,4 +240,14 @@ pub trait ExecutionBackend: Send + Sync {
     }
 
     async fn cleanup(&self, backend_operation_id: &str) -> Result<CleanupEvidence, BackendError>;
+
+    async fn reconcile_orphans(
+        &self,
+        _retained_operation_ids: &BTreeSet<String>,
+        _now: DateTime<Utc>,
+    ) -> Result<Vec<CleanupEvidence>, BackendError> {
+        Err(BackendError::Unsupported(
+            "backend does not support owned-resource reconciliation".into(),
+        ))
+    }
 }

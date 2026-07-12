@@ -30,6 +30,8 @@ pub struct MockBehavior {
     pub outcome: MockOutcome,
     pub lose_first_response: bool,
     pub cleanup_fails: bool,
+    #[serde(default)]
+    pub cleanup_failures: u32,
 }
 
 impl Default for MockBehavior {
@@ -42,6 +44,7 @@ impl Default for MockBehavior {
             outcome: MockOutcome::Success,
             lose_first_response: false,
             cleanup_fails: false,
+            cleanup_failures: 0,
         }
     }
 }
@@ -58,6 +61,7 @@ pub struct MockExecutionBackend {
     capability: BackendCapability,
     behavior: MockBehavior,
     operations: Arc<Mutex<HashMap<String, Operation>>>,
+    cleanup_failures: Arc<Mutex<u32>>,
 }
 
 impl MockExecutionBackend {
@@ -74,6 +78,7 @@ impl MockExecutionBackend {
                 healthy: true,
                 available_slots: 1,
             },
+            cleanup_failures: Arc::new(Mutex::new(behavior.cleanup_failures)),
             behavior,
             operations: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -156,7 +161,7 @@ impl ExecutionBackend for MockExecutionBackend {
     async fn execute(
         &self,
         prepared: &PreparedExecution,
-        _lease: &ExecuteLease,
+        lease: &ExecuteLease,
         mut cancellation: watch::Receiver<bool>,
     ) -> Result<BackendOutput, BackendError> {
         {
@@ -176,8 +181,18 @@ impl ExecutionBackend for MockExecutionBackend {
         }
 
         let started_at = Utc::now();
+        let until_deadline = lease
+            .lease
+            .deadline
+            .signed_duration_since(Utc::now())
+            .to_std()
+            .unwrap_or_default();
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(self.behavior.duration_ms)) => {}
+            _ = tokio::time::sleep(until_deadline) => {
+                self.cancel(&prepared.backend_operation_id).await?;
+                return Err(BackendError::TimedOut("mock operation deadline expired".into()));
+            }
             changed = cancellation.changed() => {
                 if changed.is_ok() && *cancellation.borrow() {
                     self.cancel(&prepared.backend_operation_id).await?;
@@ -260,6 +275,15 @@ impl ExecutionBackend for MockExecutionBackend {
                 "mock backend injected cleanup failure".to_string(),
             ));
         }
+        {
+            let mut remaining = self.cleanup_failures.lock().await;
+            if *remaining > 0 {
+                *remaining -= 1;
+                return Err(BackendError::Cleanup(
+                    "mock backend injected transient cleanup failure".to_string(),
+                ));
+            }
+        }
         let mut operations = self.operations.lock().await;
         let operation = operations
             .get_mut(operation_id)
@@ -334,7 +358,85 @@ mod tests {
     #[tokio::test]
     async fn passes_shared_backend_conformance() {
         let backend = MockExecutionBackend::new("compat", MockBehavior::default());
+        execution_backend_conformance::exercise_validation_guards(&backend, &lease(), &[])
+            .await
+            .unwrap();
         execution_backend_conformance::exercise_lifecycle(&backend, &lease(), &[])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn passes_shared_failure_unknown_and_cancellation_conformance() {
+        let failure = MockExecutionBackend::new(
+            "compat",
+            MockBehavior {
+                outcome: MockOutcome::Failure,
+                exit_code: 17,
+                ..Default::default()
+            },
+        );
+        execution_backend_conformance::exercise_nonzero_failure(&failure, &lease())
+            .await
+            .unwrap();
+
+        let unknown = MockExecutionBackend::new(
+            "compat",
+            MockBehavior {
+                outcome: MockOutcome::Unknown,
+                ..Default::default()
+            },
+        );
+        execution_backend_conformance::exercise_unknown_outcome(&unknown, &lease())
+            .await
+            .unwrap();
+
+        let cancellable = MockExecutionBackend::new(
+            "compat",
+            MockBehavior {
+                duration_ms: 250,
+                ..Default::default()
+            },
+        );
+        execution_backend_conformance::exercise_cancellation(&cancellable, &lease())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn passes_shared_recovery_conformance() {
+        let lost = MockExecutionBackend::new(
+            "compat",
+            MockBehavior {
+                lose_first_response: true,
+                ..Default::default()
+            },
+        );
+        execution_backend_conformance::exercise_lost_terminal_response(&lost, &lease())
+            .await
+            .unwrap();
+
+        let cleanup = MockExecutionBackend::new(
+            "compat",
+            MockBehavior {
+                cleanup_failures: 1,
+                ..Default::default()
+            },
+        );
+        execution_backend_conformance::exercise_cleanup_retry(&cleanup, &lease())
+            .await
+            .unwrap();
+
+        let deadline = MockExecutionBackend::new(
+            "compat",
+            MockBehavior {
+                duration_ms: 500,
+                ..Default::default()
+            },
+        );
+        let mut deadline_lease = lease();
+        deadline_lease.lease.deadline = Utc::now() + ChronoDuration::milliseconds(50);
+        execution_backend_conformance::exercise_deadline(&deadline, &deadline_lease)
             .await
             .unwrap();
     }

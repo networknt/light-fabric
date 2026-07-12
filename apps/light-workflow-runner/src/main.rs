@@ -54,6 +54,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let health_address = config.health_address;
     let watchdog = Arc::clone(&supervisor);
     tokio::spawn(async move { watchdog.run_watchdog().await });
+    let orphan_reconciler = Arc::clone(&supervisor);
+    tokio::spawn(async move { orphan_reconciler.run_orphan_reconciler().await });
     let health_for_server = Arc::clone(&health_state);
     tokio::spawn(async move {
         if let Err(error) = health::serve(health_address, health_for_server).await {

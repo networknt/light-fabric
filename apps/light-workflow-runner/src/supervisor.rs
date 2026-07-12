@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
@@ -6,6 +7,7 @@ use chrono::Utc;
 use dashmap::DashMap;
 use execution_backend::{
     BackendError, BackendOperationState, Checkpoint, ExecutionBackend, PreparedExecution,
+    validate_artifact_manifest,
 };
 use execution_runner_protocol::{
     ActiveLeaseSummary, AttemptState, CancelLease, CleanupCompleted, CleanupState,
@@ -447,10 +449,19 @@ impl Supervisor {
                 .collect_artifacts(&prepared.backend_operation_id)
                 .await
             {
-                Ok(artifacts) if artifacts.len() <= 1024 => result.artifacts = artifacts,
+                Ok(artifacts)
+                    if validate_artifact_manifest(
+                        &artifacts,
+                        1024,
+                        supervisor.stager.maximum_bytes(),
+                    )
+                    .is_ok() =>
+                {
+                    result.artifacts = artifacts
+                }
                 Ok(_) => {
                     result.state = AttemptState::Failed;
-                    result.failure_class = Some("artifact_manifest_too_large".to_string());
+                    result.failure_class = Some("artifact_manifest_rejected".to_string());
                 }
                 Err(error) => {
                     warn!(execution_id = %lease.lease.execution_id, %error, "artifact collection failed");
@@ -921,6 +932,35 @@ impl Supervisor {
                 } else {
                     info!(%execution_id, "watchdog cancelled expired execution");
                 }
+            }
+        }
+    }
+
+    pub async fn reconcile_backend_orphans_once(&self) -> Result<usize, String> {
+        let retained = self
+            .journal
+            .unfinished()?
+            .into_iter()
+            .filter_map(|record| record.backend_operation_id)
+            .collect::<BTreeSet<_>>();
+        match self.backend.reconcile_orphans(&retained, Utc::now()).await {
+            Ok(cleaned) => {
+                for evidence in &cleaned {
+                    info!(operation_id=%evidence.backend_operation_id, evidence=%evidence.evidence_reference, "reconciled orphan backend resource");
+                }
+                Ok(cleaned.len())
+            }
+            Err(BackendError::Unsupported(_)) => Ok(0),
+            Err(error) => Err(format!("backend orphan reconciliation failed: {error}")),
+        }
+    }
+
+    pub async fn run_orphan_reconciler(self: Arc<Self>) {
+        let mut ticker = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            ticker.tick().await;
+            if let Err(error) = self.reconcile_backend_orphans_once().await {
+                warn!(%error, "backend orphan reconciliation pass failed");
             }
         }
     }

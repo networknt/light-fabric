@@ -8,7 +8,12 @@ use execution_runner_protocol::{
     BackendCapability, CommandExecutionSpec, ExecuteLease, HostExposure, IsolationBoundary,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::PathBuf, process::Stdio, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+    process::Stdio,
+    time::Duration,
+};
 use tokio::{io::AsyncReadExt, process::Command, sync::watch};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -29,6 +34,7 @@ pub struct OciBackendConfig {
     pub rootless: bool,
     pub maximum_memory_bytes: u64,
     pub maximum_pids: u32,
+    pub owner_runner: String,
 }
 
 #[derive(Clone)]
@@ -105,6 +111,7 @@ impl OciExecutionBackend {
             || config.available_slots == 0
             || config.maximum_memory_bytes == 0
             || config.maximum_pids == 0
+            || config.owner_runner.trim().is_empty()
         {
             return Err(BackendError::InvalidRequest(
                 "OCI image must be digest-pinned and resource limits must be positive".into(),
@@ -235,6 +242,10 @@ impl ExecutionBackend for OciExecutionBackend {
                 spec.working_directory.clone(),
                 "--label".into(),
                 format!("light.execution={}", lease.lease.execution_id),
+                "--label".into(),
+                format!("light.runner={}", self.config.owner_runner),
+                "--label".into(),
+                format!("light.expires={}", lease.lease.deadline.to_rfc3339()),
             ];
             for input in staged {
                 args.extend([
@@ -404,6 +415,87 @@ impl ExecutionBackend for OciExecutionBackend {
             cleaned_at: Utc::now(),
             evidence_reference: format!("oci:deleted:{id}"),
         })
+    }
+
+    async fn reconcile_orphans(
+        &self,
+        retained_operation_ids: &BTreeSet<String>,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<Vec<CleanupEvidence>, BackendError> {
+        let output = self
+            .runtime(&[
+                "container".into(),
+                "ls".into(),
+                "--all".into(),
+                "--filter".into(),
+                format!("label=light.runner={}", self.config.owner_runner),
+                "--format".into(),
+                "{{.Names}}".into(),
+            ])
+            .await?;
+        if !output.status.success() {
+            return Err(BackendError::Transport(format!(
+                "OCI owned-resource discovery failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        let names = String::from_utf8(output.stdout)
+            .map_err(|_| BackendError::Unknown("OCI discovery returned non-UTF8 names".into()))?;
+        let names = names
+            .lines()
+            .filter(|name| !name.is_empty())
+            .collect::<Vec<_>>();
+        if names.len() > 1_000 {
+            return Err(BackendError::Unknown(
+                "OCI owned-resource discovery exceeded 1000 containers".into(),
+            ));
+        }
+        let mut cleaned = Vec::new();
+        for name in names {
+            if retained_operation_ids.contains(name) {
+                continue;
+            }
+            let labels = self
+                .runtime(&[
+                    "container".into(),
+                    "inspect".into(),
+                    "--format".into(),
+                    "{{json .Config.Labels}}".into(),
+                    name.into(),
+                ])
+                .await?;
+            if !labels.status.success() {
+                continue;
+            }
+            let labels: BTreeMap<String, String> =
+                serde_json::from_slice(&labels.stdout).map_err(|error| {
+                    BackendError::Unknown(format!("OCI labels are invalid: {error}"))
+                })?;
+            if labels.get("light.runner").map(String::as_str)
+                != Some(self.config.owner_runner.as_str())
+            {
+                continue;
+            }
+            let expires = labels.get("light.expires").ok_or_else(|| {
+                BackendError::Unknown(format!("owned OCI container {name} has no expiry label"))
+            })?;
+            let expires = chrono::DateTime::parse_from_rfc3339(expires)
+                .map_err(|error| {
+                    BackendError::Unknown(format!(
+                        "owned OCI container {name} has invalid expiry: {error}"
+                    ))
+                })?
+                .with_timezone(&Utc);
+            if expires > now {
+                continue;
+            }
+            let evidence = self.cleanup(name).await?;
+            cleaned.push(CleanupEvidence {
+                evidence_reference: format!("oci:orphan-deleted:{name}"),
+                ..evidence
+            });
+        }
+        Ok(cleaned)
     }
 }
 

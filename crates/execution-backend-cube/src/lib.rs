@@ -11,7 +11,10 @@ use execution_runner_protocol::{
 };
 use execution_security::ProtectedPathPolicy;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use tokio::sync::watch;
 
 mod http;
@@ -404,6 +407,31 @@ impl<C: CubeApi + 'static> ExecutionBackend for CubeExecutionBackend<C> {
             evidence_reference: format!("cube:deleted:{id}"),
         })
     }
+
+    async fn reconcile_orphans(
+        &self,
+        retained_operation_ids: &BTreeSet<String>,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<CleanupEvidence>, BackendError> {
+        let resources = self.discover_all_owned_bounded(10).await?;
+        let mut cleaned = Vec::new();
+        for resource in resources {
+            if retained_operation_ids.contains(&resource.environment_id)
+                || resource.expires_at > now
+                || resource.tags.get("light.runner").map(String::as_str)
+                    != Some(self.config.owner_runner.as_str())
+            {
+                continue;
+            }
+            self.client.delete(&resource.environment_id).await?;
+            cleaned.push(CleanupEvidence {
+                backend_operation_id: resource.environment_id.clone(),
+                cleaned_at: Utc::now(),
+                evidence_reference: format!("cube:orphan-deleted:{}", resource.environment_id),
+            });
+        }
+        Ok(cleaned)
+    }
 }
 
 fn validate_coding_fixture_output(
@@ -501,12 +529,27 @@ mod tests {
     use std::sync::Mutex;
     use uuid::Uuid;
 
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    enum FakeOutcome {
+        #[default]
+        Success,
+        Failure,
+        Unknown,
+    }
+
     #[derive(Default)]
     struct FakeCube {
         resource: Mutex<Option<CubeResource>>,
         creates: Mutex<usize>,
         stages: Mutex<usize>,
+        result: Mutex<Option<CubeCommandResult>>,
+        outcome: FakeOutcome,
+        duration_ms: u64,
         lose_first_response: bool,
+        lose_execute_response: bool,
+        execute_response_lost: Mutex<bool>,
+        timeout_seconds: Mutex<Option<u64>>,
+        delete_failures: Mutex<u32>,
     }
 
     #[async_trait]
@@ -555,26 +598,87 @@ mod tests {
             _: &str,
             _: &CommandExecutionSpec,
         ) -> Result<CubeCommandResult, BackendError> {
+            if let Some(result) = self.result.lock().unwrap().clone() {
+                return Ok(result);
+            }
+            if self.duration_ms > 0 {
+                let timeout = { *self.timeout_seconds.lock().unwrap() };
+                let duration =
+                    tokio::time::sleep(std::time::Duration::from_millis(self.duration_ms));
+                tokio::pin!(duration);
+                if let Some(timeout) = timeout {
+                    tokio::select! {
+                        _ = &mut duration => {}
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(timeout)) => {
+                            if let Some(resource) = self.resource.lock().unwrap().as_mut() {
+                                resource.state = CubeState::Unknown;
+                            }
+                            return Err(BackendError::TimedOut("injected Cube native timeout".into()));
+                        }
+                    }
+                } else {
+                    duration.await;
+                }
+            }
+            if self.outcome == FakeOutcome::Unknown {
+                if let Some(resource) = self.resource.lock().unwrap().as_mut() {
+                    resource.state = CubeState::Unknown;
+                }
+                return Err(BackendError::Unknown(
+                    "injected unknown Cube outcome".into(),
+                ));
+            }
             let now = Utc::now();
-            Ok(CubeCommandResult {
-                exit_code: 0,
-                stdout: b"ok".to_vec(),
-                stderr: vec![],
+            let failed = self.outcome == FakeOutcome::Failure;
+            let result = CubeCommandResult {
+                exit_code: if failed { 17 } else { 0 },
+                stdout: if failed { vec![] } else { b"ok".to_vec() },
+                stderr: if failed { b"failure".to_vec() } else { vec![] },
                 started_at: now,
                 finished_at: now,
                 evidence: BTreeMap::new(),
-            })
+            };
+            if let Some(resource) = self.resource.lock().unwrap().as_mut() {
+                resource.state = if failed {
+                    CubeState::Failed
+                } else {
+                    CubeState::Succeeded
+                };
+            }
+            *self.result.lock().unwrap() = Some(result.clone());
+            if self.lose_execute_response {
+                let mut lost = self.execute_response_lost.lock().unwrap();
+                if !*lost {
+                    *lost = true;
+                    return Err(BackendError::Transport(
+                        "injected lost Cube execute response".into(),
+                    ));
+                }
+            }
+            Ok(result)
         }
-        async fn set_timeout(&self, _: &str, _: u64) -> Result<(), BackendError> {
+        async fn set_timeout(&self, _: &str, timeout: u64) -> Result<(), BackendError> {
+            *self.timeout_seconds.lock().unwrap() = Some(timeout);
             Ok(())
         }
         async fn cancel(&self, _: &str) -> Result<(), BackendError> {
+            if let Some(resource) = self.resource.lock().unwrap().as_mut() {
+                resource.state = CubeState::Cancelled;
+            }
             Ok(())
         }
         async fn artifacts(&self, _: &str) -> Result<Vec<ArtifactEvidence>, BackendError> {
             Ok(vec![])
         }
         async fn delete(&self, _: &str) -> Result<(), BackendError> {
+            let mut failures = self.delete_failures.lock().unwrap();
+            if *failures > 0 {
+                *failures -= 1;
+                return Err(BackendError::Cleanup(
+                    "injected transient Cube delete failure".into(),
+                ));
+            }
+            drop(failures);
             self.resource.lock().unwrap().take();
             Ok(())
         }
@@ -683,9 +787,94 @@ mod tests {
     #[tokio::test]
     async fn passes_shared_backend_conformance() {
         let backend = backend(Arc::new(FakeCube::default()));
+        execution_backend_conformance::exercise_validation_guards(&backend, &lease(), &[])
+            .await
+            .unwrap();
         execution_backend_conformance::exercise_lifecycle(&backend, &lease(), &[])
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn passes_shared_failure_unknown_and_cancellation_conformance() {
+        let failure = backend(Arc::new(FakeCube {
+            outcome: FakeOutcome::Failure,
+            ..Default::default()
+        }));
+        execution_backend_conformance::exercise_nonzero_failure(&failure, &lease())
+            .await
+            .unwrap();
+
+        let unknown = backend(Arc::new(FakeCube {
+            outcome: FakeOutcome::Unknown,
+            ..Default::default()
+        }));
+        execution_backend_conformance::exercise_unknown_outcome(&unknown, &lease())
+            .await
+            .unwrap();
+
+        let cancellable = backend(Arc::new(FakeCube {
+            duration_ms: 250,
+            ..Default::default()
+        }));
+        execution_backend_conformance::exercise_cancellation(&cancellable, &lease())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn passes_shared_recovery_conformance() {
+        let lost = backend(Arc::new(FakeCube {
+            lose_execute_response: true,
+            ..Default::default()
+        }));
+        execution_backend_conformance::exercise_lost_terminal_response(&lost, &lease())
+            .await
+            .unwrap();
+
+        let cleanup = backend(Arc::new(FakeCube {
+            delete_failures: Mutex::new(1),
+            ..Default::default()
+        }));
+        execution_backend_conformance::exercise_cleanup_retry(&cleanup, &lease())
+            .await
+            .unwrap();
+
+        let deadline = backend(Arc::new(FakeCube {
+            duration_ms: 1_500,
+            ..Default::default()
+        }));
+        let mut deadline_lease = lease();
+        deadline_lease.lease.deadline = Utc::now() + Duration::milliseconds(1_100);
+        execution_backend_conformance::exercise_deadline(&deadline, &deadline_lease)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn orphan_reconciliation_is_expiry_and_ownership_fenced() {
+        let api = Arc::new(FakeCube::default());
+        let backend = backend(Arc::clone(&api));
+        let prepared = backend.prepare(&lease(), &[]).await.unwrap();
+        api.resource.lock().unwrap().as_mut().unwrap().expires_at =
+            Utc::now() - Duration::seconds(1);
+        let retained = BTreeSet::from([prepared.backend_operation_id.clone()]);
+        assert!(
+            backend
+                .reconcile_orphans(&retained, Utc::now())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            backend
+                .reconcile_orphans(&BTreeSet::new(), Utc::now())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(api.resource.lock().unwrap().is_none());
     }
 
     #[test]

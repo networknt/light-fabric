@@ -325,7 +325,7 @@ impl RunnerConfig {
                 )))
             }
             RunnerBackendConfig::Oci(config) => Ok(std::sync::Arc::new(
-                OciExecutionBackend::new(oci_backend_config(config))
+                OciExecutionBackend::new(oci_backend_config(config, &self.runner_id))
                     .map_err(|error| error.to_string())?,
             )),
         }
@@ -355,7 +355,7 @@ impl RunnerConfig {
             }
             .capability(),
             RunnerBackendConfig::Oci(config) => {
-                OciExecutionBackend::new(oci_backend_config(config))
+                OciExecutionBackend::new(oci_backend_config(config, &self.runner_id))
                     .map_err(|error| error.to_string())?
                     .capability()
             }
@@ -454,7 +454,7 @@ fn validate_cube_backend(config: &CubeRunnerBackendConfig) -> Result<(), String>
     Ok(())
 }
 
-fn oci_backend_config(config: &OciRunnerBackendConfig) -> OciBackendConfig {
+fn oci_backend_config(config: &OciRunnerBackendConfig, owner_runner: &str) -> OciBackendConfig {
     OciBackendConfig {
         runtime: match config.implementation {
             OciImplementation::Docker => OciRuntime::Docker,
@@ -467,11 +467,12 @@ fn oci_backend_config(config: &OciRunnerBackendConfig) -> OciBackendConfig {
         rootless: matches!(config.implementation, OciImplementation::RootlessOci),
         maximum_memory_bytes: config.maximum_memory_bytes,
         maximum_pids: config.maximum_pids,
+        owner_runner: owner_runner.to_string(),
     }
 }
 
 fn validate_oci_backend(config: &OciRunnerBackendConfig) -> Result<(), String> {
-    OciExecutionBackend::new(oci_backend_config(config))
+    OciExecutionBackend::new(oci_backend_config(config, "configuration-validation"))
         .map(|_| ())
         .map_err(|error| error.to_string())
 }

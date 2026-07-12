@@ -50,6 +50,10 @@ impl InputStager {
         Ok(staged)
     }
 
+    pub fn maximum_bytes(&self) -> u64 {
+        self.maximum_bytes
+    }
+
     pub fn cleanup(
         &self,
         execution_id: execution_runner_protocol::ExecutionId,

@@ -370,10 +370,16 @@ pub struct NormalizedOutput {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ArtifactEvidence {
     pub logical_name: String,
+    #[serde(default = "unknown_artifact_file_type")]
+    pub file_type: String,
     pub media_type: String,
     pub size: u64,
     pub digest: String,
     pub reference: String,
+}
+
+fn unknown_artifact_file_type() -> String {
+    "unknown".into()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
