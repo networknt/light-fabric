@@ -635,17 +635,108 @@ async fn admit_channel_turn(
 }
 
 async fn trigger_loop(state: AppState) {
+    let mut passes = 0_u64;
     loop {
         if let Err(error) = trigger_pass(&state).await {
             tracing::warn!(%error,"personal trigger pass failed");
+        }
+        passes = passes.wrapping_add(1);
+        if passes % 3600 == 0 {
+            if let Err(error)=sqlx::query("DELETE FROM agent_trigger_budget_usage_t WHERE host_id=$1 AND window_start_ts<now()-interval '90 days'").bind(state.host_id).execute(&state.pool).await{
+                tracing::warn!(%error,"trigger budget retention sweep failed");
+            }
         }
         tokio::time::sleep(StdDuration::from_secs(1)).await;
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TriggerBudget {
+    window_seconds: i64,
+    maximum_fires: i64,
+    maximum_turns: i64,
+    maximum_tokens: i64,
+    maximum_cost_micros: i64,
+    tokens_per_fire: i64,
+    cost_micros_per_fire: i64,
+}
+
+impl TriggerBudget {
+    fn validate(&self) -> Result<()> {
+        if !(60..=86400).contains(&self.window_seconds)
+            || self.maximum_fires <= 0
+            || self.maximum_turns <= 0
+            || self.maximum_tokens < 0
+            || self.maximum_cost_micros < 0
+            || self.tokens_per_fire < 0
+            || self.cost_micros_per_fire < 0
+            || self.tokens_per_fire > self.maximum_tokens
+            || self.cost_micros_per_fire > self.maximum_cost_micros
+        {
+            anyhow::bail!("trigger budget is invalid")
+        }
+        Ok(())
+    }
+}
+
+enum TriggerDecision {
+    Skip {
+        next: chrono::DateTime<Utc>,
+        skipped: i64,
+    },
+    Fire {
+        effective_due: chrono::DateTime<Utc>,
+        next: chrono::DateTime<Utc>,
+        skipped: i64,
+    },
+}
+
+fn trigger_decision(
+    due: chrono::DateTime<Utc>,
+    now: chrono::DateTime<Utc>,
+    interval: i64,
+    max_delay: i64,
+    policy: &str,
+    max_catch_up: i64,
+) -> Result<TriggerDecision> {
+    if interval < 60 || max_delay < 0 || !(1..=10).contains(&max_catch_up) {
+        anyhow::bail!("trigger schedule bounds are invalid")
+    }
+    if now <= due + Duration::seconds(max_delay) {
+        return Ok(TriggerDecision::Fire {
+            effective_due: due,
+            next: due + Duration::seconds(interval),
+            skipped: 0,
+        });
+    }
+    let occurrences = ((now - due).num_seconds() / interval) + 1;
+    match policy {
+        "SKIP" => Ok(TriggerDecision::Skip {
+            next: due + Duration::seconds(interval * occurrences),
+            skipped: occurrences,
+        }),
+        "FIRE_ONCE" => Ok(TriggerDecision::Fire {
+            effective_due: due,
+            next: due + Duration::seconds(interval * occurrences),
+            skipped: occurrences.saturating_sub(1),
+        }),
+        "CATCH_UP" => {
+            let skipped = occurrences.saturating_sub(max_catch_up);
+            let effective_due = due + Duration::seconds(interval * skipped);
+            Ok(TriggerDecision::Fire {
+                effective_due,
+                next: effective_due + Duration::seconds(interval),
+                skipped,
+            })
+        }
+        _ => anyhow::bail!("trigger misfire policy is invalid"),
+    }
+}
+
 async fn trigger_pass(state: &AppState) -> Result<()> {
     let mut tx = state.pool.begin().await?;
-    let row=sqlx::query("SELECT t.trigger_id,t.binding_id,t.trigger_kind,t.schedule_or_cursor,t.maximum_delay_seconds,t.next_fire_ts,
+    let row=sqlx::query("SELECT t.trigger_id,t.binding_id,t.trigger_kind,t.schedule_or_cursor,t.budget,t.maximum_delay_seconds,t.next_fire_ts,t.misfire_policy,t.maximum_catch_up_fires,
       b.principal_id,b.agent_def_id,b.adapter_id,b.external_identity,b.allowed_destinations,b.group_allowed,b.maximum_attachment_bytes,b.quiet_hours,b.revoked_ts
       FROM agent_trigger_t t JOIN agent_channel_binding_t b ON b.host_id=t.host_id AND b.binding_id=t.binding_id
       LEFT JOIN agent_connector_grant_t g ON g.host_id=t.host_id AND g.grant_id=t.connector_grant_id
@@ -661,49 +752,124 @@ async fn trigger_pass(state: &AppState) -> Result<()> {
     let spec: Value = row.try_get("schedule_or_cursor")?;
     let due: chrono::DateTime<Utc> = row.try_get("next_fire_ts")?;
     let max_delay: i32 = row.try_get("maximum_delay_seconds")?;
-    let interval = spec
-        .get("intervalSeconds")
-        .and_then(Value::as_i64)
-        .unwrap_or(3600)
-        .clamp(60, 86400);
-    let key = format!("trigger:{trigger_id}:{}", due.timestamp());
-    sqlx::query("UPDATE agent_trigger_t SET last_fire_ts=now(),last_idempotency_key=$1,fire_count=fire_count+1,next_fire_ts=$2+make_interval(secs=>$3) WHERE host_id=$4 AND trigger_id=$5")
-      .bind(&key).bind(due).bind(interval as i32).bind(state.host_id).bind(trigger_id).execute(&mut *tx).await?;
+    let Some(interval) = spec.get("intervalSeconds").and_then(Value::as_i64) else {
+        sqlx::query("UPDATE agent_trigger_t SET state='PAUSED',last_error=jsonb_build_object('class','invalid_schedule'),updated_ts=now() WHERE host_id=$1 AND trigger_id=$2").bind(state.host_id).bind(trigger_id).execute(&mut *tx).await?;
+        tx.commit().await?;
+        return Ok(());
+    };
+    let decision = match trigger_decision(
+        due,
+        Utc::now(),
+        interval,
+        i64::from(max_delay),
+        row.try_get("misfire_policy")?,
+        i64::from(row.try_get::<i32, _>("maximum_catch_up_fires")?),
+    ) {
+        Ok(decision) => decision,
+        Err(error) => {
+            sqlx::query("UPDATE agent_trigger_t SET state='PAUSED',last_error=jsonb_build_object('class','invalid_schedule'),updated_ts=now() WHERE host_id=$1 AND trigger_id=$2").bind(state.host_id).bind(trigger_id).execute(&mut *tx).await?;
+            tx.commit().await?;
+            return Err(error);
+        }
+    };
+    let (effective_due, next_due, misfire_skipped) = match decision {
+        TriggerDecision::Skip { next, skipped } => {
+            sqlx::query("UPDATE agent_trigger_t SET next_fire_ts=$1,last_misfire_ts=now(),misfire_count=misfire_count+1,skipped_fire_count=skipped_fire_count+$2,updated_ts=now() WHERE host_id=$3 AND trigger_id=$4")
+                .bind(next).bind(skipped).bind(state.host_id).bind(trigger_id).execute(&mut *tx).await?;
+            tx.commit().await?;
+            return Ok(());
+        }
+        TriggerDecision::Fire {
+            effective_due,
+            next,
+            skipped,
+        } => (effective_due, next, skipped),
+    };
+    let (Some(destination), Some(text)) = (
+        spec.get("destination").and_then(Value::as_str),
+        spec.get("text").and_then(Value::as_str),
+    ) else {
+        sqlx::query("UPDATE agent_trigger_t SET state='PAUSED',last_error=jsonb_build_object('class','invalid_schedule'),updated_ts=now() WHERE host_id=$1 AND trigger_id=$2").bind(state.host_id).bind(trigger_id).execute(&mut *tx).await?;
+        tx.commit().await?;
+        return Ok(());
+    };
+    let destination = destination.to_string();
+    let text = text.to_string();
+    if text.len() > 64 * 1024 {
+        sqlx::query("UPDATE agent_trigger_t SET state='PAUSED',last_error=jsonb_build_object('class','invalid_schedule'),updated_ts=now() WHERE host_id=$1 AND trigger_id=$2").bind(state.host_id).bind(trigger_id).execute(&mut *tx).await?;
+        tx.commit().await?;
+        return Ok(());
+    }
+    let allowed: std::collections::BTreeSet<String> =
+        serde_json::from_value(row.try_get("allowed_destinations")?)?;
+    let quiet: Value = row.try_get("quiet_hours")?;
+    let hour = Utc::now().hour() as u64;
+    let start = quiet.get("startHour").and_then(Value::as_u64).unwrap_or(22);
+    let end = quiet.get("endHour").and_then(Value::as_u64).unwrap_or(7);
+    let in_quiet = (start <= end && hour >= start && hour < end)
+        || (start > end && (hour >= start || hour < end));
+    if !allowed.contains(&destination) || in_quiet {
+        sqlx::query("UPDATE agent_trigger_t SET next_fire_ts=$1,last_misfire_ts=now(),misfire_count=misfire_count+1,skipped_fire_count=skipped_fire_count+$2,last_error=jsonb_build_object('class','trigger_policy_denied'),updated_ts=now() WHERE host_id=$3 AND trigger_id=$4")
+            .bind(next_due).bind(misfire_skipped+1).bind(state.host_id).bind(trigger_id).execute(&mut *tx).await?;
+        tx.commit().await?;
+        return Ok(());
+    }
+    let budget: TriggerBudget = match serde_json::from_value(row.try_get("budget")?) {
+        Ok(budget) => budget,
+        Err(error) => {
+            sqlx::query("UPDATE agent_trigger_t SET state='PAUSED',last_error=jsonb_build_object('class','invalid_budget'),updated_ts=now() WHERE host_id=$1 AND trigger_id=$2").bind(state.host_id).bind(trigger_id).execute(&mut *tx).await?;
+            tx.commit().await?;
+            return Err(error.into());
+        }
+    };
+    if let Err(error) = budget.validate() {
+        sqlx::query("UPDATE agent_trigger_t SET state='PAUSED',last_error=jsonb_build_object('class','invalid_budget'),updated_ts=now() WHERE host_id=$1 AND trigger_id=$2")
+            .bind(state.host_id).bind(trigger_id).execute(&mut *tx).await?;
+        tx.commit().await?;
+        return Err(error);
+    }
+    let budget_admitted:Option<Uuid>=sqlx::query_scalar("INSERT INTO agent_trigger_budget_usage_t(host_id,trigger_id,window_start_ts,fire_count,turn_count,reserved_tokens,reserved_cost_micros)
+      VALUES($1,$2,to_timestamp(floor(extract(epoch FROM now())/$3)*$3),1,1,$4,$5)
+      ON CONFLICT(host_id,trigger_id,window_start_ts) DO UPDATE SET fire_count=agent_trigger_budget_usage_t.fire_count+1,
+       turn_count=agent_trigger_budget_usage_t.turn_count+1,reserved_tokens=agent_trigger_budget_usage_t.reserved_tokens+$4,
+       reserved_cost_micros=agent_trigger_budget_usage_t.reserved_cost_micros+$5,updated_ts=now()
+      WHERE agent_trigger_budget_usage_t.fire_count+1<=$6 AND agent_trigger_budget_usage_t.turn_count+1<=$7
+       AND agent_trigger_budget_usage_t.reserved_tokens+$4<=$8 AND agent_trigger_budget_usage_t.reserved_cost_micros+$5<=$9 RETURNING trigger_id")
+      .bind(state.host_id).bind(trigger_id).bind(budget.window_seconds).bind(budget.tokens_per_fire).bind(budget.cost_micros_per_fire)
+      .bind(budget.maximum_fires).bind(budget.maximum_turns).bind(budget.maximum_tokens).bind(budget.maximum_cost_micros).fetch_optional(&mut *tx).await?;
+    if budget_admitted.is_none() {
+        sqlx::query("UPDATE agent_trigger_t SET state='PAUSED',last_error=jsonb_build_object('class','trigger_budget_exhausted'),updated_ts=now() WHERE host_id=$1 AND trigger_id=$2")
+            .bind(state.host_id).bind(trigger_id).execute(&mut *tx).await?;
+        tx.commit().await?;
+        return Ok(());
+    }
+    let key = format!("trigger:{trigger_id}:{}", effective_due.timestamp());
+    sqlx::query("UPDATE agent_trigger_t SET last_fire_ts=now(),last_idempotency_key=$1,fire_count=fire_count+1,next_fire_ts=$2,
+      last_misfire_ts=CASE WHEN $3>0 THEN now() ELSE last_misfire_ts END,misfire_count=misfire_count+CASE WHEN $3>0 THEN 1 ELSE 0 END,
+      skipped_fire_count=skipped_fire_count+$3,last_error=NULL,updated_ts=now() WHERE host_id=$4 AND trigger_id=$5")
+      .bind(&key).bind(next_due).bind(misfire_skipped).bind(state.host_id).bind(trigger_id).execute(&mut *tx).await?;
     if row.try_get::<String, _>("trigger_kind")? == "CONNECTOR" {
         let consumed=sqlx::query("UPDATE agent_connector_grant_t SET use_count=use_count+1 WHERE host_id=$1 AND grant_id=(SELECT connector_grant_id FROM agent_trigger_t WHERE host_id=$1 AND trigger_id=$2) AND revoked_ts IS NULL AND expires_ts>now() AND use_count<maximum_uses AND allowed_operations ? 'triggers.fire'").bind(state.host_id).bind(trigger_id).execute(&mut *tx).await?;
         if consumed.rows_affected() != 1 {
+            tx.rollback().await?;
             sqlx::query(
                 "UPDATE agent_trigger_t SET state='PAUSED' WHERE host_id=$1 AND trigger_id=$2",
             )
             .bind(state.host_id)
             .bind(trigger_id)
-            .execute(&mut *tx)
+            .execute(&state.pool)
             .await?;
-            tx.commit().await?;
             return Ok(());
         }
     }
-    if Utc::now() > due + Duration::seconds(max_delay as i64) {
-        tx.commit().await?;
-        return Ok(());
-    }
-    let destination = spec
-        .get("destination")
-        .and_then(Value::as_str)
-        .context("trigger destination missing")?
-        .to_string();
-    let text = spec
-        .get("text")
-        .and_then(Value::as_str)
-        .context("trigger text missing")?
-        .to_string();
     let message_id = Uuid::now_v7();
     let inserted=sqlx::query("INSERT INTO agent_channel_message_t(host_id,message_id,binding_id,external_event_id,response_destination,direction,payload_digest,state,payload) VALUES($1,$2,$3,$4,$5,'INBOUND',$6,'RECEIVED',$7) ON CONFLICT(host_id,binding_id,external_event_id,direction) DO NOTHING")
       .bind(state.host_id).bind(message_id).bind(binding_id).bind(&key).bind(&destination).bind(sha256_digest(text.as_bytes())).bind(json!({"text":text,"provider":"trigger"})).execute(&mut *tx).await?;
-    tx.commit().await?;
     if inserted.rows_affected() == 0 {
+        tx.rollback().await?;
         return Ok(());
     }
+    tx.commit().await?;
     let quiet: Value = row.try_get("quiet_hours")?;
     let binding = ChannelBinding {
         binding_id,
@@ -720,13 +886,6 @@ async fn trigger_pass(state: &AppState) -> Result<()> {
         quiet_end_hour: quiet.get("endHour").and_then(Value::as_u64).unwrap_or(7) as u8,
         revoked_at: None,
     };
-    if !binding.allowed_destinations.contains(&destination)
-        || light_agent_channel::quiet_hours(&binding, Utc::now())
-    {
-        sqlx::query("UPDATE agent_channel_message_t SET state='REJECTED',last_error=jsonb_build_object('class','trigger_policy_denied'),updated_ts=now() WHERE host_id=$1 AND message_id=$2 AND state='RECEIVED'")
-            .bind(state.host_id).bind(message_id).execute(&state.pool).await?;
-        return Ok(());
-    }
     admit_channel_turn(state, &binding, &key, &text, message_id).await
 }
 
@@ -917,5 +1076,40 @@ mod tests {
                 .to_string(),
             "response exceeds admitted byte limit"
         );
+    }
+
+    #[test]
+    fn trigger_misfires_skip_fire_once_and_bound_catch_up() {
+        let now = Utc::now();
+        let due = now - Duration::minutes(10);
+        assert!(
+            matches!(trigger_decision(due,now,60,10,"SKIP",1).unwrap(),TriggerDecision::Skip{next,skipped} if next>now&&skipped>=10)
+        );
+        assert!(
+            matches!(trigger_decision(due,now,60,10,"FIRE_ONCE",1).unwrap(),TriggerDecision::Fire{next,skipped,..} if next>now&&skipped>=9)
+        );
+        assert!(
+            matches!(trigger_decision(due,now,60,10,"CATCH_UP",3).unwrap(),TriggerDecision::Fire{effective_due,next,skipped} if effective_due<=now&&next==effective_due+Duration::seconds(60)&&skipped>=7)
+        );
+        assert!(trigger_decision(due, now, 60, 10, "CATCH_UP", 11).is_err());
+    }
+
+    #[test]
+    fn trigger_budget_is_strict_and_conservative() {
+        let valid = TriggerBudget {
+            window_seconds: 3600,
+            maximum_fires: 10,
+            maximum_turns: 10,
+            maximum_tokens: 10_000,
+            maximum_cost_micros: 1_000,
+            tokens_per_fire: 1_000,
+            cost_micros_per_fire: 100,
+        };
+        assert!(valid.validate().is_ok());
+        let invalid = TriggerBudget {
+            tokens_per_fire: 10_001,
+            ..valid
+        };
+        assert!(invalid.validate().is_err());
     }
 }

@@ -44,6 +44,22 @@ delay, destinations, quiet hours, revocation, and connector-use limits, and
 create ordinary FIFO channel turns. Connector-driven trigger firing requires
 the separate `triggers.fire` operation.
 
+Every active trigger must carry a closed budget object with
+`windowSeconds`, `maximumFires`, `maximumTurns`, `maximumTokens`,
+`maximumCostMicros`, `tokensPerFire`, and `costMicrosPerFire`. Admission
+reserves one fire, turn, and the conservative token/cost amounts atomically in
+`agent_trigger_budget_usage_t`; crossing any ceiling pauses the trigger before
+it consumes a connector use or creates a message. Invalid schedules and budgets
+also pause fail-closed. Usage windows are retained for 90 days.
+
+`misfire_policy` is explicit: `SKIP` advances to the first future occurrence,
+`FIRE_ONCE` coalesces the backlog into one fire, and `CATCH_UP` retains only the
+most recent `maximum_catch_up_fires` occurrences (1-10). `maximum_delay_seconds`
+decides when a fire is a misfire. Skipped occurrences and misfires are counted
+durably. Destination or quiet-hours denial advances without consuming trigger
+budget or connector authority. Schedule advancement, budget reservation,
+connector use, and message insertion share one PostgreSQL transaction.
+
 Outbound provider authentication is grant-specific. For Slack replies, create
 a live `agent_connector_grant_t` with `connector_alias = 'slack-api-v1'`, an
 `allowed_operations` array containing `chat.postMessage`, and an opaque
