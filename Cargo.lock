@@ -3477,12 +3477,22 @@ dependencies = [
 name = "light-agent-channel"
 version = "0.1.0"
 dependencies = [
+ "agent-core",
+ "anyhow",
+ "axum",
  "chrono",
+ "hex",
  "hmac",
+ "light-agent",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
+ "sqlx",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 

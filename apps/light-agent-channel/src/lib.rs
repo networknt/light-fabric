@@ -1,6 +1,7 @@
 use chrono::{DateTime, Timelike, Utc};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::Sha256;
 use std::collections::{BTreeSet, HashSet};
 use thiserror::Error;
@@ -137,6 +138,115 @@ pub enum ChannelError {
     #[error("signed webhook payload is malformed")]
     Payload,
 }
+
+pub mod slack {
+    use super::*;
+    use chrono::TimeZone;
+
+    pub const ADAPTER_ID: &str = "slack-events-v1";
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum SlackInbound {
+        Challenge(String),
+        Message(SlackMessage),
+        Ignored,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct SlackMessage {
+        pub event_id: String,
+        pub external_identity: String,
+        pub destination: String,
+        pub group: bool,
+        pub text: String,
+    }
+
+    pub fn verify_and_parse(
+        secret: &[u8],
+        timestamp: &str,
+        signature: &str,
+        raw: &[u8],
+        now: DateTime<Utc>,
+    ) -> Result<SlackInbound, ChannelError> {
+        if secret.len() < 32 || raw.len() > 1024 * 1024 {
+            return Err(ChannelError::Limit);
+        }
+        let seconds: i64 = timestamp.parse().map_err(|_| ChannelError::Signature)?;
+        let signed_at = Utc
+            .timestamp_opt(seconds, 0)
+            .single()
+            .ok_or(ChannelError::Signature)?;
+        if (now - signed_at).num_seconds().abs() > 300 {
+            return Err(ChannelError::Replay);
+        }
+        let supplied = signature
+            .strip_prefix("v0=")
+            .ok_or(ChannelError::Signature)?;
+        let supplied = hex_decode(supplied)?;
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(secret).map_err(|_| ChannelError::Signature)?;
+        mac.update(format!("v0:{timestamp}:").as_bytes());
+        mac.update(raw);
+        mac.verify_slice(&supplied)
+            .map_err(|_| ChannelError::Signature)?;
+        let body: Value = serde_json::from_slice(raw).map_err(|_| ChannelError::Payload)?;
+        match body.get("type").and_then(Value::as_str) {
+            Some("url_verification") => Ok(SlackInbound::Challenge(
+                body.get("challenge")
+                    .and_then(Value::as_str)
+                    .ok_or(ChannelError::Payload)?
+                    .to_string(),
+            )),
+            Some("event_callback") => {
+                let event = body
+                    .get("event")
+                    .and_then(Value::as_object)
+                    .ok_or(ChannelError::Payload)?;
+                if event.get("type").and_then(Value::as_str) != Some("message")
+                    || event.get("bot_id").is_some()
+                    || event.get("subtype").is_some()
+                {
+                    return Ok(SlackInbound::Ignored);
+                }
+                if event
+                    .get("files")
+                    .and_then(Value::as_array)
+                    .is_some_and(|files| !files.is_empty())
+                {
+                    return Err(ChannelError::Limit);
+                }
+                let team = body
+                    .get("team_id")
+                    .and_then(Value::as_str)
+                    .ok_or(ChannelError::Payload)?;
+                let user = event
+                    .get("user")
+                    .and_then(Value::as_str)
+                    .ok_or(ChannelError::Payload)?;
+                let channel = event
+                    .get("channel")
+                    .and_then(Value::as_str)
+                    .ok_or(ChannelError::Payload)?;
+                Ok(SlackInbound::Message(SlackMessage {
+                    event_id: body
+                        .get("event_id")
+                        .and_then(Value::as_str)
+                        .ok_or(ChannelError::Payload)?
+                        .to_string(),
+                    external_identity: format!("{team}:{user}"),
+                    destination: channel.to_string(),
+                    group: event.get("channel_type").and_then(Value::as_str) != Some("im"),
+                    text: event
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                }))
+            }
+            _ => Ok(SlackInbound::Ignored),
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +323,29 @@ mod tests {
                 .unwrap()
                 .verify_and_normalize(&binding(), &raw, &sig, now),
             Err(ChannelError::Binding)
+        );
+    }
+
+    #[test]
+    fn slack_v0_signature_binds_timestamp_and_exact_raw_event() {
+        let secret = vec![3; 32];
+        let now = Utc::now();
+        let timestamp = now.timestamp().to_string();
+        let raw=serde_json::to_vec(&serde_json::json!({"type":"event_callback","team_id":"T1","event_id":"Ev1",
+            "event":{"type":"message","user":"U1","channel":"D1","channel_type":"im","text":"hello"}})).unwrap();
+        let mut mac = Hmac::<Sha256>::new_from_slice(&secret).unwrap();
+        mac.update(format!("v0:{timestamp}:").as_bytes());
+        mac.update(&raw);
+        let signature = format!("v0={}", hex::encode(mac.finalize().into_bytes()));
+        let parsed = slack::verify_and_parse(&secret, &timestamp, &signature, &raw, now).unwrap();
+        assert!(
+            matches!(parsed,slack::SlackInbound::Message(ref m) if m.external_identity=="T1:U1"&&m.destination=="D1")
+        );
+        let mut tampered = raw;
+        tampered.push(b' ');
+        assert_eq!(
+            slack::verify_and_parse(&secret, &timestamp, &signature, &tampered, now),
+            Err(ChannelError::Signature)
         );
     }
 }
