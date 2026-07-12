@@ -534,6 +534,30 @@ impl Journal {
         u32::try_from(count).map_err(|_| "cleanup backlog exceeds u32".to_string())
     }
 
+    pub fn state_counts(&self) -> Result<Vec<(String, u64)>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "journal mutex poisoned".to_string())?;
+        let mut statement = connection
+            .prepare("SELECT state,COUNT(*) FROM execution_journal GROUP BY state ORDER BY state")
+            .map_err(|error| format!("prepare journal state metrics: {error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|error| format!("query journal state metrics: {error}"))?;
+        rows.map(|row| {
+            let (state, count) =
+                row.map_err(|error| format!("read journal state metric: {error}"))?;
+            Ok((
+                state,
+                u64::try_from(count).map_err(|_| "negative journal state count".to_string())?,
+            ))
+        })
+        .collect()
+    }
+
     pub fn is_healthy(&self) -> bool {
         self.connection
             .lock()

@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: light-fabric-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout controller integration dependency
+        uses: actions/checkout@v4
+        with:
+          repository: lightapi/controller-rs
+          path: controller-rs
+      - name: Place controller beside the workspace
+        run: mv controller-rs ../controller-rs
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Formatting
+        run: cargo fmt --all --check
+      - name: Compile all targets
+        run: cargo check --workspace --all-targets --locked
+      - name: Unit and deterministic integration tests
+        run: cargo test --workspace --locked
+
+  runner-image-and-manifests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout controller image dependency
+        uses: actions/checkout@v4
+        with:
+          repository: lightapi/controller-rs
+          path: controller-rs
+      - name: Place controller beside the workspace
+        run: mv controller-rs ../controller-rs
+      - name: Build runner image
+        run: docker build --file apps/light-workflow-runner/docker/Dockerfile --tag light-workflow-runner:ci ..
+      - uses: azure/setup-kubectl@v4
+      - name: Render Kubernetes resources
+        run: kubectl kustomize apps/light-workflow-runner/k8s > /tmp/light-workflow-runner.yaml
+      - name: Reject example secrets from deployable resources
+        run: |
+          if grep -E "replace-with-short-lived-runner-jwt|replace-with-cube-api-key" /tmp/light-workflow-runner.yaml; then
+            exit 1
+          fi

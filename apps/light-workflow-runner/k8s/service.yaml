@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: light-workflow-runner
+  labels:
+    app.kubernetes.io/name: light-workflow-runner
+spec:
+  selector:
+    app.kubernetes.io/name: light-workflow-runner
+  ports:
+    - name: metrics
+      port: 9444
+      targetPort: health

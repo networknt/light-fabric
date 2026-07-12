@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: light-workflow-runner
+  labels:
+    app.kubernetes.io/name: light-workflow-runner
+    app.kubernetes.io/component: execution-runner
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: light-workflow-runner
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: light-workflow-runner
+        app.kubernetes.io/component: execution-runner
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9444"
+        prometheus.io/path: /metrics
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: runner
+          image: ghcr.io/networknt/light-workflow-runner:replace-with-digest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: LIGHT_WORKFLOW_RUNNER_CONFIG_FILE
+              value: /etc/light-workflow-runner/runner.yml
+            - name: RUST_LOG
+              value: info
+          ports:
+            - name: health
+              containerPort: 9444
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 2
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/light-workflow-runner
+              readOnly: true
+            - name: secrets
+              mountPath: /run/secrets/runner
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/light-workflow-runner
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: light-workflow-runner
+        - name: secrets
+          secret:
+            secretName: light-workflow-runner
+            defaultMode: 0440
+        - name: data
+          persistentVolumeClaim:
+            claimName: light-workflow-runner
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

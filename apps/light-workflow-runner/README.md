@@ -57,7 +57,26 @@ LIGHT_WORKFLOW_RUNNER_CONFIG_FILE=/etc/light-workflow-runner/runner.yml \
 ```
 
 The readiness endpoint is `/readyz`; liveness and cleanup evidence are exposed
-at `/healthz` on `healthAddress`.
+at `/healthz` on `healthAddress`. Prometheus text metrics are exposed at
+`/metrics` on the same internal listener. They cover controller connectivity,
+backend/journal/watchdog/orphan health, available capacity, active leases,
+cleanup backlog, backend compatibility identity, and durable journal state
+counts. Do not expose this listener publicly; the backend compatibility digest
+is operational metadata.
+
+The production container and a hardened Cube-backed Kubernetes baseline live
+under `docker/` and `k8s/`. The pod runs as UID/GID 10001 with no service-account
+token, no capabilities, a read-only root filesystem, seccomp, bounded temporary
+storage, and a persistent `ReadWriteOnce` journal volume. Materialize
+`secret.example.yaml` through the deployment secret manager; never commit it as
+`secret.yaml`. Because the full-stack integration test references the sibling
+`controller-rs` checkout, build the image from their common workspace parent:
+
+```bash
+docker build -f light-fabric/apps/light-workflow-runner/docker/Dockerfile \
+  -t light-workflow-runner:local /home/steve/workspace
+kubectl kustomize apps/light-workflow-runner/k8s
+```
 
 Before opening its health listener or controller transport, the runner performs
 a bounded backend orphan-reconciliation pass. Startup fails if discovery or

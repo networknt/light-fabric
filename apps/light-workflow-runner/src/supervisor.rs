@@ -115,6 +115,10 @@ impl Supervisor {
         self.journal.cleanup_backlog().unwrap_or(u32::MAX)
     }
 
+    pub fn journal_state_counts(&self) -> Vec<(String, u64)> {
+        self.journal.state_counts().unwrap_or_default()
+    }
+
     pub fn journal_healthy(&self) -> bool {
         self.journal.is_healthy()
     }

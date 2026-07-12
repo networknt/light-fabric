@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: light-workflow-runner
+  labels:
+    app.kubernetes.io/name: light-workflow-runner
+    app.kubernetes.io/component: execution-runner
+data:
+  runner.yml: |
+    version: 1
+    runnerId: cube-runner
+    enrollmentId: cube-runner-enrollment
+    hostId: 00000000-0000-0000-0000-000000000000
+    controllerUrl: wss://controller.example/ws/runner
+    jwtFile: /run/secrets/runner/runner.jwt
+    dataDirectory: /var/lib/light-workflow-runner
+    healthAddress: 0.0.0.0:9444
+    maximumConcurrency: 4
+    heartbeatIntervalMs: 5000
+    reconnectMaximumMs: 30000
+    shutdownGraceMs: 30000
+    stagingMaximumBytes: 104857600
+    orphanReconcileIntervalMs: 60000
+    orphanReconcileStartupTimeoutMs: 30000
+    backend:
+      implementation: cube
+      apiUrl: https://cube-api.internal.example/
+      sandboxUrl: https://cube-sandbox.internal.example/
+      apiKeyFile: /run/secrets/runner/cube-api.key
+      tlsCaFile: /run/secrets/runner/cube-ca.pem
+      allowInsecureHttp: false
+      templateId: replace-with-reviewed-template
+      compatibilityDigest: sha256:replace-with-approved-compatibility-digest
+      availableSlots: 4
+      maximumNativeTtlSeconds: 900
+      discoveryPageLimit: 200
+      requestTimeoutMs: 30000
+      maximumResponseBytes: 4194304
+    allowedCommandTemplateDigests:
+      - sha256:replace-with-reviewed-command-template-digest
