@@ -36,6 +36,64 @@ pub struct OciExecutionBackend {
     config: OciBackendConfig,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct OciContainerState {
+    status: String,
+    #[serde(default)]
+    exit_code: Option<i32>,
+    #[serde(rename = "OOMKilled", default)]
+    oom_killed: bool,
+    #[serde(default)]
+    error: String,
+    #[serde(default)]
+    started_at: String,
+    #[serde(default)]
+    finished_at: String,
+}
+
+fn inspection_state(
+    raw: &[u8],
+) -> Result<(BackendOperationState, BTreeMap<String, String>), BackendError> {
+    let state: OciContainerState = serde_json::from_slice(raw).map_err(|error| {
+        BackendError::Unknown(format!(
+            "OCI runtime returned invalid state evidence: {error}"
+        ))
+    })?;
+    let status = state.status.trim().to_ascii_lowercase();
+    let failed = state.oom_killed
+        || state.exit_code.is_some_and(|code| code != 0)
+        || !state.error.trim().is_empty();
+    let operation_state = match status.as_str() {
+        "created" | "configured" => BackendOperationState::Prepared,
+        "running" | "paused" | "restarting" | "removing" | "stopping" => {
+            BackendOperationState::Running
+        }
+        "exited" | "stopped" if state.exit_code.is_none() => BackendOperationState::Unknown,
+        "exited" | "stopped" if failed => BackendOperationState::Failed,
+        "exited" | "stopped" => BackendOperationState::Succeeded,
+        "dead" => BackendOperationState::Failed,
+        _ => BackendOperationState::Unknown,
+    };
+    let mut evidence = BTreeMap::from([
+        ("runtimeStatus".into(), status),
+        ("oomKilled".into(), state.oom_killed.to_string()),
+    ]);
+    if let Some(exit_code) = state.exit_code {
+        evidence.insert("exitCode".into(), exit_code.to_string());
+    }
+    if !state.error.trim().is_empty() {
+        evidence.insert("runtimeError".into(), state.error);
+    }
+    if !state.started_at.trim().is_empty() {
+        evidence.insert("startedAt".into(), state.started_at);
+    }
+    if !state.finished_at.trim().is_empty() {
+        evidence.insert("finishedAt".into(), state.finished_at);
+    }
+    Ok((operation_state, evidence))
+}
+
 impl OciExecutionBackend {
     pub fn new(config: OciBackendConfig) -> Result<Self, BackendError> {
         if !config.binary.is_absolute() || !config.binary.is_file() {
@@ -217,25 +275,19 @@ impl ExecutionBackend for OciExecutionBackend {
                 "container".into(),
                 "inspect".into(),
                 "--format".into(),
-                "{{.State.Status}}".into(),
+                "{{json .State}}".into(),
                 id.into(),
             ])
             .await?;
         if !output.status.success() {
             return Err(BackendError::NotFound(id.into()));
         }
-        let state = match String::from_utf8_lossy(&output.stdout).trim() {
-            "created" => BackendOperationState::Prepared,
-            "running" => BackendOperationState::Running,
-            "exited" => BackendOperationState::Succeeded,
-            "dead" => BackendOperationState::Failed,
-            _ => BackendOperationState::Unknown,
-        };
+        let (state, evidence) = inspection_state(&output.stdout)?;
         Ok(Inspection {
             backend_operation_id: id.into(),
             state,
             observed_at: Utc::now(),
-            evidence: BTreeMap::new(),
+            evidence,
         })
     }
 
@@ -352,5 +404,54 @@ impl ExecutionBackend for OciExecutionBackend {
             cleaned_at: Utc::now(),
             evidence_reference: format!("oci:deleted:{id}"),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inspection_uses_exit_code_and_oom_evidence() {
+        let (state, evidence) = inspection_state(
+            br#"{"Status":"exited","ExitCode":17,"OOMKilled":false,"Error":"","StartedAt":"start","FinishedAt":"finish"}"#,
+        )
+        .unwrap();
+        assert_eq!(state, BackendOperationState::Failed);
+        assert_eq!(evidence.get("exitCode").map(String::as_str), Some("17"));
+
+        let (state, _) =
+            inspection_state(br#"{"Status":"exited","ExitCode":0,"OOMKilled":true,"Error":""}"#)
+                .unwrap();
+        assert_eq!(state, BackendOperationState::Failed);
+    }
+
+    #[test]
+    fn inspection_reports_only_proven_zero_exit_as_success() {
+        let (state, _) =
+            inspection_state(br#"{"Status":"exited","ExitCode":0,"OOMKilled":false,"Error":""}"#)
+                .unwrap();
+        assert_eq!(state, BackendOperationState::Succeeded);
+
+        let (state, _) =
+            inspection_state(br#"{"Status":"exited","OOMKilled":false,"Error":""}"#).unwrap();
+        assert_eq!(state, BackendOperationState::Unknown);
+    }
+
+    #[test]
+    fn inspection_fails_closed_on_runtime_error_or_malformed_evidence() {
+        let (state, evidence) = inspection_state(
+            br#"{"Status":"exited","ExitCode":0,"OOMKilled":false,"Error":"runtime failure"}"#,
+        )
+        .unwrap();
+        assert_eq!(state, BackendOperationState::Failed);
+        assert_eq!(
+            evidence.get("runtimeError").map(String::as_str),
+            Some("runtime failure")
+        );
+        assert!(matches!(
+            inspection_state(br#"{"Status":"exited","ExitCode":"bad"}"#),
+            Err(BackendError::Unknown(_))
+        ));
     }
 }
