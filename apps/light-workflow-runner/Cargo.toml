@@ -39,3 +39,5 @@ uuid.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+controller-rs = { path = "../../../controller-rs" }
+sqlx = { version = "0.8", default-features = false, features = ["json", "postgres", "runtime-tokio-rustls", "uuid"] }

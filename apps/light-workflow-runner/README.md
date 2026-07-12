@@ -121,3 +121,24 @@ and canonical `print-message` template digest already match across these local
 fixtures. Replace the host, JWT, and enrollment identity, then generate the
 admission document. The placeholders in `runner.example.yml` are intentionally
 not runnable.
+
+## Full-stack integration test
+
+`tests/controller_cube_full_stack.rs` joins the real `controller-rs`
+PostgreSQL scheduler and lease runtime, runner WebSocket transport, supervisor
+and SQLite journal, and the Cube execution backend around a deterministic
+in-process Cube service. It verifies reservation, fenced lease accept/start,
+execution, terminal-result persistence and acknowledgement,
+and confirmed backend cleanup.
+
+Run it only against a disposable Portal database with the current canonical
+schema:
+
+```bash
+DATABASE_URL=postgres://postgres:secret@localhost:5432/portal_test \
+  cargo test -p light-workflow-runner --test controller_cube_full_stack -- --nocapture
+```
+
+Without `DATABASE_URL`, the test is compiled and skipped. The fixture uses
+dedicated origin, runner, workflow-instance, and policy identifiers and removes
+its rows after completion or before a rerun.
