@@ -44,7 +44,8 @@ pub async fn serve(address: std::net::SocketAddr, state: Arc<HealthState>) -> Re
 async fn healthz(State(state): State<Arc<HealthState>>) -> impl IntoResponse {
     let journal_healthy = state.supervisor.journal_healthy();
     let watchdog_healthy = state.supervisor.watchdog_healthy();
-    let status = if journal_healthy && watchdog_healthy {
+    let orphan_reconciliation_healthy = state.supervisor.orphan_reconciliation_healthy();
+    let status = if journal_healthy && watchdog_healthy && orphan_reconciliation_healthy {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
@@ -57,6 +58,7 @@ async fn healthz(State(state): State<Arc<HealthState>>) -> impl IntoResponse {
             "backendHealthy": state.supervisor.backend_capability().healthy,
             "journalHealthy": journal_healthy,
             "watchdogHealthy": watchdog_healthy,
+            "orphanReconciliationHealthy": orphan_reconciliation_healthy,
             "cleanupBacklog": state.supervisor.cleanup_backlog()
         })),
     )
@@ -65,6 +67,7 @@ async fn healthz(State(state): State<Arc<HealthState>>) -> impl IntoResponse {
 async fn readyz(State(state): State<Arc<HealthState>>) -> impl IntoResponse {
     let ready = state.controller_connected.load(Ordering::Acquire)
         && state.supervisor.journal_healthy()
+        && state.supervisor.orphan_reconciliation_healthy()
         && state.supervisor.backend_capability().healthy;
     (
         if ready {

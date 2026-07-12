@@ -33,6 +33,10 @@ struct RunnerConfigFile {
     reconnect_maximum_ms: u64,
     shutdown_grace_ms: u64,
     staging_maximum_bytes: u64,
+    #[serde(default = "default_orphan_reconcile_interval_ms")]
+    orphan_reconcile_interval_ms: u64,
+    #[serde(default = "default_orphan_reconcile_startup_timeout_ms")]
+    orphan_reconcile_startup_timeout_ms: u64,
     backend: RunnerBackendConfig,
     allowed_command_template_digests: Vec<String>,
     #[serde(default)]
@@ -132,6 +136,12 @@ fn default_cube_request_timeout_ms() -> u64 {
 fn default_cube_maximum_response_bytes() -> usize {
     4 * 1024 * 1024
 }
+fn default_orphan_reconcile_interval_ms() -> u64 {
+    60_000
+}
+fn default_orphan_reconcile_startup_timeout_ms() -> u64 {
+    30_000
+}
 
 #[derive(Debug, Clone)]
 pub struct RunnerConfig {
@@ -147,6 +157,8 @@ pub struct RunnerConfig {
     pub reconnect_maximum: std::time::Duration,
     pub shutdown_grace: std::time::Duration,
     pub staging_maximum_bytes: u64,
+    pub orphan_reconcile_interval: std::time::Duration,
+    pub orphan_reconcile_startup_timeout: std::time::Duration,
     pub backend: RunnerBackendConfig,
     pub allowed_command_template_digests: BTreeSet<String>,
     pub effective_config_digest: String,
@@ -167,6 +179,8 @@ struct EffectiveConfigEvidence<'a> {
     maximum_concurrency: u32,
     heartbeat_interval_ms: u64,
     staging_maximum_bytes: u64,
+    orphan_reconcile_interval_ms: u64,
+    orphan_reconcile_startup_timeout_ms: u64,
     backend: &'a RunnerBackendConfig,
     allowed_command_template_digests: &'a BTreeSet<String>,
     agent_worker: &'a Option<WorkerProcessConfig>,
@@ -203,6 +217,8 @@ impl RunnerConfig {
             || file.reconnect_maximum_ms == 0
             || file.shutdown_grace_ms == 0
             || file.staging_maximum_bytes == 0
+            || file.orphan_reconcile_interval_ms < 1_000
+            || file.orphan_reconcile_startup_timeout_ms == 0
             || file.backend.available_slots() == 0
             || file.backend.available_slots() > file.maximum_concurrency
         {
@@ -242,6 +258,8 @@ impl RunnerConfig {
             maximum_concurrency: file.maximum_concurrency,
             heartbeat_interval_ms: file.heartbeat_interval_ms,
             staging_maximum_bytes: file.staging_maximum_bytes,
+            orphan_reconcile_interval_ms: file.orphan_reconcile_interval_ms,
+            orphan_reconcile_startup_timeout_ms: file.orphan_reconcile_startup_timeout_ms,
             backend: &file.backend,
             allowed_command_template_digests: &allowed,
             agent_worker: &file.agent_worker,
@@ -264,6 +282,12 @@ impl RunnerConfig {
             reconnect_maximum: std::time::Duration::from_millis(file.reconnect_maximum_ms),
             shutdown_grace: std::time::Duration::from_millis(file.shutdown_grace_ms),
             staging_maximum_bytes: file.staging_maximum_bytes,
+            orphan_reconcile_interval: std::time::Duration::from_millis(
+                file.orphan_reconcile_interval_ms,
+            ),
+            orphan_reconcile_startup_timeout: std::time::Duration::from_millis(
+                file.orphan_reconcile_startup_timeout_ms,
+            ),
             backend: file.backend,
             allowed_command_template_digests: allowed,
             effective_config_digest,
@@ -554,6 +578,8 @@ allowedCommandTemplateDigests: [sha256:template-digest]
             reconnect_maximum: std::time::Duration::from_secs(10),
             shutdown_grace: std::time::Duration::from_secs(10),
             staging_maximum_bytes: 1024,
+            orphan_reconcile_interval: std::time::Duration::from_secs(60),
+            orphan_reconcile_startup_timeout: std::time::Duration::from_secs(30),
             backend: RunnerBackendConfig::Mock(MockBackendConfig {
                 compatibility_digest: "sha256:compatibility".into(),
                 available_slots: 2,

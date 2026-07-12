@@ -98,6 +98,8 @@ async fn registers_unbound_then_sends_session_bound_heartbeat() {
         reconnect_maximum: Duration::from_millis(100),
         shutdown_grace: Duration::from_secs(1),
         staging_maximum_bytes: 1024,
+        orphan_reconcile_interval: Duration::from_secs(60),
+        orphan_reconcile_startup_timeout: Duration::from_secs(30),
         backend: RunnerBackendConfig::Mock(MockBackendConfig {
             compatibility_digest: compatibility_digest.clone(),
             available_slots: 1,

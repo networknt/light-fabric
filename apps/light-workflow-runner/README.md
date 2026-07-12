@@ -59,6 +59,16 @@ LIGHT_WORKFLOW_RUNNER_CONFIG_FILE=/etc/light-workflow-runner/runner.yml \
 The readiness endpoint is `/readyz`; liveness and cleanup evidence are exposed
 at `/healthz` on `healthAddress`.
 
+Before opening its health listener or controller transport, the runner performs
+a bounded backend orphan-reconciliation pass. Startup fails if discovery or
+cleanup cannot complete within `orphanReconcileStartupTimeoutMs`; consequently
+an OCI runner cannot accept a new lease while stale owned containers remain
+unexamined. Later passes run every `orphanReconcileIntervalMs` (minimum one
+second). A failed periodic pass makes readiness and health fail until a
+subsequent pass succeeds. OCI discovery is ownership-label scoped, retains all
+operations still present in the durable journal, and deletes only resources
+whose runner-owned expiry label has elapsed.
+
 Agent worker execution is disabled unless `agentWorker` is present. That block
 pins the admitted origin service ID, absolute worker path, exact binary digest,
 and canonical capability digest. Agent leases cannot choose or override those

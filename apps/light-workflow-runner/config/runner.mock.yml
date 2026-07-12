@@ -11,6 +11,8 @@ heartbeatIntervalMs: 5000
 reconnectMaximumMs: 30000
 shutdownGraceMs: 30000
 stagingMaximumBytes: 104857600
+orphanReconcileIntervalMs: 60000
+orphanReconcileStartupTimeoutMs: 30000
 backend:
   compatibilityDigest: sha256:mock-ephemeral-v1
   availableSlots: 1

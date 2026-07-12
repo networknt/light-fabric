@@ -50,12 +50,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.maximum_concurrency,
         config.agent_worker.clone(),
     );
+    tokio::time::timeout(
+        config.orphan_reconcile_startup_timeout,
+        supervisor.reconcile_backend_orphans_once(),
+    )
+    .await
+    .map_err(|_| std::io::Error::other("startup backend orphan reconciliation timed out"))?
+    .map_err(std::io::Error::other)?;
     let health_state = health::HealthState::new(Arc::clone(&supervisor));
     let health_address = config.health_address;
     let watchdog = Arc::clone(&supervisor);
     tokio::spawn(async move { watchdog.run_watchdog().await });
     let orphan_reconciler = Arc::clone(&supervisor);
-    tokio::spawn(async move { orphan_reconciler.run_orphan_reconciler().await });
+    let orphan_interval = config.orphan_reconcile_interval;
+    tokio::spawn(async move {
+        orphan_reconciler
+            .run_orphan_reconciler(orphan_interval)
+            .await
+    });
     let health_for_server = Arc::clone(&health_state);
     tokio::spawn(async move {
         if let Err(error) = health::serve(health_address, health_for_server).await {

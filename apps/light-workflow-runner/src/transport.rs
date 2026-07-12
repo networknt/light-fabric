@@ -328,6 +328,8 @@ mod tests {
             reconnect_maximum: Duration::from_secs(1),
             shutdown_grace: Duration::from_secs(1),
             staging_maximum_bytes: 1024,
+            orphan_reconcile_interval: Duration::from_secs(60),
+            orphan_reconcile_startup_timeout: Duration::from_secs(30),
             backend: crate::configuration::RunnerBackendConfig::Mock(
                 crate::configuration::MockBackendConfig {
                     compatibility_digest: "sha256:compatibility".into(),

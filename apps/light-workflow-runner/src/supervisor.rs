@@ -40,6 +40,7 @@ pub struct Supervisor {
     capacity: Arc<Semaphore>,
     draining: AtomicBool,
     watchdog_last_tick_ms: AtomicI64,
+    orphan_reconciliation_healthy: AtomicBool,
     agent_worker: Option<WorkerProcessConfig>,
 }
 
@@ -62,6 +63,7 @@ impl Supervisor {
             capacity: Arc::new(Semaphore::new(maximum_concurrency as usize)),
             draining: AtomicBool::new(false),
             watchdog_last_tick_ms: AtomicI64::new(Utc::now().timestamp_millis()),
+            orphan_reconciliation_healthy: AtomicBool::new(true),
             agent_worker,
         })
     }
@@ -69,7 +71,9 @@ impl Supervisor {
     pub fn backend_capability(&self) -> execution_runner_protocol::BackendCapability {
         let mut capability = self.backend.capability();
         capability.available_slots = self.available_capacity();
-        capability.healthy = !self.draining.load(Ordering::Acquire) && self.journal.is_healthy();
+        capability.healthy = !self.draining.load(Ordering::Acquire)
+            && self.journal.is_healthy()
+            && self.orphan_reconciliation_healthy.load(Ordering::Acquire);
         capability
     }
 
@@ -120,6 +124,10 @@ impl Supervisor {
             .timestamp_millis()
             .saturating_sub(self.watchdog_last_tick_ms.load(Ordering::Acquire))
             <= 2_000
+    }
+
+    pub fn orphan_reconciliation_healthy(&self) -> bool {
+        self.orphan_reconciliation_healthy.load(Ordering::Acquire)
     }
 
     pub fn drain(&self) {
@@ -937,26 +945,41 @@ impl Supervisor {
     }
 
     pub async fn reconcile_backend_orphans_once(&self) -> Result<usize, String> {
+        let now = Utc::now();
         let retained = self
             .journal
             .unfinished()?
             .into_iter()
+            // An unfinished row is authoritative only while its lease is
+            // live. Retaining expired rows would leak resources indefinitely
+            // whenever controller connectivity prevents journal recovery.
+            .filter(|record| record.deadline > now)
             .filter_map(|record| record.backend_operation_id)
             .collect::<BTreeSet<_>>();
-        match self.backend.reconcile_orphans(&retained, Utc::now()).await {
+        match self.backend.reconcile_orphans(&retained, now).await {
             Ok(cleaned) => {
+                self.orphan_reconciliation_healthy
+                    .store(true, Ordering::Release);
                 for evidence in &cleaned {
                     info!(operation_id=%evidence.backend_operation_id, evidence=%evidence.evidence_reference, "reconciled orphan backend resource");
                 }
                 Ok(cleaned.len())
             }
-            Err(BackendError::Unsupported(_)) => Ok(0),
-            Err(error) => Err(format!("backend orphan reconciliation failed: {error}")),
+            Err(BackendError::Unsupported(_)) => {
+                self.orphan_reconciliation_healthy
+                    .store(true, Ordering::Release);
+                Ok(0)
+            }
+            Err(error) => {
+                self.orphan_reconciliation_healthy
+                    .store(false, Ordering::Release);
+                Err(format!("backend orphan reconciliation failed: {error}"))
+            }
         }
     }
 
-    pub async fn run_orphan_reconciler(self: Arc<Self>) {
-        let mut ticker = tokio::time::interval(Duration::from_secs(60));
+    pub async fn run_orphan_reconciler(self: Arc<Self>, interval: Duration) {
+        let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
         loop {
             ticker.tick().await;
             if let Err(error) = self.reconcile_backend_orphans_once().await {

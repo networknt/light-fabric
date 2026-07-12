@@ -11,6 +11,8 @@ heartbeatIntervalMs: 5000
 reconnectMaximumMs: 30000
 shutdownGraceMs: 30000
 stagingMaximumBytes: 104857600
+orphanReconcileIntervalMs: 60000
+orphanReconcileStartupTimeoutMs: 30000
 backend:
   implementation: rootless-oci
   binary: /usr/bin/podman
@@ -21,4 +23,3 @@ backend:
   maximumPids: 256
 allowedCommandTemplateDigests:
   - replace-with-approved-command-template-digest
-
