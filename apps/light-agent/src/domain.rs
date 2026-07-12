@@ -38,6 +38,216 @@ pub struct AdmittedTurn {
     pub data_boundary_digest: String,
 }
 
+#[derive(Debug, Clone)]
+struct PoolAssignment {
+    pool_id: Uuid,
+    compatibility_digest: String,
+}
+
+async fn resolve_pool(
+    tx: &mut Transaction<'_, Postgres>,
+    host: Uuid,
+    agent: Uuid,
+    version: i64,
+    policy: &str,
+    boundary: &str,
+    profile: &str,
+) -> Result<Option<PoolAssignment>> {
+    let configured: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_service_pool_t WHERE host_id=$1")
+            .bind(host)
+            .fetch_one(&mut **tx)
+            .await?;
+    let row = sqlx::query(
+        "SELECT a.pool_id,a.compatibility_digest,p.compatibility_digest pool_digest,
+            p.compatibility_dimensions FROM agent_pool_assignment_t a JOIN agent_service_pool_t p
+              ON p.host_id=a.host_id AND p.pool_id=a.pool_id AND p.enabled=TRUE
+            WHERE a.host_id=$1 AND a.agent_def_id=$2 AND a.agent_definition_version=$3
+              AND a.policy_digest=$4 AND a.revoked_ts IS NULL FOR UPDATE OF a,p",
+    )
+    .bind(host)
+    .bind(agent)
+    .bind(version)
+    .bind(policy)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some(row) = row else {
+        if configured > 0 {
+            bail!("agent definition has no live compatible service-pool assignment")
+        }
+        return Ok(None);
+    };
+    let assignment: String = row.try_get("compatibility_digest")?;
+    let pool: String = row.try_get("pool_digest")?;
+    let dimensions: Value = row.try_get("compatibility_dimensions")?;
+    let object = dimensions
+        .as_object()
+        .context("service-pool compatibility dimensions must be an object")?;
+    for required in [
+        "tenant",
+        "identity",
+        "modelCredential",
+        "region",
+        "dataBoundary",
+        "network",
+        "retention",
+        "profile",
+    ] {
+        if object
+            .get(required)
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            bail!("service-pool compatibility dimension {required} is missing")
+        }
+    }
+    let host_key = host.to_string();
+    if object.get("tenant").and_then(Value::as_str) != Some(host_key.as_str())
+        || object.get("dataBoundary").and_then(Value::as_str) != Some(boundary)
+        || object.get("profile").and_then(Value::as_str) != Some(profile)
+    {
+        bail!("service-pool tenant, data boundary, or profile mismatch")
+    }
+    let computed = execution_runner_protocol::canonical_sha256(&dimensions)?;
+    if assignment != pool || pool != computed {
+        bail!("service-pool compatibility digest mismatch")
+    }
+    Ok(Some(PoolAssignment {
+        pool_id: row.try_get("pool_id")?,
+        compatibility_digest: pool,
+    }))
+}
+
+async fn enforce_quotas(
+    tx: &mut Transaction<'_, Postgres>,
+    host: Uuid,
+    principal: &str,
+    agent: Uuid,
+    profile: &str,
+    provider: &str,
+    pool: Option<Uuid>,
+    turn_id: Option<Uuid>,
+    session_admission: bool,
+    tokens: i64,
+    cost: i64,
+) -> Result<()> {
+    let keys = [
+        ("HOST", host.to_string()),
+        ("PRINCIPAL", principal.to_string()),
+        ("AGENT", agent.to_string()),
+        ("PROFILE", profile.to_string()),
+        ("PROVIDER", provider.to_string()),
+        ("POOL", pool.map(|v| v.to_string()).unwrap_or_default()),
+    ];
+    for (kind, key) in keys {
+        if key.is_empty() {
+            continue;
+        }
+        let policies=sqlx::query("SELECT quota_id,maximum_active_sessions,maximum_queued_turns,
+            maximum_running_turns,token_budget_per_window,cost_budget_micros_per_window,window_seconds
+            FROM agent_quota_policy_t WHERE host_id=$1 AND scope_kind=$2 AND scope_key=$3 AND enabled=TRUE FOR UPDATE")
+            .bind(host).bind(kind).bind(&key).fetch_all(&mut **tx).await?;
+        for q in policies {
+            if session_admission {
+                if let Some(max) = q.try_get::<Option<i32>, _>("maximum_active_sessions")? {
+                    let active:i64=match kind {"HOST"=>sqlx::query_scalar("SELECT COUNT(*) FROM agent_session_t WHERE host_id=$1 AND state='ACTIVE'").bind(host).fetch_one(&mut **tx).await?,
+                    "PRINCIPAL"=>sqlx::query_scalar("SELECT COUNT(*) FROM agent_session_t WHERE host_id=$1 AND principal_id=$2 AND state='ACTIVE'").bind(host).bind(principal).fetch_one(&mut **tx).await?,
+                    "AGENT"=>sqlx::query_scalar("SELECT COUNT(*) FROM agent_session_t WHERE host_id=$1 AND agent_def_id=$2 AND state='ACTIVE'").bind(host).bind(agent).fetch_one(&mut **tx).await?,
+                    "PROFILE"=>sqlx::query_scalar("SELECT COUNT(*) FROM agent_session_t s JOIN agent_policy_snapshot_t p ON p.host_id=s.host_id AND p.policy_snapshot_id=s.policy_snapshot_id WHERE s.host_id=$1 AND p.product_profile_digest=$2 AND s.state='ACTIVE'").bind(host).bind(profile).fetch_one(&mut **tx).await?,
+                    "PROVIDER"=>sqlx::query_scalar("SELECT COUNT(*) FROM agent_session_t s JOIN agent_definition_t d ON d.host_id=s.host_id AND d.agent_def_id=s.agent_def_id WHERE s.host_id=$1 AND d.model_provider=$2 AND s.state='ACTIVE'").bind(host).bind(provider).fetch_one(&mut **tx).await?,
+                    "POOL"=>sqlx::query_scalar("SELECT COUNT(*) FROM agent_session_t WHERE host_id=$1 AND service_pool_id=$2 AND state='ACTIVE'").bind(host).bind(pool).fetch_one(&mut **tx).await?, _=>0};
+                    if active >= i64::from(max) {
+                        bail!("agent session quota exceeded for {kind}:{key}")
+                    }
+                }
+            } else {
+                if let Some(max) = q.try_get::<Option<i32>, _>("maximum_queued_turns")? {
+                    let count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM agent_turn_t t JOIN agent_session_t s ON s.host_id=t.host_id AND s.session_id=t.session_id JOIN agent_policy_snapshot_t p ON p.host_id=s.host_id AND p.policy_snapshot_id=s.policy_snapshot_id WHERE t.host_id=$1 AND t.state='QUEUED' AND ($2<>'PRINCIPAL' OR s.principal_id=$3) AND ($2<>'AGENT' OR s.agent_def_id=$4) AND ($2<>'POOL' OR s.service_pool_id=$5) AND ($2<>'PROVIDER' OR t.model_provider=$6) AND ($2<>'PROFILE' OR p.product_profile_digest=$7)").bind(host).bind(kind).bind(principal).bind(agent).bind(pool).bind(provider).bind(profile).fetch_one(&mut **tx).await?;
+                    if count >= i64::from(max) {
+                        bail!("agent queued-turn quota exceeded for {kind}:{key}")
+                    }
+                }
+                if let Some(max) = q.try_get::<Option<i32>, _>("maximum_running_turns")? {
+                    let count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM agent_turn_t t JOIN agent_session_t s ON s.host_id=t.host_id AND s.session_id=t.session_id JOIN agent_policy_snapshot_t p ON p.host_id=s.host_id AND p.policy_snapshot_id=s.policy_snapshot_id WHERE t.host_id=$1 AND t.state IN('RECEIVED','RUNNING_MODEL','WAITING_ACTION','RUNNING_ACTION','WAITING_RECONCILIATION','WAITING_APPROVAL') AND ($2<>'PRINCIPAL' OR s.principal_id=$3) AND ($2<>'AGENT' OR s.agent_def_id=$4) AND ($2<>'POOL' OR s.service_pool_id=$5) AND ($2<>'PROVIDER' OR t.model_provider=$6) AND ($2<>'PROFILE' OR p.product_profile_digest=$7)").bind(host).bind(kind).bind(principal).bind(agent).bind(pool).bind(provider).bind(profile).fetch_one(&mut **tx).await?;
+                    if count >= i64::from(max) {
+                        bail!("agent running-turn quota exceeded for {kind}:{key}")
+                    }
+                }
+                let token_max = q.try_get::<Option<i64>, _>("token_budget_per_window")?;
+                let cost_max = q.try_get::<Option<i64>, _>("cost_budget_micros_per_window")?;
+                if token_max.is_some() || cost_max.is_some() {
+                    let quota: Uuid = q.try_get("quota_id")?;
+                    let window: i32 = q.try_get("window_seconds")?;
+                    let ok:Option<Uuid>=sqlx::query_scalar("INSERT INTO agent_quota_usage_t(host_id,quota_id,window_start_ts,reserved_tokens,reserved_cost_micros) VALUES($1,$2,to_timestamp(floor(extract(epoch FROM now())/$3)*$3),$4,$5) ON CONFLICT(host_id,quota_id,window_start_ts) DO UPDATE SET reserved_tokens=agent_quota_usage_t.reserved_tokens+$4,reserved_cost_micros=agent_quota_usage_t.reserved_cost_micros+$5,updated_ts=now() WHERE ($6::bigint IS NULL OR agent_quota_usage_t.reserved_tokens+agent_quota_usage_t.consumed_tokens+$4<=$6) AND ($7::bigint IS NULL OR agent_quota_usage_t.reserved_cost_micros+agent_quota_usage_t.consumed_cost_micros+$5<=$7) RETURNING quota_id")
+                        .bind(host).bind(quota).bind(window).bind(tokens).bind(cost).bind(token_max).bind(cost_max).fetch_optional(&mut **tx).await?;
+                    if ok.is_none() {
+                        bail!("agent token or cost quota exceeded for {kind}:{key}")
+                    }
+                    let turn_id = turn_id.context("turn quota reservation requires a turn id")?;
+                    sqlx::query("INSERT INTO agent_quota_reservation_t(host_id,quota_id,turn_id,window_start_ts,reserved_tokens,reserved_cost_micros) VALUES($1,$2,$3,to_timestamp(floor(extract(epoch FROM now())/$4)*$4),$5,$6)")
+                        .bind(host).bind(quota).bind(turn_id).bind(window).bind(tokens).bind(cost).execute(&mut **tx).await?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn reconcile_turn_quota_usage(
+    tx: &mut Transaction<'_, Postgres>,
+    host_id: Uuid,
+    turn_id: Uuid,
+    actual_tokens: i64,
+    actual_cost_micros: i64,
+) -> Result<()> {
+    let reservations = sqlx::query(
+        "SELECT quota_id,window_start_ts,reserved_tokens,reserved_cost_micros
+         FROM agent_quota_reservation_t
+         WHERE host_id=$1 AND turn_id=$2 AND reconciled_ts IS NULL
+         FOR UPDATE",
+    )
+    .bind(host_id)
+    .bind(turn_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    for reservation in reservations {
+        let quota_id: Uuid = reservation.try_get("quota_id")?;
+        let window_start: DateTime<Utc> = reservation.try_get("window_start_ts")?;
+        let reserved_tokens: i64 = reservation.try_get("reserved_tokens")?;
+        let reserved_cost: i64 = reservation.try_get("reserved_cost_micros")?;
+        sqlx::query(
+            "UPDATE agent_quota_usage_t SET
+               reserved_tokens=GREATEST(0,reserved_tokens-$4),
+               reserved_cost_micros=GREATEST(0,reserved_cost_micros-$5),
+               consumed_tokens=consumed_tokens+$6,
+               consumed_cost_micros=consumed_cost_micros+$7,updated_ts=now()
+             WHERE host_id=$1 AND quota_id=$2 AND window_start_ts=$3",
+        )
+        .bind(host_id)
+        .bind(quota_id)
+        .bind(window_start)
+        .bind(reserved_tokens)
+        .bind(reserved_cost)
+        .bind(actual_tokens.max(0))
+        .bind(actual_cost_micros.max(0))
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            "UPDATE agent_quota_reservation_t SET actual_tokens=$4,
+               actual_cost_micros=$5,reconciled_ts=now(),updated_ts=now()
+             WHERE host_id=$1 AND quota_id=$2 AND turn_id=$3 AND reconciled_ts IS NULL",
+        )
+        .bind(host_id)
+        .bind(quota_id)
+        .bind(turn_id)
+        .bind(actual_tokens.max(0))
+        .bind(actual_cost_micros.max(0))
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
 impl AgentRepository {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
@@ -68,9 +278,29 @@ impl AgentRepository {
                     self.reconcile_execution_results().await?;
                     self.reconcile_expiry_and_cleanup().await?;
                     self.reconcile_projections().await?;
+                    let retention_days = std::env::var("LIGHT_AGENT_QUOTA_USAGE_RETENTION_DAYS").ok()
+                        .and_then(|value| value.parse::<i32>().ok()).unwrap_or(30).clamp(1, 3650);
+                    self.sweep_quota_usage(retention_days, 1_000).await?;
                 },
             }
         }
+    }
+
+    pub async fn sweep_quota_usage(&self, retention_days: i32, batch_size: i64) -> Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM agent_quota_usage_t u WHERE (u.host_id,u.quota_id,u.window_start_ts) IN
+             (SELECT q.host_id,q.quota_id,q.window_start_ts FROM agent_quota_usage_t q
+              WHERE q.window_start_ts < now()-make_interval(days=>$1)
+                AND NOT EXISTS(SELECT 1 FROM agent_quota_reservation_t r
+                  WHERE r.host_id=q.host_id AND r.quota_id=q.quota_id
+                    AND r.window_start_ts=q.window_start_ts AND r.reconciled_ts IS NULL)
+              ORDER BY q.window_start_ts LIMIT $2 FOR UPDATE SKIP LOCKED)",
+        )
+        .bind(retention_days.clamp(1, 3650))
+        .bind(batch_size.clamp(1, 10_000))
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 
     pub async fn reconcile_agent_jobs(&self) -> Result<u64> {
@@ -219,6 +449,14 @@ impl AgentRepository {
         let policy: String = row.try_get("policy_digest")?;
         let state: String = row.try_get("state")?;
         let result = json!({"executionId":execution_id,"state":state,"result":row.try_get::<Option<Value>,_>("normalized_result")?,"error":row.try_get::<Option<Value>,_>("normalized_error")?});
+        let actual_tokens = result
+            .pointer("/result/usage/totalTokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let actual_cost = result
+            .pointer("/result/usage/costMicros")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
         append_event(
             &mut tx,
             host_id,
@@ -235,6 +473,7 @@ impl AgentRepository {
             .bind(host_id).bind(turn_id).bind(execution_id).bind(&state).bind(&result).execute(&mut *tx).await?;
         sqlx::query("UPDATE execution_attempt_t SET accepted_by_origin_ts=COALESCE(accepted_by_origin_ts,now()),updated_ts=now() WHERE host_id=$1 AND execution_id=$2").bind(host_id).bind(execution_id).execute(&mut *tx).await?;
         sqlx::query("UPDATE agent_session_t SET active_turn_id=NULL,session_version=session_version+1,updated_ts=now() WHERE host_id=$1 AND session_id=$2 AND active_turn_id=$3").bind(host_id).bind(session).bind(turn_id).execute(&mut *tx).await?;
+        reconcile_turn_quota_usage(&mut tx, host_id, turn_id, actual_tokens, actual_cost).await?;
         tx.commit().await?;
         Ok(true)
     }
@@ -425,11 +664,62 @@ impl AgentRepository {
     pub async fn create_or_resume_session(&self, spec: &SessionSpec) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         persist_policy(&mut tx, spec.host_id, spec.agent_def_id, &spec.policy).await?;
+        let policy_digest =
+            sha256_digest(&serde_json::to_vec(&serde_json::to_value(&spec.policy)?)?);
+        let (definition_version, provider): (i64, String) = sqlx::query_as(
+            "SELECT aggregate_version,model_provider
+            FROM agent_definition_t WHERE host_id=$1 AND agent_def_id=$2",
+        )
+        .bind(spec.host_id)
+        .bind(spec.agent_def_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let pool = resolve_pool(
+            &mut tx,
+            spec.host_id,
+            spec.agent_def_id,
+            definition_version,
+            &policy_digest,
+            &spec.policy.data_boundary_digest,
+            &spec.policy.product_profile_digest,
+        )
+        .await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(format!(
+                "agent-session:{}:{}",
+                spec.host_id, spec.session_id.0
+            ))
+            .execute(&mut *tx)
+            .await?;
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM agent_session_t WHERE host_id=$1 AND session_id=$2)",
+        )
+        .bind(spec.host_id)
+        .bind(spec.session_id.0)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !exists {
+            enforce_quotas(
+                &mut tx,
+                spec.host_id,
+                &spec.principal_id,
+                spec.agent_def_id,
+                &spec.policy.product_profile_digest,
+                &provider,
+                pool.as_ref().map(|p| p.pool_id),
+                None,
+                true,
+                0,
+                0,
+            )
+            .await?;
+        }
         let result = sqlx::query(
             "INSERT INTO agent_session_t
              (host_id,session_id,principal_id,user_id,agent_def_id,agent_definition_version,bank_id,
-              policy_snapshot_id,idle_expires_ts,maximum_expires_ts,resume_handle_digest)
-             VALUES ($1,$2,$3,$4,$5,1,$6,$7,$8,$9,$10)
+              policy_snapshot_id,idle_expires_ts,maximum_expires_ts,resume_handle_digest,
+              service_pool_id,service_pool_compatibility_digest)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
              ON CONFLICT (host_id,session_id) DO NOTHING",
         )
         .bind(spec.host_id)
@@ -437,15 +727,18 @@ impl AgentRepository {
         .bind(&spec.principal_id)
         .bind(spec.user_id)
         .bind(spec.agent_def_id)
+        .bind(definition_version)
         .bind(spec.bank_id)
         .bind(spec.policy.snapshot_id)
         .bind(spec.idle_expires_at)
         .bind(spec.maximum_expires_at)
         .bind(&spec.resume_handle_digest)
+        .bind(pool.as_ref().map(|p| p.pool_id))
+        .bind(pool.as_ref().map(|p| p.compatibility_digest.as_str()))
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 0 {
-            let row = sqlx::query("SELECT principal_id,agent_def_id,state FROM agent_session_t WHERE host_id=$1 AND session_id=$2 FOR UPDATE")
+            let row = sqlx::query("SELECT principal_id,agent_def_id,state,service_pool_id,service_pool_compatibility_digest FROM agent_session_t WHERE host_id=$1 AND session_id=$2 FOR UPDATE")
                 .bind(spec.host_id).bind(spec.session_id.0).fetch_one(&mut *tx).await?;
             let principal: String = row.try_get("principal_id")?;
             let definition: Uuid = row.try_get("agent_def_id")?;
@@ -453,6 +746,10 @@ impl AgentRepository {
             if principal != spec.principal_id
                 || definition != spec.agent_def_id
                 || state != "ACTIVE"
+                || row.try_get::<Option<Uuid>, _>("service_pool_id")?
+                    != pool.as_ref().map(|p| p.pool_id)
+                || row.try_get::<Option<String>, _>("service_pool_compatibility_digest")?
+                    != pool.as_ref().map(|p| p.compatibility_digest.clone())
             {
                 bail!("durable agent session ownership or state mismatch");
             }
@@ -471,8 +768,25 @@ impl AgentRepository {
         model_name: &str,
     ) -> Result<AdmittedTurn> {
         let mut tx = self.pool.begin().await?;
-        let row = sqlx::query("SELECT next_turn_sequence,next_queue_sequence,policy_snapshot_id,(SELECT policy_digest FROM agent_policy_snapshot_t p WHERE p.host_id=s.host_id AND p.policy_snapshot_id=s.policy_snapshot_id) policy_digest,(SELECT data_boundary_digest FROM agent_policy_snapshot_t p WHERE p.host_id=s.host_id AND p.policy_snapshot_id=s.policy_snapshot_id) data_boundary_digest,maximum_expires_ts FROM agent_session_t s WHERE host_id=$1 AND session_id=$2 AND state='ACTIVE' FOR UPDATE")
-            .bind(host_id).bind(session_id.0).fetch_optional(&mut *tx).await?.context("active agent session not found")?;
+        let row = sqlx::query(
+            "SELECT next_turn_sequence,next_queue_sequence,policy_snapshot_id,
+              p.policy_digest,p.data_boundary_digest,p.product_profile_digest,maximum_expires_ts,
+              s.principal_id,s.agent_def_id,s.service_pool_id
+              FROM agent_session_t s JOIN agent_policy_snapshot_t p ON p.host_id=s.host_id
+                AND p.policy_snapshot_id=s.policy_snapshot_id AND p.revoked_ts IS NULL
+              WHERE s.host_id=$1 AND s.session_id=$2 AND s.state='ACTIVE'
+                AND (s.service_pool_id IS NULL OR EXISTS(SELECT 1 FROM agent_pool_assignment_t a
+                  JOIN agent_service_pool_t sp ON sp.host_id=a.host_id AND sp.pool_id=a.pool_id AND sp.enabled=TRUE
+                  WHERE a.host_id=s.host_id AND a.agent_def_id=s.agent_def_id
+                    AND a.agent_definition_version=s.agent_definition_version AND a.policy_digest=p.policy_digest
+                    AND a.pool_id=s.service_pool_id AND a.compatibility_digest=s.service_pool_compatibility_digest
+                    AND a.revoked_ts IS NULL)) FOR UPDATE OF s,p",
+        )
+        .bind(host_id)
+        .bind(session_id.0)
+        .fetch_optional(&mut *tx)
+        .await?
+        .context("active agent session not found")?;
         if let Some(existing) = sqlx::query("SELECT turn_id,turn_sequence,policy_digest,data_boundary_digest FROM agent_turn_t WHERE host_id=$1 AND session_id=$2 AND client_message_id=$3")
             .bind(host_id).bind(session_id.0).bind(client_message_id).fetch_optional(&mut *tx).await? {
             tx.commit().await?;
@@ -484,11 +798,29 @@ impl AgentRepository {
         let policy_digest: String = row.try_get("policy_digest")?;
         let boundary: String = row.try_get("data_boundary_digest")?;
         let maximum: DateTime<Utc> = row.try_get("maximum_expires_ts")?;
-        let deadline = std::cmp::min(Utc::now() + Duration::minutes(2), maximum);
+        let principal: String = row.try_get("principal_id")?;
+        let agent: Uuid = row.try_get("agent_def_id")?;
+        let pool: Option<Uuid> = row.try_get("service_pool_id")?;
+        let profile: String = row.try_get("product_profile_digest")?;
         let turn_id = AgentTurnId::new();
-        sqlx::query("INSERT INTO agent_turn_t (host_id,turn_id,session_id,turn_sequence,queue_sequence,origin_kind,client_message_id,idempotency_key,policy_snapshot_id,policy_digest,data_boundary_digest,model_provider,model_name,model_action_budget,token_budget,cost_budget_micros,deadline_ts) VALUES ($1,$2,$3,$4,$5,'user',$6,$6,$7,$8,$9,$10,$11,20,65536,0,$12)")
+        enforce_quotas(
+            &mut tx,
+            host_id,
+            &principal,
+            agent,
+            &profile,
+            model_provider,
+            pool,
+            Some(turn_id.0),
+            false,
+            65_536,
+            0,
+        )
+        .await?;
+        let deadline = std::cmp::min(Utc::now() + Duration::minutes(2), maximum);
+        sqlx::query("INSERT INTO agent_turn_t (host_id,turn_id,session_id,turn_sequence,queue_sequence,origin_kind,client_message_id,idempotency_key,policy_snapshot_id,policy_digest,data_boundary_digest,model_provider,model_name,model_action_budget,token_budget,cost_budget_micros,deadline_ts,service_pool_id) VALUES ($1,$2,$3,$4,$5,'user',$6,$6,$7,$8,$9,$10,$11,20,65536,0,$12,$13)")
             .bind(host_id).bind(turn_id.0).bind(session_id.0).bind(turn_sequence).bind(queue_sequence).bind(client_message_id)
-            .bind(policy_snapshot_id).bind(&policy_digest).bind(&boundary).bind(model_provider).bind(model_name).bind(deadline).execute(&mut *tx).await?;
+            .bind(policy_snapshot_id).bind(&policy_digest).bind(&boundary).bind(model_provider).bind(model_name).bind(deadline).bind(pool).execute(&mut *tx).await?;
         sqlx::query("UPDATE agent_session_t SET next_turn_sequence=next_turn_sequence+1,next_queue_sequence=next_queue_sequence+1,updated_ts=now() WHERE host_id=$1 AND session_id=$2")
             .bind(host_id).bind(session_id.0).execute(&mut *tx).await?;
         append_event(
@@ -519,7 +851,7 @@ impl AgentRepository {
         session_id: AgentSessionId,
     ) -> Result<Option<AgentTurnId>> {
         let mut tx = self.pool.begin().await?;
-        let locked = sqlx::query("SELECT active_turn_id FROM agent_session_t WHERE host_id=$1 AND session_id=$2 AND state='ACTIVE' FOR UPDATE")
+        let locked = sqlx::query("SELECT active_turn_id,service_pool_id FROM agent_session_t WHERE host_id=$1 AND session_id=$2 AND state='ACTIVE' FOR UPDATE")
             .bind(host_id).bind(session_id.0).fetch_optional(&mut *tx).await?;
         let Some(row) = locked else {
             tx.commit().await?;
@@ -528,6 +860,16 @@ impl AgentRepository {
         if row.try_get::<Option<Uuid>, _>("active_turn_id")?.is_some() {
             tx.commit().await?;
             return Ok(None);
+        }
+        if let Some(pool_id) = row.try_get::<Option<Uuid>, _>("service_pool_id")? {
+            let available:bool=sqlx::query_scalar("SELECT (SELECT COUNT(*) FROM agent_turn_t
+                  WHERE host_id=$1 AND service_pool_id=$2 AND state IN('RECEIVED','RUNNING_MODEL','WAITING_ACTION','RUNNING_ACTION','WAITING_RECONCILIATION','WAITING_APPROVAL')) < maximum_concurrency
+                FROM agent_service_pool_t WHERE host_id=$1 AND pool_id=$2 AND enabled=TRUE FOR UPDATE")
+                .bind(host_id).bind(pool_id).fetch_optional(&mut *tx).await?.unwrap_or(false);
+            if !available {
+                tx.commit().await?;
+                return Ok(None);
+            }
         }
         let turn = sqlx::query("SELECT turn_id FROM agent_turn_t WHERE host_id=$1 AND session_id=$2 AND state='QUEUED' ORDER BY queue_sequence FOR UPDATE SKIP LOCKED LIMIT 1")
             .bind(host_id).bind(session_id.0).fetch_optional(&mut *tx).await?;
@@ -697,6 +1039,8 @@ impl AgentRepository {
         session_id: AgentSessionId,
         turn_id: AgentTurnId,
         response: &str,
+        actual_tokens: i64,
+        actual_cost_micros: i64,
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
@@ -735,6 +1079,14 @@ impl AgentRepository {
             .bind(host_id).bind(turn_id.0).bind(json!({"text":response})).execute(&mut *tx).await?;
         sqlx::query("UPDATE agent_session_t SET active_turn_id=NULL,session_version=session_version+1,updated_ts=now() WHERE host_id=$1 AND session_id=$2 AND active_turn_id=$3")
             .bind(host_id).bind(session_id.0).bind(turn_id.0).execute(&mut *tx).await?;
+        reconcile_turn_quota_usage(
+            &mut tx,
+            host_id,
+            turn_id.0,
+            actual_tokens,
+            actual_cost_micros,
+        )
+        .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -751,6 +1103,7 @@ impl AgentRepository {
             .bind(host_id).bind(turn_id.0).bind(json!({"message":reason})).execute(&mut *tx).await?;
         sqlx::query("UPDATE agent_session_t SET active_turn_id=NULL,session_version=session_version+1,updated_ts=now() WHERE host_id=$1 AND session_id=$2 AND active_turn_id=$3")
             .bind(host_id).bind(session_id.0).bind(turn_id.0).execute(&mut *tx).await?;
+        reconcile_turn_quota_usage(&mut tx, host_id, turn_id.0, 0, 0).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -905,7 +1258,7 @@ mod tests {
             Some(first.turn_id)
         );
         repository
-            .complete_turn(host_id, session, first.turn_id, "world")
+            .complete_turn(host_id, session, first.turn_id, "world", 1, 0)
             .await
             .unwrap();
         assert_eq!(

@@ -418,7 +418,17 @@ fn portal_query_base_url(config: &PortalRegistryConfig) -> String {
 
 #[derive(Clone)]
 struct AgentCatalogCache {
-    inner: Arc<RwLock<Option<CachedAgentCatalog>>>,
+    inner: Arc<RwLock<HashMap<CatalogCacheKey, CachedAgentCatalog>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CatalogCacheKey {
+    host_id: Uuid,
+    agent_def_id: Uuid,
+    definition_version: i64,
+    policy_digest: String,
+    service_id: String,
+    env_tag: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -430,24 +440,33 @@ struct CachedAgentCatalog {
 impl AgentCatalogCache {
     fn new() -> Self {
         Self {
-            inner: Arc::new(RwLock::new(None)),
+            inner: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    async fn get_fresh(&self, ttl: Duration) -> Option<EffectiveAgentCatalog> {
-        self.get_with_max_age(ttl, false).await
+    async fn get_fresh(
+        &self,
+        key: &CatalogCacheKey,
+        ttl: Duration,
+    ) -> Option<EffectiveAgentCatalog> {
+        self.get_with_max_age(key, ttl, false).await
     }
 
-    async fn get_stale(&self, max_age: Duration) -> Option<EffectiveAgentCatalog> {
-        self.get_with_max_age(max_age, true).await
+    async fn get_stale(
+        &self,
+        key: &CatalogCacheKey,
+        max_age: Duration,
+    ) -> Option<EffectiveAgentCatalog> {
+        self.get_with_max_age(key, max_age, true).await
     }
 
     async fn get_with_max_age(
         &self,
+        key: &CatalogCacheKey,
         max_age: Duration,
         mark_stale: bool,
     ) -> Option<EffectiveAgentCatalog> {
-        let entry = self.inner.read().await.clone()?;
+        let entry = self.inner.read().await.get(key).cloned()?;
         if entry.fetched_at.elapsed() > max_age {
             return None;
         }
@@ -463,7 +482,13 @@ impl AgentCatalogCache {
         ttl: Duration,
         stale_on_error: Duration,
     ) -> CatalogCacheDiagnostics {
-        let entry = self.inner.read().await.clone();
+        let entry = self
+            .inner
+            .read()
+            .await
+            .values()
+            .max_by_key(|entry| entry.fetched_at)
+            .cloned();
         let age_seconds = entry
             .as_ref()
             .map(|entry| entry.fetched_at.elapsed().as_secs());
@@ -482,15 +507,18 @@ impl AgentCatalogCache {
         }
     }
 
-    async fn set(&self, catalog: EffectiveAgentCatalog) {
-        *self.inner.write().await = Some(CachedAgentCatalog {
-            catalog,
-            fetched_at: Instant::now(),
-        });
+    async fn set(&self, key: CatalogCacheKey, catalog: EffectiveAgentCatalog) {
+        self.inner.write().await.insert(
+            key,
+            CachedAgentCatalog {
+                catalog,
+                fetched_at: Instant::now(),
+            },
+        );
     }
 
     async fn clear(&self) {
-        *self.inner.write().await = None;
+        self.inner.write().await.clear();
     }
 }
 
@@ -638,6 +666,8 @@ struct PortalQueryClient {
 fn build_effective_catalog_data(
     host_id: Uuid,
     agent_def_id: Uuid,
+    definition_version: i64,
+    policy_digest: String,
     service_id: &str,
     env_tag: Option<&str>,
     semantic_query: Option<&str>,
@@ -646,6 +676,8 @@ fn build_effective_catalog_data(
     let mut data = serde_json::json!({
         "hostId": host_id,
         "agentDefId": agent_def_id,
+        "definitionVersion": definition_version,
+        "policyDigest": policy_digest,
         "serviceId": service_id,
     });
     if let Some(env_tag) = env_tag.filter(|value| !value.trim().is_empty()) {
@@ -781,6 +813,8 @@ impl PortalQueryClient {
         &self,
         host_id: Uuid,
         agent_def_id: Uuid,
+        definition_version: i64,
+        policy_digest: &str,
         service_id: &str,
         env_tag: Option<&str>,
         semantic_query: Option<&str>,
@@ -789,6 +823,8 @@ impl PortalQueryClient {
         let data = build_effective_catalog_data(
             host_id,
             agent_def_id,
+            definition_version,
+            policy_digest.to_string(),
             service_id,
             env_tag,
             semantic_query,
@@ -1084,6 +1120,8 @@ struct AgentState {
     limits: AgentLimits,
     host_id: Uuid,
     agent_def_id: Uuid,
+    definition_version: i64,
+    policy_digest: String,
     service_id: String,
     env_tag: Option<String>,
     catalog_cache_ttl: Duration,
@@ -1093,6 +1131,16 @@ struct AgentState {
 }
 
 impl AgentState {
+    fn catalog_cache_key(&self) -> CatalogCacheKey {
+        CatalogCacheKey {
+            host_id: self.host_id,
+            agent_def_id: self.agent_def_id,
+            definition_version: self.definition_version,
+            policy_digest: self.policy_digest.clone(),
+            service_id: self.service_id.clone(),
+            env_tag: self.env_tag.clone(),
+        }
+    }
     async fn catalog_selection(&self, prompt: &str) -> Option<CatalogSelection> {
         let catalog = if self.catalog_semantic_search_enabled {
             match self.semantic_effective_catalog(prompt).await {
@@ -1116,7 +1164,12 @@ impl AgentState {
     }
 
     async fn effective_catalog(&self) -> Option<EffectiveAgentCatalog> {
-        if let Some(catalog) = self.catalog_cache.get_fresh(self.catalog_cache_ttl).await {
+        let key = self.catalog_cache_key();
+        if let Some(catalog) = self
+            .catalog_cache
+            .get_fresh(&key, self.catalog_cache_ttl)
+            .await
+        {
             return Some(catalog);
         }
 
@@ -1127,7 +1180,7 @@ impl AgentState {
                     "Effective agent catalog refresh failed; trying bounded stale catalog fallback: {err}"
                 );
                 self.catalog_cache
-                    .get_stale(self.catalog_stale_on_error)
+                    .get_stale(&key, self.catalog_stale_on_error)
                     .await
             }
         }
@@ -1141,13 +1194,17 @@ impl AgentState {
             .get_effective_agent_catalog(
                 self.host_id,
                 self.agent_def_id,
+                self.definition_version,
+                &self.policy_digest,
                 &self.service_id,
                 self.env_tag.as_deref(),
                 None,
                 None,
             )
             .await?;
-        self.catalog_cache.set(catalog.clone()).await;
+        self.catalog_cache
+            .set(self.catalog_cache_key(), catalog.clone())
+            .await;
         Ok(Some(catalog))
     }
 
@@ -1167,6 +1224,8 @@ impl AgentState {
             .get_effective_agent_catalog(
                 self.host_id,
                 self.agent_def_id,
+                self.definition_version,
+                &self.policy_digest,
                 &self.service_id,
                 self.env_tag.as_deref(),
                 Some(semantic_query),
@@ -1247,7 +1306,7 @@ async fn tool_diagnostics(
             Err(err) => (
                 state
                     .catalog_cache
-                    .get_stale(state.catalog_stale_on_error)
+                    .get_stale(&state.catalog_cache_key(), state.catalog_stale_on_error)
                     .await,
                 Some(err.to_string()),
             ),
@@ -2758,7 +2817,7 @@ async fn handle_socket(
                         let _ = sender.send(Message::Text(payload.into())).await;
                     }
                 }
-                Ok(Ok(response)) => {
+                Ok(Ok((response, actual_tokens))) => {
                     if let Some(text) = response.text {
                         if let Err(err) = state
                             .domain
@@ -2767,6 +2826,8 @@ async fn handle_socket(
                                 AgentSessionId(session_id),
                                 admitted.turn_id,
                                 &text,
+                                i64::try_from(actual_tokens).unwrap_or(i64::MAX),
+                                0,
                             )
                             .await
                         {
@@ -3348,7 +3409,7 @@ async fn run_agent_loop(
     data_boundary_digest: &str,
     session_id: &str,
     bank_id: Uuid,
-) -> Result<ChatResponse> {
+) -> Result<(ChatResponse, u64)> {
     let user_prompt = messages
         .last()
         .map(|m| m.content.clone())
@@ -3619,7 +3680,7 @@ async fn run_agent_loop(
             .map_err(|e| warn!("Failed to retain memory: {}", e));
     }
 
-    Ok(response)
+    Ok((response, turn_tokens))
 }
 
 async fn build_agent_state(
@@ -3708,6 +3769,14 @@ async fn build_agent_state(
                         .to_string(),
                 )
             })?;
+    let definition_identity:Option<(i64,String)>=sqlx::query_as("SELECT d.aggregate_version,
+            COALESCE(p.policy_digest,'unresolved') FROM agent_definition_t d
+            LEFT JOIN agent_policy_snapshot_t p ON p.host_id=d.host_id AND p.policy_snapshot_id=d.policy_snapshot_id
+            WHERE d.host_id=$1 AND d.agent_def_id=$2")
+        .bind(host_id).bind(agent_def_id).fetch_optional(&pool).await
+        .map_err(|e|RuntimeError::Config(format!("failed to resolve Agent pool identity: {e}")))?;
+    let (definition_version, policy_digest) =
+        definition_identity.unwrap_or((0, "unresolved".into()));
     let security = load_security_runtime(runtime_config, true)?
         .ok_or_else(|| RuntimeError::Config("JWT verification must be enabled".to_string()))?;
     security.bootstrap().await.map_err(|rejection| {
@@ -3791,6 +3860,8 @@ async fn build_agent_state(
         limits,
         host_id,
         agent_def_id,
+        definition_version,
+        policy_digest,
         service_id: runtime_config.service_identity.service_id.clone(),
         env_tag,
         catalog_cache_ttl,
@@ -3928,13 +3999,13 @@ impl RegistryHandler for AgentRegistryHandler {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentCatalogCache, AgentLimits, CatalogSkill, CatalogTool, CatalogToolPolicy, ChatMessage,
-        EffectiveAgentCatalog, MAX_SESSION_MESSAGES, ModelProviderConfig, SessionOwner,
-        agent_ca_cert_path_from_config, bind_authenticated_principal, bound_untrusted_text,
-        build_effective_catalog_data, choose_model, collect_catalog_tool_names,
-        collect_policy_diagnostics, filter_gateway_tools, is_local_cli_provider,
-        normalize_provider_id, parse_tool_arguments, rollback_last_user_message,
-        select_catalog_tools, trim_history, validate_session_owner,
+        AgentCatalogCache, AgentLimits, CatalogCacheKey, CatalogSkill, CatalogTool,
+        CatalogToolPolicy, ChatMessage, EffectiveAgentCatalog, MAX_SESSION_MESSAGES,
+        ModelProviderConfig, SessionOwner, agent_ca_cert_path_from_config,
+        bind_authenticated_principal, bound_untrusted_text, build_effective_catalog_data,
+        choose_model, collect_catalog_tool_names, collect_policy_diagnostics, filter_gateway_tools,
+        is_local_cli_provider, normalize_provider_id, parse_tool_arguments,
+        rollback_last_user_message, select_catalog_tools, trim_history, validate_session_owner,
     };
     use light_runtime::config::{BootstrapConfig, ClientConfig};
     use light_security::AuthPrincipal;
@@ -4009,6 +4080,8 @@ mod tests {
         let default_data = build_effective_catalog_data(
             host_id,
             agent_def_id,
+            1,
+            "policy-digest".to_string(),
             "com.networknt.agent-1.0.0",
             None,
             None,
@@ -4021,6 +4094,8 @@ mod tests {
         let semantic_data = build_effective_catalog_data(
             host_id,
             agent_def_id,
+            1,
+            "policy-digest".to_string(),
             "com.networknt.agent-1.0.0",
             Some("dev"),
             Some("  find customer preferences  "),
@@ -4035,19 +4110,50 @@ mod tests {
     #[tokio::test]
     async fn catalog_cache_marks_stale_after_fresh_ttl() {
         let cache = AgentCatalogCache::new();
+        let key = CatalogCacheKey {
+            host_id: Uuid::nil(),
+            agent_def_id: Uuid::new_v4(),
+            definition_version: 1,
+            policy_digest: "policy".into(),
+            service_id: "agent".into(),
+            env_tag: Some("dev".into()),
+        };
         cache
-            .set(EffectiveAgentCatalog {
-                catalog_hash: Some("abc".into()),
-                stale: false,
-                ..Default::default()
-            })
+            .set(
+                key.clone(),
+                EffectiveAgentCatalog {
+                    catalog_hash: Some("abc".into()),
+                    stale: false,
+                    ..Default::default()
+                },
+            )
             .await;
 
-        assert!(cache.get_fresh(Duration::from_secs(60)).await.is_some());
+        assert!(
+            cache
+                .get_fresh(&key, Duration::from_secs(60))
+                .await
+                .is_some()
+        );
+        let other = CatalogCacheKey {
+            agent_def_id: Uuid::new_v4(),
+            ..key.clone()
+        };
+        assert!(
+            cache
+                .get_fresh(&other, Duration::from_secs(60))
+                .await
+                .is_none()
+        );
         tokio::time::sleep(Duration::from_millis(1)).await;
-        assert!(cache.get_fresh(Duration::from_secs(0)).await.is_none());
+        assert!(
+            cache
+                .get_fresh(&key, Duration::from_secs(0))
+                .await
+                .is_none()
+        );
         let stale = cache
-            .get_stale(Duration::from_secs(60))
+            .get_stale(&key, Duration::from_secs(60))
             .await
             .expect("stale catalog");
         assert!(stale.stale);
