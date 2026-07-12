@@ -11,6 +11,7 @@ use execution_backend_cube::{
 };
 use execution_backend_mock::MockBehavior;
 use execution_backend_mock::MockExecutionBackend;
+use execution_backend_oci::{OciBackendConfig, OciExecutionBackend, OciRuntime};
 use execution_runner_protocol::{OriginKind, SubjectKind, canonical_sha256};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -77,10 +78,30 @@ pub struct CubeRunnerBackendConfig {
     pub maximum_response_bytes: usize,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OciImplementation {
+    Docker,
+    RootlessOci,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OciRunnerBackendConfig {
+    pub implementation: OciImplementation,
+    pub binary: PathBuf,
+    pub image: String,
+    pub compatibility_digest: String,
+    pub available_slots: u32,
+    pub maximum_memory_bytes: u64,
+    pub maximum_pids: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RunnerBackendConfig {
     Cube(CubeRunnerBackendConfig),
+    Oci(OciRunnerBackendConfig),
     Mock(MockBackendConfig),
 }
 
@@ -89,6 +110,7 @@ impl RunnerBackendConfig {
         match self {
             Self::Mock(config) => config.available_slots,
             Self::Cube(config) => config.available_slots,
+            Self::Oci(config) => config.available_slots,
         }
     }
 
@@ -96,6 +118,7 @@ impl RunnerBackendConfig {
         match self {
             Self::Mock(config) => &config.compatibility_digest,
             Self::Cube(config) => &config.compatibility_digest,
+            Self::Oci(config) => &config.compatibility_digest,
         }
     }
 }
@@ -191,6 +214,9 @@ impl RunnerConfig {
         )?;
         if let RunnerBackendConfig::Cube(cube) = &file.backend {
             validate_cube_backend(cube)?;
+        }
+        if let RunnerBackendConfig::Oci(oci) = &file.backend {
+            validate_oci_backend(oci)?;
         }
         let allowed = file
             .allowed_command_template_digests
@@ -298,6 +324,10 @@ impl RunnerConfig {
                     },
                 )))
             }
+            RunnerBackendConfig::Oci(config) => Ok(std::sync::Arc::new(
+                OciExecutionBackend::new(oci_backend_config(config))
+                    .map_err(|error| error.to_string())?,
+            )),
         }
     }
 
@@ -324,6 +354,11 @@ impl RunnerConfig {
                 discovery_page_limit: config.discovery_page_limit,
             }
             .capability(),
+            RunnerBackendConfig::Oci(config) => {
+                OciExecutionBackend::new(oci_backend_config(config))
+                    .map_err(|error| error.to_string())?
+                    .capability()
+            }
         };
         let mut origins = vec![serde_json::json!({
             "kind": OriginKind::Workflow,
@@ -417,6 +452,28 @@ fn validate_cube_backend(config: &CubeRunnerBackendConfig) -> Result<(), String>
         }
     }
     Ok(())
+}
+
+fn oci_backend_config(config: &OciRunnerBackendConfig) -> OciBackendConfig {
+    OciBackendConfig {
+        runtime: match config.implementation {
+            OciImplementation::Docker => OciRuntime::Docker,
+            OciImplementation::RootlessOci => OciRuntime::Podman,
+        },
+        binary: config.binary.clone(),
+        image: config.image.clone(),
+        compatibility_digest: config.compatibility_digest.clone(),
+        available_slots: config.available_slots,
+        rootless: matches!(config.implementation, OciImplementation::RootlessOci),
+        maximum_memory_bytes: config.maximum_memory_bytes,
+        maximum_pids: config.maximum_pids,
+    }
+}
+
+fn validate_oci_backend(config: &OciRunnerBackendConfig) -> Result<(), String> {
+    OciExecutionBackend::new(oci_backend_config(config))
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 fn validate_token_file(path: &Path) -> Result<(), String> {
@@ -560,5 +617,30 @@ allowedCommandTemplateDigests: [sha256:template-digest]
             "micro-vm"
         );
         assert_eq!(document["enrollments"][0]["backends"][0]["maximumSlots"], 2);
+
+        config.backend = RunnerBackendConfig::Oci(OciRunnerBackendConfig {
+            implementation: OciImplementation::RootlessOci,
+            binary: "/bin/true".into(),
+            image: format!("registry.example/execution@sha256:{}", "a".repeat(64)),
+            compatibility_digest: "sha256:rootless-compatible".into(),
+            available_slots: 2,
+            maximum_memory_bytes: 1024 * 1024,
+            maximum_pids: 32,
+        });
+        let document = config
+            .admission_document("runner-subject", "light-workflow")
+            .unwrap();
+        assert_eq!(
+            document["enrollments"][0]["backends"][0]["backendId"],
+            "rootless-oci"
+        );
+        assert_eq!(
+            document["enrollments"][0]["backends"][0]["boundary"],
+            "user-namespace"
+        );
+        assert_eq!(
+            document["enrollments"][0]["backends"][0]["hostExposure"],
+            "explicit-mounts"
+        );
     }
 }

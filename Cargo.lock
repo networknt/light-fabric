@@ -1329,6 +1329,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "execution-backend-conformance"
+version = "0.1.0"
+dependencies = [
+ "execution-backend",
+ "execution-runner-protocol",
+ "tokio",
+]
+
+[[package]]
 name = "execution-backend-cube"
 version = "0.1.0"
 dependencies = [
@@ -1336,6 +1345,7 @@ dependencies = [
  "chrono",
  "coding-agent-runtime",
  "execution-backend",
+ "execution-backend-conformance",
  "execution-runner-protocol",
  "execution-security",
  "futures-util",
@@ -1358,6 +1368,22 @@ dependencies = [
  "async-trait",
  "chrono",
  "execution-backend",
+ "execution-backend-conformance",
+ "execution-runner-protocol",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "execution-backend-oci"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "execution-backend",
+ "execution-backend-conformance",
  "execution-runner-protocol",
  "serde",
  "serde_json",
@@ -3751,6 +3777,7 @@ dependencies = [
  "execution-backend",
  "execution-backend-cube",
  "execution-backend-mock",
+ "execution-backend-oci",
  "execution-runner-protocol",
  "futures-util",
  "hex",

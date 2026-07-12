@@ -12,4 +12,7 @@ execution-runner-protocol = { path = "../execution-runner-protocol" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+execution-backend-conformance = { path = "../execution-backend-conformance" }
 uuid.workspace = true

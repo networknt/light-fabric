@@ -1,0 +1,24 @@
+version: 1
+runnerId: docker-runner
+enrollmentId: docker-runner-enrollment
+hostId: 00000000-0000-0000-0000-000000000000
+controllerUrl: wss://controller.example/ws/runner
+jwtFile: /run/secrets/runner.jwt
+dataDirectory: /var/lib/light-workflow-runner
+healthAddress: 127.0.0.1:9444
+maximumConcurrency: 2
+heartbeatIntervalMs: 5000
+reconnectMaximumMs: 30000
+shutdownGraceMs: 30000
+stagingMaximumBytes: 104857600
+backend:
+  implementation: docker
+  binary: /usr/bin/docker
+  image: registry.example/light-execution@sha256:replace-with-64-hex-digest
+  compatibilityDigest: sha256:docker-ephemeral-v1
+  availableSlots: 2
+  maximumMemoryBytes: 1073741824
+  maximumPids: 256
+allowedCommandTemplateDigests:
+  - replace-with-approved-command-template-digest
+

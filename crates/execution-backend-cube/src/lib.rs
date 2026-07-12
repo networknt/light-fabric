@@ -680,6 +680,14 @@ mod tests {
         backend.cleanup(&first.backend_operation_id).await.unwrap();
     }
 
+    #[tokio::test]
+    async fn passes_shared_backend_conformance() {
+        let backend = backend(Arc::new(FakeCube::default()));
+        execution_backend_conformance::exercise_lifecycle(&backend, &lease(), &[])
+            .await
+            .unwrap();
+    }
+
     #[test]
     fn rejects_network_credentials_and_unenforceable_ttl() {
         let backend = backend(Arc::new(FakeCube::default()));

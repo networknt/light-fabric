@@ -1,0 +1,11 @@
+[package]
+name = "execution-backend-conformance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+execution-backend = { path = "../execution-backend" }
+execution-runner-protocol = { path = "../execution-runner-protocol" }
+tokio.workspace = true
+

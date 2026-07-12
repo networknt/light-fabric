@@ -14,6 +14,7 @@ dashmap = "6"
 execution-backend = { path = "../../crates/execution-backend" }
 execution-backend-mock = { path = "../../crates/execution-backend-mock" }
 execution-backend-cube = { path = "../../crates/execution-backend-cube" }
+execution-backend-oci = { path = "../../crates/execution-backend-oci" }
 execution-runner-protocol = { path = "../../crates/execution-runner-protocol" }
 futures-util.workspace = true
 hex.workspace = true

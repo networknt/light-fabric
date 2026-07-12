@@ -330,4 +330,12 @@ mod tests {
         let second_output = backend.execute(&first, &lease, cancel_rx).await.unwrap();
         assert_eq!(first_output, second_output);
     }
+
+    #[tokio::test]
+    async fn passes_shared_backend_conformance() {
+        let backend = MockExecutionBackend::new("compat", MockBehavior::default());
+        execution_backend_conformance::exercise_lifecycle(&backend, &lease(), &[])
+            .await
+            .unwrap();
+    }
 }
