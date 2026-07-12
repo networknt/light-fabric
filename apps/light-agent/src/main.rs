@@ -31,12 +31,12 @@ use model_provider::{
 };
 use portal_registry::RegistryHandler;
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, Row, postgres::PgListener};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock};
 use tower_http::services::ServeDir;
 use tracing::{error, info, warn};
 use url::Url;
@@ -44,7 +44,7 @@ use uuid::Uuid;
 
 use agent_core::{AgentSessionId, PolicySnapshot, sha256_digest};
 use agent_delegation::{DelegationClaims, DelegationKind, DelegationSigner};
-use light_agent::domain::{AgentRepository, SessionSpec};
+use light_agent::domain::{AgentRepository, SessionSpec, TurnRuntimeResolution};
 
 mod embedded_config {
     include!(concat!(env!("OUT_DIR"), "/embedded_config.rs"));
@@ -1107,14 +1107,14 @@ impl MemoryStore for PortalCommandMemoryStore {
 }
 
 struct AgentState {
-    provider: Box<dyn Provider>,
-    model: String,
-    temperature: f64,
+    runtime_config: RuntimeConfig,
+    default_temperature: f64,
     mcp_client: McpGatewayClient,
     portal_query_client: Option<PortalQueryClient>,
     catalog_cache: AgentCatalogCache,
     memory: Arc<dyn MemoryStore>,
     domain: AgentRepository,
+    turn_dispatch: TurnDispatchCoordinator,
     delegation_signer: Option<Arc<DelegationSigner>>,
     security: Arc<SecurityRuntime>,
     limits: AgentLimits,
@@ -1130,6 +1130,112 @@ struct AgentState {
     catalog_semantic_limit: usize,
 }
 
+#[derive(Clone)]
+struct TurnDispatchCoordinator {
+    domain: AgentRepository,
+    waiters: Arc<RwLock<HashMap<Uuid, Arc<Notify>>>>,
+}
+
+impl TurnDispatchCoordinator {
+    fn new(domain: AgentRepository) -> Self {
+        Self {
+            domain,
+            waiters: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    async fn register(&self, turn_id: Uuid) -> Arc<Notify> {
+        let notify = Arc::new(Notify::new());
+        self.waiters
+            .write()
+            .await
+            .insert(turn_id, Arc::clone(&notify));
+        notify
+    }
+
+    async fn remove(&self, turn_id: Uuid) {
+        self.waiters.write().await.remove(&turn_id);
+    }
+
+    async fn wake(&self, turn_id: Uuid) {
+        if let Some(waiter) = self.waiters.read().await.get(&turn_id).cloned() {
+            waiter.notify_waiters();
+        }
+    }
+
+    fn spawn(&self, host_id: Uuid) {
+        let coordinator = self.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Err(error) = coordinator.listen_and_dispatch(host_id).await {
+                    warn!(%error, "agent fair-dispatch listener disconnected");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        });
+    }
+
+    async fn listen_and_dispatch(&self, host_id: Uuid) -> Result<()> {
+        let mut listener = PgListener::connect_with(&self.domain.pool()).await?;
+        listener.listen("agent_turn_queue_v1").await?;
+        listener.listen("agent_turn_capacity_v1").await?;
+        listener.listen("agent_turn_activated_v1").await?;
+        // LISTEN first, then catch up, so a commit in the handoff window is
+        // either visible to the scan or queued on this connection.
+        self.dispatch_available(host_id).await?;
+        self.reconcile_local_waiters(host_id).await?;
+        loop {
+            match tokio::time::timeout(Duration::from_secs(5), listener.recv()).await {
+                Ok(Ok(notification)) if notification.channel() == "agent_turn_activated_v1" => {
+                    if let Ok(turn_id) = Uuid::parse_str(notification.payload()) {
+                        self.wake(turn_id).await;
+                    }
+                }
+                Ok(Ok(notification)) => {
+                    if notification.payload() == host_id.to_string() {
+                        self.dispatch_available(host_id).await?;
+                    }
+                }
+                Ok(Err(error)) => return Err(error.into()),
+                Err(_) => {
+                    self.dispatch_available(host_id).await?;
+                    self.reconcile_local_waiters(host_id).await?;
+                }
+            }
+        }
+    }
+
+    async fn dispatch_available(&self, host_id: Uuid) -> Result<()> {
+        // Bound each wake pass; another notification or the five-second
+        // catch-up continues large queues without monopolizing the listener.
+        for _ in 0..256 {
+            if self
+                .domain
+                .dispatch_next_turn_fair(host_id)
+                .await?
+                .is_none()
+            {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    async fn reconcile_local_waiters(&self, host_id: Uuid) -> Result<()> {
+        let turn_ids = self
+            .waiters
+            .read()
+            .await
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        for turn_id in self.domain.active_turn_ids(host_id, &turn_ids).await? {
+            self.wake(turn_id).await;
+        }
+        Ok(())
+    }
+}
+
 impl AgentState {
     fn catalog_cache_key(&self) -> CatalogCacheKey {
         CatalogCacheKey {
@@ -1141,28 +1247,91 @@ impl AgentState {
             env_tag: self.env_tag.clone(),
         }
     }
-    async fn catalog_selection(&self, prompt: &str) -> Option<CatalogSelection> {
-        let catalog = if self.catalog_semantic_search_enabled {
-            match self.semantic_effective_catalog(prompt).await {
-                Ok(Some(catalog)) => catalog,
-                Ok(None) => self.effective_catalog().await?,
-                Err(err) => {
-                    warn!(
-                        "Semantic effective catalog refresh failed; falling back to cached keyword catalog: {err}"
-                    );
-                    self.effective_catalog().await?
+    fn turn_catalog_cache_key(&self, turn: &TurnRuntimeResolution) -> CatalogCacheKey {
+        CatalogCacheKey {
+            host_id: turn.host_id,
+            agent_def_id: turn.agent_def_id,
+            definition_version: turn.definition_version,
+            policy_digest: turn.policy_digest.clone(),
+            service_id: self.service_id.clone(),
+            env_tag: self.env_tag.clone(),
+        }
+    }
+    async fn catalog_selection_for_turn(
+        &self,
+        turn: &TurnRuntimeResolution,
+        prompt: &str,
+    ) -> Option<CatalogSelection> {
+        let catalog = if self.catalog_semantic_search_enabled && !prompt.trim().is_empty() {
+            match self
+                .fetch_turn_catalog(turn, Some(prompt), Some(self.catalog_semantic_limit))
+                .await
+            {
+                Ok(Some(catalog)) => Some(catalog),
+                Ok(None) => self.effective_catalog_for_turn(turn).await,
+                Err(error) => {
+                    warn!(%error, turn_id=%turn.turn_id.0, "semantic turn catalog refresh failed");
+                    self.effective_catalog_for_turn(turn).await
                 }
             }
         } else {
-            self.effective_catalog().await?
-        };
+            self.effective_catalog_for_turn(turn).await
+        }?;
         Some(select_catalog_tools(
             &catalog,
             prompt,
             DEFAULT_CATALOG_SELECTION_LIMIT,
         ))
     }
-
+    async fn effective_catalog_for_turn(
+        &self,
+        turn: &TurnRuntimeResolution,
+    ) -> Option<EffectiveAgentCatalog> {
+        let key = self.turn_catalog_cache_key(turn);
+        if let Some(catalog) = self
+            .catalog_cache
+            .get_fresh(&key, self.catalog_cache_ttl)
+            .await
+        {
+            return Some(catalog);
+        }
+        match self.fetch_turn_catalog(turn, None, None).await {
+            Ok(Some(catalog)) => {
+                self.catalog_cache.set(key, catalog.clone()).await;
+                Some(catalog)
+            }
+            Ok(None) => None,
+            Err(error) => {
+                warn!(%error, turn_id=%turn.turn_id.0, "turn catalog refresh failed; using bounded stale entry");
+                self.catalog_cache
+                    .get_stale(&key, self.catalog_stale_on_error)
+                    .await
+            }
+        }
+    }
+    async fn fetch_turn_catalog(
+        &self,
+        turn: &TurnRuntimeResolution,
+        query: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Option<EffectiveAgentCatalog>> {
+        let Some(client) = self.portal_query_client.as_ref() else {
+            return Ok(None);
+        };
+        client
+            .get_effective_agent_catalog(
+                turn.host_id,
+                turn.agent_def_id,
+                turn.definition_version,
+                &turn.policy_digest,
+                &self.service_id,
+                self.env_tag.as_deref(),
+                query,
+                limit,
+            )
+            .await
+            .map(Some)
+    }
     async fn effective_catalog(&self) -> Option<EffectiveAgentCatalog> {
         let key = self.catalog_cache_key();
         if let Some(catalog) = self
@@ -1206,33 +1375,6 @@ impl AgentState {
             .set(self.catalog_cache_key(), catalog.clone())
             .await;
         Ok(Some(catalog))
-    }
-
-    async fn semantic_effective_catalog(
-        &self,
-        prompt: &str,
-    ) -> Result<Option<EffectiveAgentCatalog>> {
-        let Some(client) = self.portal_query_client.as_ref() else {
-            return Ok(None);
-        };
-        let semantic_query = prompt.trim();
-        if semantic_query.is_empty() {
-            return Ok(None);
-        }
-
-        client
-            .get_effective_agent_catalog(
-                self.host_id,
-                self.agent_def_id,
-                self.definition_version,
-                &self.policy_digest,
-                &self.service_id,
-                self.env_tag.as_deref(),
-                Some(semantic_query),
-                Some(self.catalog_semantic_limit),
-            )
-            .await
-            .map(Some)
     }
 }
 
@@ -1443,7 +1585,7 @@ fn bind_authenticated_principal(
     principal: &AuthPrincipal,
     expected_host_id: Uuid,
     expected_service_id: &str,
-    agent_def_id: Uuid,
+    default_agent_def_id: Uuid,
 ) -> Result<SessionOwner, HandlerRejection> {
     let host_id = principal
         .host
@@ -1474,6 +1616,13 @@ fn bind_authenticated_principal(
     let principal_id = Uuid::parse_str(principal_id)
         .map_err(|_| HandlerRejection::forbidden("token principal identity is invalid"))?;
 
+    let agent_def_id = claim_string(principal, &["agent_def_id", "agentDefId"])
+        .map(|value| {
+            Uuid::parse_str(&value)
+                .map_err(|_| HandlerRejection::forbidden("token agent definition is invalid"))
+        })
+        .transpose()?
+        .unwrap_or(default_agent_def_id);
     Ok(SessionOwner {
         principal_id,
         agent_def_id,
@@ -2599,8 +2748,8 @@ async fn handle_socket(
     let policy_digest = |label: &str| {
         sha256_digest(
             format!(
-                "{}:{}:{}:{label}",
-                state.host_id, state.agent_def_id, state.model
+                "{}:{}:{label}",
+                state.host_id, authenticated.owner.agent_def_id
             )
             .as_bytes(),
         )
@@ -2742,8 +2891,6 @@ async fn handle_socket(
                     AgentSessionId(session_id),
                     &client_message_id,
                     &user_text,
-                    "configured",
-                    &state.model,
                 )
                 .await
             {
@@ -2766,25 +2913,79 @@ async fn handle_socket(
                     continue;
                 }
             };
-            match state
-                .domain
-                .activate_next_turn(state.host_id, AgentSessionId(session_id))
-                .await
-            {
-                Ok(Some(active)) if active == admitted.turn_id => {}
-                Ok(_) => {
+            let dispatch_deadline = tokio::time::Instant::now() + state.limits.turn_timeout;
+            let waiter = state.turn_dispatch.register(admitted.turn_id.0).await;
+            let turn_resolution = loop {
+                // Register the notification future before checking PostgreSQL,
+                // closing the activation/check race without query polling.
+                let notified = waiter.notified();
+                tokio::pin!(notified);
+                if let Ok(resolution) = state
+                    .domain
+                    .resolve_turn_runtime(state.host_id, admitted.turn_id)
+                    .await
+                {
+                    break Some(resolution);
+                }
+                if tokio::time::timeout_at(dispatch_deadline, &mut notified)
+                    .await
+                    .is_err()
+                {
+                    break None;
+                }
+            };
+            state.turn_dispatch.remove(admitted.turn_id.0).await;
+            let turn_resolution = match turn_resolution {
+                Some(resolution) => resolution,
+                None => {
+                    let _ = state
+                        .domain
+                        .fail_turn(
+                            state.host_id,
+                            AgentSessionId(session_id),
+                            admitted.turn_id,
+                            "turn remained queued past dispatch deadline",
+                        )
+                        .await;
+                    warn!(turn_id=%admitted.turn_id.0, "turn dispatch deadline expired");
                     if let Ok(payload) = serde_json::to_string(&ServerMessage::Error {
-                        message: "Turn queued behind an active request".into(),
+                        message: "Turn could not acquire pool capacity".into(),
                     }) {
                         let _ = sender.send(Message::Text(payload.into())).await;
                     }
                     continue;
                 }
-                Err(err) => {
-                    error!("Failed to activate durable turn: {err}");
-                    continue;
-                }
-            }
+            };
+            let turn_provider_config = ModelProviderConfig {
+                provider: turn_resolution.model_provider.clone(),
+                model: Some(turn_resolution.model_name.clone()),
+                temperature: state.default_temperature,
+            };
+            let turn_runtime =
+                match build_model_provider(&state.runtime_config, &turn_provider_config) {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        let _ = state
+                            .domain
+                            .fail_turn(
+                                state.host_id,
+                                AgentSessionId(session_id),
+                                admitted.turn_id,
+                                &error.to_string(),
+                            )
+                            .await;
+                        let _ = sender
+                            .send(Message::Text(
+                                serde_json::to_string(&ServerMessage::Error {
+                                    message: "Turn provider/runtime resolution failed".into(),
+                                })
+                                .unwrap()
+                                .into(),
+                            ))
+                            .await;
+                        continue;
+                    }
+                };
             history.push(ChatMessage::user(user_text.clone()));
             trim_history(&mut history);
 
@@ -2793,10 +2994,12 @@ async fn handle_socket(
                 history.clone(),
                 &authenticated,
                 admitted.turn_id.0,
-                &admitted.policy_digest,
-                &admitted.data_boundary_digest,
+                &turn_resolution.policy_digest,
+                &turn_resolution.data_boundary_digest,
                 &session_id_string,
                 bank_id,
+                &turn_resolution,
+                &turn_runtime,
             );
             match tokio::time::timeout(state.limits.turn_timeout, turn).await {
                 Err(_) => {
@@ -3409,6 +3612,8 @@ async fn run_agent_loop(
     data_boundary_digest: &str,
     session_id: &str,
     bank_id: Uuid,
+    turn_resolution: &TurnRuntimeResolution,
+    turn_runtime: &ModelProviderSelection,
 ) -> Result<(ChatResponse, u64)> {
     let user_prompt = messages
         .last()
@@ -3440,7 +3645,9 @@ async fn run_agent_loop(
 
     // 2. Discover executable tools from the gateway. The portal catalog only
     // narrows what we expose to the model; gateway remains the execution path.
-    let catalog_selection = state.catalog_selection(&user_prompt).await;
+    let catalog_selection = state
+        .catalog_selection_for_turn(turn_resolution, &user_prompt)
+        .await;
     if let Some(context) = catalog_selection
         .as_ref()
         .and_then(|selection| selection.context.as_ref())
@@ -3496,9 +3703,9 @@ async fn run_agent_loop(
                     Some(&tool_specs)
                 },
             };
-            state
+            turn_runtime
                 .provider
-                .chat(request, &state.model, state.temperature)
+                .chat(request, &turn_runtime.model, turn_runtime.temperature)
                 .await?
         };
 
@@ -3694,7 +3901,6 @@ async fn build_agent_state(
         "model-provider",
         [],
     )?;
-    let model_provider = build_model_provider(runtime_config, &model_provider_config)?;
 
     let mcp_config: McpClientConfig = runtime_config.module_registry.load_registered(
         runtime_config,
@@ -3846,15 +4052,18 @@ async fn build_agent_state(
         100,
     );
 
+    let domain = AgentRepository::new(pool.clone());
+    let turn_dispatch = TurnDispatchCoordinator::new(domain.clone());
+    turn_dispatch.spawn(host_id);
     let state = Arc::new(AgentState {
-        provider: model_provider.provider,
-        model: model_provider.model,
-        temperature: model_provider.temperature,
+        runtime_config: runtime_config.clone(),
+        default_temperature: model_provider_config.temperature,
         mcp_client,
         portal_query_client,
         catalog_cache,
         memory,
-        domain: AgentRepository::new(pool.clone()),
+        domain,
+        turn_dispatch,
         delegation_signer,
         security: Arc::new(security),
         limits,
@@ -4001,15 +4210,17 @@ mod tests {
     use super::{
         AgentCatalogCache, AgentLimits, CatalogCacheKey, CatalogSkill, CatalogTool,
         CatalogToolPolicy, ChatMessage, EffectiveAgentCatalog, MAX_SESSION_MESSAGES,
-        ModelProviderConfig, SessionOwner, agent_ca_cert_path_from_config,
+        ModelProviderConfig, SessionOwner, TurnDispatchCoordinator, agent_ca_cert_path_from_config,
         bind_authenticated_principal, bound_untrusted_text, build_effective_catalog_data,
         choose_model, collect_catalog_tool_names, collect_policy_diagnostics, filter_gateway_tools,
         is_local_cli_provider, normalize_provider_id, parse_tool_arguments,
         rollback_last_user_message, select_catalog_tools, trim_history, validate_session_owner,
     };
+    use light_agent::domain::AgentRepository;
     use light_runtime::config::{BootstrapConfig, ClientConfig};
     use light_security::AuthPrincipal;
     use mcp_client::McpTool;
+    use sqlx::postgres::PgPoolOptions;
     use std::path::PathBuf;
     use std::time::Duration;
     use uuid::Uuid;
@@ -4028,6 +4239,25 @@ mod tests {
             max_output_items: 8,
             max_turn_tokens: 100,
         }
+    }
+
+    #[tokio::test]
+    async fn turn_dispatch_wakes_only_registered_waiter_without_database_polling() {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1/unused")
+            .unwrap();
+        let coordinator = TurnDispatchCoordinator::new(AgentRepository::new(pool));
+        let turn_id = Uuid::now_v7();
+        let waiter = coordinator.register(turn_id).await;
+        let notified = waiter.notified();
+        tokio::pin!(notified);
+
+        coordinator.wake(turn_id).await;
+
+        tokio::time::timeout(Duration::from_millis(100), &mut notified)
+            .await
+            .unwrap();
+        coordinator.remove(turn_id).await;
     }
 
     #[test]

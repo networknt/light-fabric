@@ -39,6 +39,22 @@ pub struct AdmittedTurn {
 }
 
 #[derive(Debug, Clone)]
+pub struct TurnRuntimeResolution {
+    pub host_id: Uuid,
+    pub turn_id: AgentTurnId,
+    pub session_id: AgentSessionId,
+    pub agent_def_id: Uuid,
+    pub definition_version: i64,
+    pub policy_digest: String,
+    pub data_boundary_digest: String,
+    pub product_profile_digest: String,
+    pub model_provider: String,
+    pub model_name: String,
+    pub service_pool_id: Option<Uuid>,
+    pub service_pool_compatibility_digest: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 struct PoolAssignment {
     pool_id: Uuid,
     compatibility_digest: String,
@@ -251,6 +267,25 @@ async fn reconcile_turn_quota_usage(
 impl AgentRepository {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    pub fn pool(&self) -> PgPool {
+        self.pool.clone()
+    }
+
+    pub async fn active_turn_ids(&self, host_id: Uuid, turn_ids: &[Uuid]) -> Result<Vec<Uuid>> {
+        if turn_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(sqlx::query_scalar(
+            "SELECT t.turn_id FROM agent_turn_t t JOIN agent_session_t s
+               ON s.host_id=t.host_id AND s.session_id=t.session_id AND s.active_turn_id=t.turn_id
+             WHERE t.host_id=$1 AND t.turn_id=ANY($2) AND t.state='RECEIVED'",
+        )
+        .bind(host_id)
+        .bind(turn_ids)
+        .fetch_all(&self.pool)
+        .await?)
     }
 
     pub fn spawn_result_reconciler(&self) -> tokio::task::JoinHandle<()> {
@@ -474,6 +509,10 @@ impl AgentRepository {
         sqlx::query("UPDATE execution_attempt_t SET accepted_by_origin_ts=COALESCE(accepted_by_origin_ts,now()),updated_ts=now() WHERE host_id=$1 AND execution_id=$2").bind(host_id).bind(execution_id).execute(&mut *tx).await?;
         sqlx::query("UPDATE agent_session_t SET active_turn_id=NULL,session_version=session_version+1,updated_ts=now() WHERE host_id=$1 AND session_id=$2 AND active_turn_id=$3").bind(host_id).bind(session).bind(turn_id).execute(&mut *tx).await?;
         reconcile_turn_quota_usage(&mut tx, host_id, turn_id, actual_tokens, actual_cost).await?;
+        sqlx::query("SELECT pg_notify('agent_turn_capacity_v1',$1)")
+            .bind(host_id.to_string())
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(true)
     }
@@ -579,8 +618,17 @@ impl AgentRepository {
             .execute(&mut *tx).await?;
         let stale = sqlx::query("UPDATE agent_turn_t SET state='UNKNOWN',terminal_error=jsonb_build_object('message','turn deadline expired during reconciliation'),terminal_ts=now(),updated_ts=now() WHERE state IN ('RECEIVED','RUNNING_MODEL','WAITING_ACTION','RUNNING_ACTION','WAITING_RECONCILIATION') AND deadline_ts<=now() RETURNING host_id,session_id,turn_id")
             .fetch_all(&mut *tx).await?;
+        let mut freed_hosts = std::collections::BTreeSet::new();
         for row in stale {
-            sqlx::query("UPDATE agent_session_t SET active_turn_id=NULL,session_version=session_version+1,updated_ts=now() WHERE host_id=$1 AND session_id=$2 AND active_turn_id=$3").bind(row.try_get::<Uuid,_>("host_id")?).bind(row.try_get::<Uuid,_>("session_id")?).bind(row.try_get::<Uuid,_>("turn_id")?).execute(&mut *tx).await?;
+            let host_id: Uuid = row.try_get("host_id")?;
+            sqlx::query("UPDATE agent_session_t SET active_turn_id=NULL,session_version=session_version+1,updated_ts=now() WHERE host_id=$1 AND session_id=$2 AND active_turn_id=$3").bind(host_id).bind(row.try_get::<Uuid,_>("session_id")?).bind(row.try_get::<Uuid,_>("turn_id")?).execute(&mut *tx).await?;
+            freed_hosts.insert(host_id);
+        }
+        for host_id in freed_hosts {
+            sqlx::query("SELECT pg_notify('agent_turn_capacity_v1',$1)")
+                .bind(host_id.to_string())
+                .execute(&mut *tx)
+                .await?;
         }
         let expired = sqlx::query("UPDATE agent_session_t SET state='EXPIRED',cleanup_state=CASE WHEN execution_session_id IS NULL THEN 'NOT_REQUIRED' ELSE 'CLEANUP_REQUESTED' END,updated_ts=now() WHERE state='ACTIVE' AND LEAST(idle_expires_ts,maximum_expires_ts)<=now() RETURNING host_id,session_id,execution_session_id")
             .fetch_all(&mut *tx).await?;
@@ -764,16 +812,17 @@ impl AgentRepository {
         session_id: AgentSessionId,
         client_message_id: &str,
         text: &str,
-        model_provider: &str,
-        model_name: &str,
     ) -> Result<AdmittedTurn> {
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
             "SELECT next_turn_sequence,next_queue_sequence,policy_snapshot_id,
               p.policy_digest,p.data_boundary_digest,p.product_profile_digest,maximum_expires_ts,
-              s.principal_id,s.agent_def_id,s.service_pool_id
+              s.principal_id,s.agent_def_id,s.agent_definition_version,s.service_pool_id,
+              d.model_provider,d.model_name
               FROM agent_session_t s JOIN agent_policy_snapshot_t p ON p.host_id=s.host_id
                 AND p.policy_snapshot_id=s.policy_snapshot_id AND p.revoked_ts IS NULL
+              JOIN agent_definition_t d ON d.host_id=s.host_id AND d.agent_def_id=s.agent_def_id
+                AND d.aggregate_version=s.agent_definition_version
               WHERE s.host_id=$1 AND s.session_id=$2 AND s.state='ACTIVE'
                 AND (s.service_pool_id IS NULL OR EXISTS(SELECT 1 FROM agent_pool_assignment_t a
                   JOIN agent_service_pool_t sp ON sp.host_id=a.host_id AND sp.pool_id=a.pool_id AND sp.enabled=TRUE
@@ -802,6 +851,8 @@ impl AgentRepository {
         let agent: Uuid = row.try_get("agent_def_id")?;
         let pool: Option<Uuid> = row.try_get("service_pool_id")?;
         let profile: String = row.try_get("product_profile_digest")?;
+        let model_provider: String = row.try_get("model_provider")?;
+        let model_name: String = row.try_get("model_name")?;
         let turn_id = AgentTurnId::new();
         enforce_quotas(
             &mut tx,
@@ -809,7 +860,7 @@ impl AgentRepository {
             &principal,
             agent,
             &profile,
-            model_provider,
+            &model_provider,
             pool,
             Some(turn_id.0),
             false,
@@ -820,7 +871,7 @@ impl AgentRepository {
         let deadline = std::cmp::min(Utc::now() + Duration::minutes(2), maximum);
         sqlx::query("INSERT INTO agent_turn_t (host_id,turn_id,session_id,turn_sequence,queue_sequence,origin_kind,client_message_id,idempotency_key,policy_snapshot_id,policy_digest,data_boundary_digest,model_provider,model_name,model_action_budget,token_budget,cost_budget_micros,deadline_ts,service_pool_id) VALUES ($1,$2,$3,$4,$5,'user',$6,$6,$7,$8,$9,$10,$11,20,65536,0,$12,$13)")
             .bind(host_id).bind(turn_id.0).bind(session_id.0).bind(turn_sequence).bind(queue_sequence).bind(client_message_id)
-            .bind(policy_snapshot_id).bind(&policy_digest).bind(&boundary).bind(model_provider).bind(model_name).bind(deadline).bind(pool).execute(&mut *tx).await?;
+            .bind(policy_snapshot_id).bind(&policy_digest).bind(&boundary).bind(&model_provider).bind(&model_name).bind(deadline).bind(pool).execute(&mut *tx).await?;
         sqlx::query("UPDATE agent_session_t SET next_turn_sequence=next_turn_sequence+1,next_queue_sequence=next_queue_sequence+1,updated_ts=now() WHERE host_id=$1 AND session_id=$2")
             .bind(host_id).bind(session_id.0).execute(&mut *tx).await?;
         append_event(
@@ -835,6 +886,10 @@ impl AgentRepository {
             &policy_digest,
         )
         .await?;
+        sqlx::query("SELECT pg_notify('agent_turn_queue_v1',$1)")
+            .bind(host_id.to_string())
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(AdmittedTurn {
             turn_id,
@@ -850,48 +905,125 @@ impl AgentRepository {
         host_id: Uuid,
         session_id: AgentSessionId,
     ) -> Result<Option<AgentTurnId>> {
+        Ok(self
+            .dispatch_next_turn_fair(host_id)
+            .await?
+            .and_then(|(selected_session, turn)| (selected_session == session_id).then_some(turn)))
+    }
+
+    /// Selects one candidate across all sessions using a serialized host-level
+    /// dispatch decision. Principals with fewer running turns and the oldest
+    /// previous activation win before FIFO creation order is considered.
+    pub async fn dispatch_next_turn_fair(
+        &self,
+        host_id: Uuid,
+    ) -> Result<Option<(AgentSessionId, AgentTurnId)>> {
         let mut tx = self.pool.begin().await?;
-        let locked = sqlx::query("SELECT active_turn_id,service_pool_id FROM agent_session_t WHERE host_id=$1 AND session_id=$2 AND state='ACTIVE' FOR UPDATE")
-            .bind(host_id).bind(session_id.0).fetch_optional(&mut *tx).await?;
-        let Some(row) = locked else {
-            tx.commit().await?;
-            return Ok(None);
-        };
-        if row.try_get::<Option<Uuid>, _>("active_turn_id")?.is_some() {
-            tx.commit().await?;
-            return Ok(None);
-        }
-        if let Some(pool_id) = row.try_get::<Option<Uuid>, _>("service_pool_id")? {
-            let available:bool=sqlx::query_scalar("SELECT (SELECT COUNT(*) FROM agent_turn_t
-                  WHERE host_id=$1 AND service_pool_id=$2 AND state IN('RECEIVED','RUNNING_MODEL','WAITING_ACTION','RUNNING_ACTION','WAITING_RECONCILIATION','WAITING_APPROVAL')) < maximum_concurrency
-                FROM agent_service_pool_t WHERE host_id=$1 AND pool_id=$2 AND enabled=TRUE FOR UPDATE")
-                .bind(host_id).bind(pool_id).fetch_optional(&mut *tx).await?.unwrap_or(false);
-            if !available {
-                tx.commit().await?;
-                return Ok(None);
-            }
-        }
-        let turn = sqlx::query("SELECT turn_id FROM agent_turn_t WHERE host_id=$1 AND session_id=$2 AND state='QUEUED' ORDER BY queue_sequence FOR UPDATE SKIP LOCKED LIMIT 1")
-            .bind(host_id).bind(session_id.0).fetch_optional(&mut *tx).await?;
-        let Some(turn) = turn else {
-            tx.commit().await?;
-            return Ok(None);
-        };
-        let turn_id: Uuid = turn.try_get("turn_id")?;
-        sqlx::query("UPDATE agent_turn_t SET state='RECEIVED',activated_ts=now(),updated_ts=now() WHERE host_id=$1 AND turn_id=$2 AND state='QUEUED'")
-            .bind(host_id).bind(turn_id).execute(&mut *tx).await?;
-        sqlx::query("UPDATE agent_session_t SET active_turn_id=$3,session_version=session_version+1,updated_ts=now() WHERE host_id=$1 AND session_id=$2 AND active_turn_id IS NULL")
-            .bind(host_id).bind(session_id.0).bind(turn_id).execute(&mut *tx).await?;
-        sqlx::query(
-            "UPDATE agent_job_t SET state='RUNNING',updated_ts=now()
-                    WHERE host_id=$1 AND turn_id=$2 AND state='TURN_CREATED'",
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(format!("agent-pool-dispatch:{host_id}"))
+            .execute(&mut *tx)
+            .await?;
+        let candidate = sqlx::query(
+            "SELECT t.turn_id,t.session_id
+             FROM agent_turn_t t
+             JOIN agent_session_t s ON s.host_id=t.host_id AND s.session_id=t.session_id
+             LEFT JOIN agent_service_pool_t p ON p.host_id=t.host_id AND p.pool_id=t.service_pool_id
+             WHERE t.host_id=$1 AND t.state='QUEUED' AND s.state='ACTIVE'
+               AND s.active_turn_id IS NULL
+               AND (t.service_pool_id IS NULL OR (p.enabled=TRUE AND
+                 EXISTS(SELECT 1 FROM agent_pool_assignment_t a
+                   WHERE a.host_id=t.host_id AND a.agent_def_id=s.agent_def_id
+                     AND a.agent_definition_version=s.agent_definition_version
+                     AND a.policy_digest=t.policy_digest AND a.pool_id=t.service_pool_id
+                     AND a.compatibility_digest=s.service_pool_compatibility_digest
+                     AND a.revoked_ts IS NULL) AND
+                 (SELECT COUNT(*) FROM agent_turn_t running
+                  WHERE running.host_id=t.host_id AND running.service_pool_id=t.service_pool_id
+                    AND running.state IN('RECEIVED','RUNNING_MODEL','WAITING_ACTION','RUNNING_ACTION','WAITING_RECONCILIATION','WAITING_APPROVAL')) < p.maximum_concurrency))
+             ORDER BY
+               (SELECT COUNT(*) FROM agent_turn_t running JOIN agent_session_t rs
+                  ON rs.host_id=running.host_id AND rs.session_id=running.session_id
+                WHERE running.host_id=t.host_id AND rs.principal_id=s.principal_id
+                  AND running.state IN('RECEIVED','RUNNING_MODEL','WAITING_ACTION','RUNNING_ACTION','WAITING_RECONCILIATION','WAITING_APPROVAL')),
+               COALESCE((SELECT MAX(previous.activated_ts) FROM agent_turn_t previous
+                 JOIN agent_session_t ps ON ps.host_id=previous.host_id AND ps.session_id=previous.session_id
+                 WHERE previous.host_id=t.host_id AND ps.principal_id=s.principal_id),to_timestamp(0)),
+               t.created_ts,t.turn_id
+             FOR UPDATE OF t,s SKIP LOCKED LIMIT 1",
         )
         .bind(host_id)
-        .bind(turn_id)
-        .execute(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await?;
+        let Some(candidate) = candidate else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let turn_id: Uuid = candidate.try_get("turn_id")?;
+        let session_id: Uuid = candidate.try_get("session_id")?;
+        let activated = sqlx::query("UPDATE agent_turn_t SET state='RECEIVED',activated_ts=now(),updated_ts=now() WHERE host_id=$1 AND turn_id=$2 AND state='QUEUED'")
+            .bind(host_id).bind(turn_id).execute(&mut *tx).await?;
+        let session = sqlx::query("UPDATE agent_session_t SET active_turn_id=$3,session_version=session_version+1,updated_ts=now() WHERE host_id=$1 AND session_id=$2 AND active_turn_id IS NULL")
+            .bind(host_id).bind(session_id).bind(turn_id).execute(&mut *tx).await?;
+        if activated.rows_affected() != 1 || session.rows_affected() != 1 {
+            bail!("fair dispatch lost its turn/session activation fence")
+        }
+        sqlx::query("UPDATE agent_job_t SET state='RUNNING',updated_ts=now() WHERE host_id=$1 AND turn_id=$2 AND state='TURN_CREATED'")
+            .bind(host_id).bind(turn_id).execute(&mut *tx).await?;
+        sqlx::query("SELECT pg_notify('agent_turn_activated_v1',$1)")
+            .bind(turn_id.to_string())
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
-        Ok(Some(AgentTurnId(turn_id)))
+        Ok(Some((AgentSessionId(session_id), AgentTurnId(turn_id))))
+    }
+
+    pub async fn resolve_turn_runtime(
+        &self,
+        host_id: Uuid,
+        turn_id: AgentTurnId,
+    ) -> Result<TurnRuntimeResolution> {
+        let row = sqlx::query(
+            "SELECT t.session_id,t.policy_digest,t.data_boundary_digest,t.model_provider,t.model_name,
+                    t.service_pool_id,s.agent_def_id,s.agent_definition_version,
+                    s.service_pool_compatibility_digest,p.product_profile_digest
+             FROM agent_turn_t t JOIN agent_session_t s
+               ON s.host_id=t.host_id AND s.session_id=t.session_id AND s.active_turn_id=t.turn_id
+             JOIN agent_policy_snapshot_t p ON p.host_id=t.host_id
+               AND p.policy_snapshot_id=t.policy_snapshot_id AND p.policy_digest=t.policy_digest
+               AND p.revoked_ts IS NULL
+             LEFT JOIN agent_service_pool_t sp ON sp.host_id=t.host_id AND sp.pool_id=t.service_pool_id
+             WHERE t.host_id=$1 AND t.turn_id=$2 AND t.state='RECEIVED'
+               AND t.service_pool_id IS NOT DISTINCT FROM s.service_pool_id
+               AND (t.service_pool_id IS NULL OR (sp.enabled=TRUE AND EXISTS(
+                 SELECT 1 FROM agent_pool_assignment_t a
+                 WHERE a.host_id=t.host_id AND a.agent_def_id=s.agent_def_id
+                   AND a.agent_definition_version=s.agent_definition_version
+                   AND a.policy_digest=t.policy_digest AND a.pool_id=t.service_pool_id
+                   AND a.compatibility_digest=s.service_pool_compatibility_digest
+                   AND a.revoked_ts IS NULL)))",
+        )
+        .bind(host_id)
+        .bind(turn_id.0)
+        .fetch_one(&self.pool)
+        .await?;
+        let resolution = TurnRuntimeResolution {
+            host_id,
+            turn_id,
+            session_id: AgentSessionId(row.try_get("session_id")?),
+            agent_def_id: row.try_get("agent_def_id")?,
+            definition_version: row.try_get("agent_definition_version")?,
+            policy_digest: row.try_get("policy_digest")?,
+            data_boundary_digest: row.try_get("data_boundary_digest")?,
+            product_profile_digest: row.try_get("product_profile_digest")?,
+            model_provider: row.try_get("model_provider")?,
+            model_name: row.try_get("model_name")?,
+            service_pool_id: row.try_get("service_pool_id")?,
+            service_pool_compatibility_digest: row.try_get("service_pool_compatibility_digest")?,
+        };
+        if resolution.model_provider.trim().is_empty() || resolution.model_name.trim().is_empty() {
+            bail!("turn has no immutable model provider/runtime binding")
+        }
+        Ok(resolution)
     }
 
     pub async fn propose_gateway_action(
@@ -1087,6 +1219,10 @@ impl AgentRepository {
             actual_cost_micros,
         )
         .await?;
+        sqlx::query("SELECT pg_notify('agent_turn_capacity_v1',$1)")
+            .bind(host_id.to_string())
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -1104,6 +1240,10 @@ impl AgentRepository {
         sqlx::query("UPDATE agent_session_t SET active_turn_id=NULL,session_version=session_version+1,updated_ts=now() WHERE host_id=$1 AND session_id=$2 AND active_turn_id=$3")
             .bind(host_id).bind(session_id.0).bind(turn_id.0).execute(&mut *tx).await?;
         reconcile_turn_quota_usage(&mut tx, host_id, turn_id.0, 0, 0).await?;
+        sqlx::query("SELECT pg_notify('agent_turn_capacity_v1',$1)")
+            .bind(host_id.to_string())
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -1236,15 +1376,15 @@ mod tests {
             .await
             .unwrap();
         let first = repository
-            .admit_user_turn(host_id, session, "message-1", "hello", "mock", "mock")
+            .admit_user_turn(host_id, session, "message-1", "hello")
             .await
             .unwrap();
         let duplicate = repository
-            .admit_user_turn(host_id, session, "message-1", "hello", "mock", "mock")
+            .admit_user_turn(host_id, session, "message-1", "hello")
             .await
             .unwrap();
         let second = repository
-            .admit_user_turn(host_id, session, "message-2", "again", "mock", "mock")
+            .admit_user_turn(host_id, session, "message-2", "again")
             .await
             .unwrap();
         assert_eq!(first.turn_id, duplicate.turn_id);
@@ -1257,6 +1397,13 @@ mod tests {
                 .unwrap(),
             Some(first.turn_id)
         );
+        let runtime = repository
+            .resolve_turn_runtime(host_id, first.turn_id)
+            .await
+            .unwrap();
+        assert_eq!(runtime.agent_def_id, agent_def_id);
+        assert_eq!(runtime.model_provider, "mock");
+        assert_eq!(runtime.model_name, "mock");
         repository
             .complete_turn(host_id, session, first.turn_id, "world", 1, 0)
             .await

@@ -14,3 +14,28 @@ path for local compatibility only. It is disabled by default.
 
 Apply `portal-db/postgres/patch_20260711_light_agent_runtime.sql` after the
 workflow-runner migration before starting this version.
+
+The process-wide `AgentState` contains only shared infrastructure and caches.
+Provider, model, definition version, policy, data boundary, product profile,
+service pool, compatibility digest, and effective catalog identity are resolved
+again from the activated durable turn. The signed caller may select an agent
+definition with the `agentDefId`/`agent_def_id` claim; deployments without that
+claim retain the configured single-definition fallback. A definition update,
+policy revocation, or pool-assignment revocation therefore cannot silently
+change an already admitted turn or reuse a mismatched catalog entry.
+
+Queued turns are dispatched across sessions under a host-scoped PostgreSQL
+advisory transaction lock. Dispatch first favors principals with fewer running
+turns, then the principal least recently activated, then durable FIFO creation
+order. The same transaction enforces session exclusivity and pool concurrency;
+all replicas use this path, so scale-out does not create a per-process fairness
+island.
+
+Waiting WebSockets do not poll PostgreSQL. Each replica owns one dedicated
+`LISTEN` connection for queue, capacity, and activation notifications plus an
+in-memory per-turn `Notify` registry. Admission and terminalization publish
+transactional notifications; any replica may perform the serialized dispatch,
+and the activation notification wakes the replica holding the corresponding
+WebSocket. The listener subscribes before its catch-up pass and runs a bounded
+five-second catch-up after reconnect, so notifications are latency hints rather
+than the source of truth.
