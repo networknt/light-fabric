@@ -59,16 +59,119 @@ impl AgentRepository {
         let mut listener = PgListener::connect_with(&self.pool).await?;
         listener.listen("execution_result_ready_v1").await?;
         self.reconcile_execution_results().await?;
+        self.reconcile_agent_jobs().await?;
         loop {
             tokio::select! {
                 notification = listener.recv() => { notification?; self.reconcile_execution_results().await?; }
                 _ = tokio::time::sleep(std::time::Duration::from_secs(15)) => {
+                    self.reconcile_agent_jobs().await?;
                     self.reconcile_execution_results().await?;
                     self.reconcile_expiry_and_cleanup().await?;
                     self.reconcile_projections().await?;
                 },
             }
         }
+    }
+
+    pub async fn reconcile_agent_jobs(&self) -> Result<u64> {
+        let mut changed = 0;
+        changed += sqlx::query("WITH expired AS (UPDATE agent_job_t SET state='FAILED',
+                    error=jsonb_build_object('class','deadline_exceeded'),terminal_ts=now(),updated_ts=now()
+                    WHERE state IN('PENDING','TURN_CREATED','RUNNING') AND deadline_ts<=now()
+                    RETURNING host_id,turn_id) UPDATE agent_turn_t t SET state='CANCELLED',
+                    terminal_error=jsonb_build_object('class','deadline_exceeded'),terminal_ts=now(),updated_ts=now()
+                    FROM expired WHERE t.host_id=expired.host_id AND t.turn_id=expired.turn_id
+                      AND t.state NOT IN('COMPLETED','FAILED','CANCELLED','UNKNOWN')")
+            .execute(&self.pool).await?.rows_affected();
+        for _ in 0..100 {
+            let mut tx = self.pool.begin().await?;
+            let row=sqlx::query("SELECT j.host_id,j.job_id,j.agent_def_id,j.idempotency_key,j.policy_digest,
+                    j.data_boundary_digest,j.deadline_ts,j.token_budget,j.cost_budget_micros,j.delegation_depth,
+                    d.aggregate_version,d.policy_snapshot_id,d.model_provider,d.model_name
+                 FROM agent_job_t j JOIN agent_definition_t d ON d.host_id=j.host_id AND d.agent_def_id=j.agent_def_id
+                 JOIN agent_policy_snapshot_t p ON p.host_id=d.host_id AND p.policy_snapshot_id=d.policy_snapshot_id
+                   AND p.policy_digest=j.policy_digest AND p.data_boundary_digest=j.data_boundary_digest AND p.revoked_ts IS NULL
+                 WHERE j.state='PENDING' AND j.deadline_ts>now() ORDER BY j.created_ts,j.job_id
+                 LIMIT 1 FOR UPDATE OF j SKIP LOCKED")
+                .fetch_optional(&mut *tx).await?;
+            let Some(row) = row else {
+                tx.commit().await?;
+                break;
+            };
+            let host: Uuid = row.try_get("host_id")?;
+            let job: Uuid = row.try_get("job_id")?;
+            let turn = Uuid::now_v7();
+            let deadline: DateTime<Utc> = row.try_get("deadline_ts")?;
+            sqlx::query("INSERT INTO agent_session_t(host_id,session_id,principal_id,agent_def_id,
+                    agent_definition_version,policy_snapshot_id,idle_expires_ts,maximum_expires_ts,resume_handle_digest)
+                    VALUES($1,$2,$3,$4,$5,$6,$7,$7,$8) ON CONFLICT(host_id,session_id) DO NOTHING")
+                .bind(host).bind(job).bind(format!("workflow-job:{job}"))
+                .bind(row.try_get::<Uuid,_>("agent_def_id")?).bind(row.try_get::<i64,_>("aggregate_version")?)
+                .bind(row.try_get::<Uuid,_>("policy_snapshot_id")?).bind(deadline)
+                .bind(sha256_digest(format!("workflow-job:{job}").as_bytes())).execute(&mut *tx).await?;
+            sqlx::query("INSERT INTO agent_turn_t(host_id,turn_id,session_id,turn_sequence,queue_sequence,
+                    origin_kind,origin_ref,client_message_id,idempotency_key,policy_snapshot_id,policy_digest,
+                    data_boundary_digest,model_provider,model_name,model_action_budget,token_budget,
+                    cost_budget_micros,deadline_ts,delegation_depth)
+                    VALUES($1,$2,$3,1,1,'workflow',$4,$5,$5,$6,$7,$8,$9,$10,20,$11,$12,$13,$14)")
+                .bind(host).bind(turn).bind(job).bind(job.to_string())
+                .bind(row.try_get::<String,_>("idempotency_key")?).bind(row.try_get::<Uuid,_>("policy_snapshot_id")?)
+                .bind(row.try_get::<String,_>("policy_digest")?).bind(row.try_get::<String,_>("data_boundary_digest")?)
+                .bind(row.try_get::<String,_>("model_provider")?).bind(row.try_get::<String,_>("model_name")?)
+                .bind(row.try_get::<i64,_>("token_budget")?).bind(row.try_get::<i64,_>("cost_budget_micros")?)
+                .bind(deadline).bind(row.try_get::<i32,_>("delegation_depth")?).execute(&mut *tx).await?;
+            sqlx::query(
+                "UPDATE agent_job_t SET turn_id=$1,state='TURN_CREATED',updated_ts=now()
+                        WHERE host_id=$2 AND job_id=$3 AND state='PENDING'",
+            )
+            .bind(turn)
+            .bind(host)
+            .bind(job)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            changed += 1;
+        }
+        let terminal=sqlx::query("UPDATE agent_job_t j SET state=CASE t.state WHEN 'COMPLETED' THEN 'SUCCEEDED'
+                    WHEN 'FAILED' THEN 'FAILED' WHEN 'CANCELLED' THEN 'CANCELLED' ELSE 'UNKNOWN' END,
+                    public_output=CASE WHEN t.state='COMPLETED' THEN t.terminal_result END,
+                    error=CASE WHEN t.state<>'COMPLETED' THEN t.terminal_error END,
+                    terminal_ts=COALESCE(t.terminal_ts,now()),updated_ts=now()
+                    FROM agent_turn_t t WHERE t.host_id=j.host_id AND t.turn_id=j.turn_id
+                      AND j.state IN('TURN_CREATED','RUNNING') AND t.state IN('COMPLETED','FAILED','CANCELLED','UNKNOWN')")
+            .execute(&self.pool).await?;
+        let cancelled=sqlx::query("WITH jobs AS (UPDATE agent_job_t j SET state='CANCELLED',
+                    error=jsonb_build_object('class','workflow_cancelled'),
+                    cancellation_requested_ts=COALESCE(j.cancellation_requested_ts,now()),
+                    terminal_ts=now(),updated_ts=now()
+                    FROM task_info_t t,process_info_t p WHERE t.host_id=j.host_id
+                      AND t.task_id=j.workflow_task_id AND p.host_id=j.host_id
+                      AND p.process_id=j.workflow_process_id
+                      AND j.state IN('PENDING','TURN_CREATED','RUNNING')
+                      AND (p.status_code<>'A' OR t.status_code IN('F','X'))
+                    RETURNING j.host_id,j.turn_id) UPDATE agent_turn_t t SET state='CANCELLED',
+                    terminal_error=jsonb_build_object('class','workflow_cancelled'),terminal_ts=now(),updated_ts=now()
+                    FROM jobs WHERE t.host_id=jobs.host_id AND t.turn_id=jobs.turn_id
+                      AND t.state NOT IN('COMPLETED','FAILED','CANCELLED','UNKNOWN')")
+            .execute(&self.pool).await?;
+        sqlx::query("INSERT INTO execution_session_cleanup_request_t(host_id,cleanup_request_id,
+                    execution_session_id,origin_kind,origin_service_id,origin_instance_id,
+                    origin_session_id,subject_kind,subject_id,idempotency_key,reason,requested_by,
+                    cleanup_deadline_ts,state)
+                    SELECT j.host_id,gen_random_uuid(),s.execution_session_id,'agent','light-agent',
+                      'workflow-job-reconciler',s.session_id,'agent-turn',j.turn_id,
+                      'workflow-job-cancel:'||j.job_id,'workflow-cancelled','light-agent',
+                      now()+interval '5 minutes','PENDING'
+                    FROM agent_job_t j JOIN agent_session_t s ON s.host_id=j.host_id AND s.session_id=j.job_id
+                    WHERE j.cancellation_requested_ts IS NOT NULL AND s.execution_session_id IS NOT NULL
+                      AND s.cleanup_state IN('NOT_REQUIRED','CLEANUP_REQUESTED')
+                    ON CONFLICT(host_id,origin_service_id,origin_instance_id,idempotency_key) DO NOTHING")
+            .execute(&self.pool).await?;
+        sqlx::query("UPDATE agent_session_t s SET state='CLOSING',cleanup_state='CLEANUP_PENDING',updated_ts=now()
+                    FROM agent_job_t j WHERE j.host_id=s.host_id AND j.job_id=s.session_id
+                      AND j.cancellation_requested_ts IS NOT NULL AND s.execution_session_id IS NOT NULL
+                      AND s.state='ACTIVE'").execute(&self.pool).await?;
+        Ok(changed + terminal.rows_affected() + cancelled.rows_affected())
     }
 
     pub async fn reconcile_execution_results(&self) -> Result<u64> {
@@ -128,7 +231,7 @@ impl AgentRepository {
             &policy,
         )
         .await?;
-        sqlx::query("UPDATE agent_turn_t SET execution_attempt_id=$3,state=CASE WHEN $4='SUCCEEDED' THEN 'COMPLETED' WHEN $4='CANCELLED' THEN 'CANCELLED' WHEN $4='UNKNOWN' THEN 'UNKNOWN' ELSE 'FAILED' END,terminal_result=CASE WHEN $4='SUCCEEDED' THEN $5 ELSE terminal_result END,terminal_error=CASE WHEN $4<>'SUCCEEDED' THEN $5 ELSE terminal_error END,terminal_ts=now(),updated_ts=now() WHERE host_id=$1 AND turn_id=$2 AND execution_attempt_id IS NULL")
+        sqlx::query("UPDATE agent_turn_t SET execution_attempt_id=$3,state=CASE WHEN $4='SUCCEEDED' THEN 'COMPLETED' WHEN $4='CANCELLED' THEN 'CANCELLED' WHEN $4='UNKNOWN' THEN 'UNKNOWN' ELSE 'FAILED' END,terminal_result=CASE WHEN $4='SUCCEEDED' THEN $5 ELSE terminal_result END,terminal_error=CASE WHEN $4<>'SUCCEEDED' THEN $5 ELSE terminal_error END,terminal_ts=now(),updated_ts=now() WHERE host_id=$1 AND turn_id=$2 AND execution_attempt_id IS NULL AND state NOT IN ('COMPLETED','FAILED','CANCELLED','UNKNOWN')")
             .bind(host_id).bind(turn_id).bind(execution_id).bind(&state).bind(&result).execute(&mut *tx).await?;
         sqlx::query("UPDATE execution_attempt_t SET accepted_by_origin_ts=COALESCE(accepted_by_origin_ts,now()),updated_ts=now() WHERE host_id=$1 AND execution_id=$2").bind(host_id).bind(execution_id).execute(&mut *tx).await?;
         sqlx::query("UPDATE agent_session_t SET active_turn_id=NULL,session_version=session_version+1,updated_ts=now() WHERE host_id=$1 AND session_id=$2 AND active_turn_id=$3").bind(host_id).bind(session).bind(turn_id).execute(&mut *tx).await?;
@@ -437,6 +540,14 @@ impl AgentRepository {
             .bind(host_id).bind(turn_id).execute(&mut *tx).await?;
         sqlx::query("UPDATE agent_session_t SET active_turn_id=$3,session_version=session_version+1,updated_ts=now() WHERE host_id=$1 AND session_id=$2 AND active_turn_id IS NULL")
             .bind(host_id).bind(session_id.0).bind(turn_id).execute(&mut *tx).await?;
+        sqlx::query(
+            "UPDATE agent_job_t SET state='RUNNING',updated_ts=now()
+                    WHERE host_id=$1 AND turn_id=$2 AND state='TURN_CREATED'",
+        )
+        .bind(host_id)
+        .bind(turn_id)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(Some(AgentTurnId(turn_id)))
     }

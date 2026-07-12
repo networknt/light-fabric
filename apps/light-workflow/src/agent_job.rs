@@ -1,6 +1,9 @@
+use crate::executor::TaskExecutor;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sqlx::PgPool;
+use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +66,30 @@ pub enum AgentJobError {
     Cycle,
     #[error("agent job public output failed schema validation")]
     Output,
+}
+
+pub struct AgentJobReconciler {
+    pool: PgPool,
+    executor: Arc<TaskExecutor>,
+}
+impl AgentJobReconciler {
+    pub fn new(pool: PgPool, executor: Arc<TaskExecutor>) -> Self {
+        Self { pool, executor }
+    }
+    pub async fn run(&self) -> Result<(), sqlx::Error> {
+        loop {
+            let jobs:Vec<(Uuid,Uuid)>=sqlx::query_as("SELECT host_id,job_id FROM agent_job_t
+                WHERE state IN('SUCCEEDED','FAILED','CANCELLED','UNKNOWN') ORDER BY updated_ts LIMIT 100")
+                .fetch_all(&self.pool).await?;
+            let mut progressed = false;
+            for (host, job) in jobs {
+                progressed |= self.executor.reconcile_agent_job(host, job).await?;
+            }
+            if !progressed {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        }
+    }
 }
 #[cfg(test)]
 mod tests {

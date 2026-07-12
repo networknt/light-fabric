@@ -1,5 +1,6 @@
 use execution_security::ProtectedPathPolicy;
 use light_runtime::{TracingOptions, init_tracing};
+use light_workflow::agent_job::AgentJobReconciler;
 use light_workflow::configuration::RunnerExecutionConfig;
 use light_workflow::consumer::EventConsumer;
 use light_workflow::executor::TaskExecutor;
@@ -62,6 +63,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let host_executor = Arc::clone(&executor);
     let executor_handle = tokio::spawn(async move { host_executor.run().await });
+    let agent_job_reconciler = AgentJobReconciler::new(pool.clone(), Arc::clone(&executor));
+    let agent_job_handle = tokio::spawn(async move { agent_job_reconciler.run().await });
     let rule_api_handle = tokio::spawn(async move { run_rule_api().await });
     let runner_runtime = if runner_config.enabled {
         let scheduler = RunnerScheduler::new(pool.clone(), runner_config.clone());
@@ -125,6 +128,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     )))
                 })?
                 .map_err(|err| err)
+        },
+        async {
+            agent_job_handle
+                .await
+                .map_err(|err| -> Box<dyn Error + Send + Sync> {
+                    Box::new(io::Error::other(format!(
+                        "agent job reconciler failed to join: {err}"
+                    )))
+                })?
+                .map_err(|err| Box::new(err) as Box<dyn Error + Send + Sync>)
         },
         async {
             rule_api_handle

@@ -868,6 +868,19 @@ pub struct AgentArguments {
     /// Agent definition id or portal agent name.
     #[serde(rename = "agent")]
     pub agent: String,
+    /// Execution mode. `native` preserves the existing in-process behavior;
+    /// `service` submits a durable job to Light-Agent.
+    #[serde(default, skip_serializing_if = "AgentCallMode::is_native")]
+    pub mode: AgentCallMode,
+    #[serde(rename = "tokenBudget", skip_serializing_if = "Option::is_none")]
+    pub token_budget: Option<u64>,
+    #[serde(rename = "costBudgetMicros", skip_serializing_if = "Option::is_none")]
+    pub cost_budget_micros: Option<u64>,
+    #[serde(
+        rename = "maximumDelegationDepth",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub maximum_delegation_depth: Option<u8>,
     /// Optional skill id or skill name. If absent, all active skills attached to the agent are used.
     #[serde(rename = "skill", skip_serializing_if = "Option::is_none")]
     pub skill: Option<String>,
@@ -892,6 +905,19 @@ pub struct AgentArguments {
     /// Behavior when the model output is not valid JSON or does not match the output schema.
     #[serde(rename = "onInvalidOutput", skip_serializing_if = "Option::is_none")]
     pub on_invalid_output: Option<AgentInvalidOutputPolicy>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentCallMode {
+    #[default]
+    Native,
+    Service,
+}
+impl AgentCallMode {
+    fn is_native(&self) -> bool {
+        *self == Self::Native
+    }
 }
 
 /// Retry and fallback settings for malformed agent output.

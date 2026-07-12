@@ -1,4 +1,5 @@
 use crate::repositories::{NewTask, TerminalAttempt, WorkflowRepository};
+use chrono::Utc;
 use execution_runner_protocol::canonical_sha256;
 use light_rule::{ActionRegistry, MultiThreadRuleExecutor, RuleConfig, RuleEngine};
 use model_provider::{
@@ -8,7 +9,7 @@ use model_provider::{
 use regex::Regex;
 use serde_json::{Map as JsonMap, Number, Value, json};
 use serde_yaml::Value as YamlValue;
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::io;
@@ -134,6 +135,81 @@ pub struct TaskExecutor {
 }
 
 impl TaskExecutor {
+    pub async fn reconcile_agent_job(
+        &self,
+        host_id: Uuid,
+        job_id: Uuid,
+    ) -> Result<bool, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        let row=sqlx::query("SELECT j.workflow_process_id,j.workflow_task_id,j.state,j.public_output,j.error,j.output_schema
+            FROM agent_job_t j JOIN task_info_t t ON t.host_id=j.host_id AND t.task_id=j.workflow_task_id
+            WHERE j.host_id=$1 AND j.job_id=$2 AND j.state IN('SUCCEEDED','FAILED','CANCELLED','UNKNOWN')
+              AND t.status_code='W' FOR UPDATE OF j,t")
+            .bind(host_id).bind(job_id).fetch_optional(&mut *tx).await?;
+        let Some(row) = row else {
+            tx.commit().await?;
+            return Ok(false);
+        };
+        let process_id: Uuid = row.try_get("workflow_process_id")?;
+        let task_id: Uuid = row.try_get("workflow_task_id")?;
+        let state: String = row.try_get("state")?;
+        let task=sqlx::query_as::<_,ActiveTask>("SELECT host_id,task_id,task_type,process_id,wf_instance_id,
+            wf_task_id,status_code,result_code FROM task_info_t WHERE host_id=$1 AND task_id=$2 AND process_id=$3")
+            .bind(host_id).bind(task_id).bind(process_id).fetch_one(&mut *tx).await?;
+        let (context_data, wf_def_id, snapshot) = self
+            .get_context_data(&mut tx, &host_id, &process_id)
+            .await?;
+        let (definition, raw_definition) = if let Some(snapshot) = snapshot {
+            (
+                serde_json::from_value(snapshot.clone())
+                    .map_err(|e| sqlx::Error::Protocol(e.to_string()))?,
+                serde_yaml::to_value(snapshot).map_err(|e| sqlx::Error::Protocol(e.to_string()))?,
+            )
+        } else {
+            let dsl = self
+                .get_workflow_definition(&mut tx, &host_id, &wf_def_id)
+                .await?;
+            (
+                serde_yaml::from_str(&dsl).map_err(|e| sqlx::Error::Protocol(e.to_string()))?,
+                serde_yaml::from_str(&dsl).map_err(|e| sqlx::Error::Protocol(e.to_string()))?,
+            )
+        };
+        let output: Option<Value> = row.try_get("public_output")?;
+        let result = if state == "SUCCEEDED" {
+            let output = output.unwrap_or(Value::Null);
+            let schema: Value = row.try_get("output_schema")?;
+            match crate::agent_job::validate_public_output(&schema, &output) {
+                Ok(()) => TaskExecutionResult {
+                    status_code: "C",
+                    task_output: output,
+                    next_task: None,
+                    context_data: None,
+                },
+                Err(e) => TaskExecutionResult {
+                    status_code: "F",
+                    task_output: json!({"agentJobId":job_id,"class":"INVALID_PUBLIC_OUTPUT","message":e.to_string()}),
+                    next_task: None,
+                    context_data: None,
+                },
+            }
+        } else {
+            TaskExecutionResult {
+                status_code: "F",
+                task_output: json!({"agentJobId":job_id,"state":state,"error":row.try_get::<Option<Value>,_>("error")?}),
+                next_task: None,
+                context_data: None,
+            }
+        };
+        let claimed = ClaimedTask {
+            task,
+            context_data,
+            definition,
+            raw_definition,
+        };
+        self.finish_task(&mut tx, &claimed, result).await?;
+        tx.commit().await?;
+        Ok(true)
+    }
     fn supported_task_type_name(task_def: &TaskDefinition) -> Option<&'static str> {
         match task_def {
             TaskDefinition::Ask(_) => Some("ask"),
@@ -738,6 +814,8 @@ impl TaskExecutor {
                     &claimed.context_data,
                     &claimed.raw_definition,
                     &claimed.task.host_id,
+                    claimed.task.process_id,
+                    claimed.task.task_id,
                     &claimed.task.wf_task_id,
                 )
                 .await
@@ -991,6 +1069,8 @@ impl TaskExecutor {
         context: &Value,
         raw_definition: &YamlValue,
         host_id: &Uuid,
+        process_id: Uuid,
+        task_id: Uuid,
         task_name: &str,
     ) -> Result<TaskExecutionResult, DynError> {
         let catalog = self
@@ -1002,6 +1082,45 @@ impl TaskExecutor {
             .map(|input| self.resolve_json_value(input, context))
             .unwrap_or_else(|| context.clone());
         let output_schema = self.resolve_agent_output_schema(args, raw_definition)?;
+        if args.mode == workflow_core::models::task::AgentCallMode::Service {
+            let deadline: Option<chrono::DateTime<Utc>> = sqlx::query_scalar(
+                "SELECT deadline_ts FROM task_info_t WHERE host_id=$1 AND task_id=$2",
+            )
+            .bind(host_id)
+            .bind(task_id)
+            .fetch_one(&self.pool)
+            .await?;
+            let deadline = deadline.unwrap_or_else(|| Utc::now() + chrono::Duration::minutes(10));
+            let input_schema_digest = execution_runner_protocol::canonical_sha256(&task_input)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+            let output_schema = output_schema.unwrap_or_else(|| json!({"type":"object"}));
+            let (policy_digest,data_boundary_digest):(String,String)=sqlx::query_as(
+                "SELECT p.policy_digest,p.data_boundary_digest FROM agent_definition_t d
+                 JOIN agent_policy_snapshot_t p ON p.host_id=d.host_id AND p.policy_snapshot_id=d.policy_snapshot_id
+                 WHERE d.host_id=$1 AND d.agent_def_id=$2 AND p.revoked_ts IS NULL",
+            ).bind(host_id).bind(catalog.agent.agent_def_id).fetch_one(&self.pool).await?;
+            let job_id = Uuid::now_v7();
+            let inserted: Uuid = sqlx::query_scalar(
+                "INSERT INTO agent_job_t(host_id,job_id,workflow_process_id,workflow_task_id,
+                   agent_def_id,idempotency_key,input,input_schema_digest,output_schema,policy_digest,
+                   data_boundary_digest,deadline_ts,token_budget,cost_budget_micros,delegation_depth,
+                   maximum_delegation_depth,memory_mode,state)
+                 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,0,$15,'ISOLATED','PENDING')
+                 ON CONFLICT(host_id,idempotency_key) DO UPDATE SET updated_ts=agent_job_t.updated_ts
+                 RETURNING job_id",
+            ).bind(host_id).bind(job_id).bind(process_id).bind(task_id)
+             .bind(catalog.agent.agent_def_id).bind(format!("workflow:{process_id}:{task_id}"))
+             .bind(task_input).bind(input_schema_digest).bind(output_schema).bind(policy_digest)
+             .bind(data_boundary_digest).bind(deadline).bind(args.token_budget.unwrap_or(65_536) as i64)
+             .bind(args.cost_budget_micros.unwrap_or(0) as i64)
+             .bind(args.maximum_delegation_depth.unwrap_or(4) as i32).fetch_one(&self.pool).await?;
+            return Ok(TaskExecutionResult {
+                status_code: "W",
+                task_output: json!({"agentJobId":inserted,"state":"PENDING"}),
+                next_task: None,
+                context_data: None,
+            });
+        }
         let retry_count = args
             .on_invalid_output
             .as_ref()
