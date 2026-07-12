@@ -32,7 +32,7 @@ use model_provider::{
 use portal_registry::RegistryHandler;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row, postgres::PgListener};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -44,7 +44,11 @@ use uuid::Uuid;
 
 use agent_core::{AgentSessionId, sha256_digest};
 use agent_delegation::{DelegationClaims, DelegationKind, DelegationSigner};
-use light_agent::domain::{AgentRepository, SessionSpec, TurnRuntimeResolution};
+use agent_materializer::{MaterializationManifest, ProductProfile};
+use coding_agent_runtime::{CodingTurnSpec, ImmutableRepositoryInput};
+use light_agent::domain::{
+    AgentRepository, EdgeActionSpec, PiCodingRuntime, SessionSpec, TurnRuntimeResolution,
+};
 
 mod embedded_config {
     include!(concat!(env!("OUT_DIR"), "/embedded_config.rs"));
@@ -1128,6 +1132,15 @@ struct AgentState {
     catalog_stale_on_error: Duration,
     catalog_semantic_search_enabled: bool,
     catalog_semantic_limit: usize,
+    coding_profile: Option<CodingProfileConfig>,
+    personal_profile_digest: Option<String>,
+}
+
+#[derive(Clone)]
+struct CodingProfileConfig {
+    product_profile_digest: String,
+    repository_uri_prefix: String,
+    runtime: PiCodingRuntime,
 }
 
 #[derive(Clone)]
@@ -1682,11 +1695,39 @@ async fn ws_handler(
         .into_response()
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum RequestedProfile {
+    Enterprise,
+    Coding,
+    PersonalAssistant,
+}
+
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CodingDispatchRequest {
+    repository: ImmutableRepositoryInput,
+    base_revision: String,
+    workspace_root: String,
+    #[serde(default)]
+    writable_roots: BTreeSet<String>,
+    allowed_tools: BTreeSet<String>,
+    maximum_patch_bytes: u64,
+    maximum_changed_files: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ClientMessage {
     pub text: String,
     #[serde(default)]
     pub client_message_id: Option<String>,
+    #[serde(default)]
+    profile: Option<RequestedProfile>,
+    #[serde(default)]
+    coding: Option<CodingDispatchRequest>,
+    #[serde(default)]
+    edge_action: Option<EdgeActionSpec>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1696,6 +1737,8 @@ enum ServerMessage {
     Session { session_id: String },
     #[serde(rename = "text")]
     Text { text: String },
+    #[serde(rename = "executionAccepted")]
+    ExecutionAccepted { profile: String, request_id: String },
     #[serde(rename = "error")]
     Error { message: String },
 }
@@ -2737,6 +2780,84 @@ fn optional_bool(value: &Option<String>, key: &str) -> Result<Option<bool>, Runt
     }
 }
 
+fn canonical_sha256(value: &str) -> bool {
+    value
+        .strip_prefix("sha256:")
+        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+fn validate_repository_input_uri(value: &str, prefix: &str) -> Result<()> {
+    let uri = Url::parse(value).context("repository input URI is invalid")?;
+    let prefix_uri = Url::parse(prefix).context("repository input URI prefix is invalid")?;
+    if uri.scheme() != "file"
+        || prefix_uri.scheme() != "file"
+        || uri.host_str().is_some_and(|host| !host.is_empty())
+        || prefix_uri.host_str().is_some_and(|host| !host.is_empty())
+        || uri.query().is_some()
+        || uri.fragment().is_some()
+        || !value.starts_with(prefix)
+        || !prefix.ends_with('/')
+        || uri.to_file_path().ok().is_none_or(|path| {
+            path.components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+        })
+    {
+        bail!("repository input is outside the configured immutable spool")
+    }
+    Ok(())
+}
+
+fn coding_profile_from_environment() -> Result<Option<CodingProfileConfig>, RuntimeError> {
+    let names = [
+        "LIGHT_AGENT_CODING_PROFILE_DIGEST",
+        "LIGHT_AGENT_CODING_REPOSITORY_URI_PREFIX",
+        "LIGHT_AGENT_CODING_COMPATIBILITY_DIGEST",
+        "LIGHT_AGENT_PI_TEMPLATE_DIGEST",
+        "LIGHT_AGENT_PI_BINARY_DIGEST",
+        "LIGHT_AGENT_PI_PROVIDER",
+        "LIGHT_AGENT_PI_MODEL",
+    ];
+    let values = names
+        .iter()
+        .map(|name| std::env::var(name).ok().filter(|v| !v.trim().is_empty()))
+        .collect::<Vec<_>>();
+    if values.iter().all(Option::is_none) {
+        return Ok(None);
+    }
+    if values.iter().any(Option::is_none) {
+        return Err(RuntimeError::Config(format!(
+            "coding profile requires all of {}",
+            names.join(", ")
+        )));
+    }
+    let values = values.into_iter().map(Option::unwrap).collect::<Vec<_>>();
+    for (name, value) in [
+        (names[0], values[0].as_str()),
+        (names[2], values[2].as_str()),
+        (names[3], values[3].as_str()),
+        (names[4], values[4].as_str()),
+    ] {
+        if !canonical_sha256(value) {
+            return Err(RuntimeError::Config(format!(
+                "{name} must be canonical SHA-256"
+            )));
+        }
+    }
+    validate_repository_input_uri(&format!("{}probe", values[1]), &values[1])
+        .map_err(|error| RuntimeError::Config(error.to_string()))?;
+    Ok(Some(CodingProfileConfig {
+        product_profile_digest: values[0].clone(),
+        repository_uri_prefix: values[1].clone(),
+        runtime: PiCodingRuntime {
+            compatibility_digest: values[2].clone(),
+            template_digest: values[3].clone(),
+            pi_digest: values[4].clone(),
+            provider: values[5].clone(),
+            model: values[6].clone(),
+        },
+    }))
+}
+
 async fn handle_socket(
     socket: WebSocket,
     state: Arc<AgentState>,
@@ -2879,6 +3000,30 @@ async fn handle_socket(
                 continue;
             }
 
+            let inferred_profile = if client_msg.coding.is_some() {
+                RequestedProfile::Coding
+            } else if client_msg.edge_action.is_some() {
+                RequestedProfile::PersonalAssistant
+            } else {
+                RequestedProfile::Enterprise
+            };
+            let requested_profile = client_msg.profile.unwrap_or(inferred_profile);
+            let profile_shape_valid = requested_profile == inferred_profile
+                && !(client_msg.coding.is_some() && client_msg.edge_action.is_some())
+                && (requested_profile != RequestedProfile::Coding || client_msg.coding.is_some());
+            if !profile_shape_valid {
+                let _ = sender
+                    .send(Message::Text(
+                        serde_json::to_string(&ServerMessage::Error {
+                            message: "Profile and typed execution payload do not match".into(),
+                        })
+                        .unwrap()
+                        .into(),
+                    ))
+                    .await;
+                continue;
+            }
+
             let user_text = client_msg.text.clone();
             let client_message_id = client_msg
                 .client_message_id
@@ -2955,6 +3100,164 @@ async fn handle_socket(
                     continue;
                 }
             };
+
+            if requested_profile == RequestedProfile::Coding {
+                let outcome: Result<Uuid> = async {
+                    let config = state
+                        .coding_profile
+                        .as_ref()
+                        .context("coding profile is disabled")?;
+                    if turn_resolution.product_profile_digest != config.product_profile_digest {
+                        bail!("turn policy does not authorize the coding profile")
+                    }
+                    let request = client_msg
+                        .coding
+                        .as_ref()
+                        .context("coding payload is required")?;
+                    validate_repository_input_uri(
+                        &request.repository.artifact_uri,
+                        &config.repository_uri_prefix,
+                    )?;
+                    let writable_roots = if request.writable_roots.is_empty() {
+                        BTreeSet::from([request.workspace_root.clone()])
+                    } else {
+                        request.writable_roots.clone()
+                    };
+                    let manifest = MaterializationManifest {
+                        schema_version: 1,
+                        materializer_id: "coding".into(),
+                        materializer_version: 1,
+                        product_profile: ProductProfile::Coding,
+                        runtime_compatibility: config.runtime.compatibility_digest.clone(),
+                        packages: Vec::new(),
+                        effective_instructions: Vec::new(),
+                        allowed_tools: BTreeSet::new(),
+                        writable_roots: writable_roots.clone(),
+                    };
+                    let spec = CodingTurnSpec {
+                        repository_digest: request.repository.digest.clone(),
+                        base_revision: request.base_revision.clone(),
+                        workspace_root: request.workspace_root.clone(),
+                        prompt: user_text.clone(),
+                        model_alias: format!(
+                            "{}:{}",
+                            config.runtime.provider, config.runtime.model
+                        ),
+                        materialization_manifest_digest: manifest.digest()?,
+                        writable_roots,
+                        allowed_tools: request.allowed_tools.clone(),
+                        maximum_patch_bytes: request.maximum_patch_bytes,
+                        maximum_changed_files: request.maximum_changed_files,
+                    };
+                    state
+                        .domain
+                        .schedule_pi_coding_turn(
+                            state.host_id,
+                            AgentSessionId(session_id),
+                            admitted.turn_id,
+                            &state.service_id,
+                            &manifest,
+                            &spec,
+                            &request.repository,
+                            &config.runtime,
+                        )
+                        .await
+                }
+                .await;
+                match outcome {
+                    Ok(request_id) => {
+                        let _ = sender
+                            .send(Message::Text(
+                                serde_json::to_string(&ServerMessage::ExecutionAccepted {
+                                    profile: "coding".into(),
+                                    request_id: request_id.to_string(),
+                                })
+                                .unwrap()
+                                .into(),
+                            ))
+                            .await;
+                    }
+                    Err(error) => {
+                        let _ = state
+                            .domain
+                            .fail_turn(
+                                state.host_id,
+                                AgentSessionId(session_id),
+                                admitted.turn_id,
+                                &error.to_string(),
+                            )
+                            .await;
+                        let _ = sender
+                            .send(Message::Text(
+                                serde_json::to_string(&ServerMessage::Error {
+                                    message: format!("Coding dispatch failed: {error}"),
+                                })
+                                .unwrap()
+                                .into(),
+                            ))
+                            .await;
+                    }
+                }
+                continue;
+            }
+
+            if let Some(edge_action) = client_msg.edge_action.as_ref() {
+                let outcome: Result<Uuid> = async {
+                    let expected = state
+                        .personal_profile_digest
+                        .as_deref()
+                        .context("personal-assistant profile is disabled")?;
+                    if turn_resolution.product_profile_digest != expected {
+                        bail!("turn policy does not authorize personal edge actions")
+                    }
+                    state
+                        .domain
+                        .schedule_edge_action(
+                            state.host_id,
+                            AgentSessionId(session_id),
+                            admitted.turn_id,
+                            &state.service_id,
+                            edge_action,
+                        )
+                        .await
+                }
+                .await;
+                match outcome {
+                    Ok(action_id) => {
+                        let _ = sender
+                            .send(Message::Text(
+                                serde_json::to_string(&ServerMessage::ExecutionAccepted {
+                                    profile: "personal-assistant".into(),
+                                    request_id: action_id.to_string(),
+                                })
+                                .unwrap()
+                                .into(),
+                            ))
+                            .await;
+                    }
+                    Err(error) => {
+                        let _ = state
+                            .domain
+                            .fail_turn(
+                                state.host_id,
+                                AgentSessionId(session_id),
+                                admitted.turn_id,
+                                &error.to_string(),
+                            )
+                            .await;
+                        let _ = sender
+                            .send(Message::Text(
+                                serde_json::to_string(&ServerMessage::Error {
+                                    message: format!("Edge action dispatch failed: {error}"),
+                                })
+                                .unwrap()
+                                .into(),
+                            ))
+                            .await;
+                    }
+                }
+                continue;
+            }
             let turn_provider_config = ModelProviderConfig {
                 provider: turn_resolution.model_provider.clone(),
                 model: Some(turn_resolution.model_name.clone()),
@@ -4070,6 +4373,18 @@ async fn build_agent_state(
         DEFAULT_SEMANTIC_CATALOG_LIMIT,
         100,
     );
+    let coding_profile = coding_profile_from_environment()?;
+    let personal_profile_digest = std::env::var("LIGHT_AGENT_PERSONAL_PROFILE_DIGEST")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    if personal_profile_digest
+        .as_deref()
+        .is_some_and(|value| !canonical_sha256(value))
+    {
+        return Err(RuntimeError::Config(
+            "LIGHT_AGENT_PERSONAL_PROFILE_DIGEST must be canonical SHA-256".into(),
+        ));
+    }
 
     let domain = AgentRepository::new(pool.clone());
     let turn_dispatch = TurnDispatchCoordinator::new(domain.clone());
@@ -4096,6 +4411,8 @@ async fn build_agent_state(
         catalog_stale_on_error,
         catalog_semantic_search_enabled,
         catalog_semantic_limit,
+        coding_profile,
+        personal_profile_digest,
     });
     state.domain.spawn_result_reconciler();
 
@@ -4233,7 +4550,8 @@ mod tests {
         bind_authenticated_principal, bound_untrusted_text, build_effective_catalog_data,
         choose_model, collect_catalog_tool_names, collect_policy_diagnostics, filter_gateway_tools,
         is_local_cli_provider, normalize_provider_id, parse_tool_arguments,
-        rollback_last_user_message, select_catalog_tools, trim_history, validate_session_owner,
+        rollback_last_user_message, select_catalog_tools, trim_history,
+        validate_repository_input_uri, validate_session_owner,
     };
     use light_agent::domain::AgentRepository;
     use light_runtime::config::{BootstrapConfig, ClientConfig};
@@ -4258,6 +4576,23 @@ mod tests {
             max_output_items: 8,
             max_turn_tokens: 100,
         }
+    }
+
+    #[test]
+    fn coding_repository_input_is_confined_to_operator_spool() {
+        let prefix = "file:///var/lib/light-agent/repositories/";
+        assert!(
+            validate_repository_input_uri(
+                "file:///var/lib/light-agent/repositories/tenant/repo.bundle",
+                prefix
+            )
+            .is_ok()
+        );
+        assert!(validate_repository_input_uri("file:///etc/shadow", prefix).is_err());
+        assert!(
+            validate_repository_input_uri("https://attacker.invalid/repository.bundle", prefix)
+                .is_err()
+        );
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use coding_agent_runtime::{
-    CodingFixtureOutput, CodingFixtureRequest, PI_RPC_ADAPTER_ID, PI_RPC_ADAPTER_VERSION,
+    CodingFixtureOutput, CodingTurnSpec, PI_RPC_ADAPTER_ID, PI_RPC_ADAPTER_VERSION,
     PI_RPC_IMPLEMENTATION_VERSION, validate_patch,
 };
 use execution_security::ProtectedPathPolicy;
@@ -23,23 +23,13 @@ const MAXIMUM_STDERR_BYTES: usize = 1024 * 1024;
 #[tokio::main]
 async fn main() -> Result<()> {
     let arguments = Arguments::parse()?;
-    let request = CodingFixtureRequest::decode_argument(&arguments.request_base64)?;
-    verify_regular_digest(&arguments.repository, &request.spec.repository_digest)?;
+    let spec = CodingTurnSpec::decode_argument(&arguments.request_base64)?;
+    verify_regular_digest(&arguments.repository, &spec.repository_digest)?;
     verify_executable_digest(&arguments.pi, &arguments.pi_digest)?;
-    let workspace = PathBuf::from(&request.spec.workspace_root);
-    materialize_repository(
-        &arguments.repository,
-        &workspace,
-        &request.spec.base_revision,
-    )?;
-    run_pi(
-        &arguments,
-        &request.spec.prompt,
-        &request.spec.allowed_tools,
-        &workspace,
-    )
-    .await?;
-    let output = export_patch(request, &workspace)?;
+    let workspace = PathBuf::from(&spec.workspace_root);
+    materialize_repository(&arguments.repository, &workspace, &spec.base_revision)?;
+    run_pi(&arguments, &spec.prompt, &spec.allowed_tools, &workspace).await?;
+    let output = export_patch(spec, &workspace)?;
     println!("{}", serde_json::to_string(&output)?);
     Ok(())
 }
@@ -252,7 +242,7 @@ fn materialize_repository(repository: &Path, workspace: &Path, revision: &str) -
     Ok(())
 }
 
-fn export_patch(request: CodingFixtureRequest, workspace: &Path) -> Result<CodingFixtureOutput> {
+fn export_patch(spec: CodingTurnSpec, workspace: &Path) -> Result<CodingFixtureOutput> {
     git(Some(workspace), &["diff", "--check"])?;
     let patch = git_output(
         Some(workspace),
@@ -272,16 +262,16 @@ fn export_patch(request: CodingFixtureRequest, workspace: &Path) -> Result<Codin
         .map(|path| String::from_utf8(path.to_vec()).context("non-UTF8 changed path"))
         .collect::<Result<Vec<_>>>()?;
     let validated = validate_patch(
-        &request.spec,
+        &spec,
         &ProtectedPathPolicy::default_deny(),
-        &request.spec.base_revision,
+        &spec.base_revision,
         &patch,
         &changed_paths,
     )?;
     Ok(CodingFixtureOutput {
         adapter_id: PI_RPC_ADAPTER_ID.into(),
         adapter_version: PI_RPC_ADAPTER_VERSION.into(),
-        repository_digest: request.spec.repository_digest,
+        repository_digest: spec.repository_digest,
         base_revision: validated.base_revision,
         patch: validated.patch,
         changed_paths: validated.changed_paths.into_iter().collect(),

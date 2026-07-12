@@ -115,6 +115,19 @@ impl CodingTurnSpec {
     pub fn digest(&self) -> Result<String, serde_json::Error> {
         canonical_digest(self)
     }
+    pub fn encode_argument(&self) -> Result<String, CodingError> {
+        self.validate()?;
+        let json = serde_json::to_vec(self).map_err(|_| CodingError::Spec)?;
+        Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json))
+    }
+    pub fn decode_argument(value: &str) -> Result<Self, CodingError> {
+        let json = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(value)
+            .map_err(|_| CodingError::Spec)?;
+        let request: Self = serde_json::from_slice(&json).map_err(|_| CodingError::Spec)?;
+        request.validate()?;
+        Ok(request)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,11 +141,13 @@ pub struct ImmutableRepositoryInput {
 
 impl ImmutableRepositoryInput {
     pub fn validate(&self, spec: &CodingTurnSpec) -> Result<(), CodingError> {
+        let digest = self.digest.strip_prefix("sha256:").unwrap_or_default();
         if self.digest != spec.repository_digest
             || self.size == 0
             || self.size > i64::MAX as u64
             || self.media_type != "application/x-git-bundle"
-            || !self.digest.starts_with("sha256:")
+            || digest.len() != 64
+            || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
         {
             return Err(CodingError::Repository);
         }
@@ -364,6 +379,16 @@ mod tests {
             ),
             Err(CodingError::Protected)
         );
+    }
+
+    #[test]
+    fn coding_spec_argument_round_trips_through_closed_encoding() {
+        let expected = spec();
+        assert_eq!(
+            CodingTurnSpec::decode_argument(&expected.encode_argument().unwrap()).unwrap(),
+            expected
+        );
+        assert!(CodingTurnSpec::decode_argument("not-base64").is_err());
     }
     #[test]
     fn adapters_require_machine_protocols_and_forbid_bypass() {

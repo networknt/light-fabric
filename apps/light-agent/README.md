@@ -56,3 +56,59 @@ and the activation notification wakes the replica holding the corresponding
 WebSocket. The listener subscribes before its catch-up pass and runs a bounded
 five-second catch-up after reconnect, so notifications are latency hints rather
 than the source of truth.
+
+## Profile dispatch
+
+Messages without a `profile` retain the enterprise gateway/model behavior.
+Coding and personal edge execution use closed, typed payloads and are dispatched
+only after the durable turn acquires its session fence and its published
+`productProfileDigest` matches the operator-enabled profile.
+
+Enable the Pi coding profile with all of the following settings; partial
+configuration fails startup:
+
+```bash
+LIGHT_AGENT_CODING_PROFILE_DIGEST=sha256:<published-coding-profile-digest>
+LIGHT_AGENT_CODING_REPOSITORY_URI_PREFIX=file:///var/lib/light-agent/repositories/
+LIGHT_AGENT_CODING_COMPATIBILITY_DIGEST=sha256:<approved-cube-compatibility>
+LIGHT_AGENT_PI_TEMPLATE_DIGEST=sha256:<approved-command-template>
+LIGHT_AGENT_PI_BINARY_DIGEST=sha256:<pinned-pi-binary>
+LIGHT_AGENT_PI_PROVIDER=brokered
+LIGHT_AGENT_PI_MODEL=<approved-model-alias>
+```
+
+The repository source adapter must place immutable Git bundles under the
+configured spool before the message is admitted. Arbitrary local paths and
+remote URLs are rejected. Light-Agent constructs the materialization manifest
+itself and currently admits no client-selected skill packages.
+
+```json
+{
+  "clientMessageId": "01-coding-turn",
+  "profile": "coding",
+  "text": "Update the parser and its tests.",
+  "coding": {
+    "repository": {
+      "artifactUri": "file:///var/lib/light-agent/repositories/acme/repo.bundle",
+      "digest": "sha256:<bundle-digest>",
+      "size": 12345,
+      "mediaType": "application/x-git-bundle"
+    },
+    "baseRevision": "<40-or-64-hex-commit>",
+    "workspaceRoot": "/workspace/repo",
+    "writableRoots": ["/workspace/repo"],
+    "allowedTools": ["fs.read", "fs.write"],
+    "maximumPatchBytes": 1048576,
+    "maximumChangedFiles": 100
+  }
+}
+```
+
+Personal edge actions require
+`LIGHT_AGENT_PERSONAL_PROFILE_DIGEST=sha256:<published-profile-digest>`. The
+typed `edgeAction` contains `edgeBindingId`, `action`, `arguments`,
+`schemaDigest`, and an optional `approvalId`. The server revalidates the live
+principal-bound edge runner, exact action schema, effect class, approval, runner
+identity, backend identity, and compatibility digest before enqueueing. Direct
+edge turns terminate from the accepted runner result; they do not leave a
+session waiting for a nonexistent in-process model continuation.

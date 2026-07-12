@@ -38,13 +38,23 @@ pub struct AdmittedTurn {
     pub data_boundary_digest: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EdgeActionSpec {
     pub edge_binding_id: Uuid,
     pub action: String,
     pub arguments: Value,
     pub schema_digest: String,
     pub approval_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PiCodingRuntime {
+    pub compatibility_digest: String,
+    pub template_digest: String,
+    pub pi_digest: String,
+    pub provider: String,
+    pub model: String,
 }
 
 fn validate_edge_arguments(path: &str, schema: &Value, value: &Value) -> Result<()> {
@@ -919,6 +929,114 @@ impl AgentRepository {
         Ok(request_id)
     }
 
+    pub async fn schedule_pi_coding_turn(
+        &self,
+        host_id: Uuid,
+        session_id: AgentSessionId,
+        turn_id: AgentTurnId,
+        instance_id: &str,
+        manifest: &MaterializationManifest,
+        spec: &CodingTurnSpec,
+        repository: &ImmutableRepositoryInput,
+        runtime: &PiCodingRuntime,
+    ) -> Result<Uuid> {
+        spec.validate()?;
+        repository.validate(spec)?;
+        let manifest_digest = manifest.digest()?;
+        if manifest.product_profile != agent_materializer::ProductProfile::Coding
+            || spec.materialization_manifest_digest != manifest_digest
+            || manifest.runtime_compatibility != runtime.compatibility_digest
+            || manifest.writable_roots != spec.writable_roots
+        {
+            bail!("Pi coding materialization or runtime binding mismatch")
+        }
+        for digest in [
+            runtime.compatibility_digest.as_str(),
+            runtime.template_digest.as_str(),
+            runtime.pi_digest.as_str(),
+        ] {
+            let hex = digest.strip_prefix("sha256:").unwrap_or_default();
+            if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                bail!("Pi runtime requires canonical SHA-256 digests")
+            }
+        }
+        if runtime.provider.is_empty()
+            || runtime.model.is_empty()
+            || runtime.provider.starts_with('-')
+            || runtime.model.starts_with('-')
+        {
+            bail!("Pi provider or model binding is invalid")
+        }
+        let mut tx = self.pool.begin().await?;
+        let row=sqlx::query("SELECT t.policy_snapshot_id,t.policy_digest,s.principal_id FROM agent_turn_t t JOIN agent_session_t s ON s.host_id=t.host_id AND s.session_id=t.session_id JOIN agent_policy_snapshot_t p ON p.host_id=t.host_id AND p.policy_snapshot_id=t.policy_snapshot_id AND p.revoked_ts IS NULL WHERE t.host_id=$1 AND t.turn_id=$2 AND t.session_id=$3 AND t.state='RECEIVED' FOR UPDATE OF t,s")
+            .bind(host_id).bind(turn_id.0).bind(session_id.0).fetch_one(&mut *tx).await?;
+        let snapshot: Uuid = row.try_get("policy_snapshot_id")?;
+        let policy: String = row.try_get("policy_digest")?;
+        let principal: String = row.try_get("principal_id")?;
+        let request_id = Uuid::now_v7();
+        let requirements = ExecutionRequirements {
+            action_kind: "coding.pi-rpc-v1".into(),
+            minimum_boundary: IsolationBoundary::MicroVm,
+            maximum_host_exposure: HostExposure::None,
+            network_enabled: false,
+            credential_classes: vec![],
+            persistent_workspace: false,
+            required_features: vec![
+                "deny-all-egress".into(),
+                "immutable-repository-upload".into(),
+                "canonical-patch-output".into(),
+                "pi-rpc-v1".into(),
+            ],
+            policy_digest: policy.clone(),
+            compatibility_digest: runtime.compatibility_digest.clone(),
+        };
+        let command = CommandExecutionSpec {
+            schema_version: 1,
+            template_id: "cube-pi-rpc-v1".into(),
+            template_version: 1,
+            template_digest: runtime.template_digest.clone(),
+            executable: "/usr/local/bin/light-pi-rpc-adapter".into(),
+            arguments: vec![
+                "--repository".into(),
+                "/inputs/repository.bundle".into(),
+                "--request-base64".into(),
+                spec.encode_argument()?,
+                "--pi".into(),
+                "/usr/local/bin/pi".into(),
+                "--pi-digest".into(),
+                runtime.pi_digest.clone(),
+                "--provider".into(),
+                runtime.provider.clone(),
+                "--model".into(),
+                runtime.model.clone(),
+            ],
+            working_directory: "/workspace".into(),
+            environment: Default::default(),
+            wall_clock_timeout_ms: 120_000,
+            stdout_limit_bytes: 16 * 1024 * 1024,
+            stderr_limit_bytes: 1024 * 1024,
+            network_enabled: false,
+            credentials_enabled: false,
+            persistent_workspace: false,
+        };
+        sqlx::query("INSERT INTO runner_scheduling_request_t(host_id,request_id,idempotency_key,origin_kind,origin_service_id,origin_instance_id,subject_kind,subject_id,agent_session_id,agent_turn_id,policy_snapshot_id,policy_digest,normalized_requirements,execution_spec,fairness_key,state) VALUES($1,$2,$3,'agent','light-agent',$4,'agent-turn',$5,$6,$5,$7,$8,$9,$10,$11,'PENDING_CAPACITY')")
+            .bind(host_id).bind(request_id).bind(format!("coding-pi-turn:{}",turn_id.0)).bind(instance_id).bind(turn_id.0).bind(session_id.0).bind(snapshot).bind(&policy).bind(serde_json::to_value(requirements)?).bind(serde_json::to_value(command)?).bind(format!("agent:{principal}")).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO agent_turn_materialization_t(host_id,turn_id,materializer_id,materializer_version,product_profile,manifest,manifest_digest) VALUES($1,$2,$3,$4,'coding',$5,$6)")
+            .bind(host_id).bind(turn_id.0).bind(&manifest.materializer_id).bind(manifest.materializer_version as i32).bind(serde_json::to_value(manifest)?).bind(&manifest_digest).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO execution_input_t(host_id,input_id,request_id,kind,artifact_uri,content_digest,size_bytes,media_type,signer_binding,provenance_binding,scanner_binding,revocation_binding,staging_root,mount_target,read_only,executable,mount_options) VALUES($1,$2,$3,'repository-bundle',$4,$5,$6,$7,'{}'::jsonb,jsonb_build_object('baseRevision',$8),'{}'::jsonb,jsonb_build_object('state','IMMUTABLE'),$9,'/inputs/repository.bundle',TRUE,FALSE,'[\"ro\",\"nodev\",\"nosuid\",\"noexec\"]'::jsonb)")
+            .bind(host_id).bind(Uuid::now_v7()).bind(request_id).bind(&repository.artifact_uri).bind(&repository.digest).bind(repository.size as i64).bind(&repository.media_type).bind(&spec.base_revision).bind(format!("{}/inputs",spec.workspace_root)).execute(&mut *tx).await?;
+        if !manifest.packages.is_empty() {
+            bail!(
+                "Pi coding profile package mounting is not admitted until policy-to-package resolution is server-owned"
+            )
+        }
+        sqlx::query("UPDATE agent_turn_t SET scheduling_request_id=$3,materialization_manifest_digest=$4,coding_base_revision=$5,state='WAITING_RECONCILIATION',updated_ts=now() WHERE host_id=$1 AND turn_id=$2 AND state='RECEIVED'")
+            .bind(host_id).bind(turn_id.0).bind(request_id).bind(&manifest_digest).bind(&spec.base_revision).execute(&mut *tx).await?;
+        append_event(&mut tx,host_id,session_id.0,Some(turn_id.0),None,"agent","PI_CODING_TURN_SCHEDULED",json!({"requestId":request_id,"manifestDigest":manifest_digest,"baseRevision":spec.base_revision,"adapter":"pi-rpc"}),&policy).await?;
+        tx.commit().await?;
+        Ok(request_id)
+    }
+
     pub async fn reconcile_expiry_and_cleanup(&self) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         sqlx::query("UPDATE agent_approval_t SET state='EXPIRED',decision_ts=now(),decision_reason='approval deadline expired' WHERE state='REQUESTED' AND expires_ts<=now()")
@@ -977,7 +1095,7 @@ impl AgentRepository {
         execution_id: Uuid,
     ) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
-        let row = sqlx::query("SELECT a.origin_accepted_ts,t.session_id,t.policy_digest,e.state,e.normalized_result,e.normalized_error,e.fencing_token FROM agent_action_attempt_t a JOIN agent_turn_t t ON t.host_id=a.host_id AND t.turn_id=a.turn_id JOIN execution_attempt_t e ON e.host_id=a.host_id AND e.execution_id=a.execution_attempt_id WHERE a.host_id=$1 AND a.action_attempt_id=$2 AND a.turn_id=$3 AND e.execution_id=$4 AND e.terminal_ts IS NOT NULL FOR UPDATE OF a,t,e")
+        let row = sqlx::query("SELECT a.origin_accepted_ts,t.session_id,t.policy_digest,e.state,e.normalized_result,e.normalized_error,e.fencing_token,(r.normalized_requirements->>'actionKind') LIKE 'edge.%' AS terminal_edge FROM agent_action_attempt_t a JOIN agent_turn_t t ON t.host_id=a.host_id AND t.turn_id=a.turn_id JOIN execution_attempt_t e ON e.host_id=a.host_id AND e.execution_id=a.execution_attempt_id JOIN runner_scheduling_request_t r ON r.host_id=e.host_id AND r.request_id=e.request_id WHERE a.host_id=$1 AND a.action_attempt_id=$2 AND a.turn_id=$3 AND e.execution_id=$4 AND e.terminal_ts IS NOT NULL FOR UPDATE OF a,t,e")
             .bind(host_id).bind(action_attempt_id).bind(turn_id).bind(execution_id).fetch_optional(&mut *tx).await?;
         let Some(row) = row else {
             tx.commit().await?;
@@ -1010,8 +1128,20 @@ impl AgentRepository {
             .bind(host_id).bind(action_attempt_id).bind(&result).bind(sha256_digest(&serde_json::to_vec(&result)?)).execute(&mut *tx).await?;
         sqlx::query("UPDATE execution_attempt_t SET accepted_by_origin_ts=COALESCE(accepted_by_origin_ts,now()),updated_ts=now() WHERE host_id=$1 AND execution_id=$2 AND terminal_ts IS NOT NULL")
             .bind(host_id).bind(execution_id).execute(&mut *tx).await?;
-        sqlx::query("UPDATE agent_turn_t SET state=CASE WHEN $3 IN ('SUCCEEDED','FAILED','CANCELLED') THEN 'RUNNING_MODEL' ELSE 'UNKNOWN' END,updated_ts=now() WHERE host_id=$1 AND turn_id=$2 AND state IN ('RUNNING_ACTION','WAITING_RECONCILIATION')")
-            .bind(host_id).bind(turn_id).bind(state).execute(&mut *tx).await?;
+        if row.try_get::<bool, _>("terminal_edge")? {
+            sqlx::query("UPDATE agent_turn_t SET state=CASE $3 WHEN 'SUCCEEDED' THEN 'COMPLETED' WHEN 'CANCELLED' THEN 'CANCELLED' WHEN 'UNKNOWN' THEN 'UNKNOWN' ELSE 'FAILED' END,terminal_result=CASE WHEN $3='SUCCEEDED' THEN $4 ELSE terminal_result END,terminal_error=CASE WHEN $3<>'SUCCEEDED' THEN $4 ELSE terminal_error END,terminal_ts=now(),updated_ts=now() WHERE host_id=$1 AND turn_id=$2 AND state IN ('RUNNING_ACTION','WAITING_RECONCILIATION')")
+                .bind(host_id).bind(turn_id).bind(&state).bind(&result).execute(&mut *tx).await?;
+            sqlx::query("UPDATE agent_session_t SET active_turn_id=NULL,session_version=session_version+1,updated_ts=now() WHERE host_id=$1 AND session_id=$2 AND active_turn_id=$3")
+                .bind(host_id).bind(session_id).bind(turn_id).execute(&mut *tx).await?;
+            reconcile_turn_quota_usage(&mut tx, host_id, turn_id, 0, 0).await?;
+            sqlx::query("SELECT pg_notify('agent_turn_capacity_v1',$1)")
+                .bind(host_id.to_string())
+                .execute(&mut *tx)
+                .await?;
+        } else {
+            sqlx::query("UPDATE agent_turn_t SET state=CASE WHEN $3 IN ('SUCCEEDED','FAILED','CANCELLED') THEN 'RUNNING_MODEL' ELSE 'UNKNOWN' END,updated_ts=now() WHERE host_id=$1 AND turn_id=$2 AND state IN ('RUNNING_ACTION','WAITING_RECONCILIATION')")
+                .bind(host_id).bind(turn_id).bind(state).execute(&mut *tx).await?;
+        }
         tx.commit().await?;
         Ok(true)
     }
