@@ -74,8 +74,6 @@ jobs:
       LIGHT_CUBE_TEST_SANDBOX_URL: ${{ vars.LIGHT_CUBE_TEST_SANDBOX_URL }}
       LIGHT_CUBE_TEST_TEMPLATE_ID: ${{ vars.LIGHT_CUBE_TEST_TEMPLATE_ID }}
       LIGHT_CUBE_TEST_ALLOW_HTTP: 'false'
-      LIGHT_CUBE_TEST_API_KEY_FILE: ${{ runner.temp }}/cube-api.key
-      LIGHT_CUBE_TEST_TLS_CA_FILE: ${{ runner.temp }}/cube-ca.pem
       LIGHT_LIVE_TEST_TIMEOUT: 25m
     steps:
       - uses: actions/checkout@v4
@@ -89,15 +87,27 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${CUBE_API_KEY}"
-          install -m 0600 /dev/null "${LIGHT_CUBE_TEST_API_KEY_FILE}"
-          printf '%s' "${CUBE_API_KEY}" > "${LIGHT_CUBE_TEST_API_KEY_FILE}"
-          install -m 0600 /dev/null "${LIGHT_CUBE_TEST_TLS_CA_FILE}"
-          printf '%s' "${CUBE_TLS_CA_PEM}" > "${LIGHT_CUBE_TEST_TLS_CA_FILE}"
+          test -n "${CUBE_TLS_CA_PEM}"
+          credential_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/light-cube.XXXXXX")"
+          chmod 0700 "${credential_dir}"
+          printf 'LIGHT_CUBE_TEST_CREDENTIAL_DIR=%s\n' "${credential_dir}" >> "${GITHUB_ENV}"
+          api_key_file="${credential_dir}/cube-api.key"
+          tls_ca_file="${credential_dir}/cube-ca.pem"
+          install -m 0600 /dev/null "${api_key_file}"
+          printf '%s' "${CUBE_API_KEY}" > "${api_key_file}"
+          install -m 0600 /dev/null "${tls_ca_file}"
+          printf '%s' "${CUBE_TLS_CA_PEM}" > "${tls_ca_file}"
+          printf 'LIGHT_CUBE_TEST_API_KEY_FILE=%s\n' "${api_key_file}" >> "${GITHUB_ENV}"
+          printf 'LIGHT_CUBE_TEST_TLS_CA_FILE=%s\n' "${tls_ca_file}" >> "${GITHUB_ENV}"
       - name: Run Cube failure and coding matrices
         run: bash ci/run-execution-live-matrix.sh cube 2>&1 | tee cube-live-matrix.log
       - name: Remove materialized credentials
         if: always()
-        run: rm -f "${LIGHT_CUBE_TEST_API_KEY_FILE}" "${LIGHT_CUBE_TEST_TLS_CA_FILE}"
+        run: |
+          if [[ -n "${LIGHT_CUBE_TEST_CREDENTIAL_DIR:-}" ]]; then
+            find "${LIGHT_CUBE_TEST_CREDENTIAL_DIR}" -maxdepth 1 -type f -delete
+            rmdir "${LIGHT_CUBE_TEST_CREDENTIAL_DIR}"
+          fi
       - name: Upload Cube evidence
         if: always()
         uses: actions/upload-artifact@v4
