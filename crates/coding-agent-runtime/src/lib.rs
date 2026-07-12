@@ -8,6 +8,8 @@ use thiserror::Error;
 
 pub const PI_RPC_ADAPTER_ID: &str = "pi-rpc";
 pub const PI_RPC_ADAPTER_VERSION: &str = "1";
+pub const PI_RPC_IMPLEMENTATION_PACKAGE: &str = "@earendil-works/pi-coding-agent";
+pub const PI_RPC_IMPLEMENTATION_VERSION: &str = "0.80.6";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

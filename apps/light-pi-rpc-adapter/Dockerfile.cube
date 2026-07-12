@@ -1,0 +1,14 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+ARG PI_VERSION=0.80.6
+USER root
+COPY target/release/light-pi-rpc-adapter /usr/local/bin/light-pi-rpc-adapter
+RUN chmod 0555 /usr/local/bin/light-pi-rpc-adapter \
+    && npm install --global --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+    && pi --version | grep -F "${PI_VERSION}" \
+    && test -x /usr/bin/git \
+    && command -v envd >/dev/null \
+    && mkdir -p /opt/light-pi/config /tmp/pi-home \
+    && chmod 0555 /opt/light-pi/config \
+    && chmod 1777 /tmp/pi-home

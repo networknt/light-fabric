@@ -3643,6 +3643,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "light-pi-rpc-adapter"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "coding-agent-runtime",
+ "execution-security",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "light-pingora"
 version = "0.1.0"
 dependencies = [

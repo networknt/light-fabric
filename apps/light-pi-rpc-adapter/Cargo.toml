@@ -1,0 +1,16 @@
+[package]
+name = "light-pi-rpc-adapter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+coding-agent-runtime = { path = "../../crates/coding-agent-runtime" }
+execution-security = { path = "../../crates/execution-security" }
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
