@@ -4,11 +4,14 @@ use std::time::Duration;
 
 use chrono::Utc;
 use dashmap::DashMap;
-use execution_backend::{BackendError, BackendOperationState, ExecutionBackend};
+use execution_backend::{
+    BackendError, BackendOperationState, Checkpoint, ExecutionBackend, PreparedExecution,
+};
 use execution_runner_protocol::{
-    ActiveLeaseSummary, AttemptState, CancelLease, CleanupState, CommandExecutionSpec,
-    ExecuteLease, ExecutionId, LeaseContext, LeaseResultAccepted, NormalizedOutput, OriginKind,
-    RetrySafety, RunnerToController, TerminalLeaseResult,
+    ActiveLeaseSummary, AttemptState, CancelLease, CleanupCompleted, CleanupState,
+    CommandExecutionSpec, ExecuteLease, ExecutionId, LeaseContext, LeaseResultAccepted,
+    NormalizedOutput, OriginKind, RetrySafety, RunnerToController, SessionDirective,
+    SessionUpdated, TerminalLeaseResult,
 };
 use tokio::sync::{Semaphore, mpsc, watch};
 use tracing::{error, info, warn};
@@ -121,6 +124,105 @@ impl Supervisor {
         self.draining.store(true, Ordering::Release);
     }
 
+    pub async fn hold_session(
+        &self,
+        directive: &SessionDirective,
+    ) -> Result<SessionUpdated, String> {
+        self.validate_session_directive(directive)?;
+        let operation = directive.backend_operation_id.as_deref().ok_or_else(|| {
+            "hold session directive is missing the backend operation identity".to_string()
+        })?;
+        let checkpoint = self
+            .backend
+            .checkpoint(operation)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(SessionUpdated {
+            execution_session_id: directive.execution_session_id,
+            session_version: directive.session_version,
+            session_fence: directive.session_fence,
+            state: "IDLE_APPROVAL_HOLD".into(),
+            backend_operation_id: Some(operation.to_string()),
+            checkpoint_handle: Some(checkpoint.checkpoint_handle),
+            checkpoint_digest: Some(checkpoint.digest),
+            evidence_reference: format!("checkpoint:{operation}"),
+        })
+    }
+
+    pub async fn resume_session(
+        &self,
+        directive: &SessionDirective,
+    ) -> Result<SessionUpdated, String> {
+        self.validate_session_directive(directive)?;
+        let checkpoint =
+            Checkpoint {
+                backend_operation_id: directive.backend_operation_id.clone().ok_or_else(|| {
+                    "resume session directive lacks its backend operation identity".to_string()
+                })?,
+                checkpoint_handle: directive.checkpoint_handle.clone().ok_or_else(|| {
+                    "resume session directive lacks a checkpoint handle".to_string()
+                })?,
+                digest: directive.checkpoint_digest.clone().ok_or_else(|| {
+                    "resume session directive lacks a checkpoint digest".to_string()
+                })?,
+            };
+        let prepared = self
+            .backend
+            .restore(&checkpoint)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(SessionUpdated {
+            execution_session_id: directive.execution_session_id,
+            session_version: directive.session_version,
+            session_fence: directive.session_fence,
+            state: "IDLE".into(),
+            backend_operation_id: Some(prepared.backend_operation_id),
+            checkpoint_handle: Some(checkpoint.checkpoint_handle),
+            checkpoint_digest: Some(checkpoint.digest),
+            evidence_reference: "checkpoint-restored".into(),
+        })
+    }
+
+    pub async fn cleanup_session(
+        &self,
+        directive: &SessionDirective,
+    ) -> Result<CleanupCompleted, String> {
+        self.validate_session_directive(directive)?;
+        let cleanup_request_id = directive
+            .cleanup_request_id
+            .ok_or_else(|| "cleanup session directive lacks cleanupRequestId".to_string())?;
+        let evidence = match directive.backend_operation_id.as_deref() {
+            Some(operation) => self
+                .cleanup_with_retry(operation)
+                .await
+                .map_err(|e| e.to_string())?,
+            None => execution_backend::CleanupEvidence {
+                backend_operation_id: "already-absent".into(),
+                cleaned_at: Utc::now(),
+                evidence_reference: "backend-resource-already-absent".into(),
+            },
+        };
+        Ok(CleanupCompleted {
+            cleanup_request_id,
+            execution_session_id: directive.execution_session_id,
+            cleanup_state: CleanupState::Confirmed,
+            evidence_reference: evidence.evidence_reference,
+        })
+    }
+
+    fn validate_session_directive(&self, directive: &SessionDirective) -> Result<(), String> {
+        if directive.deadline <= Utc::now()
+            || directive.session_version == 0
+            || directive.session_fence == 0
+        {
+            return Err("session directive is expired or unfenced".into());
+        }
+        if directive.compatibility_digest != self.backend.capability().compatibility_digest {
+            return Err("session compatibility digest differs from the active backend".into());
+        }
+        Ok(())
+    }
+
     pub async fn accept_execute(
         self: &Arc<Self>,
         lease: ExecuteLease,
@@ -182,7 +284,77 @@ impl Supervisor {
             self.report_setup_failure(lease, error, outbound).await?;
             return Ok(());
         }
-        let prepared = match self.backend.prepare(&lease, &staged).await {
+        let session = lease.execution_profile.get("_executionSession");
+        if let Some(session) = session {
+            if session
+                .get("compatibilityDigest")
+                .and_then(serde_json::Value::as_str)
+                != Some(lease.lease.compatibility_digest.as_str())
+            {
+                drop(permit);
+                self.report_setup_failure(
+                    lease,
+                    BackendError::InvalidRequest("execution session compatibility drift".into()),
+                    outbound,
+                )
+                .await?;
+                return Ok(());
+            }
+        }
+        let resumed =
+            match session {
+                Some(session)
+                    if session
+                        .get("checkpointHandle")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some() =>
+                {
+                    let checkpoint = Checkpoint {
+                        backend_operation_id: session
+                            .get("backendOperationId")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        checkpoint_handle: session
+                            .get("checkpointHandle")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        digest: session
+                            .get("checkpointDigest")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                    };
+                    Some(self.backend.restore(&checkpoint).await)
+                }
+                Some(session)
+                    if session
+                        .get("backendOperationId")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some() =>
+                {
+                    let operation = session
+                        .get("backendOperationId")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap()
+                        .to_string();
+                    Some(self.backend.inspect(&operation).await.map(|inspection| {
+                        PreparedExecution {
+                            backend_operation_id: operation,
+                            execution_id: lease.lease.execution_id,
+                            backend_id: lease.backend_id.clone(),
+                            prepared_at: inspection.observed_at,
+                            evidence: inspection.evidence,
+                        }
+                    }))
+                }
+                _ => None,
+            };
+        let prepared = match match resumed {
+            Some(result) => result,
+            None => self.backend.prepare(&lease, &staged).await,
+        } {
             Ok(prepared) => prepared,
             Err(error) => {
                 drop(permit);
@@ -284,26 +456,34 @@ impl Supervisor {
                     warn!(execution_id = %lease.lease.execution_id, %error, "artifact collection failed");
                 }
             }
-            match supervisor
-                .cleanup_with_retry(&prepared.backend_operation_id)
-                .await
-            {
-                Ok(evidence) => {
-                    result.cleanup_state = CleanupState::Confirmed;
-                    result
-                        .evidence
-                        .insert("cleanupEvidence".to_string(), evidence.evidence_reference);
-                    let _ = supervisor.journal.set_state(
-                        lease.lease.execution_id,
-                        JournalState::CleanupRequired,
-                        Some(&prepared.backend_operation_id),
-                    );
-                }
-                Err(error) => {
-                    result.cleanup_state = CleanupState::Failed;
-                    result
-                        .evidence
-                        .insert("cleanupError".to_string(), error.to_string());
+            if command.persistent_workspace && result.state == AttemptState::Succeeded {
+                result.cleanup_state = CleanupState::NotRequired;
+                result.evidence.insert(
+                    "retainedSessionOperation".to_string(),
+                    prepared.backend_operation_id.clone(),
+                );
+            } else {
+                match supervisor
+                    .cleanup_with_retry(&prepared.backend_operation_id)
+                    .await
+                {
+                    Ok(evidence) => {
+                        result.cleanup_state = CleanupState::Confirmed;
+                        result
+                            .evidence
+                            .insert("cleanupEvidence".to_string(), evidence.evidence_reference);
+                        let _ = supervisor.journal.set_state(
+                            lease.lease.execution_id,
+                            JournalState::CleanupRequired,
+                            Some(&prepared.backend_operation_id),
+                        );
+                    }
+                    Err(error) => {
+                        result.cleanup_state = CleanupState::Failed;
+                        result
+                            .evidence
+                            .insert("cleanupError".to_string(), error.to_string());
+                    }
                 }
             }
             let terminal = TerminalLeaseResult {
@@ -987,6 +1167,31 @@ mod tests {
             ),
             root,
         )
+    }
+
+    #[tokio::test]
+    async fn session_directive_rejects_compatibility_drift_before_checkpoint() {
+        let (supervisor, root) = supervisor(MockBehavior::default());
+        let directive = SessionDirective {
+            execution_session_id: execution_runner_protocol::ExecutionSessionId::new(),
+            cleanup_request_id: None,
+            session_version: 2,
+            session_fence: 3,
+            compatibility_digest: "different-backend".into(),
+            backend_operation_id: Some("operation".into()),
+            checkpoint_handle: None,
+            checkpoint_digest: None,
+            reason: "approval-hold".into(),
+            deadline: Utc::now() + ChronoDuration::minutes(1),
+        };
+        assert!(
+            supervisor
+                .hold_session(&directive)
+                .await
+                .unwrap_err()
+                .contains("compatibility")
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]

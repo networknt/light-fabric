@@ -421,6 +421,7 @@ pub enum RunnerToController {
     RunnerLeaseUnknown(TerminalLeaseResult),
     RunnerLeaseCancelled(TerminalLeaseResult),
     RunnerCleanupCompleted(CleanupCompleted),
+    RunnerSessionUpdated(SessionUpdated),
     RunnerDrain(RunnerDrain),
 }
 
@@ -480,6 +481,19 @@ pub struct CleanupCompleted {
     pub cleanup_request_id: CleanupRequestId,
     pub execution_session_id: ExecutionSessionId,
     pub cleanup_state: CleanupState,
+    pub evidence_reference: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionUpdated {
+    pub execution_session_id: ExecutionSessionId,
+    pub session_version: u64,
+    pub session_fence: u64,
+    pub state: String,
+    pub backend_operation_id: Option<String>,
+    pub checkpoint_handle: Option<String>,
+    pub checkpoint_digest: Option<String>,
     pub evidence_reference: String,
 }
 
@@ -548,8 +562,17 @@ pub struct CancelLease {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionDirective {
     pub execution_session_id: ExecutionSessionId,
+    #[serde(default)]
+    pub cleanup_request_id: Option<CleanupRequestId>,
     pub session_version: u64,
     pub session_fence: u64,
+    pub compatibility_digest: String,
+    #[serde(default)]
+    pub backend_operation_id: Option<String>,
+    #[serde(default)]
+    pub checkpoint_handle: Option<String>,
+    #[serde(default)]
+    pub checkpoint_digest: Option<String>,
     pub reason: String,
     pub deadline: DateTime<Utc>,
 }

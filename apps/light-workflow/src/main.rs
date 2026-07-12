@@ -8,6 +8,7 @@ use light_workflow::lease_reaper::LeaseReaper;
 use light_workflow::result_reconciler::ResultReconciler;
 use light_workflow::rule_api::run_rule_api;
 use light_workflow::runner_scheduler::RunnerScheduler;
+use light_workflow::session_reconciler::ExecutionSessionReconciler;
 use sqlx::postgres::PgPoolOptions;
 use std::env;
 use std::error::Error;
@@ -71,6 +72,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             runner_config.origin_instance_id.clone(),
         );
         let lease_reaper = LeaseReaper::new(pool.clone());
+        let session_reconciler = ExecutionSessionReconciler::new(
+            pool.clone(),
+            runner_config.origin_service_id.clone(),
+            runner_config.origin_instance_id.clone(),
+        );
         let fixed_actions = FixedActionExecutor::new(
             pool.clone(),
             PathBuf::from(
@@ -89,6 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 scheduler.run(),
                 reconciler.run(),
                 lease_reaper.run(),
+                session_reconciler.run(),
                 fixed_actions.run()
             )
             .map(|_| ())

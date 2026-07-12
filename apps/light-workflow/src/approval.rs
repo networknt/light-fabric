@@ -102,6 +102,14 @@ impl WorkflowApprovalService {
             provenance.as_deref(),
         )
         .await?;
+        sqlx::query("UPDATE execution_session_t SET state='READY',hold_id=NULL,hold_reason=NULL,
+                    hold_until_ts=NULL,hold_policy_digest=NULL,session_version=session_version+1,
+                    session_fence=session_fence+1,retained_resource_evidence=
+                    jsonb_build_object('reason','approval-granted','resumeDispatched',false),updated_ts=CURRENT_TIMESTAMP
+                    WHERE host_id=$1 AND hold_id=$2 AND state='IDLE_APPROVAL_HOLD'
+                      AND hold_until_ts>CURRENT_TIMESTAMP AND effective_expires_ts>CURRENT_TIMESTAMP
+                      AND cleanup_status='NOT_REQUESTED'")
+            .bind(decision.host_id).bind(decision.approval_id).execute(&mut *tx).await?;
 
         let request_id = Uuid::now_v7();
         if let Some(object) = requirements.as_object_mut() {
@@ -243,6 +251,15 @@ impl WorkflowApprovalService {
                 "approval subject changed or was already decided".into(),
             ));
         }
+        sqlx::query(
+            "UPDATE execution_session_t SET hold_until_ts=CURRENT_TIMESTAMP,
+                    updated_ts=CURRENT_TIMESTAMP WHERE host_id=$1 AND hold_id=$2
+                      AND state='IDLE_APPROVAL_HOLD'",
+        )
+        .bind(decision.host_id)
+        .bind(decision.approval_id)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("UPDATE process_info_t SET status_code='F', custom_status_code=$1,
                     completed_ts=CURRENT_TIMESTAMP WHERE host_id=$2 AND process_id=(
                     SELECT process_id FROM workflow_approval_t WHERE host_id=$2 AND approval_id=$3)")

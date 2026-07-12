@@ -223,10 +223,26 @@ async fn process_controller_message(
         ControllerToRunner::RunnerRegisterAccepted(_) => {
             Err("duplicate registration acceptance".to_string())
         }
-        ControllerToRunner::RunnerHoldSession(_)
-        | ControllerToRunner::RunnerResumeSession(_)
-        | ControllerToRunner::RunnerCleanupSession(_) => {
-            Err("execution sessions are not enabled for the mock runner".to_string())
+        ControllerToRunner::RunnerHoldSession(directive) => {
+            let update = supervisor.hold_session(&directive).await?;
+            outbound
+                .send(RunnerToController::RunnerSessionUpdated(update))
+                .await
+                .map_err(|_| "controller outbound channel closed".to_string())
+        }
+        ControllerToRunner::RunnerResumeSession(directive) => {
+            let update = supervisor.resume_session(&directive).await?;
+            outbound
+                .send(RunnerToController::RunnerSessionUpdated(update))
+                .await
+                .map_err(|_| "controller outbound channel closed".to_string())
+        }
+        ControllerToRunner::RunnerCleanupSession(directive) => {
+            let completed = supervisor.cleanup_session(&directive).await?;
+            outbound
+                .send(RunnerToController::RunnerCleanupCompleted(completed))
+                .await
+                .map_err(|_| "controller outbound channel closed".to_string())
         }
     }
 }

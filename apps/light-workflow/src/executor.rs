@@ -295,12 +295,14 @@ impl TaskExecutor {
             })
             .filter(|policy| policy.approval_required)
             .and_then(|policy| {
+                let hold_eligible = policy.persistence == workflow_policy::PersistenceMode::Session
+                    && policy.credential_classes.is_empty();
                 policy
                     .approval
-                    .map(|binding| (policy.policy_digest, binding))
+                    .map(|binding| (policy.policy_digest, binding, hold_eligible))
             });
         if succeeded {
-            if let Some((policy_digest, binding)) = approval {
+            if let Some((policy_digest, binding, hold_eligible)) = approval {
                 self.finish_runner_task_waiting_approval(
                     tx,
                     &claimed,
@@ -308,6 +310,7 @@ impl TaskExecutor {
                     &task_output,
                     &policy_digest,
                     &binding,
+                    hold_eligible,
                 )
                 .await?;
                 return Ok(true);
@@ -428,6 +431,7 @@ impl TaskExecutor {
         task_output: &Value,
         policy_digest: &str,
         binding: &workflow_policy::ApprovalBinding,
+        hold_eligible: bool,
     ) -> Result<(), sqlx::Error> {
         let artifact_digests: Value = sqlx::query_scalar(
             "SELECT COALESCE(jsonb_agg(content_digest ORDER BY content_digest), '[]'::jsonb)
@@ -487,6 +491,17 @@ impl TaskExecutor {
         .bind(binding.ttl_seconds as i64)
         .execute(&mut **tx)
         .await?;
+        if hold_eligible {
+            sqlx::query("UPDATE execution_session_t SET state='IDLE_APPROVAL_HOLD',hold_id=$1,
+                        hold_reason='approval',hold_until_ts=LEAST(effective_expires_ts,
+                          CURRENT_TIMESTAMP+make_interval(secs=>$2)),hold_policy_digest=$3,
+                        session_version=session_version+1,session_fence=session_fence+1,
+                        retained_resource_evidence=jsonb_build_object('reason','approval','checkpointRequired',true),
+                        updated_ts=CURRENT_TIMESTAMP WHERE host_id=$4 AND subject_id=$5
+                        AND policy_digest=$3 AND state='IDLE' AND cleanup_status='NOT_REQUESTED'")
+                .bind(approval_id).bind(binding.ttl_seconds as i64).bind(policy_digest)
+                .bind(attempt.host_id).bind(attempt.task_id).execute(&mut **tx).await?;
+        }
         sqlx::query(
             "UPDATE process_info_t SET status_code = 'W',
                     custom_status_code = 'WAITING_APPROVAL', context_data = $1,
