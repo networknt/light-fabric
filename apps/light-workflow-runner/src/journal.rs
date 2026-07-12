@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use agent_runtime_protocol::BrokerResponse;
 use agent_runtime_protocol::RuntimeEvent;
 use chrono::{DateTime, Utc};
 use execution_runner_protocol::{
@@ -68,6 +69,13 @@ pub struct JournalRecord {
     pub terminal_result: Option<TerminalLeaseResult>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum BrokerRequestDisposition {
+    New,
+    Replay(BrokerResponse),
+    Unknown,
+}
+
 #[derive(Clone)]
 pub struct Journal {
     connection: Arc<Mutex<Connection>>,
@@ -112,6 +120,22 @@ impl Journal {
                     created_at TEXT NOT NULL,
                     PRIMARY KEY(execution_id, event_id),
                     UNIQUE(execution_id, sequence)
+                 );
+                 CREATE TABLE IF NOT EXISTS broker_request_journal (
+                    execution_id TEXT NOT NULL,
+                    request_id TEXT NOT NULL,
+                    fencing_token INTEGER NOT NULL,
+                    request_digest TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK(state IN('IN_FLIGHT','COMPLETED','UNKNOWN')),
+                    charged_tokens INTEGER NOT NULL,
+                    charged_cost_micros INTEGER NOT NULL,
+                    response_json TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(execution_id,request_id),
+                    FOREIGN KEY(execution_id) REFERENCES execution_journal(execution_id) ON DELETE CASCADE
                  );",
             )
             .map_err(|error| format!("initialize journal: {error}"))?;
@@ -139,6 +163,149 @@ impl Journal {
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_broker_test_execution(
+        &self,
+        execution_id: ExecutionId,
+        lease_id: LeaseId,
+        fencing_token: u64,
+    ) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "journal mutex poisoned")?;
+        connection.execute("INSERT INTO execution_journal(execution_id,lease_id,fencing_token,deadline,state,policy_digest,compatibility_digest,definition_digest,command_template_digest,lease_context,updated_at) VALUES(?1,?2,?3,?4,'EXECUTING','p','c','d','t','{}',?5)",params![execution_id.to_string(),lease_id.to_string(),fencing_token as i64,(Utc::now()+chrono::Duration::minutes(5)).to_rfc3339(),Utc::now().to_rfc3339()]).map_err(|e|format!("record broker test execution: {e}"))?;
+        Ok(())
+    }
+
+    pub fn begin_broker_request(
+        &self,
+        execution_id: ExecutionId,
+        fencing_token: u64,
+        request_id: uuid::Uuid,
+        request_digest: &str,
+        operation: &str,
+        target: &str,
+        charged_tokens: u64,
+        charged_cost_micros: u64,
+        maximum_requests: u32,
+        maximum_tokens: u64,
+        maximum_cost_micros: u64,
+    ) -> Result<BrokerRequestDisposition, String> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "journal mutex poisoned")?;
+        let transaction = connection
+            .transaction()
+            .map_err(|e| format!("begin broker journal transaction: {e}"))?;
+        let fence: Option<i64> = transaction
+            .query_row(
+                "SELECT fencing_token FROM execution_journal WHERE execution_id=?1",
+                params![execution_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("read broker execution fence: {e}"))?;
+        if fence != Some(fencing_token as i64) {
+            return Err("broker request did not match the durable execution fence".into());
+        }
+        let existing:Option<(String,String,Option<String>)>=transaction.query_row("SELECT request_digest,state,response_json FROM broker_request_journal WHERE execution_id=?1 AND request_id=?2",params![execution_id.to_string(),request_id.to_string()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional().map_err(|e|format!("read broker request journal: {e}"))?;
+        let disposition = if let Some((digest, state, response)) = existing {
+            if digest != request_digest {
+                return Err("broker request ID was reused with different content".into());
+            }
+            match state.as_str() {
+                "COMPLETED" => BrokerRequestDisposition::Replay(
+                    serde_json::from_str(
+                        response
+                            .as_deref()
+                            .ok_or("completed broker request lacks response")?,
+                    )
+                    .map_err(|e| format!("decode durable broker response: {e}"))?,
+                ),
+                "IN_FLIGHT" => {
+                    transaction.execute("UPDATE broker_request_journal SET state='UNKNOWN',updated_at=?3 WHERE execution_id=?1 AND request_id=?2 AND state='IN_FLIGHT'",params![execution_id.to_string(),request_id.to_string(),Utc::now().to_rfc3339()]).map_err(|e|format!("mark interrupted broker request unknown: {e}"))?;
+                    BrokerRequestDisposition::Unknown
+                }
+                "UNKNOWN" => BrokerRequestDisposition::Unknown,
+                other => return Err(format!("unknown broker journal state {other}")),
+            }
+        } else {
+            let (requests,tokens,cost):(i64,i64,i64)=transaction.query_row("SELECT COUNT(*),COALESCE(SUM(charged_tokens),0),COALESCE(SUM(charged_cost_micros),0) FROM broker_request_journal WHERE execution_id=?1",params![execution_id.to_string()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).map_err(|e|format!("read broker budget usage: {e}"))?;
+            if u64::try_from(requests).unwrap_or(u64::MAX) >= u64::from(maximum_requests)
+                || u64::try_from(tokens)
+                    .unwrap_or(u64::MAX)
+                    .saturating_add(charged_tokens)
+                    > maximum_tokens
+                || u64::try_from(cost)
+                    .unwrap_or(u64::MAX)
+                    .saturating_add(charged_cost_micros)
+                    > maximum_cost_micros
+            {
+                return Err("broker budget exceeded".into());
+            }
+            transaction.execute("INSERT INTO broker_request_journal(execution_id,request_id,fencing_token,request_digest,operation,target,state,charged_tokens,charged_cost_micros,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,'IN_FLIGHT',?7,?8,?9,?9)",params![execution_id.to_string(),request_id.to_string(),fencing_token as i64,request_digest,operation,target,i64::try_from(charged_tokens).map_err(|_|"broker token charge exceeds SQLite integer")?,i64::try_from(charged_cost_micros).map_err(|_|"broker cost charge exceeds SQLite integer")?,Utc::now().to_rfc3339()]).map_err(|e|format!("record broker request intent: {e}"))?;
+            BrokerRequestDisposition::New
+        };
+        transaction
+            .commit()
+            .map_err(|e| format!("commit broker request intent: {e}"))?;
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(PASSIVE);")
+            .map_err(|e| format!("checkpoint broker request intent: {e}"))?;
+        Ok(disposition)
+    }
+
+    pub fn complete_broker_request(
+        &self,
+        execution_id: ExecutionId,
+        request_id: uuid::Uuid,
+        response: &BrokerResponse,
+    ) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "journal mutex poisoned")?;
+        let changed=connection.execute("UPDATE broker_request_journal SET state='COMPLETED',response_json=?3,updated_at=?4 WHERE execution_id=?1 AND request_id=?2 AND state='IN_FLIGHT'",params![execution_id.to_string(),request_id.to_string(),serde_json::to_string(response).map_err(|e|format!("serialize broker response: {e}"))?,Utc::now().to_rfc3339()]).map_err(|e|format!("complete broker request: {e}"))?;
+        if changed != 1 {
+            return Err("broker request was no longer durably in flight".into());
+        }
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(PASSIVE);")
+            .map_err(|e| format!("checkpoint broker response: {e}"))?;
+        Ok(())
+    }
+
+    pub fn mark_broker_request_unknown(
+        &self,
+        execution_id: ExecutionId,
+        request_id: uuid::Uuid,
+    ) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "journal mutex poisoned")?;
+        connection.execute("UPDATE broker_request_journal SET state='UNKNOWN',updated_at=?3 WHERE execution_id=?1 AND request_id=?2 AND state='IN_FLIGHT'",params![execution_id.to_string(),request_id.to_string(),Utc::now().to_rfc3339()]).map_err(|e|format!("mark broker request unknown: {e}"))?;
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(PASSIVE);")
+            .map_err(|e| format!("checkpoint unknown broker request: {e}"))?;
+        Ok(())
+    }
+
+    pub fn broker_usage(&self, execution_id: ExecutionId) -> Result<(u32, u64, u64), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "journal mutex poisoned")?;
+        let (requests,tokens,cost):(i64,i64,i64)=connection.query_row("SELECT COUNT(*),COALESCE(SUM(charged_tokens),0),COALESCE(SUM(charged_cost_micros),0) FROM broker_request_journal WHERE execution_id=?1",params![execution_id.to_string()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).map_err(|e|format!("read durable broker usage: {e}"))?;
+        Ok((
+            u32::try_from(requests).map_err(|_| "broker request count overflow")?,
+            u64::try_from(tokens).map_err(|_| "broker token usage is negative")?,
+            u64::try_from(cost).map_err(|_| "broker cost usage is negative")?,
+        ))
     }
 
     pub fn record_runtime_event(&self, event: &RuntimeEvent) -> Result<bool, String> {
@@ -532,6 +699,110 @@ mod tests {
             )
             .unwrap();
         assert_eq!(columns, 1);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn broker_requests_replay_completed_and_fence_interrupted_effects_as_unknown() {
+        let directory =
+            std::env::temp_dir().join(format!("runner-broker-journal-{}", Uuid::new_v4()));
+        let path = directory.join("journal.sqlite");
+        let journal = Journal::open(&path).unwrap();
+        let lease = lease();
+        journal.record_intent(&lease).unwrap();
+        let request_id = Uuid::new_v4();
+        assert_eq!(
+            journal
+                .begin_broker_request(
+                    lease.lease.execution_id,
+                    lease.lease.fencing_token,
+                    request_id,
+                    "sha256:request",
+                    "CredentialedRequest",
+                    "calendar",
+                    0,
+                    0,
+                    2,
+                    0,
+                    0
+                )
+                .unwrap(),
+            BrokerRequestDisposition::New
+        );
+        let response = BrokerResponse {
+            request_id,
+            status: 200,
+            body_base64: "e30=".into(),
+            consumed_requests: 1,
+            consumed_tokens: 0,
+            consumed_cost_micros: 0,
+        };
+        journal
+            .complete_broker_request(lease.lease.execution_id, request_id, &response)
+            .unwrap();
+        drop(journal);
+        let reopened = Journal::open(&path).unwrap();
+        assert_eq!(
+            reopened
+                .begin_broker_request(
+                    lease.lease.execution_id,
+                    lease.lease.fencing_token,
+                    request_id,
+                    "sha256:request",
+                    "CredentialedRequest",
+                    "calendar",
+                    0,
+                    0,
+                    2,
+                    0,
+                    0
+                )
+                .unwrap(),
+            BrokerRequestDisposition::Replay(response)
+        );
+        let interrupted = Uuid::new_v4();
+        assert_eq!(
+            reopened
+                .begin_broker_request(
+                    lease.lease.execution_id,
+                    lease.lease.fencing_token,
+                    interrupted,
+                    "sha256:other",
+                    "CredentialedRequest",
+                    "mail",
+                    0,
+                    0,
+                    2,
+                    0,
+                    0
+                )
+                .unwrap(),
+            BrokerRequestDisposition::New
+        );
+        drop(reopened);
+        let restarted = Journal::open(&path).unwrap();
+        assert_eq!(
+            restarted
+                .begin_broker_request(
+                    lease.lease.execution_id,
+                    lease.lease.fencing_token,
+                    interrupted,
+                    "sha256:other",
+                    "CredentialedRequest",
+                    "mail",
+                    0,
+                    0,
+                    2,
+                    0,
+                    0
+                )
+                .unwrap(),
+            BrokerRequestDisposition::Unknown
+        );
+        assert_eq!(
+            restarted.broker_usage(lease.lease.execution_id).unwrap().0,
+            2
+        );
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

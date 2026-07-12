@@ -83,9 +83,9 @@ pub async fn run_worker_process(
         transport_nonce: Uuid::new_v4().simple().to_string(),
     };
     let broker = match (&spec.broker, &config.broker) {
-        (Some(grant), Some(config)) => {
-            Some(AttemptBroker::bind(config, grant.clone(), identity.clone()).await?)
-        }
+        (Some(grant), Some(config)) => Some(
+            AttemptBroker::bind(config, grant.clone(), identity.clone(), journal.clone()).await?,
+        ),
         (None, None) => None,
         _ => {
             return Err(
@@ -93,6 +93,7 @@ pub async fn run_worker_process(
             );
         }
     };
+    let mut broker_unknown = broker.as_ref().map(AttemptBroker::unknown_receiver);
     let mut command = Command::new(&config.executable);
     command
         .env_clear()
@@ -175,6 +176,10 @@ pub async fn run_worker_process(
             kill_tree(&mut child).await;
             return Err("agent worker deadline expired before ready".into());
         }
+        _ = wait_for_broker_unknown(&mut broker_unknown) => {
+            kill_tree(&mut child).await;
+            return Err("broker effect outcome is UNKNOWN and requires reconciliation".into());
+        }
     };
     ready.validate(&identity, 0).map_err(|e| e.to_string())?;
     match &ready.payload {
@@ -200,7 +205,7 @@ pub async fn run_worker_process(
     tokio::pin!(deadline);
     let mut sequence = ready.sequence;
     let outcome = loop {
-        tokio::select! {event=read_event(&mut stdout,spec.maximum_event_bytes)=>{let event=event?;event.validate(&identity,sequence).map_err(|e|e.to_string())?;sequence=event.sequence;journal.record_runtime_event(&event)?;if let RuntimeEventPayload::Terminal{class,output,error}=event.payload{break WorkerOutcome{class,output,error,events:sequence}}},changed=cancel.changed()=>{if changed.is_ok()&&*cancel.borrow(){kill_tree(&mut child).await;return Err("agent worker cancelled".into())}},stderr=&mut stderr_task=>{kill_tree(&mut child).await;return Err(stderr.map_err(|error|error.to_string())?.err().unwrap_or_else(||"agent worker exited before terminal event".into()))},_=&mut deadline=>{kill_tree(&mut child).await;return Err("agent worker deadline expired".into())}}
+        tokio::select! {event=read_event(&mut stdout,spec.maximum_event_bytes)=>{let event=event?;event.validate(&identity,sequence).map_err(|e|e.to_string())?;sequence=event.sequence;journal.record_runtime_event(&event)?;if let RuntimeEventPayload::Terminal{class,output,error}=event.payload{break WorkerOutcome{class,output,error,events:sequence}}},changed=cancel.changed()=>{if changed.is_ok()&&*cancel.borrow(){kill_tree(&mut child).await;return Err("agent worker cancelled".into())}},stderr=&mut stderr_task=>{kill_tree(&mut child).await;return Err(stderr.map_err(|error|error.to_string())?.err().unwrap_or_else(||"agent worker exited before terminal event".into()))},_=&mut deadline=>{kill_tree(&mut child).await;return Err("agent worker deadline expired".into())},_ = wait_for_broker_unknown(&mut broker_unknown)=>{kill_tree(&mut child).await;return Err("broker effect outcome is UNKNOWN and requires reconciliation".into())}}
     };
     drop(stdin);
     let status = child.wait().await.map_err(|e| e.to_string())?;
@@ -218,6 +223,19 @@ pub async fn run_worker_process(
         task.await.map_err(|e| e.to_string())??;
     }
     Ok(outcome)
+}
+async fn wait_for_broker_unknown(receiver: &mut Option<watch::Receiver<bool>>) {
+    match receiver {
+        Some(receiver) => loop {
+            if *receiver.borrow() {
+                return;
+            }
+            if receiver.changed().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        },
+        None => std::future::pending::<()>().await,
+    }
 }
 fn validate_spec(lease: &ExecuteLease, s: &AgentWorkerExecutionSpec) -> Result<(), String> {
     if s.schema_version != 1

@@ -94,6 +94,17 @@ environment. Model routes must use a trusted `costPer1kTokensMicros`; the
 broker derives a conservative charge from the admitted output ceiling and
 request size rather than trusting worker-reported usage.
 
+Broker admission, charged usage, and terminal response evidence are persisted
+in the runner's synchronous SQLite journal before authority is exercised or a
+response is returned. Reusing a completed request ID, including after runner
+restart, returns the exact recorded response without calling the provider
+again. Network and credential routes also receive a runner-derived
+`Idempotency-Key`. If the runner cannot prove whether an admitted upstream call
+completed, it durably marks that request `UNKNOWN`, terminates the worker, and
+reports the execution attempt as `UNKNOWN`; it never silently reissues the
+effect. Origin reconciliation must resolve that request ID through provider
+status evidence or operator policy before scheduling new work.
+
 Treat the configured executable as part of the runner's trusted computing
 base. Its file and every parent directory must be owned by the deployment
 administrator and not writable by the runner account or workload users;

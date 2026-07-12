@@ -1,3 +1,4 @@
+use crate::journal::{BrokerRequestDisposition, Journal};
 use agent_runtime_protocol::{
     AttemptBrokerGrant, BrokerOperation, BrokerRequest, BrokerResponse, RuntimeIdentity,
     canonical_digest,
@@ -7,7 +8,7 @@ use chrono::Utc;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashSet},
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
@@ -71,21 +72,15 @@ struct ResolvedRoute {
     base_url: url::Url,
     credential: Option<String>,
 }
-struct Usage {
-    requests: u32,
-    tokens: u64,
-    cost: u64,
-    replay: HashMap<uuid::Uuid, BrokerResponse>,
-    used: std::collections::HashSet<uuid::Uuid>,
-}
-
 pub struct AttemptBroker {
     listener: UnixListener,
     socket_path: PathBuf,
     identity: RuntimeIdentity,
     grant: AttemptBrokerGrant,
     routes: Arc<BTreeMap<String, ResolvedRoute>>,
-    usage: Arc<Mutex<Usage>>,
+    journal: Journal,
+    active_requests: Arc<Mutex<HashSet<uuid::Uuid>>>,
+    unknown_outcome: watch::Sender<bool>,
     client: reqwest::Client,
     maximum_request_bytes: usize,
 }
@@ -152,6 +147,7 @@ impl AttemptBroker {
         config: &AttemptBrokerConfig,
         grant: AttemptBrokerGrant,
         identity: RuntimeIdentity,
+        journal: Journal,
     ) -> Result<Self, String> {
         config.validate()?;
         if grant.route_digest != config.route_digest()?
@@ -201,19 +197,16 @@ impl AttemptBroker {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| e.to_string())?;
+        let (unknown_outcome, _unknown_receiver) = watch::channel(false);
         Ok(Self {
             listener,
             socket_path,
             identity,
             grant,
             routes: Arc::new(routes),
-            usage: Arc::new(Mutex::new(Usage {
-                requests: 0,
-                tokens: 0,
-                cost: 0,
-                replay: HashMap::new(),
-                used: std::collections::HashSet::new(),
-            })),
+            journal,
+            active_requests: Arc::new(Mutex::new(HashSet::new())),
+            unknown_outcome,
             client,
             maximum_request_bytes: config.maximum_request_bytes,
         })
@@ -221,13 +214,16 @@ impl AttemptBroker {
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
     }
+    pub fn unknown_receiver(&self) -> watch::Receiver<bool> {
+        self.unknown_outcome.subscribe()
+    }
     pub async fn serve(
         self,
         expected_pid: u32,
         mut shutdown: watch::Receiver<bool>,
     ) -> Result<(), String> {
         loop {
-            tokio::select! {accepted=self.listener.accept()=>{let(stream,_)=accepted.map_err(|e|e.to_string())?;if stream.peer_cred().map_err(|e|e.to_string())?.pid()!=i32::try_from(expected_pid).ok(){continue;}let identity=self.identity.clone();let grant=self.grant.clone();let routes=Arc::clone(&self.routes);let usage=Arc::clone(&self.usage);let client=self.client.clone();let max=self.maximum_request_bytes;tokio::spawn(async move{let _=handle(stream,identity,grant,routes,usage,client,max).await;});},changed=shutdown.changed()=>{if changed.is_err()||*shutdown.borrow(){break;}}}
+            tokio::select! {accepted=self.listener.accept()=>{let(stream,_)=accepted.map_err(|e|e.to_string())?;if stream.peer_cred().map_err(|e|e.to_string())?.pid()!=i32::try_from(expected_pid).ok(){continue;}let identity=self.identity.clone();let grant=self.grant.clone();let routes=Arc::clone(&self.routes);let journal=self.journal.clone();let active=Arc::clone(&self.active_requests);let unknown=self.unknown_outcome.clone();let client=self.client.clone();let max=self.maximum_request_bytes;tokio::spawn(async move{let _=handle(stream,identity,grant,routes,journal,active,unknown,client,max).await;});},changed=shutdown.changed()=>{if changed.is_err()||*shutdown.borrow(){break;}}}
         }
         let _ = fs::remove_file(&self.socket_path);
         Ok(())
@@ -239,7 +235,9 @@ async fn handle(
     identity: RuntimeIdentity,
     grant: AttemptBrokerGrant,
     routes: Arc<BTreeMap<String, ResolvedRoute>>,
-    usage: Arc<Mutex<Usage>>,
+    journal: Journal,
+    active_requests: Arc<Mutex<HashSet<uuid::Uuid>>>,
+    unknown_outcome: watch::Sender<bool>,
     client: reqwest::Client,
     maximum_request_bytes: usize,
 ) -> Result<(), String> {
@@ -256,7 +254,22 @@ async fn handle(
     }
     frame.pop();
     let request: BrokerRequest = serde_json::from_slice(&frame).map_err(|e| e.to_string())?;
-    let response = dispatch(request, &identity, &grant, &routes, &usage, &client).await?;
+    let request_id = request.request_id;
+    if !active_requests.lock().await.insert(request_id) {
+        return Err("broker request is already active in this runner process".into());
+    }
+    let dispatched = dispatch(
+        request,
+        &identity,
+        &grant,
+        &routes,
+        &journal,
+        &unknown_outcome,
+        &client,
+    )
+    .await;
+    active_requests.lock().await.remove(&request_id);
+    let response = dispatched?;
     let mut bytes = serde_json::to_vec(&response).map_err(|e| e.to_string())?;
     bytes.push(b'\n');
     write.write_all(&bytes).await.map_err(|e| e.to_string())?;
@@ -268,7 +281,8 @@ async fn dispatch(
     identity: &RuntimeIdentity,
     grant: &AttemptBrokerGrant,
     routes: &BTreeMap<String, ResolvedRoute>,
-    usage: &Mutex<Usage>,
+    journal: &Journal,
+    unknown_outcome: &watch::Sender<bool>,
     client: &reqwest::Client,
 ) -> Result<BrokerResponse, String> {
     if request.execution_id != identity.execution_id
@@ -332,47 +346,6 @@ async fn dispatch(
             }
             (0, 0)
         };
-    let mut state = usage.lock().await;
-    if let Some(cached) = state.replay.get(&request.request_id) {
-        return Ok(cached.clone());
-    }
-    if state.used.contains(&request.request_id) {
-        return Err("broker request id is already in progress or failed".into());
-    }
-    let next_requests = state
-        .requests
-        .checked_add(1)
-        .ok_or("request budget overflow")?;
-    let next_tokens = state
-        .tokens
-        .checked_add(charged_tokens)
-        .ok_or("token budget overflow")?;
-    let next_cost = state
-        .cost
-        .checked_add(charged_cost_micros)
-        .ok_or("cost budget overflow")?;
-    if next_requests > grant.maximum_requests
-        || next_tokens > grant.maximum_tokens
-        || next_cost > grant.maximum_cost_micros
-    {
-        return Err("broker budget exceeded".into());
-    }
-    state.requests = next_requests;
-    state.tokens = next_tokens;
-    state.cost = next_cost;
-    state.used.insert(request.request_id);
-    drop(state);
-    tracing::info!(
-        execution_id = %identity.execution_id,
-        lease_id = %identity.lease_id,
-        fencing_token = identity.fencing_token,
-        request_id = %request.request_id,
-        operation = ?request.operation,
-        target = %request.target,
-        charged_tokens,
-        charged_cost_micros,
-        "attempt broker request admitted"
-    );
     let url = route
         .base_url
         .join(&request.path)
@@ -382,7 +355,34 @@ async fn dispatch(
     }
     let method =
         reqwest::Method::from_bytes(request.method.as_bytes()).map_err(|e| e.to_string())?;
+    let request_digest = canonical_digest(&request).map_err(|e| e.to_string())?;
+    match journal.begin_broker_request(
+        identity.execution_id,
+        identity.fencing_token,
+        request.request_id,
+        &request_digest,
+        &format!("{:?}", request.operation),
+        &request.target,
+        charged_tokens,
+        charged_cost_micros,
+        grant.maximum_requests,
+        grant.maximum_tokens,
+        grant.maximum_cost_micros,
+    )? {
+        BrokerRequestDisposition::Replay(response) => return Ok(response),
+        BrokerRequestDisposition::Unknown => {
+            let _ = unknown_outcome.send(true);
+            return Err(
+                "broker request outcome is durably UNKNOWN; reconciliation is required".into(),
+            );
+        }
+        BrokerRequestDisposition::New => {}
+    }
+    tracing::info!(execution_id=%identity.execution_id,lease_id=%identity.lease_id,fencing_token=identity.fencing_token,request_id=%request.request_id,operation=?request.operation,target=%request.target,charged_tokens,charged_cost_micros,"attempt broker request durably admitted");
     let mut outbound = client.request(method, url).body(body);
+    if request.operation != BrokerOperation::ModelInference {
+        outbound = outbound.header("Idempotency-Key", request.request_id.to_string());
+    }
     if let Some(secret) = &route.credential {
         let value = if route.config.auth_scheme.is_empty() {
             secret.clone()
@@ -391,22 +391,37 @@ async fn dispatch(
         };
         outbound = outbound.header(&route.config.auth_header, value);
     }
-    let response = outbound.send().await.map_err(|e| e.to_string())?;
+    let response = match outbound.send().await {
+        Ok(response) => response,
+        Err(error) => {
+            journal.mark_broker_request_unknown(identity.execution_id, request.request_id)?;
+            let _ = unknown_outcome.send(true);
+            return Err(format!(
+                "broker request outcome is UNKNOWN after transport failure: {error}"
+            ));
+        }
+    };
     let status = response.status().as_u16();
-    let bytes = read_bounded_response(response, grant.maximum_response_bytes).await?;
-    let mut state = usage.lock().await;
-    if let Some(cached) = state.replay.get(&request.request_id) {
-        return Ok(cached.clone());
-    }
+    let bytes = match read_bounded_response(response, grant.maximum_response_bytes).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            journal.mark_broker_request_unknown(identity.execution_id, request.request_id)?;
+            let _ = unknown_outcome.send(true);
+            return Err(format!(
+                "broker request outcome is UNKNOWN while reading response: {error}"
+            ));
+        }
+    };
+    let (requests, tokens, cost) = journal.broker_usage(identity.execution_id)?;
     let response = BrokerResponse {
         request_id: request.request_id,
         status,
         body_base64: STANDARD.encode(bytes),
-        consumed_requests: state.requests,
-        consumed_tokens: state.tokens,
-        consumed_cost_micros: state.cost,
+        consumed_requests: requests,
+        consumed_tokens: tokens,
+        consumed_cost_micros: cost,
     };
-    state.replay.insert(request.request_id, response.clone());
+    journal.complete_broker_request(identity.execution_id, request.request_id, &response)?;
     Ok(response)
 }
 
@@ -452,14 +467,20 @@ mod tests {
     use axum::{
         Router,
         body::{Body, Bytes},
+        extract::State,
         http::HeaderMap,
         routing::{get, post},
     };
     use execution_runner_protocol::{ExecutionId, LeaseId};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use uuid::Uuid;
 
-    async fn upstream(headers: HeaderMap) -> String {
+    async fn upstream(State(calls): State<Arc<AtomicUsize>>, headers: HeaderMap) -> String {
+        calls.fetch_add(1, Ordering::SeqCst);
         headers
             .get("authorization")
             .and_then(|v| v.to_str().ok())
@@ -517,10 +538,17 @@ mod tests {
     async fn broker_binds_peer_identity_injects_secret_and_replays_once() {
         let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = tcp.local_addr().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let upstream_calls = calls.clone();
         tokio::spawn(async move {
-            axum::serve(tcp, Router::new().route("/invoke", post(upstream)))
-                .await
-                .unwrap();
+            axum::serve(
+                tcp,
+                Router::new()
+                    .route("/invoke", post(upstream))
+                    .with_state(upstream_calls),
+            )
+            .await
+            .unwrap();
         });
         let directory = tempfile::tempdir().unwrap();
         let secret = directory.path().join("model.token");
@@ -559,7 +587,15 @@ mod tests {
             maximum_response_bytes: 1024,
             expires_at: Utc::now() + chrono::Duration::minutes(1),
         };
-        let broker = AttemptBroker::bind(&config, grant, identity.clone())
+        let journal = Journal::open(&directory.path().join("journal.sqlite")).unwrap();
+        journal
+            .record_broker_test_execution(
+                identity.execution_id,
+                identity.lease_id,
+                identity.fencing_token,
+            )
+            .unwrap();
+        let broker = AttemptBroker::bind(&config, grant.clone(), identity.clone(), journal.clone())
             .await
             .unwrap();
         let socket = broker.socket_path().to_path_buf();
@@ -586,12 +622,22 @@ mod tests {
             String::from_utf8(STANDARD.decode(&first.body_base64).unwrap()).unwrap(),
             "Bearer secret-value"
         );
-        let replay = send(&socket, &request).await.unwrap();
-        assert_eq!(replay, first);
-        assert_eq!(replay.consumed_requests, 1);
         shutdown.send(true).unwrap();
         task.await.unwrap().unwrap();
         assert!(!socket.exists());
+
+        let broker = AttemptBroker::bind(&config, grant, identity, journal)
+            .await
+            .unwrap();
+        let socket = broker.socket_path().to_path_buf();
+        let (shutdown, rx) = watch::channel(false);
+        let task = tokio::spawn(broker.serve(std::process::id(), rx));
+        let replay = send(&socket, &request).await.unwrap();
+        assert_eq!(replay, first);
+        assert_eq!(replay.consumed_requests, 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        shutdown.send(true).unwrap();
+        task.await.unwrap().unwrap();
     }
 
     #[tokio::test]
@@ -630,7 +676,17 @@ mod tests {
             maximum_response_bytes: 100,
             expires_at: Utc::now() + chrono::Duration::minutes(1),
         };
-        let broker = AttemptBroker::bind(&config, grant, identity).await.unwrap();
+        let journal = Journal::open(&directory.path().join("journal.sqlite")).unwrap();
+        journal
+            .record_broker_test_execution(
+                identity.execution_id,
+                identity.lease_id,
+                identity.fencing_token,
+            )
+            .unwrap();
+        let broker = AttemptBroker::bind(&config, grant, identity, journal)
+            .await
+            .unwrap();
         let socket = broker.socket_path().to_path_buf();
         let (shutdown, rx) = watch::channel(false);
         let task = tokio::spawn(broker.serve(std::process::id(), rx));
