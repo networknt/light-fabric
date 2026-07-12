@@ -159,6 +159,16 @@ pub mod slack {
         pub destination: String,
         pub group: bool,
         pub text: String,
+        pub attachments: Vec<SlackAttachment>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    pub struct SlackAttachment {
+        pub external_file_id: String,
+        pub private_url: String,
+        pub media_type: String,
+        pub size_bytes: u64,
     }
 
     pub fn verify_and_parse(
@@ -208,11 +218,37 @@ pub mod slack {
                 {
                     return Ok(SlackInbound::Ignored);
                 }
-                if event
+                let attachments = event
                     .get("files")
                     .and_then(Value::as_array)
-                    .is_some_and(|files| !files.is_empty())
-                {
+                    .into_iter()
+                    .flatten()
+                    .map(|file| {
+                        Ok(SlackAttachment {
+                            external_file_id: file
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .ok_or(ChannelError::Payload)?
+                                .to_string(),
+                            private_url: file
+                                .get("url_private_download")
+                                .or_else(|| file.get("url_private"))
+                                .and_then(Value::as_str)
+                                .ok_or(ChannelError::Payload)?
+                                .to_string(),
+                            media_type: file
+                                .get("mimetype")
+                                .and_then(Value::as_str)
+                                .unwrap_or("application/octet-stream")
+                                .to_string(),
+                            size_bytes: file
+                                .get("size")
+                                .and_then(Value::as_u64)
+                                .ok_or(ChannelError::Payload)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ChannelError>>()?;
+                if attachments.len() > 8 {
                     return Err(ChannelError::Limit);
                 }
                 let team = body
@@ -241,6 +277,7 @@ pub mod slack {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string(),
+                    attachments,
                 }))
             }
             _ => Ok(SlackInbound::Ignored),
@@ -346,6 +383,22 @@ mod tests {
         assert_eq!(
             slack::verify_and_parse(&secret, &timestamp, &signature, &tampered, now),
             Err(ChannelError::Signature)
+        );
+    }
+
+    #[test]
+    fn slack_attachment_metadata_is_bounded_and_normalized() {
+        let secret = vec![4; 32];
+        let now = Utc::now();
+        let timestamp = now.timestamp().to_string();
+        let raw=serde_json::to_vec(&serde_json::json!({"type":"event_callback","team_id":"T1","event_id":"Ev2","event":{"type":"message","user":"U1","channel":"D1","channel_type":"im","text":"file","files":[{"id":"F1","url_private_download":"https://files.slack.com/files/F1","mimetype":"text/plain","size":12}]}})).unwrap();
+        let mut mac = Hmac::<Sha256>::new_from_slice(&secret).unwrap();
+        mac.update(format!("v0:{timestamp}:").as_bytes());
+        mac.update(&raw);
+        let signature = format!("v0={}", hex::encode(mac.finalize().into_bytes()));
+        let parsed = slack::verify_and_parse(&secret, &timestamp, &signature, &raw, now).unwrap();
+        assert!(
+            matches!(parsed,slack::SlackInbound::Message(ref message) if message.attachments.len()==1&&message.attachments[0].external_file_id=="F1"&&message.attachments[0].size_bytes==12)
         );
     }
 }

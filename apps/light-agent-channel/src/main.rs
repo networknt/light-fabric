@@ -9,12 +9,14 @@ use axum::{
     routing::post,
 };
 use chrono::{Duration, Timelike, Utc};
+use hmac::{Hmac, Mac};
 use light_agent::domain::{AgentRepository, SessionSpec};
 use light_agent_channel::{
     ChannelBinding,
     slack::{self, SlackInbound},
 };
 use serde_json::{Value, json};
+use sha2::Sha256;
 use sqlx::{PgPool, Row, postgres::PgPoolOptions};
 use std::{env, net::SocketAddr, sync::Arc, time::Duration as StdDuration};
 use uuid::Uuid;
@@ -27,6 +29,9 @@ struct AppState {
     signing_secret: Arc<Vec<u8>>,
     bot_token: Arc<String>,
     http: reqwest::Client,
+    attachment_scanner_url: Option<reqwest::Url>,
+    attachment_scanner_token: Option<Arc<String>>,
+    connector_signing_secret: Option<Arc<Vec<u8>>>,
 }
 
 #[tokio::main]
@@ -41,6 +46,32 @@ async fn main() -> Result<()> {
     if secret.len() < 32 {
         anyhow::bail!("SLACK_SIGNING_SECRET must contain at least 32 bytes");
     }
+    let attachment_scanner_url = env::var("LIGHT_AGENT_ATTACHMENT_SCANNER_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| reqwest::Url::parse(&v))
+        .transpose()?;
+    let attachment_scanner_token = env::var("LIGHT_AGENT_ATTACHMENT_SCANNER_TOKEN")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(Arc::new);
+    if attachment_scanner_url
+        .as_ref()
+        .is_some_and(|url| url.scheme() != "https")
+        || attachment_scanner_url.is_some() != attachment_scanner_token.is_some()
+    {
+        anyhow::bail!("attachment scanner requires an HTTPS URL and token together");
+    }
+    let connector_signing_secret = env::var("LIGHT_AGENT_CONNECTOR_SIGNING_SECRET")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.into_bytes());
+    if connector_signing_secret
+        .as_ref()
+        .is_some_and(|v| v.len() < 32)
+    {
+        anyhow::bail!("connector signing secret must contain at least 32 bytes");
+    }
     let state = AppState {
         repository: AgentRepository::new(pool.clone()),
         pool,
@@ -49,11 +80,18 @@ async fn main() -> Result<()> {
         bot_token: Arc::new(env::var("SLACK_BOT_TOKEN")?),
         http: reqwest::Client::builder()
             .timeout(StdDuration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
             .build()?,
+        attachment_scanner_url,
+        attachment_scanner_token,
+        connector_signing_secret: connector_signing_secret.map(Arc::new),
     };
     tokio::spawn(delivery_loop(state.clone()));
+    tokio::spawn(trigger_loop(state.clone()));
+    tokio::spawn(attachment_recovery_loop(state.clone()));
     let app = Router::new()
         .route("/channels/slack/events", post(slack_events))
+        .route("/channels/connectors/events", post(connector_events))
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .with_state(state);
     let addr: SocketAddr = env::var("LIGHT_AGENT_CHANNEL_ADDR")
@@ -61,6 +99,105 @@ async fn main() -> Result<()> {
         .parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
+    Ok(())
+}
+
+async fn connector_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    match handle_connector(&state, &headers, &body).await {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(error) => {
+            tracing::warn!(%error,"rejected connector event");
+            (StatusCode::UNAUTHORIZED, "invalid request").into_response()
+        }
+    }
+}
+
+async fn handle_connector(state: &AppState, headers: &HeaderMap, raw: &[u8]) -> Result<()> {
+    let secret = state
+        .connector_signing_secret
+        .as_ref()
+        .context("connector webhook is disabled")?;
+    let signature = headers
+        .get("x-light-signature")
+        .and_then(|v| v.to_str().ok())
+        .context("missing connector signature")?
+        .strip_prefix("sha256=")
+        .context("invalid connector signature scheme")?;
+    let supplied = hex::decode(signature)?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret)?;
+    mac.update(raw);
+    mac.verify_slice(&supplied)?;
+    let body: Value = serde_json::from_slice(raw)?;
+    let trigger_id = Uuid::parse_str(
+        body.get("triggerId")
+            .and_then(Value::as_str)
+            .context("triggerId missing")?,
+    )?;
+    let event_id = body
+        .get("eventId")
+        .and_then(Value::as_str)
+        .context("eventId missing")?;
+    let timestamp = body
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .context("timestamp missing")?
+        .parse::<chrono::DateTime<Utc>>()?;
+    if (Utc::now() - timestamp).num_seconds().abs() > 300 {
+        anyhow::bail!("connector event is stale");
+    }
+    let row=sqlx::query("SELECT t.binding_id,b.principal_id,b.agent_def_id,b.adapter_id,b.external_identity,b.allowed_destinations,b.group_allowed,b.maximum_attachment_bytes,b.quiet_hours,b.revoked_ts,g.grant_id
+      FROM agent_trigger_t t JOIN agent_channel_binding_t b ON b.host_id=t.host_id AND b.binding_id=t.binding_id
+      JOIN agent_connector_grant_t g ON g.host_id=t.host_id AND g.grant_id=t.connector_grant_id
+      WHERE t.host_id=$1 AND t.trigger_id=$2 AND t.state='ACTIVE' AND t.trigger_kind='CONNECTOR' AND b.revoked_ts IS NULL AND g.revoked_ts IS NULL AND g.expires_ts>now() AND g.use_count<g.maximum_uses")
+      .bind(state.host_id).bind(trigger_id).fetch_one(&state.pool).await?;
+    let destination = body
+        .get("destination")
+        .and_then(Value::as_str)
+        .context("destination missing")?;
+    let text = body
+        .get("text")
+        .and_then(Value::as_str)
+        .context("text missing")?;
+    let quiet: Value = row.try_get("quiet_hours")?;
+    let binding = ChannelBinding {
+        binding_id: row.try_get("binding_id")?,
+        host_id: state.host_id,
+        principal_id: row.try_get("principal_id")?,
+        agent_def_id: row.try_get("agent_def_id")?,
+        adapter_id: row.try_get("adapter_id")?,
+        external_identity: row.try_get("external_identity")?,
+        allowed_destinations: serde_json::from_value(row.try_get("allowed_destinations")?)?,
+        group_allowed: row.try_get("group_allowed")?,
+        maximum_attachment_bytes: row.try_get::<i64, _>("maximum_attachment_bytes")? as u64,
+        quiet_start_hour: quiet.get("startHour").and_then(Value::as_u64).unwrap_or(22) as u8,
+        quiet_end_hour: quiet.get("endHour").and_then(Value::as_u64).unwrap_or(7) as u8,
+        revoked_at: None,
+    };
+    if !binding.allowed_destinations.contains(destination)
+        || light_agent_channel::quiet_hours(&binding, Utc::now())
+    {
+        anyhow::bail!("connector destination or quiet-hours policy denied event");
+    }
+    let message_id = Uuid::now_v7();
+    let key = format!("connector:{trigger_id}:{event_id}");
+    let mut tx = state.pool.begin().await?;
+    let inserted=sqlx::query("INSERT INTO agent_channel_message_t(host_id,message_id,binding_id,external_event_id,response_destination,direction,payload_digest,state,payload) VALUES($1,$2,$3,$4,$5,'INBOUND',$6,'RECEIVED',$7) ON CONFLICT(host_id,binding_id,external_event_id,direction) DO NOTHING")
+      .bind(state.host_id).bind(message_id).bind(binding.binding_id).bind(&key).bind(destination).bind(sha256_digest(raw)).bind(json!({"text":text,"provider":"connector"})).execute(&mut *tx).await?;
+    if inserted.rows_affected() == 1 {
+        let consumed=sqlx::query("UPDATE agent_connector_grant_t SET use_count=use_count+1 WHERE host_id=$1 AND grant_id=$2 AND revoked_ts IS NULL AND expires_ts>now() AND use_count<maximum_uses").bind(state.host_id).bind(row.try_get::<Uuid,_>("grant_id")?).execute(&mut *tx).await?;
+        if consumed.rows_affected() != 1 {
+            tx.rollback().await?;
+            anyhow::bail!("connector grant was exhausted or revoked during admission");
+        }
+    }
+    tx.commit().await?;
+    if inserted.rows_affected() == 1 {
+        admit_channel_turn(state, &binding, &key, text, message_id).await?;
+    }
     Ok(())
 }
 
@@ -134,11 +271,207 @@ async fn handle_slack(state: &AppState, headers: &HeaderMap, raw: &[u8]) -> Resu
         VALUES($1,$2,$3,$4,$5,'INBOUND',$6,'RECEIVED',$7)
         ON CONFLICT(host_id,binding_id,external_event_id,direction) DO NOTHING RETURNING message_id")
         .bind(state.host_id).bind(message_id).bind(binding.binding_id).bind(&message.event_id)
-        .bind(&message.destination).bind(digest).bind(json!({"text":message.text,"provider":"slack"}))
+        .bind(&message.destination).bind(digest).bind(json!({"text":message.text,"provider":"slack","eventId":message.event_id,"attachments":message.attachments}))
         .fetch_optional(&state.pool).await?;
     if inserted.is_none() {
         return Ok(None);
     }
+    let mut turn_text = message.text.clone();
+    if !message.attachments.is_empty() {
+        let owned_state = state.clone();
+        let owned_binding = binding.clone();
+        let event_id = message.event_id.clone();
+        let attachments = message.attachments.clone();
+        tokio::spawn(async move {
+            let result = async {
+                let references =
+                    scan_slack_attachments(&owned_state, &owned_binding, message_id, &attachments)
+                        .await?;
+                turn_text.push_str("\n\nApproved scanned attachments:\n");
+                for reference in references {
+                    turn_text.push_str(&format!("- {reference}\n"));
+                }
+                admit_channel_turn(
+                    &owned_state,
+                    &owned_binding,
+                    &event_id,
+                    &turn_text,
+                    message_id,
+                )
+                .await
+            }
+            .await;
+            if let Err(error) = result {
+                tracing::warn!(%error,message_id=%message_id,"attachment processing rejected inbound message");
+                let _=sqlx::query("UPDATE agent_channel_message_t SET state='REJECTED',last_error=jsonb_build_object('class','attachment_rejected'),updated_ts=now() WHERE host_id=$1 AND message_id=$2 AND state='RECEIVED'").bind(owned_state.host_id).bind(message_id).execute(&owned_state.pool).await;
+            }
+        });
+        return Ok(None);
+    }
+    admit_channel_turn(state, &binding, &message.event_id, &turn_text, message_id).await?;
+    Ok(None)
+}
+
+async fn scan_slack_attachments(
+    state: &AppState,
+    binding: &ChannelBinding,
+    message_id: Uuid,
+    attachments: &[slack::SlackAttachment],
+) -> Result<Vec<String>> {
+    let scanner = state
+        .attachment_scanner_url
+        .as_ref()
+        .context("attachments require LIGHT_AGENT_ATTACHMENT_SCANNER_URL")?;
+    let scanner_token = state
+        .attachment_scanner_token
+        .as_ref()
+        .context("attachments require LIGHT_AGENT_ATTACHMENT_SCANNER_TOKEN")?;
+    let mut total = 0_u64;
+    let mut references = Vec::new();
+    for attachment in attachments {
+        total = total
+            .checked_add(attachment.size_bytes)
+            .context("attachment size overflow")?;
+        if total > binding.maximum_attachment_bytes {
+            anyhow::bail!("attachment limit exceeded");
+        }
+        let url = reqwest::Url::parse(&attachment.private_url)?;
+        if url.scheme() != "https"
+            || !url
+                .host_str()
+                .is_some_and(|host| host == "slack.com" || host.ends_with(".slack.com"))
+        {
+            anyhow::bail!("Slack attachment URL is not authorized");
+        }
+        let response = state
+            .http
+            .get(url)
+            .bearer_auth(state.bot_token.as_str())
+            .send()
+            .await?;
+        if !response.status().is_success()
+            || response
+                .content_length()
+                .is_some_and(|n| n > attachment.size_bytes || n > binding.maximum_attachment_bytes)
+        {
+            anyhow::bail!("Slack attachment download failed or exceeded its bound");
+        }
+        let bytes = response.bytes().await?;
+        if bytes.len() as u64 != attachment.size_bytes {
+            anyhow::bail!("Slack attachment size differs from signed metadata");
+        }
+        let digest = sha256_digest(&bytes);
+        let scan = state
+            .http
+            .post(scanner.clone())
+            .bearer_auth(scanner_token.as_str())
+            .header("x-content-sha256", &digest)
+            .header("x-media-type", &attachment.media_type)
+            .body(bytes)
+            .send()
+            .await?;
+        if !scan.status().is_success() || scan.content_length().is_some_and(|n| n > 64 * 1024) {
+            anyhow::bail!("attachment scanner failed");
+        }
+        let receipt: Value = scan.json().await?;
+        if receipt.get("clean").and_then(Value::as_bool) != Some(true)
+            || receipt.get("contentDigest").and_then(Value::as_str) != Some(digest.as_str())
+        {
+            anyhow::bail!("attachment scanner rejected content or returned a mismatched digest");
+        }
+        let immutable = receipt
+            .get("immutableReference")
+            .and_then(Value::as_str)
+            .context("scanner omitted immutable reference")?;
+        let scanner_id = receipt
+            .get("scannerId")
+            .and_then(Value::as_str)
+            .context("scanner omitted identity")?;
+        let receipt_digest = sha256_digest(&serde_json::to_vec(&receipt)?);
+        sqlx::query("INSERT INTO agent_channel_attachment_t(host_id,attachment_id,message_id,external_file_id,media_type,size_bytes,content_digest,immutable_reference,scanner_id,scanner_receipt_digest,scan_state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'CLEAN') ON CONFLICT(host_id,message_id,external_file_id) DO NOTHING")
+          .bind(state.host_id).bind(Uuid::now_v7()).bind(message_id).bind(&attachment.external_file_id).bind(&attachment.media_type).bind(attachment.size_bytes as i64).bind(&digest).bind(immutable).bind(scanner_id).bind(receipt_digest).execute(&state.pool).await?;
+        references.push(format!(
+            "{} ({}, {})",
+            immutable, attachment.media_type, digest
+        ));
+    }
+    Ok(references)
+}
+
+async fn attachment_recovery_loop(state: AppState) {
+    loop {
+        if let Err(error) = attachment_recovery_pass(&state).await {
+            tracing::warn!(%error,"attachment recovery pass failed");
+        }
+        tokio::time::sleep(StdDuration::from_secs(5)).await;
+    }
+}
+
+async fn attachment_recovery_pass(state: &AppState) -> Result<()> {
+    let row=sqlx::query("SELECT m.message_id,m.external_event_id,m.payload,b.binding_id,b.principal_id,b.agent_def_id,b.adapter_id,b.external_identity,b.allowed_destinations,b.group_allowed,b.maximum_attachment_bytes,b.quiet_hours,b.revoked_ts
+      FROM agent_channel_message_t m JOIN agent_channel_binding_t b ON b.host_id=m.host_id AND b.binding_id=m.binding_id
+      WHERE m.host_id=$1 AND m.direction='INBOUND' AND m.state='RECEIVED' AND m.payload->>'provider'='slack'
+       AND jsonb_array_length(COALESCE(m.payload->'attachments','[]'::jsonb))>0 AND m.created_ts<now()-interval '5 seconds'
+      ORDER BY m.created_ts LIMIT 1").bind(state.host_id).fetch_optional(&state.pool).await?;
+    let Some(row) = row else {
+        return Ok(());
+    };
+    let message_id: Uuid = row.try_get("message_id")?;
+    let payload: Value = row.try_get("payload")?;
+    let quiet: Value = row.try_get("quiet_hours")?;
+    let binding = ChannelBinding {
+        binding_id: row.try_get("binding_id")?,
+        host_id: state.host_id,
+        principal_id: row.try_get("principal_id")?,
+        agent_def_id: row.try_get("agent_def_id")?,
+        adapter_id: row.try_get("adapter_id")?,
+        external_identity: row.try_get("external_identity")?,
+        allowed_destinations: serde_json::from_value(row.try_get("allowed_destinations")?)?,
+        group_allowed: row.try_get("group_allowed")?,
+        maximum_attachment_bytes: row.try_get::<i64, _>("maximum_attachment_bytes")? as u64,
+        quiet_start_hour: quiet.get("startHour").and_then(Value::as_u64).unwrap_or(22) as u8,
+        quiet_end_hour: quiet.get("endHour").and_then(Value::as_u64).unwrap_or(7) as u8,
+        revoked_at: row.try_get("revoked_ts")?,
+    };
+    let attachments: Vec<slack::SlackAttachment> = serde_json::from_value(
+        payload
+            .get("attachments")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+    )?;
+    let external_event_id: String = row.try_get("external_event_id")?;
+    let event_id = payload
+        .get("eventId")
+        .and_then(Value::as_str)
+        .unwrap_or(&external_event_id)
+        .to_string();
+    let mut text = payload
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    match scan_slack_attachments(state, &binding, message_id, &attachments).await {
+        Ok(references) => {
+            text.push_str("\n\nApproved scanned attachments:\n");
+            for reference in references {
+                text.push_str(&format!("- {reference}\n"));
+            }
+            admit_channel_turn(state, &binding, &event_id, &text, message_id).await?;
+        }
+        Err(error) => {
+            sqlx::query("UPDATE agent_channel_message_t SET state='REJECTED',last_error=jsonb_build_object('class','attachment_rejected','message',$1),updated_ts=now() WHERE host_id=$2 AND message_id=$3 AND state='RECEIVED'").bind(error.to_string()).bind(state.host_id).bind(message_id).execute(&state.pool).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn admit_channel_turn(
+    state: &AppState,
+    binding: &ChannelBinding,
+    event_id: &str,
+    text: &str,
+    message_id: Uuid,
+) -> Result<()> {
     let definition=sqlx::query("SELECT d.aggregate_version,d.policy_snapshot_id,d.model_provider,d.model_name,
             p.resolved_snapshot FROM agent_definition_t d JOIN agent_policy_snapshot_t p
               ON p.host_id=d.host_id AND p.policy_snapshot_id=d.policy_snapshot_id AND p.revoked_ts IS NULL
@@ -163,14 +496,7 @@ async fn handle_slack(state: &AppState, headers: &HeaderMap, raw: &[u8]) -> Resu
         .await?;
     let turn = state
         .repository
-        .admit_user_turn(
-            state.host_id,
-            session,
-            &message.event_id,
-            &message.text,
-            definition.try_get("model_provider")?,
-            definition.try_get("model_name")?,
-        )
+        .admit_user_turn(state.host_id, session, event_id, text)
         .await?;
     sqlx::query("UPDATE agent_turn_t SET origin_kind='channel',origin_ref=$1 WHERE host_id=$2 AND turn_id=$3")
         .bind(message_id.to_string()).bind(state.host_id).bind(turn.turn_id.0).execute(&state.pool).await?;
@@ -183,7 +509,102 @@ async fn handle_slack(state: &AppState, headers: &HeaderMap, raw: &[u8]) -> Resu
     .bind(message_id)
     .execute(&state.pool)
     .await?;
-    Ok(None)
+    Ok(())
+}
+
+async fn trigger_loop(state: AppState) {
+    loop {
+        if let Err(error) = trigger_pass(&state).await {
+            tracing::warn!(%error,"personal trigger pass failed");
+        }
+        tokio::time::sleep(StdDuration::from_secs(1)).await;
+    }
+}
+
+async fn trigger_pass(state: &AppState) -> Result<()> {
+    let mut tx = state.pool.begin().await?;
+    let row=sqlx::query("SELECT t.trigger_id,t.binding_id,t.trigger_kind,t.schedule_or_cursor,t.maximum_delay_seconds,t.next_fire_ts,
+      b.principal_id,b.agent_def_id,b.adapter_id,b.external_identity,b.allowed_destinations,b.group_allowed,b.maximum_attachment_bytes,b.quiet_hours,b.revoked_ts
+      FROM agent_trigger_t t JOIN agent_channel_binding_t b ON b.host_id=t.host_id AND b.binding_id=t.binding_id
+      LEFT JOIN agent_connector_grant_t g ON g.host_id=t.host_id AND g.grant_id=t.connector_grant_id
+      WHERE t.host_id=$1 AND t.state='ACTIVE' AND t.next_fire_ts<=now() AND b.revoked_ts IS NULL
+       AND (t.trigger_kind='SCHEDULE' OR (g.revoked_ts IS NULL AND g.expires_ts>now() AND g.use_count<g.maximum_uses))
+      ORDER BY t.next_fire_ts LIMIT 1 FOR UPDATE OF t SKIP LOCKED").bind(state.host_id).fetch_optional(&mut *tx).await?;
+    let Some(row) = row else {
+        tx.commit().await?;
+        return Ok(());
+    };
+    let trigger_id: Uuid = row.try_get("trigger_id")?;
+    let binding_id: Uuid = row.try_get("binding_id")?;
+    let spec: Value = row.try_get("schedule_or_cursor")?;
+    let due: chrono::DateTime<Utc> = row.try_get("next_fire_ts")?;
+    let max_delay: i32 = row.try_get("maximum_delay_seconds")?;
+    let interval = spec
+        .get("intervalSeconds")
+        .and_then(Value::as_i64)
+        .unwrap_or(3600)
+        .clamp(60, 86400);
+    let key = format!("trigger:{trigger_id}:{}", due.timestamp());
+    sqlx::query("UPDATE agent_trigger_t SET last_fire_ts=now(),last_idempotency_key=$1,fire_count=fire_count+1,next_fire_ts=$2+make_interval(secs=>$3) WHERE host_id=$4 AND trigger_id=$5")
+      .bind(&key).bind(due).bind(interval as i32).bind(state.host_id).bind(trigger_id).execute(&mut *tx).await?;
+    if row.try_get::<String, _>("trigger_kind")? == "CONNECTOR" {
+        let consumed=sqlx::query("UPDATE agent_connector_grant_t SET use_count=use_count+1 WHERE host_id=$1 AND grant_id=(SELECT connector_grant_id FROM agent_trigger_t WHERE host_id=$1 AND trigger_id=$2) AND revoked_ts IS NULL AND expires_ts>now() AND use_count<maximum_uses").bind(state.host_id).bind(trigger_id).execute(&mut *tx).await?;
+        if consumed.rows_affected() != 1 {
+            sqlx::query(
+                "UPDATE agent_trigger_t SET state='PAUSED' WHERE host_id=$1 AND trigger_id=$2",
+            )
+            .bind(state.host_id)
+            .bind(trigger_id)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            return Ok(());
+        }
+    }
+    if Utc::now() > due + Duration::seconds(max_delay as i64) {
+        tx.commit().await?;
+        return Ok(());
+    }
+    let destination = spec
+        .get("destination")
+        .and_then(Value::as_str)
+        .context("trigger destination missing")?
+        .to_string();
+    let text = spec
+        .get("text")
+        .and_then(Value::as_str)
+        .context("trigger text missing")?
+        .to_string();
+    let message_id = Uuid::now_v7();
+    let inserted=sqlx::query("INSERT INTO agent_channel_message_t(host_id,message_id,binding_id,external_event_id,response_destination,direction,payload_digest,state,payload) VALUES($1,$2,$3,$4,$5,'INBOUND',$6,'RECEIVED',$7) ON CONFLICT(host_id,binding_id,external_event_id,direction) DO NOTHING")
+      .bind(state.host_id).bind(message_id).bind(binding_id).bind(&key).bind(&destination).bind(sha256_digest(text.as_bytes())).bind(json!({"text":text,"provider":"trigger"})).execute(&mut *tx).await?;
+    tx.commit().await?;
+    if inserted.rows_affected() == 0 {
+        return Ok(());
+    }
+    let quiet: Value = row.try_get("quiet_hours")?;
+    let binding = ChannelBinding {
+        binding_id,
+        host_id: state.host_id,
+        principal_id: row.try_get("principal_id")?,
+        agent_def_id: row.try_get("agent_def_id")?,
+        adapter_id: row.try_get("adapter_id")?,
+        external_identity: row.try_get("external_identity")?,
+        allowed_destinations: serde_json::from_value(row.try_get("allowed_destinations")?)?,
+        group_allowed: row.try_get("group_allowed")?,
+        maximum_attachment_bytes: row.try_get::<i64, _>("maximum_attachment_bytes")? as u64,
+        quiet_start_hour: quiet.get("startHour").and_then(Value::as_u64).unwrap_or(22) as u8,
+        quiet_end_hour: quiet.get("endHour").and_then(Value::as_u64).unwrap_or(7) as u8,
+        revoked_at: None,
+    };
+    if !binding.allowed_destinations.contains(&destination)
+        || light_agent_channel::quiet_hours(&binding, Utc::now())
+    {
+        sqlx::query("UPDATE agent_channel_message_t SET state='REJECTED',last_error=jsonb_build_object('class','trigger_policy_denied'),updated_ts=now() WHERE host_id=$1 AND message_id=$2 AND state='RECEIVED'")
+            .bind(state.host_id).bind(message_id).execute(&state.pool).await?;
+        return Ok(());
+    }
+    admit_channel_turn(state, &binding, &key, &text, message_id).await
 }
 
 async fn delivery_loop(state: AppState) {

@@ -1446,6 +1446,13 @@ local browser profile, desktop, filesystem, home network, or device access.
 The edge runner advertises explicit capabilities and receives short-lived
 leases; it is not a permanently authorized remote shell.
 
+The implemented edge binding is principal-specific and names the exact runner,
+backend, execution profile, action allowlist, required capabilities,
+compatibility digest, and expiry. Light-Agent converts an allowed local effect
+to a fixed `light-edge-action` structured command and Controller refuses to
+reserve it on any other runner or backend. Revoked/expired bindings and action
+or capability mismatches fail before scheduling.
+
 ### Release Agent
 
 Use a dedicated runner pool and strong sandbox/VM profile. The agent can inspect

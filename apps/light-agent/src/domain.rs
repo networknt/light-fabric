@@ -39,6 +39,14 @@ pub struct AdmittedTurn {
 }
 
 #[derive(Debug, Clone)]
+pub struct EdgeActionSpec {
+    pub edge_binding_id: Uuid,
+    pub action: String,
+    pub arguments: Value,
+    pub schema_digest: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct TurnRuntimeResolution {
     pub host_id: Uuid,
     pub turn_id: AgentTurnId,
@@ -265,6 +273,75 @@ async fn reconcile_turn_quota_usage(
 }
 
 impl AgentRepository {
+    pub async fn schedule_edge_action(
+        &self,
+        host_id: Uuid,
+        session_id: AgentSessionId,
+        turn_id: AgentTurnId,
+        instance_id: &str,
+        spec: &EdgeActionSpec,
+    ) -> Result<Uuid> {
+        if spec.action.is_empty() || spec.action.len() > 126 || !spec.arguments.is_object() {
+            bail!("edge action name or arguments are invalid")
+        }
+        let mut tx = self.pool.begin().await?;
+        let row=sqlx::query("SELECT t.policy_snapshot_id,t.policy_digest,s.principal_id,b.runner_id,b.backend_id,b.compatibility_digest,b.required_capabilities
+          FROM agent_turn_t t JOIN agent_session_t s ON s.host_id=t.host_id AND s.session_id=t.session_id
+          JOIN agent_edge_runner_binding_t b ON b.host_id=s.host_id AND b.edge_binding_id=$4 AND b.principal_id=s.principal_id
+          WHERE t.host_id=$1 AND t.turn_id=$2 AND t.session_id=$3 AND t.state IN('RECEIVED','RUNNING_MODEL')
+            AND b.revoked_ts IS NULL AND b.expires_ts>now() AND b.allowed_actions ? $5 FOR UPDATE OF t,s,b")
+            .bind(host_id).bind(turn_id.0).bind(session_id.0).bind(spec.edge_binding_id).bind(&spec.action)
+            .fetch_optional(&mut *tx).await?.context("no live principal-bound edge runner authorizes this action")?;
+        let policy: String = row.try_get("policy_digest")?;
+        let snapshot: Uuid = row.try_get("policy_snapshot_id")?;
+        let principal: String = row.try_get("principal_id")?;
+        let required_features: Vec<String> =
+            serde_json::from_value(row.try_get("required_capabilities")?)?;
+        let compatibility: String = row.try_get("compatibility_digest")?;
+        let action_attempt_id = Uuid::now_v7();
+        let request_id = Uuid::now_v7();
+        let argument_digest = sha256_digest(&serde_json::to_vec(&spec.arguments)?);
+        sqlx::query("INSERT INTO agent_action_attempt_t(host_id,action_attempt_id,turn_id,logical_action_id,attempt_number,stable_tool_ref,model_alias,placement,schema_digest,policy_digest,argument_digest,effect_class,state) VALUES($1,$2,$3,$2,1,$4,$4,'runner',$5,$6,$7,'unknown','DISPATCHED')")
+            .bind(host_id).bind(action_attempt_id).bind(turn_id.0).bind(&spec.action).bind(&spec.schema_digest).bind(&policy).bind(&argument_digest).execute(&mut *tx).await?;
+        let requirements = ExecutionRequirements {
+            action_kind: format!("edge.{}", spec.action),
+            minimum_boundary: IsolationBoundary::UserNamespace,
+            maximum_host_exposure: HostExposure::ExplicitMounts,
+            network_enabled: true,
+            credential_classes: vec![],
+            persistent_workspace: false,
+            required_features,
+            policy_digest: policy.clone(),
+            compatibility_digest: compatibility,
+        };
+        let command = CommandExecutionSpec {
+            schema_version: 1,
+            template_id: "personal-edge-action-v1".into(),
+            template_version: 1,
+            template_digest:
+                "sha256:ae5c8ce6e21f5270cce087e8ae0fcf8a95df83569ee993adb7650f98e6dce033".into(),
+            executable: "/usr/local/bin/light-edge-action".into(),
+            arguments: vec![
+                "--action".into(),
+                spec.action.clone(),
+                "--arguments-json".into(),
+                serde_json::to_string(&spec.arguments)?,
+            ],
+            working_directory: "/workspace".into(),
+            environment: Default::default(),
+            wall_clock_timeout_ms: 120_000,
+            stdout_limit_bytes: 1024 * 1024,
+            stderr_limit_bytes: 1024 * 1024,
+            network_enabled: true,
+            credentials_enabled: false,
+            persistent_workspace: false,
+        };
+        sqlx::query("INSERT INTO runner_scheduling_request_t(host_id,request_id,idempotency_key,origin_kind,origin_service_id,origin_instance_id,subject_kind,subject_id,agent_session_id,agent_turn_id,agent_action_id,policy_snapshot_id,policy_digest,normalized_requirements,execution_spec,fairness_key,state,pinned_runner_id,pinned_backend_id,edge_binding_id) VALUES($1,$2,$3,'agent','light-agent',$4,'agent-action',$5,$6,$7,$5,$8,$9,$10,$11,$12,'PENDING_CAPACITY',$13,$14,$15)")
+            .bind(host_id).bind(request_id).bind(format!("edge-action:{action_attempt_id}")).bind(instance_id).bind(action_attempt_id).bind(session_id.0).bind(turn_id.0).bind(snapshot).bind(&policy).bind(serde_json::to_value(requirements)?).bind(serde_json::to_value(command)?).bind(format!("agent:{principal}")).bind(row.try_get::<String,_>("runner_id")?).bind(row.try_get::<String,_>("backend_id")?).bind(spec.edge_binding_id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE agent_turn_t SET state='WAITING_RECONCILIATION',updated_ts=now() WHERE host_id=$1 AND turn_id=$2").bind(host_id).bind(turn_id.0).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(action_attempt_id)
+    }
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
