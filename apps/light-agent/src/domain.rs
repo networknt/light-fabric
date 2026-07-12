@@ -1694,18 +1694,36 @@ impl AgentRepository {
         bank_id: Uuid,
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-        let events = sqlx::query("SELECT event_sequence,event_type,content FROM agent_session_event_t WHERE host_id=$1 AND session_id=$2 AND event_type IN ('USER_MESSAGE','MODEL_RESULT') ORDER BY event_sequence")
-            .bind(host_id).bind(session_id.0).fetch_all(&mut *tx).await?;
+        let projection_sequence: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(event_sequence),0) FROM agent_session_event_t
+             WHERE host_id=$1 AND session_id=$2",
+        )
+        .bind(host_id)
+        .bind(session_id.0)
+        .fetch_one(&mut *tx)
+        .await?;
+        let events = sqlx::query(
+            "SELECT e.event_type,e.content
+            FROM agent_session_event_t e
+            JOIN agent_turn_t t ON t.host_id=e.host_id AND t.turn_id=e.turn_id
+            WHERE e.host_id=$1 AND e.session_id=$2
+              AND e.event_type IN ('USER_MESSAGE','MODEL_RESULT')
+            ORDER BY t.turn_sequence,
+              CASE e.event_type WHEN 'USER_MESSAGE' THEN 0 ELSE 1 END,
+              e.event_sequence",
+        )
+        .bind(host_id)
+        .bind(session_id.0)
+        .fetch_all(&mut *tx)
+        .await?;
         let mut messages = Vec::with_capacity(events.len());
-        let mut sequence = 0_i64;
         for event in events {
-            sequence = event.try_get("event_sequence")?;
             let kind: String = event.try_get("event_type")?;
             let content: Value = event.try_get("content")?;
             messages.push(json!({"role": if kind == "USER_MESSAGE" {"user"} else {"assistant"}, "content": content.get("text").cloned().unwrap_or(Value::Null)}));
         }
         sqlx::query("INSERT INTO agent_session_history_t(host_id,bank_id,session_id,durable_session_id,messages,projection_sequence) VALUES($1,$2,$3,$3,$4,$5) ON CONFLICT(host_id,bank_id,session_id) DO UPDATE SET messages=EXCLUDED.messages,durable_session_id=EXCLUDED.durable_session_id,projection_sequence=EXCLUDED.projection_sequence,aggregate_version=agent_session_history_t.aggregate_version+1,update_ts=now() WHERE agent_session_history_t.projection_sequence < EXCLUDED.projection_sequence")
-            .bind(host_id).bind(bank_id).bind(session_id.0).bind(Value::Array(messages)).bind(sequence).execute(&mut *tx).await?;
+            .bind(host_id).bind(bank_id).bind(session_id.0).bind(Value::Array(messages)).bind(projection_sequence).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -1887,13 +1905,14 @@ mod tests {
         setup.commit().await.unwrap();
         let repository = AgentRepository::new(pool.clone());
         let session = AgentSessionId::new();
+        let principal_id = Uuid::now_v7();
         let digest = |name: &str| sha256_digest(name.as_bytes());
         repository
             .create_or_resume_session(&SessionSpec {
                 host_id,
                 session_id: session,
-                principal_id: Uuid::now_v7().to_string(),
-                user_id: None,
+                principal_id: principal_id.to_string(),
+                user_id: Some(principal_id),
                 agent_def_id,
                 bank_id: None,
                 policy: PolicySnapshot {
@@ -1914,6 +1933,9 @@ mod tests {
             })
             .await
             .unwrap();
+        sqlx::query("INSERT INTO agent_memory_bank_t(host_id,bank_id,agent_def_id,user_id,bank_name) VALUES($1,$2,$3,$4,'test-history')")
+            .bind(host_id).bind(session.0).bind(agent_def_id).bind(principal_id)
+            .execute(&pool).await.unwrap();
         sqlx::query("UPDATE agent_definition_t SET policy_snapshot_id=$3 WHERE host_id=$1 AND agent_def_id=$2")
             .bind(host_id)
             .bind(agent_def_id)
@@ -1960,6 +1982,40 @@ mod tests {
             .complete_turn(host_id, session, first.turn_id, "world", 1, 0)
             .await
             .unwrap();
+        repository
+            .rebuild_history_projection(host_id, session, session.0)
+            .await
+            .unwrap();
+        let projection = sqlx::query(
+            "SELECT messages,projection_sequence FROM agent_session_history_t
+             WHERE host_id=$1 AND bank_id=$2 AND session_id=$2",
+        )
+        .bind(host_id)
+        .bind(session.0)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            projection.try_get::<Value, _>("messages").unwrap(),
+            json!([
+                {"role":"user","content":"hello"},
+                {"role":"assistant","content":"world"},
+                {"role":"user","content":"again"}
+            ])
+        );
+        let maximum_event_sequence: i64 = sqlx::query_scalar(
+            "SELECT MAX(event_sequence) FROM agent_session_event_t
+             WHERE host_id=$1 AND session_id=$2",
+        )
+        .bind(host_id)
+        .bind(session.0)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            projection.try_get::<i64, _>("projection_sequence").unwrap(),
+            maximum_event_sequence
+        );
         assert_eq!(
             repository
                 .activate_next_turn(host_id, session)

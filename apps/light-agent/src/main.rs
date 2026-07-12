@@ -883,13 +883,6 @@ trait MemoryStore: Send + Sync {
         bank_id: Uuid,
         session_id: Uuid,
     ) -> Result<Vec<ChatMessage>>;
-    async fn persist_session_history(
-        &self,
-        host_id: Uuid,
-        bank_id: Uuid,
-        session_id: Uuid,
-        history: &[ChatMessage],
-    ) -> Result<()>;
     async fn retain(
         &self,
         host_id: Uuid,
@@ -956,16 +949,6 @@ impl MemoryStore for DirectPgMemoryStore {
         session_id: Uuid,
     ) -> Result<Vec<ChatMessage>> {
         load_session_history_from_db(&self.pool, host_id, bank_id, session_id).await
-    }
-
-    async fn persist_session_history(
-        &self,
-        host_id: Uuid,
-        bank_id: Uuid,
-        session_id: Uuid,
-        history: &[ChatMessage],
-    ) -> Result<()> {
-        persist_session_history_to_db(&self.pool, host_id, bank_id, session_id, history).await
     }
 
     async fn retain(
@@ -1046,27 +1029,6 @@ impl MemoryStore for PortalCommandMemoryStore {
         session_id: Uuid,
     ) -> Result<Vec<ChatMessage>> {
         load_session_history_from_db(&self.pool, host_id, bank_id, session_id).await
-    }
-
-    async fn persist_session_history(
-        &self,
-        host_id: Uuid,
-        bank_id: Uuid,
-        session_id: Uuid,
-        history: &[ChatMessage],
-    ) -> Result<()> {
-        self.command_client
-            .call(
-                "compactAgentSessionHistory",
-                serde_json::json!({
-                    "hostId": host_id,
-                    "bankId": bank_id,
-                    "sessionId": session_id,
-                    "messages": history
-                }),
-            )
-            .await?;
-        Ok(())
     }
 
     async fn retain(
@@ -1747,15 +1709,6 @@ fn trim_history(history: &mut Vec<ChatMessage>) {
     let excess = history.len().saturating_sub(MAX_SESSION_MESSAGES);
     if excess > 0 {
         history.drain(0..excess);
-    }
-}
-
-fn rollback_last_user_message(history: &mut Vec<ChatMessage>, expected_text: &str) {
-    if history
-        .last()
-        .is_some_and(|message| message.role == "user" && message.content == expected_text)
-    {
-        history.pop();
     }
 }
 
@@ -2942,26 +2895,6 @@ async fn handle_socket(
         return;
     }
 
-    let mut history = match state
-        .memory
-        .load_session_history(state.host_id, bank_id, session_id)
-        .await
-    {
-        Ok(history) => history,
-        Err(e) => {
-            error!(
-                "Failed to load session history for host_id={}, bank_id={}, session_id={}: {}",
-                state.host_id, bank_id, session_id, e
-            );
-            if let Ok(payload) = serde_json::to_string(&ServerMessage::Error {
-                message: "Failed to load session history".to_string(),
-            }) {
-                let _ = sender.send(Message::Text(payload.into())).await;
-            }
-            return;
-        }
-    };
-
     while let Some(Ok(msg)) = receiver.next().await {
         if let Message::Text(text) = msg {
             let client_msg: ClientMessage = match serde_json::from_str(&text) {
@@ -3100,6 +3033,67 @@ async fn handle_socket(
                     continue;
                 }
             };
+
+            // Admission and completion events are the conversation authority.
+            // Refresh only after this turn owns the session activation fence so
+            // a long-lived socket cannot run from the history it loaded before
+            // another connection completed an earlier turn.
+            if let Err(error) = state
+                .domain
+                .rebuild_history_projection(state.host_id, AgentSessionId(session_id), bank_id)
+                .await
+            {
+                let _ = state
+                    .domain
+                    .fail_turn(
+                        state.host_id,
+                        AgentSessionId(session_id),
+                        admitted.turn_id,
+                        "event-backed history refresh failed",
+                    )
+                    .await;
+                error!(turn_id=%admitted.turn_id.0, "Failed to refresh history projection after activation: {error}");
+                let _ = sender
+                    .send(Message::Text(
+                        serde_json::to_string(&ServerMessage::Error {
+                            message: "Failed to refresh session history".into(),
+                        })
+                        .unwrap()
+                        .into(),
+                    ))
+                    .await;
+                continue;
+            }
+            let mut history = match state
+                .memory
+                .load_session_history(state.host_id, bank_id, session_id)
+                .await
+            {
+                Ok(history) => history,
+                Err(error) => {
+                    let _ = state
+                        .domain
+                        .fail_turn(
+                            state.host_id,
+                            AgentSessionId(session_id),
+                            admitted.turn_id,
+                            "event-backed history load failed",
+                        )
+                        .await;
+                    error!(turn_id=%admitted.turn_id.0, "Failed to load refreshed history projection: {error}");
+                    let _ = sender
+                        .send(Message::Text(
+                            serde_json::to_string(&ServerMessage::Error {
+                                message: "Failed to load refreshed session history".into(),
+                            })
+                            .unwrap()
+                            .into(),
+                        ))
+                        .await;
+                    continue;
+                }
+            };
+            trim_history(&mut history);
 
             if requested_profile == RequestedProfile::Coding {
                 let outcome: Result<Uuid> = async {
@@ -3288,9 +3282,6 @@ async fn handle_socket(
                         continue;
                     }
                 };
-            history.push(ChatMessage::user(user_text.clone()));
-            trim_history(&mut history);
-
             let turn = run_agent_loop(
                 &state,
                 history.clone(),
@@ -3314,7 +3305,6 @@ async fn handle_socket(
                             "turn deadline exceeded",
                         )
                         .await;
-                    rollback_last_user_message(&mut history, &user_text);
                     let payload = serde_json::to_string(&ServerMessage::Error {
                         message: "Turn deadline exceeded".to_string(),
                     });
@@ -3338,16 +3328,6 @@ async fn handle_socket(
                         {
                             error!("Failed to commit durable turn result: {err}");
                             continue;
-                        }
-                        history.push(ChatMessage::assistant(text.clone()));
-                        trim_history(&mut history);
-
-                        if let Err(e) = state
-                            .memory
-                            .persist_session_history(state.host_id, bank_id, session_id, &history)
-                            .await
-                        {
-                            warn!("Failed to persist session history: {}", e);
                         }
                         if let Err(err) = state
                             .domain
@@ -3382,7 +3362,6 @@ async fn handle_socket(
                             &e.to_string(),
                         )
                         .await;
-                    rollback_last_user_message(&mut history, &user_text);
                     match serde_json::to_string(&ServerMessage::Error {
                         message: format!("Error: {}", e),
                     }) {
@@ -3521,33 +3500,6 @@ async fn load_session_history_from_db(
     let messages: serde_json::Value = row.get("messages");
     serde_json::from_value::<Vec<ChatMessage>>(messages)
         .context("session history contains invalid messages")
-}
-
-async fn persist_session_history_to_db(
-    db: &PgPool,
-    host_id: Uuid,
-    bank_id: Uuid,
-    session_id: Uuid,
-    history: &[ChatMessage],
-) -> Result<()> {
-    let history_payload =
-        serde_json::to_value(history).context("failed to serialize session history")?;
-    sqlx::query(
-        "INSERT INTO agent_session_history_t
-         (host_id, bank_id, session_id, messages)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (host_id, bank_id, session_id)
-         DO UPDATE SET messages = EXCLUDED.messages,
-                       update_ts = CURRENT_TIMESTAMP",
-    )
-    .bind(host_id)
-    .bind(bank_id)
-    .bind(session_id)
-    .bind(history_payload)
-    .execute(db)
-    .await
-    .context("failed to persist session history")?;
-    Ok(())
 }
 
 fn validate_json_limits(
@@ -4549,9 +4501,8 @@ mod tests {
         ModelProviderConfig, SessionOwner, TurnDispatchCoordinator, agent_ca_cert_path_from_config,
         bind_authenticated_principal, bound_untrusted_text, build_effective_catalog_data,
         choose_model, collect_catalog_tool_names, collect_policy_diagnostics, filter_gateway_tools,
-        is_local_cli_provider, normalize_provider_id, parse_tool_arguments,
-        rollback_last_user_message, select_catalog_tools, trim_history,
-        validate_repository_input_uri, validate_session_owner,
+        is_local_cli_provider, normalize_provider_id, parse_tool_arguments, select_catalog_tools,
+        trim_history, validate_repository_input_uri, validate_session_owner,
     };
     use light_agent::domain::AgentRepository;
     use light_runtime::config::{BootstrapConfig, ClientConfig};
@@ -4628,32 +4579,6 @@ mod tests {
             history.last().unwrap().content,
             format!("msg-{}", MAX_SESSION_MESSAGES + 4)
         );
-    }
-
-    #[test]
-    fn rollback_last_user_message_removes_failed_turn() {
-        let mut history = vec![
-            ChatMessage::assistant("existing reply"),
-            ChatMessage::user("failed prompt"),
-        ];
-
-        rollback_last_user_message(&mut history, "failed prompt");
-
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].role, "assistant");
-    }
-
-    #[test]
-    fn rollback_last_user_message_leaves_other_entries_untouched() {
-        let mut history = vec![
-            ChatMessage::user("previous prompt"),
-            ChatMessage::assistant("previous reply"),
-        ];
-
-        rollback_last_user_message(&mut history, "failed prompt");
-
-        assert_eq!(history.len(), 2);
-        assert_eq!(history[1].content, "previous reply");
     }
 
     #[test]
