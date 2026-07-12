@@ -29,3 +29,5 @@ backend:
   maximumResponseBytes: 4194304
 allowedCommandTemplateDigests:
   - sha256:replace-with-canonical-command-template-digest
+  # Enable only when templateId contains the exact reviewed fixture binary.
+  - sha256:503c1f8879addd7dec140d9f2e703e6b7230979188bbd6f7c9e4f941e276a717

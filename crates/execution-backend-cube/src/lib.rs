@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use coding_agent_runtime::{CodingFixtureOutput, CodingFixtureRequest, validate_patch};
 use execution_backend::{
     BackendError, BackendOperationState, BackendOutput, CleanupEvidence, ExecutionBackend,
     Inspection, PreparedExecution, StagedInput,
@@ -8,6 +9,7 @@ use execution_runner_protocol::{
     ArtifactEvidence, BackendCapability, CommandExecutionSpec, ExecuteLease, HostExposure,
     IsolationBoundary,
 };
+use execution_security::ProtectedPathPolicy;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::watch;
@@ -78,6 +80,11 @@ pub trait CubeApi: Send + Sync {
         &self,
         key: &str,
     ) -> Result<Option<CubeResource>, BackendError>;
+    async fn stage_inputs(
+        &self,
+        environment_id: &str,
+        inputs: &[CubeInputMount],
+    ) -> Result<(), BackendError>;
     async fn inspect(&self, environment_id: &str) -> Result<Option<CubeResource>, BackendError>;
     async fn execute(
         &self,
@@ -204,11 +211,13 @@ impl CubeBackendConfig {
             backend_version: "cube-e2b-connect-v1".into(),
             boundary: IsolationBoundary::MicroVm,
             host_exposure: HostExposure::None,
-            actions: vec!["run.shell".into()],
+            actions: vec!["run.shell".into(), "coding.fixture".into()],
             features: vec![
                 "deny-all-egress".into(),
                 "native-ttl".into(),
                 "bounded-metadata-recovery".into(),
+                "immutable-repository-upload".into(),
+                "canonical-patch-output".into(),
                 "bounded-tag-discovery".into(),
             ],
             compatibility_digest: self.compatibility_digest.clone(),
@@ -248,6 +257,24 @@ impl<C: CubeApi + 'static> ExecutionBackend for CubeExecutionBackend<C> {
                 "Cube inputs must be immutable".into(),
             ));
         }
+        if command.executable == "/usr/local/bin/light-coding-agent-fixture" {
+            let request = coding_fixture_request(&command)?;
+            if staged.len() != 1
+                || staged[0].mount_target != "/inputs/repository.bundle"
+                || staged[0].media_type != "application/x-git-bundle"
+                || staged[0].source_digest != request.spec.repository_digest
+                || staged[0].executable
+                || !staged[0]
+                    .mount_options
+                    .iter()
+                    .any(|option| option == "noexec")
+            {
+                return Err(BackendError::InvalidRequest(
+                    "coding fixture requires exactly one immutable non-executable Git bundle"
+                        .into(),
+                ));
+            }
+        }
         let remaining = lease
             .lease
             .deadline
@@ -268,7 +295,20 @@ impl<C: CubeApi + 'static> ExecutionBackend for CubeExecutionBackend<C> {
     ) -> Result<PreparedExecution, BackendError> {
         self.validate(lease, staged)?;
         let key = format!("light:{}", lease.lease.execution_id);
+        let inputs = staged
+            .iter()
+            .map(|input| CubeInputMount {
+                source: input.local_path.display().to_string(),
+                target: input.mount_target.clone(),
+                digest: input.source_digest.clone(),
+                read_only: true,
+                mount_options: input.mount_options.clone(),
+            })
+            .collect::<Vec<_>>();
         if let Some(found) = self.client.find_by_idempotency_key(&key).await? {
+            self.client
+                .stage_inputs(&found.environment_id, &inputs)
+                .await?;
             return prepared(lease, found);
         }
         let mut tags = self.tags(lease);
@@ -280,20 +320,27 @@ impl<C: CubeApi + 'static> ExecutionBackend for CubeExecutionBackend<C> {
             deny_all_egress: true,
             credentials_enabled: false,
             tags,
-            inputs: staged
-                .iter()
-                .map(|input| CubeInputMount {
-                    source: input.local_path.display().to_string(),
-                    target: input.mount_target.clone(),
-                    digest: input.source_digest.clone(),
-                    read_only: true,
-                    mount_options: input.mount_options.clone(),
-                })
-                .collect(),
+            inputs: inputs.clone(),
         };
         match self.client.create(request).await {
-            Ok(resource) => prepared(lease, resource),
-            Err(BackendError::Transport(_)) => self.client.find_by_idempotency_key(&key).await?.map(|resource| prepared(lease, resource)).transpose()?.ok_or_else(|| BackendError::Unknown("Cube create response was lost and bounded idempotency lookup found no resource".into())),
+            Ok(resource) => {
+                if let Err(error) = self
+                    .client
+                    .stage_inputs(&resource.environment_id, &inputs)
+                    .await
+                {
+                    let _ = self.client.delete(&resource.environment_id).await;
+                    return Err(error);
+                }
+                prepared(lease, resource)
+            }
+            Err(BackendError::Transport(_)) => {
+                let resource = self.client.find_by_idempotency_key(&key).await?.ok_or_else(|| BackendError::Unknown("Cube create response was lost and bounded idempotency lookup found no resource".into()))?;
+                self.client
+                    .stage_inputs(&resource.environment_id, &inputs)
+                    .await?;
+                prepared(lease, resource)
+            }
             Err(error) => Err(error),
         }
     }
@@ -334,7 +381,8 @@ impl<C: CubeApi + 'static> ExecutionBackend for CubeExecutionBackend<C> {
         tokio::select! {
             result = self.client.execute(&prepared.backend_operation_id, &command) => {
                 let result = result?; let failed = result.exit_code != 0;
-                Ok(BackendOutput { exit_code: Some(result.exit_code), signal: None, stdout: result.stdout, stderr: result.stderr, structured_output: None, started_at: result.started_at, finished_at: result.finished_at, failure_class: failed.then(|| "non_zero_exit".into()), evidence: result.evidence })
+                let structured_output = if failed { None } else { validate_coding_fixture_output(lease, &result.stdout)? };
+                Ok(BackendOutput { exit_code: Some(result.exit_code), signal: None, stdout: result.stdout, stderr: result.stderr, structured_output, started_at: result.started_at, finished_at: result.finished_at, failure_class: failed.then(|| "non_zero_exit".into()), evidence: result.evidence })
             }
             changed = cancellation.changed() => { if changed.is_ok() && *cancellation.borrow() { self.client.cancel(&prepared.backend_operation_id).await?; Err(BackendError::Cancelled("Cube execution cancelled".into())) } else { Err(BackendError::Unknown("Cube cancellation channel closed".into())) } }
         }
@@ -356,6 +404,62 @@ impl<C: CubeApi + 'static> ExecutionBackend for CubeExecutionBackend<C> {
             evidence_reference: format!("cube:deleted:{id}"),
         })
     }
+}
+
+fn validate_coding_fixture_output(
+    lease: &ExecuteLease,
+    stdout: &[u8],
+) -> Result<Option<serde_json::Value>, BackendError> {
+    let command: CommandExecutionSpec =
+        serde_json::from_value(lease.command.clone()).map_err(|error| {
+            BackendError::InvalidRequest(format!("invalid coding command: {error}"))
+        })?;
+    if command.executable != "/usr/local/bin/light-coding-agent-fixture" {
+        return Ok(None);
+    }
+    let request = coding_fixture_request(&command)?;
+    let spec = &request.spec;
+    let output: CodingFixtureOutput = serde_json::from_slice(stdout).map_err(|error| {
+        BackendError::Unknown(format!("invalid coding fixture output: {error}"))
+    })?;
+    if output.adapter_id != "cube-coding-fixture"
+        || output.adapter_version != "1"
+        || output.repository_digest != spec.repository_digest
+    {
+        return Err(BackendError::Unknown(
+            "coding fixture identity or repository digest mismatch".into(),
+        ));
+    }
+    let validated = validate_patch(
+        spec,
+        &ProtectedPathPolicy::default_deny(),
+        &output.base_revision,
+        &output.patch,
+        &output.changed_paths,
+    )
+    .map_err(|error| BackendError::InvalidRequest(format!("coding patch rejected: {error}")))?;
+    serde_json::to_value(validated)
+        .map(Some)
+        .map_err(|error| BackendError::Unknown(format!("serialize validated patch: {error}")))
+}
+
+fn coding_fixture_request(
+    command: &CommandExecutionSpec,
+) -> Result<CodingFixtureRequest, BackendError> {
+    if command.arguments.len() != 4
+        || command.arguments[0] != "--repository"
+        || command.arguments[1] != "/inputs/repository.bundle"
+        || command.arguments[2] != "--request-base64"
+    {
+        return Err(BackendError::InvalidRequest(
+            "coding fixture arguments do not match the admitted contract".into(),
+        ));
+    }
+    let request =
+        CodingFixtureRequest::decode_argument(&command.arguments[3]).map_err(|error| {
+            BackendError::InvalidRequest(format!("invalid coding fixture request: {error}"))
+        })?;
+    Ok(request)
 }
 
 fn prepared(
@@ -387,10 +491,13 @@ fn map_state(state: CubeState) -> BackendOperationState {
 mod tests {
     use super::*;
     use chrono::Duration;
+    use coding_agent_runtime::{CodingFixtureRequest, CodingTurnSpec};
     use execution_runner_protocol::{
         AuthenticatedOrigin, ExecutionId, ExecutionSubject, LeaseContext, LeaseId, OriginKind,
         SchedulingRequestId,
     };
+    use sha2::Digest;
+    use std::collections::BTreeSet;
     use std::sync::Mutex;
     use uuid::Uuid;
 
@@ -398,6 +505,7 @@ mod tests {
     struct FakeCube {
         resource: Mutex<Option<CubeResource>>,
         creates: Mutex<usize>,
+        stages: Mutex<usize>,
         lose_first_response: bool,
     }
 
@@ -429,6 +537,10 @@ mod tests {
                 .unwrap()
                 .clone()
                 .filter(|v| v.idempotency_key == key))
+        }
+        async fn stage_inputs(&self, _: &str, _: &[CubeInputMount]) -> Result<(), BackendError> {
+            *self.stages.lock().unwrap() += 1;
+            Ok(())
         }
         async fn inspect(&self, id: &str) -> Result<Option<CubeResource>, BackendError> {
             Ok(self
@@ -559,6 +671,7 @@ mod tests {
         let second = backend.prepare(&lease, &[]).await.unwrap();
         assert_eq!(first.backend_operation_id, second.backend_operation_id);
         assert_eq!(*api.creates.lock().unwrap(), 1);
+        assert_eq!(*api.stages.lock().unwrap(), 2);
         assert_eq!(
             backend.discover_all_owned_bounded(1).await.unwrap().len(),
             1
@@ -576,5 +689,74 @@ mod tests {
             backend.validate(&lease, &[]),
             Err(BackendError::InvalidRequest(_))
         ));
+    }
+
+    #[test]
+    fn trusted_side_canonicalizes_cube_coding_patch() {
+        let spec = CodingTurnSpec {
+            repository_digest: format!("sha256:{}", "1".repeat(64)),
+            base_revision: "a".repeat(40),
+            workspace_root: "/workspace/repo".into(),
+            prompt: "fixture".into(),
+            model_alias: "fixture".into(),
+            materialization_manifest_digest: format!("sha256:{}", "2".repeat(64)),
+            writable_roots: BTreeSet::from(["/workspace/repo".into()]),
+            allowed_tools: BTreeSet::from(["fs.read".into(), "fs.write".into()]),
+            maximum_patch_bytes: 4096,
+            maximum_changed_files: 1,
+        };
+        let request = CodingFixtureRequest {
+            spec: spec.clone(),
+            target_path: "fixture.txt".into(),
+            expected_text: "before".into(),
+            replacement_text: "after".into(),
+        };
+        let mut lease = lease();
+        lease.command = serde_json::to_value(CommandExecutionSpec {
+            schema_version: 1,
+            template_id: "cube-coding-fixture-v1".into(),
+            template_version: 1,
+            template_digest: lease.command_template_digest.clone(),
+            executable: "/usr/local/bin/light-coding-agent-fixture".into(),
+            arguments: vec![
+                "--repository".into(),
+                "/inputs/repository.bundle".into(),
+                "--request-base64".into(),
+                request.encode_argument().unwrap(),
+            ],
+            working_directory: "/workspace".into(),
+            environment: BTreeMap::new(),
+            wall_clock_timeout_ms: 10_000,
+            stdout_limit_bytes: 4096,
+            stderr_limit_bytes: 4096,
+            network_enabled: false,
+            credentials_enabled: false,
+            persistent_workspace: false,
+        })
+        .unwrap();
+        let patch = "diff --git a/fixture.txt b/fixture.txt\n--- a/fixture.txt\n+++ b/fixture.txt\n@@ -1 +1 @@\n-before\n+after\n";
+        let output = CodingFixtureOutput {
+            adapter_id: "cube-coding-fixture".into(),
+            adapter_version: "1".into(),
+            repository_digest: spec.repository_digest.clone(),
+            base_revision: spec.base_revision.clone(),
+            patch: patch.into(),
+            changed_paths: vec!["fixture.txt".into()],
+        };
+        let validated =
+            validate_coding_fixture_output(&lease, &serde_json::to_vec(&output).unwrap())
+                .unwrap()
+                .unwrap();
+        assert_eq!(validated["baseRevision"], spec.base_revision);
+        assert_eq!(
+            validated["patchDigest"],
+            format!("sha256:{:x}", sha2::Sha256::digest(patch.as_bytes()))
+        );
+        let mut tampered = output;
+        tampered.changed_paths = vec!["other.txt".into()];
+        assert!(
+            validate_coding_fixture_output(&lease, &serde_json::to_vec(&tampered).unwrap())
+                .is_err()
+        );
     }
 }

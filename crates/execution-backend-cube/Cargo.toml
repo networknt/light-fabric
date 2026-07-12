@@ -7,7 +7,9 @@ license.workspace = true
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true
+coding-agent-runtime = { path = "../coding-agent-runtime" }
 execution-backend = { path = "../execution-backend" }
+execution-security = { path = "../execution-security" }
 execution-runner-protocol = { path = "../execution-runner-protocol" }
 futures-util.workspace = true
 prost = "0.13"
@@ -15,8 +17,10 @@ reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+tokio-util = { version = "0.7", features = ["io"] }
 url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
 sha2.workspace = true
+tempfile = "3"

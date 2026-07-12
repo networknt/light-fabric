@@ -1,0 +1,8 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+USER root
+COPY target/release/light-coding-agent-fixture /usr/local/bin/light-coding-agent-fixture
+RUN chmod 0555 /usr/local/bin/light-coding-agent-fixture \
+    && test -x /usr/bin/git \
+    && command -v envd >/dev/null

@@ -815,6 +815,7 @@ name = "coding-agent-runtime"
 version = "0.1.0"
 dependencies = [
  "agent-runtime-protocol",
+ "base64 0.22.1",
  "execution-security",
  "serde",
  "serde_json",
@@ -1333,15 +1334,19 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "coding-agent-runtime",
  "execution-backend",
  "execution-runner-protocol",
+ "execution-security",
  "futures-util",
  "prost",
  "reqwest",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "tokio",
+ "tokio-util",
  "url",
  "uuid",
 ]
@@ -3526,6 +3531,17 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "light-coding-agent-fixture"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "coding-agent-runtime",
+ "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]

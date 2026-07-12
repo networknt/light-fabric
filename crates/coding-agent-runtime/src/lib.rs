@@ -1,4 +1,5 @@
 use agent_runtime_protocol::canonical_digest;
+use base64::Engine;
 use execution_security::ProtectedPathPolicy;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -95,7 +96,7 @@ impl CodingTurnSpec {
         {
             return Err(CodingError::Spec);
         }
-        if self.base_revision.len() != 40
+        if !matches!(self.base_revision.len(), 40 | 64)
             || !self.base_revision.bytes().all(|b| b.is_ascii_hexdigit())
         {
             return Err(CodingError::Spec);
@@ -112,6 +113,91 @@ impl CodingTurnSpec {
     pub fn digest(&self) -> Result<String, serde_json::Error> {
         canonical_digest(self)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImmutableRepositoryInput {
+    pub artifact_uri: String,
+    pub digest: String,
+    pub size: u64,
+    pub media_type: String,
+}
+
+impl ImmutableRepositoryInput {
+    pub fn validate(&self, spec: &CodingTurnSpec) -> Result<(), CodingError> {
+        if self.digest != spec.repository_digest
+            || self.size == 0
+            || self.size > i64::MAX as u64
+            || self.media_type != "application/x-git-bundle"
+            || !self.digest.starts_with("sha256:")
+        {
+            return Err(CodingError::Repository);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CodingFixtureRequest {
+    pub spec: CodingTurnSpec,
+    pub target_path: String,
+    pub expected_text: String,
+    pub replacement_text: String,
+}
+
+impl CodingFixtureRequest {
+    pub fn validate(&self) -> Result<(), CodingError> {
+        self.spec.validate()?;
+        let admitted_workspace = BTreeSet::from([self.spec.workspace_root.clone()]);
+        let admitted_tools = BTreeSet::from(["fs.read".to_string(), "fs.write".to_string()]);
+        if self.target_path.is_empty()
+            || self.target_path.starts_with('/')
+            || self
+                .target_path
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+            || self.expected_text.is_empty()
+            || self.expected_text == self.replacement_text
+            || self
+                .expected_text
+                .len()
+                .saturating_add(self.replacement_text.len())
+                > 1024 * 1024
+            || self.spec.writable_roots != admitted_workspace
+            || self.spec.allowed_tools != admitted_tools
+        {
+            return Err(CodingError::Spec);
+        }
+        Ok(())
+    }
+
+    pub fn encode_argument(&self) -> Result<String, CodingError> {
+        self.validate()?;
+        let json = serde_json::to_vec(self).map_err(|_| CodingError::Spec)?;
+        Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json))
+    }
+
+    pub fn decode_argument(value: &str) -> Result<Self, CodingError> {
+        let json = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(value)
+            .map_err(|_| CodingError::Spec)?;
+        let request: Self = serde_json::from_slice(&json).map_err(|_| CodingError::Spec)?;
+        request.validate()?;
+        Ok(request)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CodingFixtureOutput {
+    pub adapter_id: String,
+    pub adapter_version: String,
+    pub repository_digest: String,
+    pub base_revision: String,
+    pub patch: String,
+    pub changed_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,6 +319,8 @@ pub enum CodingError {
     PermissionBypass,
     #[error("adapter output is not a pinned structured protocol")]
     Unstructured,
+    #[error("invalid immutable repository input")]
+    Repository,
 }
 
 #[cfg(test)]

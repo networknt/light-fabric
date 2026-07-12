@@ -9,6 +9,6 @@ agent-runtime-protocol = { path = "../agent-runtime-protocol" }
 execution-security = { path = "../execution-security" }
 serde.workspace = true
 serde_json.workspace = true
+base64 = "0.22"
 sha2.workspace = true
 thiserror.workspace = true
-

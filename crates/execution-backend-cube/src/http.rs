@@ -117,9 +117,13 @@ impl CubeHttpClient {
     }
 
     fn envd_url(&self, detail: &SandboxDetail) -> Result<Url, BackendError> {
+        self.envd_endpoint(detail, "process.Process/Start")
+    }
+
+    fn envd_endpoint(&self, detail: &SandboxDetail, path: &str) -> Result<Url, BackendError> {
         if let Some(base) = &self.sandbox_url {
             return base
-                .join("process.Process/Start")
+                .join(path)
                 .map_err(|error| BackendError::InvalidRequest(error.to_string()));
         }
         let domain = detail.domain.as_deref().ok_or_else(|| {
@@ -128,10 +132,56 @@ impl CubeHttpClient {
             )
         })?;
         Url::parse(&format!(
-            "https://{ENVD_PORT}-{}.{domain}/process.Process/Start",
+            "https://{ENVD_PORT}-{}.{domain}/{path}",
             detail.sandbox_id
         ))
         .map_err(|error| BackendError::InvalidRequest(format!("invalid Cube envd URL: {error}")))
+    }
+
+    async fn upload_input(
+        &self,
+        detail: &SandboxDetail,
+        input: &super::CubeInputMount,
+    ) -> Result<(), BackendError> {
+        if !input.read_only
+            || input.target != "/inputs/repository.bundle"
+            || !input.mount_options.iter().any(|option| option == "noexec")
+        {
+            return Err(BackendError::InvalidRequest(
+                "Cube coding input must be immutable, non-executable, and use the fixed repository path"
+                    .into(),
+            ));
+        }
+        let metadata = tokio::fs::metadata(&input.source).await.map_err(|error| {
+            BackendError::InvalidRequest(format!("inspect staged Cube input: {error}"))
+        })?;
+        if !metadata.is_file() {
+            return Err(BackendError::Unsupported(
+                "Cube HTTP input upload accepts only immutable regular files".into(),
+            ));
+        }
+        let file = tokio::fs::File::open(&input.source)
+            .await
+            .map_err(|error| {
+                BackendError::InvalidRequest(format!("open staged Cube input: {error}"))
+            })?;
+        let stream = tokio_util::io::ReaderStream::new(file);
+        let mut url = self.envd_endpoint(detail, "files")?;
+        url.query_pairs_mut().append_pair("path", &input.target);
+        let mut request = self
+            .http
+            .post(url)
+            .header(header::CONTENT_TYPE, "application/octet-stream")
+            .header("E2b-Sandbox-Id", &detail.sandbox_id)
+            .header("E2b-Sandbox-Port", ENVD_PORT.to_string())
+            .header("X-Metadata-sha256", &input.digest)
+            .body(reqwest::Body::wrap_stream(stream));
+        if let Some(token) = &detail.envd_access_token {
+            request = request.header("X-Access-Token", token);
+        }
+        let response = request.send().await.map_err(transport)?;
+        let _ = bounded_body(response, self.maximum_response_bytes).await?;
+        Ok(())
     }
 }
 
@@ -141,11 +191,6 @@ impl CubeApi for CubeHttpClient {
         if !request.deny_all_egress || request.credentials_enabled {
             return Err(BackendError::InvalidRequest(
                 "Cube HTTP client requires deny-all egress and forbids credentials".into(),
-            ));
-        }
-        if !request.inputs.is_empty() {
-            return Err(BackendError::Unsupported(
-                "Cube HTTP API cannot mount runner-local staged input paths; use an approved remote materializer".into(),
             ));
         }
         let now = Utc::now();
@@ -198,6 +243,24 @@ impl CubeApi for CubeHttpClient {
             ));
         }
         Ok(found.pop().map(|item| item.into_resource(key)))
+    }
+
+    async fn stage_inputs(
+        &self,
+        environment_id: &str,
+        inputs: &[super::CubeInputMount],
+    ) -> Result<(), BackendError> {
+        if inputs.is_empty() {
+            return Ok(());
+        }
+        let detail = self
+            .detail(environment_id)
+            .await?
+            .ok_or_else(|| BackendError::NotFound(environment_id.into()))?;
+        for input in inputs {
+            self.upload_input(&detail, input).await?;
+        }
+        Ok(())
     }
 
     async fn inspect(&self, environment_id: &str) -> Result<Option<CubeResource>, BackendError> {
@@ -688,6 +751,7 @@ fn append_bounded(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::Digest;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
@@ -818,5 +882,75 @@ mod tests {
         );
         assert_eq!(body["lifecycle"]["onTimeout"], "kill");
         assert_eq!(body["metadata"]["light.runner"], "runner");
+    }
+
+    #[tokio::test]
+    async fn immutable_repository_bytes_are_uploaded_to_the_fixed_guest_path() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 4096];
+            loop {
+                let count = socket.read(&mut buffer).await.unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&buffer[..count]);
+                if request
+                    .windows(b"bundle-bytes".len())
+                    .any(|part| part == b"bundle-bytes")
+                    && request.ends_with(b"0\r\n\r\n")
+                {
+                    break;
+                }
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]")
+                .await
+                .unwrap();
+            request
+        });
+        let client = CubeHttpClient::new(CubeHttpClientConfig {
+            api_url: Url::parse(&format!("http://{address}/")).unwrap(),
+            sandbox_url: Some(Url::parse(&format!("http://{address}/")).unwrap()),
+            api_key: "test-secret".into(),
+            request_timeout: Duration::from_secs(2),
+            maximum_response_bytes: 4096,
+            allow_insecure_http: true,
+            tls_ca_pem: None,
+        })
+        .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("repository.bundle");
+        std::fs::write(&source, b"bundle-bytes").unwrap();
+        client
+            .upload_input(
+                &SandboxDetail {
+                    sandbox_id: "cube-1".into(),
+                    end_at: None,
+                    metadata: BTreeMap::new(),
+                    state: "running".into(),
+                    domain: None,
+                    envd_access_token: Some("attempt-token".into()),
+                },
+                &super::super::CubeInputMount {
+                    source: source.display().to_string(),
+                    target: "/inputs/repository.bundle".into(),
+                    digest: format!("sha256:{:x}", sha2::Sha256::digest(b"bundle-bytes")),
+                    read_only: true,
+                    mount_options: vec!["ro".into(), "noexec".into()],
+                },
+            )
+            .await
+            .unwrap();
+        let request = server.await.unwrap();
+        let request = String::from_utf8_lossy(&request);
+        assert!(request.starts_with("POST /files?path=%2Finputs%2Frepository.bundle HTTP/1.1"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("x-access-token: attempt-token")
+        );
+        assert!(request.contains("bundle-bytes"));
     }
 }

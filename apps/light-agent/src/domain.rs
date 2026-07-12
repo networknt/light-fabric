@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Row, Transaction, postgres::PgListener};
 use uuid::Uuid;
 
-use coding_agent_runtime::CodingTurnSpec;
+use coding_agent_runtime::{CodingFixtureRequest, CodingTurnSpec, ImmutableRepositoryInput};
 use execution_runner_protocol::{
     CommandExecutionSpec, ExecutionRequirements, HostExposure, IsolationBoundary,
 };
@@ -144,14 +144,24 @@ impl AgentRepository {
         instance_id: &str,
         manifest: &MaterializationManifest,
         spec: &CodingTurnSpec,
+        repository: &ImmutableRepositoryInput,
+        fixture: &CodingFixtureRequest,
         compatibility_digest: &str,
     ) -> Result<Uuid> {
         spec.validate()?;
+        repository.validate(spec)?;
+        fixture.validate()?;
+        if &fixture.spec != spec {
+            bail!("coding fixture spec differs from the admitted turn spec")
+        }
         let manifest_digest = manifest.digest()?;
         if manifest.product_profile != agent_materializer::ProductProfile::Coding
             || spec.materialization_manifest_digest != manifest_digest
         {
             bail!("coding materialization profile or digest mismatch")
+        }
+        if !manifest.packages.is_empty() {
+            bail!("the first Cube coding fixture admits only the immutable repository input")
         }
         let mut tx = self.pool.begin().await?;
         let row=sqlx::query("SELECT t.policy_snapshot_id,t.policy_digest,t.data_boundary_digest,s.principal_id FROM agent_turn_t t JOIN agent_session_t s ON s.host_id=t.host_id AND s.session_id=t.session_id JOIN agent_policy_snapshot_t p ON p.host_id=t.host_id AND p.policy_snapshot_id=t.policy_snapshot_id AND p.revoked_ts IS NULL WHERE t.host_id=$1 AND t.turn_id=$2 AND t.session_id=$3 AND t.state IN ('RECEIVED','RUNNING_MODEL') FOR UPDATE OF t,s")
@@ -161,25 +171,34 @@ impl AgentRepository {
         let principal: String = row.try_get("principal_id")?;
         let request_id = Uuid::now_v7();
         let requirements = ExecutionRequirements {
-            action_kind: "agent.runtime".into(),
+            action_kind: "coding.fixture".into(),
             minimum_boundary: IsolationBoundary::MicroVm,
             maximum_host_exposure: HostExposure::None,
             network_enabled: false,
             credential_classes: vec![],
             persistent_workspace: false,
-            required_features: vec!["deny-all-egress".into(), "artifacts".into()],
+            required_features: vec![
+                "deny-all-egress".into(),
+                "immutable-repository-upload".into(),
+                "canonical-patch-output".into(),
+            ],
             policy_digest: policy.clone(),
             compatibility_digest: compatibility_digest.into(),
         };
         let command = CommandExecutionSpec {
             schema_version: 1,
-            template_id: "coding-agent-worker-v1".into(),
+            template_id: "cube-coding-fixture-v1".into(),
             template_version: 1,
-            template_digest: "503c1f8879addd7dec140d9f2e703e6b7230979188bbd6f7c9e4f941e276a717"
-                .into(),
-            executable: "/usr/local/bin/light-agent-worker".into(),
-            arguments: vec![],
-            working_directory: spec.workspace_root.clone(),
+            template_digest:
+                "sha256:503c1f8879addd7dec140d9f2e703e6b7230979188bbd6f7c9e4f941e276a717".into(),
+            executable: "/usr/local/bin/light-coding-agent-fixture".into(),
+            arguments: vec![
+                "--repository".into(),
+                "/inputs/repository.bundle".into(),
+                "--request-base64".into(),
+                fixture.encode_argument()?,
+            ],
+            working_directory: "/workspace".into(),
             environment: Default::default(),
             wall_clock_timeout_ms: 120_000,
             stdout_limit_bytes: 1024 * 1024,
@@ -193,6 +212,8 @@ impl AgentRepository {
             .bind(host_id).bind(request_id).bind(format!("coding-turn:{}",turn_id.0)).bind(instance_id).bind(turn_id.0).bind(session_id.0).bind(snapshot).bind(&policy).bind(serde_json::to_value(requirements)?).bind(execution_spec).bind(format!("agent:{principal}")).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO agent_turn_materialization_t(host_id,turn_id,materializer_id,materializer_version,product_profile,manifest,manifest_digest) VALUES($1,$2,$3,$4,'coding',$5,$6)")
             .bind(host_id).bind(turn_id.0).bind(&manifest.materializer_id).bind(manifest.materializer_version as i32).bind(serde_json::to_value(manifest)?).bind(&manifest_digest).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO execution_input_t(host_id,input_id,request_id,kind,artifact_uri,content_digest,size_bytes,media_type,signer_binding,provenance_binding,scanner_binding,revocation_binding,staging_root,mount_target,read_only,executable,mount_options) VALUES($1,$2,$3,'repository-bundle',$4,$5,$6,$7,'{}'::jsonb,jsonb_build_object('baseRevision',$8),'{}'::jsonb,jsonb_build_object('state','IMMUTABLE'),$9,'/inputs/repository.bundle',TRUE,FALSE,'[\"ro\",\"nodev\",\"nosuid\",\"noexec\"]'::jsonb)")
+            .bind(host_id).bind(Uuid::now_v7()).bind(request_id).bind(&repository.artifact_uri).bind(&repository.digest).bind(repository.size as i64).bind(&repository.media_type).bind(&spec.base_revision).bind(format!("{}/inputs",spec.workspace_root)).execute(&mut *tx).await?;
         for package in &manifest.packages {
             let inserted=sqlx::query("INSERT INTO execution_input_t(host_id,input_id,request_id,kind,artifact_uri,content_digest,size_bytes,media_type,signer_binding,provenance_binding,scanner_binding,revocation_binding,staging_root,mount_target,read_only,executable,trust_bundle_id,package_manifest_digest,mount_options) SELECT $1,$2,$3,'skill-package',p.object_reference,p.content_digest,p.size_bytes,p.media_type,jsonb_build_object('signer',p.signer_reference,'signature',p.signature_reference),jsonb_build_object('reference',p.provenance_reference),jsonb_build_object('scanner',p.scanner_reference,'digest',p.scan_digest),jsonb_build_object('state',p.state,'revokedTs',p.revoked_ts),$4,$5,TRUE,FALSE,p.signer_reference,$6,'[\"ro\",\"nodev\",\"nosuid\",\"noexec\"]'::jsonb FROM skill_package_t p WHERE p.host_id=$1 AND p.package_id=$7 AND p.state='PUBLISHED' AND p.revoked_ts IS NULL AND p.content_digest=$6")
                 .bind(host_id).bind(Uuid::now_v7()).bind(request_id).bind(format!("{}/inputs",spec.workspace_root)).bind(&package.mount_target).bind(&package.content_digest).bind(package.package_id).execute(&mut *tx).await?;

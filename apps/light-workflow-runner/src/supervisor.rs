@@ -148,7 +148,9 @@ impl Supervisor {
             return Ok(());
         }
 
-        if lease.lease.origin.kind == OriginKind::Agent {
+        if lease.lease.origin.kind == OriginKind::Agent
+            && lease.command.get("expectedCapabilityDigest").is_some()
+        {
             return self.accept_agent_worker(lease, outbound).await;
         }
         validate_command(&lease, &self.allowed_template_digests)?;
@@ -1027,6 +1029,36 @@ mod tests {
                 .unwrap_err()
                 .contains("stale or conflicting")
         );
+        assert!(matches!(
+            messages.recv().await,
+            Some(RunnerToController::RunnerLeaseSucceeded(_))
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn agent_command_spec_uses_selected_backend_not_host_worker_transport() {
+        let (supervisor, root) = supervisor(MockBehavior::default());
+        let mut lease = lease();
+        lease.lease.origin.kind = OriginKind::Agent;
+        lease.lease.origin.service_id = "light-agent".into();
+        lease.lease.subject = ExecutionSubject::AgentTurn {
+            subject_id: Uuid::new_v4(),
+            session_id: Uuid::new_v4(),
+            turn_id: Uuid::new_v4(),
+        };
+        let (outbound, mut messages) = mpsc::channel(8);
+
+        supervisor.accept_execute(lease, outbound).await.unwrap();
+
+        assert!(matches!(
+            messages.recv().await,
+            Some(RunnerToController::RunnerLeaseAccepted(_))
+        ));
+        assert!(matches!(
+            messages.recv().await,
+            Some(RunnerToController::RunnerLeaseStarted(_))
+        ));
         assert!(matches!(
             messages.recv().await,
             Some(RunnerToController::RunnerLeaseSucceeded(_))

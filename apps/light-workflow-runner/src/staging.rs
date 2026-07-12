@@ -283,4 +283,36 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_file(&source);
     }
+
+    #[test]
+    fn immutable_repository_bundle_is_copied_with_noexec_policy() {
+        let root = std::env::temp_dir().join(format!("runner-repository-{}", Uuid::new_v4()));
+        let source = root.with_extension("bundle");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&source, b"immutable-bundle").unwrap();
+        let digest = format!(
+            "sha256:{}",
+            hex::encode(Sha256::digest(b"immutable-bundle"))
+        );
+        let input = ExecutionInput {
+            input_id: Uuid::new_v4(),
+            kind: "repository-bundle".into(),
+            artifact_uri: url::Url::from_file_path(&source).unwrap().to_string(),
+            digest: digest.clone(),
+            size: 16,
+            media_type: "application/x-git-bundle".into(),
+            mount_target: "/inputs/repository.bundle".into(),
+            read_only: true,
+            executable: false,
+            verification: serde_json::json!({"revocationBinding":{"state":"IMMUTABLE"}}),
+        };
+
+        let staged = stage_one(&root, &input).unwrap();
+
+        assert_eq!(staged.source_digest, digest);
+        assert_eq!(fs::read(&staged.local_path).unwrap(), b"immutable-bundle");
+        assert!(staged.mount_options.iter().any(|option| option == "noexec"));
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_file(&source);
+    }
 }

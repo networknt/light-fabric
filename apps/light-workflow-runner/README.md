@@ -26,10 +26,13 @@ shell command, bounds the full response plus stdout/stderr, and performs
 idempotent synchronous deletion. Metadata lookup is bounded to Cube's current
 200-item API limit; multiple idempotency matches fail as `UNKNOWN`.
 
-Runner-local staged paths cannot be mounted by the remote Cube HTTP API and
-therefore fail closed until an approved remote materializer is configured.
-Likewise, Cube artifact collection is not advertised and reports unsupported
-until a trusted export mechanism is installed.
+The Cube client can upload digest-verified immutable regular-file inputs through
+envd 0.5.7 or newer. The first coding fixture uses a Git bundle uploaded to the
+fixed `/inputs/repository.bundle` path; the guest verifies its digest and base
+commit before creating a writable checkout. Directory inputs and extracted
+skill-package trees still fail closed until an approved remote materializer is
+configured. Cube artifact collection is likewise not advertised until a
+trusted export mechanism is installed.
 
 The controller admission file must contain digests calculated from the exact
 runner binary and effective configuration. Generate the complete admission
