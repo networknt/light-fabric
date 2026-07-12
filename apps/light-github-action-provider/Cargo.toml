@@ -11,6 +11,8 @@ chrono.workspace=true
 hex.workspace=true
 hmac.workspace=true
 futures-util.workspace=true
+execution-fixed-action={path="../../crates/execution-fixed-action"}
+execution-security={path="../../crates/execution-security"}
 reqwest.workspace=true
 rusqlite={version="0.31",features=["bundled"]}
 serde.workspace=true

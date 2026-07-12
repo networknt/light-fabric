@@ -321,6 +321,30 @@ pub fn execute_fixed_patch(
     }
 }
 
+/// Applies and verifies an approved patch but leaves the isolated checkout in
+/// place for a credential-owning provider to create and publish a commit. The
+/// caller owns cleanup and must never reuse the workspace for another action.
+pub fn execute_fixed_patch_in_workspace(
+    request: &FixedPatchRequest,
+    patch_bytes: &[u8],
+    allowed_repository: &str,
+    allowed_branch_prefix: &str,
+    workspace: &Path,
+    protected: &ProtectedPathPolicy,
+) -> Result<FixedPatchEvidence, FixedActionError> {
+    if workspace.exists() {
+        return Err(FixedActionError::Workspace);
+    }
+    execute_fixed_patch_inner(
+        request,
+        patch_bytes,
+        allowed_repository,
+        allowed_branch_prefix,
+        workspace,
+        protected,
+    )
+}
+
 fn execute_fixed_patch_inner(
     request: &FixedPatchRequest,
     patch_bytes: &[u8],
@@ -362,9 +386,11 @@ fn execute_fixed_patch_inner(
             "diff".into(),
             "--cached".into(),
             "--binary".into(),
-            "--full-index".into(),
             "--no-ext-diff".into(),
+            "--no-textconv".into(),
             "--no-renames".into(),
+            "--src-prefix=a/".into(),
+            "--dst-prefix=b/".into(),
         ],
         &plan.environment,
     )?;

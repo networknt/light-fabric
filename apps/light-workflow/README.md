@@ -172,11 +172,16 @@ The receipt schema is closed and contains only `providerOperationId`,
 `resourceReference`; additional fields are rejected rather than persisted.
 
 `apps/light-github-action-provider` is the concrete repository provider. It
-uses GitHub's refs and pull-request REST APIs, an explicit repository allowlist
-and branch prefix, owner-only service/GitHub token files, and a synchronous
-SQLite intent journal. Lost create responses are reconciled by inspecting the
-approved branch SHA or head/base pull request; replaying the workflow
-idempotency key returns the stored receipt without issuing another mutation.
+uses a fresh hardened Git checkout plus GitHub's refs and pull-request REST
+APIs, an explicit repository allowlist and branch prefix, owner-only
+service/GitHub token files, and a synchronous SQLite intent journal. The
+workflow sends the canonical patch only after re-hashing it against the bound
+verified artifact. The provider reapplies it to the exact base commit, creates
+a deterministic commit, compare-and-set creates the branch, and opens a PR
+only after the branch resolves to that commit. Lost create responses are
+reconciled by inspecting the exact branch commit or PR head/base; replaying the
+workflow idempotency key returns the stored receipt without overwriting an
+existing branch or issuing another PR mutation.
 
 Providers must also expose `GET fixed-actions/status` and resolve the same
 `Idempotency-Key` to `SUCCEEDED`, `FAILED`, `PENDING`, or `NOT_FOUND` evidence.

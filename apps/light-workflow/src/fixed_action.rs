@@ -307,6 +307,18 @@ fn validate_provider_action(action: &ClaimedAction) -> Result<(), String> {
                     .as_deref()
                     .ok_or("repository action lacks base commit")?,
             )?;
+            let patch = spec
+                .get("patch")
+                .and_then(Value::as_str)
+                .ok_or("repository provider action lacks canonical patch bytes")?;
+            if patch.len() > 16 * 1024 * 1024
+                || format!(
+                    "sha256:{}",
+                    hex::encode(sha2::Sha256::digest(patch.as_bytes()))
+                ) != action.artifact_digest
+            {
+                return Err("repository provider patch differs from its durable digest".into());
+            }
         }
         "publish" | "sign" => {
             bound("patchArtifactReference", &action.patch_artifact_reference)?;
@@ -643,7 +655,11 @@ mod tests {
     };
 
     fn provider_action(kind: &str) -> ClaimedAction {
-        let digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let patch = "diff --git a/src/lib.rs b/src/lib.rs\n";
+        let digest = format!(
+            "sha256:{}",
+            hex::encode(sha2::Sha256::digest(patch.as_bytes()))
+        );
         ClaimedAction {
             host_id: Uuid::now_v7(),
             fixed_action_id: Uuid::now_v7(),
@@ -654,7 +670,7 @@ mod tests {
             repository_object_format: "sha1".into(),
             target_ref: "agent/change".into(),
             patch_artifact_reference: "s3://immutable/change.patch".into(),
-            artifact_digest: digest.into(),
+            artifact_digest: digest.clone(),
             policy_digest: "sha256:policy".into(),
             changed_paths: json!(["src/lib.rs"]),
             action_kind: kind.into(),
@@ -666,6 +682,7 @@ mod tests {
                 "targetBranch": "agent/change",
                 "patchArtifactReference": "s3://immutable/change.patch",
                 "patchDigest": digest,
+                "patch": patch,
                 "policyDigest": "sha256:policy",
                 "provenanceDigest": "sha256:provenance"
             }),

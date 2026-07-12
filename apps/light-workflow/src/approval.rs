@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::Digest;
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -135,6 +136,7 @@ impl WorkflowApprovalService {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        let patch = structured.get("patch").and_then(Value::as_str);
         if matches!(
             operation.as_str(),
             "apply-patch" | "create-branch" | "open-pr"
@@ -153,6 +155,22 @@ impl WorkflowApprovalService {
         .bind(preceding_execution_id)
         .fetch_one(&mut *tx)
         .await?;
+        if matches!(operation.as_str(), "create-branch" | "open-pr") {
+            let patch = patch.ok_or_else(|| {
+                sqlx::Error::Protocol(
+                    "approved repository provider action lacks canonical patch bytes".into(),
+                )
+            })?;
+            let actual = format!(
+                "sha256:{}",
+                hex::encode(sha2::Sha256::digest(patch.as_bytes()))
+            );
+            if actual != patch_digest {
+                return Err(sqlx::Error::Protocol(
+                    "canonical patch bytes differ from the verified artifact digest".into(),
+                ));
+            }
+        }
         let target_ref = structured
             .get("targetBranch")
             .and_then(Value::as_str)
@@ -174,6 +192,7 @@ impl WorkflowApprovalService {
             "targetBranch": target_ref,
             "patchArtifactReference": patch_artifact_reference,
             "patchDigest": patch_digest,
+            "patch": patch,
             "changedPaths": changed_paths,
             "pullRequestBase": structured.get("pullRequestBase").and_then(Value::as_str).unwrap_or("main"),
             "pullRequestTitle": format!("Approved automated change {}", preceding_execution_id),
