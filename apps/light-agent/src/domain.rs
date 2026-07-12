@@ -277,6 +277,7 @@ async fn enforce_quotas(
     session_admission: bool,
     tokens: i64,
     cost: i64,
+    cost_authoritative: bool,
 ) -> Result<()> {
     let keys = [
         ("HOST", host.to_string()),
@@ -322,6 +323,11 @@ async fn enforce_quotas(
                 }
                 let token_max = q.try_get::<Option<i64>, _>("token_budget_per_window")?;
                 let cost_max = q.try_get::<Option<i64>, _>("cost_budget_micros_per_window")?;
+                if cost_max.is_some() && !cost_authoritative {
+                    bail!(
+                        "agent cost quota requires an active authoritative model rate for {provider}"
+                    )
+                }
                 if token_max.is_some() || cost_max.is_some() {
                     let quota: Uuid = q.try_get("quota_id")?;
                     let window: i32 = q.try_get("window_seconds")?;
@@ -340,12 +346,23 @@ async fn enforce_quotas(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+enum QuotaSettlement {
+    Trusted {
+        tokens: i64,
+        cost_micros: i64,
+        source: &'static str,
+        evidence_digest: String,
+    },
+    ReservationCeiling,
+    Release,
+}
+
 async fn reconcile_turn_quota_usage(
     tx: &mut Transaction<'_, Postgres>,
     host_id: Uuid,
     turn_id: Uuid,
-    actual_tokens: i64,
-    actual_cost_micros: i64,
+    settlement: &QuotaSettlement,
 ) -> Result<()> {
     let reservations = sqlx::query(
         "SELECT quota_id,window_start_ts,reserved_tokens,reserved_cost_micros
@@ -362,6 +379,23 @@ async fn reconcile_turn_quota_usage(
         let window_start: DateTime<Utc> = reservation.try_get("window_start_ts")?;
         let reserved_tokens: i64 = reservation.try_get("reserved_tokens")?;
         let reserved_cost: i64 = reservation.try_get("reserved_cost_micros")?;
+        let (actual_tokens, actual_cost_micros, source, evidence_digest) = match settlement {
+            QuotaSettlement::Trusted {
+                tokens,
+                cost_micros,
+                source,
+                evidence_digest,
+            } => (
+                (*tokens).max(0),
+                (*cost_micros).max(0),
+                *source,
+                Some(evidence_digest.as_str()),
+            ),
+            QuotaSettlement::ReservationCeiling => {
+                (reserved_tokens, reserved_cost, "reservation-ceiling", None)
+            }
+            QuotaSettlement::Release => (0, 0, "released-no-effect", None),
+        };
         sqlx::query(
             "UPDATE agent_quota_usage_t SET
                reserved_tokens=GREATEST(0,reserved_tokens-$4),
@@ -375,24 +409,66 @@ async fn reconcile_turn_quota_usage(
         .bind(window_start)
         .bind(reserved_tokens)
         .bind(reserved_cost)
-        .bind(actual_tokens.max(0))
-        .bind(actual_cost_micros.max(0))
+        .bind(actual_tokens)
+        .bind(actual_cost_micros)
         .execute(&mut **tx)
         .await?;
         sqlx::query(
             "UPDATE agent_quota_reservation_t SET actual_tokens=$4,
-               actual_cost_micros=$5,reconciled_ts=now(),updated_ts=now()
+               actual_cost_micros=$5,accounting_source=$6,usage_evidence_digest=$7,
+               reconciled_ts=now(),updated_ts=now()
              WHERE host_id=$1 AND quota_id=$2 AND turn_id=$3 AND reconciled_ts IS NULL",
         )
         .bind(host_id)
         .bind(quota_id)
         .bind(turn_id)
-        .bind(actual_tokens.max(0))
-        .bind(actual_cost_micros.max(0))
+        .bind(actual_tokens)
+        .bind(actual_cost_micros)
+        .bind(source)
+        .bind(evidence_digest)
         .execute(&mut **tx)
         .await?;
     }
     Ok(())
+}
+
+fn trusted_runner_quota_settlement(result: &Value) -> Option<QuotaSettlement> {
+    let evidence = result.get("evidence")?.as_object()?;
+    let tokens = evidence
+        .get("trustedBrokerConsumedTokens")?
+        .as_str()?
+        .parse::<i64>()
+        .ok()?;
+    let cost_micros = evidence
+        .get("trustedBrokerConsumedCostMicros")?
+        .as_str()?
+        .parse::<i64>()
+        .ok()?;
+    if tokens < 0 || cost_micros < 0 {
+        return None;
+    }
+    let evidence_digest = execution_runner_protocol::canonical_sha256(&json!({
+        "executionId": result.get("executionId"),
+        "tokens": tokens,
+        "costMicros": cost_micros,
+        "requests": evidence.get("trustedBrokerConsumedRequests")
+    }))
+    .ok()?;
+    Some(QuotaSettlement::Trusted {
+        tokens,
+        cost_micros,
+        source: "runner-broker",
+        evidence_digest,
+    })
+}
+
+fn token_cost_micros(tokens: i64, rate_micros_per_million: i64) -> i64 {
+    if tokens <= 0 || rate_micros_per_million <= 0 {
+        return 0;
+    }
+    let product = i128::from(tokens).saturating_mul(i128::from(rate_micros_per_million));
+    let rounded = product.saturating_add(999_999) / 1_000_000;
+    i64::try_from(rounded).unwrap_or(i64::MAX)
 }
 
 impl AgentRepository {
@@ -801,14 +877,11 @@ impl AgentRepository {
         let policy: String = row.try_get("policy_digest")?;
         let state: String = row.try_get("state")?;
         let result = json!({"executionId":execution_id,"state":state,"result":row.try_get::<Option<Value>,_>("normalized_result")?,"error":row.try_get::<Option<Value>,_>("normalized_error")?});
-        let actual_tokens = result
-            .pointer("/result/usage/totalTokens")
-            .and_then(Value::as_i64)
-            .unwrap_or(0);
-        let actual_cost = result
-            .pointer("/result/usage/costMicros")
-            .and_then(Value::as_i64)
-            .unwrap_or(0);
+        let trusted_usage = row
+            .try_get::<Option<Value>, _>("normalized_result")?
+            .as_ref()
+            .and_then(trusted_runner_quota_settlement)
+            .unwrap_or(QuotaSettlement::ReservationCeiling);
         append_event(
             &mut tx,
             host_id,
@@ -825,7 +898,7 @@ impl AgentRepository {
             .bind(host_id).bind(turn_id).bind(execution_id).bind(&state).bind(&result).execute(&mut *tx).await?;
         sqlx::query("UPDATE execution_attempt_t SET accepted_by_origin_ts=COALESCE(accepted_by_origin_ts,now()),updated_ts=now() WHERE host_id=$1 AND execution_id=$2").bind(host_id).bind(execution_id).execute(&mut *tx).await?;
         sqlx::query("UPDATE agent_session_t SET active_turn_id=NULL,session_version=session_version+1,updated_ts=now() WHERE host_id=$1 AND session_id=$2 AND active_turn_id=$3").bind(host_id).bind(session).bind(turn_id).execute(&mut *tx).await?;
-        reconcile_turn_quota_usage(&mut tx, host_id, turn_id, actual_tokens, actual_cost).await?;
+        reconcile_turn_quota_usage(&mut tx, host_id, turn_id, &trusted_usage).await?;
         sqlx::query("SELECT pg_notify('agent_turn_capacity_v1',$1)")
             .bind(host_id.to_string())
             .execute(&mut *tx)
@@ -1133,7 +1206,8 @@ impl AgentRepository {
                 .bind(host_id).bind(turn_id).bind(&state).bind(&result).execute(&mut *tx).await?;
             sqlx::query("UPDATE agent_session_t SET active_turn_id=NULL,session_version=session_version+1,updated_ts=now() WHERE host_id=$1 AND session_id=$2 AND active_turn_id=$3")
                 .bind(host_id).bind(session_id).bind(turn_id).execute(&mut *tx).await?;
-            reconcile_turn_quota_usage(&mut tx, host_id, turn_id, 0, 0).await?;
+            reconcile_turn_quota_usage(&mut tx, host_id, turn_id, &QuotaSettlement::Release)
+                .await?;
             sqlx::query("SELECT pg_notify('agent_turn_capacity_v1',$1)")
                 .bind(host_id.to_string())
                 .execute(&mut *tx)
@@ -1196,6 +1270,7 @@ impl AgentRepository {
                 true,
                 0,
                 0,
+                true,
             )
             .await?;
         }
@@ -1292,7 +1367,31 @@ impl AgentRepository {
         let profile: String = row.try_get("product_profile_digest")?;
         let model_provider: String = row.try_get("model_provider")?;
         let model_name: String = row.try_get("model_name")?;
+        let rate = sqlx::query(
+            "SELECT input_cost_micros_per_million,output_cost_micros_per_million
+             FROM agent_model_rate_t WHERE host_id=$1 AND provider=$2 AND model=$3
+               AND enabled=TRUE AND effective_ts<=now()
+               AND (expires_ts IS NULL OR expires_ts>now())
+             ORDER BY effective_ts DESC,rate_id DESC LIMIT 1 FOR SHARE",
+        )
+        .bind(host_id)
+        .bind(&model_provider)
+        .bind(&model_name)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let input_rate = rate
+            .as_ref()
+            .map(|row| row.try_get::<i64, _>("input_cost_micros_per_million"))
+            .transpose()?
+            .unwrap_or(0);
+        let output_rate = rate
+            .as_ref()
+            .map(|row| row.try_get::<i64, _>("output_cost_micros_per_million"))
+            .transpose()?
+            .unwrap_or(0);
         let turn_id = AgentTurnId::new();
+        let token_reservation = 65_536_i64;
+        let cost_reservation = token_cost_micros(token_reservation, input_rate.max(output_rate));
         enforce_quotas(
             &mut tx,
             host_id,
@@ -1303,14 +1402,17 @@ impl AgentRepository {
             pool,
             Some(turn_id.0),
             false,
-            65_536,
-            0,
+            token_reservation,
+            cost_reservation,
+            rate.is_some(),
         )
         .await?;
         let deadline = std::cmp::min(Utc::now() + Duration::minutes(2), maximum);
-        sqlx::query("INSERT INTO agent_turn_t (host_id,turn_id,session_id,turn_sequence,queue_sequence,origin_kind,client_message_id,idempotency_key,policy_snapshot_id,policy_digest,data_boundary_digest,model_provider,model_name,model_action_budget,token_budget,cost_budget_micros,deadline_ts,service_pool_id) VALUES ($1,$2,$3,$4,$5,'user',$6,$6,$7,$8,$9,$10,$11,20,65536,0,$12,$13)")
+        sqlx::query("INSERT INTO agent_turn_t (host_id,turn_id,session_id,turn_sequence,queue_sequence,origin_kind,client_message_id,idempotency_key,policy_snapshot_id,policy_digest,data_boundary_digest,model_provider,model_name,model_action_budget,token_budget,cost_budget_micros,quota_input_cost_micros_per_million,quota_output_cost_micros_per_million,deadline_ts,service_pool_id) VALUES ($1,$2,$3,$4,$5,'user',$6,$6,$7,$8,$9,$10,$11,20,$12,$13,$14,$15,$16,$17)")
             .bind(host_id).bind(turn_id.0).bind(session_id.0).bind(turn_sequence).bind(queue_sequence).bind(client_message_id)
-            .bind(policy_snapshot_id).bind(&policy_digest).bind(&boundary).bind(&model_provider).bind(&model_name).bind(deadline).bind(pool).execute(&mut *tx).await?;
+            .bind(policy_snapshot_id).bind(&policy_digest).bind(&boundary).bind(&model_provider).bind(&model_name)
+            .bind(token_reservation).bind(cost_reservation).bind(input_rate).bind(output_rate)
+            .bind(deadline).bind(pool).execute(&mut *tx).await?;
         sqlx::query("UPDATE agent_session_t SET next_turn_sequence=next_turn_sequence+1,next_queue_sequence=next_queue_sequence+1,updated_ts=now() WHERE host_id=$1 AND session_id=$2")
             .bind(host_id).bind(session_id.0).execute(&mut *tx).await?;
         append_event(
@@ -1610,18 +1712,45 @@ impl AgentRepository {
         session_id: AgentSessionId,
         turn_id: AgentTurnId,
         response: &str,
-        actual_tokens: i64,
-        actual_cost_micros: i64,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
-            "SELECT policy_digest FROM agent_turn_t WHERE host_id=$1 AND turn_id=$2 FOR UPDATE",
+            "SELECT policy_digest,quota_input_cost_micros_per_million,
+                    quota_output_cost_micros_per_million
+             FROM agent_turn_t WHERE host_id=$1 AND turn_id=$2 FOR UPDATE",
         )
         .bind(host_id)
         .bind(turn_id.0)
         .fetch_one(&mut *tx)
         .await?;
         let policy: String = row.try_get("policy_digest")?;
+        let input_rate: i64 = row.try_get("quota_input_cost_micros_per_million")?;
+        let output_rate: i64 = row.try_get("quota_output_cost_micros_per_million")?;
+        let settlement = match (input_tokens, output_tokens) {
+            (Some(input_tokens), Some(output_tokens)) => {
+                let input_tokens = input_tokens.max(0);
+                let output_tokens = output_tokens.max(0);
+                let actual_tokens = input_tokens.saturating_add(output_tokens);
+                let actual_cost_micros = token_cost_micros(input_tokens, input_rate)
+                    .saturating_add(token_cost_micros(output_tokens, output_rate));
+                let evidence_digest = execution_runner_protocol::canonical_sha256(&json!({
+                    "turnId": turn_id.0,
+                    "inputTokens": input_tokens,
+                    "outputTokens": output_tokens,
+                    "inputRateMicrosPerMillion": input_rate,
+                    "outputRateMicrosPerMillion": output_rate
+                }))?;
+                QuotaSettlement::Trusted {
+                    tokens: actual_tokens,
+                    cost_micros: actual_cost_micros,
+                    source: "trusted-provider",
+                    evidence_digest,
+                }
+            }
+            _ => QuotaSettlement::ReservationCeiling,
+        };
         append_event(
             &mut tx,
             host_id,
@@ -1650,14 +1779,7 @@ impl AgentRepository {
             .bind(host_id).bind(turn_id.0).bind(json!({"text":response})).execute(&mut *tx).await?;
         sqlx::query("UPDATE agent_session_t SET active_turn_id=NULL,session_version=session_version+1,updated_ts=now() WHERE host_id=$1 AND session_id=$2 AND active_turn_id=$3")
             .bind(host_id).bind(session_id.0).bind(turn_id.0).execute(&mut *tx).await?;
-        reconcile_turn_quota_usage(
-            &mut tx,
-            host_id,
-            turn_id.0,
-            actual_tokens,
-            actual_cost_micros,
-        )
-        .await?;
+        reconcile_turn_quota_usage(&mut tx, host_id, turn_id.0, &settlement).await?;
         sqlx::query("SELECT pg_notify('agent_turn_capacity_v1',$1)")
             .bind(host_id.to_string())
             .execute(&mut *tx)
@@ -1673,12 +1795,47 @@ impl AgentRepository {
         turn_id: AgentTurnId,
         reason: &str,
     ) -> Result<()> {
+        self.fail_turn_with_settlement(
+            host_id,
+            session_id,
+            turn_id,
+            reason,
+            QuotaSettlement::Release,
+        )
+        .await
+    }
+
+    pub async fn fail_turn_after_model_dispatch(
+        &self,
+        host_id: Uuid,
+        session_id: AgentSessionId,
+        turn_id: AgentTurnId,
+        reason: &str,
+    ) -> Result<()> {
+        self.fail_turn_with_settlement(
+            host_id,
+            session_id,
+            turn_id,
+            reason,
+            QuotaSettlement::ReservationCeiling,
+        )
+        .await
+    }
+
+    async fn fail_turn_with_settlement(
+        &self,
+        host_id: Uuid,
+        session_id: AgentSessionId,
+        turn_id: AgentTurnId,
+        reason: &str,
+        settlement: QuotaSettlement,
+    ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         sqlx::query("UPDATE agent_turn_t SET state='FAILED',terminal_error=$3,terminal_ts=now(),updated_ts=now() WHERE host_id=$1 AND turn_id=$2 AND state NOT IN ('COMPLETED','FAILED','CANCELLED','UNKNOWN')")
             .bind(host_id).bind(turn_id.0).bind(json!({"message":reason})).execute(&mut *tx).await?;
         sqlx::query("UPDATE agent_session_t SET active_turn_id=NULL,session_version=session_version+1,updated_ts=now() WHERE host_id=$1 AND session_id=$2 AND active_turn_id=$3")
             .bind(host_id).bind(session_id.0).bind(turn_id.0).execute(&mut *tx).await?;
-        reconcile_turn_quota_usage(&mut tx, host_id, turn_id.0, 0, 0).await?;
+        reconcile_turn_quota_usage(&mut tx, host_id, turn_id.0, &settlement).await?;
         sqlx::query("SELECT pg_notify('agent_turn_capacity_v1',$1)")
             .bind(host_id.to_string())
             .execute(&mut *tx)
@@ -1878,6 +2035,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn trusted_quota_usage_requires_runner_owned_evidence_and_rounds_cost_up() {
+        assert_eq!(token_cost_micros(1, 1), 1);
+        assert_eq!(token_cost_micros(1_000_000, 250), 250);
+        assert!(
+            trusted_runner_quota_settlement(&json!({
+                "usage":{"totalTokens":1,"costMicros":1}
+            }))
+            .is_none()
+        );
+        let settlement = trusted_runner_quota_settlement(&json!({
+            "executionId":Uuid::now_v7(),
+            "evidence":{
+                "trustedBrokerConsumedRequests":"2",
+                "trustedBrokerConsumedTokens":"101",
+                "trustedBrokerConsumedCostMicros":"7"
+            }
+        }))
+        .unwrap();
+        assert!(matches!(
+            settlement,
+            QuotaSettlement::Trusted {
+                tokens: 101,
+                cost_micros: 7,
+                source: "runner-broker",
+                ..
+            }
+        ));
+    }
+
     #[tokio::test]
     async fn durable_admission_is_idempotent_fifo_and_projection_rebuildable() {
         let Ok(url) = std::env::var("LIGHT_AGENT_TEST_DATABASE_URL") else {
@@ -1979,7 +2166,7 @@ mod tests {
         assert_eq!(runtime.model_provider, "mock");
         assert_eq!(runtime.model_name, "mock");
         repository
-            .complete_turn(host_id, session, first.turn_id, "world", 1, 0)
+            .complete_turn(host_id, session, first.turn_id, "world", Some(1), Some(0))
             .await
             .unwrap();
         repository

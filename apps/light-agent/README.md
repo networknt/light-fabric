@@ -112,3 +112,20 @@ principal-bound edge runner, exact action schema, effect class, approval, runner
 identity, backend identity, and compatibility digest before enqueueing. Direct
 edge turns terminate from the accepted runner result; they do not leave a
 session waiting for a nonexistent in-process model continuation.
+
+## Trusted quota accounting
+
+Token and cost quotas reserve the admitted turn ceiling transactionally.
+Enterprise model usage is accepted only from the server-owned provider adapter
+and cost is calculated from the immutable `agent_model_rate_t` rate snapshot
+stored on the turn. Runner-backed model usage is accepted only from
+runner-journal broker counters copied into terminal evidence; sandbox-provided
+`usage` fields are ignored. Missing or uncertain usage settles at the reserved
+ceiling instead of refunding capacity. Pre-dispatch failures explicitly release
+their reservation. Every reconciliation records its accounting source and, for
+trusted actuals, an evidence digest, making retries idempotent and auditable.
+
+Deployments with cost quotas must publish an enabled model rate for the exact
+host, provider, and model before admitting a turn. Rates are expressed as
+micro-units per one million input or output tokens and are snapshotted at
+admission so later rate changes cannot alter an in-flight turn.

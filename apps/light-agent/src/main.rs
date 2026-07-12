@@ -3298,7 +3298,7 @@ async fn handle_socket(
                 Err(_) => {
                     let _ = state
                         .domain
-                        .fail_turn(
+                        .fail_turn_after_model_dispatch(
                             state.host_id,
                             AgentSessionId(session_id),
                             admitted.turn_id,
@@ -3312,7 +3312,7 @@ async fn handle_socket(
                         let _ = sender.send(Message::Text(payload.into())).await;
                     }
                 }
-                Ok(Ok((response, actual_tokens))) => {
+                Ok(Ok((response, usage))) => {
                     if let Some(text) = response.text {
                         if let Err(err) = state
                             .domain
@@ -3321,8 +3321,12 @@ async fn handle_socket(
                                 AgentSessionId(session_id),
                                 admitted.turn_id,
                                 &text,
-                                i64::try_from(actual_tokens).unwrap_or(i64::MAX),
-                                0,
+                                usage
+                                    .complete
+                                    .then(|| i64::try_from(usage.input_tokens).unwrap_or(i64::MAX)),
+                                usage.complete.then(|| {
+                                    i64::try_from(usage.output_tokens).unwrap_or(i64::MAX)
+                                }),
                             )
                             .await
                         {
@@ -3355,7 +3359,7 @@ async fn handle_socket(
                     error!("Agent loop error: {}", e);
                     let _ = state
                         .domain
-                        .fail_turn(
+                        .fail_turn_after_model_dispatch(
                             state.host_id,
                             AgentSessionId(session_id),
                             admitted.turn_id,
@@ -3857,6 +3861,13 @@ fn gateway_authorization(
     Ok(format!("Bearer {token}"))
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct TrustedProviderUsage {
+    input_tokens: u64,
+    output_tokens: u64,
+    complete: bool,
+}
+
 async fn run_agent_loop(
     state: &AgentState,
     mut messages: Vec<ChatMessage>,
@@ -3868,7 +3879,7 @@ async fn run_agent_loop(
     bank_id: Uuid,
     turn_resolution: &TurnRuntimeResolution,
     turn_runtime: &ModelProviderSelection,
-) -> Result<(ChatResponse, u64)> {
+) -> Result<(ChatResponse, TrustedProviderUsage)> {
     let user_prompt = messages
         .last()
         .map(|m| m.content.clone())
@@ -3946,7 +3957,10 @@ async fn run_agent_loop(
     // 3. Main LLM Loop
     let mut final_response = None;
     let mut action_count = 0usize;
-    let mut turn_tokens = 0u64;
+    let mut trusted_usage = TrustedProviderUsage {
+        complete: true,
+        ..TrustedProviderUsage::default()
+    };
     for _ in 0..state.limits.max_model_calls {
         let mut response = {
             let request = ChatRequest {
@@ -3963,17 +3977,29 @@ async fn run_agent_loop(
                 .await?
         };
 
-        if let Some(usage) = response.usage.as_ref() {
-            turn_tokens = turn_tokens
-                .saturating_add(usage.input_tokens.unwrap_or_default())
-                .saturating_add(usage.output_tokens.unwrap_or_default());
-            if turn_tokens > state.limits.max_turn_tokens {
-                bail!(
-                    "turn token budget exceeded ({} > {})",
-                    turn_tokens,
-                    state.limits.max_turn_tokens
-                );
+        if let Some(reported) = response.usage.as_ref() {
+            if let (Some(input_tokens), Some(output_tokens)) =
+                (reported.input_tokens, reported.output_tokens)
+            {
+                trusted_usage.input_tokens =
+                    trusted_usage.input_tokens.saturating_add(input_tokens);
+                trusted_usage.output_tokens =
+                    trusted_usage.output_tokens.saturating_add(output_tokens);
+                let turn_tokens = trusted_usage
+                    .input_tokens
+                    .saturating_add(trusted_usage.output_tokens);
+                if turn_tokens > state.limits.max_turn_tokens {
+                    bail!(
+                        "turn token budget exceeded ({} > {})",
+                        turn_tokens,
+                        state.limits.max_turn_tokens
+                    );
+                }
+            } else {
+                trusted_usage.complete = false;
             }
+        } else {
+            trusted_usage.complete = false;
         }
 
         if response.tool_calls.is_empty() {
@@ -4141,7 +4167,7 @@ async fn run_agent_loop(
             .map_err(|e| warn!("Failed to retain memory: {}", e));
     }
 
-    Ok((response, turn_tokens))
+    Ok((response, trusted_usage))
 }
 
 async fn build_agent_state(

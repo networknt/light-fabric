@@ -658,6 +658,24 @@ impl Supervisor {
             if let Some(error) = worker_error {
                 result.evidence.insert("workerError".into(), error);
             }
+            match supervisor.journal.broker_usage(lease.lease.execution_id) {
+                Ok((requests, tokens, cost)) => {
+                    result
+                        .evidence
+                        .insert("trustedBrokerConsumedRequests".into(), requests.to_string());
+                    result
+                        .evidence
+                        .insert("trustedBrokerConsumedTokens".into(), tokens.to_string());
+                    result
+                        .evidence
+                        .insert("trustedBrokerConsumedCostMicros".into(), cost.to_string());
+                }
+                Err(error) => {
+                    result.state = AttemptState::Unknown;
+                    result.failure_class = Some("broker_usage_unavailable".into());
+                    result.evidence.insert("brokerUsageError".into(), error);
+                }
+            }
             let terminal = TerminalLeaseResult {
                 lease: lease.lease.clone(),
                 result,
