@@ -20,6 +20,18 @@ is a development compatibility mode and is rejected unless
 Apply `portal-db/postgres/patch_20260711_light_agent_runtime.sql` after the
 workflow-runner migration before starting this version.
 
+Every active production `agent_definition_t` must publish an immutable policy
+by setting `policy_snapshot_id` to a non-revoked `agent_policy_snapshot_t` for
+the same host and agent definition. Startup fails if the configured default
+definition has no such snapshot, and an authenticated session for any selected
+definition fails closed until its published snapshot exists. Light-Agent
+deserializes the closed policy document, recomputes its SHA-256 digest, and
+checks every component digest against the immutable columns before admission.
+It does not synthesize policy, profile, catalog, model, execution, channel, or
+data-boundary digests from the session or caller identity. Resuming a session
+also requires the exact published snapshot and agent-definition version that
+were originally admitted.
+
 The process-wide `AgentState` contains only shared infrastructure and caches.
 Provider, model, definition version, policy, data boundary, product profile,
 service pool, compatibility digest, and effective catalog identity are resolved

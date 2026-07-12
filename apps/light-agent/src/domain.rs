@@ -386,6 +386,54 @@ async fn reconcile_turn_quota_usage(
 }
 
 impl AgentRepository {
+    /// Resolves the immutable policy published on the active agent definition.
+    /// Session admission must never manufacture policy component digests from
+    /// request or process-local values.
+    pub async fn resolve_published_policy(
+        &self,
+        host_id: Uuid,
+        agent_def_id: Uuid,
+    ) -> Result<PolicySnapshot> {
+        let row = sqlx::query(
+            "SELECT p.policy_snapshot_id,p.definition_digest,p.product_profile_digest,
+                    p.model_digest,p.catalog_digest,p.memory_digest,p.execution_digest,
+                    p.channel_digest,p.data_boundary_digest,p.resolved_snapshot,p.policy_digest
+             FROM agent_definition_t d
+             JOIN agent_policy_snapshot_t p ON p.host_id=d.host_id
+               AND p.policy_snapshot_id=d.policy_snapshot_id
+               AND p.agent_def_id=d.agent_def_id
+             WHERE d.host_id=$1 AND d.agent_def_id=$2 AND d.active=TRUE
+               AND p.revoked_ts IS NULL",
+        )
+        .bind(host_id)
+        .bind(agent_def_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .context("agent definition has no active published policy snapshot")?;
+        let document: Value = row.try_get("resolved_snapshot")?;
+        let policy: PolicySnapshot = serde_json::from_value(document)
+            .context("published agent policy snapshot document is invalid")?;
+        let expected_digest: String = row.try_get("policy_digest")?;
+        // PolicySnapshot has a closed, stable field order. Hashing the typed
+        // document also avoids depending on PostgreSQL JSONB key ordering.
+        let actual_digest = policy_document_digest(&policy)?;
+        if actual_digest != expected_digest
+            || policy.snapshot_id != row.try_get::<Uuid, _>("policy_snapshot_id")?
+            || policy.definition_digest != row.try_get::<String, _>("definition_digest")?
+            || policy.product_profile_digest
+                != row.try_get::<String, _>("product_profile_digest")?
+            || policy.model_digest != row.try_get::<String, _>("model_digest")?
+            || policy.catalog_digest != row.try_get::<String, _>("catalog_digest")?
+            || policy.memory_digest != row.try_get::<String, _>("memory_digest")?
+            || policy.execution_digest != row.try_get::<String, _>("execution_digest")?
+            || policy.channel_digest != row.try_get::<String, _>("channel_digest")?
+            || policy.data_boundary_digest != row.try_get::<String, _>("data_boundary_digest")?
+        {
+            bail!("published agent policy snapshot failed canonical binding verification")
+        }
+        Ok(policy)
+    }
+
     pub async fn schedule_edge_action(
         &self,
         host_id: Uuid,
@@ -1045,13 +1093,15 @@ impl AgentRepository {
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 0 {
-            let row = sqlx::query("SELECT principal_id,agent_def_id,state,service_pool_id,service_pool_compatibility_digest FROM agent_session_t WHERE host_id=$1 AND session_id=$2 FOR UPDATE")
+            let row = sqlx::query("SELECT principal_id,agent_def_id,agent_definition_version,policy_snapshot_id,state,service_pool_id,service_pool_compatibility_digest FROM agent_session_t WHERE host_id=$1 AND session_id=$2 FOR UPDATE")
                 .bind(spec.host_id).bind(spec.session_id.0).fetch_one(&mut *tx).await?;
             let principal: String = row.try_get("principal_id")?;
             let definition: Uuid = row.try_get("agent_def_id")?;
             let state: String = row.try_get("state")?;
             if principal != spec.principal_id
                 || definition != spec.agent_def_id
+                || row.try_get::<i64, _>("agent_definition_version")? != definition_version
+                || row.try_get::<Uuid, _>("policy_snapshot_id")? != spec.policy.snapshot_id
                 || state != "ACTIVE"
                 || row.try_get::<Option<Uuid>, _>("service_pool_id")?
                     != pool.as_ref().map(|p| p.pool_id)
@@ -1538,10 +1588,44 @@ async fn persist_policy(
     policy: &PolicySnapshot,
 ) -> Result<()> {
     let value = serde_json::to_value(policy)?;
-    let digest = sha256_digest(&serde_json::to_vec(&value)?);
-    sqlx::query("INSERT INTO agent_policy_snapshot_t(host_id,policy_snapshot_id,agent_def_id,definition_digest,product_profile_digest,model_digest,catalog_digest,memory_digest,execution_digest,channel_digest,data_boundary_digest,resolved_snapshot,policy_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(host_id,policy_snapshot_id) DO NOTHING")
+    let digest = policy_document_digest(policy)?;
+    let inserted = sqlx::query("INSERT INTO agent_policy_snapshot_t(host_id,policy_snapshot_id,agent_def_id,definition_digest,product_profile_digest,model_digest,catalog_digest,memory_digest,execution_digest,channel_digest,data_boundary_digest,resolved_snapshot,policy_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(host_id,policy_snapshot_id) DO NOTHING")
         .bind(host_id).bind(policy.snapshot_id).bind(agent_def_id).bind(&policy.definition_digest).bind(&policy.product_profile_digest).bind(&policy.model_digest).bind(&policy.catalog_digest).bind(&policy.memory_digest).bind(&policy.execution_digest).bind(&policy.channel_digest).bind(&policy.data_boundary_digest).bind(value).bind(digest).execute(&mut **tx).await?;
+    if inserted.rows_affected() == 0 {
+        let matches: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM agent_policy_snapshot_t
+             WHERE host_id=$1 AND policy_snapshot_id=$2 AND agent_def_id=$3
+               AND revoked_ts IS NULL AND definition_digest=$4
+               AND product_profile_digest=$5 AND model_digest=$6
+               AND catalog_digest=$7 AND memory_digest=$8
+               AND execution_digest=$9 AND channel_digest=$10
+               AND data_boundary_digest=$11 AND resolved_snapshot=$12
+               AND policy_digest=$13)",
+        )
+        .bind(host_id)
+        .bind(policy.snapshot_id)
+        .bind(agent_def_id)
+        .bind(&policy.definition_digest)
+        .bind(&policy.product_profile_digest)
+        .bind(&policy.model_digest)
+        .bind(&policy.catalog_digest)
+        .bind(&policy.memory_digest)
+        .bind(&policy.execution_digest)
+        .bind(&policy.channel_digest)
+        .bind(&policy.data_boundary_digest)
+        .bind(serde_json::to_value(policy)?)
+        .bind(policy_document_digest(policy)?)
+        .fetch_one(&mut **tx)
+        .await?;
+        if !matches {
+            bail!("policy snapshot identifier is already bound to different or revoked authority")
+        }
+    }
     Ok(())
+}
+
+fn policy_document_digest(policy: &PolicySnapshot) -> Result<String> {
+    Ok(sha256_digest(&serde_json::to_vec(policy)?))
 }
 
 async fn session_id_for_turn(
@@ -1579,6 +1663,39 @@ async fn append_event(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn published_policy_digest_is_stable_after_jsonb_key_reordering() {
+        let policy = PolicySnapshot {
+            snapshot_id: Uuid::nil(),
+            definition_digest: sha256_digest(b"definition"),
+            product_profile_digest: sha256_digest(b"profile"),
+            model_digest: sha256_digest(b"model"),
+            catalog_digest: sha256_digest(b"catalog"),
+            memory_digest: sha256_digest(b"memory"),
+            execution_digest: sha256_digest(b"execution"),
+            channel_digest: sha256_digest(b"channel"),
+            data_boundary_digest: sha256_digest(b"boundary"),
+            tools: BTreeMap::new(),
+        };
+        let reordered = json!({
+            "tools": {},
+            "snapshotId": Uuid::nil(),
+            "modelDigest": policy.model_digest.clone(),
+            "memoryDigest": policy.memory_digest.clone(),
+            "executionDigest": policy.execution_digest.clone(),
+            "definitionDigest": policy.definition_digest.clone(),
+            "dataBoundaryDigest": policy.data_boundary_digest.clone(),
+            "catalogDigest": policy.catalog_digest.clone(),
+            "channelDigest": policy.channel_digest.clone(),
+            "productProfileDigest": policy.product_profile_digest.clone()
+        });
+        let decoded: PolicySnapshot = serde_json::from_value(reordered).unwrap();
+        assert_eq!(
+            policy_document_digest(&policy).unwrap(),
+            policy_document_digest(&decoded).unwrap()
+        );
+    }
 
     #[test]
     fn edge_action_arguments_fail_closed_against_server_schema() {
@@ -1667,6 +1784,19 @@ mod tests {
             })
             .await
             .unwrap();
+        sqlx::query("UPDATE agent_definition_t SET policy_snapshot_id=$3 WHERE host_id=$1 AND agent_def_id=$2")
+            .bind(host_id)
+            .bind(agent_def_id)
+            .bind(session.0)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let published = repository
+            .resolve_published_policy(host_id, agent_def_id)
+            .await
+            .unwrap();
+        assert_eq!(published.snapshot_id, session.0);
+        assert_eq!(published.catalog_digest, digest("catalog"));
         let first = repository
             .admit_user_turn(host_id, session, "message-1", "hello")
             .await

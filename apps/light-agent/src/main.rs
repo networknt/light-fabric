@@ -42,7 +42,7 @@ use tracing::{error, info, warn};
 use url::Url;
 use uuid::Uuid;
 
-use agent_core::{AgentSessionId, PolicySnapshot, sha256_digest};
+use agent_core::{AgentSessionId, sha256_digest};
 use agent_delegation::{DelegationClaims, DelegationKind, DelegationSigner};
 use light_agent::domain::{AgentRepository, SessionSpec, TurnRuntimeResolution};
 
@@ -2745,26 +2745,25 @@ async fn handle_socket(
 ) {
     let (mut sender, mut receiver) = socket.split();
     let session_id_string = session_id.to_string();
-    let policy_digest = |label: &str| {
-        sha256_digest(
-            format!(
-                "{}:{}:{label}",
-                state.host_id, authenticated.owner.agent_def_id
-            )
-            .as_bytes(),
-        )
-    };
-    let durable_policy = PolicySnapshot {
-        snapshot_id: session_id,
-        definition_digest: policy_digest("definition"),
-        product_profile_digest: policy_digest("enterprise"),
-        model_digest: policy_digest("model"),
-        catalog_digest: policy_digest("catalog"),
-        memory_digest: policy_digest("memory"),
-        execution_digest: policy_digest("execution"),
-        channel_digest: policy_digest("channel"),
-        data_boundary_digest: policy_digest(&authenticated.owner.principal_id.to_string()),
-        tools: Default::default(),
+    let durable_policy = match state
+        .domain
+        .resolve_published_policy(state.host_id, authenticated.owner.agent_def_id)
+        .await
+    {
+        Ok(policy) => policy,
+        Err(error) => {
+            error!(agent_def_id=%authenticated.owner.agent_def_id, %error, "agent session policy resolution failed closed");
+            let _ = sender
+                .send(Message::Text(
+                    serde_json::to_string(&ServerMessage::Error {
+                        message: "Agent has no active published policy".into(),
+                    })
+                    .unwrap()
+                    .into(),
+                ))
+                .await;
+            return;
+        }
     };
     if let Err(err) = state
         .domain
@@ -3975,14 +3974,24 @@ async fn build_agent_state(
                         .to_string(),
                 )
             })?;
-    let definition_identity:Option<(i64,String)>=sqlx::query_as("SELECT d.aggregate_version,
-            COALESCE(p.policy_digest,'unresolved') FROM agent_definition_t d
-            LEFT JOIN agent_policy_snapshot_t p ON p.host_id=d.host_id AND p.policy_snapshot_id=d.policy_snapshot_id
-            WHERE d.host_id=$1 AND d.agent_def_id=$2")
-        .bind(host_id).bind(agent_def_id).fetch_optional(&pool).await
-        .map_err(|e|RuntimeError::Config(format!("failed to resolve Agent pool identity: {e}")))?;
-    let (definition_version, policy_digest) =
-        definition_identity.unwrap_or((0, "unresolved".into()));
+    let definition_identity: Option<(i64, String)> = sqlx::query_as(
+        "SELECT d.aggregate_version,
+            p.policy_digest FROM agent_definition_t d
+            JOIN agent_policy_snapshot_t p ON p.host_id=d.host_id
+              AND p.policy_snapshot_id=d.policy_snapshot_id AND p.agent_def_id=d.agent_def_id
+              AND p.revoked_ts IS NULL
+            WHERE d.host_id=$1 AND d.agent_def_id=$2 AND d.active=TRUE",
+    )
+    .bind(host_id)
+    .bind(agent_def_id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| RuntimeError::Config(format!("failed to resolve Agent pool identity: {e}")))?;
+    let (definition_version, policy_digest) = definition_identity.ok_or_else(|| {
+        RuntimeError::Config(
+            "configured agent definition has no active published policy snapshot".into(),
+        )
+    })?;
     let security = load_security_runtime(runtime_config, true)?
         .ok_or_else(|| RuntimeError::Config("JWT verification must be enabled".to_string()))?;
     security.bootstrap().await.map_err(|rejection| {
