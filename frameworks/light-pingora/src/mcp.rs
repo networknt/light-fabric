@@ -709,17 +709,57 @@ impl McpRouterRuntime {
         request: McpHttpRequest,
         context: McpRequestContext,
     ) -> Result<Option<McpHttpResponse>, RuntimeError> {
+        let started = Instant::now();
+        if tracing::enabled!(target: "light_pingora::mcp", tracing::Level::DEBUG) {
+            tracing::debug!(
+                target: "light_pingora::mcp",
+                http_method = %request.method,
+                path = %request.path,
+                header_count = request.headers.len(),
+                body_bytes = request.body.len(),
+                session_id_present = session_id_from_path_and_headers(
+                    request.path.as_str(),
+                    &request.headers,
+                )
+                .is_some(),
+                correlation_id = ?context.correlation_id,
+                "MCP router received request"
+            );
+        }
         if !self.matches_path(request.path.as_str()) {
             return Ok(None);
         }
 
         let method = request.method.to_ascii_uppercase();
-        match method.as_str() {
+        let outcome = match method.as_str() {
             "POST" => self.handle_post(request, &context).await.map(Some),
             "GET" => Ok(Some(method_not_allowed_response())),
             "DELETE" => self.handle_delete(request).await.map(Some),
             _ => Ok(Some(method_not_allowed_response())),
+        };
+        match &outcome {
+            Ok(Some(response)) => tracing::debug!(
+                target: "light_pingora::mcp",
+                http_method = %method,
+                status = response.status,
+                content_type = %response.content_type,
+                body_bytes = response.body.len(),
+                streamed = response.streamed,
+                elapsed_ms = started.elapsed().as_millis(),
+                correlation_id = ?context.correlation_id,
+                "MCP router completed request"
+            ),
+            Ok(None) => {}
+            Err(error) => tracing::warn!(
+                target: "light_pingora::mcp",
+                http_method = %method,
+                elapsed_ms = started.elapsed().as_millis(),
+                correlation_id = ?context.correlation_id,
+                error = %error,
+                "MCP router failed to process request"
+            ),
         }
+        outcome
     }
 
     async fn handle_post(
@@ -784,6 +824,20 @@ impl McpRouterRuntime {
             return Ok(accepted_response());
         }
         let method = method.unwrap_or_default();
+        if tracing::enabled!(target: "light_pingora::mcp", tracing::Level::DEBUG) {
+            tracing::debug!(
+                target: "light_pingora::mcp",
+                rpc_method = method,
+                request_id = ?id,
+                session_id_present = session_id_from_path_and_headers(
+                    request.path.as_str(),
+                    &request.headers,
+                )
+                .is_some(),
+                correlation_id = ?context.correlation_id,
+                "MCP JSON-RPC method invoked"
+            );
+        }
         if let Some(delegation) = context.delegation.as_ref() {
             let binding = match method {
                 "tools/list" => delegation.validate_binding(
@@ -823,6 +877,16 @@ impl McpRouterRuntime {
             {
                 Ok(session) => Some(session),
                 Err(error) => {
+                    tracing::warn!(
+                        target: "light_pingora::mcp",
+                        rpc_method = method,
+                        path = %request.path,
+                        status = error.status,
+                        code = error.code,
+                        reason = %error.message,
+                        correlation_id = ?context.correlation_id,
+                        "MCP request rejected during frontend session validation"
+                    );
                     return rpc_error_response(
                         response_mode,
                         error.status,
@@ -1278,6 +1342,21 @@ impl McpRouterRuntime {
         frontend_session_id: &str,
         context: &McpRequestContext,
     ) -> Result<JsonValue, McpExecutionError> {
+        if tracing::enabled!(target: "light_pingora::mcp", tracing::Level::DEBUG) {
+            let requested_tool_name = message
+                .get("params")
+                .and_then(JsonValue::as_object)
+                .and_then(|params| params.get("name"))
+                .and_then(JsonValue::as_str)
+                .unwrap_or("<missing>");
+            tracing::debug!(
+                target: "light_pingora::mcp",
+                tool_name = requested_tool_name,
+                session_id_present = !frontend_session_id.is_empty(),
+                correlation_id = ?context.correlation_id,
+                "MCP tools/call invoked"
+            );
+        }
         let params = message
             .get("params")
             .and_then(JsonValue::as_object)
