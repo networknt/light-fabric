@@ -2892,15 +2892,17 @@ impl ProxyHttp for GatewayProxy {
             if end_of_stream {
                 let input = std::mem::take(&mut ctx.access_control_response_body);
                 let Some(exchange) = ctx.access_control_exchange.as_ref() else {
-                    *body = Some(Bytes::from(input));
-                    return Ok(None);
+                    tracing::error!(
+                        "access-control response filter is active without request context"
+                    );
+                    return Err(access_control_response_filter_error());
                 };
                 let runtime = self.access_control.load();
                 let Some(runtime) = runtime.as_ref().as_ref() else {
-                    return Err(Error::explain(
-                        ErrorType::InternalError,
-                        "access-control is not configured",
-                    ));
+                    tracing::error!(
+                        "access-control response filter runtime became unavailable while processing the request"
+                    );
+                    return Err(access_control_response_filter_error());
                 };
                 let transformed = block_on_access_control_response(
                     runtime,
@@ -2910,8 +2912,8 @@ impl ProxyHttp for GatewayProxy {
                     ctx.correlation.correlation_id.as_deref(),
                     ctx.upstream_status.unwrap_or(200),
                     input.as_slice(),
-                );
-                *body = Some(Bytes::from(transformed.unwrap_or(input)));
+                )?;
+                *body = Some(Bytes::from(transformed));
             } else {
                 *body = None;
             }
@@ -3462,7 +3464,7 @@ fn block_on_access_control_response(
     correlation_id: Option<&str>,
     status_code: u16,
     body: &[u8],
-) -> Option<Vec<u8>> {
+) -> pingora::Result<Vec<u8>> {
     let future = runtime.filter_http_response(
         exchange.endpoint.as_str(),
         headers,
@@ -3472,15 +3474,36 @@ fn block_on_access_control_response(
         status_code,
         body,
     );
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        tokio::task::block_in_place(|| handle.block_on(future))
-    } else {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .ok()?
-            .block_on(future)
+    let handle = tokio::runtime::Handle::try_current().map_err(|error| {
+        tracing::error!(error = %error, "access-control response filter requires a Tokio runtime");
+        access_control_response_filter_error()
+    })?;
+    let result = tokio::task::block_in_place(|| handle.block_on(future));
+    match result {
+        Ok(Some(filtered)) => Ok(filtered),
+        Ok(None) => {
+            tracing::error!(
+                endpoint = exchange.endpoint,
+                "access-control response filter became unavailable while processing the request"
+            );
+            Err(access_control_response_filter_error())
+        }
+        Err(error) => {
+            tracing::error!(
+                endpoint = exchange.endpoint,
+                error = %error,
+                "access-control response filter failed"
+            );
+            Err(access_control_response_filter_error())
+        }
     }
+}
+
+fn access_control_response_filter_error() -> Box<Error> {
+    Error::explain(
+        ErrorType::HTTPStatus(500),
+        "access-control response filter failed",
+    )
 }
 
 fn access_control_status_error(status: u16, message: String) -> Box<Error> {
@@ -4061,6 +4084,107 @@ mod tests {
             cache_registry: None,
             registry_client: None,
         }
+    }
+
+    #[test]
+    fn active_response_filter_without_tokio_runtime_fails_closed() {
+        let runtime = AccessControlRuntime::new(
+            Some(light_pingora::AccessControlConfig::default()),
+            light_pingora::RuleFileConfig::default(),
+        );
+        let exchange = AccessControlExchange {
+            endpoint: "/v1/accounts@get".to_string(),
+            request_data: json!({}),
+        };
+
+        let error = block_on_access_control_response(
+            &runtime,
+            &exchange,
+            &[],
+            None,
+            None,
+            200,
+            br#"[{"accountNo":"1","ssn":"secret"}]"#,
+        )
+        .expect_err("response filter must not create a fallback runtime");
+
+        assert!(
+            error
+                .to_string()
+                .contains("access-control response filter failed")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn active_response_filter_fails_when_filter_becomes_unavailable() {
+        let runtime = AccessControlRuntime::new(
+            Some(light_pingora::AccessControlConfig::default()),
+            light_pingora::RuleFileConfig::default(),
+        );
+        let exchange = AccessControlExchange {
+            endpoint: "/v1/accounts@get".to_string(),
+            request_data: json!({}),
+        };
+
+        let result = block_on_access_control_response(
+            &runtime,
+            &exchange,
+            &[],
+            None,
+            None,
+            200,
+            br#"[{"accountNo":"1","ssn":"secret"}]"#,
+        );
+
+        let error = result.expect_err("active filter must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("access-control response filter failed")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn active_response_filter_propagates_filter_failure() {
+        let rules = serde_yaml::from_str::<light_pingora::RuleFileConfig>(
+            r#"
+ruleBodies:
+  filter:
+    common: Y
+    ruleId: filter
+    ruleName: Filter
+    ruleType: res-fil
+    expression: "true"
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+endpointRules:
+  /v1/accounts@get:
+    res-fil:
+      - filter
+"#,
+        )
+        .expect("rule config");
+        let runtime =
+            AccessControlRuntime::new(Some(light_pingora::AccessControlConfig::default()), rules);
+        let exchange = AccessControlExchange {
+            endpoint: "/v1/accounts@get".to_string(),
+            request_data: json!({}),
+        };
+
+        let result = block_on_access_control_response(
+            &runtime,
+            &exchange,
+            &[],
+            None,
+            None,
+            200,
+            b"unfiltered secret",
+        );
+
+        let error = result.expect_err("filter failure must fail closed");
+        let message = error.to_string();
+        assert!(message.contains("access-control response filter failed"));
+        assert!(!message.contains("valid JSON"));
     }
 
     #[test]

@@ -142,6 +142,49 @@ pub enum AccessDecision {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AccessControlResponseFilterError {
+    InvalidJson(String),
+    RuleNotFound(String),
+    RuleRejected(String),
+    RuleExecution { rule_id: String, message: String },
+    MissingFilteredBody,
+    Serialization(String),
+}
+
+impl fmt::Display for AccessControlResponseFilterError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidJson(message) => {
+                write!(formatter, "response body is not valid JSON: {message}")
+            }
+            Self::RuleNotFound(rule_id) => {
+                write!(formatter, "response filter rule body not found: {rule_id}")
+            }
+            Self::RuleRejected(rule_id) => {
+                write!(formatter, "response filter rule returned false: {rule_id}")
+            }
+            Self::RuleExecution { rule_id, message } => {
+                write!(
+                    formatter,
+                    "response filter rule execution failed for {rule_id}: {message}"
+                )
+            }
+            Self::MissingFilteredBody => {
+                formatter.write_str("filtered response body is missing from rule context")
+            }
+            Self::Serialization(message) => {
+                write!(
+                    formatter,
+                    "filtered response body serialization failed: {message}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for AccessControlResponseFilterError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolVisibility {
     Visible,
     Hidden,
@@ -422,18 +465,22 @@ impl AccessControlRuntime {
         correlation_id: Option<&str>,
         status_code: u16,
         response_body: &[u8],
-    ) -> Option<Vec<u8>> {
+    ) -> Result<Option<Vec<u8>>, AccessControlResponseFilterError> {
         if self.active_config_for_endpoint(endpoint).is_none() {
-            return None;
+            return Ok(None);
         }
         let Some((service_entry, endpoint_rules)) = self.find_service_entry(endpoint) else {
-            return None;
+            return Ok(None);
         };
         let rule_ids = self.response_filter_rule_ids(endpoint_rules);
         if rule_ids.is_empty() {
-            return None;
+            return Ok(None);
         }
-        let body_json = serde_json::from_slice::<JsonValue>(response_body).ok()?;
+        if response_body.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        let body_json = serde_json::from_slice::<JsonValue>(response_body)
+            .map_err(|error| AccessControlResponseFilterError::InvalidJson(error.to_string()))?;
         let permission = permission_for(endpoint_rules);
         let mut context = build_rule_context(
             "http",
@@ -459,9 +506,9 @@ impl AccessControlRuntime {
                 warn!(
                     endpoint,
                     rule_id = rule_id.as_str(),
-                    "Access control response filter skipped: rule body not found"
+                    "Access control response filter failed: rule body not found"
                 );
-                return None;
+                return Err(AccessControlResponseFilterError::RuleNotFound(rule_id));
             };
             match self.engine.execute_rule(rule, &mut context).await {
                 Ok(true) => {}
@@ -469,23 +516,30 @@ impl AccessControlRuntime {
                     warn!(
                         endpoint,
                         rule_id = rule_id.as_str(),
-                        "Access control response filter skipped: rule returned false"
+                        "Access control response filter failed: rule returned false"
                     );
-                    return None;
+                    return Err(AccessControlResponseFilterError::RuleRejected(rule_id));
                 }
                 Err(error) => {
                     error!(
                         endpoint,
                         rule_id = rule_id.as_str(),
                         error = %error,
-                        "Access control response filter skipped: rule execution error"
+                        "Access control response filter failed: rule execution error"
                     );
-                    return None;
+                    return Err(AccessControlResponseFilterError::RuleExecution {
+                        rule_id,
+                        message: error.to_string(),
+                    });
                 }
             }
         }
-        let filtered_body = context.get(RESPONSE_BODY_JSON)?;
-        serde_json::to_vec(filtered_body).ok()
+        let filtered_body = context
+            .get(RESPONSE_BODY_JSON)
+            .ok_or(AccessControlResponseFilterError::MissingFilteredBody)?;
+        serde_json::to_vec(filtered_body)
+            .map(Some)
+            .map_err(|error| AccessControlResponseFilterError::Serialization(error.to_string()))
     }
 
     pub async fn filter_mcp_response(
@@ -1945,11 +1999,139 @@ endpointRules:
                 br#"[{"accountNo":"1","firstName":"A","ssn":"secret"}]"#,
             )
             .await
+            .expect("response filter execution")
             .expect("filtered response");
         let value = serde_json::from_slice::<JsonValue>(&filtered).expect("json");
         assert_eq!(value[0]["accountNo"], "1");
         assert_eq!(value[0]["firstName"], "A");
         assert!(value[0].get("ssn").is_none());
+    }
+
+    #[tokio::test]
+    async fn filter_http_response_rejects_non_json_when_configured() {
+        let policy = policy_for_filter("col", json!({"col": {}}));
+
+        let error = policy
+            .filter_http_response(
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("teller")),
+                &json!({}),
+                None,
+                200,
+                b"not-json",
+            )
+            .await
+            .expect_err("configured response filter must reject non-JSON bodies");
+
+        assert!(matches!(
+            error,
+            AccessControlResponseFilterError::InvalidJson(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn filter_http_response_preserves_empty_body_when_configured() {
+        let policy = policy_for_filter("col", json!({"col": {}}));
+
+        let filtered = policy
+            .filter_http_response(
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("teller")),
+                &json!({}),
+                None,
+                204,
+                b"",
+            )
+            .await
+            .expect("empty response filter execution")
+            .expect("configured filter result");
+
+        assert!(filtered.is_empty());
+    }
+
+    #[tokio::test]
+    async fn filter_http_response_rejects_missing_rule_body() {
+        let mut policy = policy_for_filter("col", json!({"col": {}}));
+        policy.rules.rule_bodies.remove("filter");
+
+        let error = policy
+            .filter_http_response(
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("teller")),
+                &json!({}),
+                None,
+                200,
+                br#"[{"accountNo":"1","ssn":"secret"}]"#,
+            )
+            .await
+            .expect_err("configured response filter must reject a missing rule body");
+
+        assert_eq!(
+            error,
+            AccessControlResponseFilterError::RuleNotFound("filter".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn filter_http_response_rejects_rule_returning_false() {
+        let mut policy = policy_for_filter("col", json!({"col": {}}));
+        policy
+            .rules
+            .rule_bodies
+            .get_mut("filter")
+            .expect("filter rule")
+            .expression = Some("false".to_string());
+
+        let error = policy
+            .filter_http_response(
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("teller")),
+                &json!({}),
+                None,
+                200,
+                br#"[{"accountNo":"1","ssn":"secret"}]"#,
+            )
+            .await
+            .expect_err("configured response filter must reject a false rule");
+
+        assert_eq!(
+            error,
+            AccessControlResponseFilterError::RuleRejected("filter".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn filter_http_response_rejects_rule_execution_error() {
+        let mut policy = policy_for_filter("col", json!({"col": {}}));
+        policy
+            .rules
+            .rule_bodies
+            .get_mut("filter")
+            .expect("filter rule")
+            .expression = None;
+
+        let error = policy
+            .filter_http_response(
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("teller")),
+                &json!({}),
+                None,
+                200,
+                br#"[{"accountNo":"1","ssn":"secret"}]"#,
+            )
+            .await
+            .expect_err("configured response filter must reject rule execution errors");
+
+        assert!(matches!(
+            error,
+            AccessControlResponseFilterError::RuleExecution { rule_id, .. }
+                if rule_id == "filter"
+        ));
     }
 
     #[tokio::test]
@@ -1982,7 +2164,8 @@ endpointRules:
                 200,
                 br#"[{"accountNo":"1","firstName":"A","ssn":"secret"}]"#,
             )
-            .await;
+            .await
+            .expect("disabled response filtering");
         assert!(filtered.is_none());
 
         let result = policy
@@ -2063,7 +2246,8 @@ endpointRules:
                 200,
                 br#"[{"accountNo":"1","firstName":"A","ssn":"secret"}]"#,
             )
-            .await;
+            .await
+            .expect("skipped response filtering");
         assert!(filtered.is_none());
 
         let result = policy
@@ -2145,6 +2329,7 @@ endpointRules:
                 br#"[{"accountNo":"1","firstName":"A","ssn":"secret"}]"#,
             )
             .await
+            .expect("response filter execution")
             .expect("http response remains filtered by endpoint");
         let http_value = serde_json::from_slice::<JsonValue>(&http_filtered).expect("json");
         assert!(http_value[0].get("ssn").is_none());
