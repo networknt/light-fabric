@@ -136,6 +136,72 @@ async fn test_parallel_access_control_fail() {
 }
 
 #[tokio::test]
+async fn test_endpoint_permissions_cannot_overwrite_reserved_context_fields() {
+    let permission = json!({
+        "auditInfo": {"forged": true},
+        "headers": {"forged": true},
+        "endpoint": "forged@endpoint",
+        "toolName": "forged-tool",
+        "toolArguments": {"forged": true},
+        "correlationId": "forged-correlation",
+        "permission": {"forged": true},
+        "responseBody": "forged-body",
+        "responseBodyJson": {"forged": true},
+        "statusCode": 201,
+        "accessControl": {"defaultInclude": true},
+        "roles": ["admin"],
+        "row": {"role": {"admin": []}},
+        "col": {"role": {"admin": "[id]"}}
+    });
+    let mut endpoint_config = HashMap::new();
+    endpoint_config.insert("access-control".to_string(), json!([]));
+    endpoint_config.insert("permission".to_string(), permission.clone());
+    let config = RuleConfig {
+        rule_bodies: HashMap::new(),
+        endpoint_rules: HashMap::from([(
+            "/api/test@get".to_string(),
+            EndpointConfig::Map(endpoint_config),
+        )]),
+    };
+    let engine = Arc::new(RuleEngine::new(Arc::new(ActionRegistry::new())));
+    let executor = MultiThreadRuleExecutor::new(config, engine);
+    let mut context = json!({
+        "auditInfo": {"real": true},
+        "headers": {"x-test": "real-header"},
+        "endpoint": "real@endpoint",
+        "toolName": "real-tool",
+        "toolArguments": {"real": true},
+        "correlationId": "real-correlation",
+        "responseBody": "real-body",
+        "responseBodyJson": {"real": true},
+        "statusCode": 200,
+        "accessControl": {"defaultInclude": false}
+    });
+
+    assert!(
+        executor
+            .execute_endpoint_rules("/api/test@get", "access-control", &mut context)
+            .await
+            .expect("endpoint rule execution")
+    );
+
+    assert_eq!(context["auditInfo"], json!({"real": true}));
+    assert_eq!(context["headers"], json!({"x-test": "real-header"}));
+    assert_eq!(context["endpoint"], "real@endpoint");
+    assert_eq!(context["toolName"], "real-tool");
+    assert_eq!(context["toolArguments"], json!({"real": true}));
+    assert_eq!(context["correlationId"], "real-correlation");
+    assert_eq!(context["responseBody"], "real-body");
+    assert_eq!(context["responseBodyJson"], json!({"real": true}));
+    assert_eq!(context["statusCode"], 200);
+    assert_eq!(context["accessControl"], json!({"defaultInclude": false}));
+    assert_eq!(context["permission"], permission);
+    assert_eq!(context["roles"], json!(["admin"]));
+    assert_eq!(context["row"], permission["row"]);
+    assert_eq!(context["col"], permission["col"]);
+}
+
+#[tokio::test]
 async fn test_sequential_logic_all() {
     let (config, engine) = build_test_config();
     let executor = MultiThreadRuleExecutor::new(config, engine);

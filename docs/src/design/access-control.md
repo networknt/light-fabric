@@ -267,7 +267,12 @@ Permission values should continue to be injected twice:
 - as top-level convenience fields, such as `roles`, `row`, and `col`
 
 This preserves compatibility with existing rule bodies and built-in action
-classes.
+classes. Runtime-owned context fields are the exception: permission keys named
+`auditInfo`, `headers`, `endpoint`, `toolName`, `toolArguments`,
+`correlationId`, `permission`, `responseBody`, `responseBodyJson`, `statusCode`,
+or `accessControl` remain available under `permission` but are not promoted to
+the top level. This prevents endpoint configuration from replacing verified
+identity, request, or response context.
 
 ## Request Access
 

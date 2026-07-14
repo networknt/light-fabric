@@ -1,7 +1,10 @@
 use crate::config_util::{deserialize_string_list, deserialize_typed_map};
 use crate::security::AuthPrincipal;
 use async_trait::async_trait;
-use light_rule::{ActionRegistry, EndpointConfig, Rule, RuleAction, RuleActionPlugin, RuleEngine};
+use light_rule::{
+    ActionRegistry, EndpointConfig, Rule, RuleAction, RuleActionPlugin, RuleEngine,
+    is_reserved_rule_context_key,
+};
 use light_runtime::{ModuleKind, RuntimeConfig, RuntimeError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
@@ -948,6 +951,13 @@ fn build_rule_context(
     context.insert("permission".to_string(), permission_val);
     if let Some(permission) = permission {
         for (key, value) in permission {
+            if is_reserved_rule_context_key(key) {
+                warn!(
+                    permission_key = key.as_str(),
+                    "Skipping permission key that collides with a reserved rule-context field"
+                );
+                continue;
+            }
             context.insert(key.clone(), value.clone());
         }
     }
@@ -1876,6 +1886,61 @@ mod tests {
             claims: json!({ "role": role }),
             ..AuthPrincipal::default()
         }
+    }
+
+    #[test]
+    fn permission_fields_cannot_overwrite_reserved_rule_context() {
+        let permission = json!({
+            "auditInfo": {"forged": true},
+            "headers": {"forged": true},
+            "endpoint": "forged@endpoint",
+            "toolName": "forged-tool",
+            "toolArguments": {"forged": true},
+            "correlationId": "forged-correlation",
+            "permission": {"forged": true},
+            "responseBody": "forged-body",
+            "responseBodyJson": {"forged": true},
+            "statusCode": 201,
+            "accessControl": {"defaultInclude": true},
+            "roles": ["admin"],
+            "row": {"role": {"admin": []}},
+            "col": {"role": {"admin": "[id]"}}
+        });
+        let permission = permission.as_object().expect("permission object");
+        let context = build_rule_context(
+            "real-tool",
+            "real@endpoint",
+            &[("X-Test".to_string(), "real-header".to_string())],
+            Some(&auth("user")),
+            &json!({"real": true}),
+            Some("real-correlation"),
+            Some(permission),
+        );
+
+        assert_eq!(
+            context["auditInfo"]["subject_claims"]["ClaimsMap"]["role"],
+            "user"
+        );
+        assert_eq!(context["headers"]["x-test"], "real-header");
+        assert_eq!(context["endpoint"], "real@endpoint");
+        assert_eq!(context["toolName"], "real-tool");
+        assert_eq!(context["toolArguments"], json!({"real": true}));
+        assert_eq!(context["correlationId"], "real-correlation");
+        assert_eq!(context["permission"], JsonValue::Object(permission.clone()));
+        for key in [
+            "responseBody",
+            "responseBodyJson",
+            "statusCode",
+            "accessControl",
+        ] {
+            assert!(
+                context.get(key).is_none(),
+                "reserved key {key} was promoted"
+            );
+        }
+        assert_eq!(context["roles"], json!(["admin"]));
+        assert_eq!(context["row"], permission["row"]);
+        assert_eq!(context["col"], permission["col"]);
     }
 
     fn policy_for_filter(rule_type: &str, permission: JsonValue) -> AccessControlRuntime {

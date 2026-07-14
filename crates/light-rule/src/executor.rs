@@ -1,9 +1,10 @@
 use crate::engine::RuleEngine;
+use crate::is_reserved_rule_context_key;
 use crate::models::{Rule, RuleConfig};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 /// State of the executor, containing the rules and endpoints mappings.
 pub struct RuntimeState {
@@ -143,6 +144,13 @@ impl MultiThreadRuleExecutor {
                 if let Value::Object(perm_map) = &perm_val {
                     if let Value::Object(input_map) = input {
                         for (k, v) in perm_map {
+                            if is_reserved_rule_context_key(k) {
+                                warn!(
+                                    permission_key = k.as_str(),
+                                    "Skipping permission key that collides with a reserved rule-context field"
+                                );
+                                continue;
+                            }
                             input_map.insert(k.clone(), v.clone());
                         }
                     }
