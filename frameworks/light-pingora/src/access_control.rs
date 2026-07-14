@@ -1573,7 +1573,15 @@ fn matching_row_filters(context: &JsonValue, row_config: &JsonValue) -> Vec<Vec<
             if !permission_matches(Some(claim.as_str()), permission) {
                 continue;
             }
-            filter_groups.push(row_filter_list(filters, context));
+            let filters = row_filter_list(filters, context).unwrap_or_else(|| {
+                warn!(
+                    dimension,
+                    permission,
+                    "Access control row filter configuration is invalid; matched rows will be denied"
+                );
+                Vec::new()
+            });
+            filter_groups.push(filters);
         }
     }
     filter_groups
@@ -1611,11 +1619,14 @@ fn row_filter_items_mut(body: &mut JsonValue) -> Option<&mut Vec<JsonValue>> {
 
 fn row_matches(item: &JsonValue, filters: &[RowFilter]) -> bool {
     let Some(map) = item.as_object() else {
-        return true;
+        return false;
     };
+    if filters.is_empty() {
+        return false;
+    }
     filters.iter().all(|filter| {
         let Some(value) = map.get(filter.col_name.as_str()) else {
-            return true;
+            return false;
         };
         compare_row_value(value, filter.operator.as_str(), filter.col_value.as_str())
     })
@@ -1665,27 +1676,45 @@ fn row_expression_base_context(context: &JsonValue) -> JsonValue {
 }
 
 fn compare_row_value(value: &JsonValue, operator: &str, expected: &str) -> bool {
-    if let Some(actual) = value.as_f64()
-        && let Ok(expected) = expected.parse::<f64>()
-    {
-        return match operator {
-            "=" => actual == expected,
-            "!=" => actual != expected,
-            "<" => actual < expected,
-            ">" => actual > expected,
-            "<=" => actual <= expected,
-            ">=" => actual >= expected,
-            _ => true,
-        };
+    if let Some(actual) = value.as_f64() {
+        if operator == "range" {
+            let bounds = list_tokens(expected);
+            if bounds.len() != 2 {
+                return false;
+            }
+            let (Ok(min), Ok(max)) = (bounds[0].parse::<f64>(), bounds[1].parse::<f64>()) else {
+                return false;
+            };
+            return actual >= min && actual <= max;
+        }
+        if matches!(operator, "=" | "!=" | "<" | ">" | "<=" | ">=") {
+            let Ok(expected) = expected.parse::<f64>() else {
+                return false;
+            };
+            return match operator {
+                "=" => actual == expected,
+                "!=" => actual != expected,
+                "<" => actual < expected,
+                ">" => actual > expected,
+                "<=" => actual <= expected,
+                ">=" => actual >= expected,
+                _ => false,
+            };
+        }
     }
 
-    let actual = value_to_string(value).unwrap_or_default();
+    let actual = match value {
+        JsonValue::String(value) => value.clone(),
+        JsonValue::Number(value) => value.to_string(),
+        JsonValue::Bool(value) => value.to_string(),
+        JsonValue::Null | JsonValue::Array(_) | JsonValue::Object(_) => return false,
+    };
     match operator {
         "=" => actual == expected,
         "!=" => actual != expected,
         "in" => list_tokens(expected).iter().any(|item| item == &actual),
         "not in" => !list_tokens(expected).iter().any(|item| item == &actual),
-        _ => true,
+        _ => false,
     }
 }
 
@@ -1696,25 +1725,37 @@ struct RowFilter {
     col_value: String,
 }
 
-fn row_filter_list(value: &JsonValue, context: &JsonValue) -> Vec<RowFilter> {
-    let Some(filters) = value.as_array() else {
-        return Vec::new();
-    };
+fn row_filter_list(value: &JsonValue, context: &JsonValue) -> Option<Vec<RowFilter>> {
+    let filters = value.as_array()?;
+    if filters.is_empty() {
+        return None;
+    }
     filters
         .iter()
-        .filter_map(|filter| {
+        .map(|filter| {
             let col_value = value_to_string(filter.get("colValue")?)?;
-            let col_value = col_value
-                .strip_prefix('@')
-                .and_then(|claim| claim_value(context, &[claim]))
-                .unwrap_or(col_value);
+            let col_value = if let Some(claim) = col_value.strip_prefix('@') {
+                claim_value(context, &[claim])?
+            } else {
+                col_value
+            };
+            let col_name = filter.get("colName")?.as_str()?.trim();
+            if col_name.is_empty() {
+                return None;
+            }
+            let operator = match filter.get("operator") {
+                Some(operator) => operator.as_str()?,
+                None => "=",
+            };
+            if !matches!(
+                operator,
+                "=" | "!=" | "<" | ">" | "<=" | ">=" | "in" | "not in" | "range"
+            ) {
+                return None;
+            }
             Some(RowFilter {
-                col_name: filter.get("colName")?.as_str()?.to_string(),
-                operator: filter
-                    .get("operator")
-                    .and_then(JsonValue::as_str)
-                    .unwrap_or("=")
-                    .to_string(),
+                col_name: col_name.to_string(),
+                operator: operator.to_string(),
                 col_value,
             })
         })
@@ -2974,6 +3015,112 @@ allow-account-role:
             result["content"][0]["text"],
             JsonValue::String("[{\"status\":\"O\"}]".to_string())
         );
+    }
+
+    #[test]
+    fn row_matches_rejects_unknown_string_and_numeric_operators() {
+        let string_filter = RowFilter {
+            col_name: "status".to_string(),
+            operator: "==".to_string(),
+            col_value: "O".to_string(),
+        };
+        let numeric_filter = RowFilter {
+            col_name: "priority".to_string(),
+            operator: "approximately".to_string(),
+            col_value: "50".to_string(),
+        };
+
+        assert!(!row_matches(&json!({"status": "O"}), &[string_filter]));
+        assert!(!row_matches(&json!({"priority": 50}), &[numeric_filter]));
+    }
+
+    #[test]
+    fn row_matches_applies_numeric_range_operator() {
+        let filters = [RowFilter {
+            col_name: "priority".to_string(),
+            operator: "range".to_string(),
+            col_value: "[25, 75]".to_string(),
+        }];
+
+        assert!(row_matches(&json!({"priority": 25}), &filters));
+        assert!(row_matches(&json!({"priority": 75}), &filters));
+        assert!(!row_matches(&json!({"priority": 24}), &filters));
+        assert!(!row_matches(&json!({"priority": 76}), &filters));
+        assert!(!row_matches(
+            &json!({"priority": 50}),
+            &[RowFilter {
+                col_name: "priority".to_string(),
+                operator: "range".to_string(),
+                col_value: "[invalid, 75]".to_string(),
+            }]
+        ));
+    }
+
+    #[test]
+    fn row_matches_rejects_missing_columns_and_non_object_rows() {
+        let filters = [RowFilter {
+            col_name: "status".to_string(),
+            operator: "=".to_string(),
+            col_value: "O".to_string(),
+        }];
+
+        assert!(!row_matches(&json!({"other": "O"}), &filters));
+        assert!(!row_matches(&json!("O"), &filters));
+    }
+
+    #[test]
+    fn row_filter_list_rejects_malformed_filters_and_missing_claim_values() {
+        assert!(
+            row_filter_list(&json!([{"operator": "=", "colValue": "O"}]), &json!({})).is_none()
+        );
+        assert!(
+            row_filter_list(
+                &json!([{"colName": "status", "operator": "==", "colValue": "O"}]),
+                &json!({})
+            )
+            .is_none()
+        );
+        assert!(
+            row_filter_list(
+                &json!([{"colName": "status", "operator": "=", "colValue": "@region"}]),
+                &json!({})
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn empty_matched_row_filter_group_denies_all_rows() {
+        let mut body = json!([{"status": "O"}, {"status": "C"}]);
+
+        apply_row_filter_groups(&mut body, &[Vec::new()], true);
+
+        assert_eq!(body, json!([]));
+    }
+
+    #[test]
+    fn every_matched_row_filter_group_must_match() {
+        let mut body = json!([
+            {"status": "O", "region": "CA"},
+            {"status": "O", "region": "US"},
+            {"status": "C", "region": "CA"}
+        ]);
+        let filter_groups = [
+            vec![RowFilter {
+                col_name: "status".to_string(),
+                operator: "=".to_string(),
+                col_value: "O".to_string(),
+            }],
+            vec![RowFilter {
+                col_name: "region".to_string(),
+                operator: "=".to_string(),
+                col_value: "CA".to_string(),
+            }],
+        ];
+
+        apply_row_filter_groups(&mut body, &filter_groups, false);
+
+        assert_eq!(body, json!([{"status": "O", "region": "CA"}]));
     }
 
     #[tokio::test]
