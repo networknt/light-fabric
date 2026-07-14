@@ -94,12 +94,12 @@ accessRuleLogic: any
 defaultDeny: true
 defaultInclude: false
 skipPathPrefixes: []
+claimMappings: {}
 toolsListAccessControl:
   mode: permission
   unknownRuleFallback: hidden
   maxCelEvaluations: 100
   maxCacheEntries: 2000
-  claimMappings: {}
 ```
 
 The filter should support three modes:
@@ -190,22 +190,23 @@ For example, the visibility checker resolves `roles` by reading
 `auditInfo.subject_claims.ClaimsMap.group`, or
 `auditInfo.subject_claims.ClaimsMap.groups`.
 
-If a deployment uses non-standard claim names, add an explicit claim mapping
-under `toolsListAccessControl`:
+If a deployment uses non-standard claim names, add an access-control-wide claim
+mapping:
 
 ```yaml
-toolsListAccessControl:
-  mode: permission
-  claimMappings:
-    roles:
-      - custom_roles
-    groups:
-      - custom_scope
+claimMappings:
+  roles:
+    - custom_roles
+  groups:
+    - custom_scope
 ```
 
 When a mapping is present for a permission key, the mapped claim names are used
 instead of the standard aliases for that key. Keys without a mapping continue to
-use the standard aliases.
+use the standard aliases. The mapping also applies to built-in request access
+and response filters. Existing `toolsListAccessControl.claimMappings` values are
+retained as a compatibility fallback when the corresponding top-level mapping
+is absent.
 
 This covers the sample policy where:
 

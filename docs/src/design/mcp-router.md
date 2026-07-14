@@ -825,15 +825,17 @@ The current compatibility actions support the existing permission model:
 
 - `roles` is used by `RoleBasedAccessControlAction`.
 - `row.role`, `row.group`, `row.position`, `row.attribute`, and `row.user`
-  provide row filters for the matching caller claim.
+  provide row filters for the matching caller claim. Additional dimensions are
+  supported when their claim names are declared in `claimMappings`.
 - If `permission.row` exists but no row-filter entry matches the caller's
   claims, `access-control.defaultInclude` decides the miss behavior.
   `defaultInclude: false` returns no rows and is the secure default.
   `defaultInclude: true` keeps the legacy include-all behavior.
 - Row filters support `=`, `!=`, `<`, `>`, `<=`, `>=`, `in`, and `not in`.
 - `col.role`, `col.group`, `col.position`, `col.attribute`, and `col.user`
-  provide the returned field list for the matching caller claim. A field list
-  prefixed with `!` is a remove list; otherwise it is a keep list.
+  provide the returned field list for the matching caller claim. Mapped custom
+  dimensions are also supported. A field list prefixed with `!` is a remove
+  list; otherwise it is a keep list.
 - Column filtering must apply to top-level JSON objects as well as top-level
   arrays and object payloads containing `items`. Row filtering applies only to
   arrays or `items` arrays.

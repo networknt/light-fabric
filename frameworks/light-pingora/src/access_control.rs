@@ -46,6 +46,8 @@ pub struct AccessControlConfig {
     pub default_include: bool,
     #[serde(default, deserialize_with = "deserialize_string_list")]
     pub skip_path_prefixes: Vec<String>,
+    #[serde(default, alias = "claimMappings")]
+    pub claim_mappings: BTreeMap<String, Vec<String>>,
     #[serde(default, alias = "toolsListAccessControl")]
     pub tools_list_access_control: ToolsListAccessControlConfig,
 }
@@ -58,6 +60,7 @@ impl Default for AccessControlConfig {
             default_deny: true,
             default_include: false,
             skip_path_prefixes: Vec::new(),
+            claim_mappings: BTreeMap::new(),
             tools_list_access_control: ToolsListAccessControlConfig::default(),
         }
     }
@@ -124,6 +127,7 @@ pub struct AccessControlRuntime {
     access: Option<AccessControlConfig>,
     rules: RuleFileConfig,
     engine: Arc<RuleEngine>,
+    claim_mappings: Arc<BTreeMap<String, Vec<String>>>,
 }
 
 impl fmt::Debug for AccessControlRuntime {
@@ -195,10 +199,14 @@ pub enum ToolVisibility {
 
 impl AccessControlRuntime {
     pub fn new(access: Option<AccessControlConfig>, rules: RuleFileConfig) -> Self {
+        let claim_mappings = Arc::new(effective_claim_mappings(access.as_ref()));
         Self {
             access,
             rules,
-            engine: Arc::new(RuleEngine::new(Arc::new(default_action_registry()))),
+            engine: Arc::new(RuleEngine::new(Arc::new(default_action_registry(
+                claim_mappings.clone(),
+            )))),
+            claim_mappings,
         }
     }
 
@@ -221,10 +229,13 @@ impl AccessControlRuntime {
     }
 
     pub fn tools_list_access_control(&self) -> ToolsListAccessControlConfig {
-        self.access
+        let mut config = self
+            .access
             .as_ref()
             .map(|config| config.tools_list_access_control.clone())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        config.claim_mappings = self.claim_mappings.as_ref().clone();
+        config
     }
 
     pub fn normalized_claims_for_visibility(&self, auth: Option<&AuthPrincipal>) -> JsonValue {
@@ -335,11 +346,7 @@ impl AccessControlRuntime {
         };
 
         if let Some(visibility) = endpoint_rules.get("visibility") {
-            return if permission_matches_claims(
-                visibility,
-                auth,
-                &config.tools_list_access_control.claim_mappings,
-            ) {
+            return if permission_matches_claims(visibility, auth, self.claim_mappings.as_ref()) {
                 ToolVisibility::Visible
             } else {
                 ToolVisibility::Hidden
@@ -364,12 +371,7 @@ impl AccessControlRuntime {
                 outcomes.push(unknown_rule_visible(config));
                 continue;
             };
-            match rule_visibility_match(
-                rule,
-                &permission,
-                auth,
-                &config.tools_list_access_control.claim_mappings,
-            ) {
+            match rule_visibility_match(rule, &permission, auth, self.claim_mappings.as_ref()) {
                 RuleVisibilityMatch::Matched(value) => outcomes.push(value),
                 RuleVisibilityMatch::Ignored => {}
                 RuleVisibilityMatch::Unknown => outcomes.push(unknown_rule_visible(config)),
@@ -888,23 +890,27 @@ where
     Ok(None)
 }
 
-fn default_action_registry() -> ActionRegistry {
+fn default_action_registry(claim_mappings: Arc<BTreeMap<String, Vec<String>>>) -> ActionRegistry {
     let mut registry = ActionRegistry::new();
-    let rbac = Arc::new(RoleBasedAccessControlAction);
+    let rbac = Arc::new(RoleBasedAccessControlAction {
+        claim_mappings: claim_mappings.clone(),
+    });
     registry.register(
         "com.networknt.rule.RoleBasedAccessControlAction",
         rbac.clone(),
     );
     registry.register("RoleBasedAccessControlAction", rbac);
 
-    let column = Arc::new(ResponseColumnFilterAction);
+    let column = Arc::new(ResponseColumnFilterAction {
+        claim_mappings: claim_mappings.clone(),
+    });
     registry.register(
         "com.networknt.rule.ResponseColumnFilterAction",
         column.clone(),
     );
     registry.register("ResponseColumnFilterAction", column);
 
-    let row = Arc::new(ResponseRowFilterAction);
+    let row = Arc::new(ResponseRowFilterAction { claim_mappings });
     registry.register("com.networknt.rule.ResponseRowFilterAction", row.clone());
     registry.register("ResponseRowFilterAction", row);
 
@@ -1243,6 +1249,15 @@ fn default_claim_names_for_permission(permission_key: &str) -> &'static [&'stati
     }
 }
 
+fn effective_claim_mappings(config: Option<&AccessControlConfig>) -> BTreeMap<String, Vec<String>> {
+    let Some(config) = config else {
+        return BTreeMap::new();
+    };
+    let mut mappings = config.tools_list_access_control.claim_mappings.clone();
+    mappings.extend(config.claim_mappings.clone());
+    mappings
+}
+
 fn values_to_token_set(value: &JsonValue) -> BTreeSet<String> {
     match value {
         JsonValue::Array(values) => values.iter().flat_map(values_to_token_set).collect(),
@@ -1396,7 +1411,9 @@ fn update_text_content(result: &mut JsonValue, text: String) {
     }
 }
 
-struct RoleBasedAccessControlAction;
+struct RoleBasedAccessControlAction {
+    claim_mappings: Arc<BTreeMap<String, Vec<String>>>,
+}
 
 #[async_trait]
 impl RuleActionPlugin for RoleBasedAccessControlAction {
@@ -1405,7 +1422,7 @@ impl RuleActionPlugin for RoleBasedAccessControlAction {
         rule_context: &mut JsonValue,
         _action_values: &Option<JsonValue>,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        let caller_roles = claim_for_dimension(rule_context, "role");
+        let caller_roles = claim_for_dimension(rule_context, "role", &self.claim_mappings);
         let endpoint_roles = rule_context.get("roles").and_then(value_to_string);
         Ok(has_any_configured_permission(
             caller_roles.as_deref(),
@@ -1414,7 +1431,9 @@ impl RuleActionPlugin for RoleBasedAccessControlAction {
     }
 }
 
-struct ResponseColumnFilterAction;
+struct ResponseColumnFilterAction {
+    claim_mappings: Arc<BTreeMap<String, Vec<String>>>,
+}
 
 #[async_trait]
 impl RuleActionPlugin for ResponseColumnFilterAction {
@@ -1426,7 +1445,7 @@ impl RuleActionPlugin for ResponseColumnFilterAction {
         let Some(col_config) = rule_context.get("col").cloned() else {
             return Ok(false);
         };
-        let filter_specs = matching_column_filters(rule_context, &col_config);
+        let filter_specs = matching_column_filters(rule_context, &col_config, &self.claim_mappings);
         let Some(body) = response_body_json_mut(rule_context) else {
             return Ok(false);
         };
@@ -1435,7 +1454,9 @@ impl RuleActionPlugin for ResponseColumnFilterAction {
     }
 }
 
-struct ResponseRowFilterAction;
+struct ResponseRowFilterAction {
+    claim_mappings: Arc<BTreeMap<String, Vec<String>>>,
+}
 
 #[async_trait]
 impl RuleActionPlugin for ResponseRowFilterAction {
@@ -1447,7 +1468,7 @@ impl RuleActionPlugin for ResponseRowFilterAction {
         let Some(row_config) = rule_context.get("row").cloned() else {
             return Ok(true);
         };
-        let filter_groups = matching_row_filters(rule_context, &row_config);
+        let filter_groups = matching_row_filters(rule_context, &row_config, &self.claim_mappings);
         let default_include = rule_context
             .pointer("/accessControl/defaultInclude")
             .and_then(JsonValue::as_bool)
@@ -1514,13 +1535,17 @@ fn response_body_json_mut(context: &mut JsonValue) -> Option<&mut JsonValue> {
 fn matching_column_filters(
     context: &JsonValue,
     col_config: &JsonValue,
+    claim_mappings: &BTreeMap<String, Vec<String>>,
 ) -> Vec<(bool, Vec<String>)> {
     let mut specs = Vec::new();
-    for dimension in ["role", "group", "position", "attribute", "user"] {
-        let Some(claim) = claim_for_dimension(context, dimension) else {
+    let Some(dimensions) = col_config.as_object() else {
+        return specs;
+    };
+    for (dimension, configured_permissions) in dimensions {
+        let Some(claim) = claim_for_dimension(context, dimension, claim_mappings) else {
             continue;
         };
-        let Some(permission_map) = col_config.get(dimension).and_then(JsonValue::as_object) else {
+        let Some(permission_map) = configured_permissions.as_object() else {
             continue;
         };
         for (permission, fields) in permission_map {
@@ -1570,13 +1595,20 @@ fn apply_column_specs_to_object(
     }
 }
 
-fn matching_row_filters(context: &JsonValue, row_config: &JsonValue) -> Vec<Vec<RowFilter>> {
+fn matching_row_filters(
+    context: &JsonValue,
+    row_config: &JsonValue,
+    claim_mappings: &BTreeMap<String, Vec<String>>,
+) -> Vec<Vec<RowFilter>> {
     let mut filter_groups = Vec::new();
-    for dimension in ["role", "group", "position", "attribute", "user"] {
-        let Some(claim) = claim_for_dimension(context, dimension) else {
+    let Some(dimensions) = row_config.as_object() else {
+        return filter_groups;
+    };
+    for (dimension, configured_permissions) in dimensions {
+        let Some(claim) = claim_for_dimension(context, dimension, claim_mappings) else {
             continue;
         };
-        let Some(permission_map) = row_config.get(dimension).and_then(JsonValue::as_object) else {
+        let Some(permission_map) = configured_permissions.as_object() else {
             continue;
         };
         for (permission, filters) in permission_map {
@@ -1781,15 +1813,29 @@ fn column_field_list(value: &JsonValue) -> Option<(bool, Vec<String>)> {
     (!fields.is_empty()).then_some((remove, fields))
 }
 
-fn claim_for_dimension(context: &JsonValue, dimension: &str) -> Option<String> {
-    match dimension {
-        "role" => claim_value(context, &["role"]),
-        "group" => claim_value(context, &["grp", "group"]),
-        "position" => claim_value(context, &["pos", "position"]),
-        "attribute" => claim_value(context, &["att", "attribute"]),
-        "user" => claim_value(context, &["uid", "user_id", "sub"]),
-        claim => claim_value(context, &[claim]),
+fn claim_for_dimension(
+    context: &JsonValue,
+    dimension: &str,
+    claim_mappings: &BTreeMap<String, Vec<String>>,
+) -> Option<String> {
+    let permission_key = match dimension {
+        "role" => "roles",
+        "group" => "groups",
+        "position" => "positions",
+        "attribute" => "attributes",
+        "user" => "users",
+        dimension => dimension,
+    };
+    let mut claim_names = claim_names_for_permission(permission_key, claim_mappings);
+    if claim_names.is_empty() {
+        claim_names.push(dimension.to_string());
     }
+    let claim_values = claim_names
+        .iter()
+        .filter_map(|name| claim_value(context, &[name.as_str()]))
+        .flat_map(|value| list_tokens(value.as_str()))
+        .collect::<BTreeSet<_>>();
+    (!claim_values.is_empty()).then(|| claim_values.into_iter().collect::<Vec<_>>().join(" "))
 }
 
 fn claim_value(context: &JsonValue, names: &[&str]) -> Option<String> {
@@ -2082,6 +2128,58 @@ endpointRules:
     }
 
     #[tokio::test]
+    async fn role_action_uses_configured_claim_mapping() {
+        let policy = AccessControlRuntime::new(
+            Some(AccessControlConfig {
+                claim_mappings: BTreeMap::from([(
+                    "roles".to_string(),
+                    vec!["custom_roles".to_string()],
+                )]),
+                ..AccessControlConfig::default()
+            }),
+            serde_yaml::from_str::<RuleFileConfig>(
+                r#"
+ruleBodies:
+  allow-role:
+    common: Y
+    ruleId: allow-role
+    ruleName: Allow Role
+    ruleType: req-acc
+    expression: "true"
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+    actions:
+      - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
+endpointRules:
+  /v1/reports@get:
+    req-acc:
+      - allow-role
+    permission:
+      roles: auditor
+"#,
+            )
+            .expect("rule config"),
+        );
+        let principal = AuthPrincipal {
+            claims: json!({"custom_roles": ["auditor"]}),
+            ..AuthPrincipal::default()
+        };
+
+        assert_eq!(
+            policy
+                .authorize_http_endpoint(
+                    "/v1/reports@get",
+                    &[],
+                    Some(&principal),
+                    &json!({}),
+                    None,
+                )
+                .await,
+            AccessDecision::Allowed
+        );
+    }
+
+    #[tokio::test]
     async fn filter_http_response_applies_column_filter_for_endpoint() {
         let policy = policy_for_filter(
             "col",
@@ -2111,6 +2209,79 @@ endpointRules:
         assert_eq!(value[0]["accountNo"], "1");
         assert_eq!(value[0]["firstName"], "A");
         assert!(value[0].get("ssn").is_none());
+    }
+
+    #[tokio::test]
+    async fn response_filters_use_configured_claim_mapping() {
+        let policy = AccessControlRuntime::new(
+            Some(AccessControlConfig {
+                claim_mappings: BTreeMap::from([(
+                    "roles".to_string(),
+                    vec!["custom_roles".to_string()],
+                )]),
+                ..AccessControlConfig::default()
+            }),
+            serde_yaml::from_str::<RuleFileConfig>(
+                r#"
+ruleBodies:
+  row-filter:
+    common: Y
+    ruleId: row-filter
+    ruleName: Row Filter
+    ruleType: res-fil
+    expression: "true"
+    actions:
+      - actionClassName: com.networknt.rule.ResponseRowFilterAction
+  column-filter:
+    common: Y
+    ruleId: column-filter
+    ruleName: Column Filter
+    ruleType: res-fil
+    expression: "true"
+    actions:
+      - actionClassName: com.networknt.rule.ResponseColumnFilterAction
+endpointRules:
+  /v1/reports@get:
+    res-fil:
+      - row-filter
+      - column-filter
+    permission:
+      row:
+        role:
+          auditor:
+            - colName: status
+              operator: "="
+              colValue: open
+      col:
+        role:
+          auditor: '["id","status"]'
+"#,
+            )
+            .expect("rule config"),
+        );
+        let principal = AuthPrincipal {
+            claims: json!({"custom_roles": "auditor"}),
+            ..AuthPrincipal::default()
+        };
+
+        let filtered = policy
+            .filter_http_response(
+                "/v1/reports@get",
+                &[],
+                Some(&principal),
+                &json!({}),
+                None,
+                200,
+                br#"[{"id":1,"status":"open","secret":"a"},{"id":2,"status":"closed","secret":"b"}]"#,
+            )
+            .await
+            .expect("response filter execution")
+            .expect("filtered response");
+
+        assert_eq!(
+            serde_json::from_slice::<JsonValue>(&filtered).expect("json"),
+            json!([{"id": 1, "status": "open"}])
+        );
     }
 
     #[tokio::test]
@@ -2588,6 +2759,30 @@ toolsListAccessControl:
     }
 
     #[test]
+    fn global_claim_mappings_override_legacy_tools_list_mappings() {
+        let config = serde_yaml::from_str::<AccessControlConfig>(
+            r#"
+enabled: true
+claimMappings:
+  roles:
+    - global_roles
+toolsListAccessControl:
+  claimMappings:
+    roles:
+      - legacy_roles
+    groups:
+      - legacy_groups
+"#,
+        )
+        .expect("config");
+        let policy = AccessControlRuntime::new(Some(config), RuleFileConfig::default());
+        let effective = policy.tools_list_access_control().claim_mappings;
+
+        assert_eq!(effective["roles"], vec!["global_roles".to_string()]);
+        assert_eq!(effective["groups"], vec!["legacy_groups".to_string()]);
+    }
+
+    #[test]
     fn load_access_control_runtime_reads_tools_list_access_control_from_values() {
         let mut values = HashMap::new();
         values.insert("access-control.enabled".to_string(), YamlValue::Bool(true));
@@ -2613,6 +2808,26 @@ toolsListAccessControl:
         assert_eq!(config.mode, ToolsListAccessControlMode::Permission);
         assert_eq!(config.max_cel_evaluations, 25);
         assert_eq!(config.max_cache_entries, 75);
+    }
+
+    #[test]
+    fn load_access_control_runtime_reads_global_claim_mappings_from_values() {
+        let mut values = HashMap::new();
+        values.insert("access-control.enabled".to_string(), YamlValue::Bool(true));
+        values.insert(
+            "access-control.claimMappings.roles".to_string(),
+            serde_yaml::from_str("[custom_roles]").expect("roles mapping"),
+        );
+
+        let (_config_dir, runtime_config) = runtime_config_with_values(values);
+        let policy = load_access_control_runtime(&runtime_config, true)
+            .expect("load policy")
+            .expect("policy");
+
+        assert_eq!(
+            policy.tools_list_access_control().claim_mappings["roles"],
+            vec!["custom_roles".to_string()]
+        );
     }
 
     #[test]
@@ -3079,6 +3294,82 @@ allow-account-role:
         assert_eq!(
             result["content"][0]["text"],
             JsonValue::String("[{\"status\":\"O\"}]".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_response_filters_support_custom_mapped_dimension() {
+        let policy = AccessControlRuntime::new(
+            Some(AccessControlConfig {
+                claim_mappings: BTreeMap::from([(
+                    "tenant".to_string(),
+                    vec!["tenant_id".to_string()],
+                )]),
+                ..AccessControlConfig::default()
+            }),
+            serde_yaml::from_str::<RuleFileConfig>(
+                r#"
+ruleBodies:
+  row-filter:
+    common: Y
+    ruleId: row-filter
+    ruleName: Row Filter
+    ruleType: res-fil
+    expression: "true"
+    actions:
+      - actionClassName: com.networknt.rule.ResponseRowFilterAction
+  column-filter:
+    common: Y
+    ruleId: column-filter
+    ruleName: Column Filter
+    ruleType: res-fil
+    expression: "true"
+    actions:
+      - actionClassName: com.networknt.rule.ResponseColumnFilterAction
+endpointRules:
+  reports@call:
+    res-fil:
+      - row-filter
+      - column-filter
+    permission:
+      row:
+        tenant:
+          acme:
+            - colName: tenant
+              operator: "="
+              colValue: acme
+      col:
+        tenant:
+          acme: '["id","tenant"]'
+"#,
+            )
+            .expect("rule config"),
+        );
+        let principal = AuthPrincipal {
+            claims: json!({"tenant_id": "acme"}),
+            ..AuthPrincipal::default()
+        };
+
+        let result = policy
+            .filter_mcp_response(
+                "reports",
+                "reports@call",
+                &[],
+                Some(&principal),
+                &json!({}),
+                None,
+                json!({
+                    "content": [{
+                        "type": "text",
+                        "text": "[{\"id\":1,\"tenant\":\"acme\",\"secret\":\"a\"},{\"id\":2,\"tenant\":\"other\",\"secret\":\"b\"}]"
+                    }]
+                }),
+            )
+            .await;
+
+        assert_eq!(
+            result["content"][0]["text"],
+            JsonValue::String("[{\"id\":1,\"tenant\":\"acme\"}]".to_string())
         );
     }
 

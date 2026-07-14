@@ -135,6 +135,7 @@ defaultInclude: false
 skipPathPrefixes:
   - /health
   - /adm
+claimMappings: {}
 ```
 
 Fields:
@@ -151,6 +152,25 @@ Fields:
   `false`, the row filter returns no rows. When `true`, the row filter preserves
   the legacy include-all behavior.
 - `skipPathPrefixes`: endpoint prefixes that bypass access-control entirely.
+- `claimMappings`: maps permission dimensions to JWT claim names for built-in
+  request-access, row-filter, column-filter, and MCP tool-visibility behavior.
+  Standard keys are `roles`, `groups`, `positions`, `attributes`, and `users`.
+  Custom row or column dimensions use the dimension name as the mapping key.
+
+For example, a deployment with custom role and tenant claims can use:
+
+```yaml
+claimMappings:
+  roles:
+    - custom_roles
+  tenant:
+    - tenant_id
+```
+
+Standard aliases remain active when a dimension has no configured mapping.
+Existing `toolsListAccessControl.claimMappings` configuration remains supported
+as a compatibility fallback, but top-level `claimMappings` takes precedence and
+applies consistently to authorization and response filtering.
 
 `rule.yml` contains the reusable rules and endpoint policy:
 
