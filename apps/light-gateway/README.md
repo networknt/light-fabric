@@ -11,7 +11,7 @@ Delegation does not bypass normal gateway authorization or response filtering.
 When delegation is enabled, configure
 `LIGHT_GATEWAY_DELEGATION_DATABASE_URL` (or `DATABASE_URL`) for the shared
 PostgreSQL replay ledger and apply
-`portal-db/postgres/patch_20260711_agent_delegation_replay.sql`. Every gateway
+`portal-db/postgres/patch_20260711_10_agent_delegation_replay.sql`. Every gateway
 replica atomically consumes the token replay ID from that ledger. Duplicate
 consumption and database outages fail closed. `LIGHT_GATEWAY_INSTANCE_ID` is
 optional audit metadata and otherwise defaults to the configured service ID.

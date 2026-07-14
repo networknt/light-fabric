@@ -17,7 +17,7 @@ auditing remain in the command boundary. `LIGHT_AGENT_MEMORY_WRITE_MODE=direct-p
 is a development compatibility mode and is rejected unless
 `LIGHT_AGENT_ALLOW_DIRECT_PG_MEMORY=true` is also set.
 
-Apply `portal-db/postgres/patch_20260711_light_agent_runtime.sql` after the
+Apply `portal-db/postgres/patch_20260711_01_light_agent_runtime.sql` after the
 workflow-runner migration before starting this version.
 
 Every active production `agent_definition_t` must publish an immutable policy
