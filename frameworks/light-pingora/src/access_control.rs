@@ -28,6 +28,7 @@ const REQUEST_ACCESS: &str = "req-acc";
 const RESPONSE_FILTER: &str = "res-fil";
 const RESPONSE_BODY: &str = "responseBody";
 const RESPONSE_BODY_JSON: &str = "responseBodyJson";
+const RESPONSE_ROW_FILTER_DENIED: &str = "responseRowFilterDenied";
 const RESPONSE_COLUMN_FILTER_ACTION: &str = "ResponseColumnFilterAction";
 const RESPONSE_ROW_FILTER_ACTION: &str = "ResponseRowFilterAction";
 const RESPONSE_CEL_ROW_FILTER_ACTION: &str = "ResponseCelRowFilterAction";
@@ -631,6 +632,14 @@ impl AccessControlRuntime {
                     return mcp_filter_error_result("Access control response filter failed");
                 }
             }
+        }
+
+        if response_row_filter_denied(&context) {
+            warn!(
+                tool_name,
+                endpoint, "Access control response row filter denied a top-level MCP object"
+            );
+            return mcp_filter_error_result("Access denied by response filter");
         }
 
         let Some(filtered_body) = context.get(RESPONSE_BODY_JSON).cloned() else {
@@ -1473,10 +1482,15 @@ impl RuleActionPlugin for ResponseRowFilterAction {
             .pointer("/accessControl/defaultInclude")
             .and_then(JsonValue::as_bool)
             .unwrap_or(false);
-        let Some(body) = response_body_json_mut(rule_context) else {
-            return Ok(false);
+        let denied = {
+            let Some(body) = response_body_json_mut(rule_context) else {
+                return Ok(false);
+            };
+            apply_row_filter_groups(body, &filter_groups, default_include)
         };
-        apply_row_filter_groups(body, &filter_groups, default_include);
+        if denied {
+            mark_response_row_filter_denied(rule_context);
+        }
         Ok(true)
     }
 }
@@ -1514,22 +1528,47 @@ impl RuleActionPlugin for ResponseCelRowFilterAction {
             .and_then(|values| values.get("conditionSecurityProfile"))
             .and_then(JsonValue::as_str);
         let base_context = row_expression_base_context(rule_context);
-        let Some(body) = response_body_json_mut(rule_context) else {
-            return Ok(false);
+        let denied = {
+            let Some(body) = response_body_json_mut(rule_context) else {
+                return Ok(false);
+            };
+            apply_cel_row_filter(
+                body,
+                &base_context,
+                &self.engine,
+                row_expression,
+                condition_security_profile,
+            )?
         };
-        apply_cel_row_filter(
-            body,
-            &base_context,
-            &self.engine,
-            row_expression,
-            condition_security_profile,
-        )?;
+        if denied {
+            mark_response_row_filter_denied(rule_context);
+        }
         Ok(true)
     }
 }
 
 fn response_body_json_mut(context: &mut JsonValue) -> Option<&mut JsonValue> {
     context.as_object_mut()?.get_mut(RESPONSE_BODY_JSON)
+}
+
+fn mark_response_row_filter_denied(context: &mut JsonValue) {
+    if let Some(access_control) = context
+        .get_mut("accessControl")
+        .and_then(JsonValue::as_object_mut)
+    {
+        access_control.insert(
+            RESPONSE_ROW_FILTER_DENIED.to_string(),
+            JsonValue::Bool(true),
+        );
+    }
+}
+
+fn response_row_filter_denied(context: &JsonValue) -> bool {
+    context
+        .get("accessControl")
+        .and_then(|access_control| access_control.get(RESPONSE_ROW_FILTER_DENIED))
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false)
 }
 
 fn matching_column_filters(
@@ -1633,21 +1672,30 @@ fn apply_row_filter_groups(
     body: &mut JsonValue,
     filter_groups: &[Vec<RowFilter>],
     default_include: bool,
-) {
-    let Some(items) = row_filter_items_mut(body) else {
-        return;
-    };
-    if filter_groups.is_empty() {
-        if !default_include {
-            items.clear();
-        }
-        return;
+) -> bool {
+    if let Some(items) = row_filter_items_mut(body) {
+        items.retain(|item| row_matches_filter_groups(item, filter_groups, default_include));
+        return false;
     }
-    items.retain(|item| {
-        filter_groups
-            .iter()
-            .all(|filters| row_matches(item, filters))
-    });
+
+    if body.is_object() && !row_matches_filter_groups(body, filter_groups, default_include) {
+        *body = JsonValue::Object(JsonMap::new());
+        return true;
+    }
+    false
+}
+
+fn row_matches_filter_groups(
+    item: &JsonValue,
+    filter_groups: &[Vec<RowFilter>],
+    default_include: bool,
+) -> bool {
+    if filter_groups.is_empty() {
+        return default_include;
+    }
+    filter_groups
+        .iter()
+        .all(|filters| row_matches(item, filters))
 }
 
 fn row_filter_items_mut(body: &mut JsonValue) -> Option<&mut Vec<JsonValue>> {
@@ -1680,18 +1728,36 @@ fn apply_cel_row_filter(
     engine: &RuleEngine,
     row_expression: &str,
     condition_security_profile: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let Some(items) = row_filter_items_mut(body) else {
-        return Ok(());
-    };
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(items) = row_filter_items_mut(body) {
+        engine.retain_cel_predicate_rows(
+            "ResponseCelRowFilterAction",
+            row_expression,
+            condition_security_profile,
+            RESPONSE_FILTER,
+            base_context,
+            items,
+        )?;
+        return Ok(false);
+    }
+    if !body.is_object() {
+        return Ok(false);
+    }
+
+    let mut items = vec![body.take()];
     engine.retain_cel_predicate_rows(
         "ResponseCelRowFilterAction",
         row_expression,
         condition_security_profile,
         RESPONSE_FILTER,
         base_context,
-        items,
-    )
+        &mut items,
+    )?;
+    let denied = items.is_empty();
+    *body = items
+        .pop()
+        .unwrap_or_else(|| JsonValue::Object(JsonMap::new()));
+    Ok(denied)
 }
 
 fn row_expression_base_context(context: &JsonValue) -> JsonValue {
@@ -2209,6 +2275,43 @@ endpointRules:
         assert_eq!(value[0]["accountNo"], "1");
         assert_eq!(value[0]["firstName"], "A");
         assert!(value[0].get("ssn").is_none());
+    }
+
+    #[tokio::test]
+    async fn filter_http_response_denies_non_matching_top_level_object() {
+        let policy = policy_for_filter(
+            "row",
+            json!({
+                "row": {
+                    "role": {
+                        "teller": [{
+                            "colName": "accountType",
+                            "operator": "=",
+                            "colValue": "C"
+                        }]
+                    }
+                }
+            }),
+        );
+
+        let filtered = policy
+            .filter_http_response(
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("teller")),
+                &json!({}),
+                None,
+                200,
+                br#"{"accountType":"S","ssn":"secret"}"#,
+            )
+            .await
+            .expect("response filter execution")
+            .expect("filtered response");
+
+        assert_eq!(
+            serde_json::from_slice::<JsonValue>(&filtered).expect("json"),
+            json!({})
+        );
     }
 
     #[tokio::test]
@@ -3254,6 +3357,47 @@ allow-account-role:
     }
 
     #[tokio::test]
+    async fn empty_top_level_object_from_column_filter_is_not_an_mcp_error() {
+        let policy = policy_for_filter(
+            "col",
+            json!({
+                "col": {
+                    "role": {
+                        "mcp-reader": "missing"
+                    }
+                }
+            }),
+        );
+
+        let result = policy
+            .filter_mcp_response(
+                "accounts",
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("mcp-reader")),
+                &json!({}),
+                None,
+                json!({
+                    "content": [{
+                        "type": "text",
+                        "text": r#"{"secret":"value"}"#
+                    }],
+                    "structuredContent": {
+                        "secret": "value"
+                    }
+                }),
+            )
+            .await;
+
+        assert!(result.get("isError").is_none());
+        assert_eq!(result["structuredContent"], json!({}));
+        assert_eq!(
+            result["content"][0]["text"],
+            JsonValue::String("{}".to_string())
+        );
+    }
+
+    #[tokio::test]
     async fn response_row_filter_updates_text_content() {
         let policy = policy_for_filter(
             "row",
@@ -3452,6 +3596,33 @@ endpointRules:
         apply_row_filter_groups(&mut body, &[Vec::new()], true);
 
         assert_eq!(body, json!([]));
+    }
+
+    #[test]
+    fn row_filter_handles_top_level_objects() {
+        let filter_groups = [vec![RowFilter {
+            col_name: "status".to_string(),
+            operator: "=".to_string(),
+            col_value: "O".to_string(),
+        }]];
+        let mut allowed = json!({"status": "O", "secret": "allowed"});
+        let mut denied = json!({"status": "C", "secret": "denied"});
+        let mut unmatched = json!({"status": "O", "secret": "unmatched"});
+        let mut legacy = unmatched.clone();
+
+        let allowed_was_denied = apply_row_filter_groups(&mut allowed, &filter_groups, false);
+        let denied_was_denied = apply_row_filter_groups(&mut denied, &filter_groups, false);
+        let unmatched_was_denied = apply_row_filter_groups(&mut unmatched, &[], false);
+        let legacy_was_denied = apply_row_filter_groups(&mut legacy, &[], true);
+
+        assert!(!allowed_was_denied);
+        assert!(denied_was_denied);
+        assert!(unmatched_was_denied);
+        assert!(!legacy_was_denied);
+        assert_eq!(allowed, json!({"status": "O", "secret": "allowed"}));
+        assert_eq!(denied, json!({}));
+        assert_eq!(unmatched, json!({}));
+        assert_eq!(legacy, json!({"status": "O", "secret": "unmatched"}));
     }
 
     #[test]
@@ -3660,6 +3831,58 @@ endpointRules:
     }
 
     #[tokio::test]
+    async fn response_row_filter_denies_non_matching_top_level_object() {
+        let policy = policy_for_filter(
+            "row",
+            json!({
+                "row": {
+                    "role": {
+                        "teller": [
+                            {
+                                "colName": "accountType",
+                                "operator": "=",
+                                "colValue": "C"
+                            }
+                        ]
+                    }
+                }
+            }),
+        );
+
+        let result = policy
+            .filter_mcp_response(
+                "accounts",
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("teller")),
+                &json!({}),
+                None,
+                json!({
+                    "content": [{
+                        "type": "text",
+                        "text": r#"{"accountType":"S","ssn":"secret"}"#
+                    }],
+                    "structuredContent": {
+                        "accountType": "S",
+                        "ssn": "secret"
+                    }
+                }),
+            )
+            .await;
+
+        assert_eq!(
+            result,
+            json!({
+                "isError": true,
+                "content": [{
+                    "type": "text",
+                    "text": "Access denied by response filter"
+                }]
+            })
+        );
+    }
+
+    #[tokio::test]
     async fn response_row_filter_no_permission_row_block_does_not_empty_response() {
         let policy = AccessControlRuntime::new(
             Some(AccessControlConfig::default()),
@@ -3847,6 +4070,53 @@ endpointRules:
         assert_eq!(
             result["content"][0]["text"],
             JsonValue::String("[{\"active\":true,\"id\":1,\"priority\":10}]".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn response_cel_row_filter_denies_non_matching_top_level_object() {
+        let policy = policy_for_cel_row_filter(
+            "row.priority < 50 && row.active == true",
+            json!({
+                "row": {
+                    "role": {
+                        "mcp-reader": []
+                    }
+                }
+            }),
+        );
+
+        let result = policy
+            .filter_mcp_response(
+                "accounts",
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("mcp-reader")),
+                &json!({}),
+                None,
+                json!({
+                    "content": [{
+                        "type": "text",
+                        "text": r#"{"id":2,"priority":75,"active":true}"#
+                    }],
+                    "structuredContent": {
+                        "id": 2,
+                        "priority": 75,
+                        "active": true
+                    }
+                }),
+            )
+            .await;
+
+        assert_eq!(
+            result,
+            json!({
+                "isError": true,
+                "content": [{
+                    "type": "text",
+                    "text": "Access denied by response filter"
+                }]
+            })
         );
     }
 

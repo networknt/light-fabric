@@ -837,13 +837,15 @@ The current compatibility actions support the existing permission model:
   dimensions are also supported. A field list prefixed with `!` is a remove
   list; otherwise it is a keep list.
 - Column filtering must apply to top-level JSON objects as well as top-level
-  arrays and object payloads containing `items`. Row filtering applies only to
-  arrays or `items` arrays.
+  arrays and object payloads containing `items`. Row filtering treats a
+  top-level JSON object as a single candidate row and returns an MCP tool error
+  with `isError: true` when it is denied.
 
-This should remain the default design for Java and Rust parity. If a later
-policy needs arbitrary per-row CEL predicates, add a new explicit filter action
-such as `ResponseCelRowFilterAction` instead of changing the meaning of the
-Java-compatible `ResponseRowFilterAction`.
+This should remain the default design for Java and Rust parity. The Java row
+action must apply the same single-object behavior instead of returning maps
+unchanged. If a policy needs arbitrary per-row CEL predicates, use the explicit
+`ResponseCelRowFilterAction` rather than changing the declarative permission
+format of `ResponseRowFilterAction`.
 
 CEL must not directly manipulate the MCP result JSON. The rule-level CEL
 expression decides whether a `res-fil` rule applies; the action performs the

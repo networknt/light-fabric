@@ -494,8 +494,10 @@ and add an HTTP response-body adapter:
   `statusCode` fields.
 - Reuse `find_service_entry`, `rule_ids_for`, `permission_for`, and the default
   action registry.
-- Reuse `ResponseRowFilterAction` for JSON arrays and object payloads with an
-  `items` array.
+- Reuse `ResponseRowFilterAction` for JSON arrays, object payloads with an
+  `items` array, and single top-level JSON objects. A denied single object is
+  replaced with an empty object for HTTP responses; the MCP adapter returns a
+  tool error with `isError: true`.
 - Reuse `ResponseColumnFilterAction` for JSON arrays, object payloads with an
   `items` array, and single top-level JSON objects.
 - Add handler-level tests for exact endpoint, path template endpoint, parent

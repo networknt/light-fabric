@@ -473,8 +473,9 @@ than arbitrary column-level CEL.
 
 Column filtering must also support top-level JSON objects, not only arrays or
 objects containing `items`. Single-object responses such as `GET /offers/123`
-still need field hiding. Row filtering applies only to arrays or object payloads
-with an `items` array.
+still need field hiding. Row filtering also treats a top-level JSON object as a
+single candidate row. HTTP filtering replaces a denied object with an empty
+object, while MCP filtering returns a tool error with `isError: true`.
 
 ## Rule Context
 

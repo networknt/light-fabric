@@ -7259,6 +7259,101 @@ endpointRules:
     }
 
     #[tokio::test]
+    async fn mcp_denied_top_level_object_returns_tool_error() {
+        let (base, _received) = spawn_http_server(http_json_response(json!({
+            "accountType": "S",
+            "ssn": "secret"
+        })))
+        .await;
+
+        let policy = Arc::new(crate::access_control::AccessControlRuntime::new(
+            Some(crate::access_control::AccessControlConfig::default()),
+            serde_yaml::from_str::<crate::access_control::RuleFileConfig>(
+                r#"
+ruleBodies:
+  allow:
+    common: Y
+    ruleId: allow
+    ruleName: Allow teller
+    ruleType: req-acc
+    expression: "true"
+    actions:
+      - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
+  row_filter:
+    common: Y
+    ruleId: row_filter
+    ruleName: Filter rows
+    ruleType: res-fil
+    actions:
+      - actionClassName: com.networknt.rule.ResponseRowFilterAction
+endpointRules:
+  account@call:
+    req-acc:
+      - allow
+    res-fil:
+      - row_filter
+    permission:
+      roles: teller
+      row:
+        role:
+          teller:
+            - colName: accountType
+              operator: "="
+              colValue: "C"
+"#,
+            )
+            .expect("rule config"),
+        ));
+
+        let runtime = McpRouterRuntime::new_with_policy(
+            McpRouterConfig {
+                tools: vec![test_tool(
+                    "account",
+                    "Get account",
+                    base.as_str(),
+                    McpHttpMethod::Get,
+                    Some("account@call"),
+                    default_input_schema(),
+                )],
+                ..McpRouterConfig::default()
+            },
+            Some(policy),
+        )
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request_with_context(
+                McpHttpRequest {
+                    method: "POST".to_string(),
+                    path: "/mcp".to_string(),
+                    headers: accept_json_with_session(&runtime),
+                    body: br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"account","arguments":{}}}"#.to_vec(),
+                },
+                McpRequestContext {
+                    auth: Some(AuthPrincipal {
+                        role: Some("teller".to_string()),
+                        claims: json!({"role": "teller"}),
+                        ..AuthPrincipal::default()
+                    }),
+                    correlation_id: Some("corr-1".to_string()),
+                    delegation: None,
+                },
+            )
+            .await
+            .expect("handle")
+            .expect("response");
+
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["result"]["isError"], true);
+        assert_eq!(
+            body["result"]["content"][0]["text"],
+            "Access denied by response filter"
+        );
+        assert!(body["result"].get("structuredContent").is_none());
+    }
+
+    #[tokio::test]
     async fn mcp_response_filter_is_skipped_when_access_control_disabled() {
         let (base, _received) = spawn_http_server(http_json_response(json!([
             {"accountType": "C"},
