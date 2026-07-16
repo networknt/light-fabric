@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+controller-wire = { path = "../controller-wire" }
 config-loader = { path = "../config-loader" }
 symmetric-decryptor = { path = "../symmetric-decryptor" }
 asymmetric-decryptor = { path = "../asymmetric-decryptor" }

@@ -1,0 +1,11 @@
+[package]
+name = "controller-wire-pointer-width-16-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+controller-wire = { path = "../../../../crates/controller-wire" }
+rkyv = { version = "=0.8.12", default-features = false, features = ["pointer_width_16"] }

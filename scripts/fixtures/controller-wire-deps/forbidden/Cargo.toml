@@ -1,0 +1,11 @@
+[package]
+name = "controller-wire-forbidden-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+controller-wire = { path = "../../../../crates/controller-wire" }
+tokio = { version = "1", features = ["rt"] }
