@@ -26,6 +26,22 @@ Full documentation, including architecture guides and implementation patterns, i
 - **`frameworks`**: Core infrastructure for high-performance services.
 - **`apps`**: Reference applications and enterprise microservices.
 
+## Runtime control-plane capabilities
+
+Light-Runtime answers portal-registry `tools/list` with the versioned
+`light-runtime-mcp-capabilities-v1` manifest. The list contains only built-in
+tools and tools backed by providers installed in that runtime: logging control,
+log-file access, live-log streaming, and cache management are advertised
+independently. Invocation checks the provider again and returns a structured
+unsupported result when it is absent. Unknown registry requests also return
+`unsupported_method`; they no longer receive a generic successful
+`{"status":"received"}` acknowledgement.
+
+Live logging accepts an optional bounded `leaseDurationMs` on `start_logs` and
+an internal idempotent `renew_logs` call. The V1 controller uses these fields so
+a lost `stop_logs` request cannot leave a runtime stream active indefinitely.
+Older controllers that omit the lease keep their legacy stream behavior.
+
 ## Getting Started
 
 To get started with the Light-Fabric, refer to the [Getting Started](docs/src/getting-started.md) guide in the documentation.

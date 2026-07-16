@@ -12,8 +12,10 @@ use serde_json::{Value as JsonValue, json};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use tokio::sync::Mutex;
+use std::time::Duration;
+use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
 const MASKED_VALUE: &str = "*";
 pub const CLIENT_MODULE_ID: &str = "light-client/client";
@@ -671,8 +673,17 @@ pub struct RuntimeMcpHandler {
     log_stream: Option<Arc<LogStreamBroadcaster>>,
     log_file_access: Option<Arc<LogFileAccess>>,
     notifier: Option<PortalRegistryNotifier>,
-    log_stream_task: Mutex<Option<JoinHandle<()>>>,
+    log_stream_task: Mutex<Option<LogStreamSession>>,
 }
+
+struct LogStreamSession {
+    task: JoinHandle<()>,
+    lease_tx: watch::Sender<Option<Instant>>,
+}
+
+const RUNTIME_CAPABILITY_VERSION: &str = "light-runtime-mcp-capabilities-v1";
+const MIN_LOG_STREAM_LEASE_MS: u64 = 100;
+const MAX_LOG_STREAM_LEASE_MS: u64 = 300_000;
 
 impl RuntimeMcpHandler {
     pub fn new(
@@ -727,7 +738,13 @@ impl RegistryHandler for RuntimeMcpHandler {
 
     async fn handle_request(&self, method: &str, params: JsonValue) -> JsonValue {
         match method {
-            "tools/list" => json!({ "tools": runtime_tools() }),
+            "tools/list" => json!({
+                "capabilityVersion": RUNTIME_CAPABILITY_VERSION,
+                "features": {
+                    "logStreamLeaseV1": self.log_stream.is_some() && self.notifier.is_some()
+                },
+                "tools": self.available_runtime_tools()
+            }),
             "tools/call" => {
                 let Some(name) = params.get("name").and_then(JsonValue::as_str) else {
                     return json!({
@@ -745,6 +762,7 @@ impl RegistryHandler for RuntimeMcpHandler {
                     "set_logging_filter" => self.set_logging_filter(params.get("arguments")),
                     "get_log_content" => self.get_log_content(params.get("arguments")).await,
                     "start_logs" => self.start_logs(params.get("arguments")).await,
+                    "renew_logs" => self.renew_logs(params.get("arguments")).await,
                     "stop_logs" => self.stop_logs().await,
                     "reload_modules" => match parse_reload_modules(params.get("arguments")) {
                         Ok(modules) => {
@@ -773,6 +791,23 @@ impl RegistryHandler for RuntimeMcpHandler {
 }
 
 impl RuntimeMcpHandler {
+    fn available_runtime_tools(&self) -> JsonValue {
+        let mut tools = runtime_tools().as_array().cloned().unwrap_or_default();
+        tools.retain(|tool| match tool.get("name").and_then(JsonValue::as_str) {
+            Some("get_service_info" | "get_modules" | "reload_modules") => true,
+            Some("get_logging_filter" | "set_logging_filter") => self.logging_control.is_some(),
+            Some("get_log_content") => self.log_file_access.is_some(),
+            Some("start_logs" | "stop_logs") => {
+                self.log_stream.is_some() && self.notifier.is_some()
+            }
+            Some("list_caches" | "get_cache_entries" | "clear_cache") => {
+                self.cache_registry.is_some()
+            }
+            _ => false,
+        });
+        JsonValue::Array(tools)
+    }
+
     fn list_caches(&self) -> JsonValue {
         let Some(cache_registry) = self.cache_registry.as_ref() else {
             return unsupported_cache_response(None);
@@ -913,14 +948,39 @@ impl RuntimeMcpHandler {
                 });
             }
         };
+        let lease = match parse_log_stream_lease(arguments, false) {
+            Ok(lease) => lease,
+            Err(message) => return json!({ "status": "error", "message": message }),
+        };
 
         self.abort_log_stream().await;
 
         let mut receiver = log_stream.subscribe();
         let notifier = notifier.clone();
+        let (lease_tx, mut lease_rx) =
+            watch::channel(lease.map(|duration| Instant::now() + duration));
         let task = tokio::spawn(async move {
             loop {
-                match receiver.recv().await {
+                let deadline = *lease_rx.borrow_and_update();
+                let event = if let Some(deadline) = deadline {
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(deadline) => break,
+                        changed = lease_rx.changed() => {
+                            if changed.is_err() { break; }
+                            continue;
+                        }
+                        event = receiver.recv() => event,
+                    }
+                } else {
+                    tokio::select! {
+                        changed = lease_rx.changed() => {
+                            if changed.is_err() { break; }
+                            continue;
+                        }
+                        event = receiver.recv() => event,
+                    }
+                };
+                match event {
                     Ok(event) if filter.matches(&event) => {
                         let Ok(params) = serde_json::to_value(event) else {
                             continue;
@@ -933,19 +993,49 @@ impl RuntimeMcpHandler {
                             break;
                         }
                     }
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
         });
 
-        *self.log_stream_task.lock().await = Some(task);
+        *self.log_stream_task.lock().await = Some(LogStreamSession { task, lease_tx });
 
         json!({
             "supported": true,
             "status": "success",
-            "streaming": true
+            "streaming": true,
+            "leaseDurationMs": lease.map(|duration| duration.as_millis() as u64)
+        })
+    }
+
+    async fn renew_logs(&self, arguments: Option<&JsonValue>) -> JsonValue {
+        let lease = match parse_log_stream_lease(arguments, true) {
+            Ok(Some(lease)) => lease,
+            Ok(None) => unreachable!("required lease parser returned no lease"),
+            Err(message) => return json!({ "status": "error", "message": message }),
+        };
+        let stream = self.log_stream_task.lock().await;
+        let Some(stream) = stream.as_ref() else {
+            return json!({
+                "supported": true,
+                "status": "error",
+                "message": "log stream is not active"
+            });
+        };
+        if stream.task.is_finished() {
+            return json!({
+                "supported": true,
+                "status": "error",
+                "message": "log stream lease expired"
+            });
+        }
+        stream.lease_tx.send_replace(Some(Instant::now() + lease));
+        json!({
+            "supported": true,
+            "status": "success",
+            "streaming": true,
+            "leaseDurationMs": lease.as_millis() as u64
         })
     }
 
@@ -962,10 +1052,33 @@ impl RuntimeMcpHandler {
     }
 
     async fn abort_log_stream(&self) {
-        if let Some(task) = self.log_stream_task.lock().await.take() {
-            task.abort();
+        if let Some(stream) = self.log_stream_task.lock().await.take() {
+            stream.task.abort();
         }
     }
+}
+
+fn parse_log_stream_lease(
+    arguments: Option<&JsonValue>,
+    required: bool,
+) -> Result<Option<Duration>, String> {
+    let value = arguments.and_then(|arguments| arguments.get("leaseDurationMs"));
+    let Some(value) = value else {
+        return if required {
+            Err("leaseDurationMs is required".to_string())
+        } else {
+            Ok(None)
+        };
+    };
+    let milliseconds = value
+        .as_u64()
+        .filter(|value| (MIN_LOG_STREAM_LEASE_MS..=MAX_LOG_STREAM_LEASE_MS).contains(value))
+        .ok_or_else(|| {
+            format!(
+                "leaseDurationMs must be an integer between {MIN_LOG_STREAM_LEASE_MS} and {MAX_LOG_STREAM_LEASE_MS}"
+            )
+        })?;
+    Ok(Some(Duration::from_millis(milliseconds)))
 }
 
 #[derive(Debug)]
@@ -2034,6 +2147,8 @@ mod tests {
             RuntimeMcpHandler::new(Arc::clone(&registry), config, Arc::new(DelegateHandler));
 
         let tools = handler.handle_request("tools/list", json!({})).await;
+        assert_eq!(tools["capabilityVersion"], RUNTIME_CAPABILITY_VERSION);
+        assert_eq!(tools["features"]["logStreamLeaseV1"], false);
         assert_eq!(tools["tools"][0]["name"], "get_service_info");
         assert!(
             tools["tools"]
@@ -2042,26 +2157,15 @@ mod tests {
                 .iter()
                 .any(|tool| tool["name"] == "reload_modules")
         );
-        assert!(
-            tools["tools"]
-                .as_array()
-                .expect("tools array")
-                .iter()
-                .any(|tool| tool["name"] == "clear_cache")
-        );
-        assert!(
-            tools["tools"]
-                .as_array()
-                .expect("tools array")
-                .iter()
-                .any(|tool| tool["name"] == "get_log_content")
-        );
-        assert!(
-            tools["tools"]
-                .as_array()
-                .expect("tools array")
-                .iter()
-                .any(|tool| tool["name"] == "start_logs")
+        let names = tools["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec!["get_service_info", "get_modules", "reload_modules"]
         );
 
         let info = handler
@@ -2193,6 +2297,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_mcp_handler_expires_and_renews_bounded_log_stream_lease() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let client = portal_registry::PortalRegistryClient::new(
+            "ws://127.0.0.1:8080/ws/microservice",
+            portal_registry::RegistrationBuilder::new(
+                "test-service-1.0.0",
+                "1.0.0",
+                "http",
+                "127.0.0.1",
+                8080,
+            )
+            .with_jwt("token")
+            .build(),
+            Arc::new(DelegateHandler),
+        )
+        .expect("portal registry client");
+        let handler = RuntimeMcpHandler::new(
+            Arc::clone(&registry),
+            runtime_config(),
+            Arc::new(DelegateHandler),
+        )
+        .with_log_stream(
+            Arc::new(crate::logging::LogStreamBroadcaster::new()),
+            client.notifier(),
+        );
+
+        let tools = handler.handle_request("tools/list", json!({})).await;
+        assert_eq!(tools["features"]["logStreamLeaseV1"], true);
+        assert!(
+            tools["tools"]
+                .as_array()
+                .expect("tools")
+                .iter()
+                .any(|tool| tool["name"] == "start_logs")
+        );
+
+        let start = handler
+            .handle_request(
+                "tools/call",
+                json!({
+                    "name": "start_logs",
+                    "arguments": { "leaseDurationMs": 100 }
+                }),
+            )
+            .await;
+        assert_eq!(start["status"], "success");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let renewed = handler
+            .handle_request(
+                "tools/call",
+                json!({
+                    "name": "renew_logs",
+                    "arguments": { "leaseDurationMs": 150 }
+                }),
+            )
+            .await;
+        assert_eq!(renewed["status"], "success");
+        tokio::time::sleep(Duration::from_millis(175)).await;
+        let expired = handler
+            .handle_request(
+                "tools/call",
+                json!({
+                    "name": "renew_logs",
+                    "arguments": { "leaseDurationMs": 150 }
+                }),
+            )
+            .await;
+        assert_eq!(expired["status"], "error");
+        assert_eq!(expired["message"], "log stream lease expired");
+    }
+
+    #[tokio::test]
     async fn runtime_mcp_handler_reads_history_from_json_log_file() {
         let registry = Arc::new(ModuleRegistry::new());
         let temp_dir = TempDir::new().expect("log temp dir");
@@ -2236,6 +2412,10 @@ mod tests {
             history["logs"][0]["message"],
             "JWT validation failed after JWKS refresh: InvalidSignature"
         );
+        let tools = handler.handle_request("tools/list", json!({})).await;
+        let names = tools["tools"].as_array().expect("tools");
+        assert!(names.iter().any(|tool| tool["name"] == "get_log_content"));
+        assert!(!names.iter().any(|tool| tool["name"] == "start_logs"));
     }
 
     #[tokio::test]
@@ -2310,6 +2490,19 @@ mod tests {
             logging_control.current_state().filter,
             "info,light_gateway=debug"
         );
+        let tools = handler.handle_request("tools/list", json!({})).await;
+        let names = tools["tools"].as_array().expect("tools");
+        assert!(
+            names
+                .iter()
+                .any(|tool| tool["name"] == "get_logging_filter")
+        );
+        assert!(
+            names
+                .iter()
+                .any(|tool| tool["name"] == "set_logging_filter")
+        );
+        assert!(!names.iter().any(|tool| tool["name"] == "get_log_content"));
     }
 
     #[tokio::test]
@@ -2378,5 +2571,90 @@ mod tests {
             )
             .await;
         assert_eq!(entries_after_clear["entries"], json!({}));
+        let tools = handler.handle_request("tools/list", json!({})).await;
+        let names = tools["tools"].as_array().expect("tools");
+        assert!(names.iter().any(|tool| tool["name"] == "list_caches"));
+        assert!(names.iter().any(|tool| tool["name"] == "get_cache_entries"));
+        assert!(names.iter().any(|tool| tool["name"] == "clear_cache"));
+    }
+
+    #[tokio::test]
+    async fn runtime_mcp_handler_all_providers_publish_exact_available_tools() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let cache_registry = Arc::new(CacheRegistry::new());
+        let (logging_control, _filter_layer) = crate::logging::LoggingControl::new_for_test("info");
+        let temp_dir = TempDir::new().expect("log temp dir");
+        let log_file = Arc::new(crate::logging::LogFileAccess::new(
+            temp_dir.path().join("service.jsonl"),
+        ));
+        let client = portal_registry::PortalRegistryClient::new(
+            "ws://127.0.0.1:8080/ws/microservice",
+            portal_registry::RegistrationBuilder::new(
+                "test-service-1.0.0",
+                "1.0.0",
+                "http",
+                "127.0.0.1",
+                8080,
+            )
+            .with_jwt("token")
+            .build(),
+            Arc::new(DelegateHandler),
+        )
+        .expect("portal registry client");
+        let handler = RuntimeMcpHandler::new(
+            Arc::clone(&registry),
+            runtime_config(),
+            Arc::new(DelegateHandler),
+        )
+        .with_cache_registry(cache_registry)
+        .with_logging_control(logging_control)
+        .with_log_file_access(log_file)
+        .with_log_stream(
+            Arc::new(crate::logging::LogStreamBroadcaster::new()),
+            client.notifier(),
+        );
+
+        let response = handler.handle_request("tools/list", json!({})).await;
+        let names = response["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("tool name"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "get_service_info",
+                "get_modules",
+                "reload_modules",
+                "get_logging_filter",
+                "set_logging_filter",
+                "get_log_content",
+                "start_logs",
+                "stop_logs",
+                "list_caches",
+                "get_cache_entries",
+                "clear_cache",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_mcp_handler_rejects_unknown_tool_and_method() {
+        let handler = RuntimeMcpHandler::new(
+            Arc::new(ModuleRegistry::new()),
+            runtime_config(),
+            Arc::new(DelegateHandler),
+        );
+        for response in [
+            handler
+                .handle_request("tools/call", json!({ "name": "unknown_tool" }))
+                .await,
+            handler.handle_request("unknown/method", json!({})).await,
+        ] {
+            assert_eq!(response["supported"], false);
+            assert_eq!(response["status"], "unsupported");
+            assert_eq!(response["error"]["code"], "unsupported_method");
+        }
     }
 }

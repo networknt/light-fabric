@@ -4514,7 +4514,7 @@ impl RegistryHandler for AgentRegistryHandler {
             self.catalog_cache.clear().await;
             serde_json::json!({"status": "cleared", "cache": "effective-agent-catalog"})
         } else {
-            serde_json::json!({"status": "received"})
+            portal_registry::unsupported_method_response(method)
         }
     }
 }

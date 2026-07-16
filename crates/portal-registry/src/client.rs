@@ -274,9 +274,20 @@ pub enum RegistrationState {
 #[async_trait::async_trait]
 pub trait RegistryHandler: Send + Sync {
     async fn handle_notification(&self, _method: &str, _params: serde_json::Value) {}
-    async fn handle_request(&self, _method: &str, _params: serde_json::Value) -> serde_json::Value {
-        json!({"status": "received"})
+    async fn handle_request(&self, method: &str, _params: serde_json::Value) -> serde_json::Value {
+        unsupported_method_response(method)
     }
+}
+
+pub fn unsupported_method_response(method: &str) -> serde_json::Value {
+    json!({
+        "supported": false,
+        "status": "unsupported",
+        "error": {
+            "code": "unsupported_method",
+            "message": format!("registry method `{method}` is not supported")
+        }
+    })
 }
 
 pub struct PortalRegistryClient {
@@ -808,6 +819,16 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RegistryHandler for NoopHandler {}
+
+    #[tokio::test]
+    async fn default_registry_handler_rejects_unknown_requests() {
+        let response = NoopHandler
+            .handle_request("unknown/request", json!({}))
+            .await;
+        assert_eq!(response["supported"], false);
+        assert_eq!(response["status"], "unsupported");
+        assert_eq!(response["error"]["code"], "unsupported_method");
+    }
 
     #[derive(Default)]
     struct SlowHandler {

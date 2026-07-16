@@ -16,6 +16,7 @@ pub fn fuzz_runtime_wire_input(data: &[u8], max_payload_bytes: usize) {
 pub use candidate::ControlCandidate;
 pub use client::{
     PortalRegistryClient, PortalRegistryNotifier, RegistrationState, RegistryHandler,
+    unsupported_method_response,
 };
 pub use protocol::{
     DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, JsonRpcMessage, RegistrationResponse,
