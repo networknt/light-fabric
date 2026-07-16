@@ -1,5 +1,7 @@
 pub mod client;
+mod logical;
 pub mod protocol;
+mod websocket;
 
 pub use client::{
     PortalRegistryClient, PortalRegistryNotifier, RegistrationState, RegistryHandler,

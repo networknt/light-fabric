@@ -1,0 +1,51 @@
+{
+  "registration": {
+    "jsonrpc": "2.0",
+    "id": "register-1",
+    "method": "service/register",
+    "params": {
+      "serviceId": "user-service",
+      "version": "1.0.0",
+      "protocol": "https",
+      "address": "127.0.0.1",
+      "port": 8443,
+      "tags": { "zone": "a" },
+      "envTag": "prod",
+      "jwt": "token"
+    }
+  },
+  "registrationAcknowledgement": {
+    "jsonrpc": "2.0",
+    "id": "register-1",
+    "result": {
+      "runtimeInstanceId": "0195ef10-2f24-7af2-85e9-a8ef54642f39",
+      "status": "registered"
+    }
+  },
+  "metadataUpdate": {
+    "jsonrpc": "2.0",
+    "method": "service/update_metadata",
+    "params": {
+      "version": "1.0.1",
+      "protocol": "https",
+      "port": 8444,
+      "tags": { "zone": "b" }
+    }
+  },
+  "commandRequest": {
+    "jsonrpc": "2.0",
+    "id": "command-1",
+    "method": "get_server_info",
+    "params": {}
+  },
+  "commandResponse": {
+    "jsonrpc": "2.0",
+    "id": "command-1",
+    "result": { "status": "ok" }
+  },
+  "notification": {
+    "jsonrpc": "2.0",
+    "method": "notifications/logs",
+    "params": { "line": "ready" }
+  }
+}

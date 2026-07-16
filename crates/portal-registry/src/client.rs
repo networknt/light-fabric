@@ -1,8 +1,7 @@
 use crate::protocol::{
-    DiscoverySnapshot, DiscoverySubscription, JsonRpcMessage, RegistrationResponse,
-    ServiceMetadataUpdate, ServiceRegistrationParams,
+    DiscoverySnapshot, DiscoverySubscription, JsonRpcMessage, ServiceMetadataUpdate,
+    ServiceRegistrationParams,
 };
-use futures_util::{SinkExt, StreamExt};
 use rustls::pki_types::CertificateDer;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -12,17 +11,14 @@ use std::fmt;
 use std::io::{BufReader, Cursor};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::TcpStream;
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot, watch};
 use tokio::time::timeout;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use tracing::{debug, error, info};
+use tracing::{error, info};
 use url::Url;
 use uuid::Uuid;
 
-pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
-const REGISTRATION_ACK_TIMEOUT: Duration = Duration::from_secs(5);
+use crate::logical::{PendingRequests, handle_inbound_message};
+use crate::websocket::{InboundEvent, WebSocketAdapter};
 
 #[derive(Debug)]
 struct NoHostnameVerifier {
@@ -283,17 +279,17 @@ pub struct PortalRegistryClient {
     controller_url: Mutex<Url>,
     registration_params: Mutex<ServiceRegistrationParams>,
     handler: RwLock<Arc<dyn RegistryHandler>>,
-    outbound_tx: Arc<Mutex<Option<mpsc::Sender<Message>>>>,
+    outbound_tx: Arc<Mutex<Option<mpsc::Sender<JsonRpcMessage>>>>,
     registration_tx: watch::Sender<RegistrationState>,
     ca_certificate: Mutex<Option<Vec<u8>>>,
     verify_hostname: Mutex<bool>,
-    pending_requests: Arc<Mutex<HashMap<String, oneshot::Sender<JsonRpcMessage>>>>,
+    pending_requests: PendingRequests,
     heartbeat_interval: Duration,
 }
 
 #[derive(Clone)]
 pub struct PortalRegistryNotifier {
-    outbound_tx: Arc<Mutex<Option<mpsc::Sender<Message>>>>,
+    outbound_tx: Arc<Mutex<Option<mpsc::Sender<JsonRpcMessage>>>>,
 }
 
 impl PortalRegistryNotifier {
@@ -303,7 +299,6 @@ impl PortalRegistryNotifier {
         params: serde_json::Value,
     ) -> anyhow::Result<()> {
         let payload = JsonRpcMessage::new_notification(method, params);
-        let message = Message::Text(serde_json::to_string(&payload)?.into());
 
         let tx = {
             let guard = self.outbound_tx.lock().await;
@@ -311,7 +306,7 @@ impl PortalRegistryNotifier {
         };
 
         let tx = tx.ok_or_else(|| anyhow::anyhow!("registry client is not connected"))?;
-        tx.send(message)
+        tx.send(payload)
             .await
             .map_err(|_| anyhow::anyhow!("registry client connection is closed"))
     }
@@ -416,7 +411,6 @@ impl PortalRegistryClient {
             "service/update_metadata",
             serde_json::to_value(update)?,
         );
-        let message = Message::Text(serde_json::to_string(&payload)?.into());
 
         let tx = {
             let guard = self.outbound_tx.lock().await;
@@ -424,7 +418,7 @@ impl PortalRegistryClient {
         };
 
         let tx = tx.ok_or_else(|| anyhow::anyhow!("registry client is not connected"))?;
-        tx.send(message)
+        tx.send(payload)
             .await
             .map_err(|_| anyhow::anyhow!("registry client connection is closed"))
     }
@@ -456,7 +450,6 @@ impl PortalRegistryClient {
             pending.insert(id.clone(), tx);
         }
 
-        let message = Message::Text(serde_json::to_string(&payload)?.into());
         let outbound = {
             let guard = self.outbound_tx.lock().await;
             guard.clone()
@@ -469,7 +462,7 @@ impl PortalRegistryClient {
                 return Err(anyhow::anyhow!("registry client is not connected"));
             }
         };
-        if outbound.send(message).await.is_err() {
+        if outbound.send(payload).await.is_err() {
             self.pending_requests.lock().await.remove(&id);
             return Err(anyhow::anyhow!("failed to send {method} request"));
         }
@@ -584,21 +577,13 @@ impl PortalRegistryClient {
             None
         };
 
-        let (mut ws_stream, _) = tokio_tungstenite::connect_async_tls_with_config(
-            controller_url.as_str(),
-            None,
-            false,
-            connector,
-        )
-        .await?;
+        let mut transport = WebSocketAdapter::connect(&controller_url, connector).await?;
         info!("Connected to controller at {}", controller_url);
 
-        // 1. Initial Handshake (service/register)
-        self.register(&mut ws_stream).await?;
+        self.register(&mut transport).await?;
 
-        // 2. Main Loop
-        let (mut sender, mut receiver) = ws_stream.split();
-        let (tx, mut rx) = mpsc::channel::<Message>(100);
+        let (mut sender, mut receiver) = transport.split();
+        let (tx, mut rx) = mpsc::channel::<JsonRpcMessage>(100);
         {
             let mut guard = self.outbound_tx.lock().await;
             *guard = Some(tx.clone());
@@ -618,66 +603,31 @@ impl PortalRegistryClient {
                 tokio::select! {
                     res = receiver.next() => {
                         match res {
-                            Some(Ok(msg)) => {
-                                // Any message received indicates active data flow and clears outstanding ping status
+                            Ok(Some(event)) => {
                                 ping_outstanding = false;
-                                match msg {
-                                    Message::Text(text) => {
-                                        if let Ok(json_msg) = serde_json::from_str::<JsonRpcMessage>(&text) {
-                                            if let Some(method) = json_msg.method.as_deref() {
-                                                // Request or Notification
-                                                if json_msg.id.is_some() {
-                                                    // Request from server
-                                                    let result = handler
-                                                        .handle_request(method, json_msg.params.unwrap_or(json!({})))
-                                                        .await;
-                                                    let response = JsonRpcMessage {
-                                                        jsonrpc: "2.0".to_string(),
-                                                        id: json_msg.id,
-                                                        method: None,
-                                                        params: None,
-                                                        result: Some(result),
-                                                        error: None,
-                                                    };
-                                                    let _ = tx.send(Message::Text(serde_json::to_string(&response)?.into())).await;
-                                                } else {
-                                                    // Notification from server
-                                                    handler
-                                                        .handle_notification(
-                                                            method,
-                                                            json_msg.params.unwrap_or(json!({})),
-                                                        )
-                                                        .await;
-                                                }
-                                            } else if let Some(id_val) = json_msg.id.as_ref() {
-                                                // Response to our request
-                                                let id_str = match id_val {
-                                                    serde_json::Value::String(s) => s.clone(),
-                                                    _ => id_val.to_string(),
-                                                };
-                                                let mut pending = self.pending_requests.lock().await;
-                                                if let Some(tx) = pending.remove(&id_str) {
-                                                    let _ = tx.send(json_msg);
-                                                }
-                                            }
+                                match event {
+                                    InboundEvent::Message(message) => {
+                                        if let Some(response) = handle_inbound_message(
+                                            &handler,
+                                            &self.pending_requests,
+                                            message,
+                                        ).await {
+                                            tx.send(response).await.map_err(|_| {
+                                                anyhow::anyhow!("registry client outbound queue closed")
+                                            })?;
                                         }
                                     }
-                                    Message::Ping(payload) => {
-                                        let _ = tx.send(Message::Pong(payload)).await;
-                                    }
-                                    Message::Pong(_) => {
-                                        // Received Pong from server
-                                    }
-                                    Message::Close(_) => break,
-                                    _ => {}
+                                    InboundEvent::Ping(payload) => sender.send_pong(payload).await?,
+                                    InboundEvent::Pong | InboundEvent::Ignored => {}
+                                    InboundEvent::Close => break,
                                 }
                             }
-                            Some(Err(err)) => return Err(err.into()),
-                            None => break,
+                            Ok(None) => break,
+                            Err(error) => return Err(error),
                         }
                     }
                     Some(msg) = rx.recv() => {
-                        sender.send(msg).await?;
+                        sender.send_message(msg).await?;
                     }
                     _ = heartbeat.tick() => {
                         if ping_outstanding {
@@ -687,7 +637,7 @@ impl PortalRegistryClient {
                             ));
                         }
                         ping_outstanding = true;
-                        sender.send(Message::Ping(vec![].into())).await?;
+                        sender.send_ping().await?;
                     }
                 }
             }
@@ -705,84 +655,30 @@ impl PortalRegistryClient {
         res
     }
 
-    async fn register(&self, ws_stream: &mut WsStream) -> anyhow::Result<()> {
-        let registration_id = json!("register-1");
+    async fn register(&self, transport: &mut WebSocketAdapter) -> anyhow::Result<()> {
         let register_params = self.registration_params.lock().await.clone();
-        let register_params_val = serde_json::to_value(register_params)?;
-        let register_msg = JsonRpcMessage::new_request(
-            registration_id.clone(),
-            "service/register",
-            register_params_val,
+        let response = transport.register(register_params).await?;
+        let _ = self.registration_tx.send(RegistrationState::Registered {
+            runtime_instance_id: response.runtime_instance_id,
+        });
+        info!(
+            "Successfully registered with controller. Instance ID: {}",
+            response.runtime_instance_id
         );
-
-        ws_stream
-            .send(Message::Text(serde_json::to_string(&register_msg)?.into()))
-            .await?;
-
-        timeout(REGISTRATION_ACK_TIMEOUT, async {
-            while let Some(msg) = ws_stream.next().await {
-                match msg? {
-                    Message::Text(text) => {
-                        debug!("Raw registration response: '{}'", text);
-                        let resp = serde_json::from_str::<JsonRpcMessage>(&text)?;
-                        if let Some(result) = resp.result {
-                            let reg_resp: RegistrationResponse = serde_json::from_value(result)?;
-                            let _ = self.registration_tx.send(RegistrationState::Registered {
-                                runtime_instance_id: reg_resp.runtime_instance_id,
-                            });
-                            info!(
-                                "Successfully registered with controller. Instance ID: {}",
-                                reg_resp.runtime_instance_id
-                            );
-                            return Ok(());
-                        } else if let Some(error) = resp.error {
-                            return Err(anyhow::anyhow!("Registration failed: {}", error.message));
-                        }
-                    }
-                    Message::Ping(payload) => {
-                        ws_stream.send(Message::Pong(payload)).await?;
-                    }
-                    Message::Pong(_) => {}
-                    Message::Close(Some(frame)) => {
-                        return Err(anyhow::anyhow!(
-                            "Connection closed during registration: code={} reason={}",
-                            frame.code,
-                            frame.reason
-                        ));
-                    }
-                    Message::Close(None) => {
-                        return Err(anyhow::anyhow!("Connection closed during registration"));
-                    }
-                    Message::Binary(_) => {
-                        return Err(anyhow::anyhow!(
-                            "Unexpected binary frame received during registration"
-                        ));
-                    }
-                    Message::Frame(_) => {}
-                }
-            }
-
-            Err(anyhow::anyhow!("Connection closed during registration"))
-        })
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "Timed out waiting {:?} for controller registration acknowledgement",
-                REGISTRATION_ACK_TIMEOUT
-            )
-        })?
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_util::StreamExt;
+    use crate::websocket::WebSocketAdapter;
+    use futures_util::{SinkExt, StreamExt};
     use serde_json::{Value, json};
     use std::collections::HashMap;
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
-    use tokio_tungstenite::accept_async;
+    use tokio_tungstenite::{accept_async, tungstenite::Message};
 
     const TEST_CA_PEM: &[u8] = include_bytes!("../../../apps/light-gateway/config/ca.pem");
 
@@ -1142,15 +1038,16 @@ mod tests {
         .expect("build client");
         let registration_rx = client.subscribe_registration();
 
-        let mut ws_stream = {
+        let ws_stream = {
             let (ws_stream, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
                 .await
                 .expect("connect websocket");
             ws_stream
         };
 
+        let mut transport = WebSocketAdapter::from_stream(ws_stream);
         client
-            .register(&mut ws_stream)
+            .register(&mut transport)
             .await
             .expect("register succeeds after ping");
 
