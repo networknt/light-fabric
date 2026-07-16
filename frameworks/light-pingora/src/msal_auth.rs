@@ -247,10 +247,7 @@ impl MsalAuthRuntime {
             .ok_or_else(|| HandlerRejection::new(401, "ERR10036", "Missing CSRF header"))?;
 
         if cookie_csrf != &header_csrf {
-            warn!(
-                "CSRF mismatch: header '{}' != cookie '{}'",
-                header_csrf, cookie_csrf
-            );
+            warn!("CSRF validation failed");
             return Err(HandlerRejection::new(
                 401,
                 "ERR10039",

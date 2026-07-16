@@ -9,6 +9,7 @@ use light_runtime::{ModuleKind, RuntimeConfig, RuntimeError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::Arc;
@@ -213,6 +214,53 @@ impl AccessControlRuntime {
 
     pub fn authorization_enabled(&self) -> bool {
         self.access.as_ref().is_some_and(|config| config.enabled)
+    }
+
+    /// Stable, non-secret fingerprint for diagnostics and reload verification.
+    pub fn policy_revision(&self) -> String {
+        // `serde_json::Value` canonicalizes object keys through its ordered map
+        // representation, so source YAML formatting and HashMap iteration do
+        // not change the revision.
+        let normalized =
+            serde_json::to_value((&self.access, &self.rules)).unwrap_or(JsonValue::Null);
+        let payload = serde_json::to_vec(&normalized).unwrap_or_default();
+        let digest = Sha256::digest(payload);
+        hex::encode(digest)
+    }
+
+    pub fn validate_request_policy(&self, endpoint: &str) -> Result<(), String> {
+        let Some(config) = self.access.as_ref().filter(|config| config.enabled) else {
+            return Err("access-control is not enabled".to_string());
+        };
+        if !config.default_deny {
+            return Err("access-control defaultDeny must be true".to_string());
+        }
+        if Self::config_skips_target(config, endpoint) {
+            return Err(format!(
+                "access-control endpoint `{endpoint}` must not be skipped"
+            ));
+        }
+        let Some(EndpointConfig::Map(endpoint_rules)) = self.rules.endpoint_rules.get(endpoint)
+        else {
+            return Err(format!(
+                "access-control endpoint `{endpoint}` is not configured"
+            ));
+        };
+        let rule_ids = rule_ids_for(endpoint_rules, REQUEST_ACCESS);
+        if rule_ids.is_empty() {
+            return Err(format!(
+                "access-control endpoint `{endpoint}` has no req-acc rule"
+            ));
+        }
+        if let Some(rule_id) = rule_ids
+            .iter()
+            .find(|rule_id| !self.rules.rule_bodies.contains_key(rule_id.as_str()))
+        {
+            return Err(format!(
+                "access-control endpoint `{endpoint}` references unavailable rule `{rule_id}`"
+            ));
+        }
+        Ok(())
     }
 
     pub fn default_deny(&self) -> bool {
@@ -1998,6 +2046,56 @@ mod tests {
             claims: json!({ "role": role }),
             ..AuthPrincipal::default()
         }
+    }
+
+    #[test]
+    fn policy_revision_is_canonical_and_endpoint_validation_is_fail_closed() {
+        let first: RuleFileConfig = serde_yaml::from_str(
+            r#"
+ruleBodies:
+  allow-role:
+    common: Y
+    ruleId: allow-role
+    ruleName: Allow role
+    ruleType: req-acc
+    actions:
+      - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
+endpointRules:
+  /ctrl/mcp@connect:
+    permission:
+      roles: admin host-admin instance-admin
+    req-acc: [allow-role]
+"#,
+        )
+        .expect("first policy");
+        let second: RuleFileConfig = serde_yaml::from_str(
+            r#"
+endpointRules:
+  /ctrl/mcp@connect:
+    req-acc: [allow-role]
+    permission:
+      roles: admin host-admin instance-admin
+ruleBodies:
+  allow-role:
+    actions:
+      - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
+    ruleType: req-acc
+    ruleName: Allow role
+    ruleId: allow-role
+    common: Y
+"#,
+        )
+        .expect("second policy");
+        let first = AccessControlRuntime::new(Some(AccessControlConfig::default()), first);
+        let second = AccessControlRuntime::new(Some(AccessControlConfig::default()), second);
+        assert_eq!(first.policy_revision(), second.policy_revision());
+        assert_eq!(first.policy_revision().len(), 64);
+        assert!(first.validate_request_policy("/ctrl/mcp@connect").is_ok());
+        assert!(
+            first
+                .validate_request_policy("/ctrl/missing@connect")
+                .is_err()
+        );
     }
 
     #[test]

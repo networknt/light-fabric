@@ -5,28 +5,30 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use light_pingora::{
     AccessControlRuntime, AccessDecision, ActiveHandlerSet, ApiKeyConfig, AuthPrincipal,
-    BasicAuthConfig, CorrelationConfig, CorrelationState, CorsConfig, CorsRequestOutcome,
-    CorsResponseHeaders, HandlerBuildContext, HandlerMetricsLogLevel, HandlerRejection,
-    HeaderConfig, McpHttpRequest, McpHttpResponse, McpRequestContext, McpRouterRuntime,
-    MetricsConfig, MetricsRecorder, MsalAuthRuntime, MsalExchangeOutcome, MsalExchangeRuntime,
-    PathPrefixServiceConfig, PiiTokenizationRuntime, PingoraApp, PingoraHandler,
-    PingoraHandlerDescriptor, PingoraHandlerKind, PingoraHandlerRegistry, PingoraTransport,
-    ProxyRoute, ProxyTarget, RateLimitHeaders, RateLimitRuntime, RouterDecision, RouterRoute,
-    SecurityRuntime, SpaAuthResponse, StatelessAuthOutcome, StatelessAuthRuntime, StaticResolution,
-    StaticResourceSet, TokenRuntime, UnifiedSecurityConfig, WebSocketConnectionPermit,
-    WebSocketRouteDecision, WebSocketRouteError, WebSocketRouterRuntime, apply_correlation_request,
-    apply_correlation_response, apply_cors_response, apply_header_request, apply_header_response,
-    apply_path_prefix_service, apply_rate_limit_headers, apply_router_upstream_request,
-    apply_token_request, apply_websocket_upstream_request, build_metrics_event, check_rate_limit,
+    BasicAuthConfig, CONTROLLER_MCP_CONNECT_ENDPOINT, CONTROLLER_MCP_PATH, CorrelationConfig,
+    CorrelationState, CorsConfig, CorsRequestOutcome, CorsResponseHeaders, HandlerBuildContext,
+    HandlerMetricsLogLevel, HandlerRejection, HeaderConfig, McpHttpRequest, McpHttpResponse,
+    McpRequestContext, McpRouterRuntime, MetricsConfig, MetricsRecorder, MsalAuthRuntime,
+    MsalExchangeOutcome, MsalExchangeRuntime, PathPrefixServiceConfig, PiiTokenizationRuntime,
+    PingoraApp, PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerKind,
+    PingoraHandlerRegistry, PingoraTransport, ProxyRoute, ProxyTarget, RateLimitHeaders,
+    RateLimitRuntime, RouterDecision, RouterRoute, SecurityRuntime, SpaAuthResponse,
+    StatelessAuthOutcome, StatelessAuthRuntime, StaticResolution, StaticResourceSet, TokenRuntime,
+    UnifiedSecurityConfig, WebSocketConnectionPermit, WebSocketHandshake, WebSocketRouteDecision,
+    WebSocketRouteError, WebSocketRouterRuntime, apply_browser_websocket_upstream_credentials,
+    apply_correlation_request, apply_correlation_response, apply_cors_response,
+    apply_header_request, apply_header_response, apply_path_prefix_service,
+    apply_rate_limit_headers, apply_router_upstream_request, apply_token_request,
+    apply_websocket_upstream_request, build_metrics_event, check_rate_limit,
     correlation_id_for_upstream, evaluate_cors_request, load_access_control_runtime,
     load_active_handlers, load_api_key_config, load_basic_auth_config, load_correlation_config,
     load_cors_config, load_header_config, load_mcp_router_runtime, load_metrics_config,
     load_msal_auth_runtime, load_msal_exchange_runtime, load_path_prefix_service_config,
     load_pii_tokenization_runtime, load_proxy_route, load_rate_limit_runtime, load_router_route,
     load_security_runtime, load_stateless_auth_runtime, load_static_resources, load_token_runtime,
-    load_unified_security_config, load_websocket_router_runtime, merge_extra_response_headers,
-    select_router_target, verify_api_key, verify_basic_auth, verify_jwt_request,
-    verify_unified_security,
+    load_unified_security_config, load_websocket_router_runtime_with_policy,
+    merge_extra_response_headers, select_router_target, verify_api_key, verify_basic_auth,
+    verify_jwt_request, verify_unified_security,
 };
 use light_runtime::{
     CacheRegistry, ConfigManager, LightRuntimeBuilder, ReloadContext, ReloadOutcome,
@@ -281,9 +283,13 @@ impl GatewayProxy {
             config,
             active_handlers.is_handler_active("access-control"),
         )?;
+        log_access_control_revision(access_control.as_ref());
         let mcp_router = load_mcp_router_runtime(config, active_handlers.is_handler_active("mcp"))?;
-        let websocket_router =
-            load_websocket_router_runtime(config, active_handlers.is_handler_active("websocket"))?;
+        let websocket_router = load_websocket_router_runtime_with_policy(
+            config,
+            active_handlers.is_handler_active("websocket"),
+            access_control.clone().map(Arc::new),
+        )?;
         let router_route = load_router_route(config, active_handlers.is_handler_active("router"))?;
         let proxy_route = load_proxy_route(config)?;
         let static_resources = load_static_resources(config)?;
@@ -484,6 +490,7 @@ impl GatewayProxy {
             light_pingora::WEBSOCKET_ROUTER_MODULE_ID,
             Arc::new(WebSocketRouterReloader {
                 active_handlers: Arc::clone(&active_handlers),
+                access_control: Arc::clone(&access_control),
                 websocket_router: Arc::clone(&websocket_router),
             }),
         );
@@ -1374,6 +1381,7 @@ impl ReloadableModule for HandlerReloader {
             &ctx.runtime_config,
             active_handlers.is_handler_active("access-control"),
         )?;
+        log_access_control_revision(access_control.as_ref());
         let mcp_router = load_mcp_router_runtime_preserving_state(
             &ctx.runtime_config,
             active_handlers.is_handler_active("mcp"),
@@ -1382,6 +1390,7 @@ impl ReloadableModule for HandlerReloader {
         let websocket_router = load_websocket_router_runtime_preserving_state(
             &ctx.runtime_config,
             active_handlers.is_handler_active("websocket"),
+            access_control.as_ref(),
             &self.websocket_router,
         )?;
         let router_route = load_router_route(
@@ -1793,6 +1802,7 @@ impl ReloadableModule for McpRouterReloader {
 
 struct WebSocketRouterReloader {
     active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    access_control: Arc<ConfigManager<Option<AccessControlRuntime>>>,
     websocket_router: Arc<ConfigManager<Option<WebSocketRouterRuntime>>>,
 }
 
@@ -1803,6 +1813,7 @@ impl ReloadableModule for WebSocketRouterReloader {
         let runtime = load_websocket_router_runtime_preserving_state(
             &ctx.runtime_config,
             active,
+            self.access_control.load().as_ref().as_ref(),
             &self.websocket_router,
         )?;
         self.websocket_router.store(runtime);
@@ -1825,6 +1836,7 @@ impl ReloadableModule for AccessControlReloader {
             &ctx.runtime_config,
             active_handlers.is_handler_active("access-control"),
         )?;
+        log_access_control_revision(access_control.as_ref());
         let mcp_router = load_mcp_router_runtime_preserving_state(
             &ctx.runtime_config,
             active_handlers.is_handler_active("mcp"),
@@ -1833,6 +1845,7 @@ impl ReloadableModule for AccessControlReloader {
         let websocket_router = load_websocket_router_runtime_preserving_state(
             &ctx.runtime_config,
             active_handlers.is_handler_active("websocket"),
+            access_control.as_ref(),
             &self.websocket_router,
         )?;
         self.access_control.store(access_control);
@@ -2375,6 +2388,28 @@ impl ProxyHttp for GatewayProxy {
                             .write_text_response(session, ctx, 426, "upgrade required")
                             .await;
                     }
+                    let handshake = match runtime.prepare_handshake(
+                        request_path.as_str(),
+                        request_header(session, "origin").as_deref(),
+                        request_cookie_value(session, "csrf").as_deref(),
+                        request_header(session, "sec-websocket-protocol").as_deref(),
+                    ) {
+                        Ok(handshake) => handshake,
+                        Err(error) => {
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            return self
+                                .write_string_response(
+                                    session,
+                                    ctx,
+                                    websocket_route_status(&error),
+                                    error.to_string(),
+                                )
+                                .await;
+                        }
+                    };
+                    let trusted_authorization = handshake
+                        .as_ref()
+                        .and_then(|_| request_header(session, "authorization"));
                     let headers = agent_headers(session);
                     let decision = match runtime.resolve(
                         &request_path,
@@ -2399,8 +2434,12 @@ impl ProxyHttp for GatewayProxy {
                     match runtime
                         .authorize(
                             &decision,
-                            ctx.endpoint.as_str(),
-                            &headers,
+                            if request_path == CONTROLLER_MCP_PATH {
+                                CONTROLLER_MCP_CONNECT_ENDPOINT
+                            } else {
+                                ctx.endpoint.as_str()
+                            },
+                            &websocket_policy_headers(session),
                             ctx.auth.as_ref(),
                             ctx.correlation.correlation_id.as_deref(),
                         )
@@ -2408,6 +2447,15 @@ impl ProxyHttp for GatewayProxy {
                     {
                         AccessDecision::Allowed => {}
                         AccessDecision::Denied(message) => {
+                            warn!(
+                                policy_endpoint = if request_path == CONTROLLER_MCP_PATH {
+                                    CONTROLLER_MCP_CONNECT_ENDPOINT
+                                } else {
+                                    ctx.endpoint.as_str()
+                                },
+                                denial_category = "connection_policy_denied",
+                                "websocket connection denied by access-control policy"
+                            );
                             ctx.record_handler_duration(&handler_id, started.elapsed());
                             return self.write_string_response(session, ctx, 403, message).await;
                         }
@@ -2448,6 +2496,8 @@ impl ProxyHttp for GatewayProxy {
                             ctx.websocket_max_connection_duration =
                                 runtime.max_connection_duration();
                             ctx.websocket_permit = Some(permit);
+                            ctx.websocket_handshake = handshake;
+                            ctx.websocket_trusted_authorization = trusted_authorization;
                             let timeout = websocket_io_timeout(ctx);
                             session.as_downstream_mut().set_read_timeout(timeout);
                             session.as_downstream_mut().set_write_timeout(timeout);
@@ -2676,6 +2726,13 @@ impl ProxyHttp for GatewayProxy {
                     decision,
                     ctx.websocket_preserve_routing_headers,
                 )?;
+                if let Some(handshake) = ctx.websocket_handshake.as_ref() {
+                    apply_browser_websocket_upstream_credentials(
+                        upstream_request,
+                        handshake,
+                        ctx.websocket_trusted_authorization.as_deref(),
+                    )?;
+                }
             } else if let Some(decision) = ctx.router_decision.as_ref() {
                 let route = self.router_route.load();
                 let route = route.as_ref().as_ref().ok_or_else(|| {
@@ -2923,7 +2980,7 @@ impl ProxyHttp for GatewayProxy {
 
     async fn response_filter(
         &self,
-        session: &mut Session,
+        _session: &mut Session,
         upstream_response: &mut ResponseHeader,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()>
@@ -2955,15 +3012,17 @@ impl ProxyHttp for GatewayProxy {
             upstream_response.remove_header("etag");
             upstream_response.remove_header("last-modified");
         }
-        if ctx.websocket_decision.is_some()
-            && upstream_response.status.as_u16() == 101
-            && upstream_response
+        if upstream_response.status.as_u16() == 101
+            && let Some(handshake) = ctx.websocket_handshake.as_ref()
+        {
+            let upstream_selection = upstream_response
                 .headers
                 .get("sec-websocket-protocol")
-                .is_none()
-            && let Some(protocol) = selected_websocket_protocol(session)
-        {
-            upstream_response.insert_header("Sec-WebSocket-Protocol", protocol)?;
+                .and_then(|value| value.to_str().ok());
+            let protocol = handshake
+                .downstream_protocol(upstream_selection)
+                .map_err(|error| Error::explain(ErrorType::InvalidHTTPHeader, error.to_string()))?;
+            upstream_response.insert_header("sec-websocket-protocol", protocol)?;
         }
         self.apply_response_headers(upstream_response, ctx)?;
         if upstream_response.status.as_u16() >= 500 {
@@ -3011,6 +3070,8 @@ struct GatewayRequestContext {
     router_decision: Option<RouterDecision>,
     websocket_decision: Option<WebSocketRouteDecision>,
     websocket_permit: Option<WebSocketConnectionPermit>,
+    websocket_handshake: Option<WebSocketHandshake>,
+    websocket_trusted_authorization: Option<String>,
     websocket_preserve_routing_headers: bool,
     websocket_idle_timeout: Option<Duration>,
     websocket_max_connection_duration: Option<Duration>,
@@ -3053,6 +3114,8 @@ impl Default for GatewayRequestContext {
             router_decision: None,
             websocket_decision: None,
             websocket_permit: None,
+            websocket_handshake: None,
+            websocket_trusted_authorization: None,
             websocket_preserve_routing_headers: false,
             websocket_idle_timeout: None,
             websocket_max_connection_duration: None,
@@ -3096,6 +3159,8 @@ impl GatewayRequestContext {
         self.router_decision = None;
         self.websocket_decision = None;
         self.websocket_permit = None;
+        self.websocket_handshake = None;
+        self.websocket_trusted_authorization = None;
         self.websocket_preserve_routing_headers = false;
         self.websocket_idle_timeout = None;
         self.websocket_max_connection_duration = None;
@@ -3272,18 +3337,41 @@ fn request_header(session: &Session, name: &str) -> Option<String> {
     None
 }
 
-fn selected_websocket_protocol(session: &Session) -> Option<String> {
-    request_header(session, "Sec-WebSocket-Protocol")
-        .as_deref()
-        .and_then(first_websocket_protocol)
+fn request_cookie_value(session: &Session, name: &str) -> Option<String> {
+    request_header(session, "cookie")?
+        .split(';')
+        .filter_map(|cookie| cookie.trim().split_once('='))
+        .find(|(cookie_name, _)| cookie_name.trim() == name)
+        .map(|(_, value)| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
-fn first_websocket_protocol(value: &str) -> Option<String> {
-    value
-        .split(',')
-        .map(str::trim)
-        .find(|protocol| !protocol.is_empty())
-        .map(str::to_string)
+fn websocket_policy_headers(session: &Session) -> Vec<(String, String)> {
+    const SAFE_HEADERS: [&str; 6] = [
+        "host",
+        "origin",
+        "user-agent",
+        "x-forwarded-host",
+        "x-forwarded-port",
+        "x-forwarded-proto",
+    ];
+    SAFE_HEADERS
+        .iter()
+        .filter_map(|name| request_header(session, name).map(|value| ((*name).to_string(), value)))
+        .collect()
+}
+
+fn log_access_control_revision(runtime: Option<&AccessControlRuntime>) {
+    if let Some(runtime) = runtime {
+        info!(
+            policy_revision = %runtime.policy_revision(),
+            enabled = runtime.authorization_enabled(),
+            default_deny = runtime.default_deny(),
+            "access-control policy loaded"
+        );
+    } else {
+        info!("access-control policy is not active");
+    }
 }
 
 fn agent_headers(session: &Session) -> Vec<(String, String)> {
@@ -3563,7 +3651,11 @@ fn header_contains_token(session: &Session, name: &str, token: &str) -> bool {
 fn websocket_route_status(error: &WebSocketRouteError) -> u16 {
     match error {
         WebSocketRouteError::MissingTarget => 403,
-        WebSocketRouteError::InvalidProtocol(_) => 400,
+        WebSocketRouteError::InvalidProtocol(_)
+        | WebSocketRouteError::InvalidProtocolOffer
+        | WebSocketRouteError::InvalidCsrfProtocol => 400,
+        WebSocketRouteError::MissingOrigin | WebSocketRouteError::OriginDenied => 403,
+        WebSocketRouteError::UnofferedUpstreamProtocol => 502,
         WebSocketRouteError::UpgradeRateExceeded(_) => 429,
         WebSocketRouteError::TooManyActiveConnections(_) => 503,
         WebSocketRouteError::DiscoveryUnavailable(_)
@@ -3912,10 +4004,15 @@ fn load_mcp_router_runtime_preserving_state(
 fn load_websocket_router_runtime_preserving_state(
     runtime_config: &RuntimeConfig,
     active: bool,
+    access_control: Option<&AccessControlRuntime>,
     current: &ConfigManager<Option<WebSocketRouterRuntime>>,
 ) -> Result<Option<WebSocketRouterRuntime>, RuntimeError> {
     let previous = current.load();
-    let mut runtime = load_websocket_router_runtime(runtime_config, active)?;
+    let mut runtime = load_websocket_router_runtime_with_policy(
+        runtime_config,
+        active,
+        access_control.cloned().map(Arc::new),
+    )?;
     if let Some(runtime) = runtime.as_mut()
         && let Some(previous) = previous.as_ref().as_ref()
     {

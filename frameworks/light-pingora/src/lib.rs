@@ -161,11 +161,13 @@ pub use unified_security::{
     UnifiedPathAuth, UnifiedSecurityConfig, load_unified_security_config, verify_unified_security,
 };
 pub use websocket::{
-    WEBSOCKET_ROUTER_CONFIG_NAME, WEBSOCKET_ROUTER_FILE, WEBSOCKET_ROUTER_LEGACY_FILE,
-    WEBSOCKET_ROUTER_MODULE_ID, WebSocketConnectionPermit, WebSocketDiscoveryResolver,
+    CONTROLLER_MCP_CONNECT_ENDPOINT, CONTROLLER_MCP_PATH, WEBSOCKET_ROUTER_CONFIG_NAME,
+    WEBSOCKET_ROUTER_FILE, WEBSOCKET_ROUTER_LEGACY_FILE, WEBSOCKET_ROUTER_MODULE_ID,
+    WebSocketConnectionPermit, WebSocketDiscoveryResolver, WebSocketHandshake,
     WebSocketRouteDecision, WebSocketRouteError, WebSocketRouteSource, WebSocketRouterConfig,
-    WebSocketRouterRuntime, WebSocketServiceTarget, apply_websocket_upstream_request,
-    load_websocket_router_runtime,
+    WebSocketRouterRuntime, WebSocketServiceTarget, apply_browser_websocket_upstream_credentials,
+    apply_websocket_upstream_request, load_websocket_router_runtime,
+    load_websocket_router_runtime_with_policy,
 };
 
 pub trait PingoraApp: Send + Sync + 'static {

@@ -1,6 +1,6 @@
 enabled: ${handler.enabled:true}
 reportHandlerDuration: ${handler.reportHandlerDuration:false}
-handlerMetricsLogLevel: ${handler.handlerMetricsLogLevel:DEBUG}
+handlerMetricsLogLevel: ${handler.handlerMetricsLogLevel:INFO}
 basePath: ${handler.basePath:/}
 
 handlers: ${handler.handlers:[]}

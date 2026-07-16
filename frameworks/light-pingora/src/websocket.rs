@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use url::form_urlencoded;
+use url::{Url, form_urlencoded};
 
 pub const WEBSOCKET_ROUTER_FILE: &str = "websocket-router.yml";
 pub const WEBSOCKET_ROUTER_LEGACY_FILE: &str = "websocket-router.yaml";
@@ -32,7 +32,17 @@ const SERVICE_ID_HEADERS: [&str; 3] = ["Service-Id", "service_id", "serviceId"];
 const SERVICE_ID_QUERY_PARAMS: [&str; 2] = ["service_id", "serviceId"];
 const ENV_TAG_QUERY_PARAMS: [&str; 2] = ["env_tag", "envTag"];
 const PROTOCOL_QUERY_PARAM: &str = "protocol";
-const ROUTER_QUERY_PARAMS: [&str; 5] = ["protocol", "service_id", "serviceId", "env_tag", "envTag"];
+const ROUTER_QUERY_PARAMS: [&str; 6] = [
+    "protocol",
+    "service_id",
+    "serviceId",
+    "env_tag",
+    "envTag",
+    "csrf",
+];
+pub const CONTROLLER_MCP_PATH: &str = "/ctrl/mcp";
+pub const CONTROLLER_MCP_CONNECT_ENDPOINT: &str = "/ctrl/mcp@connect";
+const CSRF_PROTOCOL_PREFIX: &str = "csrf.";
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -41,6 +51,10 @@ pub struct WebSocketRouterConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_env_tag: Option<String>,
     pub path_prefix_service: BTreeMap<String, WebSocketServiceTarget>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub origin_allowlist: BTreeMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub application_protocols: BTreeMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub preserve_routing_headers: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -59,6 +73,8 @@ impl Default for WebSocketRouterConfig {
             default_protocol: DEFAULT_PROTOCOL.to_string(),
             default_env_tag: None,
             path_prefix_service: BTreeMap::new(),
+            origin_allowlist: BTreeMap::new(),
+            application_protocols: BTreeMap::new(),
             preserve_routing_headers: false,
             idle_timeout_ms: Some(DEFAULT_IDLE_TIMEOUT_MS),
             max_connection_duration_ms: None,
@@ -82,6 +98,10 @@ impl<'de> Deserialize<'de> for WebSocketRouterConfig {
             default_env_tag: Option<String>,
             #[serde(default, deserialize_with = "deserialize_path_prefix_service")]
             path_prefix_service: BTreeMap<String, RawWebSocketServiceTarget>,
+            #[serde(default, deserialize_with = "deserialize_string_list_map")]
+            origin_allowlist: BTreeMap<String, Vec<String>>,
+            #[serde(default, deserialize_with = "deserialize_string_list_map")]
+            application_protocols: BTreeMap<String, Vec<String>>,
             #[serde(default)]
             preserve_routing_headers: bool,
             #[serde(
@@ -115,10 +135,17 @@ impl<'de> Deserialize<'de> for WebSocketRouterConfig {
             }
         }
 
+        let origin_allowlist =
+            normalize_origin_allowlist(raw.origin_allowlist).map_err(D::Error::custom)?;
+        let application_protocols =
+            normalize_application_protocols(raw.application_protocols).map_err(D::Error::custom)?;
+
         Ok(Self {
             default_protocol,
             default_env_tag,
             path_prefix_service,
+            origin_allowlist,
+            application_protocols,
             preserve_routing_headers: raw.preserve_routing_headers,
             idle_timeout_ms: normalize_optional_millis("idleTimeoutMs", raw.idle_timeout_ms)
                 .map_err(D::Error::custom)?,
@@ -175,6 +202,11 @@ pub enum WebSocketRouteError {
     NoUsableEndpoint(String),
     UpgradeRateExceeded(usize),
     TooManyActiveConnections(usize),
+    MissingOrigin,
+    OriginDenied,
+    InvalidProtocolOffer,
+    InvalidCsrfProtocol,
+    UnofferedUpstreamProtocol,
 }
 
 impl fmt::Display for WebSocketRouteError {
@@ -203,6 +235,17 @@ impl fmt::Display for WebSocketRouteError {
                 f,
                 "websocket-router active connection limit exceeded: {limit}"
             ),
+            Self::MissingOrigin => f.write_str("websocket Origin is required"),
+            Self::OriginDenied => f.write_str("websocket Origin is not allowed"),
+            Self::InvalidProtocolOffer => {
+                f.write_str("websocket protocol offer is malformed or not permitted")
+            }
+            Self::InvalidCsrfProtocol => {
+                f.write_str("websocket CSRF protocol credential is missing or invalid")
+            }
+            Self::UnofferedUpstreamProtocol => {
+                f.write_str("upstream selected an unoffered websocket protocol")
+            }
         }
     }
 }
@@ -258,6 +301,41 @@ struct UpgradeRateWindow {
 
 pub struct WebSocketConnectionPermit {
     state: Arc<WebSocketRuntimeState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebSocketHandshake {
+    csrf_protocol: String,
+    application_protocols: Vec<String>,
+}
+
+impl WebSocketHandshake {
+    pub fn csrf_protocol(&self) -> &str {
+        self.csrf_protocol.as_str()
+    }
+
+    pub fn upstream_protocol_header(&self) -> Option<String> {
+        (!self.application_protocols.is_empty()).then(|| self.application_protocols.join(", "))
+    }
+
+    pub fn downstream_protocol(
+        &self,
+        upstream_selection: Option<&str>,
+    ) -> Result<String, WebSocketRouteError> {
+        let Some(selection) = upstream_selection else {
+            return Ok(self.csrf_protocol.clone());
+        };
+        let selection = selection.trim();
+        if !is_http_token(selection)
+            || !self
+                .application_protocols
+                .iter()
+                .any(|offered| offered == selection)
+        {
+            return Err(WebSocketRouteError::UnofferedUpstreamProtocol);
+        }
+        Ok(selection.to_string())
+    }
 }
 
 impl fmt::Debug for WebSocketConnectionPermit {
@@ -339,7 +417,16 @@ impl WebSocketRouterRuntime {
         )
     }
 
-    fn new_with_discovery_policy_and_direct_registry(
+    pub fn new_with_discovery_policy_and_direct_registry(
+        config: WebSocketRouterConfig,
+        discovery: Option<Arc<dyn WebSocketDiscoveryResolver>>,
+        policy: Option<Arc<AccessControlRuntime>>,
+        direct_registry: DirectRegistryConfig,
+    ) -> Result<Self, RuntimeError> {
+        Self::build(config, discovery, policy, direct_registry)
+    }
+
+    fn build(
         config: WebSocketRouterConfig,
         discovery: Option<Arc<dyn WebSocketDiscoveryResolver>>,
         policy: Option<Arc<AccessControlRuntime>>,
@@ -375,6 +462,70 @@ impl WebSocketRouterRuntime {
 
     pub fn preserve_state_from(&mut self, previous: &Self) {
         self.state = Arc::clone(&previous.state);
+    }
+
+    pub fn prepare_handshake(
+        &self,
+        path: &str,
+        origin: Option<&str>,
+        csrf_cookie: Option<&str>,
+        protocol_header: Option<&str>,
+    ) -> Result<Option<WebSocketHandshake>, WebSocketRouteError> {
+        if path != CONTROLLER_MCP_PATH {
+            if path.starts_with("/ctrl/mcp/") {
+                return Err(WebSocketRouteError::MissingTarget);
+            }
+            return Ok(None);
+        }
+        let origin = origin.ok_or(WebSocketRouteError::MissingOrigin)?;
+        let normalized_origin =
+            normalize_origin(origin).map_err(|_| WebSocketRouteError::OriginDenied)?;
+        let allowed = self
+            .config
+            .origin_allowlist
+            .get(CONTROLLER_MCP_PATH)
+            .filter(|allowed| !allowed.is_empty())
+            .is_some_and(|allowed| allowed.iter().any(|entry| entry == &normalized_origin));
+        if !allowed {
+            return Err(WebSocketRouteError::OriginDenied);
+        }
+
+        let expected_csrf = csrf_cookie
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or(WebSocketRouteError::InvalidCsrfProtocol)?;
+        let offered = protocol_header.ok_or(WebSocketRouteError::InvalidCsrfProtocol)?;
+        let permitted = self
+            .config
+            .application_protocols
+            .get(CONTROLLER_MCP_PATH)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let mut csrf_protocol = None;
+        let mut application_protocols = Vec::new();
+        for raw in offered.split(',') {
+            let token = raw.trim();
+            if !is_http_token(token) {
+                return Err(WebSocketRouteError::InvalidProtocolOffer);
+            }
+            if let Some(csrf) = token.strip_prefix(CSRF_PROTOCOL_PREFIX) {
+                if csrf_protocol.is_some() || csrf != expected_csrf {
+                    return Err(WebSocketRouteError::InvalidCsrfProtocol);
+                }
+                csrf_protocol = Some(token.to_string());
+            } else if permitted.iter().any(|allowed| allowed == token)
+                && !application_protocols.iter().any(|offered| offered == token)
+            {
+                application_protocols.push(token.to_string());
+            } else {
+                return Err(WebSocketRouteError::InvalidProtocolOffer);
+            }
+        }
+        let csrf_protocol = csrf_protocol.ok_or(WebSocketRouteError::InvalidCsrfProtocol)?;
+        Ok(Some(WebSocketHandshake {
+            csrf_protocol,
+            application_protocols,
+        }))
     }
 
     pub fn check_upgrade_rate(&self) -> Result<(), WebSocketRouteError> {
@@ -436,8 +587,19 @@ impl WebSocketRouterRuntime {
         correlation_id: Option<&str>,
     ) -> AccessDecision {
         let Some(policy) = self.policy.as_ref() else {
-            return AccessDecision::Allowed;
+            return if endpoint == CONTROLLER_MCP_CONNECT_ENDPOINT {
+                AccessDecision::Denied(
+                    "Access denied: connection policy is unavailable".to_string(),
+                )
+            } else {
+                AccessDecision::Allowed
+            };
         };
+        if endpoint == CONTROLLER_MCP_CONNECT_ENDPOINT && !policy.authorization_enabled() {
+            return AccessDecision::Denied(
+                "Access denied: connection policy is not enabled".to_string(),
+            );
+        }
         let arguments = json!({
             "serviceId": decision.service_id.as_str(),
             "protocol": decision.protocol.as_str(),
@@ -577,6 +739,14 @@ pub fn load_websocket_router_runtime(
     runtime_config: &RuntimeConfig,
     active: bool,
 ) -> Result<Option<WebSocketRouterRuntime>, RuntimeError> {
+    load_websocket_router_runtime_with_policy(runtime_config, active, None)
+}
+
+pub fn load_websocket_router_runtime_with_policy(
+    runtime_config: &RuntimeConfig,
+    active: bool,
+    policy: Option<Arc<AccessControlRuntime>>,
+) -> Result<Option<WebSocketRouterRuntime>, RuntimeError> {
     if !active {
         return Ok(None);
     }
@@ -585,6 +755,20 @@ pub fn load_websocket_router_runtime(
         Some(config) => config,
         None => WebSocketRouterConfig::default(),
     };
+    if config.path_prefix_service.contains_key(CONTROLLER_MCP_PATH) {
+        let validation = policy.as_ref().map_or_else(
+            || Err("controller websocket route requires an enabled connection policy".to_string()),
+            |policy| policy.validate_request_policy(CONTROLLER_MCP_CONNECT_ENDPOINT),
+        );
+        if let Err(error) = validation {
+            tracing::error!(
+                policy_endpoint = CONTROLLER_MCP_CONNECT_ENDPOINT,
+                reason = %error,
+                "controller websocket connection policy validation failed"
+            );
+            return Err(RuntimeError::Config(error));
+        }
+    }
     runtime_config.module_registry.register_loaded_config(
         WEBSOCKET_ROUTER_MODULE_ID,
         WEBSOCKET_ROUTER_CONFIG_NAME,
@@ -596,9 +780,10 @@ pub fn load_websocket_router_runtime(
         true,
     )?;
     Ok(Some(
-        WebSocketRouterRuntime::new_with_discovery_and_direct_registry(
+        WebSocketRouterRuntime::new_with_discovery_policy_and_direct_registry(
             config,
             discovery_resolver(runtime_config.registry_client.clone()),
+            policy,
             runtime_config.direct_registry.clone(),
         )?,
     ))
@@ -624,6 +809,41 @@ pub fn apply_websocket_upstream_request(
         for header in SERVICE_ID_HEADERS {
             upstream_request.remove_header(header);
         }
+    }
+    Ok(())
+}
+
+pub fn apply_browser_websocket_upstream_credentials(
+    upstream_request: &mut RequestHeader,
+    handshake: &WebSocketHandshake,
+    trusted_authorization: Option<&str>,
+) -> pingora::Result<()> {
+    for header in [
+        "cookie",
+        "authorization",
+        "x-csrf-token",
+        "x-scope-token",
+        "x-user-id",
+        "x-user",
+        "x-roles",
+        "x-role",
+        "x-host",
+        "x-light-user",
+        "x-light-roles",
+        "x-forwarded-user",
+        "x-forwarded-email",
+    ] {
+        upstream_request.remove_header(header);
+    }
+    for header in SERVICE_ID_HEADERS {
+        upstream_request.remove_header(header);
+    }
+    if let Some(authorization) = trusted_authorization {
+        upstream_request.insert_header("authorization", authorization)?;
+    }
+    upstream_request.remove_header("sec-websocket-protocol");
+    if let Some(protocols) = handshake.upstream_protocol_header() {
+        upstream_request.insert_header("sec-websocket-protocol", protocols)?;
     }
     Ok(())
 }
@@ -777,6 +997,108 @@ where
     }
 
     deserializer.deserialize_any(PathPrefixServiceVisitor)
+}
+
+fn deserialize_string_list_map<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = YamlValue::deserialize(deserializer)?;
+    let value = match value {
+        YamlValue::Null => return Ok(BTreeMap::new()),
+        YamlValue::String(value) if value.trim().is_empty() => return Ok(BTreeMap::new()),
+        YamlValue::String(value) => {
+            serde_yaml::from_str::<YamlValue>(&value).map_err(D::Error::custom)?
+        }
+        value => value,
+    };
+    serde_yaml::from_value(value).map_err(D::Error::custom)
+}
+
+fn normalize_origin_allowlist(
+    values: BTreeMap<String, Vec<String>>,
+) -> Result<BTreeMap<String, Vec<String>>, String> {
+    let mut normalized = BTreeMap::new();
+    for (path, origins) in values {
+        let path = normalize_prefix(&path)?;
+        let mut entries = Vec::with_capacity(origins.len());
+        for origin in origins {
+            let origin = normalize_origin(&origin)?;
+            if !entries.contains(&origin) {
+                entries.push(origin);
+            }
+        }
+        normalized.insert(path, entries);
+    }
+    Ok(normalized)
+}
+
+fn normalize_application_protocols(
+    values: BTreeMap<String, Vec<String>>,
+) -> Result<BTreeMap<String, Vec<String>>, String> {
+    let mut normalized = BTreeMap::new();
+    for (path, protocols) in values {
+        let path = normalize_prefix(&path)?;
+        let mut entries = Vec::with_capacity(protocols.len());
+        for protocol in protocols {
+            let protocol = protocol.trim();
+            if protocol.starts_with(CSRF_PROTOCOL_PREFIX) || !is_http_token(protocol) {
+                return Err(format!(
+                    "invalid websocket application protocol `{protocol}`"
+                ));
+            }
+            if !entries.iter().any(|entry| entry == protocol) {
+                entries.push(protocol.to_string());
+            }
+        }
+        normalized.insert(path, entries);
+    }
+    Ok(normalized)
+}
+
+fn normalize_origin(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("null") {
+        return Err("websocket Origin must be an absolute http(s) origin".to_string());
+    }
+    let url = Url::parse(value).map_err(|_| "websocket Origin is malformed".to_string())?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("websocket Origin must contain only scheme, host, and port".to_string());
+    }
+    Ok(url.origin().ascii_serialization())
+}
+
+fn is_http_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
 }
 
 fn parse_path_prefix_service_str(
@@ -1451,6 +1773,103 @@ pathPrefixService:
     }
 
     #[tokio::test]
+    async fn controller_connection_fails_closed_without_enabled_policy() {
+        let runtime = protected_runtime();
+        let decision = runtime
+            .resolve(
+                CONTROLLER_MCP_PATH,
+                None,
+                std::iter::empty::<(&str, &str)>(),
+            )
+            .expect("resolve");
+        assert!(matches!(
+            runtime
+                .authorize(&decision, CONTROLLER_MCP_CONNECT_ENDPOINT, &[], None, None,)
+                .await,
+            AccessDecision::Denied(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn controller_connection_admits_only_exact_administrative_roles() {
+        let policy = Arc::new(crate::access_control::AccessControlRuntime::new(
+            Some(crate::access_control::AccessControlConfig::default()),
+            serde_yaml::from_str(
+                r#"
+ruleBodies:
+  allow-role-based-access-control.lightapi.net.dev.lightapi.net:
+    common: Y
+    ruleId: allow-role-based-access-control.lightapi.net.dev.lightapi.net
+    ruleName: Controller connection roles
+    ruleType: req-acc
+    expression: "true"
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+    actions:
+      - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
+endpointRules:
+  /ctrl/mcp@connect:
+    req-acc:
+      - allow-role-based-access-control.lightapi.net.dev.lightapi.net
+    permission:
+      roles: admin host-admin instance-admin
+"#,
+            )
+            .expect("role policy"),
+        ));
+        let runtime = WebSocketRouterRuntime::new_with_policy(
+            protected_runtime().config().clone(),
+            Some(policy),
+        )
+        .expect("runtime with policy");
+        let route = runtime
+            .resolve(
+                CONTROLLER_MCP_PATH,
+                None,
+                std::iter::empty::<(&str, &str)>(),
+            )
+            .expect("route");
+
+        for role in ["admin", "host-admin", "instance-admin"] {
+            let auth = AuthPrincipal {
+                claims: json!({"role": role}),
+                ..AuthPrincipal::default()
+            };
+            assert_eq!(
+                runtime
+                    .authorize(
+                        &route,
+                        CONTROLLER_MCP_CONNECT_ENDPOINT,
+                        &[],
+                        Some(&auth),
+                        None,
+                    )
+                    .await,
+                AccessDecision::Allowed,
+                "role {role}"
+            );
+        }
+        for role in ["user", "account-admin", "not-instance-admin"] {
+            let auth = AuthPrincipal {
+                claims: json!({"role": role}),
+                ..AuthPrincipal::default()
+            };
+            assert!(matches!(
+                runtime
+                    .authorize(
+                        &route,
+                        CONTROLLER_MCP_CONNECT_ENDPOINT,
+                        &[],
+                        Some(&auth),
+                        None,
+                    )
+                    .await,
+                AccessDecision::Denied(_)
+            ));
+        }
+    }
+
+    #[tokio::test]
     async fn select_target_uses_discovery_protocol_env_and_round_robin_index() {
         let discovery = Arc::new(FakeDiscovery::new(discovery_snapshot(
             "com.networknt.llmchat-1.0.0",
@@ -1623,6 +2042,53 @@ pathPrefixService:
     }
 
     #[test]
+    fn browser_credentials_are_replaced_by_trusted_upstream_context() {
+        let handshake = protected_runtime()
+            .prepare_handshake(
+                CONTROLLER_MCP_PATH,
+                Some("https://portal.example.com"),
+                Some("sentinel-csrf"),
+                Some("csrf.sentinel-csrf, light-mcp-json-v1"),
+            )
+            .expect("valid handshake")
+            .expect("protected handshake");
+        let mut request = RequestHeader::build("GET", b"/ctrl/mcp", Some(16)).expect("request");
+        for (name, value) in [
+            ("cookie", "accessToken=browser-secret; csrf=sentinel-csrf"),
+            ("authorization", "Bearer browser-supplied"),
+            ("x-csrf-token", "sentinel-csrf"),
+            ("x-user-id", "spoofed-user"),
+            ("service_id", "spoofed-service"),
+            (
+                "sec-websocket-protocol",
+                "csrf.sentinel-csrf, light-mcp-json-v1",
+            ),
+        ] {
+            request.insert_header(name, value).expect("header");
+        }
+
+        apply_browser_websocket_upstream_credentials(
+            &mut request,
+            &handshake,
+            Some("Bearer gateway-verified"),
+        )
+        .expect("sanitize request");
+
+        assert!(!request.headers.contains_key("cookie"));
+        assert!(!request.headers.contains_key("x-csrf-token"));
+        assert!(!request.headers.contains_key("x-user-id"));
+        assert!(!request.headers.contains_key("service_id"));
+        assert_eq!(
+            request.headers["authorization"].to_str().unwrap(),
+            "Bearer gateway-verified"
+        );
+        assert_eq!(
+            request.headers["sec-websocket-protocol"].to_str().unwrap(),
+            "light-mcp-json-v1"
+        );
+    }
+
+    #[test]
     fn loader_accepts_legacy_yaml_file_and_registers_module() {
         let config_dir = TempDir::new().expect("config temp dir");
         std::fs::write(
@@ -1714,5 +2180,112 @@ pathPrefixService:
             self.lookups.lock().expect("lookup lock").push(subscription);
             Ok(self.snapshot.clone())
         }
+    }
+
+    fn protected_runtime() -> WebSocketRouterRuntime {
+        let config: WebSocketRouterConfig = serde_yaml::from_str(
+            r#"
+pathPrefixService:
+  /ctrl/mcp: com.networknt.controller-1.0.0
+originAllowlist:
+  /ctrl/mcp:
+    - https://portal.example.com
+applicationProtocols:
+  /ctrl/mcp:
+    - light-mcp-json-v1
+maxConnectionDurationMs: 900000
+"#,
+        )
+        .expect("protected config");
+        WebSocketRouterRuntime::new(config).expect("protected runtime")
+    }
+
+    #[test]
+    fn controller_handshake_separates_csrf_and_application_protocols() {
+        let runtime = protected_runtime();
+        let handshake = runtime
+            .prepare_handshake(
+                CONTROLLER_MCP_PATH,
+                Some("https://PORTAL.example.com:443"),
+                Some("sentinel-csrf"),
+                Some("csrf.sentinel-csrf, light-mcp-json-v1"),
+            )
+            .expect("valid handshake")
+            .expect("protected handshake");
+
+        assert_eq!(handshake.csrf_protocol(), "csrf.sentinel-csrf");
+        assert_eq!(
+            handshake.upstream_protocol_header().as_deref(),
+            Some("light-mcp-json-v1")
+        );
+        assert_eq!(
+            handshake.downstream_protocol(None).expect("fallback"),
+            "csrf.sentinel-csrf"
+        );
+        assert_eq!(
+            handshake
+                .downstream_protocol(Some("light-mcp-json-v1"))
+                .expect("offered selection"),
+            "light-mcp-json-v1"
+        );
+    }
+
+    #[test]
+    fn controller_handshake_fails_closed_for_origin_and_csrf_ambiguity() {
+        let runtime = protected_runtime();
+        for origin in [
+            None,
+            Some("null"),
+            Some("https://portal.example.com.evil.test"),
+            Some("https://evil.test/?portal.example.com"),
+        ] {
+            assert!(
+                runtime
+                    .prepare_handshake(
+                        CONTROLLER_MCP_PATH,
+                        origin,
+                        Some("csrf-value"),
+                        Some("csrf.csrf-value"),
+                    )
+                    .is_err()
+            );
+        }
+        assert!(
+            runtime
+                .prepare_handshake(
+                    CONTROLLER_MCP_PATH,
+                    Some("https://portal.example.com"),
+                    Some("csrf-value"),
+                    Some("csrf.csrf-value, csrf.csrf-value"),
+                )
+                .is_err()
+        );
+        assert!(
+            runtime
+                .prepare_handshake(
+                    CONTROLLER_MCP_PATH,
+                    Some("https://portal.example.com"),
+                    Some("csrf-value"),
+                    Some("csrf.wrong"),
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn controller_handshake_rejects_unoffered_upstream_protocol() {
+        let handshake = protected_runtime()
+            .prepare_handshake(
+                CONTROLLER_MCP_PATH,
+                Some("https://portal.example.com"),
+                Some("csrf-value"),
+                Some("csrf.csrf-value, light-mcp-json-v1"),
+            )
+            .expect("valid handshake")
+            .expect("protected handshake");
+        assert_eq!(
+            handshake.downstream_protocol(Some("not-offered")),
+            Err(WebSocketRouteError::UnofferedUpstreamProtocol)
+        );
     }
 }
