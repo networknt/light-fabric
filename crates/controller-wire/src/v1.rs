@@ -172,6 +172,8 @@ impl ValidateV1 for ClientHelloV1 {
 
 impl ValidateV1 for ServerHelloV1 {
     fn validate(&self, _: usize) -> Result<(), WireError> {
+        nonnil_uuid("runtime_instance_id", self.runtime_instance_id)?;
+        nonnil_uuid("connection_id", self.connection_id)?;
         nonzero_u32("heartbeat_interval_ms", self.heartbeat_interval_ms)?;
         nonzero_u32("max_control_payload_bytes", self.max_control_payload_bytes)?;
         nonzero_u32("max_command_streams", self.max_command_streams)
@@ -324,6 +326,7 @@ impl ValidateV1 for DiscoverySnapshotV1 {
 
 impl ValidateV1 for DiscoveryNodeV1 {
     fn validate(&self, _: usize) -> Result<(), WireError> {
+        nonnil_uuid("node.runtime_instance_id", self.runtime_instance_id)?;
         required_string("node.service_id", &self.service_id, MAX_SERVICE_ID_BYTES)?;
         optional_string("node.env_tag", self.env_tag.as_deref(), MAX_ENV_TAG_BYTES)?;
         bounded_string("node.environment", &self.environment, MAX_ENV_TAG_BYTES)?;
@@ -409,6 +412,14 @@ fn exactly_one(field: &'static str, first: bool, second: bool) -> Result<(), Wir
             field,
             "exactly one success or error value must be present",
         ))
+    }
+}
+
+fn nonnil_uuid(field: &'static str, value: Uuid) -> Result<(), WireError> {
+    if value.is_nil() {
+        Err(WireError::semantic(field, "must not be nil"))
+    } else {
+        Ok(())
     }
 }
 

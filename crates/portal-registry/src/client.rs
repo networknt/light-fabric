@@ -22,6 +22,8 @@ use uuid::Uuid;
 
 use crate::websocket::InboundEvent;
 
+const OUTBOUND_QUEUE_CAPACITY: usize = 100;
+
 #[derive(Debug)]
 struct NoHostnameVerifier {
     roots: Arc<rustls::RootCertStore>,
@@ -664,7 +666,7 @@ impl PortalRegistryClient {
         }
 
         let (mut sender, mut receiver) = transport.split();
-        let (tx, mut rx) = mpsc::channel::<RuntimeSessionOutput>(100);
+        let (tx, mut rx) = mpsc::channel::<RuntimeSessionOutput>(OUTBOUND_QUEUE_CAPACITY);
         {
             let mut guard = self.outbound_tx.lock().await;
             *guard = Some(tx.clone());
@@ -788,13 +790,14 @@ fn validate_control_candidates(candidates: &[ControlCandidate]) -> anyhow::Resul
 mod tests {
     use super::*;
     use crate::websocket::WebSocketAdapter;
-    use controller_wire::v1::ServerHelloV1;
+    use controller_wire::v1::{CommandRequestV1, ServerHelloV1};
     use controller_wire::{
         DecodedMessageV1, FrameHeaderV1, decode_rkyv_frame_v1_on_channel, encode_rkyv_frame_v1,
     };
     use futures_util::{SinkExt, StreamExt};
     use serde_json::{Value, json};
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
     use tokio_tungstenite::{accept_async, accept_hdr_async, tungstenite::Message};
@@ -805,6 +808,23 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RegistryHandler for NoopHandler {}
+
+    #[derive(Default)]
+    struct SlowHandler {
+        active: AtomicUsize,
+        max_active: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl RegistryHandler for SlowHandler {
+        async fn handle_request(&self, _method: &str, params: Value) -> Value {
+            let active = self.active.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+            self.max_active.fetch_max(active, AtomicOrdering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            self.active.fetch_sub(1, AtomicOrdering::SeqCst);
+            json!({"status": "received", "name": params["name"]})
+        }
+    }
 
     fn test_registration_params() -> ServiceRegistrationParams {
         ServiceRegistrationParams {
@@ -1044,6 +1064,367 @@ mod tests {
 
         run.abort();
         server.await.expect("join server");
+    }
+
+    #[tokio::test]
+    async fn reconnect_uses_refreshed_token_and_auth_failure_never_downgrades() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let (first_closed_tx, first_closed_rx) = oneshot::channel();
+        let (second_auth_tx, second_auth_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept first connection");
+            let mut first = accept_hdr_async(
+                stream,
+                |
+                    request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                    mut response: tokio_tungstenite::tungstenite::handshake::server::Response,
+                | {
+                    assert_eq!(
+                        request
+                            .headers()
+                            .get("authorization")
+                            .and_then(|value| value.to_str().ok()),
+                        Some("Bearer service-jwt")
+                    );
+                    response.headers_mut().insert(
+                        "sec-websocket-protocol",
+                        ControlCandidate::runtime_rkyv_v1()
+                            .profile_token()
+                            .expect("profile")
+                            .parse()
+                            .expect("profile header"),
+                    );
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("accept first websocket");
+            let _ = first.next().await.expect("first client hello");
+            send_test_rkyv(
+                &mut first,
+                DecodedMessageV1::ServerHello(ServerHelloV1 {
+                    runtime_instance_id: Uuid::from_u128(5),
+                    connection_id: Uuid::from_u128(6),
+                    heartbeat_interval_ms: 30_000,
+                    max_control_payload_bytes: 1024 * 1024,
+                    max_command_streams: 32,
+                }),
+            )
+            .await;
+            first.close(None).await.expect("close first websocket");
+            first_closed_tx.send(()).expect("signal first close");
+
+            let (stream, _) = listener.accept().await.expect("accept reconnect");
+            let error = accept_hdr_async(
+                stream,
+                move |
+                    request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                    _response: tokio_tungstenite::tungstenite::handshake::server::Response,
+                | {
+                    let authorization = request
+                        .headers()
+                        .get("authorization")
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or_default()
+                        .to_string();
+                    second_auth_tx
+                        .send(authorization)
+                        .expect("report reconnect authorization");
+                    let mut rejection =
+                        tokio_tungstenite::tungstenite::http::Response::new(Some(
+                            "expired".to_string(),
+                        ));
+                    *rejection.status_mut() =
+                        tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED;
+                    Err(rejection)
+                },
+            )
+            .await
+            .expect_err("expired reconnect must fail authentication");
+            assert!(matches!(
+                error,
+                tokio_tungstenite::tungstenite::Error::Http(_)
+            ));
+            assert!(
+                tokio::time::timeout(Duration::from_millis(200), listener.accept())
+                    .await
+                    .is_err(),
+                "authentication failure must not open a legacy fallback connection"
+            );
+        });
+
+        let client = Arc::new(
+            PortalRegistryClient::new(
+                &format!("ws://{addr}"),
+                test_registration_params(),
+                Arc::new(NoopHandler),
+            )
+            .expect("build client")
+            .with_control_candidates(vec![
+                ControlCandidate::runtime_rkyv_v1(),
+                ControlCandidate::legacy_json(),
+            ])
+            .expect("candidate configuration"),
+        );
+        let task_client = Arc::clone(&client);
+        let run = tokio::spawn(async move { task_client.run().await });
+        tokio::time::timeout(Duration::from_secs(2), first_closed_rx)
+            .await
+            .expect("first close deadline")
+            .expect("first close signal");
+        let mut refreshed = test_registration_params();
+        refreshed.jwt = "expired-jwt".to_string();
+        client.set_registration_params(refreshed).await;
+
+        let authorization = tokio::time::timeout(Duration::from_secs(4), second_auth_rx)
+            .await
+            .expect("reconnect authorization deadline")
+            .expect("reconnect authorization sender");
+        assert_eq!(authorization, "Bearer expired-jwt");
+        server.await.expect("join server");
+        run.abort();
+    }
+
+    #[tokio::test]
+    async fn malformed_binary_error_is_bounded_and_redacts_peer_bytes() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept connection");
+            let mut socket = accept_hdr_async(
+                stream,
+                |
+                    _: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                    mut response: tokio_tungstenite::tungstenite::handshake::server::Response,
+                | {
+                    response.headers_mut().insert(
+                        "sec-websocket-protocol",
+                        ControlCandidate::runtime_rkyv_v1()
+                            .profile_token()
+                            .expect("profile")
+                            .parse()
+                            .expect("profile header"),
+                    );
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("accept websocket");
+            let _ = socket.next().await.expect("client hello");
+            send_test_rkyv(
+                &mut socket,
+                DecodedMessageV1::ServerHello(ServerHelloV1 {
+                    runtime_instance_id: Uuid::from_u128(1),
+                    connection_id: Uuid::from_u128(2),
+                    heartbeat_interval_ms: 30_000,
+                    max_control_payload_bytes: 1024 * 1024,
+                    max_command_streams: 32,
+                }),
+            )
+            .await;
+            socket
+                .send(Message::Binary(
+                    b"peer-secret-jwt-and-authorization".to_vec(),
+                ))
+                .await
+                .expect("send malformed frame");
+        });
+
+        let client = PortalRegistryClient::new(
+            &format!("ws://{addr}"),
+            test_registration_params(),
+            Arc::new(NoopHandler),
+        )
+        .expect("build client")
+        .with_control_candidates(vec![ControlCandidate::runtime_rkyv_v1()])
+        .expect("candidate configuration");
+        let error = client
+            .connect_and_loop()
+            .await
+            .expect_err("malformed controller frame must close the session")
+            .to_string();
+        assert_eq!(error, "invalid controller frame: invalid_magic");
+        assert!(!error.contains("peer-secret"));
+        assert!(!error.contains("service-jwt"));
+        server.await.expect("join server");
+    }
+
+    #[tokio::test]
+    async fn slow_handler_and_writer_process_binary_command_flood_sequentially() {
+        const COMMANDS: usize = 128;
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept connection");
+            let mut socket = accept_hdr_async(
+                stream,
+                |
+                    _: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                    mut response: tokio_tungstenite::tungstenite::handshake::server::Response,
+                | {
+                    response.headers_mut().insert(
+                        "sec-websocket-protocol",
+                        ControlCandidate::runtime_rkyv_v1()
+                            .profile_token()
+                            .expect("profile")
+                            .parse()
+                            .expect("profile header"),
+                    );
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("accept websocket");
+            let _ = socket.next().await.expect("client hello");
+            send_test_rkyv(
+                &mut socket,
+                DecodedMessageV1::ServerHello(ServerHelloV1 {
+                    runtime_instance_id: Uuid::from_u128(3),
+                    connection_id: Uuid::from_u128(4),
+                    heartbeat_interval_ms: 30_000,
+                    max_control_payload_bytes: 1024 * 1024,
+                    max_command_streams: 32,
+                }),
+            )
+            .await;
+            for index in 0..COMMANDS {
+                send_test_rkyv(
+                    &mut socket,
+                    DecodedMessageV1::CommandRequest(CommandRequestV1 {
+                        request_id: format!("command-{index}"),
+                        tool_name: "check".to_string(),
+                        arguments_json: serde_json::to_vec(&json!({"index": index}))
+                            .expect("command arguments"),
+                    }),
+                )
+                .await;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            for _ in 0..COMMANDS {
+                let response = socket
+                    .next()
+                    .await
+                    .expect("command response")
+                    .expect("valid command response")
+                    .into_data();
+                assert!(matches!(
+                    decode_test_rkyv(&response),
+                    DecodedMessageV1::CommandResponse(_)
+                ));
+            }
+            socket.close(None).await.expect("close websocket");
+        });
+
+        let handler = Arc::new(SlowHandler::default());
+        let client = PortalRegistryClient::new(
+            &format!("ws://{addr}"),
+            test_registration_params(),
+            handler.clone(),
+        )
+        .expect("build client")
+        .with_control_candidates(vec![ControlCandidate::runtime_rkyv_v1()])
+        .expect("candidate configuration");
+        client
+            .connect_and_loop()
+            .await
+            .expect("bounded command flood session");
+        assert_eq!(handler.max_active.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(handler.active.load(AtomicOrdering::SeqCst), 0);
+        assert_eq!(OUTBOUND_QUEUE_CAPACITY, 100);
+        server.await.expect("join server");
+    }
+
+    #[tokio::test]
+    async fn slow_controller_applies_bounded_outbound_queue_backpressure() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept connection");
+            let mut socket = accept_hdr_async(
+                stream,
+                |
+                    _: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                    mut response: tokio_tungstenite::tungstenite::handshake::server::Response,
+                | {
+                    response.headers_mut().insert(
+                        "sec-websocket-protocol",
+                        ControlCandidate::runtime_rkyv_v1()
+                            .profile_token()
+                            .expect("profile")
+                            .parse()
+                            .expect("profile header"),
+                    );
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("accept websocket");
+            let _ = socket.next().await.expect("client hello");
+            send_test_rkyv(
+                &mut socket,
+                DecodedMessageV1::ServerHello(ServerHelloV1 {
+                    runtime_instance_id: Uuid::from_u128(7),
+                    connection_id: Uuid::from_u128(8),
+                    heartbeat_interval_ms: 30_000,
+                    max_control_payload_bytes: 1024 * 1024,
+                    max_command_streams: 32,
+                }),
+            )
+            .await;
+            // Deliberately retain the socket without reading application data.
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+
+        let client = Arc::new(
+            PortalRegistryClient::new(
+                &format!("ws://{addr}"),
+                test_registration_params(),
+                Arc::new(NoopHandler),
+            )
+            .expect("build client")
+            .with_control_candidates(vec![ControlCandidate::runtime_rkyv_v1()])
+            .expect("candidate configuration"),
+        );
+        let mut registration = client.subscribe_registration();
+        let task_client = Arc::clone(&client);
+        let run = tokio::spawn(async move { task_client.connect_and_loop().await });
+        while !matches!(*registration.borrow(), RegistrationState::Registered { .. }) {
+            registration.changed().await.expect("registration state");
+        }
+
+        let notifier = client.notifier();
+        let blob = "x".repeat(512 * 1024);
+        let mut backpressured = false;
+        for sequence in 0..(OUTBOUND_QUEUE_CAPACITY * 2) {
+            let send = notifier.send_notification(
+                "notifications/load",
+                json!({"sequence": sequence, "blob": blob.clone()}),
+            );
+            match tokio::time::timeout(Duration::from_millis(25), send).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => panic!("session closed before saturation: {error}"),
+                Err(_) => {
+                    backpressured = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            backpressured,
+            "bounded outbound queue must apply backpressure"
+        );
+
+        run.abort();
+        server.abort();
     }
 
     async fn run_old_controller_fallback_server() {

@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use controller_wire::v1::{ClientHelloV1, PongV1};
 use controller_wire::{
-    DecodedMessageV1, FrameHeaderV1, LogicalChannel, MessageKindV1,
+    DecodedMessageV1, FrameHeaderV1, LogicalChannel, MessageKindV1, WireError,
     decode_rkyv_frame_v1_on_channel, encode_rkyv_frame_v1,
 };
 use futures_util::stream::{SplitSink, SplitStream};
@@ -62,7 +62,8 @@ impl RkyvWebSocketAdapter {
                             &frame,
                             self.max_payload_bytes,
                             LogicalChannel::SessionControl,
-                        )?;
+                        )
+                        .map_err(|error| bounded_wire_error("invalid server_hello", &error))?;
                         return match message {
                             DecodedMessageV1::ServerHello(hello) => Ok(hello),
                             _ => Err(anyhow::anyhow!(
@@ -187,7 +188,8 @@ impl RkyvWebSocketReader {
     }
 
     fn decode_binary(&self, frame: &[u8]) -> anyhow::Result<InboundEvent> {
-        let header = FrameHeaderV1::decode(frame, self.max_payload_bytes)?;
+        let header = FrameHeaderV1::decode(frame, self.max_payload_bytes)
+            .map_err(|error| bounded_wire_error("invalid controller frame", &error))?;
         if !matches!(
             header.kind,
             MessageKindV1::DiscoveryResponse
@@ -206,7 +208,8 @@ impl RkyvWebSocketReader {
             frame,
             self.max_payload_bytes,
             header.kind.logical_channel(),
-        )?;
+        )
+        .map_err(|error| bounded_wire_error("invalid controller frame", &error))?;
         match message {
             DecodedMessageV1::Ping(ping) => Ok(InboundEvent::ApplicationPing {
                 nonce: ping.nonce,
@@ -215,4 +218,8 @@ impl RkyvWebSocketReader {
             other => Ok(InboundEvent::Message(input_from_wire(other)?)),
         }
     }
+}
+
+fn bounded_wire_error(context: &str, error: &WireError) -> anyhow::Error {
+    anyhow::anyhow!("{context}: {}", error.category())
 }

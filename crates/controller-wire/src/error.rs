@@ -41,6 +41,29 @@ pub enum WireError {
 }
 
 impl WireError {
+    /// Stable, bounded diagnostic category suitable for peer-facing errors,
+    /// logs, and metrics. It deliberately excludes archive and payload text.
+    pub const fn category(&self) -> &'static str {
+        match self {
+            Self::Truncated { .. } => "truncated",
+            Self::InvalidMagic => "invalid_magic",
+            Self::UnsupportedVersion(_) => "unsupported_version",
+            Self::UnsupportedFlags(_) => "unsupported_flags",
+            Self::UnknownMessageKind(_) => "unknown_message_kind",
+            Self::InvalidLogicalChannel { .. } => "invalid_logical_channel",
+            Self::NonZeroReserved => "nonzero_reserved",
+            Self::PayloadTooLarge { .. } => "payload_too_large",
+            Self::LengthMismatch { .. } => "length_mismatch",
+            Self::EmptyJson => "empty_json",
+            Self::InvalidUtf8 => "invalid_utf8",
+            Self::InvalidJson(_) => "invalid_json",
+            Self::JsonDepthExceeded(_) => "json_depth_exceeded",
+            Self::InvalidArchive { .. } => "invalid_archive",
+            Self::Semantic { .. } => "semantic_validation",
+            Self::PayloadLengthOverflow => "payload_length_overflow",
+        }
+    }
+
     pub(crate) fn semantic(field: &'static str, reason: impl Into<String>) -> Self {
         Self::Semantic {
             field,

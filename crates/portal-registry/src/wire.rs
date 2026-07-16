@@ -299,6 +299,21 @@ fn request_id_to_string(request_id: &Value) -> String {
         .unwrap_or_else(|| request_id.to_string())
 }
 
+#[cfg(feature = "fuzzing")]
+pub(crate) fn fuzz_runtime_wire_input(data: &[u8], max_payload_bytes: usize) {
+    let Ok(header) = controller_wire::FrameHeaderV1::decode(data, max_payload_bytes) else {
+        return;
+    };
+    let Ok(message) = controller_wire::decode_rkyv_frame_v1_on_channel(
+        data,
+        max_payload_bytes,
+        header.kind.logical_channel(),
+    ) else {
+        return;
+    };
+    let _ = input_from_wire(message);
+}
+
 fn sorted_tags<'a>(tags: impl Iterator<Item = (&'a String, &'a String)>) -> Vec<WireTagV1> {
     let mut tags: Vec<_> = tags
         .map(|(key, value)| WireTagV1 {

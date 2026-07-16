@@ -7,6 +7,12 @@ mod transport;
 mod websocket;
 pub mod wire;
 
+/// Fuzz-only owned mapping boundary. This is absent from normal release graphs.
+#[cfg(feature = "fuzzing")]
+pub fn fuzz_runtime_wire_input(data: &[u8], max_payload_bytes: usize) {
+    wire::fuzz_runtime_wire_input(data, max_payload_bytes);
+}
+
 pub use candidate::ControlCandidate;
 pub use client::{
     PortalRegistryClient, PortalRegistryNotifier, RegistrationState, RegistryHandler,

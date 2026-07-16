@@ -146,6 +146,29 @@ fn semantic_limits_are_enforced_after_archive_validation() {
         Err(WireError::Semantic { field: "tags", .. })
     ));
 
+    let invalid_address = DecodedMessageV1::ClientHello(ClientHelloV1 {
+        address: "bad address".to_string(),
+        ..client_hello()
+    });
+    assert!(matches!(
+        encode_rkyv_frame_v1(&invalid_address, LIMIT),
+        Err(WireError::Semantic {
+            field: "address",
+            ..
+        })
+    ));
+
+    let too_many_tags = DecodedMessageV1::ClientHello(ClientHelloV1 {
+        tags: (0..=MAX_TAGS)
+            .map(|index| tag(&format!("tag-{index:03}"), "value"))
+            .collect(),
+        ..client_hello()
+    });
+    assert!(matches!(
+        encode_rkyv_frame_v1(&too_many_tags, LIMIT),
+        Err(WireError::Semantic { field: "tags", .. })
+    ));
+
     let bad_json = DecodedMessageV1::CommandRequest(CommandRequestV1 {
         request_id: "request-1".into(),
         tool_name: "server/info".into(),
@@ -154,6 +177,16 @@ fn semantic_limits_are_enforced_after_archive_validation() {
     assert!(matches!(
         encode_rkyv_frame_v1(&bad_json, LIMIT),
         Err(WireError::InvalidJson(_))
+    ));
+
+    let invalid_utf8 = DecodedMessageV1::CommandRequest(CommandRequestV1 {
+        request_id: "request-1".into(),
+        tool_name: "server/info".into(),
+        arguments_json: vec![0xff],
+    });
+    assert!(matches!(
+        encode_rkyv_frame_v1(&invalid_utf8, LIMIT),
+        Err(WireError::InvalidUtf8)
     ));
 
     let both = DecodedMessageV1::CommandResponse(CommandResponseV1 {
@@ -166,6 +199,34 @@ fn semantic_limits_are_enforced_after_archive_validation() {
         encode_rkyv_frame_v1(&both, LIMIT),
         Err(WireError::Semantic {
             field: "command_response",
+            ..
+        })
+    ));
+
+    let neither = DecodedMessageV1::DiscoveryResponse(DiscoveryResponseV1 {
+        request_id: "discovery-1".into(),
+        snapshot: None,
+        error: None,
+    });
+    assert!(matches!(
+        encode_rkyv_frame_v1(&neither, LIMIT),
+        Err(WireError::Semantic {
+            field: "discovery_response",
+            ..
+        })
+    ));
+
+    let nil_uuid = DecodedMessageV1::ServerHello(ServerHelloV1 {
+        runtime_instance_id: Uuid::nil(),
+        connection_id: Uuid::nil(),
+        heartbeat_interval_ms: 30_000,
+        max_control_payload_bytes: 1024,
+        max_command_streams: 1,
+    });
+    assert!(matches!(
+        encode_rkyv_frame_v1(&nil_uuid, LIMIT),
+        Err(WireError::Semantic {
+            field: "runtime_instance_id",
             ..
         })
     ));
