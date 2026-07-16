@@ -1,8 +1,9 @@
-use crate::candidate::{ConnectionFailure, ConnectionFailureClass, ControlCandidate};
+use crate::candidate::ControlCandidate;
 use crate::logical::{PendingRequests, RuntimeResponse, RuntimeSessionOutput, handle_inbound};
 use crate::protocol::{
     DiscoverySnapshot, DiscoverySubscription, ServiceMetadataUpdate, ServiceRegistrationParams,
 };
+use crate::transport::RegistryTransport;
 use rustls::pki_types::CertificateDer;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -19,7 +20,7 @@ use tracing::{error, info};
 use url::Url;
 use uuid::Uuid;
 
-use crate::websocket::{InboundEvent, WebSocketAdapter};
+use crate::websocket::InboundEvent;
 
 #[derive(Debug)]
 struct NoHostnameVerifier {
@@ -624,24 +625,16 @@ impl PortalRegistryClient {
                 ));
             }
             let attempt = tokio::select! {
-                attempt = WebSocketAdapter::connect(
+                attempt = RegistryTransport::connect(
                     &controller_url,
                     connector.clone(),
                     candidate,
-                    (!candidate.is_legacy()).then_some(service_jwt.as_str()),
+                    service_jwt.as_str(),
                 ) => attempt,
                 changed = generation_rx.changed() => {
                     let _ = changed;
                     return Err(anyhow::anyhow!("registry connection generation was superseded"));
                 }
-            };
-            let attempt = match attempt {
-                Ok(adapter) if adapter.candidate().is_legacy() => Ok(adapter),
-                Ok(_adapter) => Err(ConnectionFailure::new(
-                    ConnectionFailureClass::Unsupported,
-                    "runtime binary application messages are not enabled in Phase N2",
-                )),
-                Err(error) => Err(error),
             };
             match attempt {
                 Ok(adapter) => {
@@ -658,9 +651,8 @@ impl PortalRegistryClient {
                 Err(error) => return Err(error.into()),
             }
         }
-        let mut transport = transport.ok_or_else(|| {
-            anyhow::anyhow!("no controller candidate reached legacy registration")
-        })?;
+        let mut transport =
+            transport.ok_or_else(|| anyhow::anyhow!("no controller candidate connected"))?;
         info!("Connected to controller at {}", controller_url);
 
         tokio::select! {
@@ -707,6 +699,9 @@ impl PortalRegistryClient {
                                         }
                                     }
                                     InboundEvent::Ping(payload) => sender.send_pong(payload).await?,
+                                    InboundEvent::ApplicationPing { nonce, timestamp_ms } => {
+                                        sender.send_application_pong(nonce, timestamp_ms).await?;
+                                    }
                                     InboundEvent::Pong | InboundEvent::Ignored => {}
                                     InboundEvent::Close => break,
                                 }
@@ -750,7 +745,7 @@ impl PortalRegistryClient {
         res
     }
 
-    async fn register(&self, transport: &mut WebSocketAdapter) -> anyhow::Result<()> {
+    async fn register(&self, transport: &mut RegistryTransport) -> anyhow::Result<()> {
         let register_params = self.registration_params.lock().await.clone();
         let response = transport.register(register_params).await?;
         let _ = self.registration_tx.send(RegistrationState::Registered {
@@ -793,6 +788,10 @@ fn validate_control_candidates(candidates: &[ControlCandidate]) -> anyhow::Resul
 mod tests {
     use super::*;
     use crate::websocket::WebSocketAdapter;
+    use controller_wire::v1::ServerHelloV1;
+    use controller_wire::{
+        DecodedMessageV1, FrameHeaderV1, decode_rkyv_frame_v1_on_channel, encode_rkyv_frame_v1,
+    };
     use futures_util::{SinkExt, StreamExt};
     use serde_json::{Value, json};
     use std::collections::HashMap;
@@ -820,7 +819,234 @@ mod tests {
         }
     }
 
-    async fn run_explicit_then_legacy_server(select_explicit: bool) {
+    fn decode_test_rkyv(frame: &[u8]) -> DecodedMessageV1 {
+        let header = FrameHeaderV1::decode(frame, 1024 * 1024).expect("wire header");
+        decode_rkyv_frame_v1_on_channel(frame, 1024 * 1024, header.kind.logical_channel())
+            .expect("wire frame")
+    }
+
+    async fn send_test_rkyv(
+        socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        message: DecodedMessageV1,
+    ) {
+        let frame = encode_rkyv_frame_v1(&message, 1024 * 1024).expect("encode wire frame");
+        socket
+            .send(Message::Binary(frame.into()))
+            .await
+            .expect("send wire frame");
+    }
+
+    #[tokio::test]
+    async fn explicit_rkyv_candidate_registers_and_sends_binary_session_outputs() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let explicit_profile = ControlCandidate::runtime_rkyv_v1()
+            .profile_token()
+            .expect("explicit profile token");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept connection");
+            let mut socket = accept_hdr_async(
+                stream,
+                move |
+                    request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                    mut response: tokio_tungstenite::tungstenite::handshake::server::Response,
+                | {
+                    assert_eq!(
+                        request
+                            .headers()
+                            .get("authorization")
+                            .and_then(|value| value.to_str().ok()),
+                        Some("Bearer service-jwt")
+                    );
+                    response.headers_mut().insert(
+                        "sec-websocket-protocol",
+                        explicit_profile.parse().expect("profile header"),
+                    );
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("accept websocket");
+
+            let hello = socket
+                .next()
+                .await
+                .expect("client hello")
+                .expect("valid client hello")
+                .into_data();
+            let DecodedMessageV1::ClientHello(hello) = decode_test_rkyv(&hello) else {
+                panic!("expected client hello")
+            };
+            assert_eq!(hello.service_id, "user-service");
+            assert!(!hello.service_id.contains("service-jwt"));
+            send_test_rkyv(
+                &mut socket,
+                DecodedMessageV1::ServerHello(ServerHelloV1 {
+                    runtime_instance_id: Uuid::parse_str("0195ef10-2f24-7af2-85e9-a8ef54642f39")
+                        .expect("runtime id"),
+                    connection_id: Uuid::parse_str("0195ef10-2f24-7af2-85e9-a8ef54642f40")
+                        .expect("connection id"),
+                    heartbeat_interval_ms: 30_000,
+                    max_control_payload_bytes: 1024 * 1024,
+                    max_command_streams: 32,
+                }),
+            )
+            .await;
+
+            let metadata = socket
+                .next()
+                .await
+                .expect("metadata frame")
+                .expect("valid metadata frame")
+                .into_data();
+            let DecodedMessageV1::MetadataUpdate(metadata) = decode_test_rkyv(&metadata) else {
+                panic!("expected metadata update")
+            };
+            assert_eq!(metadata.service_version.as_deref(), Some("1.0.1"));
+
+            for expected_sequence in 1..=2 {
+                let notification = socket
+                    .next()
+                    .await
+                    .expect("notification frame")
+                    .expect("valid notification frame")
+                    .into_data();
+                let DecodedMessageV1::RuntimeNotification(notification) =
+                    decode_test_rkyv(&notification)
+                else {
+                    panic!("expected runtime notification")
+                };
+                assert_eq!(notification.sequence, expected_sequence);
+                assert_eq!(notification.method, "runtime_ready");
+            }
+            socket.close(None).await.expect("close websocket");
+        });
+
+        let client = Arc::new(
+            PortalRegistryClient::new(
+                &format!("ws://{addr}"),
+                test_registration_params(),
+                Arc::new(NoopHandler),
+            )
+            .expect("build client")
+            .with_control_candidates(vec![ControlCandidate::runtime_rkyv_v1()])
+            .expect("candidate configuration"),
+        );
+        let mut registration = client.subscribe_registration();
+        let task_client = Arc::clone(&client);
+        let run = tokio::spawn(async move { task_client.connect_and_loop().await });
+        loop {
+            if matches!(*registration.borrow(), RegistrationState::Registered { .. }) {
+                break;
+            }
+            registration.changed().await.expect("registration state");
+        }
+        client
+            .send_metadata_update(ServiceMetadataUpdate {
+                version: Some("1.0.1".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("send metadata");
+        let notifier = client.notifier();
+        notifier
+            .send_notification("notifications/runtime_ready", json!({"attempt": 1}))
+            .await
+            .expect("send first notification");
+        notifier
+            .send_notification("notifications/runtime_ready", json!({"attempt": 2}))
+            .await
+            .expect("send second notification");
+        run.await.expect("join client").expect("rkyv session");
+        server.await.expect("join server");
+    }
+
+    #[tokio::test]
+    async fn explicit_rkyv_candidate_reconnects_and_repeats_client_hello() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let (hello_tx1, hello_rx1) = oneshot::channel();
+        let (hello_tx2, hello_rx2) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            for (attempt, hello_tx) in [(1_u128, hello_tx1), (2_u128, hello_tx2)] {
+                let (stream, _) = listener.accept().await.expect("accept connection");
+                let mut socket = accept_hdr_async(
+                    stream,
+                    move |
+                        _: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                        mut response: tokio_tungstenite::tungstenite::handshake::server::Response,
+                    | {
+                        response.headers_mut().insert(
+                            "sec-websocket-protocol",
+                            ControlCandidate::runtime_rkyv_v1()
+                                .profile_token()
+                                .expect("explicit profile")
+                                .parse()
+                                .expect("profile header"),
+                        );
+                        Ok(response)
+                    },
+                )
+                .await
+                .expect("accept websocket");
+                let hello = socket
+                    .next()
+                    .await
+                    .expect("client hello")
+                    .expect("valid client hello")
+                    .into_data();
+                let DecodedMessageV1::ClientHello(hello) = decode_test_rkyv(&hello) else {
+                    panic!("expected client hello")
+                };
+                hello_tx.send(hello).expect("report client hello");
+                send_test_rkyv(
+                    &mut socket,
+                    DecodedMessageV1::ServerHello(ServerHelloV1 {
+                        runtime_instance_id: Uuid::from_u128(attempt),
+                        connection_id: Uuid::from_u128(attempt + 10),
+                        heartbeat_interval_ms: 30_000,
+                        max_control_payload_bytes: 1024 * 1024,
+                        max_command_streams: 32,
+                    }),
+                )
+                .await;
+                socket.close(None).await.expect("close websocket");
+            }
+        });
+
+        let client = Arc::new(
+            PortalRegistryClient::new(
+                &format!("ws://{addr}"),
+                test_registration_params(),
+                Arc::new(NoopHandler),
+            )
+            .expect("build client")
+            .with_control_candidates(vec![ControlCandidate::runtime_rkyv_v1()])
+            .expect("candidate configuration"),
+        );
+        let task_client = Arc::clone(&client);
+        let run = tokio::spawn(async move { task_client.run().await });
+
+        let first = tokio::time::timeout(Duration::from_secs(2), hello_rx1)
+            .await
+            .expect("first client hello deadline")
+            .expect("first client hello sender");
+        let second = tokio::time::timeout(Duration::from_secs(5), hello_rx2)
+            .await
+            .expect("second client hello deadline")
+            .expect("second client hello sender");
+        assert_eq!(first.service_id, "user-service");
+        assert_eq!(second, first);
+
+        run.abort();
+        server.await.expect("join server");
+    }
+
+    async fn run_old_controller_fallback_server() {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind listener");
@@ -835,7 +1061,7 @@ mod tests {
                     stream,
                     move |
                         request: &tokio_tungstenite::tungstenite::handshake::server::Request,
-                        mut response: tokio_tungstenite::tungstenite::handshake::server::Response,
+                        response: tokio_tungstenite::tungstenite::handshake::server::Response,
                     | {
                     if attempt == 0 {
                         assert_eq!(
@@ -852,12 +1078,6 @@ mod tests {
                                 .and_then(|value| value.to_str().ok()),
                             Some("Bearer service-jwt")
                         );
-                        if select_explicit {
-                            response.headers_mut().insert(
-                                "sec-websocket-protocol",
-                                explicit_profile.parse().expect("profile header"),
-                            );
-                        }
                     } else {
                         assert!(request.headers().get("sec-websocket-protocol").is_none());
                         assert!(request.headers().get("authorization").is_none());
@@ -920,14 +1140,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_negotiation_sends_handshake_auth_then_falls_back_before_registration() {
-        run_explicit_then_legacy_server(true).await;
-    }
-
-    #[tokio::test]
     async fn old_controller_without_subprotocol_selection_falls_back_to_explicit_legacy_candidate()
     {
-        run_explicit_then_legacy_server(false).await;
+        run_old_controller_fallback_server().await;
     }
 
     #[tokio::test]
@@ -1384,7 +1599,7 @@ mod tests {
             ws_stream
         };
 
-        let mut transport = WebSocketAdapter::from_stream(ws_stream);
+        let mut transport = RegistryTransport::Legacy(WebSocketAdapter::from_stream(ws_stream));
         client
             .register(&mut transport)
             .await

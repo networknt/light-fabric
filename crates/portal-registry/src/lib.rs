@@ -2,6 +2,8 @@ mod candidate;
 pub mod client;
 mod logical;
 pub mod protocol;
+mod rkyv_websocket;
+mod transport;
 mod websocket;
 pub mod wire;
 

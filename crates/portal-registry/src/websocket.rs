@@ -25,6 +25,7 @@ const WEBSOCKET_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) enum InboundEvent {
     Message(RuntimeSessionInput),
+    ApplicationPing { nonce: u64, timestamp_ms: i64 },
     Ping(Vec<u8>),
     Pong,
     Close,
@@ -33,7 +34,6 @@ pub(crate) enum InboundEvent {
 
 pub(crate) struct WebSocketAdapter {
     stream: WsStream,
-    candidate: ControlCandidate,
 }
 
 impl WebSocketAdapter {
@@ -43,76 +43,13 @@ impl WebSocketAdapter {
         candidate: ControlCandidate,
         service_jwt: Option<&str>,
     ) -> Result<Self, ConnectionFailure> {
-        let mut request = controller_url
-            .as_str()
-            .into_client_request()
-            .map_err(classify_connect_error)?;
-        if let Some(profile) = candidate.profile_token() {
-            let jwt = service_jwt.filter(|jwt| !jwt.is_empty()).ok_or_else(|| {
-                ConnectionFailure::new(
-                    ConnectionFailureClass::Authentication,
-                    "explicit runtime profile requires a service JWT",
-                )
-            })?;
-            request
-                .headers_mut()
-                .insert(SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_static(profile));
-            let mut authorization =
-                HeaderValue::from_str(&format!("Bearer {jwt}")).map_err(|_| {
-                    ConnectionFailure::new(
-                        ConnectionFailureClass::Authentication,
-                        "service JWT cannot be represented as an Authorization header",
-                    )
-                })?;
-            authorization.set_sensitive(true);
-            request.headers_mut().insert(AUTHORIZATION, authorization);
-        }
-
-        let (stream, response) = timeout(
-            WEBSOCKET_HANDSHAKE_TIMEOUT,
-            tokio_tungstenite::connect_async_tls_with_config(request, None, false, connector),
-        )
-        .await
-        .map_err(|_| {
-            ConnectionFailure::new(
-                ConnectionFailureClass::Unavailable,
-                "WebSocket handshake timed out",
-            )
-        })?
-        .map_err(classify_connect_error)?;
-        let selected = response
-            .headers()
-            .get(SEC_WEBSOCKET_PROTOCOL)
-            .and_then(|value| value.to_str().ok());
-        match candidate.profile_token() {
-            Some(expected) if selected == Some(expected) => {}
-            Some(_) => {
-                return Err(ConnectionFailure::new(
-                    ConnectionFailureClass::Unsupported,
-                    "controller did not select the explicitly requested runtime profile",
-                ));
-            }
-            None if selected.is_none() => {}
-            None => {
-                return Err(ConnectionFailure::new(
-                    ConnectionFailureClass::MalformedProfile,
-                    "controller selected a subprotocol for a legacy connection",
-                ));
-            }
-        }
-        Ok(Self { stream, candidate })
+        let stream = connect_stream(controller_url, connector, candidate, service_jwt).await?;
+        Ok(Self { stream })
     }
 
     #[cfg(test)]
     pub(crate) fn from_stream(stream: WsStream) -> Self {
-        Self {
-            stream,
-            candidate: ControlCandidate::LegacyJson,
-        }
-    }
-
-    pub(crate) fn candidate(&self) -> ControlCandidate {
-        self.candidate
+        Self { stream }
     }
 
     pub(crate) async fn register(
@@ -175,6 +112,71 @@ impl WebSocketAdapter {
         let (writer, reader) = self.stream.split();
         (WebSocketWriter { writer }, WebSocketReader { reader })
     }
+}
+
+pub(crate) async fn connect_stream(
+    controller_url: &Url,
+    connector: Option<tokio_tungstenite::Connector>,
+    candidate: ControlCandidate,
+    service_jwt: Option<&str>,
+) -> Result<WsStream, ConnectionFailure> {
+    let mut request = controller_url
+        .as_str()
+        .into_client_request()
+        .map_err(classify_connect_error)?;
+    if let Some(profile) = candidate.profile_token() {
+        let jwt = service_jwt.filter(|jwt| !jwt.is_empty()).ok_or_else(|| {
+            ConnectionFailure::new(
+                ConnectionFailureClass::Authentication,
+                "explicit runtime profile requires a service JWT",
+            )
+        })?;
+        request
+            .headers_mut()
+            .insert(SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_static(profile));
+        let mut authorization = HeaderValue::from_str(&format!("Bearer {jwt}")).map_err(|_| {
+            ConnectionFailure::new(
+                ConnectionFailureClass::Authentication,
+                "service JWT cannot be represented as an Authorization header",
+            )
+        })?;
+        authorization.set_sensitive(true);
+        request.headers_mut().insert(AUTHORIZATION, authorization);
+    }
+
+    let (stream, response) = timeout(
+        WEBSOCKET_HANDSHAKE_TIMEOUT,
+        tokio_tungstenite::connect_async_tls_with_config(request, None, false, connector),
+    )
+    .await
+    .map_err(|_| {
+        ConnectionFailure::new(
+            ConnectionFailureClass::Unavailable,
+            "WebSocket handshake timed out",
+        )
+    })?
+    .map_err(classify_connect_error)?;
+    let selected = response
+        .headers()
+        .get(SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|value| value.to_str().ok());
+    match candidate.profile_token() {
+        Some(expected) if selected == Some(expected) => {}
+        Some(_) => {
+            return Err(ConnectionFailure::new(
+                ConnectionFailureClass::Unsupported,
+                "controller did not select the explicitly requested runtime profile",
+            ));
+        }
+        None if selected.is_none() => {}
+        None => {
+            return Err(ConnectionFailure::new(
+                ConnectionFailureClass::MalformedProfile,
+                "controller selected a subprotocol for a legacy connection",
+            ));
+        }
+    }
+    Ok(stream)
 }
 
 fn classify_connect_error(error: tokio_tungstenite::tungstenite::Error) -> ConnectionFailure {
