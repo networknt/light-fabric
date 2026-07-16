@@ -58,6 +58,7 @@ const DEFAULT_CONFIG_DIR: &str = "config-defaults";
 const EXTERNAL_CONFIG_DIR: &str = "config-cache";
 const HEALTH_PATH: &str = "/health";
 const ACCESS_CONTROL_MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
+const RUNTIME_INSTANCE_QUERY_ENDPOINT: &str = "lightapi.net/instance/getRuntimeInstance/0.1.0";
 
 #[derive(Clone)]
 struct GatewayApp;
@@ -2607,6 +2608,32 @@ impl ProxyHttp for GatewayProxy {
                 }
                 "router" => {
                     ctx.record_handler_duration(&handler_id, started.elapsed());
+                    if request_path == "/portal/query" && !ctx.access_control_active {
+                        if method_has_request_body(&method) {
+                            ctx.access_control_active = true;
+                            ctx.runtime_query_access_control_only = true;
+                        } else if let Ok(Some(exchange)) = required_runtime_query_exchange(
+                            ctx.endpoint.as_str(),
+                            request_path.as_str(),
+                            session.req_header().uri.query(),
+                            None,
+                        ) {
+                            let runtime = self.access_control.load();
+                            let decision = authorize_required_runtime_query(
+                                runtime.as_ref().as_ref(),
+                                &exchange,
+                                &agent_headers(session),
+                                ctx.auth.as_ref(),
+                                ctx.correlation.correlation_id.as_deref(),
+                            )
+                            .await;
+                            if let Err(rejection) = decision {
+                                return self
+                                    .write_rejection_response(session, ctx, rejection)
+                                    .await;
+                            }
+                        }
+                    }
                     let route = self.router_route.load();
                     let Some(route) = route.as_ref().as_ref() else {
                         return self
@@ -2833,6 +2860,33 @@ impl ProxyHttp for GatewayProxy {
             )?;
             if end_of_stream {
                 let input = std::mem::take(&mut ctx.access_control_request_body);
+                let exchange = access_control_exchange(
+                    ctx.endpoint.as_str(),
+                    ctx.request_path.as_str(),
+                    session.req_header().uri.query(),
+                    Some(input.as_slice()),
+                    ctx.auth.as_ref(),
+                )
+                .map_err(handler_rejection_error)?;
+                if ctx.runtime_query_access_control_only {
+                    if exchange.endpoint != RUNTIME_INSTANCE_QUERY_ENDPOINT {
+                        *body = Some(Bytes::from(input));
+                        return Ok(());
+                    }
+                    let runtime = self.access_control.load();
+                    authorize_required_runtime_query(
+                        runtime.as_ref().as_ref(),
+                        &exchange,
+                        &[],
+                        ctx.auth.as_ref(),
+                        ctx.correlation.correlation_id.as_deref(),
+                    )
+                    .await
+                    .map_err(handler_rejection_error)?;
+                    ctx.access_control_exchange = Some(exchange);
+                    *body = Some(Bytes::from(input));
+                    return Ok(());
+                }
                 let runtime = self.access_control.load();
                 let Some(runtime) = runtime
                     .as_ref()
@@ -2842,14 +2896,6 @@ impl ProxyHttp for GatewayProxy {
                     *body = Some(Bytes::from(input));
                     return Ok(());
                 };
-                let exchange = access_control_exchange(
-                    ctx.endpoint.as_str(),
-                    ctx.request_path.as_str(),
-                    session.req_header().uri.query(),
-                    Some(input.as_slice()),
-                    ctx.auth.as_ref(),
-                )
-                .map_err(handler_rejection_error)?;
                 match runtime
                     .authorize_http_endpoint(
                         exchange.endpoint.as_str(),
@@ -3090,6 +3136,7 @@ struct GatewayRequestContext {
     tokenize_active: bool,
     detokenize_active: bool,
     access_control_active: bool,
+    runtime_query_access_control_only: bool,
     access_control_response_active: bool,
     tokenize_request_body: Vec<u8>,
     detokenize_response_body: Vec<u8>,
@@ -3134,6 +3181,7 @@ impl Default for GatewayRequestContext {
             tokenize_active: false,
             detokenize_active: false,
             access_control_active: false,
+            runtime_query_access_control_only: false,
             access_control_response_active: false,
             tokenize_request_body: Vec::new(),
             detokenize_response_body: Vec::new(),
@@ -3413,6 +3461,60 @@ fn access_control_exchange(
         endpoint: endpoint.to_string(),
         request_data: request_data.clone(),
     })
+}
+
+fn required_runtime_query_exchange(
+    endpoint: &str,
+    request_path: &str,
+    query: Option<&str>,
+    body: Option<&[u8]>,
+) -> Result<Option<AccessControlExchange>, HandlerRejection> {
+    let exchange = access_control_exchange(endpoint, request_path, query, body, None)?;
+    Ok((exchange.endpoint == RUNTIME_INSTANCE_QUERY_ENDPOINT).then_some(exchange))
+}
+
+async fn authorize_required_runtime_query(
+    runtime: Option<&AccessControlRuntime>,
+    exchange: &AccessControlExchange,
+    headers: &[(String, String)],
+    auth: Option<&AuthPrincipal>,
+    correlation_id: Option<&str>,
+) -> Result<(), HandlerRejection> {
+    let runtime = runtime
+        .filter(|runtime| runtime.authorization_enabled())
+        .ok_or_else(|| {
+            HandlerRejection::new(
+                503,
+                "ERR13025",
+                "runtime instance query access policy is unavailable",
+            )
+        })?;
+    runtime
+        .validate_request_policy(RUNTIME_INSTANCE_QUERY_ENDPOINT)
+        .map_err(|_| {
+            HandlerRejection::new(
+                503,
+                "ERR13025",
+                "runtime instance query access policy is invalid",
+            )
+        })?;
+    match runtime
+        .authorize_http_endpoint(
+            exchange.endpoint.as_str(),
+            headers,
+            auth,
+            &exchange.request_data,
+            correlation_id,
+        )
+        .await
+    {
+        AccessDecision::Allowed => Ok(()),
+        AccessDecision::Denied(_) => Err(HandlerRejection::new(
+            403,
+            "ERR13026",
+            "runtime instance query access denied",
+        )),
+    }
 }
 
 fn portal_access_control_exchange(
@@ -4329,6 +4431,101 @@ endpointRules:
         assert_eq!(
             exchange.request_data["hostId"],
             "01964b05-552a-7c4b-9184-6857e7f3dc5f"
+        );
+    }
+
+    #[test]
+    fn required_runtime_query_exchange_matches_only_the_frozen_endpoint() {
+        let runtime_cmd = r#"{"host":"lightapi.net","service":"instance","action":"getRuntimeInstance","version":"0.1.0","data":{"hostId":"host-a"}}"#;
+        let runtime_query = format!(
+            "cmd={}",
+            form_urlencoded::byte_serialize(runtime_cmd.as_bytes()).collect::<String>()
+        );
+        let exchange = required_runtime_query_exchange(
+            "/portal/query@get",
+            "/portal/query",
+            Some(&runtime_query),
+            None,
+        )
+        .expect("valid hybrid query")
+        .expect("protected endpoint");
+        assert_eq!(exchange.endpoint, RUNTIME_INSTANCE_QUERY_ENDPOINT);
+        assert_eq!(exchange.request_data["hostId"], "host-a");
+
+        let other_cmd = r#"{"host":"lightapi.net","service":"instance","action":"getInstance","version":"0.1.0","data":{"hostId":"host-a"}}"#;
+        let other_query = format!(
+            "cmd={}",
+            form_urlencoded::byte_serialize(other_cmd.as_bytes()).collect::<String>()
+        );
+        assert!(
+            required_runtime_query_exchange(
+                "/portal/query@get",
+                "/portal/query",
+                Some(&other_query),
+                None,
+            )
+            .expect("valid unrelated query")
+            .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_query_policy_allows_only_the_three_exact_roles_and_fails_closed() {
+        let rules = serde_yaml::from_str::<light_pingora::RuleFileConfig>(
+            r#"
+ruleBodies:
+  allow-role:
+    common: Y
+    ruleId: allow-role
+    ruleName: Allow role
+    ruleType: req-acc
+    actions:
+      - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
+endpointRules:
+  lightapi.net/instance/getRuntimeInstance/0.1.0:
+    permission:
+      roles: admin host-admin instance-admin
+    req-acc: [allow-role]
+"#,
+        )
+        .expect("runtime query policy");
+        let runtime =
+            AccessControlRuntime::new(Some(light_pingora::AccessControlConfig::default()), rules);
+        let exchange = AccessControlExchange {
+            endpoint: RUNTIME_INSTANCE_QUERY_ENDPOINT.to_string(),
+            request_data: json!({"hostId": "host-a"}),
+        };
+        for role in ["admin", "host-admin", "instance-admin"] {
+            let auth = AuthPrincipal {
+                role: Some(role.to_string()),
+                claims: json!({"role": role}),
+                ..AuthPrincipal::default()
+            };
+            assert!(
+                authorize_required_runtime_query(Some(&runtime), &exchange, &[], Some(&auth), None)
+                    .await
+                    .is_ok(),
+                "{role} should be admitted"
+            );
+        }
+        for role in ["user", "host-admin-extra", ""] {
+            let auth = AuthPrincipal {
+                role: Some(role.to_string()),
+                claims: json!({"role": role}),
+                ..AuthPrincipal::default()
+            };
+            let rejection =
+                authorize_required_runtime_query(Some(&runtime), &exchange, &[], Some(&auth), None)
+                    .await
+                    .expect_err("role must be denied");
+            assert_eq!(rejection.status, 403);
+        }
+        assert_eq!(
+            authorize_required_runtime_query(None, &exchange, &[], None, None)
+                .await
+                .expect_err("missing policy must fail closed")
+                .status,
+            503
         );
     }
 
