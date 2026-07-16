@@ -1,6 +1,5 @@
 use crate::protocol::{
-    DiscoverySnapshot, DiscoverySubscription, JsonRpcMessage, ServiceMetadataUpdate,
-    ServiceRegistrationParams,
+    DiscoverySnapshot, DiscoverySubscription, ServiceMetadataUpdate, ServiceRegistrationParams,
 };
 use rustls::pki_types::CertificateDer;
 use serde::Serialize;
@@ -17,7 +16,7 @@ use tracing::{error, info};
 use url::Url;
 use uuid::Uuid;
 
-use crate::logical::{PendingRequests, handle_inbound_message};
+use crate::logical::{PendingRequests, RuntimeResponse, RuntimeSessionOutput, handle_inbound};
 use crate::websocket::{InboundEvent, WebSocketAdapter};
 
 #[derive(Debug)]
@@ -279,7 +278,7 @@ pub struct PortalRegistryClient {
     controller_url: Mutex<Url>,
     registration_params: Mutex<ServiceRegistrationParams>,
     handler: RwLock<Arc<dyn RegistryHandler>>,
-    outbound_tx: Arc<Mutex<Option<mpsc::Sender<JsonRpcMessage>>>>,
+    outbound_tx: Arc<Mutex<Option<mpsc::Sender<RuntimeSessionOutput>>>>,
     registration_tx: watch::Sender<RegistrationState>,
     ca_certificate: Mutex<Option<Vec<u8>>>,
     verify_hostname: Mutex<bool>,
@@ -289,7 +288,7 @@ pub struct PortalRegistryClient {
 
 #[derive(Clone)]
 pub struct PortalRegistryNotifier {
-    outbound_tx: Arc<Mutex<Option<mpsc::Sender<JsonRpcMessage>>>>,
+    outbound_tx: Arc<Mutex<Option<mpsc::Sender<RuntimeSessionOutput>>>>,
 }
 
 impl PortalRegistryNotifier {
@@ -298,7 +297,10 @@ impl PortalRegistryNotifier {
         method: &str,
         params: serde_json::Value,
     ) -> anyhow::Result<()> {
-        let payload = JsonRpcMessage::new_notification(method, params);
+        let payload = RuntimeSessionOutput::Notification {
+            method: method.to_string(),
+            params,
+        };
 
         let tx = {
             let guard = self.outbound_tx.lock().await;
@@ -407,10 +409,10 @@ impl PortalRegistryClient {
     }
 
     pub async fn send_metadata_update(&self, update: ServiceMetadataUpdate) -> anyhow::Result<()> {
-        let payload = JsonRpcMessage::new_notification(
-            "service/update_metadata",
-            serde_json::to_value(update)?,
-        );
+        let payload = RuntimeSessionOutput::Notification {
+            method: "service/update_metadata".to_string(),
+            params: serde_json::to_value(update)?,
+        };
 
         let tx = {
             let guard = self.outbound_tx.lock().await;
@@ -442,9 +444,13 @@ impl PortalRegistryClient {
         R: DeserializeOwned,
     {
         let id = Uuid::new_v4().to_string();
-        let payload = JsonRpcMessage::new_request(json!(id), method, serde_json::to_value(params)?);
+        let payload = RuntimeSessionOutput::Request {
+            request_id: json!(id),
+            method: method.to_string(),
+            params: serde_json::to_value(params)?,
+        };
 
-        let (tx, rx) = oneshot::channel::<JsonRpcMessage>();
+        let (tx, rx) = oneshot::channel::<RuntimeResponse>();
         {
             let mut pending = self.pending_requests.lock().await;
             pending.insert(id.clone(), tx);
@@ -583,7 +589,7 @@ impl PortalRegistryClient {
         self.register(&mut transport).await?;
 
         let (mut sender, mut receiver) = transport.split();
-        let (tx, mut rx) = mpsc::channel::<JsonRpcMessage>(100);
+        let (tx, mut rx) = mpsc::channel::<RuntimeSessionOutput>(100);
         {
             let mut guard = self.outbound_tx.lock().await;
             *guard = Some(tx.clone());
@@ -607,7 +613,7 @@ impl PortalRegistryClient {
                                 ping_outstanding = false;
                                 match event {
                                     InboundEvent::Message(message) => {
-                                        if let Some(response) = handle_inbound_message(
+                                        if let Some(response) = handle_inbound(
                                             &handler,
                                             &self.pending_requests,
                                             message,

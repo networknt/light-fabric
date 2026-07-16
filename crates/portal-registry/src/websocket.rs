@@ -10,13 +10,16 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tracing::debug;
 use url::Url;
 
+use crate::logical::{
+    RuntimeSessionInput, RuntimeSessionOutput, input_from_legacy_json, output_to_legacy_json,
+};
 use crate::protocol::{JsonRpcMessage, RegistrationResponse, ServiceRegistrationParams};
 
 pub(crate) type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 const REGISTRATION_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) enum InboundEvent {
-    Message(JsonRpcMessage),
+    Message(RuntimeSessionInput),
     Ping(Vec<u8>),
     Pong,
     Close,
@@ -114,7 +117,11 @@ pub(crate) struct WebSocketWriter {
 }
 
 impl WebSocketWriter {
-    pub(crate) async fn send_message(&mut self, message: JsonRpcMessage) -> anyhow::Result<()> {
+    pub(crate) async fn send_message(
+        &mut self,
+        message: RuntimeSessionOutput,
+    ) -> anyhow::Result<()> {
+        let message = output_to_legacy_json(message);
         self.writer
             .send(Message::Text(serde_json::to_string(&message)?))
             .await?;
@@ -143,7 +150,7 @@ impl WebSocketReader {
         };
         Ok(Some(match frame? {
             Message::Text(text) => match serde_json::from_str(&text) {
-                Ok(message) => InboundEvent::Message(message),
+                Ok(message) => InboundEvent::Message(input_from_legacy_json(message)),
                 Err(_) => InboundEvent::Ignored,
             },
             Message::Ping(payload) => InboundEvent::Ping(payload.to_vec()),
