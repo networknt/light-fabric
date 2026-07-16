@@ -1,9 +1,11 @@
+mod candidate;
 pub mod client;
 mod logical;
 pub mod protocol;
 mod websocket;
 pub mod wire;
 
+pub use candidate::ControlCandidate;
 pub use client::{
     PortalRegistryClient, PortalRegistryNotifier, RegistrationState, RegistryHandler,
 };

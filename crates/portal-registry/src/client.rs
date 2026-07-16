@@ -1,3 +1,5 @@
+use crate::candidate::{ConnectionFailure, ConnectionFailureClass, ControlCandidate};
+use crate::logical::{PendingRequests, RuntimeResponse, RuntimeSessionOutput, handle_inbound};
 use crate::protocol::{
     DiscoverySnapshot, DiscoverySubscription, ServiceMetadataUpdate, ServiceRegistrationParams,
 };
@@ -9,6 +11,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io::{BufReader, Cursor};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot, watch};
 use tokio::time::timeout;
@@ -16,7 +19,6 @@ use tracing::{error, info};
 use url::Url;
 use uuid::Uuid;
 
-use crate::logical::{PendingRequests, RuntimeResponse, RuntimeSessionOutput, handle_inbound};
 use crate::websocket::{InboundEvent, WebSocketAdapter};
 
 #[derive(Debug)]
@@ -284,6 +286,9 @@ pub struct PortalRegistryClient {
     verify_hostname: Mutex<bool>,
     pending_requests: PendingRequests,
     heartbeat_interval: Duration,
+    control_candidates: Mutex<Vec<ControlCandidate>>,
+    connection_generation: AtomicU64,
+    connection_generation_tx: watch::Sender<u64>,
 }
 
 #[derive(Clone)]
@@ -338,6 +343,7 @@ impl PortalRegistryClient {
     ) -> anyhow::Result<Self> {
         let url = Url::parse(controller_url)?;
         let (registration_tx, _) = watch::channel(RegistrationState::Disconnected);
+        let (connection_generation_tx, _) = watch::channel(0);
         Ok(Self {
             controller_url: Mutex::new(url),
             registration_params: Mutex::new(registration_params),
@@ -348,6 +354,9 @@ impl PortalRegistryClient {
             verify_hostname: Mutex::new(true),
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
             heartbeat_interval: Duration::from_secs(30),
+            control_candidates: Mutex::new(vec![ControlCandidate::legacy_json()]),
+            connection_generation: AtomicU64::new(0),
+            connection_generation_tx,
         })
     }
 
@@ -364,6 +373,15 @@ impl PortalRegistryClient {
     pub fn with_heartbeat_interval(mut self, interval: Duration) -> Self {
         self.heartbeat_interval = interval;
         self
+    }
+
+    pub fn with_control_candidates(
+        mut self,
+        candidates: Vec<ControlCandidate>,
+    ) -> anyhow::Result<Self> {
+        validate_control_candidates(&candidates)?;
+        self.control_candidates = Mutex::new(candidates);
+        Ok(self)
     }
 
     pub async fn set_registration_params(&self, registration_params: ServiceRegistrationParams) {
@@ -390,6 +408,17 @@ impl PortalRegistryClient {
             let mut guard = self.verify_hostname.lock().await;
             *guard = verify_hostname;
         }
+        self.advance_connection_generation();
+        Ok(())
+    }
+
+    pub async fn set_control_candidates(
+        &self,
+        candidates: Vec<ControlCandidate>,
+    ) -> anyhow::Result<()> {
+        validate_control_candidates(&candidates)?;
+        *self.control_candidates.lock().await = candidates;
+        self.advance_connection_generation();
         Ok(())
     }
 
@@ -531,6 +560,8 @@ impl PortalRegistryClient {
     }
 
     async fn connect_and_loop(&self) -> anyhow::Result<()> {
+        let generation = self.advance_connection_generation();
+        let mut generation_rx = self.connection_generation_tx.subscribe();
         let controller_url = self.controller_url.lock().await.clone();
         let ca_certificate = self.ca_certificate.lock().await.clone();
         let verify_hostname = *self.verify_hostname.lock().await;
@@ -583,10 +614,62 @@ impl PortalRegistryClient {
             None
         };
 
-        let mut transport = WebSocketAdapter::connect(&controller_url, connector).await?;
+        let candidates = self.control_candidates.lock().await.clone();
+        let service_jwt = self.registration_params.lock().await.jwt.clone();
+        let mut transport = None;
+        for (index, candidate) in candidates.iter().copied().enumerate() {
+            if self.connection_generation.load(Ordering::Acquire) != generation {
+                return Err(anyhow::anyhow!(
+                    "registry connection generation was superseded"
+                ));
+            }
+            let attempt = tokio::select! {
+                attempt = WebSocketAdapter::connect(
+                    &controller_url,
+                    connector.clone(),
+                    candidate,
+                    (!candidate.is_legacy()).then_some(service_jwt.as_str()),
+                ) => attempt,
+                changed = generation_rx.changed() => {
+                    let _ = changed;
+                    return Err(anyhow::anyhow!("registry connection generation was superseded"));
+                }
+            };
+            let attempt = match attempt {
+                Ok(adapter) if adapter.candidate().is_legacy() => Ok(adapter),
+                Ok(_adapter) => Err(ConnectionFailure::new(
+                    ConnectionFailureClass::Unsupported,
+                    "runtime binary application messages are not enabled in Phase N2",
+                )),
+                Err(error) => Err(error),
+            };
+            match attempt {
+                Ok(adapter) => {
+                    transport = Some(adapter);
+                    break;
+                }
+                Err(error) if error.class.allows_fallback() && index + 1 < candidates.len() => {
+                    info!(
+                        candidate = ?candidate,
+                        failure_class = ?error.class,
+                        "controller candidate unavailable or unsupported; trying next candidate"
+                    );
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let mut transport = transport.ok_or_else(|| {
+            anyhow::anyhow!("no controller candidate reached legacy registration")
+        })?;
         info!("Connected to controller at {}", controller_url);
 
-        self.register(&mut transport).await?;
+        tokio::select! {
+            result = self.register(&mut transport) => result?,
+            changed = generation_rx.changed() => {
+                let _ = changed;
+                return Err(anyhow::anyhow!("registry connection generation was superseded"));
+            }
+        }
 
         let (mut sender, mut receiver) = transport.split();
         let (tx, mut rx) = mpsc::channel::<RuntimeSessionOutput>(100);
@@ -645,6 +728,12 @@ impl PortalRegistryClient {
                         ping_outstanding = true;
                         sender.send_ping().await?;
                     }
+                    changed = generation_rx.changed() => {
+                        let _ = changed;
+                        return Err(anyhow::anyhow!(
+                            "registry connection generation was superseded"
+                        ));
+                    }
                 }
             }
             Ok(())
@@ -673,6 +762,31 @@ impl PortalRegistryClient {
         );
         Ok(())
     }
+
+    fn advance_connection_generation(&self) -> u64 {
+        let generation = self
+            .connection_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        self.connection_generation_tx.send_replace(generation);
+        generation
+    }
+}
+
+fn validate_control_candidates(candidates: &[ControlCandidate]) -> anyhow::Result<()> {
+    if candidates.is_empty() {
+        return Err(anyhow::anyhow!(
+            "controlCandidates must contain at least one candidate"
+        ));
+    }
+    for (index, candidate) in candidates.iter().enumerate() {
+        if candidates[..index].contains(candidate) {
+            return Err(anyhow::anyhow!(
+                "controlCandidates contains duplicate candidate {candidate:?}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -684,7 +798,7 @@ mod tests {
     use std::collections::HashMap;
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
-    use tokio_tungstenite::{accept_async, tungstenite::Message};
+    use tokio_tungstenite::{accept_async, accept_hdr_async, tungstenite::Message};
 
     const TEST_CA_PEM: &[u8] = include_bytes!("../../../apps/light-gateway/config/ca.pem");
 
@@ -692,6 +806,225 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RegistryHandler for NoopHandler {}
+
+    fn test_registration_params() -> ServiceRegistrationParams {
+        ServiceRegistrationParams {
+            service_id: "user-service".to_string(),
+            version: "1.0.0".to_string(),
+            protocol: "https".to_string(),
+            address: "127.0.0.1".to_string(),
+            port: 8443,
+            tags: HashMap::new(),
+            env_tag: Some("prod".to_string()),
+            jwt: "service-jwt".to_string(),
+        }
+    }
+
+    async fn run_explicit_then_legacy_server(select_explicit: bool) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let explicit_profile = ControlCandidate::runtime_rkyv_v1()
+            .profile_token()
+            .expect("explicit profile token");
+        let server = tokio::spawn(async move {
+            for attempt in 0..2 {
+                let (stream, _) = listener.accept().await.expect("accept connection");
+                let mut socket = accept_hdr_async(
+                    stream,
+                    move |
+                        request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                        mut response: tokio_tungstenite::tungstenite::handshake::server::Response,
+                    | {
+                    if attempt == 0 {
+                        assert_eq!(
+                            request
+                                .headers()
+                                .get("sec-websocket-protocol")
+                                .and_then(|value| value.to_str().ok()),
+                            Some(explicit_profile)
+                        );
+                        assert_eq!(
+                            request
+                                .headers()
+                                .get("authorization")
+                                .and_then(|value| value.to_str().ok()),
+                            Some("Bearer service-jwt")
+                        );
+                        if select_explicit {
+                            response.headers_mut().insert(
+                                "sec-websocket-protocol",
+                                explicit_profile.parse().expect("profile header"),
+                            );
+                        }
+                    } else {
+                        assert!(request.headers().get("sec-websocket-protocol").is_none());
+                        assert!(request.headers().get("authorization").is_none());
+                    }
+                        Ok(response)
+                    },
+                )
+                .await
+                .expect("accept websocket");
+
+                if attempt == 0 {
+                    let _ = socket.next().await;
+                    continue;
+                }
+                let register = socket
+                    .next()
+                    .await
+                    .expect("register message")
+                    .expect("valid register frame")
+                    .into_text()
+                    .expect("register text");
+                let register: Value = serde_json::from_str(&register).expect("register json");
+                assert_eq!(register["params"]["jwt"], "service-jwt");
+                socket
+                    .send(Message::Text(
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": "register-1",
+                            "result": {
+                                "runtimeInstanceId": "0195ef10-2f24-7af2-85e9-a8ef54642f39",
+                                "status": "registered"
+                            }
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .expect("send ack");
+                socket.close(None).await.expect("close websocket");
+            }
+        });
+
+        let client = PortalRegistryClient::new(
+            &format!("ws://{addr}"),
+            test_registration_params(),
+            Arc::new(NoopHandler),
+        )
+        .expect("build client")
+        .with_control_candidates(vec![
+            ControlCandidate::runtime_rkyv_v1(),
+            ControlCandidate::legacy_json(),
+        ])
+        .expect("candidate configuration");
+
+        client
+            .connect_and_loop()
+            .await
+            .expect("fallback legacy connection");
+        server.await.expect("join server");
+    }
+
+    #[tokio::test]
+    async fn explicit_negotiation_sends_handshake_auth_then_falls_back_before_registration() {
+        run_explicit_then_legacy_server(true).await;
+    }
+
+    #[tokio::test]
+    async fn old_controller_without_subprotocol_selection_falls_back_to_explicit_legacy_candidate()
+    {
+        run_explicit_then_legacy_server(false).await;
+    }
+
+    #[tokio::test]
+    async fn handshake_authentication_failure_never_downgrades_to_legacy() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept explicit attempt");
+            let error = accept_hdr_async(
+                stream,
+                |
+                    _request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                    _response: tokio_tungstenite::tungstenite::handshake::server::Response,
+                | {
+                    let mut rejection =
+                        tokio_tungstenite::tungstenite::http::Response::new(Some(
+                            "unauthorized".to_string(),
+                        ));
+                    *rejection.status_mut() =
+                        tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED;
+                    Err(rejection)
+                },
+            )
+            .await
+            .expect_err("server must reject explicit authentication");
+            assert!(matches!(
+                error,
+                tokio_tungstenite::tungstenite::Error::Http(_)
+            ));
+            assert!(
+                tokio::time::timeout(Duration::from_millis(150), listener.accept())
+                    .await
+                    .is_err(),
+                "authentication failure must not open a legacy fallback connection"
+            );
+        });
+
+        let client = PortalRegistryClient::new(
+            &format!("ws://{addr}"),
+            test_registration_params(),
+            Arc::new(NoopHandler),
+        )
+        .expect("build client")
+        .with_control_candidates(vec![
+            ControlCandidate::runtime_rkyv_v1(),
+            ControlCandidate::legacy_json(),
+        ])
+        .expect("candidate configuration");
+        let error = client
+            .connect_and_loop()
+            .await
+            .expect_err("authentication must fail closed")
+            .to_string();
+        assert!(
+            error.contains("Authentication"),
+            "unexpected error: {error}"
+        );
+        server.await.expect("join server");
+    }
+
+    #[tokio::test]
+    async fn configuration_generation_cancels_an_in_progress_handshake() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.expect("accept connection");
+            std::future::pending::<()>().await;
+        });
+        let client = Arc::new(
+            PortalRegistryClient::new(
+                &format!("ws://{addr}"),
+                test_registration_params(),
+                Arc::new(NoopHandler),
+            )
+            .expect("build client"),
+        );
+        let task_client = Arc::clone(&client);
+        let connection = tokio::spawn(async move { task_client.connect_and_loop().await });
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        client
+            .set_control_candidates(vec![ControlCandidate::legacy_json()])
+            .await
+            .expect("advance configuration generation");
+
+        let error = tokio::time::timeout(Duration::from_millis(250), connection)
+            .await
+            .expect("generation cancellation deadline")
+            .expect("join connection")
+            .expect_err("superseded connection must stop")
+            .to_string();
+        assert!(error.contains("superseded"));
+        server.abort();
+    }
 
     #[test]
     fn root_store_accepts_single_ca_certificate() {

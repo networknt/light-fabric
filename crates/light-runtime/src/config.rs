@@ -121,6 +121,16 @@ pub struct PortalRegistryConfig {
     pub portal_token: String,
     #[serde(default)]
     pub controller_discovery_token: String,
+    #[serde(default)]
+    pub control_candidates: Option<Vec<ControlCandidateConfig>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ControlCandidateConfig {
+    pub transport: String,
+    pub wire_profile: String,
+    pub negotiation: String,
 }
 
 impl std::fmt::Debug for PortalRegistryConfig {
@@ -144,6 +154,7 @@ impl std::fmt::Debug for PortalRegistryConfig {
                     &"********"
                 },
             )
+            .field("control_candidates", &self.control_candidates)
             .finish()
     }
 }

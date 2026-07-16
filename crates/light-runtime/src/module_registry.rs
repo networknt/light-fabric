@@ -1674,6 +1674,7 @@ mod tests {
                 portal_query_url: None,
                 portal_token: "portal-secret".to_string(),
                 controller_discovery_token: "discovery-secret".to_string(),
+                control_candidates: None,
             }),
             direct_registry: DirectRegistryConfig::default(),
             service_identity: ServiceIdentity {

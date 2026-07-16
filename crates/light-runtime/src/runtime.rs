@@ -5,7 +5,7 @@ use config_loader::{
     load_config_from_sources, load_values_from_sources,
 };
 use portal_registry::{
-    PortalRegistryClient, RegistrationBuilder, RegistrationState, RegistryHandler,
+    ControlCandidate, PortalRegistryClient, RegistrationBuilder, RegistrationState, RegistryHandler,
 };
 use serde::de::DeserializeOwned;
 use serde_yaml::Value;
@@ -22,9 +22,9 @@ use url::Url;
 
 use crate::cache::CacheRegistry;
 use crate::config::{
-    BootstrapConfig, ClientConfig, DirectRegistryConfig, PortalRegistryConfig,
-    RemoteBootstrapResult, RuntimeConfig, ServerConfig, ServiceIdentity, default_accept_header,
-    default_environment,
+    BootstrapConfig, ClientConfig, ControlCandidateConfig, DirectRegistryConfig,
+    PortalRegistryConfig, RemoteBootstrapResult, RuntimeConfig, ServerConfig, ServiceIdentity,
+    default_accept_header, default_environment,
 };
 use crate::logging::{
     LogFileAccess, LogStreamBroadcaster, LoggingControl, register_logging_module,
@@ -563,6 +563,11 @@ where
                         "failed to build portal registry client: {e}"
                     ))
                 })?;
+        client = client
+            .with_control_candidates(resolve_control_candidates(portal_registry)?)
+            .map_err(|e| {
+                RuntimeError::Unsupported(format!("invalid portal registry controlCandidates: {e}"))
+            })?;
         if let Some((_ca_cert_path, ca_certificate)) =
             read_portal_registry_ca_certificate(bootstrap, client_config.as_ref())?
         {
@@ -718,6 +723,7 @@ where
         let portal_url = Url::parse(&portal_registry.portal_url)?;
         let ws_url = to_microservice_ws_url(&portal_url)?;
         let token = portal_token(&portal_registry).ok_or(RuntimeError::MissingPortalToken)?;
+        let control_candidates = resolve_control_candidates(&portal_registry)?;
         let mut registration = RegistrationBuilder::new(
             &runtime_config.service_identity.service_id,
             &runtime_config.service_identity.version,
@@ -766,6 +772,14 @@ where
         let client = if let Some(client) = shared_registry_client {
             client.set_registration_params(registration).await;
             client
+                .set_control_candidates(control_candidates)
+                .await
+                .map_err(|e| {
+                    RuntimeError::Unsupported(format!(
+                        "invalid portal registry controlCandidates: {e}"
+                    ))
+                })?;
+            client
                 .configure_connection(&ws_url, ca_certificate, verify_hostname)
                 .await
                 .map_err(|e| {
@@ -783,6 +797,13 @@ where
             .map_err(|e| {
                 RuntimeError::Unsupported(format!("failed to build portal registry client: {e}"))
             })?;
+            client = client
+                .with_control_candidates(control_candidates)
+                .map_err(|e| {
+                    RuntimeError::Unsupported(format!(
+                        "invalid portal registry controlCandidates: {e}"
+                    ))
+                })?;
 
             if let Some(ca_certificate) = ca_certificate {
                 client = client.with_ca_certificate(ca_certificate);
@@ -1357,6 +1378,52 @@ fn portal_token(config: &PortalRegistryConfig) -> Option<String> {
         })
 }
 
+fn resolve_control_candidates(
+    config: &PortalRegistryConfig,
+) -> Result<Vec<ControlCandidate>, RuntimeError> {
+    let Some(configured) = config.control_candidates.as_ref() else {
+        return Ok(vec![ControlCandidate::legacy_json()]);
+    };
+    if configured.is_empty() {
+        return Err(RuntimeError::Unsupported(
+            "portal-registry controlCandidates must not be empty".to_string(),
+        ));
+    }
+
+    let mut candidates = Vec::with_capacity(configured.len());
+    for ControlCandidateConfig {
+        transport,
+        wire_profile,
+        negotiation,
+    } in configured
+    {
+        let candidate = match (
+            transport.as_str(),
+            wire_profile.as_str(),
+            negotiation.as_str(),
+        ) {
+            ("websocket", "legacy-json", "legacy") => ControlCandidate::legacy_json(),
+            ("websocket", profile, "explicit")
+                if Some(profile) == ControlCandidate::runtime_rkyv_v1().profile_token() =>
+            {
+                ControlCandidate::runtime_rkyv_v1()
+            }
+            _ => {
+                return Err(RuntimeError::Unsupported(format!(
+                    "unsupported portal-registry control candidate transport={transport:?} wireProfile={wire_profile:?} negotiation={negotiation:?}"
+                )));
+            }
+        };
+        if candidates.contains(&candidate) {
+            return Err(RuntimeError::Unsupported(format!(
+                "duplicate portal-registry control candidate {candidate:?}"
+            )));
+        }
+        candidates.push(candidate);
+    }
+    Ok(candidates)
+}
+
 fn get_env_value(key: &str) -> Option<String> {
     let normalized = key.to_uppercase().replace(['-', '.'], "_");
     std::env::var(&normalized)
@@ -1408,6 +1475,63 @@ mod tests {
 
         async fn stop(&self, _handle: &mut Self::Handle) -> Result<(), RuntimeError> {
             Ok(())
+        }
+    }
+
+    #[test]
+    fn absent_control_candidates_preserves_legacy_websocket_default() {
+        let config: PortalRegistryConfig =
+            serde_yaml::from_str("portalUrl: https://controller.example.com\nportalToken: token\n")
+                .expect("portal-registry config");
+
+        assert_eq!(
+            resolve_control_candidates(&config).expect("default candidates"),
+            vec![ControlCandidate::legacy_json()]
+        );
+    }
+
+    #[test]
+    fn ordered_control_candidates_accept_only_exact_n2_profiles() {
+        let explicit_profile = ControlCandidate::runtime_rkyv_v1()
+            .profile_token()
+            .expect("explicit profile token");
+        let config: PortalRegistryConfig = serde_yaml::from_str(&format!(
+            r#"
+portalUrl: https://controller.example.com
+portalToken: token
+controlCandidates:
+  - transport: websocket
+    wireProfile: {explicit_profile}
+    negotiation: explicit
+  - transport: websocket
+    wireProfile: legacy-json
+    negotiation: legacy
+"#,
+        ))
+        .expect("portal-registry config");
+
+        assert_eq!(
+            resolve_control_candidates(&config).expect("configured candidates"),
+            vec![
+                ControlCandidate::runtime_rkyv_v1(),
+                ControlCandidate::legacy_json(),
+            ]
+        );
+
+        for yaml in [
+            "controlCandidates: []".to_string(),
+            format!("controlCandidates: [{{transport: webtransport, wireProfile: {explicit_profile}, negotiation: explicit}}]"),
+            "controlCandidates: [{transport: websocket, wireProfile: unknown, negotiation: explicit}]".to_string(),
+            "controlCandidates: [{transport: websocket, wireProfile: legacy-json, negotiation: legacy}, {transport: websocket, wireProfile: legacy-json, negotiation: legacy}]".to_string(),
+        ] {
+            let config: PortalRegistryConfig = serde_yaml::from_str(&format!(
+                "portalUrl: https://controller.example.com\nportalToken: token\n{yaml}\n"
+            ))
+            .expect("syntactically valid portal-registry config");
+            assert!(
+                resolve_control_candidates(&config).is_err(),
+                "configuration must fail: {yaml}"
+            );
         }
     }
 
