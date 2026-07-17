@@ -23,6 +23,7 @@ use crate::security::AuthPrincipal;
 use crate::token::{CLIENT_FILE, TokenRuntime, load_client_config, load_token_runtime};
 use agent_delegation::{DelegationClaims, DelegationKind};
 use async_trait::async_trait;
+use bytes::Bytes;
 use light_client::{ClientConfig, ClientFactory, EndpointOptions};
 use light_runtime::{
     DirectRegistryConfig, DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, ModuleKind,
@@ -40,10 +41,10 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::io::{self, Write};
 use std::net::IpAddr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
-use tokio::sync::Mutex as AsyncMutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, Weak};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use url::{Url, form_urlencoded};
 
 pub const MCP_ROUTER_FILE: &str = "mcp-router.yml";
@@ -71,6 +72,8 @@ const TEXT_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
 const MAX_TOOL_RETRY_ATTEMPTS: usize = 5;
 const MAX_TOOL_RETRY_BACKOFF: Duration = Duration::from_secs(1);
 const RETRYABLE_STATUS_CODES: &[u16] = &[408, 425, 429, 500, 502, 503, 504];
+const SUBSCRIPTION_CHANNEL_CAPACITY: usize = 2;
+const SUBSCRIPTION_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -176,6 +179,12 @@ pub struct McpStatelessProtocolConfig {
     pub max_concurrent_requests_per_principal: usize,
     #[serde(default = "default_stateless_concurrent_backend_calls_per_target")]
     pub max_concurrent_backend_calls_per_target: usize,
+    #[serde(default = "default_stateless_max_subscriptions")]
+    pub max_subscriptions: usize,
+    #[serde(default = "default_stateless_max_subscriptions_per_principal")]
+    pub max_subscriptions_per_principal: usize,
+    #[serde(default = "default_stateless_max_subscription_duration_ms")]
+    pub max_subscription_duration_ms: u64,
 }
 
 impl Default for McpStatelessProtocolConfig {
@@ -193,6 +202,9 @@ impl Default for McpStatelessProtocolConfig {
                 default_stateless_concurrent_requests_per_principal(),
             max_concurrent_backend_calls_per_target:
                 default_stateless_concurrent_backend_calls_per_target(),
+            max_subscriptions: default_stateless_max_subscriptions(),
+            max_subscriptions_per_principal: default_stateless_max_subscriptions_per_principal(),
+            max_subscription_duration_ms: default_stateless_max_subscription_duration_ms(),
         }
     }
 }
@@ -474,13 +486,260 @@ pub struct McpHttpRequest {
     pub body: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct McpHttpResponse {
     pub status: u16,
     pub content_type: String,
     pub headers: Vec<(String, String)>,
-    pub body: Vec<u8>,
-    pub streamed: bool,
+    pub body: McpResponseBody,
+}
+
+#[derive(Debug)]
+pub enum McpResponseBody {
+    Empty,
+    Buffered(Bytes),
+    Stream(McpResponseStream),
+}
+
+impl McpResponseBody {
+    pub fn buffered(&self) -> Option<&[u8]> {
+        match self {
+            Self::Empty => Some(&[]),
+            Self::Buffered(bytes) => Some(bytes.as_ref()),
+            Self::Stream(_) => None,
+        }
+    }
+
+    pub fn len_hint(&self) -> usize {
+        match self {
+            Self::Empty => 0,
+            Self::Buffered(bytes) => bytes.len(),
+            Self::Stream(_) => 0,
+        }
+    }
+
+    pub fn is_stream(&self) -> bool {
+        matches!(self, Self::Stream(_))
+    }
+}
+
+#[derive(Debug)]
+pub struct McpResponseStream {
+    receiver: mpsc::Receiver<Bytes>,
+    lease: McpSubscriptionLease,
+    deadline: Instant,
+    next_keep_alive: Instant,
+    terminal_frame: Bytes,
+    terminal_sent: bool,
+}
+
+impl McpResponseStream {
+    /// Returns the next already-framed SSE chunk. `None` means the transport
+    /// writer must finish the response exactly once.
+    pub async fn next_frame(&mut self) -> Option<Bytes> {
+        if self.terminal_sent {
+            return None;
+        }
+        let wake_at = self.deadline.min(self.next_keep_alive);
+        tokio::select! {
+            frame = self.receiver.recv() => frame,
+            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(wake_at)) => {
+                let now = Instant::now();
+                if now >= self.deadline {
+                    self.terminal_sent = true;
+                    self.lease.cancel();
+                    Some(self.terminal_frame.clone())
+                } else {
+                    self.next_keep_alive = now + SUBSCRIPTION_KEEP_ALIVE_INTERVAL;
+                    Some(Bytes::from_static(b": keepalive\n\n"))
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct McpSubscriptionLease {
+    hub: Weak<McpSubscriptionHub>,
+    key: u64,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl McpSubscriptionLease {
+    fn cancel(&self) {
+        if !self.cancelled.swap(true, Ordering::AcqRel)
+            && let Some(hub) = self.hub.upgrade()
+        {
+            hub.remove(self.key);
+        }
+    }
+}
+
+impl Drop for McpSubscriptionLease {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
+#[derive(Debug)]
+struct McpSubscriptionEntry {
+    principal: String,
+    sender: mpsc::Sender<Bytes>,
+    tools_list_changed: bool,
+    notification: Bytes,
+    terminal: Bytes,
+    cancelled: Arc<AtomicBool>,
+}
+
+#[derive(Debug)]
+struct McpSubscriptionRegistration {
+    principal: String,
+    tools_list_changed: bool,
+    acknowledgment: Bytes,
+    notification: Bytes,
+    terminal: Bytes,
+    deadline: Instant,
+}
+
+#[derive(Debug, Default)]
+struct McpSubscriptionState {
+    next_key: u64,
+    entries: BTreeMap<u64, McpSubscriptionEntry>,
+    per_principal: BTreeMap<String, usize>,
+}
+
+#[derive(Debug)]
+struct McpSubscriptionHub {
+    state: StdMutex<McpSubscriptionState>,
+    max_global: usize,
+    max_per_principal: usize,
+}
+
+impl McpSubscriptionHub {
+    fn new(max_global: usize, max_per_principal: usize) -> Self {
+        Self {
+            state: StdMutex::new(McpSubscriptionState::default()),
+            max_global,
+            max_per_principal,
+        }
+    }
+
+    fn register(
+        self: &Arc<Self>,
+        registration: McpSubscriptionRegistration,
+    ) -> Result<McpResponseStream, McpSessionError> {
+        let McpSubscriptionRegistration {
+            principal,
+            tools_list_changed,
+            acknowledgment,
+            notification,
+            terminal,
+            deadline,
+        } = registration;
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let principal_count = state
+            .per_principal
+            .get(&principal)
+            .copied()
+            .unwrap_or_default();
+        if state.entries.len() >= self.max_global || principal_count >= self.max_per_principal {
+            return Err(McpSessionError {
+                status: 429,
+                code: -32000,
+                message: "stateless MCP subscription exceeds a gateway resource limit".to_string(),
+            });
+        }
+        state.next_key = state.next_key.wrapping_add(1).max(1);
+        let key = state.next_key;
+        let (sender, receiver) = mpsc::channel(SUBSCRIPTION_CHANNEL_CAPACITY);
+        sender
+            .try_send(acknowledgment)
+            .map_err(|_| McpSessionError {
+                status: 503,
+                code: -32000,
+                message: "stateless MCP subscription channel is unavailable".to_string(),
+            })?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        state.entries.insert(
+            key,
+            McpSubscriptionEntry {
+                principal: principal.clone(),
+                sender,
+                tools_list_changed,
+                notification,
+                terminal: terminal.clone(),
+                cancelled: Arc::clone(&cancelled),
+            },
+        );
+        *state.per_principal.entry(principal).or_default() += 1;
+        tracing::debug!(
+            target: "light_pingora::mcp",
+            subscription_key = key,
+            "MCP stateless subscription opened"
+        );
+        Ok(McpResponseStream {
+            receiver,
+            lease: McpSubscriptionLease {
+                hub: Arc::downgrade(self),
+                key,
+                cancelled,
+            },
+            deadline,
+            next_keep_alive: Instant::now() + SUBSCRIPTION_KEEP_ALIVE_INTERVAL,
+            terminal_frame: terminal,
+            terminal_sent: false,
+        })
+    }
+
+    fn remove(&self, key: u64) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(entry) = state.entries.remove(&key) {
+            decrement_principal_count(&mut state.per_principal, &entry.principal);
+        }
+    }
+
+    fn publish_tools_changed_and_close(&self) {
+        self.close_all(true);
+    }
+
+    fn close_all(&self, publish_tools_changed: bool) {
+        let entries = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.per_principal.clear();
+            std::mem::take(&mut state.entries)
+        };
+        for (_, entry) in entries {
+            if publish_tools_changed && entry.tools_list_changed {
+                let _ = entry.sender.try_send(entry.notification);
+            }
+            let _ = entry.sender.try_send(entry.terminal);
+            entry.cancelled.store(true, Ordering::Release);
+        }
+    }
+
+    #[cfg(test)]
+    fn active_count(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .entries
+            .len()
+    }
+}
+
+impl Drop for McpSubscriptionHub {
+    fn drop(&mut self) {
+        self.close_all(false);
+    }
+}
+
+fn decrement_principal_count(counts: &mut BTreeMap<String, usize>, principal: &str) {
+    if let Some(count) = counts.get_mut(principal) {
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            counts.remove(principal);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1001,7 +1260,12 @@ pub struct McpRouterRuntime {
     last_session_purge: Arc<AsyncMutex<Option<Instant>>>,
     next_backend_request_id: Arc<AtomicU64>,
     config_revision: String,
+    tool_catalog_revision: String,
+    policy_revision: Option<String>,
     reload_session_evictions: Arc<AtomicU64>,
+    subscriptions: Arc<McpSubscriptionHub>,
+    superseded_subscriptions: Option<Arc<McpSubscriptionHub>>,
+    reload_publishes_tools_changed: bool,
     /// Shared security/light-client credential boundary. MCP never inspects or
     /// persists its token cache.
     backend_credentials: Option<Arc<TokenRuntime>>,
@@ -1149,6 +1413,13 @@ impl McpRouterRuntime {
             config.protocols.stateless.max_tools_list_cache_entries;
         let config_revision =
             stable_json_hash(&serde_json::to_value(&config).unwrap_or(JsonValue::Null));
+        let tool_catalog_revision =
+            stable_json_hash(&serde_json::to_value(&config.tools).unwrap_or(JsonValue::Null));
+        let policy_revision = policy.as_ref().map(|policy| policy.policy_revision());
+        let subscriptions = Arc::new(McpSubscriptionHub::new(
+            config.protocols.stateless.max_subscriptions,
+            config.protocols.stateless.max_subscriptions_per_principal,
+        ));
         Ok(Self {
             config,
             tools,
@@ -1171,7 +1442,12 @@ impl McpRouterRuntime {
             last_session_purge: Arc::new(AsyncMutex::new(None)),
             next_backend_request_id: Arc::new(AtomicU64::new(1)),
             config_revision,
+            tool_catalog_revision,
+            policy_revision,
             reload_session_evictions: Arc::new(AtomicU64::new(0)),
+            subscriptions,
+            superseded_subscriptions: None,
+            reload_publishes_tools_changed: false,
             backend_credentials: None,
         })
     }
@@ -1290,6 +1566,10 @@ impl McpRouterRuntime {
     /// still valid in the freshly loaded runtime.
     pub fn preserve_state_from(&mut self, previous: &Self) {
         let reset_backend_sessions = self.config_revision != previous.config_revision;
+        self.reload_publishes_tools_changed = self.tool_catalog_revision
+            != previous.tool_catalog_revision
+            || self.policy_revision != previous.policy_revision;
+        self.superseded_subscriptions = Some(Arc::clone(&previous.subscriptions));
         let Ok(mut previous_store) = previous.sessions.try_lock() else {
             tracing::warn!(
                 target: "light_pingora::mcp",
@@ -1347,6 +1627,23 @@ impl McpRouterRuntime {
         if !backend_sessions.is_empty() {
             self.terminate_backend_sessions_in_background(backend_sessions);
         }
+    }
+
+    /// Completes the reload boundary after every candidate configuration has
+    /// validated and the new runtime has been published.
+    pub fn activate_reload(&self) {
+        let Some(previous) = self.superseded_subscriptions.as_ref() else {
+            return;
+        };
+        if self.reload_publishes_tools_changed {
+            previous.publish_tools_changed_and_close();
+        } else {
+            previous.close_all(false);
+        }
+    }
+
+    pub fn shutdown_subscriptions(&self) {
+        self.subscriptions.close_all(false);
     }
 
     async fn evict_incompatible_reload_sessions(&self, reset_backend_sessions: bool) {
@@ -1469,8 +1766,8 @@ impl McpRouterRuntime {
                 http_method = %method,
                 status = response.status,
                 content_type = %response.content_type,
-                body_bytes = response.body.len(),
-                streamed = response.streamed,
+                body_bytes = response.body.len_hint(),
+                streamed = response.body.is_stream(),
                 elapsed_ms = started.elapsed().as_millis(),
                 correlation_id = ?context.correlation_id,
                 "MCP router completed request"
@@ -1663,6 +1960,9 @@ impl McpRouterRuntime {
             transport_headers: &request.headers,
             request: context,
         };
+        if metadata.method == "subscriptions/listen" {
+            return self.handle_subscription_listen(message, context, principal_key, version);
+        }
         let result = match metadata.method.as_str() {
             "server/discover" => self.stateless_discover_result(&effective).await,
             "tools/list" => self.stateless_tools_list_result(message, &effective).await,
@@ -1714,6 +2014,158 @@ impl McpRouterRuntime {
         }
     }
 
+    fn handle_subscription_listen(
+        &self,
+        message: &JsonMap<String, JsonValue>,
+        context: &McpRequestContext,
+        principal_key: String,
+        version: &str,
+    ) -> Result<McpHttpResponse, RuntimeError> {
+        let id = message.get("id").cloned().unwrap_or(JsonValue::Null);
+        if !matches!(id, JsonValue::String(_) | JsonValue::Number(_)) {
+            return response_with_protocol_version(
+                json_error_response(
+                    400,
+                    id,
+                    -32602,
+                    "subscriptions/listen requires a string or numeric request id",
+                ),
+                Some(version),
+            );
+        }
+        if serde_json::to_vec(&id)?.len() > 256 {
+            return response_with_protocol_version(
+                json_error_response(
+                    400,
+                    JsonValue::Null,
+                    -32602,
+                    "subscriptions/listen request id exceeds the gateway limit",
+                ),
+                Some(version),
+            );
+        }
+        let Some(notifications) = message
+            .get("params")
+            .and_then(JsonValue::as_object)
+            .and_then(|params| params.get("notifications"))
+            .and_then(JsonValue::as_object)
+        else {
+            return response_with_protocol_version(
+                json_error_response(
+                    400,
+                    id,
+                    -32602,
+                    "subscriptions/listen params.notifications must be an object",
+                ),
+                Some(version),
+            );
+        };
+        for field in [
+            "toolsListChanged",
+            "promptsListChanged",
+            "resourcesListChanged",
+        ] {
+            if notifications
+                .get(field)
+                .is_some_and(|value| !value.is_boolean())
+            {
+                return response_with_protocol_version(
+                    json_error_response(
+                        400,
+                        id,
+                        -32602,
+                        format!("subscriptions/listen {field} must be a boolean"),
+                    ),
+                    Some(version),
+                );
+            }
+        }
+        if let Some(resources) = notifications.get("resourceSubscriptions")
+            && !resources.as_array().is_some_and(|resources| {
+                resources.len() <= 1024
+                    && resources.iter().all(|resource| {
+                        resource
+                            .as_str()
+                            .is_some_and(|resource| !resource.is_empty() && resource.len() <= 8192)
+                    })
+            })
+        {
+            return response_with_protocol_version(
+                json_error_response(
+                    400,
+                    id,
+                    -32602,
+                    "subscriptions/listen resourceSubscriptions must contain bounded URI strings",
+                ),
+                Some(version),
+            );
+        }
+        let tools_list_changed = notifications
+            .get("toolsListChanged")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false);
+        let honored = if tools_list_changed {
+            json!({"toolsListChanged": true})
+        } else {
+            json!({})
+        };
+        let acknowledgment = json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/subscriptions/acknowledged",
+            "params": {"notifications": honored}
+        });
+        let notification = json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/tools/list_changed",
+            "params": {
+                "_meta": {
+                    "io.modelcontextprotocol/subscriptionId": id.clone()
+                }
+            }
+        });
+        let terminal = json!({
+            "jsonrpc": "2.0",
+            "id": id.clone(),
+            "result": {"resultType": "complete"}
+        });
+        let deadline = match subscription_deadline(
+            context,
+            self.config.protocols.stateless.max_subscription_duration_ms,
+        ) {
+            Ok(deadline) => deadline,
+            Err(error) => {
+                return response_with_protocol_version(
+                    json_error_response(error.status, id, error.code, error.message),
+                    Some(version),
+                );
+            }
+        };
+        let stream = match self.subscriptions.register(McpSubscriptionRegistration {
+            principal: principal_key,
+            tools_list_changed,
+            acknowledgment: Bytes::from(sse_message_body(&acknowledgment)?),
+            notification: Bytes::from(sse_message_body(&notification)?),
+            terminal: Bytes::from(sse_message_body(&terminal)?),
+            deadline,
+        }) {
+            Ok(stream) => stream,
+            Err(error) => {
+                return response_with_protocol_version(
+                    json_error_response(error.status, id, error.code, error.message),
+                    Some(version),
+                );
+            }
+        };
+        let mut response = McpHttpResponse {
+            status: 200,
+            content_type: EVENT_STREAM_CONTENT_TYPE.to_string(),
+            headers: event_stream_headers(),
+            body: McpResponseBody::Stream(stream),
+        };
+        set_response_header(&mut response.headers, MCP_PROTOCOL_VERSION_HEADER, version);
+        Ok(response)
+    }
+
     async fn stateless_discover_result(
         &self,
         effective: &EffectiveMcpRequestContext<'_>,
@@ -1742,7 +2194,7 @@ impl McpRouterRuntime {
         let ttl_ms = self.config.protocols.stateless.discover_ttl_ms;
         let result = json!({
             "supportedVersions": self.config.protocols.stateless.versions,
-            "capabilities": {"tools": {"listChanged": false}},
+            "capabilities": {"tools": {"listChanged": true}},
             "resultType": "complete",
             "_meta": {
                 SERVER_INFO_META_KEY: {
@@ -4417,6 +4869,39 @@ fn request_principal_binding(
     Ok((binding.clone(), binding))
 }
 
+fn subscription_deadline(
+    context: &McpRequestContext,
+    max_duration_ms: u64,
+) -> Result<Instant, McpSessionError> {
+    let now = Instant::now();
+    let configured = Duration::from_millis(max_duration_ms);
+    let mut lifetime = configured;
+    if let Some(expiration) = context
+        .auth
+        .as_ref()
+        .and_then(|auth| auth.claims.get("exp"))
+        .and_then(|expiration| {
+            expiration
+                .as_u64()
+                .or_else(|| expiration.as_str().and_then(|value| value.parse().ok()))
+        })
+    {
+        let epoch_seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if expiration <= epoch_seconds {
+            return Err(McpSessionError {
+                status: 401,
+                code: -32001,
+                message: "MCP subscription credential is expired".to_string(),
+            });
+        }
+        lifetime = lifetime.min(Duration::from_secs(expiration - epoch_seconds));
+    }
+    Ok(now + lifetime)
+}
+
 fn normalized_optional(value: Option<&str>) -> JsonValue {
     value
         .map(str::trim)
@@ -4624,12 +5109,26 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
                 .stateless
                 .max_concurrent_backend_calls_per_target,
         ),
+        (
+            "maxSubscriptions",
+            config.protocols.stateless.max_subscriptions,
+        ),
+        (
+            "maxSubscriptionsPerPrincipal",
+            config.protocols.stateless.max_subscriptions_per_principal,
+        ),
     ] {
         if value == 0 {
             return Err(RuntimeError::Unsupported(format!(
                 "mcp-router.protocols.stateless.{name} must be greater than 0"
             )));
         }
+    }
+    if config.protocols.stateless.max_subscription_duration_ms == 0 {
+        return Err(RuntimeError::Unsupported(
+            "mcp-router.protocols.stateless.maxSubscriptionDurationMs must be greater than 0"
+                .to_string(),
+        ));
     }
     for origin in &config.origin_allowlist {
         normalize_mcp_origin(origin).map_err(|message| {
@@ -6105,8 +6604,7 @@ fn accepted_response() -> McpHttpResponse {
         status: 202,
         content_type: JSON_CONTENT_TYPE.to_string(),
         headers: protocol_headers(),
-        body: Vec::new(),
-        streamed: false,
+        body: McpResponseBody::Empty,
     }
 }
 
@@ -6123,8 +6621,7 @@ fn method_not_allowed_response() -> McpHttpResponse {
         status: 405,
         content_type: TEXT_CONTENT_TYPE.to_string(),
         headers: vec![("allow".to_string(), "POST, DELETE".to_string())],
-        body: b"method not allowed".to_vec(),
-        streamed: false,
+        body: McpResponseBody::Buffered(Bytes::from_static(b"method not allowed")),
     }
 }
 
@@ -6251,8 +6748,7 @@ fn json_body_response(status: u16, body: JsonValue) -> Result<McpHttpResponse, R
         status,
         content_type: JSON_CONTENT_TYPE.to_string(),
         headers: protocol_headers(),
-        body,
-        streamed: false,
+        body: McpResponseBody::Buffered(Bytes::from(body)),
     })
 }
 
@@ -6317,8 +6813,7 @@ fn bounded_json_result_response(
         status,
         content_type: JSON_CONTENT_TYPE.to_string(),
         headers: protocol_headers(),
-        body: writer.bytes,
-        streamed: false,
+        body: McpResponseBody::Buffered(Bytes::from(writer.bytes)),
     }))
 }
 
@@ -6327,8 +6822,7 @@ fn event_stream_response(status: u16, body: JsonValue) -> Result<McpHttpResponse
         status,
         content_type: EVENT_STREAM_CONTENT_TYPE.to_string(),
         headers: event_stream_headers(),
-        body: sse_message_body(&body)?,
-        streamed: true,
+        body: McpResponseBody::Buffered(Bytes::from(sse_message_body(&body)?)),
     })
 }
 
@@ -6342,6 +6836,7 @@ fn protocol_headers() -> Vec<(String, String)> {
 fn event_stream_headers() -> Vec<(String, String)> {
     let mut headers = protocol_headers();
     headers.push(("cache-control".to_string(), "no-cache".to_string()));
+    headers.push(("x-accel-buffering".to_string(), "no".to_string()));
     headers
 }
 
@@ -6593,6 +7088,18 @@ fn default_stateless_concurrent_backend_calls_per_target() -> usize {
     32
 }
 
+fn default_stateless_max_subscriptions() -> usize {
+    10_000
+}
+
+fn default_stateless_max_subscriptions_per_principal() -> usize {
+    4
+}
+
+fn default_stateless_max_subscription_duration_ms() -> u64 {
+    900_000
+}
+
 fn default_input_schema() -> JsonValue {
     json!({ "type": "object" })
 }
@@ -6635,7 +7142,10 @@ mod tests {
             .expect("handle")
             .expect("response");
         assert_eq!(response.status, 400);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["error"]["code"], -32600);
     }
 
@@ -6653,7 +7163,10 @@ mod tests {
             .expect("handle")
             .expect("response");
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["error"]["code"], -32601);
     }
 
@@ -6671,7 +7184,10 @@ mod tests {
             .expect("handle")
             .expect("response");
         assert_eq!(response.status, 400);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["error"]["code"], -32000);
     }
 
@@ -6689,7 +7205,10 @@ mod tests {
             .expect("handle")
             .expect("response");
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["result"]["protocolVersion"], "2025-11-25");
         assert_eq!(
             body["result"]["capabilities"]["tools"]["listChanged"],
@@ -6716,7 +7235,10 @@ mod tests {
             .expect("handle")
             .expect("response");
         assert_eq!(response.status, 400);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["error"]["code"], -32602);
     }
 
@@ -6744,7 +7266,10 @@ mod tests {
             .expect("handle")
             .expect("response");
         assert_eq!(response.status, 403);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["error"]["code"], -32001);
     }
 
@@ -7148,7 +7673,10 @@ tools:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["result"]["protocolVersion"], "2025-06-18");
         assert_eq!(body["result"]["serverInfo"]["name"], "light-gateway-mcp");
         let session_id =
@@ -7173,7 +7701,10 @@ tools:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["result"]["protocolVersion"], "2025-03-26");
         assert_eq!(
             first_header(&response.headers, MCP_PROTOCOL_VERSION_HEADER).as_deref(),
@@ -7209,7 +7740,10 @@ tools:
             .expect("response");
 
         assert_eq!(response.status, 503);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["error"]["code"], -32000);
         assert_eq!(body["error"]["message"], "MCP session store is full");
         assert!(
@@ -7257,7 +7791,10 @@ tools:
             .expect("response");
 
         assert_eq!(response.status, 429);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["error"]["code"], -32000);
         assert_eq!(
             body["error"]["message"],
@@ -7286,7 +7823,13 @@ tools:
             .expect("response");
 
         assert_eq!(response.status, 202);
-        assert!(response.body.is_empty());
+        assert!(
+            response
+                .body
+                .buffered()
+                .expect("buffered response")
+                .is_empty()
+        );
         assert_eq!(
             first_header(&response.headers, MCP_PROTOCOL_VERSION_HEADER).as_deref(),
             Some("2025-03-26")
@@ -7308,7 +7851,10 @@ tools:
             .expect("handle")
             .expect("response");
 
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["result"]["tools"][0]["name"], "weather");
     }
 
@@ -7347,7 +7893,10 @@ tools:
             .expect("handle")
             .expect("response");
 
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(
             body["result"]["tools"][0]["name"],
             "demo_offer_decision_api_search_offers"
@@ -7461,7 +8010,10 @@ endpointRules:
             .expect("handle")
             .expect("response");
 
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         let names = body["result"]["tools"]
             .as_array()
             .expect("tools")
@@ -7563,7 +8115,10 @@ endpointRules:
             .expect("handle")
             .expect("response");
 
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         let names = body["result"]["tools"]
             .as_array()
             .expect("tools")
@@ -7624,7 +8179,10 @@ endpointRules:
             .expect("handle")
             .expect("response");
 
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         let names = body["result"]["tools"]
             .as_array()
             .expect("tools")
@@ -7702,7 +8260,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 400);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["error"]["code"], -32600);
         assert_eq!(body["error"]["message"], "missing MCP session id");
     }
@@ -7729,7 +8290,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 400);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["error"]["code"], -32000);
         assert_eq!(body["error"]["message"], "unknown MCP session id");
     }
@@ -7750,8 +8314,11 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 406);
-        assert!(!response.streamed);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert!(!response.body.is_stream());
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["error"]["code"], -32600);
     }
 
@@ -7771,7 +8338,7 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 405);
-        assert!(!response.streamed);
+        assert!(!response.body.is_stream());
         assert_eq!(
             response.headers,
             vec![("allow".to_string(), "POST, DELETE".to_string())]
@@ -7804,7 +8371,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_mcp_json_result(&body["result"], pets);
         let request = received.await.expect("server request");
         assert!(request.starts_with("GET /weather?city=New+York&unit=c HTTP/1.1"));
@@ -7830,7 +8400,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_mcp_json_result(&body["result"], pets);
         let request = received.await.expect("server request");
         assert!(request.starts_with("GET /weather?limit=1 HTTP/1.1"));
@@ -7873,7 +8446,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["error"]["code"], -32601);
         assert_eq!(body["error"]["message"], "tool `list-pets` not found");
     }
@@ -7896,8 +8472,8 @@ endpointRules:
 
         assert_eq!(response.status, 200);
         assert_eq!(response.content_type, "text/event-stream");
-        assert!(response.streamed);
-        let event = sse_json(&response.body);
+        assert!(!response.body.is_stream());
+        let event = sse_json(response.body.buffered().expect("buffered response"));
         assert_eq!(event["id"], 10);
         assert_mcp_json_result(&event["result"], json!({"ok": true}));
     }
@@ -7954,7 +8530,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_mcp_json_result(&body["result"], json!({"forecast": "rain"}));
         let request = received.await.expect("server request");
         assert!(request.starts_with("GET /weather?city=Toronto HTTP/1.1"));
@@ -8023,7 +8602,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_mcp_json_result(&body["result"], json!({"forecast": "clear"}));
         let request = received.await.expect("server request");
         assert!(request.starts_with("GET /weather?city=Toronto HTTP/1.1"));
@@ -8089,7 +8671,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_mcp_json_result(&body["result"], json!({"ok": true}));
         let request = received.await.expect("server request");
         assert!(request.starts_with(
@@ -8164,7 +8749,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["result"]["content"][0]["text"], "cloudy");
         let requests = received.await.expect("server requests");
         assert_eq!(requests.len(), 3);
@@ -8260,7 +8848,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["result"]["content"][0]["text"], "cloudy");
         let requests = received.await.expect("server requests");
         assert_eq!(requests.len(), 3);
@@ -8332,7 +8923,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["result"]["content"][0]["text"], "cloudy");
         let requests = received.await.expect("server requests");
         assert_eq!(requests.len(), 3);
@@ -8396,7 +8990,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["id"], "1");
         assert_eq!(body["result"]["content"][0]["text"], "cloudy");
         let requests = received.await.expect("server requests");
@@ -8468,7 +9065,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["result"]["content"][0]["text"], "hello");
 
         let requests = received.await.expect("server requests");
@@ -8741,7 +9341,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["error"]["code"], -32000);
         assert!(
             body["error"]["message"]
@@ -9080,7 +9683,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_mcp_json_result(&body["result"], json!({"ok": true}));
         let request = received.await.expect("server request");
         assert!(request.starts_with("GET /mcp HTTP/1.1"));
@@ -9118,7 +9724,10 @@ endpointRules:
             .expect("handle")
             .expect("response");
 
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["error"]["code"], -32001);
         assert!(
             body["error"]["message"]
@@ -9207,7 +9816,10 @@ endpointRules:
             .expect("handle")
             .expect("response");
 
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_mcp_json_result(&body["result"], json!({"ok": true}));
         let request = received.await.expect("server request");
         let body = request.split("\r\n\r\n").nth(1).expect("request body");
@@ -9305,8 +9917,14 @@ endpointRules:
             .await
             .expect("handle")
             .expect("response");
-        let legacy = serde_json::from_slice::<JsonValue>(&legacy.body).expect("legacy json");
-        let modern = serde_json::from_slice::<JsonValue>(&modern.body).expect("modern json");
+        let legacy = serde_json::from_slice::<JsonValue>(
+            legacy.body.buffered().expect("buffered legacy response"),
+        )
+        .expect("legacy json");
+        let modern = serde_json::from_slice::<JsonValue>(
+            modern.body.buffered().expect("buffered modern response"),
+        )
+        .expect("modern json");
         assert_eq!(
             legacy["result"]["structuredContent"],
             modern["result"]["structuredContent"]
@@ -9338,7 +9956,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 400);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["error"]["code"], -32700);
     }
 
@@ -9372,7 +9993,10 @@ endpointRules:
             .await
             .expect("handle")
             .expect("response");
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
         assert_eq!(body["result"]["isError"], true);
         assert_eq!(body["result"]["resultType"], "complete");
         assert!(body["error"].is_null());
@@ -9407,7 +10031,10 @@ endpointRules:
             .await
             .expect("handle")
             .expect("response");
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
         assert_eq!(body["result"]["isError"], true);
         assert_eq!(body["result"]["resultType"], "complete");
         assert!(body["result"].get("structuredContent").is_none());
@@ -9442,7 +10069,10 @@ endpointRules:
             .await
             .expect("handle")
             .expect("response");
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
         assert_eq!(body["result"]["structuredContent"], json!([1, 2]));
         assert_eq!(
             serde_json::from_str::<JsonValue>(
@@ -10090,7 +10720,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["result"]["structuredContent"]["ok"], true);
         let requests = received.await.expect("server requests");
         assert_eq!(requests.len(), 2);
@@ -10143,7 +10776,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["error"]["code"], -32000);
         let request = received.await.expect("server request");
         assert!(request.contains("POST /weather HTTP/1.1"));
@@ -10201,7 +10837,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["result"]["content"][0]["text"], "ok");
         let requests = received.await.expect("server requests");
         assert_eq!(requests.len(), 4);
@@ -10242,7 +10881,10 @@ endpointRules:
             .expect("handle")
             .expect("response");
 
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["error"]["code"], -32000);
         assert!(
             body["error"]["message"]
@@ -10317,7 +10959,10 @@ endpointRules:
             .expect("handle")
             .expect("response");
 
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["error"]["code"], -32000);
         assert!(
             body["error"]["message"]
@@ -10389,7 +11034,10 @@ endpointRules:
             .expect("response");
 
         println!("RESPONSE STATUS: {}", response.status);
-        println!("RESPONSE BODY: {}", String::from_utf8_lossy(&response.body));
+        println!(
+            "RESPONSE BODY: {}",
+            String::from_utf8_lossy(response.body.buffered().expect("buffered response"))
+        );
         assert_eq!(response.status, 200);
         let request = received.await.expect("server request");
         println!("RECEIVED REQUEST:\n{}", request);
@@ -10512,7 +11160,10 @@ endpointRules:
             .expect("handle")
             .expect("response");
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
         assert!(body["result"]["tools"].is_array());
     }
 
@@ -10590,7 +11241,10 @@ endpointRules:
             .expect("handle")
             .expect("response");
         assert_eq!(response.status, 400);
-        assert!(String::from_utf8_lossy(&response.body).contains("is disabled"));
+        assert!(
+            String::from_utf8_lossy(response.body.buffered().expect("buffered response"))
+                .contains("is disabled")
+        );
         assert_eq!(runtime.sessions.lock().await.len(), before);
     }
 
@@ -10621,22 +11275,22 @@ endpointRules:
             first_header(&response.headers, MCP_PROTOCOL_VERSION_HEADER).as_deref(),
             Some(STATELESS_RC_VERSION)
         );
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
         assert_eq!(body["result"]["resultType"], "complete");
         assert_eq!(body["result"]["cacheScope"], "private");
         assert_eq!(body["result"]["ttlMs"], 30_000);
         assert_eq!(
             body["result"]["capabilities"],
-            json!({"tools":{"listChanged":false}})
+            json!({"tools":{"listChanged":true}})
         );
         assert_eq!(
             body["result"]["supportedVersions"],
             json!([STATELESS_RC_VERSION])
         );
-        assert_eq!(
-            body["result"]["capabilities"]["tools"]["listChanged"],
-            false
-        );
+        assert_eq!(body["result"]["capabilities"]["tools"]["listChanged"], true);
         assert_eq!(
             body["result"]["_meta"][SERVER_INFO_META_KEY]["name"],
             "light-gateway"
@@ -10711,7 +11365,10 @@ endpointRules:
             .expect("handle")
             .expect("response");
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
         assert_eq!(body["result"]["resultType"], "complete");
         assert_eq!(body["result"]["structuredContent"], json!({"ok":true}));
         assert_eq!(
@@ -10785,7 +11442,10 @@ endpointRules:
             .expect("handle")
             .expect("response");
         assert_eq!(response.status, 400);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
         assert_eq!(body["error"]["code"], -32020);
         assert_eq!(runtime.sessions.lock().await.len(), 0);
     }
@@ -10814,7 +11474,10 @@ endpointRules:
             .expect("handle")
             .expect("response");
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
         assert_eq!(body["result"]["isError"], true);
         assert_eq!(body["result"]["resultType"], "complete");
         assert!(
@@ -10865,7 +11528,10 @@ endpointRules:
             .expect("handle")
             .expect("response");
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
         assert_eq!(body["result"]["resultType"], "complete");
         assert_eq!(runtime.sessions.lock().await.len(), 0);
         let request = received.await.expect("backend request");
@@ -10918,6 +11584,259 @@ endpointRules:
     }
 
     #[tokio::test]
+    async fn stateless_subscription_acknowledges_then_publishes_tagged_change_and_closes() {
+        let mut runtime = stateless_test_runtime(Vec::new());
+        runtime.config.protocols.stateless.enabled = true;
+        let response = runtime
+            .handle_request(stateless_request(
+                "subscriptions/listen",
+                json!({"notifications":{"toolsListChanged":true}}),
+                None,
+            ))
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 200);
+        assert_eq!(response.content_type, EVENT_STREAM_CONTENT_TYPE);
+        assert_eq!(
+            first_header(&response.headers, "x-accel-buffering").as_deref(),
+            Some("no")
+        );
+        let mut stream = match response.body {
+            McpResponseBody::Stream(stream) => stream,
+            body => panic!("expected live stream, got {body:?}"),
+        };
+        let acknowledgment = sse_json(&stream.next_frame().await.expect("acknowledgment"));
+        assert_eq!(
+            acknowledgment["method"],
+            "notifications/subscriptions/acknowledged"
+        );
+        assert_eq!(
+            acknowledgment["params"]["notifications"]["toolsListChanged"],
+            true
+        );
+        assert_eq!(runtime.subscriptions.active_count(), 1);
+
+        let mut reloaded_config = runtime.config.clone();
+        reloaded_config.tools.push(test_tool(
+            "new-tool",
+            "new tool",
+            "http://127.0.0.1:1",
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        ));
+        let mut reloaded = McpRouterRuntime::new(reloaded_config).expect("reloaded runtime");
+        reloaded.preserve_state_from(&runtime);
+        reloaded.activate_reload();
+
+        let changed = sse_json(&stream.next_frame().await.expect("changed notification"));
+        assert_eq!(changed["method"], "notifications/tools/list_changed");
+        assert_eq!(
+            changed["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+            1
+        );
+        let terminal = sse_json(&stream.next_frame().await.expect("terminal result"));
+        assert_eq!(terminal["id"], 1);
+        assert_eq!(terminal["result"]["resultType"], "complete");
+        assert!(stream.next_frame().await.is_none());
+        assert_eq!(runtime.subscriptions.active_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn stateless_subscription_disconnect_releases_capacity_and_emits_nothing_later() {
+        let mut config = stateless_test_config(Vec::new());
+        config.protocols.stateless.enabled = true;
+        config.protocols.stateless.max_subscriptions = 1;
+        config.protocols.stateless.max_subscriptions_per_principal = 1;
+        let runtime = McpRouterRuntime::new(config).expect("runtime");
+        let request = || {
+            stateless_request(
+                "subscriptions/listen",
+                json!({"notifications":{"toolsListChanged":true}}),
+                None,
+            )
+        };
+        let first = runtime
+            .handle_request(request())
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(runtime.subscriptions.active_count(), 1);
+        let rejected = runtime
+            .handle_request(request())
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(rejected.status, 429);
+        drop(first);
+        assert_eq!(runtime.subscriptions.active_count(), 0);
+        runtime.subscriptions.publish_tools_changed_and_close();
+        let replacement = runtime
+            .handle_request(request())
+            .await
+            .expect("handle")
+            .expect("response");
+        assert!(replacement.body.is_stream());
+    }
+
+    #[tokio::test]
+    async fn stateless_subscription_slow_consumer_is_closed_without_unbounded_queueing() {
+        let mut runtime = stateless_test_runtime(Vec::new());
+        runtime.config.protocols.stateless.enabled = true;
+        let response = runtime
+            .handle_request(stateless_request(
+                "subscriptions/listen",
+                json!({"notifications":{"toolsListChanged":true}}),
+                None,
+            ))
+            .await
+            .expect("handle")
+            .expect("response");
+        let mut stream = match response.body {
+            McpResponseBody::Stream(stream) => stream,
+            body => panic!("expected stream, got {body:?}"),
+        };
+        // The acknowledgment is intentionally left queued. Publication can
+        // enqueue at most one change; the terminal result cannot queue, so the
+        // sender is dropped and the slow consumer receives a bounded remote
+        // close instead of retaining producer state.
+        runtime.subscriptions.publish_tools_changed_and_close();
+        assert_eq!(runtime.subscriptions.active_count(), 0);
+        let acknowledgment = sse_json(&stream.next_frame().await.expect("acknowledgment"));
+        assert_eq!(
+            acknowledgment["method"],
+            "notifications/subscriptions/acknowledged"
+        );
+        let changed = sse_json(&stream.next_frame().await.expect("changed notification"));
+        assert_eq!(changed["method"], "notifications/tools/list_changed");
+        assert!(stream.next_frame().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn stateless_subscription_honors_token_expiry_before_maximum_duration() {
+        let mut runtime = stateless_test_runtime(Vec::new());
+        runtime.config.protocols.stateless.enabled = true;
+        runtime
+            .config
+            .protocols
+            .stateless
+            .max_subscription_duration_ms = 60_000;
+        let expiration = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            + 1;
+        let response = runtime
+            .handle_request_with_context(
+                stateless_request(
+                    "subscriptions/listen",
+                    json!({"notifications":{"toolsListChanged":true}}),
+                    None,
+                ),
+                McpRequestContext {
+                    auth: Some(AuthPrincipal {
+                        client_id: Some("subscription-client".to_string()),
+                        claims: json!({"exp": expiration}),
+                        ..AuthPrincipal::default()
+                    }),
+                    ..McpRequestContext::default()
+                },
+            )
+            .await
+            .expect("handle")
+            .expect("response");
+        let mut stream = match response.body {
+            McpResponseBody::Stream(stream) => stream,
+            body => panic!("expected stream, got {body:?}"),
+        };
+        let _ = stream.next_frame().await.expect("acknowledgment");
+        let terminal = tokio::time::timeout(Duration::from_secs(2), stream.next_frame())
+            .await
+            .expect("credential deadline")
+            .expect("terminal result");
+        assert_eq!(sse_json(&terminal)["result"]["resultType"], "complete");
+        assert_eq!(runtime.subscriptions.active_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn stateless_subscription_ignores_last_event_id_and_does_not_replay() {
+        let mut runtime = stateless_test_runtime(Vec::new());
+        runtime.config.protocols.stateless.enabled = true;
+        let mut request = stateless_request(
+            "subscriptions/listen",
+            json!({"notifications":{"toolsListChanged":false}}),
+            None,
+        );
+        request
+            .headers
+            .push(("last-event-id".to_string(), "stale-event".to_string()));
+        let response = runtime
+            .handle_request(request)
+            .await
+            .expect("handle")
+            .expect("response");
+        let mut stream = match response.body {
+            McpResponseBody::Stream(stream) => stream,
+            body => panic!("expected stream, got {body:?}"),
+        };
+        let acknowledgment = sse_json(&stream.next_frame().await.expect("acknowledgment"));
+        assert_eq!(acknowledgment["params"]["notifications"], json!({}));
+        runtime.subscriptions.publish_tools_changed_and_close();
+        let terminal = sse_json(&stream.next_frame().await.expect("terminal result"));
+        assert_eq!(terminal["result"]["resultType"], "complete");
+        assert!(stream.next_frame().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn stateless_subscription_runtime_shutdown_is_graceful_and_releases_capacity() {
+        let mut runtime = stateless_test_runtime(Vec::new());
+        runtime.config.protocols.stateless.enabled = true;
+        let response = runtime
+            .handle_request(stateless_request(
+                "subscriptions/listen",
+                json!({"notifications":{"toolsListChanged":true}}),
+                None,
+            ))
+            .await
+            .expect("handle")
+            .expect("response");
+        let mut stream = match response.body {
+            McpResponseBody::Stream(stream) => stream,
+            body => panic!("expected stream, got {body:?}"),
+        };
+        let _ = stream.next_frame().await.expect("acknowledgment");
+        runtime.shutdown_subscriptions();
+        let terminal = sse_json(&stream.next_frame().await.expect("terminal result"));
+        assert_eq!(terminal["id"], 1);
+        assert_eq!(terminal["result"]["resultType"], "complete");
+        assert!(stream.next_frame().await.is_none());
+        assert_eq!(runtime.subscriptions.active_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn stateless_subscription_rejects_oversized_request_id_before_allocation() {
+        let mut runtime = stateless_test_runtime(Vec::new());
+        runtime.config.protocols.stateless.enabled = true;
+        let mut request = stateless_request(
+            "subscriptions/listen",
+            json!({"notifications":{"toolsListChanged":true}}),
+            None,
+        );
+        let mut body = serde_json::from_slice::<JsonValue>(&request.body).expect("request json");
+        body["id"] = JsonValue::String("x".repeat(257));
+        request.body = serde_json::to_vec(&body).expect("request body");
+        let response = runtime
+            .handle_request(request)
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 400);
+        assert!(!response.body.is_stream());
+        assert_eq!(runtime.subscriptions.active_count(), 0);
+    }
+
+    #[tokio::test]
     async fn stateless_backend_input_required_becomes_terminal_tool_error() {
         let (base, _received) = spawn_http_server(http_json_response(json!({
             "jsonrpc":"2.0",
@@ -10944,7 +11863,10 @@ endpointRules:
             .await
             .expect("handle")
             .expect("response");
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
         assert_eq!(body["result"]["resultType"], "complete");
         assert_eq!(body["result"]["isError"], true);
         assert_eq!(
@@ -11004,7 +11926,10 @@ endpointRules:
             .await
             .expect("handle")
             .expect("response");
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
         assert!(
             body["error"]["message"]
                 .as_str()
@@ -11085,7 +12010,10 @@ endpointRules:
             .await
             .expect("handle")
             .expect("response");
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
         assert!(
             body["error"]["message"]
                 .as_str()
@@ -11119,7 +12047,10 @@ endpointRules:
             .await
             .expect("handle")
             .expect("response");
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
         assert!(
             body["error"]["message"]
                 .as_str()
@@ -11195,7 +12126,10 @@ endpointRules:
             .expect("handle")
             .expect("response");
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
         assert_eq!(body["error"]["code"], -32000);
         assert!(
             body["error"]["message"]
@@ -11250,7 +12184,9 @@ endpointRules:
             .await
             .expect("handle")
             .expect("response");
-        let second = serde_json::from_slice::<JsonValue>(&second.body).expect("json");
+        let second =
+            serde_json::from_slice::<JsonValue>(second.body.buffered().expect("buffered response"))
+                .expect("json");
         assert_eq!(second["error"]["code"], -32000);
         assert!(
             second["error"]["message"]
@@ -11261,7 +12197,9 @@ endpointRules:
 
         release.send(()).expect("release first response");
         let first = first.await.expect("first task");
-        let first = serde_json::from_slice::<JsonValue>(&first.body).expect("json");
+        let first =
+            serde_json::from_slice::<JsonValue>(first.body.buffered().expect("buffered response"))
+                .expect("json");
         assert_eq!(first["result"]["structuredContent"]["ok"], true);
         assert_eq!(received.await.expect("backend requests").len(), 1);
     }
@@ -11287,13 +12225,19 @@ endpointRules:
             .await
             .expect("handle")
             .expect("response")
-            .body;
+            .body
+            .buffered()
+            .expect("buffered response")
+            .to_vec();
         let second_body = second
             .handle_request(stateless_request("server/discover", json!({}), None))
             .await
             .expect("handle")
             .expect("response")
-            .body;
+            .body
+            .buffered()
+            .expect("buffered response")
+            .to_vec();
         assert_eq!(first_body, second_body);
         assert!(discovery.lookups.lock().expect("lookups").is_empty());
     }
@@ -11329,7 +12273,10 @@ endpointRules:
                 .await
                 .expect("list handle")
                 .expect("list response");
-            let list = serde_json::from_slice::<JsonValue>(&list.body).expect("list json");
+            let list = serde_json::from_slice::<JsonValue>(
+                list.body.buffered().expect("buffered response"),
+            )
+            .expect("list json");
             assert_eq!(list["result"]["tools"][0]["name"], "weather");
 
             let call = replica
@@ -11341,7 +12288,10 @@ endpointRules:
                 .await
                 .expect("call handle")
                 .expect("call response");
-            let call = serde_json::from_slice::<JsonValue>(&call.body).expect("call json");
+            let call = serde_json::from_slice::<JsonValue>(
+                call.body.buffered().expect("buffered response"),
+            )
+            .expect("call json");
             assert_eq!(
                 call["result"]["structuredContent"]["replicaIndependent"],
                 true
@@ -11389,7 +12339,10 @@ endpointRules:
                 .await
                 .expect("handle")
                 .expect("response");
-            let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+            let body = serde_json::from_slice::<JsonValue>(
+                response.body.buffered().expect("buffered response"),
+            )
+            .expect("json");
             assert_eq!(body["result"]["resultType"], "complete");
             assert_eq!(body["result"]["cacheScope"], "private");
             assert!(body["result"].get("nextCursor").is_none());
@@ -11433,7 +12386,10 @@ endpointRules:
             .await
             .expect("handle")
             .expect("response");
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
         assert_eq!(body["error"]["code"], -32000);
         assert!(
             body["error"]["message"]
@@ -11462,7 +12418,10 @@ endpointRules:
             .await
             .expect("handle")
             .expect("response");
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
         assert_eq!(body["error"]["code"], -32000);
         assert_eq!(runtime.stateless_tools_list_cache.lock().await.len(), 0);
     }
@@ -11490,7 +12449,10 @@ endpointRules:
             .await
             .expect("handle")
             .expect("response");
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
         assert_eq!(body["error"]["code"], -32000);
         assert_eq!(runtime.stateless_tools_list_cache.lock().await.len(), 1);
     }
@@ -11539,7 +12501,10 @@ endpointRules:
                 .await
                 .expect("handle")
                 .expect("response");
-            let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+            let body = serde_json::from_slice::<JsonValue>(
+                response.body.buffered().expect("buffered response"),
+            )
+            .expect("json");
             assert_eq!(body["error"]["code"], -32602);
         }
         let response = runtime
@@ -11549,7 +12514,10 @@ endpointRules:
             .expect("response");
         assert_eq!(response.status, 404);
         assert_eq!(response.content_type, JSON_CONTENT_TYPE);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
         assert_eq!(body["error"]["code"], -32601);
     }
 
@@ -11566,7 +12534,10 @@ endpointRules:
             .await
             .expect("handle")
             .expect("response");
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
         assert_eq!(body["error"]["code"], -32020);
 
         let mut unsupported = stateless_request("server/discover", json!({}), None);
@@ -11585,7 +12556,10 @@ endpointRules:
             .await
             .expect("handle")
             .expect("response");
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
         assert_eq!(body["error"]["code"], -32022);
         assert!(
             body["error"]["message"]
@@ -11769,7 +12743,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
         assert!(body["result"]["tools"].is_array());
     }
 
@@ -11889,7 +12866,10 @@ endpointRules:
             .expect("handle")
             .expect("response");
 
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         let result = &body["result"];
         assert_eq!(result["structuredContent"], json!({"items": []}));
         assert_eq!(result["content"][0]["text"], r#"{"items":[]}"#);
@@ -11982,7 +12962,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         assert_eq!(body["result"]["isError"], true);
         assert_eq!(
             body["result"]["content"][0]["text"],
@@ -12081,7 +13064,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         let result = &body["result"];
         assert_eq!(
             result["structuredContent"],
@@ -12183,7 +13169,10 @@ endpointRules:
             .expect("response");
 
         assert_eq!(response.status, 200);
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         let result = &body["result"];
         assert_eq!(
             result["structuredContent"],
@@ -12284,7 +13273,10 @@ endpointRules:
             .expect("handle")
             .expect("response");
 
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         let result = &body["result"];
         assert_eq!(
             result["structuredContent"],
@@ -12383,7 +13375,10 @@ endpointRules:
             .expect("handle")
             .expect("response");
 
-        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json body");
         let result = &body["result"];
         assert_eq!(
             result["structuredContent"],

@@ -8,18 +8,18 @@ use light_pingora::{
     BasicAuthConfig, CONTROLLER_MCP_CONNECT_ENDPOINT, CONTROLLER_MCP_PATH, CorrelationConfig,
     CorrelationState, CorsConfig, CorsRequestOutcome, CorsResponseHeaders, HandlerBuildContext,
     HandlerMetricsLogLevel, HandlerRejection, HeaderConfig, McpHttpRequest, McpHttpResponse,
-    McpRequestContext, McpRouterRuntime, MetricsConfig, MetricsRecorder, MsalAuthRuntime,
-    MsalExchangeOutcome, MsalExchangeRuntime, PathPrefixServiceConfig, PiiTokenizationRuntime,
-    PingoraApp, PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerKind,
-    PingoraHandlerRegistry, PingoraTransport, ProxyRoute, ProxyTarget, RateLimitHeaders,
-    RateLimitRuntime, RouterDecision, RouterRoute, SecurityRuntime, SpaAuthResponse,
-    StatelessAuthOutcome, StatelessAuthRuntime, StaticResolution, StaticResourceSet, TokenRuntime,
-    UnifiedSecurityConfig, WebSocketConnectionPermit, WebSocketHandshake, WebSocketRouteDecision,
-    WebSocketRouteError, WebSocketRouterRuntime, apply_browser_websocket_upstream_credentials,
-    apply_correlation_request, apply_correlation_response, apply_cors_response,
-    apply_header_request, apply_header_response, apply_path_prefix_service,
-    apply_rate_limit_headers, apply_router_upstream_request, apply_token_request,
-    apply_websocket_upstream_request, build_metrics_event, check_rate_limit,
+    McpRequestContext, McpResponseBody, McpResponseStream, McpRouterRuntime, MetricsConfig,
+    MetricsRecorder, MsalAuthRuntime, MsalExchangeOutcome, MsalExchangeRuntime,
+    PathPrefixServiceConfig, PiiTokenizationRuntime, PingoraApp, PingoraHandler,
+    PingoraHandlerDescriptor, PingoraHandlerKind, PingoraHandlerRegistry, PingoraTransport,
+    ProxyRoute, ProxyTarget, RateLimitHeaders, RateLimitRuntime, RouterDecision, RouterRoute,
+    SecurityRuntime, SpaAuthResponse, StatelessAuthOutcome, StatelessAuthRuntime, StaticResolution,
+    StaticResourceSet, TokenRuntime, UnifiedSecurityConfig, WebSocketConnectionPermit,
+    WebSocketHandshake, WebSocketRouteDecision, WebSocketRouteError, WebSocketRouterRuntime,
+    apply_browser_websocket_upstream_credentials, apply_correlation_request,
+    apply_correlation_response, apply_cors_response, apply_header_request, apply_header_response,
+    apply_path_prefix_service, apply_rate_limit_headers, apply_router_upstream_request,
+    apply_token_request, apply_websocket_upstream_request, build_metrics_event, check_rate_limit,
     correlation_id_for_upstream, evaluate_cors_request, load_access_control_runtime,
     load_active_handlers, load_api_key_config, load_basic_auth_config, load_correlation_config,
     load_cors_config, load_header_config, load_mcp_router_runtime, load_metrics_config,
@@ -1051,45 +1051,74 @@ impl GatewayProxy {
         ctx: &mut GatewayRequestContext,
         response: McpHttpResponse,
     ) -> pingora::Result<bool> {
-        if response.streamed {
-            return self
-                .write_streaming_mcp_response(session, ctx, response)
-                .await;
+        let McpHttpResponse {
+            status,
+            content_type,
+            headers,
+            body,
+        } = response;
+        match body {
+            McpResponseBody::Stream(stream) => {
+                self.write_streaming_mcp_response(
+                    session,
+                    ctx,
+                    status,
+                    content_type,
+                    headers,
+                    stream,
+                )
+                .await
+            }
+            McpResponseBody::Empty => {
+                self.write_bytes_response_with_headers(
+                    session,
+                    ctx,
+                    status,
+                    content_type.as_str(),
+                    None,
+                    Bytes::new(),
+                    headers.as_slice(),
+                )
+                .await
+            }
+            McpResponseBody::Buffered(body) => {
+                self.write_bytes_response_with_headers(
+                    session,
+                    ctx,
+                    status,
+                    content_type.as_str(),
+                    None,
+                    body,
+                    headers.as_slice(),
+                )
+                .await
+            }
         }
-        self.write_bytes_response_with_headers(
-            session,
-            ctx,
-            response.status,
-            response.content_type.as_str(),
-            None,
-            Bytes::from(response.body),
-            response.headers.as_slice(),
-        )
-        .await
     }
 
     async fn write_streaming_mcp_response(
         &self,
         session: &mut Session,
         ctx: &mut GatewayRequestContext,
-        response: McpHttpResponse,
+        status: u16,
+        content_type: String,
+        headers: Vec<(String, String)>,
+        mut stream: McpResponseStream,
     ) -> pingora::Result<bool> {
-        let mut header = ResponseHeader::build(response.status, Some(8 + response.headers.len()))?;
-        header.insert_header("content-type", response.content_type.as_str())?;
+        let mut header = ResponseHeader::build(status, Some(8 + headers.len()))?;
+        header.insert_header("content-type", content_type.as_str())?;
         self.apply_response_headers(&mut header, ctx)?;
-        for (name, value) in &response.headers {
+        for (name, value) in &headers {
             header.append_header(name.to_string(), value.to_string())?;
         }
-        let end_with_header = response.body.is_empty();
         session
-            .write_response_header(Box::new(header), end_with_header)
+            .write_response_header(Box::new(header), false)
             .await?;
-        if !end_with_header {
-            session
-                .write_response_body(Some(Bytes::from(response.body)), true)
-                .await?;
+        while let Some(frame) = stream.next_frame().await {
+            session.write_response_body(Some(frame), false).await?;
         }
-        self.record_metrics(ctx, response.status);
+        session.write_response_body(None, true).await?;
+        self.record_metrics(ctx, status);
         self.log_handler_durations(ctx);
         Ok(true)
     }
@@ -1416,7 +1445,7 @@ impl ReloadableModule for HandlerReloader {
         self.msal_auth.store(msal_auth);
         self.pii_tokenization.store(pii_tokenization);
         self.access_control.store(access_control);
-        self.mcp_router.store(mcp_router);
+        store_mcp_reload(&self.mcp_router, mcp_router);
         self.websocket_router.store(websocket_router);
         self.router_route.store(router_route);
         Ok(ReloadOutcome::success("handler.yml reloaded"))
@@ -1796,7 +1825,7 @@ impl ReloadableModule for McpRouterReloader {
             active,
             &self.mcp_router,
         )?;
-        self.mcp_router.store(runtime);
+        store_mcp_reload(&self.mcp_router, runtime);
         Ok(ReloadOutcome::success("mcp-router.yml reloaded"))
     }
 }
@@ -1850,7 +1879,7 @@ impl ReloadableModule for AccessControlReloader {
             &self.websocket_router,
         )?;
         self.access_control.store(access_control);
-        self.mcp_router.store(mcp_router);
+        store_mcp_reload(&self.mcp_router, mcp_router);
         self.websocket_router.store(websocket_router);
         Ok(ReloadOutcome::success("access-control/rule.yml reloaded"))
     }
@@ -4129,6 +4158,19 @@ fn load_mcp_router_runtime_preserving_state(
     Ok(runtime)
 }
 
+fn store_mcp_reload(
+    current: &ConfigManager<Option<McpRouterRuntime>>,
+    candidate: Option<McpRouterRuntime>,
+) {
+    let previous = current.load();
+    let active = current.store(candidate);
+    if let Some(active) = active.as_ref() {
+        active.activate_reload();
+    } else if let Some(previous) = previous.as_ref() {
+        previous.shutdown_subscriptions();
+    }
+}
+
 fn load_websocket_router_runtime_preserving_state(
     runtime_config: &RuntimeConfig,
     active: bool,
@@ -4266,6 +4308,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
     use tempfile::TempDir;
+    use tokio::io::AsyncWriteExt;
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::oneshot;
     use tokio::time::{Duration as TokioDuration, sleep, timeout};
@@ -6015,6 +6058,135 @@ pathPrefixService:
         running.shutdown().await.expect("shutdown gateway");
         registry_client_task.abort();
         registry_task.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn mcp_subscription_streams_ack_before_terminal_over_live_pingora() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        let gateway_port = free_tcp_port();
+        let gateway_address = format!("127.0.0.1:{gateway_port}")
+            .parse::<std::net::SocketAddr>()
+            .expect("gateway address");
+        std::fs::write(
+            config_dir.path().join("server.yml"),
+            format!(
+                r#"
+ip: 127.0.0.1
+advertisedAddress: 127.0.0.1
+httpPort: {gateway_port}
+enableHttp: true
+httpsPort: 8443
+enableHttps: false
+serviceId: com.networknt.light-gateway-1.0.0
+enableRegistry: false
+startOnRegistryFailure: true
+dynamicPort: false
+environment: dev
+shutdownGracefulPeriod: 100
+"#
+            ),
+        )
+        .expect("write server config");
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            r#"
+handlers:
+  - mcp
+paths:
+  - path: /mcp
+    method: POST
+    exec:
+      - mcp
+defaultHandlers: []
+"#,
+        )
+        .expect("write handler config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::MCP_ROUTER_FILE),
+            r#"
+enabled: true
+path: /mcp
+protocols:
+  legacy:
+    enabled: true
+    versions: ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
+  stateless:
+    enabled: true
+    versions: ["DRAFT-2026-v1"]
+    maxSubscriptionDurationMs: 2000
+tools: []
+"#,
+        )
+        .expect("write mcp config");
+
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp))
+            .with_config_dir(config_dir.path())
+            .with_external_config_dir(external_dir.path())
+            .build();
+        let running = runtime.start().await.expect("start gateway");
+        wait_for_tcp(gateway_address).await;
+
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": "live-subscription",
+            "method": "subscriptions/listen",
+            "params": {
+                "notifications": {"toolsListChanged": true},
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "DRAFT-2026-v1",
+                    "io.modelcontextprotocol/clientInfo": {"name":"phase8-live","version":"1"},
+                    "io.modelcontextprotocol/clientCapabilities": {}
+                }
+            }
+        })
+        .to_string();
+        let request = format!(
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nMCP-Protocol-Version: DRAFT-2026-v1\r\nMcp-Method: subscriptions/listen\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let mut client = TcpStream::connect(gateway_address)
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(request.as_bytes())
+            .await
+            .expect("write request");
+        let mut received = Vec::new();
+        timeout(TokioDuration::from_secs(1), async {
+            let mut chunk = [0_u8; 4096];
+            loop {
+                let read = client.read(&mut chunk).await.expect("read acknowledgment");
+                assert!(read > 0, "stream closed before acknowledgment");
+                received.extend_from_slice(&chunk[..read]);
+                if String::from_utf8_lossy(&received)
+                    .contains("notifications/subscriptions/acknowledged")
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("acknowledgment was buffered");
+        let first_delivery = String::from_utf8_lossy(&received);
+        assert!(first_delivery.contains("x-accel-buffering: no"));
+        assert!(!first_delivery.contains("\"resultType\":\"complete\""));
+
+        timeout(TokioDuration::from_secs(3), async {
+            let mut chunk = [0_u8; 4096];
+            loop {
+                let read = client.read(&mut chunk).await.expect("read terminal");
+                assert!(read > 0, "stream closed before terminal result");
+                received.extend_from_slice(&chunk[..read]);
+                if String::from_utf8_lossy(&received).contains("\"resultType\":\"complete\"") {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("terminal result timeout");
+
+        running.shutdown().await.expect("shutdown gateway");
     }
 
     #[tokio::test]

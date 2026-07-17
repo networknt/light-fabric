@@ -3829,6 +3829,7 @@ dependencies = [
  "agent-delegation",
  "async-trait",
  "base64",
+ "bytes",
  "chrono",
  "hex",
  "hmac",

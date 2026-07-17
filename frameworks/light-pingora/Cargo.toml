@@ -12,6 +12,7 @@ light-runtime = { path = "../../crates/light-runtime" }
 light-rule = { path = "../../crates/light-rule" }
 async-trait = { workspace = true }
 base64 = "0.22"
+bytes = { workspace = true }
 chrono = { workspace = true }
 hmac = { workspace = true }
 hex = { workspace = true }

@@ -21,4 +21,7 @@ protocols:
     maxConcurrentRequests: ${mcp-router.protocols.stateless.maxConcurrentRequests:1024}
     maxConcurrentRequestsPerPrincipal: ${mcp-router.protocols.stateless.maxConcurrentRequestsPerPrincipal:32}
     maxConcurrentBackendCallsPerTarget: ${mcp-router.protocols.stateless.maxConcurrentBackendCallsPerTarget:32}
+    maxSubscriptions: ${mcp-router.protocols.stateless.maxSubscriptions:10000}
+    maxSubscriptionsPerPrincipal: ${mcp-router.protocols.stateless.maxSubscriptionsPerPrincipal:4}
+    maxSubscriptionDurationMs: ${mcp-router.protocols.stateless.maxSubscriptionDurationMs:900000}
 tools: ${mcp-router.tools:[]}
