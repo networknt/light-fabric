@@ -4,6 +4,10 @@ use crate::access_control::{
 };
 use crate::config_util::deserialize_typed_list;
 use crate::direct_registry::{direct_registry_match, validate_direct_registry_protocol};
+use crate::mcp_protocol::{
+    Classification, ClassificationRejection, ClassifierConfig, FrontendProfile, RequestHead,
+    STATELESS_RC_VERSION, classify_post, classify_request_head,
+};
 use crate::security::AuthPrincipal;
 use crate::token::{CLIENT_FILE, load_client_config};
 use agent_delegation::{DelegationClaims, DelegationKind};
@@ -48,6 +52,7 @@ const DEFAULT_MCP_MAX_RESPONSE_BODY_BYTES: usize = 4_194_304;
 const DEFAULT_MCP_MAX_JSON_DEPTH: usize = 128;
 const MAX_LEGACY_CLIENT_METADATA_BYTES: usize = 16_384;
 const MAX_LEGACY_CLIENT_METADATA_DEPTH: usize = 16;
+const LEGACY_SESSION_BINDING_CONTRACT: u16 = 1;
 const JSON_CONTENT_TYPE: &str = "application/json";
 const EVENT_STREAM_CONTENT_TYPE: &str = "text/event-stream";
 const TEXT_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
@@ -397,6 +402,121 @@ pub struct McpRequestContext {
 }
 
 #[derive(Debug, Clone)]
+struct ForwardedHeaderContext {
+    /// Headers visible to the established legacy authorization contract.
+    policy_headers: Vec<(String, String)>,
+    /// Headers eligible for legacy backend forwarding after profile-owned
+    /// routing and credential fields have been removed.
+    backend_headers: Vec<(String, String)>,
+    /// Stable hashes for the small set of fields that may influence visibility.
+    cache_headers: Vec<(String, String)>,
+    /// False when legacy policy saw an unmodelled header. In that case cache
+    /// lookup is disabled rather than risking an authorization-key collision.
+    cache_eligible: bool,
+}
+
+impl ForwardedHeaderContext {
+    fn legacy(headers: &[(String, String)]) -> Self {
+        let backend_headers = headers
+            .iter()
+            .filter(|(name, _)| !should_regenerate_header(name))
+            .cloned()
+            .collect();
+        let mut cache_headers = headers
+            .iter()
+            .filter_map(|(name, value)| {
+                let name = name.to_ascii_lowercase();
+                is_cache_identity_header(name.as_str()).then(|| {
+                    let digest = Sha256::digest(value.as_bytes());
+                    (name, format!("{digest:x}"))
+                })
+            })
+            .collect::<Vec<_>>();
+        cache_headers.sort();
+        let cache_eligible = headers.iter().all(|(name, _)| {
+            let name = name.to_ascii_lowercase();
+            is_cache_identity_header(name.as_str()) || is_cache_ignored_header(name.as_str())
+        });
+        Self {
+            policy_headers: headers.to_vec(),
+            backend_headers,
+            cache_headers,
+            cache_eligible,
+        }
+    }
+
+    #[allow(dead_code)] // Phase 4 activates the already-frozen modern boundary.
+    fn stateless(headers: &[(String, String)], context: &McpRequestContext) -> Self {
+        let mut admitted = headers
+            .iter()
+            .filter(|(name, _)| {
+                matches!(
+                    name.to_ascii_lowercase().as_str(),
+                    "accept-language" | "traceparent" | "tracestate"
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(correlation_id) = context.correlation_id.as_deref() {
+            admitted.push(("x-correlation-id".to_string(), correlation_id.to_string()));
+        }
+        if let Some(auth) = context.auth.as_ref() {
+            if let Some(user_id) = auth.user_id.as_deref() {
+                admitted.push(("x-user-id".to_string(), user_id.to_string()));
+            }
+            if let Some(host) = auth.host.as_deref() {
+                admitted.push(("x-host-id".to_string(), host.to_string()));
+            }
+        }
+        let legacy_shape = Self::legacy(&admitted);
+        Self {
+            policy_headers: admitted,
+            backend_headers: legacy_shape.backend_headers,
+            cache_headers: legacy_shape.cache_headers,
+            cache_eligible: true,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct EffectiveMcpRequestContext<'a> {
+    frontend_profile: FrontendProfile,
+    protocol_version: &'a str,
+    frontend_session_id: Option<&'a str>,
+    forwarded_headers: ForwardedHeaderContext,
+    request: &'a McpRequestContext,
+}
+
+impl EffectiveMcpRequestContext<'_> {
+    fn legacy_backend_profile(&self) -> Result<BackendProfileContext<'_>, McpExecutionError> {
+        if self.frontend_profile != FrontendProfile::Legacy {
+            return Err(McpExecutionError::execution_failed(
+                "legacy backend sessions require a legacy frontend profile",
+            ));
+        }
+        Ok(BackendProfileContext {
+            frontend: self.frontend_profile,
+            backend: BackendProfile::LegacyStateful,
+            protocol_version: self.protocol_version,
+            frontend_session_id: self.frontend_session_id,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackendProfile {
+    LegacyStateful,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BackendProfileContext<'a> {
+    frontend: FrontendProfile,
+    backend: BackendProfile,
+    protocol_version: &'a str,
+    frontend_session_id: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
 struct McpGatewaySession {
     protocol_version: String,
     principal_binding: String,
@@ -405,6 +525,7 @@ struct McpGatewaySession {
     client_capabilities: JsonValue,
     last_accessed: Instant,
     backend_sessions: BTreeMap<String, McpBackendSession>,
+    binding_contract: u16,
 }
 
 impl McpGatewaySession {
@@ -423,6 +544,7 @@ impl McpGatewaySession {
             client_capabilities,
             last_accessed: Instant::now(),
             backend_sessions: BTreeMap::new(),
+            binding_contract: LEGACY_SESSION_BINDING_CONTRACT,
         }
     }
 
@@ -449,7 +571,7 @@ impl McpGatewaySession {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct McpSessionStore {
     sessions: BTreeMap<String, McpGatewaySession>,
     client_session_counts: BTreeMap<String, usize>,
@@ -568,6 +690,57 @@ struct RemovedMcpSession {
     backend_sessions: Vec<McpBackendSession>,
 }
 
+struct LegacyFrontendAdapter<'a> {
+    runtime: &'a McpRouterRuntime,
+}
+
+impl<'a> LegacyFrontendAdapter<'a> {
+    fn new(runtime: &'a McpRouterRuntime) -> Self {
+        Self { runtime }
+    }
+
+    async fn post(
+        &self,
+        request: McpHttpRequest,
+        context: &McpRequestContext,
+        response_mode: McpResponseMode,
+        payload: JsonValue,
+    ) -> Result<McpHttpResponse, RuntimeError> {
+        self.runtime
+            .handle_legacy_post(request, context, response_mode, payload)
+            .await
+    }
+
+    async fn delete(
+        &self,
+        request: McpHttpRequest,
+        context: &McpRequestContext,
+    ) -> Result<McpHttpResponse, RuntimeError> {
+        self.runtime.handle_legacy_delete(request, context).await
+    }
+}
+
+/// Phase 2 skeleton. It intentionally owns no runtime or session-store handle,
+/// and therefore cannot invoke the application core before Phase 4.
+struct StatelessFrontendAdapter;
+
+impl StatelessFrontendAdapter {
+    fn disabled_response(
+        response_mode: McpResponseMode,
+        id: JsonValue,
+        version: &str,
+    ) -> Result<McpHttpResponse, RuntimeError> {
+        let _profile = FrontendProfile::Stateless;
+        rpc_error_response(
+            response_mode,
+            400,
+            id,
+            -32600,
+            format!("MCP stateless protocol version `{version}` is disabled"),
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum McpResponseMode {
     Json,
@@ -634,6 +807,8 @@ pub struct McpRouterRuntime {
     tools_list_cache: Arc<AsyncMutex<ToolsListVisibilityCache>>,
     last_session_purge: Arc<AsyncMutex<Option<Instant>>>,
     next_backend_request_id: Arc<AtomicU64>,
+    config_revision: String,
+    reload_session_evictions: Arc<AtomicU64>,
 }
 
 impl fmt::Debug for McpRouterRuntime {
@@ -760,6 +935,8 @@ impl McpRouterRuntime {
             .as_ref()
             .map(|policy| policy.tools_list_access_control().max_cache_entries)
             .unwrap_or_else(|| ToolsListAccessControlConfig::default().max_cache_entries);
+        let config_revision =
+            stable_json_hash(&serde_json::to_value(&config).unwrap_or(JsonValue::Null));
         Ok(Self {
             config,
             tools,
@@ -773,6 +950,8 @@ impl McpRouterRuntime {
             ))),
             last_session_purge: Arc::new(AsyncMutex::new(None)),
             next_backend_request_id: Arc::new(AtomicU64::new(1)),
+            config_revision,
+            reload_session_evictions: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -793,6 +972,15 @@ impl McpRouterRuntime {
                 .versions
                 .iter()
                 .any(|candidate| candidate == version)
+    }
+
+    fn classifier_config(&self) -> ClassifierConfig<'_> {
+        ClassifierConfig {
+            legacy_enabled: self.config.protocols.legacy.enabled,
+            legacy_versions: &self.config.protocols.legacy.versions,
+            stateless_enabled: self.config.protocols.stateless.enabled,
+            stateless_versions: &self.config.protocols.stateless.versions,
+        }
     }
 
     pub fn preflight_request(
@@ -872,13 +1060,91 @@ impl McpRouterRuntime {
         path_only == self.config.path
     }
 
-    /// Shares the live session store and purge timestamp with a freshly loaded
-    /// runtime, so active client sessions are not lost when configuration is
-    /// reloaded.  Mirrors `WebSocketRouterRuntime::preserve_state_from`.
+    /// Carries only sessions whose negotiated version and binding contract are
+    /// still valid in the freshly loaded runtime.
     pub fn preserve_state_from(&mut self, previous: &Self) {
-        self.sessions = Arc::clone(&previous.sessions);
+        let Ok(mut previous_store) = previous.sessions.try_lock() else {
+            tracing::warn!(
+                target: "light_pingora::mcp",
+                reason = "session_store_busy",
+                "MCP reload deferred compatibility filtering"
+            );
+            self.sessions = Arc::clone(&previous.sessions);
+            self.last_session_purge = Arc::clone(&previous.last_session_purge);
+            self.next_backend_request_id = Arc::clone(&previous.next_backend_request_id);
+            let runtime = self.clone();
+            tokio::spawn(async move {
+                runtime.evict_incompatible_reload_sessions().await;
+            });
+            return;
+        };
+        let incompatible_ids = previous_store
+            .sessions
+            .iter()
+            .filter_map(|(session_id, session)| {
+                (!self.legacy_protocol_version_enabled(&session.protocol_version)
+                    || session.binding_contract != LEGACY_SESSION_BINDING_CONTRACT)
+                    .then(|| session_id.clone())
+            })
+            .collect::<Vec<_>>();
+        let mut backend_sessions = Vec::new();
+        for session_id in &incompatible_ids {
+            if let Some(session) = previous_store.remove(session_id) {
+                backend_sessions.extend(session.backend_sessions.into_values());
+            }
+        }
+        let retained = previous_store.clone();
+        drop(previous_store);
+        self.sessions = Arc::new(AsyncMutex::new(retained));
         self.last_session_purge = Arc::clone(&previous.last_session_purge);
         self.next_backend_request_id = Arc::clone(&previous.next_backend_request_id);
+        let evicted = incompatible_ids.len() as u64;
+        if evicted > 0 {
+            self.reload_session_evictions
+                .fetch_add(evicted, Ordering::Relaxed);
+            tracing::warn!(
+                target: "light_pingora::mcp",
+                reason = "incompatible_profile_or_binding",
+                evicted_sessions = evicted,
+                "MCP reload evicted incompatible legacy sessions"
+            );
+        }
+        if !backend_sessions.is_empty() {
+            self.terminate_backend_sessions_in_background(backend_sessions);
+        }
+    }
+
+    async fn evict_incompatible_reload_sessions(&self) {
+        let mut store = self.sessions.lock().await;
+        let incompatible_ids = store
+            .sessions
+            .iter()
+            .filter_map(|(session_id, session)| {
+                (!self.legacy_protocol_version_enabled(&session.protocol_version)
+                    || session.binding_contract != LEGACY_SESSION_BINDING_CONTRACT)
+                    .then(|| session_id.clone())
+            })
+            .collect::<Vec<_>>();
+        let backend_sessions = incompatible_ids
+            .iter()
+            .filter_map(|session_id| store.remove(session_id))
+            .flat_map(|session| session.backend_sessions.into_values())
+            .collect::<Vec<_>>();
+        drop(store);
+        let evicted = incompatible_ids.len() as u64;
+        if evicted > 0 {
+            self.reload_session_evictions
+                .fetch_add(evicted, Ordering::Relaxed);
+            tracing::warn!(
+                target: "light_pingora::mcp",
+                reason = "incompatible_profile_or_binding",
+                evicted_sessions = evicted,
+                "MCP reload evicted incompatible legacy sessions"
+            );
+        }
+        if !backend_sessions.is_empty() {
+            self.terminate_backend_sessions_in_background(backend_sessions);
+        }
     }
 
     pub async fn handle_request(
@@ -929,10 +1195,31 @@ impl McpRouterRuntime {
         }
 
         let method = request.method.to_ascii_uppercase();
-        let outcome = match method.as_str() {
-            "POST" => self.handle_post(request, &context).await.map(Some),
-            "GET" => Ok(Some(method_not_allowed_response())),
-            "DELETE" => self.handle_delete(request, &context).await.map(Some),
+        let protocol_headers = all_headers(&request.headers, MCP_PROTOCOL_VERSION_HEADER);
+        let session_id_present =
+            session_id_from_path_and_headers(request.path.as_str(), &request.headers).is_some();
+        let head_classification = classify_request_head(
+            self.classifier_config(),
+            RequestHead {
+                method: method.as_str(),
+                protocol_versions: &protocol_headers,
+                session_id_present,
+            },
+        );
+        let outcome = match (method.as_str(), head_classification) {
+            (_, Err(rejection)) => {
+                classification_rejection_response(McpResponseMode::Json, JsonValue::Null, rejection)
+                    .map(Some)
+            }
+            ("POST", Ok(None)) => self.handle_post(request, &context).await.map(Some),
+            ("GET", Ok(Some(_))) => Ok(Some(method_not_allowed_response())),
+            ("DELETE", Ok(Some(Classification::Legacy))) => LegacyFrontendAdapter::new(self)
+                .delete(request, &context)
+                .await
+                .map(Some),
+            ("DELETE", Ok(Some(Classification::Stateless { .. }))) => {
+                Ok(Some(method_not_allowed_response()))
+            }
             _ => Ok(Some(method_not_allowed_response())),
         };
         match &outcome {
@@ -973,29 +1260,6 @@ impl McpRouterRuntime {
                 "Accept header must allow application/json or text/event-stream",
             );
         };
-        let protocol_headers = all_headers(&request.headers, MCP_PROTOCOL_VERSION_HEADER);
-        if protocol_headers.len() > 1 {
-            return rpc_error_response(
-                response_mode,
-                400,
-                JsonValue::Null,
-                -32600,
-                "multiple MCP protocol version headers are not allowed",
-            );
-        }
-        if let Some(version) = protocol_headers.first()
-            && !self.legacy_protocol_version_enabled(version)
-        {
-            return rpc_error_response(
-                response_mode,
-                400,
-                JsonValue::Null,
-                -32600,
-                format!("unsupported MCP protocol version `{version}`"),
-            );
-        }
-        self.purge_expired_sessions(false).await;
-
         let payload = match serde_json::from_slice::<JsonValue>(&request.body) {
             Ok(payload) => payload,
             Err(error) => {
@@ -1035,6 +1299,42 @@ impl McpRouterRuntime {
                 "JSON-RPC request exceeds maxJsonDepth",
             );
         }
+        let protocol_headers = all_headers(&request.headers, MCP_PROTOCOL_VERSION_HEADER);
+        let classification = classify_post(
+            self.classifier_config(),
+            &protocol_headers,
+            session_id_from_path_and_headers(request.path.as_str(), &request.headers).is_some(),
+            message,
+        );
+        let request_id = message.get("id").cloned().unwrap_or(JsonValue::Null);
+        match classification {
+            Ok(Classification::Legacy) => {
+                LegacyFrontendAdapter::new(self)
+                    .post(request, context, response_mode, payload)
+                    .await
+            }
+            Ok(Classification::Stateless { version, enabled }) => {
+                debug_assert!(!enabled, "Phase 2 must not enable the stateless adapter");
+                StatelessFrontendAdapter::disabled_response(response_mode, request_id, &version)
+            }
+            Err(rejection) => {
+                classification_rejection_response(response_mode, request_id, rejection)
+            }
+        }
+    }
+
+    async fn handle_legacy_post(
+        &self,
+        request: McpHttpRequest,
+        context: &McpRequestContext,
+        response_mode: McpResponseMode,
+        payload: JsonValue,
+    ) -> Result<McpHttpResponse, RuntimeError> {
+        self.purge_expired_sessions(false).await;
+        let protocol_headers = all_headers(&request.headers, MCP_PROTOCOL_VERSION_HEADER);
+        let message = payload
+            .as_object()
+            .expect("POST classifier accepts only an object message");
         let id = message.get("id").cloned();
         let method = message.get("method").and_then(JsonValue::as_str);
         if method.is_none() {
@@ -1187,43 +1487,45 @@ impl McpRouterRuntime {
                 };
                 initialize_response(response_mode, 200, id, result, session_id)
             }
-            "tools/list" => response_with_protocol_version(
-                rpc_result_response(
-                    response_mode,
-                    200,
-                    id,
-                    self.tools_list_result(message, &request.headers, context)
-                        .await,
-                ),
-                frontend_session
-                    .as_ref()
-                    .map(|session| session.protocol_version.as_str()),
-            ),
-            "tools/call" => match self
-                .handle_tool_call(
-                    message,
-                    &request.headers,
-                    frontend_session
-                        .as_ref()
-                        .map(|session| session.id.as_str())
-                        .unwrap_or_default(),
-                    context,
+            "tools/list" => {
+                let session = frontend_session.as_ref().expect("legacy session validated");
+                let effective = EffectiveMcpRequestContext {
+                    frontend_profile: FrontendProfile::Legacy,
+                    protocol_version: session.protocol_version.as_str(),
+                    frontend_session_id: Some(session.id.as_str()),
+                    forwarded_headers: ForwardedHeaderContext::legacy(&request.headers),
+                    request: context,
+                };
+                response_with_protocol_version(
+                    rpc_result_response(
+                        response_mode,
+                        200,
+                        id,
+                        self.tools_list_result(message, &effective).await,
+                    ),
+                    Some(session.protocol_version.as_str()),
                 )
-                .await
-            {
-                Ok(result) => response_with_protocol_version(
-                    rpc_result_response(response_mode, 200, id, result),
-                    frontend_session
-                        .as_ref()
-                        .map(|session| session.protocol_version.as_str()),
-                ),
-                Err(error) => response_with_protocol_version(
-                    rpc_error_response(response_mode, 200, id, error.code, error.message),
-                    frontend_session
-                        .as_ref()
-                        .map(|session| session.protocol_version.as_str()),
-                ),
-            },
+            }
+            "tools/call" => {
+                let session = frontend_session.as_ref().expect("legacy session validated");
+                let effective = EffectiveMcpRequestContext {
+                    frontend_profile: FrontendProfile::Legacy,
+                    protocol_version: session.protocol_version.as_str(),
+                    frontend_session_id: Some(session.id.as_str()),
+                    forwarded_headers: ForwardedHeaderContext::legacy(&request.headers),
+                    request: context,
+                };
+                match self.handle_tool_call(message, &effective).await {
+                    Ok(result) => response_with_protocol_version(
+                        rpc_result_response(response_mode, 200, id, result),
+                        Some(session.protocol_version.as_str()),
+                    ),
+                    Err(error) => response_with_protocol_version(
+                        rpc_error_response(response_mode, 200, id, error.code, error.message),
+                        Some(session.protocol_version.as_str()),
+                    ),
+                }
+            }
             _ => response_with_protocol_version(
                 rpc_error_response(
                     response_mode,
@@ -1239,7 +1541,7 @@ impl McpRouterRuntime {
         }
     }
 
-    async fn handle_delete(
+    async fn handle_legacy_delete(
         &self,
         request: McpHttpRequest,
         context: &McpRequestContext,
@@ -1421,12 +1723,26 @@ impl McpRouterRuntime {
         let mut expired_backend_sessions = Vec::new();
         let result = {
             let mut store = self.sessions.lock().await;
-            if store
+            let incompatible = store.get(session_id.as_str()).is_some_and(|session| {
+                !self.legacy_protocol_version_enabled(&session.protocol_version)
+                    || session.binding_contract != LEGACY_SESSION_BINDING_CONTRACT
+            });
+            let expired = store
                 .get(session_id.as_str())
-                .is_some_and(|session| session.is_expired(now))
-            {
+                .is_some_and(|session| session.is_expired(now));
+            if expired || incompatible {
                 if let Some(session) = store.remove(session_id.as_str()) {
                     expired_backend_sessions = session.backend_sessions.into_values().collect();
+                }
+                if incompatible {
+                    self.reload_session_evictions
+                        .fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(
+                        target: "light_pingora::mcp",
+                        reason = "incompatible_profile_or_binding",
+                        evicted_sessions = 1,
+                        "MCP request evicted an incompatible legacy session"
+                    );
                 }
                 Err(McpSessionError {
                     status: 400,
@@ -1528,8 +1844,7 @@ impl McpRouterRuntime {
     async fn tools_list_result(
         &self,
         message: &serde_json::Map<String, JsonValue>,
-        agent_headers: &[(String, String)],
-        context: &McpRequestContext,
+        effective: &EffectiveMcpRequestContext<'_>,
     ) -> JsonValue {
         let query = message
             .get("params")
@@ -1538,7 +1853,7 @@ impl McpRouterRuntime {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(|value| value.to_ascii_lowercase());
-        let cache_key = self.tools_list_cache_key(query.as_deref(), agent_headers, context);
+        let cache_key = self.tools_list_cache_key(query.as_deref(), effective);
         if let Some(cache_key) = cache_key.as_deref() {
             let cached = self.tools_list_cache.lock().await.get(cache_key);
             if let Some(tool_names) = cached {
@@ -1570,7 +1885,12 @@ impl McpRouterRuntime {
         let mut visible_tools = Vec::new();
         for (index, tool) in candidates.into_iter().enumerate() {
             if self
-                .tool_visible_for_list(tool, index, agent_headers, context)
+                .tool_visible_for_list(
+                    tool,
+                    index,
+                    &effective.forwarded_headers.policy_headers,
+                    effective.request,
+                )
                 .await
             {
                 visible_tools.push(tool);
@@ -1614,29 +1934,36 @@ impl McpRouterRuntime {
     fn tools_list_cache_key(
         &self,
         query: Option<&str>,
-        agent_headers: &[(String, String)],
-        context: &McpRequestContext,
+        effective: &EffectiveMcpRequestContext<'_>,
     ) -> Option<String> {
         let policy = self.policy.as_ref()?;
         let tools_list_config = policy.tools_list_access_control();
         if tools_list_config.mode == ToolsListAccessControlMode::None
             || tools_list_config.max_cache_entries == 0
+            || !effective.forwarded_headers.cache_eligible
         {
             return None;
         }
-        let claims = policy.normalized_claims_for_visibility(context.auth.as_ref());
-        let subject = json!({
+        let context = effective.request;
+        let principal = json!({
             "clientId": context.auth.as_ref().and_then(|auth| auth.client_id.as_deref()),
             "userId": context.auth.as_ref().and_then(|auth| auth.user_id.as_deref()),
             "issuer": context.auth.as_ref().and_then(|auth| auth.issuer.as_deref()),
-            "claims": claims,
-            "headers": normalized_header_pairs(agent_headers),
+            "claims": policy.normalized_claims_for_visibility(context.auth.as_ref()),
+        });
+        let identity = json!({
+            "principalFingerprint": stable_json_hash(&principal),
+            "headers": effective.forwarded_headers.cache_headers,
+            "legacyQuery": query.unwrap_or_default(),
+            "profile": "legacy",
+            "protocolVersion": effective.protocol_version,
+            "configRevision": self.config_revision,
+            "policyRevision": policy.policy_revision(),
         });
         Some(format!(
-            "{:?}|{}|{}",
+            "{:?}|{}",
             tools_list_config.mode,
-            query.unwrap_or_default(),
-            stable_json_hash(&subject)
+            stable_json_hash(&identity)
         ))
     }
 
@@ -1689,10 +2016,11 @@ impl McpRouterRuntime {
     async fn handle_tool_call(
         &self,
         message: &serde_json::Map<String, JsonValue>,
-        agent_headers: &[(String, String)],
-        frontend_session_id: &str,
-        context: &McpRequestContext,
+        effective: &EffectiveMcpRequestContext<'_>,
     ) -> Result<JsonValue, McpExecutionError> {
+        let context = effective.request;
+        let policy_headers = &effective.forwarded_headers.policy_headers;
+        let backend_headers = &effective.forwarded_headers.backend_headers;
         if tracing::enabled!(target: "light_pingora::mcp", tracing::Level::DEBUG) {
             let requested_tool_name = message
                 .get("params")
@@ -1703,7 +2031,7 @@ impl McpRouterRuntime {
             tracing::debug!(
                 target: "light_pingora::mcp",
                 tool_name = requested_tool_name,
-                session_id_present = !frontend_session_id.is_empty(),
+                session_id_present = effective.frontend_session_id.is_some(),
                 correlation_id = ?context.correlation_id,
                 "MCP tools/call invoked"
             );
@@ -1741,7 +2069,7 @@ impl McpRouterRuntime {
                 .authorize_tool(
                     tool.name.as_str(),
                     endpoint.as_str(),
-                    agent_headers,
+                    policy_headers,
                     context.auth.as_ref(),
                     &arguments,
                     context.correlation_id.as_deref(),
@@ -1773,15 +2101,16 @@ impl McpRouterRuntime {
 
         let execution = match tool.api_type {
             McpToolType::Http => {
-                self.execute_http_tool(tool, &masked_arguments, agent_headers)
+                self.execute_http_tool(tool, &masked_arguments, backend_headers)
                     .await
             }
             McpToolType::Mcp => {
+                let backend_profile = effective.legacy_backend_profile()?;
                 self.execute_mcp_proxy_tool(
                     tool,
                     &masked_arguments,
-                    agent_headers,
-                    frontend_session_id,
+                    backend_headers,
+                    backend_profile,
                 )
                 .await
             }
@@ -1807,7 +2136,7 @@ impl McpRouterRuntime {
                 .filter_mcp_response(
                     tool.name.as_str(),
                     endpoint.as_str(),
-                    agent_headers,
+                    policy_headers,
                     context.auth.as_ref(),
                     &masked_arguments,
                     context.correlation_id.as_deref(),
@@ -2175,8 +2504,20 @@ impl McpRouterRuntime {
         tool: &McpToolConfig,
         arguments: &JsonValue,
         agent_headers: &[(String, String)],
-        frontend_session_id: &str,
+        profile: BackendProfileContext<'_>,
     ) -> Result<JsonValue, McpExecutionError> {
+        if profile.frontend != FrontendProfile::Legacy
+            || profile.backend != BackendProfile::LegacyStateful
+        {
+            return Err(McpExecutionError::execution_failed(
+                "unsupported frontend/backend MCP profile combination",
+            ));
+        }
+        let frontend_session_id = profile.frontend_session_id.ok_or_else(|| {
+            McpExecutionError::execution_failed(
+                "legacy backend sessions require a frontend session id",
+            )
+        })?;
         let method = effective_http_method(tool);
         if matches!(tool.method, McpHttpMethod::Call)
             && matches!(method, McpHttpMethod::Get | McpHttpMethod::Head)
@@ -2191,6 +2532,7 @@ impl McpRouterRuntime {
         let backend_session = self
             .ensure_backend_session(frontend_session_id, &url, agent_headers)
             .await?;
+        let _requested_protocol_version = profile.protocol_version;
         // Use `endpoint_name` (the raw operationId registered on the backend MCP server) when
         // available, falling back to `name` for configs that predate this field.
         let backend_tool_name = tool
@@ -2895,12 +3237,12 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
     }
     if config.protocols.stateless.enabled {
         return Err(RuntimeError::Unsupported(
-            "mcp-router.protocols.stateless is not available in Phase 1".to_string(),
+            "mcp-router.protocols.stateless is not available in Phase 2".to_string(),
         ));
     }
     if !config.protocols.legacy.enabled {
         return Err(RuntimeError::Unsupported(
-            "mcp-router.protocols.legacy must remain enabled in Phase 1".to_string(),
+            "mcp-router.protocols.legacy must remain enabled in Phase 2".to_string(),
         ));
     }
     if config.protocols.legacy.versions.is_empty() {
@@ -2918,6 +3260,19 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
         if !versions.insert(version.as_str()) {
             return Err(RuntimeError::Unsupported(format!(
                 "duplicate legacy MCP protocol version `{version}`"
+            )));
+        }
+    }
+    let mut stateless_versions = BTreeSet::new();
+    for version in &config.protocols.stateless.versions {
+        if version != STATELESS_RC_VERSION {
+            return Err(RuntimeError::Unsupported(format!(
+                "unsupported stateless MCP protocol version `{version}`"
+            )));
+        }
+        if !stateless_versions.insert(version.as_str()) {
+            return Err(RuntimeError::Unsupported(format!(
+                "duplicate stateless MCP protocol version `{version}`"
             )));
         }
     }
@@ -3899,15 +4254,6 @@ fn stable_json_hash(value: &JsonValue) -> String {
     format!("{digest:x}")
 }
 
-fn normalized_header_pairs(headers: &[(String, String)]) -> Vec<(String, String)> {
-    let mut pairs = headers
-        .iter()
-        .map(|(name, value)| (name.to_ascii_lowercase(), value.clone()))
-        .collect::<Vec<_>>();
-    pairs.sort();
-    pairs
-}
-
 fn outbound_headers(headers: &[(String, String)]) -> Result<HeaderMap, McpExecutionError> {
     let mut outbound = HeaderMap::new();
     for (name, value) in headers {
@@ -3976,6 +4322,36 @@ fn should_regenerate_header(name: &str) -> bool {
             | "mcp-method"
             | "mcp-name"
     ) || name.starts_with("mcp-param-")
+}
+
+fn is_cache_identity_header(name: &str) -> bool {
+    matches!(
+        name,
+        "accept-language"
+            | "traceparent"
+            | "tracestate"
+            | "x-correlation-id"
+            | "x-tenant-id"
+            | "x-user-id"
+            | "x-host-id"
+    )
+}
+
+fn is_cache_ignored_header(name: &str) -> bool {
+    matches!(
+        name,
+        "accept"
+            | "content-type"
+            | "content-length"
+            | "host"
+            | "origin"
+            | "user-agent"
+            | "authorization"
+            | "cookie"
+            | "x-csrf-token"
+            | MCP_SESSION_ID_HEADER
+            | MCP_PROTOCOL_VERSION_HEADER
+    ) || should_regenerate_header(name)
 }
 
 /// Extracts the MCP session id from an inbound request.
@@ -4087,6 +4463,43 @@ fn json_value_depth(value: &JsonValue) -> usize {
                 .unwrap_or_default()
         }
         _ => 1,
+    }
+}
+
+fn classification_rejection_response(
+    response_mode: McpResponseMode,
+    id: JsonValue,
+    rejection: ClassificationRejection,
+) -> Result<McpHttpResponse, RuntimeError> {
+    match rejection {
+        ClassificationRejection::MultipleProtocolVersionHeaders => rpc_error_response(
+            response_mode,
+            400,
+            id,
+            -32600,
+            "multiple MCP protocol version headers are not allowed",
+        ),
+        ClassificationRejection::ProtocolVersionMismatch => rpc_error_response(
+            response_mode,
+            400,
+            id,
+            -32600,
+            "MCP protocol version header does not match request metadata",
+        ),
+        ClassificationRejection::UnsupportedProtocolVersion(version) => rpc_error_response(
+            response_mode,
+            400,
+            id,
+            -32600,
+            format!("unsupported MCP protocol version `{version}`"),
+        ),
+        ClassificationRejection::InvalidJsonRpcRequest => {
+            rpc_error_response(response_mode, 400, id, -32600, "invalid JSON-RPC request")
+        }
+        ClassificationRejection::MissingLegacySession => {
+            rpc_error_response(response_mode, 400, id, -32600, "missing MCP session id")
+        }
+        ClassificationRejection::MethodNotAllowed => Ok(method_not_allowed_response()),
     }
 }
 
@@ -8026,6 +8439,209 @@ endpointRules:
         assert_eq!(response.status, 200);
         let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
         assert!(body["result"]["tools"].is_array());
+    }
+
+    #[tokio::test]
+    async fn stateless_post_is_classified_but_disabled_without_session_mutation() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        let stale_session_id = {
+            let mut store = runtime.sessions.lock().await;
+            let id = uuid::Uuid::new_v4().to_string();
+            store.insert(
+                id.clone(),
+                McpGatewaySession::new(
+                    DEFAULT_PROTOCOL_VERSION.to_string(),
+                    "test-client".to_string(),
+                ),
+            );
+            id
+        };
+        let before = runtime.sessions.lock().await.len();
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![
+                    accept_json(),
+                    (MCP_SESSION_ID_HEADER.to_string(), stale_session_id),
+                    (
+                        MCP_PROTOCOL_VERSION_HEADER.to_string(),
+                        STATELESS_RC_VERSION.to_string(),
+                    ),
+                ],
+                body: serde_json::to_vec(&json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/list",
+                    "params": {
+                        "_meta": {
+                            "io.modelcontextprotocol/protocolVersion": STATELESS_RC_VERSION
+                        }
+                    }
+                }))
+                .expect("body"),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 400);
+        assert!(String::from_utf8_lossy(&response.body).contains("is disabled"));
+        assert_eq!(runtime.sessions.lock().await.len(), before);
+    }
+
+    #[tokio::test]
+    async fn stateless_delete_does_not_read_or_remove_stale_legacy_session() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        let session_id = {
+            let mut store = runtime.sessions.lock().await;
+            let id = uuid::Uuid::new_v4().to_string();
+            store.insert(
+                id.clone(),
+                McpGatewaySession::new(
+                    DEFAULT_PROTOCOL_VERSION.to_string(),
+                    "test-client".to_string(),
+                ),
+            );
+            id
+        };
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "DELETE".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![
+                    (MCP_SESSION_ID_HEADER.to_string(), session_id.clone()),
+                    (
+                        MCP_PROTOCOL_VERSION_HEADER.to_string(),
+                        STATELESS_RC_VERSION.to_string(),
+                    ),
+                ],
+                body: Vec::new(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 405);
+        assert!(runtime.sessions.lock().await.contains_key(&session_id));
+    }
+
+    #[tokio::test]
+    async fn reload_evicts_sessions_with_disabled_version_or_binding_contract() {
+        let original = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        let (retained_id, version_evicted_id, binding_evicted_id) = {
+            let mut store = original.sessions.lock().await;
+            let retained_id = uuid::Uuid::new_v4().to_string();
+            let version_evicted_id = uuid::Uuid::new_v4().to_string();
+            let binding_evicted_id = uuid::Uuid::new_v4().to_string();
+            store.insert(
+                retained_id.clone(),
+                McpGatewaySession::new("2025-11-25".to_string(), "a".to_string()),
+            );
+            store.insert(
+                version_evicted_id.clone(),
+                McpGatewaySession::new("2024-11-05".to_string(), "b".to_string()),
+            );
+            let mut incompatible =
+                McpGatewaySession::new("2025-11-25".to_string(), "c".to_string());
+            incompatible.binding_contract = 0;
+            store.insert(binding_evicted_id.clone(), incompatible);
+            (retained_id, version_evicted_id, binding_evicted_id)
+        };
+        let mut reloaded = McpRouterRuntime::new(McpRouterConfig {
+            protocols: McpProtocolsConfig {
+                legacy: McpLegacyProtocolConfig {
+                    enabled: true,
+                    versions: vec!["2025-11-25".to_string()],
+                },
+                stateless: McpStatelessProtocolConfig::default(),
+            },
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+        reloaded.preserve_state_from(&original);
+        let store = reloaded.sessions.lock().await;
+        assert!(store.contains_key(&retained_id));
+        assert!(!store.contains_key(&version_evicted_id));
+        assert!(!store.contains_key(&binding_evicted_id));
+        assert_eq!(reloaded.reload_session_evictions.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn typed_legacy_headers_keep_secrets_out_of_backend_and_cache_identity() {
+        let headers = ForwardedHeaderContext::legacy(&[
+            ("Authorization".to_string(), "Bearer secret".to_string()),
+            ("Cookie".to_string(), "session=secret".to_string()),
+            ("X-Tenant-Id".to_string(), "tenant-a".to_string()),
+            ("X-Unknown".to_string(), "legacy-compatible".to_string()),
+        ]);
+        assert!(headers.backend_headers.iter().all(|(name, _)| {
+            !name.eq_ignore_ascii_case("authorization") && !name.eq_ignore_ascii_case("cookie")
+        }));
+        assert!(
+            headers
+                .backend_headers
+                .iter()
+                .any(|(name, _)| name == "X-Unknown")
+        );
+        let cache = format!("{:?}", headers.cache_headers);
+        assert!(!cache.contains("secret"));
+        assert!(!cache.contains("authorization"));
+        assert!(!cache.contains("cookie"));
+        assert!(cache.contains("x-tenant-id"));
+        assert!(headers.cache_headers.iter().all(|(_, digest)| {
+            digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }));
+        assert!(
+            !headers.cache_eligible,
+            "unknown policy headers disable caching"
+        );
+    }
+
+    #[test]
+    fn stateless_header_policy_is_allowlist_only_and_prefers_trusted_context() {
+        let context = McpRequestContext {
+            auth: Some(AuthPrincipal {
+                user_id: Some("trusted-user".to_string()),
+                host: Some("trusted-host".to_string()),
+                ..AuthPrincipal::default()
+            }),
+            correlation_id: Some("trusted-correlation".to_string()),
+            ..McpRequestContext::default()
+        };
+        let headers = ForwardedHeaderContext::stateless(
+            &[
+                ("Authorization".to_string(), "Bearer secret".to_string()),
+                ("Cookie".to_string(), "session=secret".to_string()),
+                ("X-Forwarded-User".to_string(), "spoofed".to_string()),
+                ("X-User-Id".to_string(), "spoofed".to_string()),
+                ("Traceparent".to_string(), "00-trace-parent".to_string()),
+                ("Accept-Language".to_string(), "en-CA".to_string()),
+            ],
+            &context,
+        );
+        assert!(
+            headers
+                .backend_headers
+                .iter()
+                .all(|(name, _)| !name.eq_ignore_ascii_case("x-forwarded-user"))
+        );
+        assert!(headers.backend_headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("x-user-id") && value == "trusted-user"
+        }));
+        assert!(headers.backend_headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("x-correlation-id") && value == "trusted-correlation"
+        }));
+        assert!(
+            headers
+                .backend_headers
+                .iter()
+                .any(|(name, _)| { name.eq_ignore_ascii_case("traceparent") })
+        );
+        assert!(
+            headers
+                .backend_headers
+                .iter()
+                .any(|(name, _)| { name.eq_ignore_ascii_case("accept-language") })
+        );
     }
 
     #[tokio::test]

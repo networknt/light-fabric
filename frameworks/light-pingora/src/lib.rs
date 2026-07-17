@@ -8,6 +8,7 @@ mod direct_registry;
 mod handler;
 mod header;
 mod mcp;
+mod mcp_protocol;
 mod metrics;
 mod msal_auth;
 mod msal_exchange;
