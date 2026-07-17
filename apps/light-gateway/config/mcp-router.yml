@@ -12,7 +12,7 @@ protocols:
     versions: ${mcp-router.protocols.legacy.versions:[2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05]}
   stateless:
     enabled: ${mcp-router.protocols.stateless.enabled:false}
-    versions: ${mcp-router.protocols.stateless.versions:[DRAFT-2026-v1]}
+    versions: ${mcp-router.protocols.stateless.versions:[2026-07-28]}
     discoverTtlMs: ${mcp-router.protocols.stateless.discoverTtlMs:30000}
     toolsListTtlMs: ${mcp-router.protocols.stateless.toolsListTtlMs:30000}
     maxDiscoverCacheEntries: ${mcp-router.protocols.stateless.maxDiscoverCacheEntries:1024}

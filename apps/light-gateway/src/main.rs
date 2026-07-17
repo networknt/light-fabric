@@ -6113,7 +6113,7 @@ protocols:
     versions: ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
   stateless:
     enabled: true
-    versions: ["DRAFT-2026-v1"]
+    versions: ["2026-07-28"]
     maxSubscriptionDurationMs: 2000
 tools: []
 "#,
@@ -6134,7 +6134,7 @@ tools: []
             "params": {
                 "notifications": {"toolsListChanged": true},
                 "_meta": {
-                    "io.modelcontextprotocol/protocolVersion": "DRAFT-2026-v1",
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
                     "io.modelcontextprotocol/clientInfo": {"name":"phase8-live","version":"1"},
                     "io.modelcontextprotocol/clientCapabilities": {}
                 }
@@ -6142,7 +6142,7 @@ tools: []
         })
         .to_string();
         let request = format!(
-            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nMCP-Protocol-Version: DRAFT-2026-v1\r\nMcp-Method: subscriptions/listen\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nMCP-Protocol-Version: 2026-07-28\r\nMcp-Method: subscriptions/listen\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
         let mut client = TcpStream::connect(gateway_address)

@@ -6,7 +6,7 @@ use crate::config_util::deserialize_typed_list;
 use crate::direct_registry::{direct_registry_match, validate_direct_registry_protocol};
 use crate::mcp_protocol::{
     Classification, ClassificationRejection, ClassifierConfig, FrontendProfile, RequestHead,
-    STATELESS_PROTOCOL_META_KEY, STATELESS_RC_VERSION, classify_post, classify_request_head,
+    STATELESS_PROTOCOL_META_KEY, STATELESS_PROTOCOL_VERSION, classify_post, classify_request_head,
 };
 use crate::mcp_resources::StatelessResourceBudgets;
 use crate::mcp_schema::{
@@ -863,7 +863,7 @@ impl EffectiveMcpRequestContext<'_> {
         BackendProfileContext {
             frontend: self.frontend_profile,
             backend: BackendProfile::Stateless,
-            protocol_version: STATELESS_RC_VERSION,
+            protocol_version: STATELESS_PROTOCOL_VERSION,
             frontend_session_id: self.frontend_session_id,
         }
     }
@@ -1839,7 +1839,7 @@ impl McpRouterRuntime {
         }
         let protocol_headers = all_headers(&request.headers, MCP_PROTOCOL_VERSION_HEADER);
         let claims_stateless = protocol_headers.iter().any(|version| {
-            *version == STATELESS_RC_VERSION
+            *version == STATELESS_PROTOCOL_VERSION
                 || self
                     .config
                     .protocols
@@ -3803,7 +3803,7 @@ impl McpRouterRuntime {
         if response_versions.len() > 1
             || response_versions
                 .first()
-                .is_some_and(|version| *version != STATELESS_RC_VERSION)
+                .is_some_and(|version| *version != STATELESS_PROTOCOL_VERSION)
         {
             return Err(McpExecutionError::execution_failed(
                 "stateless MCP backend response protocol version does not match the configured profile",
@@ -3896,7 +3896,7 @@ impl McpRouterRuntime {
         let mut meta = JsonMap::new();
         meta.insert(
             STATELESS_PROTOCOL_META_KEY.to_string(),
-            JsonValue::String(STATELESS_RC_VERSION.to_string()),
+            JsonValue::String(STATELESS_PROTOCOL_VERSION.to_string()),
         );
         meta.insert(CLIENT_CAPABILITIES_META_KEY.to_string(), capabilities);
         if let Some(client_info) = client_info {
@@ -5054,7 +5054,7 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
     }
     let mut stateless_versions = BTreeSet::new();
     for version in &config.protocols.stateless.versions {
-        if version != STATELESS_RC_VERSION {
+        if version != STATELESS_PROTOCOL_VERSION {
             return Err(RuntimeError::Unsupported(format!(
                 "unsupported stateless MCP protocol version `{version}`"
             )));
@@ -6263,7 +6263,7 @@ fn stateless_backend_headers(
     );
     headers.insert(
         HeaderName::from_static(MCP_PROTOCOL_VERSION_HEADER),
-        HeaderValue::from_static(STATELESS_RC_VERSION),
+        HeaderValue::from_static(STATELESS_PROTOCOL_VERSION),
     );
     headers.insert(
         HeaderName::from_static(MCP_METHOD_HEADER),
@@ -10273,7 +10273,7 @@ endpointRules:
                 legacy: McpLegacyProtocolConfig::default(),
                 stateless: McpStatelessProtocolConfig {
                     enabled: false,
-                    versions: vec![STATELESS_RC_VERSION.to_string()],
+                    versions: vec![STATELESS_PROTOCOL_VERSION.to_string()],
                     ..McpStatelessProtocolConfig::default()
                 },
             },
@@ -10295,7 +10295,7 @@ endpointRules:
         params.insert(
             "_meta".to_string(),
             json!({
-                "io.modelcontextprotocol/protocolVersion": STATELESS_RC_VERSION,
+                "io.modelcontextprotocol/protocolVersion": STATELESS_PROTOCOL_VERSION,
                 "io.modelcontextprotocol/clientInfo": {"name":"phase4-test","version":"1"},
                 "io.modelcontextprotocol/clientCapabilities": {}
             }),
@@ -10305,7 +10305,7 @@ endpointRules:
             ("content-type".to_string(), JSON_CONTENT_TYPE.to_string()),
             (
                 MCP_PROTOCOL_VERSION_HEADER.to_string(),
-                STATELESS_RC_VERSION.to_string(),
+                STATELESS_PROTOCOL_VERSION.to_string(),
             ),
             ("mcp-method".to_string(), method.to_string()),
         ];
@@ -11222,7 +11222,7 @@ endpointRules:
                     (MCP_SESSION_ID_HEADER.to_string(), stale_session_id),
                     (
                         MCP_PROTOCOL_VERSION_HEADER.to_string(),
-                        STATELESS_RC_VERSION.to_string(),
+                        STATELESS_PROTOCOL_VERSION.to_string(),
                     ),
                 ],
                 body: serde_json::to_vec(&json!({
@@ -11231,7 +11231,7 @@ endpointRules:
                     "method": "tools/list",
                     "params": {
                         "_meta": {
-                            "io.modelcontextprotocol/protocolVersion": STATELESS_RC_VERSION
+                            "io.modelcontextprotocol/protocolVersion": STATELESS_PROTOCOL_VERSION
                         }
                     }
                 }))
@@ -11273,7 +11273,7 @@ endpointRules:
         assert_eq!(response.status, 200);
         assert_eq!(
             first_header(&response.headers, MCP_PROTOCOL_VERSION_HEADER).as_deref(),
-            Some(STATELESS_RC_VERSION)
+            Some(STATELESS_PROTOCOL_VERSION)
         );
         let body = serde_json::from_slice::<JsonValue>(
             response.body.buffered().expect("buffered response"),
@@ -11288,7 +11288,7 @@ endpointRules:
         );
         assert_eq!(
             body["result"]["supportedVersions"],
-            json!([STATELESS_RC_VERSION])
+            json!([STATELESS_PROTOCOL_VERSION])
         );
         assert_eq!(body["result"]["capabilities"]["tools"]["listChanged"], true);
         assert_eq!(
@@ -11545,7 +11545,7 @@ endpointRules:
                 .to_ascii_lowercase()
                 .contains("mcp-name: modern_backend")
         );
-        assert!(request.contains(STATELESS_RC_VERSION));
+        assert!(request.contains(STATELESS_PROTOCOL_VERSION));
         assert!(!request.to_ascii_lowercase().contains("mcp-session-id:"));
     }
 
@@ -12565,7 +12565,7 @@ endpointRules:
             body["error"]["message"]
                 .as_str()
                 .expect("message")
-                .contains(STATELESS_RC_VERSION)
+                .contains(STATELESS_PROTOCOL_VERSION)
         );
         assert_eq!(runtime.sessions.lock().await.len(), 0);
     }
@@ -12593,7 +12593,7 @@ endpointRules:
                     (MCP_SESSION_ID_HEADER.to_string(), session_id.clone()),
                     (
                         MCP_PROTOCOL_VERSION_HEADER.to_string(),
-                        STATELESS_RC_VERSION.to_string(),
+                        STATELESS_PROTOCOL_VERSION.to_string(),
                     ),
                 ],
                 body: Vec::new(),

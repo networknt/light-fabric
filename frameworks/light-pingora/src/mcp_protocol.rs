@@ -6,7 +6,7 @@
 
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
-pub(crate) const STATELESS_RC_VERSION: &str = "DRAFT-2026-v1";
+pub(crate) const STATELESS_PROTOCOL_VERSION: &str = "2026-07-28";
 pub(crate) const STATELESS_PROTOCOL_META_KEY: &str = "io.modelcontextprotocol/protocolVersion";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,7 +162,7 @@ fn contains(versions: &[String], version: &str) -> bool {
 }
 
 fn is_known_stateless_version(version: &str) -> bool {
-    version == STATELESS_RC_VERSION
+    version == STATELESS_PROTOCOL_VERSION
 }
 
 #[cfg(test)]
@@ -174,7 +174,7 @@ mod tests {
         static LEGACY: std::sync::LazyLock<Vec<String>> =
             std::sync::LazyLock::new(|| vec!["2025-11-25".to_string()]);
         static STATELESS: std::sync::LazyLock<Vec<String>> =
-            std::sync::LazyLock::new(|| vec![STATELESS_RC_VERSION.to_string()]);
+            std::sync::LazyLock::new(|| vec![STATELESS_PROTOCOL_VERSION.to_string()]);
         ClassifierConfig {
             legacy_enabled: true,
             legacy_versions: &LEGACY,
@@ -210,12 +210,12 @@ mod tests {
 
         let stateless = message(json!({
             "jsonrpc":"2.0", "id":1, "method":"tools/list",
-            "params":{"_meta":{STATELESS_PROTOCOL_META_KEY:STATELESS_RC_VERSION}}
+            "params":{"_meta":{STATELESS_PROTOCOL_META_KEY:STATELESS_PROTOCOL_VERSION}}
         }));
         assert_eq!(
-            classify_post(config(), &[STATELESS_RC_VERSION], true, &stateless),
+            classify_post(config(), &[STATELESS_PROTOCOL_VERSION], true, &stateless),
             Ok(Classification::Stateless {
-                version: STATELESS_RC_VERSION.to_string(),
+                version: STATELESS_PROTOCOL_VERSION.to_string(),
                 enabled: false
             })
         );
@@ -224,7 +224,7 @@ mod tests {
             Err(ClassificationRejection::ProtocolVersionMismatch)
         );
         assert_eq!(
-            classify_post(config(), &[STATELESS_RC_VERSION], false, &legacy_call),
+            classify_post(config(), &[STATELESS_PROTOCOL_VERSION], false, &legacy_call),
             Err(ClassificationRejection::ProtocolVersionMismatch)
         );
     }
@@ -236,7 +236,7 @@ mod tests {
                 config(),
                 RequestHead {
                     method: "DELETE",
-                    protocol_versions: &[STATELESS_RC_VERSION],
+                    protocol_versions: &[STATELESS_PROTOCOL_VERSION],
                     session_id_present: true
                 }
             ),

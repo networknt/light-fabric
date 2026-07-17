@@ -337,7 +337,7 @@ mod tests {
         json!({
             "jsonrpc":"2.0", "id":1, "method":"server/discover",
             "params":{"_meta":{
-                "io.modelcontextprotocol/protocolVersion":"DRAFT-2026-v1",
+                "io.modelcontextprotocol/protocolVersion":"2026-07-28",
                 "io.modelcontextprotocol/clientInfo":{"name":"test","version":"1"},
                 "io.modelcontextprotocol/clientCapabilities":{}
             }}
