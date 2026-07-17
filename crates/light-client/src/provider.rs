@@ -74,6 +74,7 @@ pub struct ResolvedClientCredentialsProvider {
     pub client_id: String,
     pub client_secret: String,
     pub scope: Vec<String>,
+    pub audience: Option<String>,
     pub proxy_host: Option<String>,
     pub proxy_port: Option<u16>,
     pub enable_http2: bool,
@@ -377,6 +378,7 @@ fn merge_client_credentials_provider(
             .filter(|auth| !auth.scope.is_empty())
             .map(|auth| auth.scope.clone())
             .unwrap_or_else(|| base.scope.clone()),
+        audience: auth_server.and_then(|auth| non_empty_option(auth.audience.clone())),
         proxy_host: auth_server
             .and_then(|auth| non_empty_option(auth.proxy_host.clone()))
             .or_else(|| non_empty_option(token.proxy_host.clone())),
@@ -561,6 +563,7 @@ mod tests {
                 AuthServerConfig {
                     client_id: Some("pet-client".to_string()),
                     scope: vec!["pet.r".to_string()],
+                    audience: Some("https://pet.example.com/mcp".to_string()),
                     ..AuthServerConfig::default()
                 },
             );
@@ -574,6 +577,10 @@ mod tests {
         assert_eq!(provider.client_id, "pet-client");
         assert_eq!(provider.client_secret, "global-secret");
         assert_eq!(provider.scope, vec!["pet.r"]);
+        assert_eq!(
+            provider.audience.as_deref(),
+            Some("https://pet.example.com/mcp")
+        );
         assert_eq!(provider.token_renew_before_expired, 10);
         assert_eq!(provider.cache_service_id.as_deref(), Some("petstore"));
     }

@@ -309,6 +309,25 @@ pub(crate) fn decode_header_value(value: &str) -> Result<String, StatelessReques
     Ok(value.to_string())
 }
 
+/// Encodes an outbound semantic MCP header using the exact SEP-2243 sentinel.
+/// Printable ASCII values are kept literal; all other UTF-8 values are Base64.
+pub(crate) fn encode_header_value(value: &str) -> Result<String, StatelessRequestError> {
+    if !value.is_empty()
+        && value.trim() == value
+        && value.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
+        && !value.starts_with("=?")
+        && !value.ends_with("?=")
+    {
+        return Ok(value.to_string());
+    }
+    if value.is_empty() {
+        return Err(StatelessRequestError::header(
+            "empty MCP semantic header values are not allowed",
+        ));
+    }
+    Ok(format!("=?base64?{}?=", STANDARD.encode(value.as_bytes())))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

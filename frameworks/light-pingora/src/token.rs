@@ -195,6 +195,77 @@ impl TokenRuntime {
         }
     }
 
+    /// Resolves a target-specific service credential without exposing the
+    /// token cache to protocol adapters. The configured provider audience must
+    /// exactly equal the normalized backend resource.
+    pub async fn backend_service_token(
+        &self,
+        backend_resource: &str,
+        service_id: Option<String>,
+    ) -> Result<String, HandlerRejection> {
+        let options = self.resolve_request_options(backend_resource, service_id)?;
+        if options.audience.as_deref() != Some(backend_resource) {
+            return Err(HandlerRejection::new(
+                500,
+                "ERR10074",
+                "client credential audience does not match backendResource",
+            ));
+        }
+        self.get_client_credentials_token(backend_resource, options.cache_service_id.clone())
+            .await
+    }
+
+    /// Exchanges an independently verified caller token for a resource-bound
+    /// delegated token. Exchange tokens are deliberately not retained by MCP.
+    pub async fn exchange_backend_token(
+        &self,
+        subject_token: &str,
+        backend_resource: &str,
+    ) -> Result<String, HandlerRejection> {
+        let exchange = &self.client.oauth.token.token_exchange;
+        if exchange.audience.as_deref().map(str::trim) != Some(backend_resource) {
+            return Err(HandlerRejection::new(
+                500,
+                "ERR10074",
+                "token exchange audience does not match backendResource",
+            ));
+        }
+        if exchange.client_id.trim().is_empty() || exchange.client_secret.trim().is_empty() {
+            return Err(HandlerRejection::new(
+                500,
+                "ERR10074",
+                "client.yml token_exchange client_id and client_secret are required",
+            ));
+        }
+        let options = TokenRequestOptions {
+            server_url: self.client.oauth.token.server_url.clone(),
+            token_service_id: self.client.oauth.token.service_id.clone(),
+            uri: exchange.uri.clone(),
+            client_id: exchange.client_id.clone(),
+            client_secret: exchange.client_secret.clone(),
+            scope: exchange.scope.clone(),
+            audience: exchange.audience.clone(),
+            proxy_host: self.client.oauth.token.proxy_host.clone(),
+            proxy_port: self.client.oauth.token.proxy_port,
+            enable_http2: self.client.oauth.token.enable_http2,
+            token_renew_before_expired: self.client.oauth.token.token_renew_before_expired,
+            expired_refresh_retry_delay: self.client.oauth.token.expired_refresh_retry_delay,
+            early_refresh_retry_delay: self.client.oauth.token.early_refresh_retry_delay,
+            cache_service_id: None,
+        };
+        fetch_token_exchange(
+            &options,
+            exchange,
+            subject_token,
+            &self.client.request,
+            &self.client.tls,
+            &self.direct_registry,
+            self.registry_client.as_deref(),
+        )
+        .await
+        .map(|token| token.access_token)
+    }
+
     fn maybe_start_early_refresh(
         &self,
         cached: &mut CachedToken,
@@ -544,6 +615,7 @@ struct TokenRequestOptions {
     client_id: String,
     client_secret: String,
     scope: Vec<String>,
+    audience: Option<String>,
     proxy_host: Option<String>,
     proxy_port: Option<u16>,
     enable_http2: bool,
@@ -562,6 +634,7 @@ impl From<ResolvedClientCredentialsProvider> for TokenRequestOptions {
             client_id: provider.client_id,
             client_secret: provider.client_secret,
             scope: provider.scope,
+            audience: provider.audience,
             proxy_host: provider.proxy_host,
             proxy_port: provider.proxy_port,
             enable_http2: provider.enable_http2,
@@ -610,7 +683,10 @@ async fn fetch_client_credentials_token(
             "authorization",
             basic_authorization(options.client_id.as_str(), options.client_secret.as_str()),
         )
-        .form(&client_credentials_form(&options.scope))
+        .form(&client_credentials_form(
+            &options.scope,
+            options.audience.as_deref(),
+        ))
         .send()
         .await
         .map_err(|error| {
@@ -661,6 +737,90 @@ async fn fetch_client_credentials_token(
         access_token,
         expires_at_millis,
         scope,
+    })
+}
+
+async fn fetch_token_exchange(
+    options: &TokenRequestOptions,
+    exchange: &OAuthTokenExchangeConfig,
+    subject_token: &str,
+    request: &ClientRequestConfig,
+    tls: &ClientTlsConfig,
+    direct_registry: &DirectRegistryConfig,
+    registry_client: Option<&PortalRegistryClient>,
+) -> Result<FetchedToken, HandlerRejection> {
+    let server_url = resolve_token_server_url(options, direct_registry, registry_client).await?;
+    let url = token_endpoint_url(server_url.as_str(), options.uri.as_str())?;
+    let mut form = vec![
+        (
+            "grant_type",
+            "urn:ietf:params:oauth:grant-type:token-exchange".to_string(),
+        ),
+        ("subject_token", subject_token.to_string()),
+        (
+            "subject_token_type",
+            exchange
+                .subject_token_type
+                .clone()
+                .unwrap_or_else(|| "urn:ietf:params:oauth:token-type:access_token".to_string()),
+        ),
+    ];
+    if let Some(requested) = exchange
+        .requested_token_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        form.push(("requested_token_type", requested.to_string()));
+    }
+    if let Some(scope) = join_scope(&exchange.scope) {
+        form.push(("scope", scope));
+    }
+    form.push(("audience", options.audience.clone().unwrap_or_default()));
+    let response = token_http_client(options, request, tls)?
+        .post(url)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("accept", "application/json")
+        .header(
+            "authorization",
+            basic_authorization(options.client_id.as_str(), options.client_secret.as_str()),
+        )
+        .form(&form)
+        .send()
+        .await
+        .map_err(|error| {
+            HandlerRejection::new(
+                502,
+                "ERR10052",
+                format!("failed to exchange backend token: {error}"),
+            )
+        })?;
+    let status = response.status();
+    let body = response.json::<TokenResponse>().await.map_err(|error| {
+        HandlerRejection::new(
+            502,
+            "ERR10052",
+            format!("failed to parse backend token exchange response: {error}"),
+        )
+    })?;
+    if !status.is_success() {
+        return Err(HandlerRejection::new(
+            502,
+            "ERR10052",
+            format!("backend token exchange returned HTTP {}", status.as_u16()),
+        ));
+    }
+    let access_token = body.access_token.ok_or_else(|| {
+        HandlerRejection::new(
+            502,
+            "ERR10052",
+            "backend token exchange response missing access_token",
+        )
+    })?;
+    Ok(FetchedToken {
+        access_token,
+        expires_at_millis: 0,
+        scope: body.scope,
     })
 }
 
@@ -846,10 +1006,16 @@ fn token_endpoint_url(server_url: &str, uri: &str) -> Result<String, HandlerReje
     Ok(url)
 }
 
-fn client_credentials_form(scope: &[String]) -> Vec<(&'static str, String)> {
+fn client_credentials_form(
+    scope: &[String],
+    audience: Option<&str>,
+) -> Vec<(&'static str, String)> {
     let mut form = vec![("grant_type", "client_credentials".to_string())];
     if let Some(scope) = join_scope(scope) {
         form.push(("scope", scope));
+    }
+    if let Some(audience) = audience.map(str::trim).filter(|value| !value.is_empty()) {
+        form.push(("audience", audience.to_string()));
     }
     form
 }
@@ -1087,7 +1253,7 @@ egressIngressIndicator: protocol
 
     #[test]
     fn client_credentials_form_and_authorization_are_java_compatible() {
-        let form = client_credentials_form(&["pet.r".to_string(), "pet.w".to_string()]);
+        let form = client_credentials_form(&["pet.r".to_string(), "pet.w".to_string()], None);
 
         assert_eq!(
             form,
@@ -1099,6 +1265,13 @@ egressIngressIndicator: protocol
         assert_eq!(
             basic_authorization("client", "secret"),
             "Basic Y2xpZW50OnNlY3JldA=="
+        );
+        assert_eq!(
+            client_credentials_form(&[], Some("https://pet.example.com/mcp")),
+            vec![
+                ("grant_type", "client_credentials".to_string()),
+                ("audience", "https://pet.example.com/mcp".to_string())
+            ]
         );
     }
 
@@ -1235,6 +1408,7 @@ egressIngressIndicator: protocol
             client_id: "client".to_string(),
             client_secret: "secret".to_string(),
             scope: vec!["portal.r".to_string()],
+            audience: None,
             proxy_host: None,
             proxy_port: None,
             enable_http2: true,

@@ -14,11 +14,13 @@ use crate::mcp_schema::{
     ValidationOutcome, prepare_tools,
 };
 use crate::mcp_stateless::{
-    ExpectedParameterHeader, ExpectedParameterValue, SERVER_INFO_META_KEY, StatelessRequestError,
-    validate_parameter_headers, validate_stateless_request,
+    CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, ExpectedParameterHeader,
+    ExpectedParameterValue, MCP_METHOD_HEADER, MCP_NAME_HEADER, SERVER_INFO_META_KEY,
+    StatelessRequestError, encode_header_value, validate_parameter_headers,
+    validate_stateless_request,
 };
 use crate::security::AuthPrincipal;
-use crate::token::{CLIENT_FILE, load_client_config};
+use crate::token::{CLIENT_FILE, TokenRuntime, load_client_config, load_token_runtime};
 use agent_delegation::{DelegationClaims, DelegationKind};
 use async_trait::async_trait;
 use light_client::{ClientConfig, ClientFactory, EndpointOptions};
@@ -222,6 +224,16 @@ pub struct McpToolConfig {
     pub endpoint: Option<String>,
     #[serde(default, alias = "apiType")]
     pub api_type: McpToolType,
+    /// Explicit backend MCP profile. Existing MCP tools default to legacy;
+    /// newly configured stateless targets must opt in explicitly.
+    #[serde(default, alias = "backendMcpProtocol")]
+    pub backend_mcp_protocol: Option<McpBackendProtocol>,
+    #[serde(default, alias = "sessionIndependent")]
+    pub session_independent: bool,
+    #[serde(default, alias = "backendCredentialMode")]
+    pub backend_credential_mode: Option<McpBackendCredentialMode>,
+    #[serde(default, alias = "backendResource")]
+    pub backend_resource: Option<String>,
     #[serde(default = "default_input_schema", alias = "inputSchema")]
     pub input_schema: JsonValue,
     #[serde(default, alias = "outputSchema")]
@@ -265,6 +277,14 @@ impl<'de> Deserialize<'de> for McpToolConfig {
             endpoint: Option<String>,
             #[serde(default, alias = "apiType")]
             api_type: McpToolType,
+            #[serde(default, alias = "backendMcpProtocol")]
+            backend_mcp_protocol: Option<McpBackendProtocol>,
+            #[serde(default, alias = "sessionIndependent")]
+            session_independent: bool,
+            #[serde(default, alias = "backendCredentialMode")]
+            backend_credential_mode: Option<McpBackendCredentialMode>,
+            #[serde(default, alias = "backendResource")]
+            backend_resource: Option<String>,
             #[serde(
                 default,
                 alias = "inputSchema",
@@ -299,12 +319,34 @@ impl<'de> Deserialize<'de> for McpToolConfig {
             method: raw.method,
             endpoint: raw.endpoint,
             api_type: raw.api_type,
+            backend_mcp_protocol: raw.backend_mcp_protocol,
+            session_independent: raw.session_independent,
+            backend_credential_mode: raw.backend_credential_mode,
+            backend_resource: raw.backend_resource,
             input_schema: raw.input_schema.unwrap_or_else(default_input_schema),
             output_schema: raw.output_schema,
             input_schema_configured,
             tool_metadata: raw.tool_metadata,
         })
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpBackendProtocol {
+    Legacy,
+    Stateless,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum McpBackendCredentialMode {
+    Caller,
+    Exchange,
+    Service,
+    Anonymous,
+    /// Observable migration behavior for pre-profile legacy tools only.
+    CallerCompat,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -558,11 +600,20 @@ impl EffectiveMcpRequestContext<'_> {
             frontend_session_id: self.frontend_session_id,
         })
     }
+    fn stateless_backend_profile(&self) -> BackendProfileContext<'_> {
+        BackendProfileContext {
+            frontend: self.frontend_profile,
+            backend: BackendProfile::Stateless,
+            protocol_version: STATELESS_RC_VERSION,
+            frontend_session_id: self.frontend_session_id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackendProfile {
     LegacyStateful,
+    Stateless,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -951,6 +1002,9 @@ pub struct McpRouterRuntime {
     next_backend_request_id: Arc<AtomicU64>,
     config_revision: String,
     reload_session_evictions: Arc<AtomicU64>,
+    /// Shared security/light-client credential boundary. MCP never inspects or
+    /// persists its token cache.
+    backend_credentials: Option<Arc<TokenRuntime>>,
 }
 
 impl fmt::Debug for McpRouterRuntime {
@@ -1118,7 +1172,13 @@ impl McpRouterRuntime {
             next_backend_request_id: Arc::new(AtomicU64::new(1)),
             config_revision,
             reload_session_evictions: Arc::new(AtomicU64::new(0)),
+            backend_credentials: None,
         })
+    }
+
+    fn with_backend_credentials(mut self, credentials: Option<TokenRuntime>) -> Self {
+        self.backend_credentials = credentials.map(Arc::new);
+        self
     }
 
     pub fn config(&self) -> &McpRouterConfig {
@@ -1229,6 +1289,7 @@ impl McpRouterRuntime {
     /// Carries only sessions whose negotiated version and binding contract are
     /// still valid in the freshly loaded runtime.
     pub fn preserve_state_from(&mut self, previous: &Self) {
+        let reset_backend_sessions = self.config_revision != previous.config_revision;
         let Ok(mut previous_store) = previous.sessions.try_lock() else {
             tracing::warn!(
                 target: "light_pingora::mcp",
@@ -1240,7 +1301,9 @@ impl McpRouterRuntime {
             self.next_backend_request_id = Arc::clone(&previous.next_backend_request_id);
             let runtime = self.clone();
             tokio::spawn(async move {
-                runtime.evict_incompatible_reload_sessions().await;
+                runtime
+                    .evict_incompatible_reload_sessions(reset_backend_sessions)
+                    .await;
             });
             return;
         };
@@ -1257,6 +1320,12 @@ impl McpRouterRuntime {
         for session_id in &incompatible_ids {
             if let Some(session) = previous_store.remove(session_id) {
                 backend_sessions.extend(session.backend_sessions.into_values());
+            }
+        }
+        if reset_backend_sessions {
+            for session in previous_store.sessions.values_mut() {
+                backend_sessions
+                    .extend(std::mem::take(&mut session.backend_sessions).into_values());
             }
         }
         let retained = previous_store.clone();
@@ -1280,7 +1349,7 @@ impl McpRouterRuntime {
         }
     }
 
-    async fn evict_incompatible_reload_sessions(&self) {
+    async fn evict_incompatible_reload_sessions(&self, reset_backend_sessions: bool) {
         let mut store = self.sessions.lock().await;
         let incompatible_ids = store
             .sessions
@@ -1291,11 +1360,17 @@ impl McpRouterRuntime {
                     .then(|| session_id.clone())
             })
             .collect::<Vec<_>>();
-        let backend_sessions = incompatible_ids
+        let mut backend_sessions = incompatible_ids
             .iter()
             .filter_map(|session_id| store.remove(session_id))
             .flat_map(|session| session.backend_sessions.into_values())
             .collect::<Vec<_>>();
+        if reset_backend_sessions {
+            for session in store.sessions.values_mut() {
+                backend_sessions
+                    .extend(std::mem::take(&mut session.backend_sessions).into_values());
+            }
+        }
         drop(store);
         let evicted = incompatible_ids.len() as u64;
         if evicted > 0 {
@@ -2620,7 +2695,8 @@ impl McpRouterRuntime {
         let masked_arguments = mask_tool_arguments(tool, &arguments);
 
         let _backend_permit = if effective.frontend_profile == FrontendProfile::Stateless
-            && tool.api_type == McpToolType::Http
+            || (tool.api_type == McpToolType::Mcp
+                && tool_backend_protocol(tool) == McpBackendProtocol::Stateless)
         {
             Some(
                 self.stateless_resources
@@ -2646,22 +2722,36 @@ impl McpRouterRuntime {
                 self.execute_http_tool(tool, &masked_arguments, backend_headers)
                     .await
             }
-            McpToolType::Mcp => {
-                if effective.frontend_profile == FrontendProfile::Stateless {
+            McpToolType::Mcp => match tool_backend_protocol(tool) {
+                McpBackendProtocol::Legacy
+                    if effective.frontend_profile == FrontendProfile::Stateless =>
+                {
                     Ok(mcp_tool_error_result(
                         "Gateway does not support stateless calls to this MCP backend profile",
                     ))
-                } else {
+                }
+                McpBackendProtocol::Legacy => {
                     let backend_profile = effective.legacy_backend_profile()?;
                     self.execute_mcp_proxy_tool(
                         tool,
                         &masked_arguments,
                         backend_headers,
                         backend_profile,
+                        effective,
                     )
                     .await
                 }
-            }
+                McpBackendProtocol::Stateless => {
+                    self.execute_stateless_mcp_tool(
+                        tool,
+                        &masked_arguments,
+                        params.get("_meta"),
+                        effective,
+                        effective.stateless_backend_profile(),
+                    )
+                    .await
+                }
+            },
         };
         let result = match execution {
             Ok(result) => result,
@@ -3131,12 +3221,299 @@ impl McpRouterRuntime {
             .collect()
     }
 
+    async fn execute_stateless_mcp_tool(
+        &self,
+        tool: &PreparedMcpTool,
+        arguments: &JsonValue,
+        inbound_meta: Option<&JsonValue>,
+        effective: &EffectiveMcpRequestContext<'_>,
+        profile: BackendProfileContext<'_>,
+    ) -> Result<JsonValue, McpExecutionError> {
+        if profile.backend != BackendProfile::Stateless {
+            return Err(McpExecutionError::execution_failed(
+                "stateless MCP adapter received an incompatible backend profile",
+            ));
+        }
+        let authorization = self.resolve_backend_authorization(tool, effective).await?;
+        let url = self.tool_target_url(tool).await?;
+        validate_target_host_resolution(tool, &url).await?;
+        let backend_tool_name = tool
+            .endpoint_name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or(tool.name.as_str());
+        let meta = self
+            .stateless_backend_client_meta(effective, inbound_meta)
+            .await?;
+        let request_id = self.next_backend_request_id();
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "tools/call",
+            "params": {
+                "name": backend_tool_name,
+                "arguments": arguments,
+                "_meta": meta
+            }
+        });
+        let mut headers = stateless_backend_headers(
+            tool,
+            backend_tool_name,
+            arguments,
+            authorization.as_deref(),
+        )?;
+        // Content length and host remain transport-owned.
+        headers.remove(reqwest::header::CONTENT_LENGTH);
+        let response = self
+            .client
+            .post(url.clone())
+            .headers(headers)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|error| {
+                McpExecutionError::execution_failed(format!(
+                    "stateless MCP backend request failed: {error}"
+                ))
+            })?;
+        let (status, content_type, response_headers, body) = read_backend_mcp_response(
+            response,
+            "stateless tools/call",
+            url.as_str(),
+            self.config.max_response_body_bytes,
+        )
+        .await?;
+        if response_headers.contains_key(MCP_SESSION_ID_HEADER) {
+            return Err(McpExecutionError::execution_failed(
+                "stateless MCP backend returned unexpected session state",
+            ));
+        }
+        let response_versions = response_headers
+            .get_all(MCP_PROTOCOL_VERSION_HEADER)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .collect::<Vec<_>>();
+        if response_versions.len() > 1
+            || response_versions
+                .first()
+                .is_some_and(|version| *version != STATELESS_RC_VERSION)
+        {
+            return Err(McpExecutionError::execution_failed(
+                "stateless MCP backend response protocol version does not match the configured profile",
+            ));
+        }
+        if !status.is_success() {
+            return Err(McpExecutionError::execution_failed(format!(
+                "stateless MCP backend returned HTTP {}",
+                status.as_u16()
+            )));
+        }
+        let content_type_valid = content_type.as_deref().is_some_and(|value| {
+            let value = value.to_ascii_lowercase();
+            value.starts_with(JSON_CONTENT_TYPE) || value.starts_with(EVENT_STREAM_CONTENT_TYPE)
+        });
+        if !content_type_valid {
+            return Err(McpExecutionError::execution_failed(
+                "stateless MCP backend returned an unsupported Content-Type",
+            ));
+        }
+        let message =
+            parse_mcp_backend_response(&body, content_type.as_deref()).map_err(|error| {
+                McpExecutionError::execution_failed(format!(
+                    "invalid stateless MCP backend response: {error}"
+                ))
+            })?;
+        if message.get("jsonrpc").and_then(JsonValue::as_str) != Some("2.0")
+            || message.get("id") != Some(&json!(request_id))
+        {
+            return Err(McpExecutionError::execution_failed(
+                "stateless MCP backend response has an invalid JSON-RPC envelope or id",
+            ));
+        }
+        if let Some(error) = message.get("error") {
+            return Err(McpExecutionError::execution_failed(
+                error
+                    .get("message")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or("stateless MCP backend returned an error"),
+            ));
+        }
+        let result = message.get("result").cloned().ok_or_else(|| {
+            McpExecutionError::execution_failed("stateless MCP backend response missing result")
+        })?;
+        match result.get("resultType").and_then(JsonValue::as_str) {
+            Some("complete") => Ok(result),
+            Some("input_required") => Ok(mcp_tool_error_result(
+                "light-gateway does not support MCP multi round-trip bridging for this backend",
+            )),
+            Some(_) => Ok(mcp_tool_error_result(
+                "light-gateway does not support the MCP backend result extension",
+            )),
+            None => Err(McpExecutionError::execution_failed(
+                "stateless MCP backend response missing resultType",
+            )),
+        }
+    }
+
+    async fn stateless_backend_client_meta(
+        &self,
+        effective: &EffectiveMcpRequestContext<'_>,
+        inbound_meta: Option<&JsonValue>,
+    ) -> Result<JsonValue, McpExecutionError> {
+        let (client_info, capabilities) = match effective.frontend_profile {
+            FrontendProfile::Stateless => {
+                let meta = inbound_meta.and_then(JsonValue::as_object).ok_or_else(|| {
+                    McpExecutionError::invalid_params("stateless tools/call requires params._meta")
+                })?;
+                (
+                    meta.get(CLIENT_INFO_META_KEY).cloned(),
+                    meta.get(CLIENT_CAPABILITIES_META_KEY)
+                        .cloned()
+                        .unwrap_or_else(|| json!({})),
+                )
+            }
+            FrontendProfile::Legacy => {
+                let session_id = effective.frontend_session_id.ok_or_else(|| {
+                    McpExecutionError::execution_failed("legacy frontend session id is required")
+                })?;
+                let store = self.sessions.lock().await;
+                let session = store
+                    .get(session_id)
+                    .ok_or_else(|| McpExecutionError::execution_failed("unknown MCP session id"))?;
+                (
+                    Some(session.client_info.clone()),
+                    session.client_capabilities.clone(),
+                )
+            }
+        };
+        let mut meta = JsonMap::new();
+        meta.insert(
+            STATELESS_PROTOCOL_META_KEY.to_string(),
+            JsonValue::String(STATELESS_RC_VERSION.to_string()),
+        );
+        meta.insert(CLIENT_CAPABILITIES_META_KEY.to_string(), capabilities);
+        if let Some(client_info) = client_info {
+            meta.insert(CLIENT_INFO_META_KEY.to_string(), client_info);
+        }
+        Ok(JsonValue::Object(meta))
+    }
+
+    async fn resolve_backend_authorization(
+        &self,
+        tool: &McpToolConfig,
+        effective: &EffectiveMcpRequestContext<'_>,
+    ) -> Result<Option<String>, McpExecutionError> {
+        let mode = tool_backend_credential_mode(tool);
+        if mode == McpBackendCredentialMode::CallerCompat {
+            return Ok(None);
+        }
+        if mode == McpBackendCredentialMode::Anonymous {
+            return Ok(None);
+        }
+        let explicit_resource = tool
+            .backend_resource
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let configured_target_resource = if mode == McpBackendCredentialMode::Service {
+            tool.target_host
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .and_then(|value| Url::parse(value).ok())
+                .map(|url| apply_tool_path(url, tool))
+                .map(|url| url.as_str().trim_end_matches('/').to_string())
+                .or_else(|| {
+                    tool.service_id
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                })
+        } else {
+            None
+        };
+        let resource = explicit_resource
+            .or(configured_target_resource)
+            .ok_or_else(|| {
+                McpExecutionError::execution_failed(
+                    "backendResource is required for the selected credential mode",
+                )
+            })?;
+        let normalized_resource = Url::parse(resource.as_str())
+            .map(|mut url| {
+                url.set_fragment(None);
+                url.as_str().trim_end_matches('/').to_string()
+            })
+            .unwrap_or(resource);
+        let resource = normalized_resource.as_str();
+        match mode {
+            McpBackendCredentialMode::Caller => {
+                let bearer = exact_bearer_authorization(effective.transport_headers)?;
+                let claims = &effective
+                    .request
+                    .auth
+                    .as_ref()
+                    .ok_or_else(|| {
+                        McpExecutionError::execution_failed(
+                            "caller backend credential requires a verified principal",
+                        )
+                    })?
+                    .claims;
+                if !claim_audience_contains(claims, resource) {
+                    return Err(McpExecutionError::execution_failed(
+                        "caller token audience does not match backendResource",
+                    ));
+                }
+                Ok(Some(bearer))
+            }
+            McpBackendCredentialMode::Exchange => {
+                if effective.request.auth.is_none() {
+                    return Err(McpExecutionError::execution_failed(
+                        "token exchange requires a verified principal",
+                    ));
+                }
+                let bearer = exact_bearer_authorization(effective.transport_headers)?;
+                let token = bearer.strip_prefix("Bearer ").ok_or_else(|| {
+                    McpExecutionError::execution_failed("caller Bearer token is required")
+                })?;
+                let provider = self.backend_credentials.as_ref().ok_or_else(|| {
+                    McpExecutionError::execution_failed(
+                        "shared backend credential provider is unavailable",
+                    )
+                })?;
+                provider
+                    .exchange_backend_token(token, resource)
+                    .await
+                    .map(|token| Some(format!("Bearer {token}")))
+                    .map_err(|error| McpExecutionError::execution_failed(error.message))
+            }
+            McpBackendCredentialMode::Service => {
+                let provider = self.backend_credentials.as_ref().ok_or_else(|| {
+                    McpExecutionError::execution_failed(
+                        "shared backend credential provider is unavailable",
+                    )
+                })?;
+                provider
+                    .backend_service_token(resource, tool.service_id.clone())
+                    .await
+                    .map(|token| Some(format!("Bearer {token}")))
+                    .map_err(|error| McpExecutionError::execution_failed(error.message))
+            }
+            McpBackendCredentialMode::Anonymous | McpBackendCredentialMode::CallerCompat => {
+                Ok(None)
+            }
+        }
+    }
+
     async fn execute_mcp_proxy_tool(
         &self,
         tool: &McpToolConfig,
         arguments: &JsonValue,
         agent_headers: &[(String, String)],
         profile: BackendProfileContext<'_>,
+        effective: &EffectiveMcpRequestContext<'_>,
     ) -> Result<JsonValue, McpExecutionError> {
         if profile.frontend != FrontendProfile::Legacy
             || profile.backend != BackendProfile::LegacyStateful
@@ -3159,10 +3536,18 @@ impl McpRouterRuntime {
                 .await;
         }
 
+        let authorization = self.resolve_backend_authorization(tool, effective).await?;
+        let credential_identity = backend_credential_identity(tool, effective.request);
         let url = self.tool_target_url(tool).await?;
         validate_target_host_resolution(tool, &url).await?;
         let backend_session = self
-            .ensure_backend_session(frontend_session_id, &url, agent_headers)
+            .ensure_backend_session(
+                frontend_session_id,
+                &url,
+                agent_headers,
+                authorization.as_deref(),
+                credential_identity.as_str(),
+            )
             .await?;
         let _requested_protocol_version = profile.protocol_version;
         // Use `endpoint_name` (the raw operationId registered on the backend MCP server) when
@@ -3188,10 +3573,11 @@ impl McpRouterRuntime {
             let response = match self
                 .client
                 .post(url.clone())
-                .headers(backend_headers(
+                .headers(legacy_backend_headers(
                     agent_headers,
                     backend_session.session_id.as_deref(),
                     Some(backend_session.protocol_version.as_str()),
+                    authorization.as_deref(),
                 )?)
                 .json(&request)
                 .send()
@@ -3277,9 +3663,23 @@ impl McpRouterRuntime {
         frontend_session_id: &str,
         target_url: &Url,
         agent_headers: &[(String, String)],
+        authorization: Option<&str>,
+        credential_identity: &str,
     ) -> Result<McpBackendSession, McpExecutionError> {
-        let target_key = target_url.as_str().to_string();
         let protocol_version = {
+            let store = self.sessions.lock().await;
+            let session = store
+                .get(frontend_session_id)
+                .ok_or_else(|| McpExecutionError::execution_failed("unknown MCP session id"))?;
+            session.protocol_version.clone()
+        };
+        let target_key = format!(
+            "{}|legacy|{}|{}",
+            target_url.as_str(),
+            protocol_version,
+            credential_identity
+        );
+        {
             let store = self.sessions.lock().await;
             let session = store
                 .get(frontend_session_id)
@@ -3287,14 +3687,14 @@ impl McpRouterRuntime {
             if let Some(backend_session) = session.backend_sessions.get(target_key.as_str()) {
                 return Ok(backend_session.clone());
             }
-            session.protocol_version.clone()
-        };
+        }
 
         let initialized = self
             .initialize_backend_session(
                 target_url.clone(),
                 protocol_version.as_str(),
                 agent_headers,
+                authorization,
             )
             .await?;
         let insert_result = {
@@ -3341,6 +3741,7 @@ impl McpRouterRuntime {
         target_url: Url,
         protocol_version: &str,
         agent_headers: &[(String, String)],
+        authorization: Option<&str>,
     ) -> Result<McpBackendSession, McpExecutionError> {
         let request = json!({
             "jsonrpc": "2.0",
@@ -3358,10 +3759,11 @@ impl McpRouterRuntime {
         let response = self
             .client
             .post(target_url.clone())
-            .headers(backend_headers(
+            .headers(legacy_backend_headers(
                 agent_headers,
                 None,
                 Some(protocol_version),
+                authorization,
             )?)
             .json(&request)
             .send()
@@ -3429,6 +3831,7 @@ impl McpRouterRuntime {
                 backend_session.protocol_version.as_str(),
                 backend_session.session_id.as_deref(),
                 agent_headers,
+                authorization,
             )
             .await
         {
@@ -3444,6 +3847,7 @@ impl McpRouterRuntime {
         protocol_version: &str,
         backend_session_id: Option<&str>,
         agent_headers: &[(String, String)],
+        authorization: Option<&str>,
     ) -> Result<(), McpExecutionError> {
         let request = json!({
             "jsonrpc": "2.0",
@@ -3453,10 +3857,11 @@ impl McpRouterRuntime {
         let response = self
             .client
             .post(target_url)
-            .headers(backend_headers(
+            .headers(legacy_backend_headers(
                 agent_headers,
                 backend_session_id,
                 Some(protocol_version),
+                authorization,
             )?)
             .json(&request)
             .send()
@@ -3723,6 +4128,78 @@ fn stateless_target_key(tool: &McpToolConfig) -> String {
     )
 }
 
+fn tool_backend_protocol(tool: &McpToolConfig) -> McpBackendProtocol {
+    tool.backend_mcp_protocol
+        .unwrap_or(McpBackendProtocol::Legacy)
+}
+
+fn tool_backend_credential_mode(tool: &McpToolConfig) -> McpBackendCredentialMode {
+    tool.backend_credential_mode
+        .unwrap_or(McpBackendCredentialMode::CallerCompat)
+}
+
+fn configured_backend_identity(tool: &McpToolConfig) -> Result<String, RuntimeError> {
+    if let Some(target) = tool
+        .target_host
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let mut url = Url::parse(target).map_err(|error| {
+            RuntimeError::Unsupported(format!(
+                "mcp-router tool `{}` targetHost is invalid: {error}",
+                tool.name
+            ))
+        })?;
+        url.set_fragment(None);
+        url = apply_tool_path(url, tool);
+        return Ok(format!("target:{}", url.as_str().trim_end_matches('/')));
+    }
+    Ok(format!(
+        "service:{}:{}:{}",
+        tool.service_id.as_deref().unwrap_or_default().trim(),
+        tool.env_tag.as_deref().unwrap_or_default().trim(),
+        tool.protocol.as_deref().unwrap_or_default().trim()
+    ))
+}
+
+fn backend_credential_identity(tool: &McpToolConfig, context: &McpRequestContext) -> String {
+    let mode = tool_backend_credential_mode(tool);
+    let principal = matches!(
+        mode,
+        McpBackendCredentialMode::Caller | McpBackendCredentialMode::Exchange
+    )
+    .then(|| {
+        request_principal_binding(context)
+            .map(|(binding, _)| binding)
+            .unwrap_or_else(|_| "unbound".to_string())
+    });
+    stable_json_hash(&json!({
+        "mode": format!("{mode:?}"),
+        "resource": tool.backend_resource.as_deref().unwrap_or_default().trim(),
+        "principal": principal
+    }))
+}
+
+fn normalized_backend_resource(tool: &McpToolConfig) -> Result<Option<String>, RuntimeError> {
+    let Some(resource) = tool
+        .backend_resource
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let mut url = Url::parse(resource).map_err(|error| {
+        RuntimeError::Unsupported(format!(
+            "mcp-router tool `{}` backendResource is invalid: {error}",
+            tool.name
+        ))
+    })?;
+    url.set_fragment(None);
+    Ok(Some(url.as_str().trim_end_matches('/').to_string()))
+}
+
 fn mcp_schema_error_result(prefix: &str, diagnostics: &[SchemaDiagnostic]) -> JsonValue {
     let details = diagnostics
         .iter()
@@ -3949,6 +4426,7 @@ pub fn load_mcp_router_runtime(
         Err(RuntimeError::MissingConfig(file)) if file == CLIENT_FILE => ClientConfig::default(),
         Err(error) => return Err(error),
     };
+    let backend_credentials = load_token_runtime(runtime_config, true)?;
     Ok(Some(
         McpRouterRuntime::new_with_discovery_policy_direct_registry_and_client_config(
             config,
@@ -3956,7 +4434,8 @@ pub fn load_mcp_router_runtime(
             policy,
             runtime_config.direct_registry.clone(),
             client_config,
-        )?,
+        )?
+        .with_backend_credentials(backend_credentials),
     ))
 }
 
@@ -4103,6 +4582,8 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
         })?;
     }
     let mut names = BTreeSet::new();
+    let mut backend_contracts =
+        BTreeMap::<String, (McpBackendProtocol, McpBackendCredentialMode, Option<String>)>::new();
     for tool in &config.tools {
         let name = tool.name.trim();
         if name.is_empty() {
@@ -4141,6 +4622,61 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
             return Err(RuntimeError::Unsupported(format!(
                 "mcp-router tool `{name}` requires targetHost or serviceId"
             )));
+        }
+        if tool.api_type == McpToolType::Http {
+            if tool.backend_mcp_protocol.is_some()
+                || tool.backend_credential_mode.is_some()
+                || tool.backend_resource.is_some()
+                || tool.session_independent
+            {
+                return Err(RuntimeError::Unsupported(format!(
+                    "mcp-router HTTP tool `{name}` cannot configure MCP backend profile fields"
+                )));
+            }
+            continue;
+        }
+        let profile = tool_backend_protocol(tool);
+        let credential_mode = tool_backend_credential_mode(tool);
+        if profile == McpBackendProtocol::Stateless && tool.backend_mcp_protocol.is_none() {
+            return Err(RuntimeError::Unsupported(format!(
+                "mcp-router tool `{name}` must explicitly select backendMcpProtocol for a stateless backend"
+            )));
+        }
+        if profile == McpBackendProtocol::Stateless
+            && (tool.backend_credential_mode.is_none()
+                || credential_mode == McpBackendCredentialMode::CallerCompat)
+        {
+            return Err(RuntimeError::Unsupported(format!(
+                "mcp-router stateless backend tool `{name}` requires explicit backendCredentialMode"
+            )));
+        }
+        if credential_mode == McpBackendCredentialMode::CallerCompat
+            && profile != McpBackendProtocol::Legacy
+        {
+            return Err(RuntimeError::Unsupported(format!(
+                "mcp-router tool `{name}` cannot use caller-compat with a stateless backend"
+            )));
+        }
+        let resource = normalized_backend_resource(tool)?;
+        if matches!(
+            credential_mode,
+            McpBackendCredentialMode::Caller | McpBackendCredentialMode::Exchange
+        ) && resource.is_none()
+        {
+            return Err(RuntimeError::Unsupported(format!(
+                "mcp-router tool `{name}` requires backendResource for {credential_mode:?} credential mode"
+            )));
+        }
+        let identity = configured_backend_identity(tool)?;
+        let contract = (profile, credential_mode, resource);
+        if let Some(existing) = backend_contracts.get(identity.as_str()) {
+            if existing != &contract {
+                return Err(RuntimeError::Unsupported(format!(
+                    "mcp-router tools resolving to `{identity}` must agree on backend MCP profile, credential mode, and resource"
+                )));
+            }
+        } else {
+            backend_contracts.insert(identity, contract);
         }
     }
     Ok(())
@@ -5119,6 +5655,123 @@ fn backend_headers(
         outbound.insert(HeaderName::from_static(MCP_SESSION_ID_HEADER), value);
     }
     Ok(outbound)
+}
+
+fn legacy_backend_headers(
+    headers: &[(String, String)],
+    backend_session_id: Option<&str>,
+    protocol_version: Option<&str>,
+    selected_authorization: Option<&str>,
+) -> Result<HeaderMap, McpExecutionError> {
+    let mut outbound = backend_headers(headers, backend_session_id, protocol_version)?;
+    if let Some(authorization) = selected_authorization {
+        outbound.insert(
+            reqwest::header::AUTHORIZATION,
+            HeaderValue::from_str(authorization).map_err(|error| {
+                McpExecutionError::execution_failed(format!(
+                    "invalid selected backend Authorization credential: {error}"
+                ))
+            })?,
+        );
+    }
+    Ok(outbound)
+}
+
+fn stateless_backend_headers(
+    tool: &PreparedMcpTool,
+    backend_tool_name: &str,
+    arguments: &JsonValue,
+    authorization: Option<&str>,
+) -> Result<HeaderMap, McpExecutionError> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        reqwest::header::CONTENT_TYPE,
+        HeaderValue::from_static(JSON_CONTENT_TYPE),
+    );
+    headers.insert(
+        ACCEPT,
+        HeaderValue::from_static("application/json, text/event-stream"),
+    );
+    headers.insert(
+        HeaderName::from_static(MCP_PROTOCOL_VERSION_HEADER),
+        HeaderValue::from_static(STATELESS_RC_VERSION),
+    );
+    headers.insert(
+        HeaderName::from_static(MCP_METHOD_HEADER),
+        HeaderValue::from_str(
+            &encode_header_value("tools/call")
+                .map_err(|error| McpExecutionError::execution_failed(error.message))?,
+        )
+        .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?,
+    );
+    headers.insert(
+        HeaderName::from_static(MCP_NAME_HEADER),
+        HeaderValue::from_str(
+            &encode_header_value(backend_tool_name)
+                .map_err(|error| McpExecutionError::execution_failed(error.message))?,
+        )
+        .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?,
+    );
+    for parameter in expected_parameter_headers(tool, arguments)? {
+        let Some(value) = parameter.value else {
+            continue;
+        };
+        let value = match value {
+            ExpectedParameterValue::String(value) => value,
+            ExpectedParameterValue::Integer(value) => value.to_string(),
+            ExpectedParameterValue::Boolean(value) => value.to_string(),
+        };
+        headers.insert(
+            HeaderName::from_bytes(parameter.name.as_bytes()).map_err(|error| {
+                McpExecutionError::execution_failed(format!(
+                    "invalid generated MCP parameter header: {error}"
+                ))
+            })?,
+            HeaderValue::from_str(
+                &encode_header_value(value.as_str())
+                    .map_err(|error| McpExecutionError::execution_failed(error.message))?,
+            )
+            .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?,
+        );
+    }
+    if let Some(authorization) = authorization {
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            HeaderValue::from_str(authorization).map_err(|error| {
+                McpExecutionError::execution_failed(format!(
+                    "invalid selected backend Authorization credential: {error}"
+                ))
+            })?,
+        );
+    }
+    Ok(headers)
+}
+
+fn exact_bearer_authorization(headers: &[(String, String)]) -> Result<String, McpExecutionError> {
+    let values = headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+        .map(|(_, value)| value.trim())
+        .collect::<Vec<_>>();
+    if values.len() != 1
+        || !values[0].starts_with("Bearer ")
+        || values[0].trim_start_matches("Bearer ").trim().is_empty()
+    {
+        return Err(McpExecutionError::execution_failed(
+            "exactly one caller Bearer credential is required",
+        ));
+    }
+    Ok(values[0].to_string())
+}
+
+fn claim_audience_contains(claims: &JsonValue, expected: &str) -> bool {
+    match claims.get("aud") {
+        Some(JsonValue::String(audience)) => audience == expected,
+        Some(JsonValue::Array(audiences)) => audiences
+            .iter()
+            .any(|audience| audience.as_str() == Some(expected)),
+        _ => false,
+    }
 }
 
 fn should_regenerate_header(name: &str) -> bool {
@@ -7204,6 +7857,10 @@ endpointRules:
                     method: McpHttpMethod::Get,
                     endpoint: None,
                     api_type: McpToolType::Http,
+                    backend_mcp_protocol: None,
+                    session_independent: false,
+                    backend_credential_mode: None,
+                    backend_resource: None,
                     input_schema: default_input_schema(),
                     output_schema: None,
                     input_schema_configured: true,
@@ -7262,6 +7919,10 @@ endpointRules:
                     method: McpHttpMethod::Get,
                     endpoint: None,
                     api_type: McpToolType::Http,
+                    backend_mcp_protocol: None,
+                    session_independent: false,
+                    backend_credential_mode: None,
+                    backend_resource: None,
                     input_schema: default_input_schema(),
                     output_schema: None,
                     input_schema_configured: true,
@@ -7319,6 +7980,10 @@ endpointRules:
                     method: McpHttpMethod::Call,
                     endpoint: Some("get_sh_vers@call".to_string()),
                     api_type: McpToolType::Http,
+                    backend_mcp_protocol: None,
+                    session_independent: false,
+                    backend_credential_mode: None,
+                    backend_resource: None,
                     input_schema: json!({
                         "type": "object",
                         "properties": {
@@ -7398,6 +8063,10 @@ endpointRules:
                 method: McpHttpMethod::Post,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                backend_mcp_protocol: None,
+                session_independent: false,
+                backend_credential_mode: None,
+                backend_resource: None,
                 input_schema: default_input_schema(),
                 output_schema: None,
                 input_schema_configured: true,
@@ -7496,6 +8165,10 @@ endpointRules:
                 method: McpHttpMethod::Post,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                backend_mcp_protocol: None,
+                session_independent: false,
+                backend_credential_mode: None,
+                backend_resource: None,
                 input_schema: default_input_schema(),
                 output_schema: None,
                 input_schema_configured: true,
@@ -7564,6 +8237,10 @@ endpointRules:
                 method: McpHttpMethod::Post,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                backend_mcp_protocol: None,
+                session_independent: false,
+                backend_credential_mode: None,
+                backend_resource: None,
                 input_schema: default_input_schema(),
                 output_schema: None,
                 input_schema_configured: true,
@@ -7624,6 +8301,10 @@ endpointRules:
                 method: McpHttpMethod::Post,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                backend_mcp_protocol: None,
+                session_independent: false,
+                backend_credential_mode: None,
+                backend_resource: None,
                 input_schema: default_input_schema(),
                 output_schema: None,
                 input_schema_configured: true,
@@ -7687,6 +8368,10 @@ endpointRules:
                 method: McpHttpMethod::Post,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                backend_mcp_protocol: None,
+                session_independent: false,
+                backend_credential_mode: None,
+                backend_resource: None,
                 input_schema: json!({
                     "type": "object",
                     "properties": {"message": {"type": "string"}},
@@ -7763,6 +8448,10 @@ endpointRules:
                 method: McpHttpMethod::Call,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                backend_mcp_protocol: None,
+                session_independent: false,
+                backend_credential_mode: None,
+                backend_resource: None,
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -7833,6 +8522,10 @@ endpointRules:
                 method: McpHttpMethod::Call,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                backend_mcp_protocol: None,
+                session_independent: false,
+                backend_credential_mode: None,
+                backend_resource: None,
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -7902,6 +8595,8 @@ endpointRules:
                     frontend_session_id_for_task.as_str(),
                     &target_url,
                     &[accept_json()],
+                    None,
+                    "caller-compat",
                 )
                 .await
         });
@@ -7951,6 +8646,10 @@ endpointRules:
                 method: McpHttpMethod::Post,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                backend_mcp_protocol: None,
+                session_independent: false,
+                backend_credential_mode: None,
+                backend_resource: None,
                 input_schema: default_input_schema(),
                 output_schema: None,
                 input_schema_configured: true,
@@ -8026,6 +8725,10 @@ endpointRules:
                 method: McpHttpMethod::Post,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                backend_mcp_protocol: None,
+                session_independent: false,
+                backend_credential_mode: None,
+                backend_resource: None,
                 input_schema: default_input_schema(),
                 output_schema: None,
                 input_schema_configured: true,
@@ -8282,6 +8985,10 @@ endpointRules:
                 method: McpHttpMethod::Call,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                backend_mcp_protocol: None,
+                session_independent: false,
+                backend_credential_mode: None,
+                backend_resource: None,
                 input_schema: default_input_schema(),
                 output_schema: None,
                 input_schema_configured: false,
@@ -8818,6 +9525,10 @@ endpointRules:
             method,
             endpoint: endpoint.map(str::to_string),
             api_type: McpToolType::Http,
+            backend_mcp_protocol: None,
+            session_independent: false,
+            backend_credential_mode: None,
+            backend_resource: None,
             input_schema,
             output_schema: None,
             input_schema_configured: true,
@@ -9395,6 +10106,10 @@ endpointRules:
                 method: McpHttpMethod::Call,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                backend_mcp_protocol: None,
+                session_independent: false,
+                backend_credential_mode: None,
+                backend_resource: None,
                 input_schema: default_input_schema(),
                 output_schema: None,
                 input_schema_configured: true,
@@ -9732,6 +10447,36 @@ endpointRules:
     }
 
     #[tokio::test]
+    async fn reload_keeps_frontend_but_discards_superseded_backend_sessions() {
+        let original = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        let session_id = {
+            let mut session = McpGatewaySession::new(
+                DEFAULT_PROTOCOL_VERSION.to_string(),
+                "test-client".to_string(),
+            );
+            session.backend_sessions.insert(
+                "target|legacy|version|credential".to_string(),
+                McpBackendSession {
+                    target_url: "https://runtime.example.com/mcp".to_string(),
+                    session_id: None,
+                    protocol_version: DEFAULT_PROTOCOL_VERSION.to_string(),
+                    agent_headers: Vec::new(),
+                },
+            );
+            let id = uuid::Uuid::new_v4().to_string();
+            original.sessions.lock().await.insert(id.clone(), session);
+            id
+        };
+        let mut changed = McpRouterConfig::default();
+        changed.max_response_body_bytes += 1;
+        let mut reloaded = McpRouterRuntime::new(changed).expect("runtime");
+        reloaded.preserve_state_from(&original);
+        let store = reloaded.sessions.lock().await;
+        let session = store.get(session_id.as_str()).expect("frontend retained");
+        assert!(session.backend_sessions.is_empty());
+    }
+
+    #[tokio::test]
     async fn stateless_post_is_classified_but_disabled_without_session_mutation() {
         let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
         let stale_session_id = {
@@ -10009,6 +10754,348 @@ endpointRules:
                 .contains("does not support stateless calls")
         );
         assert_eq!(runtime.sessions.lock().await.len(), 0);
+    }
+
+    fn stateless_mcp_backend_tool(name: &str, target: &str) -> McpToolConfig {
+        let mut tool = test_tool(
+            name,
+            "Stateless MCP backend",
+            target,
+            McpHttpMethod::Post,
+            None,
+            default_input_schema(),
+        );
+        tool.api_type = McpToolType::Mcp;
+        tool.backend_mcp_protocol = Some(McpBackendProtocol::Stateless);
+        tool.backend_credential_mode = Some(McpBackendCredentialMode::Anonymous);
+        tool
+    }
+
+    #[tokio::test]
+    async fn stateless_frontend_calls_stateless_backend_without_session_state() {
+        let (base, received) = spawn_http_server(http_json_response(json!({
+            "jsonrpc":"2.0",
+            "id":1,
+            "result":{"resultType":"complete","content":[{"type":"text","text":"ok"}]}
+        })))
+        .await;
+        let mut config = stateless_test_config(vec![stateless_mcp_backend_tool(
+            "modern_backend",
+            base.as_str(),
+        )]);
+        config.protocols.stateless.enabled = true;
+        let runtime = McpRouterRuntime::new(config).expect("runtime");
+        let response = runtime
+            .handle_request(stateless_request(
+                "tools/call",
+                json!({"name":"modern_backend","arguments":{}}),
+                None,
+            ))
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        assert_eq!(body["result"]["resultType"], "complete");
+        assert_eq!(runtime.sessions.lock().await.len(), 0);
+        let request = received.await.expect("backend request");
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("mcp-method: tools/call")
+        );
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("mcp-name: modern_backend")
+        );
+        assert!(request.contains(STATELESS_RC_VERSION));
+        assert!(!request.to_ascii_lowercase().contains("mcp-session-id:"));
+    }
+
+    #[tokio::test]
+    async fn legacy_frontend_translates_stored_metadata_for_stateless_backend() {
+        let (base, received) = spawn_http_server(http_json_response(json!({
+            "jsonrpc":"2.0",
+            "id":1,
+            "result":{"resultType":"complete","content":[{"type":"text","text":"ok"}]}
+        })))
+        .await;
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![stateless_mcp_backend_tool("modern_backend", base.as_str())],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: serde_json::to_vec(&json!({
+                    "jsonrpc":"2.0","id":9,"method":"tools/call",
+                    "params":{"name":"modern_backend","arguments":{}}
+                }))
+                .expect("request"),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 200);
+        let request = received.await.expect("backend request");
+        assert!(request.contains(CLIENT_CAPABILITIES_META_KEY));
+        assert!(request.contains(CLIENT_INFO_META_KEY));
+        assert_eq!(runtime.sessions.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stateless_backend_input_required_becomes_terminal_tool_error() {
+        let (base, _received) = spawn_http_server(http_json_response(json!({
+            "jsonrpc":"2.0",
+            "id":1,
+            "result":{
+                "resultType":"input_required",
+                "requestState":"secret-state",
+                "inputRequests":[{"prompt":"secret"}]
+            }
+        })))
+        .await;
+        let mut config = stateless_test_config(vec![stateless_mcp_backend_tool(
+            "modern_backend",
+            base.as_str(),
+        )]);
+        config.protocols.stateless.enabled = true;
+        let runtime = McpRouterRuntime::new(config).expect("runtime");
+        let response = runtime
+            .handle_request(stateless_request(
+                "tools/call",
+                json!({"name":"modern_backend","arguments":{}}),
+                None,
+            ))
+            .await
+            .expect("handle")
+            .expect("response");
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        assert_eq!(body["result"]["resultType"], "complete");
+        assert_eq!(body["result"]["isError"], true);
+        assert_eq!(
+            body["result"]["content"][0]["text"],
+            "light-gateway does not support MCP multi round-trip bridging for this backend"
+        );
+        assert!(!body.to_string().contains("secret-state"));
+    }
+
+    #[test]
+    fn runtime_rejects_conflicting_profiles_for_same_backend_target() {
+        let mut legacy = stateless_mcp_backend_tool("legacy", "https://runtime.example.com");
+        legacy.backend_mcp_protocol = Some(McpBackendProtocol::Legacy);
+        legacy.backend_credential_mode = Some(McpBackendCredentialMode::Anonymous);
+        let modern = stateless_mcp_backend_tool("modern", "https://runtime.example.com");
+        let error = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![legacy, modern],
+            ..McpRouterConfig::default()
+        })
+        .expect_err("conflict must fail before runtime swap");
+        assert!(
+            error
+                .to_string()
+                .contains("must agree on backend MCP profile")
+        );
+    }
+
+    #[tokio::test]
+    async fn caller_audience_mismatch_rejects_before_backend_traffic() {
+        let mut tool = stateless_mcp_backend_tool("modern_backend", "http://127.0.0.1:1");
+        tool.backend_credential_mode = Some(McpBackendCredentialMode::Caller);
+        tool.backend_resource = Some("https://runtime.example.com/mcp".to_string());
+        let mut config = stateless_test_config(vec![tool]);
+        config.protocols.stateless.enabled = true;
+        let runtime = McpRouterRuntime::new(config).expect("runtime");
+        let mut request = stateless_request(
+            "tools/call",
+            json!({"name":"modern_backend","arguments":{}}),
+            None,
+        );
+        request.headers.push((
+            "authorization".to_string(),
+            "Bearer caller-token".to_string(),
+        ));
+        let response = runtime
+            .handle_request_with_context(
+                request,
+                McpRequestContext {
+                    auth: Some(AuthPrincipal {
+                        user_id: Some("user-1".to_string()),
+                        claims: json!({"aud":"https://other.example.com/mcp"}),
+                        ..AuthPrincipal::default()
+                    }),
+                    ..McpRequestContext::default()
+                },
+            )
+            .await
+            .expect("handle")
+            .expect("response");
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("audience does not match")
+        );
+    }
+
+    #[tokio::test]
+    async fn caller_credential_is_forwarded_only_after_exact_audience_match() {
+        let (base, received) = spawn_http_server(http_json_response(json!({
+            "jsonrpc":"2.0","id":1,
+            "result":{"resultType":"complete","content":[{"type":"text","text":"ok"}]}
+        })))
+        .await;
+        let resource = format!("{}/weather", base.trim_end_matches('/'));
+        let mut tool = stateless_mcp_backend_tool("modern_backend", base.as_str());
+        tool.backend_credential_mode = Some(McpBackendCredentialMode::Caller);
+        tool.backend_resource = Some(resource.clone());
+        let mut config = stateless_test_config(vec![tool]);
+        config.protocols.stateless.enabled = true;
+        let runtime = McpRouterRuntime::new(config).expect("runtime");
+        let mut request = stateless_request(
+            "tools/call",
+            json!({"name":"modern_backend","arguments":{}}),
+            None,
+        );
+        request.headers.push((
+            "authorization".to_string(),
+            "Bearer caller-token".to_string(),
+        ));
+        let response = runtime
+            .handle_request_with_context(
+                request,
+                McpRequestContext {
+                    auth: Some(AuthPrincipal {
+                        user_id: Some("user-1".to_string()),
+                        claims: json!({"aud":["unrelated", resource]}),
+                        ..AuthPrincipal::default()
+                    }),
+                    ..McpRequestContext::default()
+                },
+            )
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 200);
+        let request = received.await.expect("backend request");
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer caller-token")
+        );
+    }
+
+    #[tokio::test]
+    async fn stateless_backend_rejects_unexpected_session_state() {
+        let (base, _received) = spawn_http_server(http_json_response_with_headers(
+            json!({
+                "jsonrpc":"2.0","id":1,
+                "result":{"resultType":"complete","content":[]}
+            }),
+            &[(MCP_SESSION_ID_HEADER, "must-not-exist")],
+        ))
+        .await;
+        let mut config = stateless_test_config(vec![stateless_mcp_backend_tool(
+            "modern_backend",
+            base.as_str(),
+        )]);
+        config.protocols.stateless.enabled = true;
+        let runtime = McpRouterRuntime::new(config).expect("runtime");
+        let response = runtime
+            .handle_request(stateless_request(
+                "tools/call",
+                json!({"name":"modern_backend","arguments":{}}),
+                None,
+            ))
+            .await
+            .expect("handle")
+            .expect("response");
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("unexpected session state")
+        );
+    }
+
+    #[tokio::test]
+    async fn stateless_backend_rejects_response_profile_mismatch() {
+        let (base, _received) = spawn_http_server(http_json_response_with_headers(
+            json!({
+                "jsonrpc":"2.0","id":1,
+                "result":{"resultType":"complete","content":[]}
+            }),
+            &[(MCP_PROTOCOL_VERSION_HEADER, "2025-11-25")],
+        ))
+        .await;
+        let mut config = stateless_test_config(vec![stateless_mcp_backend_tool(
+            "modern_backend",
+            base.as_str(),
+        )]);
+        config.protocols.stateless.enabled = true;
+        let runtime = McpRouterRuntime::new(config).expect("runtime");
+        let response = runtime
+            .handle_request(stateless_request(
+                "tools/call",
+                json!({"name":"modern_backend","arguments":{}}),
+                None,
+            ))
+            .await
+            .expect("handle")
+            .expect("response");
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("protocol version does not match")
+        );
+    }
+
+    #[tokio::test]
+    async fn stateless_backend_regenerates_encoded_parameter_headers() {
+        let (base, received) = spawn_http_server(http_json_response(json!({
+            "jsonrpc":"2.0","id":1,
+            "result":{"resultType":"complete","content":[]}
+        })))
+        .await;
+        let mut tool = stateless_mcp_backend_tool("modern_backend", base.as_str());
+        tool.input_schema = json!({
+            "type":"object",
+            "required":["city"],
+            "properties":{"city":{"type":"string","x-mcp-header":"Mcp-Param-City"}}
+        });
+        tool.input_schema_configured = true;
+        let mut config = stateless_test_config(vec![tool]);
+        config.protocols.stateless.enabled = true;
+        let runtime = McpRouterRuntime::new(config).expect("runtime");
+        let mut request = stateless_request(
+            "tools/call",
+            json!({"name":"modern_backend","arguments":{"city":"Montréal"}}),
+            None,
+        );
+        request.headers.push((
+            "Mcp-Param-City".to_string(),
+            encode_header_value("Montréal").expect("encoded"),
+        ));
+        let response = runtime
+            .handle_request(request)
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 200);
+        let request = received.await.expect("backend request");
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("mcp-param-city: =?base64?tw9udhldqwfs?=")
+        );
     }
 
     #[tokio::test]
