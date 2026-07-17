@@ -1721,8 +1721,24 @@ impl McpRouterRuntime {
         let key = self.stateless_cache_key("server/discover", effective)?;
         let now = Instant::now();
         if let Some(result) = self.stateless_discover_cache.lock().await.get(&key, now) {
+            tracing::debug!(
+                target: "light_pingora::mcp",
+                frontendProfile = "stateless",
+                protocolVersion = effective.protocol_version,
+                operation = "server/discover",
+                cacheOutcome = "hit",
+                "mcp stateless response cache"
+            );
             return Ok(result);
         }
+        tracing::debug!(
+            target: "light_pingora::mcp",
+            frontendProfile = "stateless",
+            protocolVersion = effective.protocol_version,
+            operation = "server/discover",
+            cacheOutcome = "miss",
+            "mcp stateless response cache"
+        );
         let ttl_ms = self.config.protocols.stateless.discover_ttl_ms;
         let result = json!({
             "supportedVersions": self.config.protocols.stateless.versions,
@@ -1790,8 +1806,24 @@ impl McpRouterRuntime {
         let key = self.stateless_cache_key("tools/list", effective)?;
         let now = Instant::now();
         if let Some(result) = self.stateless_tools_list_cache.lock().await.get(&key, now) {
+            tracing::debug!(
+                target: "light_pingora::mcp",
+                frontendProfile = "stateless",
+                protocolVersion = effective.protocol_version,
+                operation = "tools/list",
+                cacheOutcome = "hit",
+                "mcp stateless response cache"
+            );
             return Ok(result);
         }
+        tracing::debug!(
+            target: "light_pingora::mcp",
+            frontendProfile = "stateless",
+            protocolVersion = effective.protocol_version,
+            operation = "tools/list",
+            cacheOutcome = "miss",
+            "mcp stateless response cache"
+        );
         let mut visible_names = Vec::new();
         for (index, tool) in self.tools.values().enumerate() {
             if self
@@ -1807,6 +1839,15 @@ impl McpRouterRuntime {
             }
         }
         if visible_names.len() > self.config.protocols.stateless.max_tools_list_items {
+            tracing::warn!(
+                target: "light_pingora::mcp",
+                frontendProfile = "stateless",
+                protocolVersion = effective.protocol_version,
+                operation = "tools/list",
+                limitClass = "catalog-items",
+                configuredLimit = self.config.protocols.stateless.max_tools_list_items,
+                "mcp stateless resource limit"
+            );
             return Err(stateless_catalog_limit_error());
         }
         let mut result = self.tools_list_response_from_names(visible_names);
@@ -1822,6 +1863,15 @@ impl McpRouterRuntime {
         }))
         .expect("JSON value serialization cannot fail");
         if encoded.len() > self.config.max_response_body_bytes {
+            tracing::warn!(
+                target: "light_pingora::mcp",
+                frontendProfile = "stateless",
+                protocolVersion = effective.protocol_version,
+                operation = "tools/list",
+                limitClass = "response-bytes",
+                configuredLimit = self.config.max_response_body_bytes,
+                "mcp stateless resource limit"
+            );
             return Err(stateless_catalog_limit_error());
         }
         self.stateless_tools_list_cache.lock().await.insert(
@@ -2619,6 +2669,7 @@ impl McpRouterRuntime {
                 started,
                 "denied",
                 "denied",
+                effective,
                 context,
             );
             return Err(McpExecutionError {
@@ -2682,6 +2733,7 @@ impl McpRouterRuntime {
                         started,
                         "denied",
                         policy_outcome,
+                        effective,
                         context,
                     );
                     return Err(McpExecutionError {
@@ -2762,6 +2814,7 @@ impl McpRouterRuntime {
                     started,
                     "error",
                     policy_outcome,
+                    effective,
                     context,
                 );
                 return Err(error);
@@ -2810,6 +2863,7 @@ impl McpRouterRuntime {
                         started,
                         "output_schema_error",
                         policy_outcome,
+                        effective,
                         context,
                     );
                     return Ok(result);
@@ -2864,6 +2918,7 @@ impl McpRouterRuntime {
             started,
             status,
             policy_outcome,
+            effective,
             context,
         );
         Ok(result)
@@ -4710,12 +4765,27 @@ fn log_mcp_tool_call(
     started: Instant,
     status: &str,
     policy_outcome: &str,
+    effective: &EffectiveMcpRequestContext<'_>,
     context: &McpRequestContext,
 ) {
+    let frontend_profile = match effective.frontend_profile {
+        FrontendProfile::Legacy => "legacy",
+        FrontendProfile::Stateless => "stateless",
+    };
+    let backend_profile = match tool.api_type {
+        McpToolType::Http => "http",
+        McpToolType::Mcp => match tool_backend_protocol(tool) {
+            McpBackendProtocol::Legacy => "mcp-legacy",
+            McpBackendProtocol::Stateless => "mcp-stateless",
+        },
+    };
     tracing::info!(
         target: "light_pingora::mcp",
         toolName = %tool.name,
         endpoint = %endpoint,
+        frontendProfile = frontend_profile,
+        protocolVersion = effective.protocol_version,
+        backendProfile = backend_profile,
         durationMs = started.elapsed().as_millis(),
         status = %status,
         policyOutcome = %policy_outcome,
@@ -11226,6 +11296,60 @@ endpointRules:
             .body;
         assert_eq!(first_body, second_body);
         assert!(discovery.lookups.lock().expect("lookups").is_empty());
+    }
+
+    #[tokio::test]
+    async fn stateless_discover_list_and_call_alternate_independent_replicas() {
+        let response = http_json_response(json!({"replicaIndependent": true}));
+        let (base, received) = spawn_http_sequence_server(vec![response.clone(), response]).await;
+        let mut config = stateless_test_config(vec![test_tool(
+            "weather",
+            "Get weather",
+            base.as_str(),
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        )]);
+        config.protocols.stateless.enabled = true;
+        let replicas = [
+            McpRouterRuntime::new(config.clone()).expect("first replica"),
+            McpRouterRuntime::new(config).expect("second replica"),
+        ];
+
+        for replica in &replicas {
+            let discover = replica
+                .handle_request(stateless_request("server/discover", json!({}), None))
+                .await
+                .expect("discover handle")
+                .expect("discover response");
+            assert_eq!(discover.status, 200);
+
+            let list = replica
+                .handle_request(stateless_request("tools/list", json!({}), None))
+                .await
+                .expect("list handle")
+                .expect("list response");
+            let list = serde_json::from_slice::<JsonValue>(&list.body).expect("list json");
+            assert_eq!(list["result"]["tools"][0]["name"], "weather");
+
+            let call = replica
+                .handle_request(stateless_request(
+                    "tools/call",
+                    json!({"name":"weather","arguments":{}}),
+                    None,
+                ))
+                .await
+                .expect("call handle")
+                .expect("call response");
+            let call = serde_json::from_slice::<JsonValue>(&call.body).expect("call json");
+            assert_eq!(
+                call["result"]["structuredContent"]["replicaIndependent"],
+                true
+            );
+            assert_eq!(replica.sessions.lock().await.len(), 0);
+        }
+
+        assert_eq!(received.await.expect("backend requests").len(), 2);
     }
 
     #[tokio::test]
