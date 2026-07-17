@@ -6,6 +6,14 @@ maxRequestBodyBytes: ${mcp-router.maxRequestBodyBytes:1048576}
 maxResponseBodyBytes: ${mcp-router.maxResponseBodyBytes:4194304}
 maxJsonDepth: ${mcp-router.maxJsonDepth:128}
 originAllowlist: ${mcp-router.originAllowlist:[]}
+schema:
+  defaultDialect: ${mcp-router.schema.defaultDialect:https://json-schema.org/draft/2020-12/schema}
+  allowExternalRefs: ${mcp-router.schema.allowExternalRefs:false}
+  maxSchemaBytes: ${mcp-router.schema.maxSchemaBytes:1048576}
+  maxDepth: ${mcp-router.schema.maxDepth:64}
+  maxSubschemas: ${mcp-router.schema.maxSubschemas:4096}
+  maxConcurrentValidations: ${mcp-router.schema.maxConcurrentValidations:32}
+  validationWatchdogMs: ${mcp-router.schema.validationWatchdogMs:50}
 protocols:
   legacy:
     enabled: ${mcp-router.protocols.legacy.enabled:true}
@@ -14,9 +22,11 @@ protocols:
     enabled: ${mcp-router.protocols.stateless.enabled:false}
     versions: ${mcp-router.protocols.stateless.versions:[2026-07-28]}
     discoverTtlMs: ${mcp-router.protocols.stateless.discoverTtlMs:30000}
+    discoverCacheScope: ${mcp-router.protocols.stateless.discoverCacheScope:private}
     toolsListTtlMs: ${mcp-router.protocols.stateless.toolsListTtlMs:30000}
+    toolsListCacheScope: ${mcp-router.protocols.stateless.toolsListCacheScope:private}
     maxDiscoverCacheEntries: ${mcp-router.protocols.stateless.maxDiscoverCacheEntries:1024}
-    maxToolsListCacheEntries: ${mcp-router.protocols.stateless.maxToolsListCacheEntries:1024}
+    maxToolsListCacheEntries: ${mcp-router.protocols.stateless.maxToolsListCacheEntries:4096}
     maxToolsListItems: ${mcp-router.protocols.stateless.maxToolsListItems:1024}
     maxConcurrentRequests: ${mcp-router.protocols.stateless.maxConcurrentRequests:1024}
     maxConcurrentRequestsPerPrincipal: ${mcp-router.protocols.stateless.maxConcurrentRequestsPerPrincipal:32}
@@ -24,4 +34,5 @@ protocols:
     maxSubscriptions: ${mcp-router.protocols.stateless.maxSubscriptions:10000}
     maxSubscriptionsPerPrincipal: ${mcp-router.protocols.stateless.maxSubscriptionsPerPrincipal:4}
     maxSubscriptionDurationMs: ${mcp-router.protocols.stateless.maxSubscriptionDurationMs:900000}
+    statelessToLegacyBridge: ${mcp-router.protocols.stateless.statelessToLegacyBridge:reject}
 tools: ${mcp-router.tools:[]}

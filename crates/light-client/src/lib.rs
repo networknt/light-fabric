@@ -11,7 +11,7 @@ pub use config::{
 };
 pub use http::{
     CaBundleError, ClientBuildError, ClientFactory, EndpointOptions, build_reqwest_client,
-    load_ca_cert_bundle, parse_ca_cert_bundle,
+    is_blocked_public_target_ip, load_ca_cert_bundle, parse_ca_cert_bundle,
 };
 pub use oauth::{OAuthClient, OAuthClientError, OAuthEndpoint};
 pub use provider::{

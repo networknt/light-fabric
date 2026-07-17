@@ -1,6 +1,7 @@
 use crate::config::{ClientConfig, ClientRequestConfig, ClientTlsConfig, TlsVersion};
 use std::fmt;
 use std::io::{BufReader, Cursor};
+use std::net::IpAddr;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -48,6 +49,75 @@ impl ClientFactory {
     ) -> Result<reqwest::Client, ClientBuildError> {
         build_reqwest_client(&self.request, &self.tls, options)
     }
+
+    /// Builds a client whose authoritative connection-time DNS lookup rejects
+    /// loopback, private, link-local, carrier-grade NAT, benchmark, metadata,
+    /// unspecified, and multicast addresses. Callers must use a separately
+    /// constructed ordinary client for explicitly approved internal targets.
+    pub fn reqwest_client_public_dns_only(
+        &self,
+        options: EndpointOptions,
+    ) -> Result<reqwest::Client, ClientBuildError> {
+        build_reqwest_client_with_dns_policy(&self.request, &self.tls, options, true)
+    }
+}
+
+#[derive(Debug)]
+struct PublicDnsResolver;
+
+impl reqwest::dns::Resolve for PublicDnsResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addresses = tokio::net::lookup_host((host.as_str(), 0))
+                .await?
+                .collect::<Vec<_>>();
+            if addresses.is_empty() {
+                return Err(std::io::Error::other(format!(
+                    "DNS lookup for `{host}` returned no addresses"
+                ))
+                .into());
+            }
+            if addresses
+                .iter()
+                .any(|address| is_blocked_public_target_ip(address.ip()))
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("DNS lookup for `{host}` returned a non-public address"),
+                )
+                .into());
+            }
+            Ok(Box::new(addresses.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// Shared public-target policy used by both preflight validation and the
+/// connection-time resolver so DNS rebinding cannot bypass an earlier check.
+pub fn is_blocked_public_target_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(address) => {
+            let octets = address.octets();
+            address.is_loopback()
+                || address.is_private()
+                || address.is_link_local()
+                || address.is_unspecified()
+                || octets == [169, 254, 169, 254]
+                || octets[0] == 0
+                || octets[0] >= 224
+                || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+                || (octets[0] == 198 && matches!(octets[1], 18 | 19))
+        }
+        IpAddr::V6(address) => {
+            let segment = address.segments()[0];
+            address.is_loopback()
+                || address.is_unspecified()
+                || address.is_multicast()
+                || (segment & 0xfe00) == 0xfc00
+                || (segment & 0xffc0) == 0xfe80
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -81,6 +151,7 @@ pub enum ClientBuildError {
         proxy_url: String,
         source: reqwest::Error,
     },
+    PublicDnsPolicyWithProxy,
     Build(reqwest::Error),
 }
 
@@ -176,6 +247,10 @@ impl fmt::Display for ClientBuildError {
             Self::Proxy { proxy_url, source } => {
                 write!(f, "invalid client proxy `{proxy_url}`: {source}")
             }
+            Self::PublicDnsPolicyWithProxy => write!(
+                f,
+                "public-target connection-time DNS policy cannot be combined with an HTTP proxy"
+            ),
             Self::Build(source) => write!(f, "invalid HTTP client: {source}"),
         }
     }
@@ -184,7 +259,7 @@ impl fmt::Display for ClientBuildError {
 impl std::error::Error for ClientBuildError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::ClientIdentityIncomplete { .. } => None,
+            Self::ClientIdentityIncomplete { .. } | Self::PublicDnsPolicyWithProxy => None,
             Self::ClientCertRead { source, .. } => Some(source),
             Self::ClientKeyRead { source, .. } => Some(source),
             Self::ClientIdentityParse { source, .. } => Some(source),
@@ -201,6 +276,26 @@ pub fn build_reqwest_client(
     tls: &ClientTlsConfig,
     options: EndpointOptions,
 ) -> Result<reqwest::Client, ClientBuildError> {
+    build_reqwest_client_with_dns_policy(request, tls, options, false)
+}
+
+fn build_reqwest_client_with_dns_policy(
+    request: &ClientRequestConfig,
+    tls: &ClientTlsConfig,
+    options: EndpointOptions,
+    public_dns_only: bool,
+) -> Result<reqwest::Client, ClientBuildError> {
+    if public_dns_only
+        && options
+            .proxy_host
+            .as_deref()
+            .is_some_and(|host| !host.trim().is_empty())
+    {
+        // An HTTP proxy resolves the origin independently, so this process
+        // cannot enforce the public-only address policy at connect time.
+        return Err(ClientBuildError::PublicDnsPolicyWithProxy);
+    }
+
     let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_millis(
             options
@@ -210,6 +305,10 @@ pub fn build_reqwest_client(
         .timeout(Duration::from_millis(
             options.timeout_ms.unwrap_or(request.timeout),
         ));
+
+    if public_dns_only {
+        builder = builder.dns_resolver(Arc::new(PublicDnsResolver));
+    }
 
     if request.connection_expire_time == 0 {
         builder = builder.pool_idle_timeout(None);
@@ -468,6 +567,48 @@ mod tests {
         assert!(matches!(
             error,
             ClientBuildError::ClientIdentityIncomplete { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn public_dns_policy_rejects_non_public_connection_addresses() {
+        for address in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "198.18.0.1",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+        ] {
+            assert!(is_blocked_public_target_ip(
+                address.parse().expect("IP address")
+            ));
+        }
+        assert!(!is_blocked_public_target_ip(
+            "8.8.8.8".parse().expect("public IP")
+        ));
+
+        let result = reqwest::dns::Resolve::resolve(
+            &PublicDnsResolver,
+            "localhost".parse().expect("DNS name"),
+        )
+        .await;
+        let error = match result {
+            Ok(_) => panic!("localhost must be rejected at connection-time resolution"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("non-public address"));
+
+        let factory = ClientFactory::from_config(&ClientConfig::default());
+        let result = factory.reqwest_client_public_dns_only(EndpointOptions {
+            proxy_host: Some("proxy.example".to_string()),
+            ..EndpointOptions::default()
+        });
+        assert!(matches!(
+            result,
+            Err(ClientBuildError::PublicDnsPolicyWithProxy)
         ));
     }
 }

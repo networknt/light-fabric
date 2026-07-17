@@ -24,7 +24,7 @@ use crate::token::{CLIENT_FILE, TokenRuntime, load_client_config, load_token_run
 use agent_delegation::{DelegationClaims, DelegationKind};
 use async_trait::async_trait;
 use bytes::Bytes;
-use light_client::{ClientConfig, ClientFactory, EndpointOptions};
+use light_client::{ClientConfig, ClientFactory, EndpointOptions, is_blocked_public_target_ip};
 use light_runtime::{
     DirectRegistryConfig, DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, ModuleKind,
     PortalRegistryClient, RuntimeConfig, RuntimeError,
@@ -37,7 +37,6 @@ use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use serde_yaml::Value as YamlValue;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::error::Error as StdError;
 use std::fmt;
 use std::io::{self, Write};
 use std::net::IpAddr;
@@ -74,6 +73,8 @@ const MAX_TOOL_RETRY_BACKOFF: Duration = Duration::from_secs(1);
 const RETRYABLE_STATUS_CODES: &[u16] = &[408, 425, 429, 500, 502, 503, 504];
 const SUBSCRIPTION_CHANNEL_CAPACITY: usize = 2;
 const SUBSCRIPTION_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
+const MAX_MCP_ERROR_RESPONSE_BYTES: usize = 2 * 1024;
+const MAX_MCP_ERROR_MESSAGE_BYTES: usize = 1024;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -153,8 +154,30 @@ impl Default for McpLegacyProtocolConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum McpCacheScope {
+    #[default]
+    Private,
+}
+
+impl McpCacheScope {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Private => "private",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub enum McpStatelessToLegacyBridge {
+    #[default]
+    Reject,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct McpStatelessProtocolConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -165,8 +188,12 @@ pub struct McpStatelessProtocolConfig {
     pub versions: Vec<String>,
     #[serde(default = "default_stateless_discover_ttl_ms")]
     pub discover_ttl_ms: u64,
+    #[serde(default)]
+    pub discover_cache_scope: McpCacheScope,
     #[serde(default = "default_stateless_tools_list_ttl_ms")]
     pub tools_list_ttl_ms: u64,
+    #[serde(default)]
+    pub tools_list_cache_scope: McpCacheScope,
     #[serde(default = "default_stateless_discover_cache_entries")]
     pub max_discover_cache_entries: usize,
     #[serde(default = "default_stateless_tools_list_cache_entries")]
@@ -185,6 +212,8 @@ pub struct McpStatelessProtocolConfig {
     pub max_subscriptions_per_principal: usize,
     #[serde(default = "default_stateless_max_subscription_duration_ms")]
     pub max_subscription_duration_ms: u64,
+    #[serde(default)]
+    pub stateless_to_legacy_bridge: McpStatelessToLegacyBridge,
 }
 
 impl Default for McpStatelessProtocolConfig {
@@ -193,7 +222,9 @@ impl Default for McpStatelessProtocolConfig {
             enabled: false,
             versions: default_stateless_protocol_versions(),
             discover_ttl_ms: default_stateless_discover_ttl_ms(),
+            discover_cache_scope: McpCacheScope::default(),
             tools_list_ttl_ms: default_stateless_tools_list_ttl_ms(),
+            tools_list_cache_scope: McpCacheScope::default(),
             max_discover_cache_entries: default_stateless_discover_cache_entries(),
             max_tools_list_cache_entries: default_stateless_tools_list_cache_entries(),
             max_tools_list_items: default_stateless_tools_list_items(),
@@ -205,6 +236,7 @@ impl Default for McpStatelessProtocolConfig {
             max_subscriptions: default_stateless_max_subscriptions(),
             max_subscriptions_per_principal: default_stateless_max_subscriptions_per_principal(),
             max_subscription_duration_ms: default_stateless_max_subscription_duration_ms(),
+            stateless_to_legacy_bridge: McpStatelessToLegacyBridge::default(),
         }
     }
 }
@@ -1021,6 +1053,7 @@ struct McpBackendSession {
     session_id: Option<String>,
     protocol_version: String,
     agent_headers: Vec<(String, String)>,
+    allow_private_target_host: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1249,7 +1282,8 @@ pub struct McpRouterRuntime {
     tools: BTreeMap<String, PreparedMcpTool>,
     schema_validation: SchemaValidationPool,
     stateless_resources: Arc<StatelessResourceBudgets>,
-    client: reqwest::Client,
+    public_target_client: reqwest::Client,
+    private_target_client: reqwest::Client,
     direct_registry: DirectRegistryConfig,
     discovery: Option<Arc<dyn McpDiscoveryResolver>>,
     policy: Option<Arc<AccessControlRuntime>>,
@@ -1398,10 +1432,20 @@ impl McpRouterRuntime {
                 .max_concurrent_requests_per_principal,
         )
         .map_err(|message| RuntimeError::Unsupported(format!("invalid MCP limits: {message}")))?;
-        let client = ClientFactory::from_config(&client_config)
+        let client_factory = ClientFactory::from_config(&client_config);
+        let public_target_client = client_factory
+            .reqwest_client_public_dns_only(EndpointOptions::default())
+            .map_err(|error| {
+                RuntimeError::Unsupported(format!(
+                    "invalid MCP HTTP client for public targets: {error}"
+                ))
+            })?;
+        let private_target_client = client_factory
             .reqwest_client(EndpointOptions::default())
             .map_err(|error| {
-                RuntimeError::Unsupported(format!("invalid MCP HTTP client: {error}"))
+                RuntimeError::Unsupported(format!(
+                    "invalid MCP HTTP client for approved private targets: {error}"
+                ))
             })?;
         let tools_list_cache_entries = policy
             .as_ref()
@@ -1425,7 +1469,8 @@ impl McpRouterRuntime {
             tools,
             schema_validation,
             stateless_resources: Arc::new(stateless_resources),
-            client,
+            public_target_client,
+            private_target_client,
             direct_registry,
             discovery,
             policy,
@@ -2204,7 +2249,7 @@ impl McpRouterRuntime {
             },
             "instructions": "This gateway exposes an authorization-filtered MCP tool facade.",
             "ttlMs": ttl_ms,
-            "cacheScope": "private"
+            "cacheScope": self.config.protocols.stateless.discover_cache_scope.as_str()
         });
         self.stateless_discover_cache.lock().await.insert(
             key,
@@ -2307,7 +2352,16 @@ impl McpRouterRuntime {
         let result_object = result.as_object_mut().expect("tools/list result object");
         result_object.insert("resultType".to_string(), json!("complete"));
         result_object.insert("ttlMs".to_string(), json!(ttl_ms));
-        result_object.insert("cacheScope".to_string(), json!("private"));
+        result_object.insert(
+            "cacheScope".to_string(),
+            json!(
+                self.config
+                    .protocols
+                    .stateless
+                    .tools_list_cache_scope
+                    .as_str()
+            ),
+        );
         let encoded = serde_json::to_vec(&json!({
             "jsonrpc": "2.0",
             "id": message.get("id").cloned().unwrap_or(JsonValue::Null),
@@ -3387,6 +3441,18 @@ impl McpRouterRuntime {
             .await
     }
 
+    fn backend_client(&self, allow_private_target_host: bool) -> &reqwest::Client {
+        if allow_private_target_host {
+            &self.private_target_client
+        } else {
+            &self.public_target_client
+        }
+    }
+
+    fn backend_client_for_tool(&self, tool: &McpToolConfig) -> &reqwest::Client {
+        self.backend_client(tool_allows_private_target_host(tool))
+    }
+
     async fn execute_http_tool_with_method(
         &self,
         tool: &McpToolConfig,
@@ -3506,7 +3572,7 @@ impl McpRouterRuntime {
             append_query_arguments(&mut url, arguments);
         }
 
-        let request_url = url.to_string();
+        let request_target = url.host_str().unwrap_or("<unknown>").to_string();
         let request_method = method.as_reqwest();
 
         let mut request_headers = outbound_headers(agent_headers)?;
@@ -3595,7 +3661,7 @@ impl McpRouterRuntime {
 
         loop {
             let mut request = self
-                .client
+                .backend_client_for_tool(tool)
                 .request(request_method.clone(), url.clone())
                 .headers(request_headers.clone());
 
@@ -3617,7 +3683,7 @@ impl McpRouterRuntime {
                                 .as_ref()
                                 .map_or(1, |policy| policy.max_attempts),
                             "transport",
-                            error_chain(&error).as_str(),
+                            reqwest_error_class(&error),
                         );
                         if let Some(policy) = retry_policy.as_ref() {
                             sleep_retry_backoff(policy).await;
@@ -3625,16 +3691,19 @@ impl McpRouterRuntime {
                         attempt += 1;
                         continue;
                     }
-                    let detail = error_chain(&error);
+                    let detail = reqwest_error_class(&error);
                     tracing::warn!(
                         target: "light_pingora::mcp",
                         toolName = %tool.name,
                         method = %request_method,
-                        url = %request_url,
+                        targetHost = %request_target,
                         error = %detail,
                         "mcp backend request failed"
                     );
-                    return Err(McpExecutionError::execution_failed(detail));
+                    return Err(McpExecutionError::execution_failed(format!(
+                        "tool `{}` backend request failed",
+                        tool.name
+                    )));
                 }
             };
             let status = response.status();
@@ -3653,11 +3722,12 @@ impl McpRouterRuntime {
                 )));
             }
             let mut body = Vec::new();
-            while let Some(chunk) = response
-                .chunk()
-                .await
-                .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?
-            {
+            while let Some(chunk) = response.chunk().await.map_err(|_| {
+                McpExecutionError::execution_failed(format!(
+                    "tool `{}` backend response read failed",
+                    tool.name
+                ))
+            })? {
                 if chunk.len()
                     > self
                         .config
@@ -3693,10 +3763,9 @@ impl McpRouterRuntime {
                     continue;
                 }
                 return Err(McpExecutionError::execution_failed(format!(
-                    "tool `{}` returned HTTP {}: {}",
+                    "tool `{}` returned HTTP {}",
                     tool.name,
-                    status.as_u16(),
-                    String::from_utf8_lossy(&body)
+                    status.as_u16()
                 )));
             }
             if body.is_empty() {
@@ -3772,16 +3841,14 @@ impl McpRouterRuntime {
         // Content length and host remain transport-owned.
         headers.remove(reqwest::header::CONTENT_LENGTH);
         let response = self
-            .client
+            .backend_client_for_tool(tool)
             .post(url.clone())
             .headers(headers)
             .json(&request)
             .send()
             .await
-            .map_err(|error| {
-                McpExecutionError::execution_failed(format!(
-                    "stateless MCP backend request failed: {error}"
-                ))
+            .map_err(|_| {
+                McpExecutionError::execution_failed("stateless MCP backend request failed")
             })?;
         let (status, content_type, response_headers, body) = read_backend_mcp_response(
             response,
@@ -4047,6 +4114,7 @@ impl McpRouterRuntime {
         let credential_identity = backend_credential_identity(tool, effective.request);
         let url = self.tool_target_url(tool).await?;
         validate_target_host_resolution(tool, &url).await?;
+        let allow_private_target_host = tool_allows_private_target_host(tool);
         let backend_session = self
             .ensure_backend_session(
                 frontend_session_id,
@@ -4054,6 +4122,7 @@ impl McpRouterRuntime {
                 agent_headers,
                 authorization.as_deref(),
                 credential_identity.as_str(),
+                allow_private_target_host,
             )
             .await?;
         let _requested_protocol_version = profile.protocol_version;
@@ -4078,7 +4147,7 @@ impl McpRouterRuntime {
         let mut attempt = 1;
         let (content_type, body) = loop {
             let response = match self
-                .client
+                .backend_client_for_tool(tool)
                 .post(url.clone())
                 .headers(legacy_backend_headers(
                     agent_headers,
@@ -4103,7 +4172,7 @@ impl McpRouterRuntime {
                                 .as_ref()
                                 .map_or(1, |policy| policy.max_attempts),
                             "transport",
-                            error_chain(&error).as_str(),
+                            reqwest_error_class(&error),
                         );
                         if let Some(policy) = retry_policy.as_ref() {
                             sleep_retry_backoff(policy).await;
@@ -4111,7 +4180,10 @@ impl McpRouterRuntime {
                         attempt += 1;
                         continue;
                     }
-                    return Err(McpExecutionError::execution_failed(error.to_string()));
+                    return Err(McpExecutionError::execution_failed(format!(
+                        "MCP tool `{}` backend request failed",
+                        tool.name
+                    )));
                 }
             };
             let (status, content_type, _headers, body) = read_backend_mcp_response(
@@ -4143,10 +4215,9 @@ impl McpRouterRuntime {
                     continue;
                 }
                 return Err(McpExecutionError::execution_failed(format!(
-                    "MCP tool `{}` returned HTTP {}: {}",
+                    "MCP tool `{}` returned HTTP {}",
                     tool.name,
-                    status.as_u16(),
-                    String::from_utf8_lossy(&body)
+                    status.as_u16()
                 )));
             }
             break (content_type, body);
@@ -4172,6 +4243,7 @@ impl McpRouterRuntime {
         agent_headers: &[(String, String)],
         authorization: Option<&str>,
         credential_identity: &str,
+        allow_private_target_host: bool,
     ) -> Result<McpBackendSession, McpExecutionError> {
         let protocol_version = {
             let store = self.sessions.lock().await;
@@ -4202,6 +4274,7 @@ impl McpRouterRuntime {
                 protocol_version.as_str(),
                 agent_headers,
                 authorization,
+                allow_private_target_host,
             )
             .await?;
         let insert_result = {
@@ -4249,6 +4322,7 @@ impl McpRouterRuntime {
         protocol_version: &str,
         agent_headers: &[(String, String)],
         authorization: Option<&str>,
+        allow_private_target_host: bool,
     ) -> Result<McpBackendSession, McpExecutionError> {
         let request = json!({
             "jsonrpc": "2.0",
@@ -4264,7 +4338,7 @@ impl McpRouterRuntime {
             }
         });
         let response = self
-            .client
+            .backend_client(allow_private_target_host)
             .post(target_url.clone())
             .headers(legacy_backend_headers(
                 agent_headers,
@@ -4275,10 +4349,8 @@ impl McpRouterRuntime {
             .json(&request)
             .send()
             .await
-            .map_err(|error| {
-                McpExecutionError::execution_failed(format!(
-                    "backend MCP initialize failed: {error}"
-                ))
+            .map_err(|_| {
+                McpExecutionError::execution_failed("backend MCP initialize request failed")
             })?;
         let backend_session_id = response
             .headers()
@@ -4294,9 +4366,8 @@ impl McpRouterRuntime {
         .await?;
         if !status.is_success() {
             return Err(McpExecutionError::execution_failed(format!(
-                "backend MCP initialize returned HTTP {}: {}",
-                status.as_u16(),
-                String::from_utf8_lossy(&body)
+                "backend MCP initialize returned HTTP {}",
+                status.as_u16()
             )));
         }
         let message =
@@ -4331,6 +4402,7 @@ impl McpRouterRuntime {
             session_id: backend_session_id,
             protocol_version: backend_protocol_version,
             agent_headers: agent_headers.to_vec(),
+            allow_private_target_host,
         };
         if let Err(error) = self
             .send_backend_initialized(
@@ -4339,6 +4411,7 @@ impl McpRouterRuntime {
                 backend_session.session_id.as_deref(),
                 agent_headers,
                 authorization,
+                allow_private_target_host,
             )
             .await
         {
@@ -4355,6 +4428,7 @@ impl McpRouterRuntime {
         backend_session_id: Option<&str>,
         agent_headers: &[(String, String)],
         authorization: Option<&str>,
+        allow_private_target_host: bool,
     ) -> Result<(), McpExecutionError> {
         let request = json!({
             "jsonrpc": "2.0",
@@ -4362,7 +4436,7 @@ impl McpRouterRuntime {
         });
         let target_url_for_log = target_url.to_string();
         let response = self
-            .client
+            .backend_client(allow_private_target_host)
             .post(target_url)
             .headers(legacy_backend_headers(
                 agent_headers,
@@ -4373,12 +4447,12 @@ impl McpRouterRuntime {
             .json(&request)
             .send()
             .await
-            .map_err(|error| {
-                McpExecutionError::execution_failed(format!(
-                    "backend MCP initialized notification failed: {error}"
-                ))
+            .map_err(|_| {
+                McpExecutionError::execution_failed(
+                    "backend MCP initialized notification request failed",
+                )
             })?;
-        let (status, _content_type, _headers, body) = read_backend_mcp_response(
+        let (status, _content_type, _headers, _body) = read_backend_mcp_response(
             response,
             "notifications/initialized",
             &target_url_for_log,
@@ -4387,9 +4461,8 @@ impl McpRouterRuntime {
         .await?;
         if !status.is_success() {
             return Err(McpExecutionError::execution_failed(format!(
-                "backend MCP initialized notification returned HTTP {}: {}",
-                status.as_u16(),
-                String::from_utf8_lossy(&body)
+                "backend MCP initialized notification returned HTTP {}",
+                status.as_u16()
             )));
         }
         Ok(())
@@ -4399,6 +4472,7 @@ impl McpRouterRuntime {
         let Some(session_id) = backend_session.session_id.as_deref() else {
             return;
         };
+        let target_host = backend_target_host_for_log(&backend_session.target_url);
         let headers = match backend_headers(
             &backend_session.agent_headers,
             Some(session_id),
@@ -4408,7 +4482,7 @@ impl McpRouterRuntime {
             Err(error) => {
                 tracing::warn!(
                     target: "light_pingora::mcp",
-                    url = %backend_session.target_url,
+                    targetHost = %target_host,
                     error = %error.message,
                     "backend MCP session termination headers invalid"
                 );
@@ -4416,7 +4490,7 @@ impl McpRouterRuntime {
             }
         };
         if let Err(error) = self
-            .client
+            .backend_client(backend_session.allow_private_target_host)
             .delete(backend_session.target_url.as_str())
             .headers(headers)
             .send()
@@ -4424,8 +4498,8 @@ impl McpRouterRuntime {
         {
             tracing::warn!(
                 target: "light_pingora::mcp",
-                url = %backend_session.target_url,
-                error = %error,
+                targetHost = %target_host,
+                errorClass = reqwest_error_class(&error),
                 "backend MCP session termination failed"
             );
         }
@@ -5023,6 +5097,11 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
             )));
         }
     }
+    if config.max_response_body_bytes < MAX_MCP_ERROR_RESPONSE_BYTES {
+        return Err(RuntimeError::Unsupported(format!(
+            "mcp-router.maxResponseBodyBytes must be at least {MAX_MCP_ERROR_RESPONSE_BYTES} bytes so bounded protocol errors always fit"
+        )));
+    }
     if !config.protocols.legacy.enabled {
         return Err(RuntimeError::Unsupported(
             "mcp-router.protocols.legacy must remain enabled for the dual-profile milestone"
@@ -5311,15 +5390,16 @@ fn mcp_error_result_text(result: &JsonValue) -> String {
         .to_string()
 }
 
-fn error_chain(error: &(dyn StdError + 'static)) -> String {
-    let mut message = error.to_string();
-    let mut source = error.source();
-    while let Some(error) = source {
-        message.push_str(": ");
-        message.push_str(&error.to_string());
-        source = error.source();
+fn reqwest_error_class(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else if error.is_decode() {
+        "decode"
+    } else {
+        "transport"
     }
-    message
 }
 
 fn mask_tool_arguments(tool: &McpToolConfig, arguments: &JsonValue) -> JsonValue {
@@ -6037,28 +6117,7 @@ fn blocked_target_host_error(tool_name: &str, base: &str) -> McpExecutionError {
 }
 
 fn is_blocked_target_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(address) => {
-            let octets = address.octets();
-            address.is_loopback()
-                || address.is_private()
-                || address.is_link_local()
-                || address.is_unspecified()
-                || octets == [169, 254, 169, 254]
-                || octets[0] == 0
-                || octets[0] >= 224
-                || (octets[0] == 100 && (64..=127).contains(&octets[1]))
-                || (octets[0] == 198 && matches!(octets[1], 18 | 19))
-        }
-        IpAddr::V6(address) => {
-            let segment = address.segments()[0];
-            address.is_loopback()
-                || address.is_unspecified()
-                || address.is_multicast()
-                || (segment & 0xfe00) == 0xfc00
-                || (segment & 0xffc0) == 0xfe80
-        }
-    }
+    is_blocked_public_target_ip(ip)
 }
 
 fn apply_tool_path(mut url: Url, tool: &McpToolConfig) -> Url {
@@ -6708,18 +6767,54 @@ fn rpc_error_response(
     code: i64,
     message: impl Into<String>,
 ) -> Result<McpHttpResponse, RuntimeError> {
-    rpc_body_response(
-        mode,
-        status,
-        json!({
+    let message = truncate_error_message(message.into().as_str());
+    let mut body = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": code,
+            "message": message
+        }
+    });
+    let json_limit = MAX_MCP_ERROR_RESPONSE_BYTES.saturating_sub(64);
+    if !json_value_fits(&body, json_limit)? {
+        body = json!({
             "jsonrpc": "2.0",
-            "id": id,
+            "id": null,
             "error": {
-                "code": code,
-                "message": message.into()
+                "code": -32000,
+                "message": "MCP error response exceeded a gateway limit"
             }
-        }),
-    )
+        });
+    }
+    rpc_body_response(mode, status, body)
+}
+
+fn truncate_error_message(message: &str) -> String {
+    if message.len() <= MAX_MCP_ERROR_MESSAGE_BYTES {
+        return message.to_string();
+    }
+    let suffix = "...";
+    let max_prefix = MAX_MCP_ERROR_MESSAGE_BYTES.saturating_sub(suffix.len());
+    let mut truncated = String::with_capacity(MAX_MCP_ERROR_MESSAGE_BYTES);
+    for ch in message.chars() {
+        if truncated.len() + ch.len_utf8() > max_prefix {
+            break;
+        }
+        truncated.push(ch);
+    }
+    truncated.push_str(suffix);
+    truncated
+}
+
+fn json_value_fits(value: &JsonValue, max_bytes: usize) -> Result<bool, RuntimeError> {
+    let mut writer = BoundedJsonWriter::new(max_bytes);
+    let serialization = serde_json::to_writer(&mut writer, value);
+    if writer.overflowed {
+        return Ok(false);
+    }
+    serialization?;
+    Ok(true)
 }
 
 fn json_error_response(
@@ -6852,13 +6947,14 @@ async fn read_backend_mcp_response(
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    let target_host = backend_target_host_for_log(url);
 
     tracing::debug!(
         target: "light_pingora::mcp",
         operation = %operation,
-        url = %url,
+        targetHost = %target_host,
         status = %status,
-        headers = ?headers,
+        contentType = content_type.as_deref().unwrap_or("<missing>"),
         "received backend MCP response headers"
     );
 
@@ -6883,11 +6979,9 @@ async fn read_backend_mcp_response(
                 tracing::debug!(
                     target: "light_pingora::mcp",
                     operation = %operation,
-                    url = %url,
+                    targetHost = %target_host,
                     status = %status,
-                    headers = ?headers,
                     body_len = body.len(),
-                    body = %String::from_utf8_lossy(body.as_slice()),
                     "received backend MCP response body"
                 );
                 return Ok((status, content_type, headers, body));
@@ -6896,18 +6990,24 @@ async fn read_backend_mcp_response(
                 tracing::debug!(
                     target: "light_pingora::mcp",
                     operation = %operation,
-                    url = %url,
+                    targetHost = %target_host,
                     status = %status,
-                    headers = ?headers,
                     error = %error,
                     "failed to decode backend MCP response body"
                 );
                 return Err(McpExecutionError::execution_failed(format!(
-                    "backend MCP {operation} response read failed: {error}"
+                    "backend MCP {operation} response read failed"
                 )));
             }
         }
     }
+}
+
+fn backend_target_host_for_log(url: &str) -> String {
+    Url::parse(url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .unwrap_or_else(|| "<unknown>".to_string())
 }
 
 fn parse_mcp_backend_response(
@@ -7491,6 +7591,50 @@ mod tests {
         );
         assert!(!config.protocols.stateless.enabled);
         assert!(config.protocols.stateless.versions.is_empty());
+    }
+
+    #[test]
+    fn stateless_config_accepts_only_locked_cache_scope_and_bridge_fields() {
+        let config = serde_yaml::from_str::<McpRouterConfig>(
+            r#"
+protocols:
+  stateless:
+    enabled: true
+    versions: [2026-07-28]
+    discoverCacheScope: private
+    toolsListCacheScope: private
+    statelessToLegacyBridge: reject
+"#,
+        )
+        .expect("locked stateless config");
+        assert_eq!(
+            config.protocols.stateless.discover_cache_scope,
+            McpCacheScope::Private
+        );
+        assert_eq!(
+            config.protocols.stateless.tools_list_cache_scope,
+            McpCacheScope::Private
+        );
+        assert_eq!(
+            config.protocols.stateless.stateless_to_legacy_bridge,
+            McpStatelessToLegacyBridge::Reject
+        );
+
+        for invalid in [
+            "discoverCacheScope: public",
+            "toolsListCacheScope: public",
+            "statelessToLegacyBridge: perRequest",
+            "unknownStatelessControl: true",
+        ] {
+            let yaml = format!(
+                "protocols:\n  stateless:\n    enabled: true\n    versions: [2026-07-28]\n    {}\n",
+                invalid
+            );
+            assert!(
+                serde_yaml::from_str::<McpRouterConfig>(&yaml).is_err(),
+                "unexpectedly accepted {invalid}"
+            );
+        }
     }
 
     #[test]
@@ -9267,6 +9411,7 @@ endpointRules:
                     &[accept_json()],
                     None,
                     "caller-compat",
+                    true,
                 )
                 .await
         });
@@ -9486,6 +9631,7 @@ endpointRules:
                 session_id: Some("backend-session".to_string()),
                 protocol_version: DEFAULT_PROTOCOL_VERSION.to_string(),
                 agent_headers: Vec::new(),
+                allow_private_target_host: true,
             },
         );
         runtime
@@ -9544,6 +9690,7 @@ endpointRules:
                 session_id: Some("backend-session".to_string()),
                 protocol_version: DEFAULT_PROTOCOL_VERSION.to_string(),
                 agent_headers: Vec::new(),
+                allow_private_target_host: true,
             },
         );
         runtime
@@ -9608,6 +9755,7 @@ endpointRules:
                 session_id: Some("backend-session".to_string()),
                 protocol_version: DEFAULT_PROTOCOL_VERSION.to_string(),
                 agent_headers: Vec::new(),
+                allow_private_target_host: true,
             },
         );
         runtime
@@ -10786,6 +10934,56 @@ endpointRules:
     }
 
     #[tokio::test]
+    async fn backend_error_bodies_are_hidden_and_protocol_errors_are_bounded() {
+        const BACKEND_SECRET: &str = "BACKEND_SECRET_MUST_NOT_ESCAPE";
+        let (base, received) = spawn_http_server(http_json_response_with_status(
+            500,
+            json!({"error": BACKEND_SECRET}),
+        ))
+        .await;
+        let runtime = runtime_with_tool("weather", "Get weather", base.as_str());
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather","arguments":{}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        let bytes = response.body.buffered().expect("buffered response");
+        let text = std::str::from_utf8(bytes).expect("utf8 response");
+        assert!(!text.contains(BACKEND_SECRET));
+        assert!(text.contains("tool `weather` returned HTTP 500"));
+        received.await.expect("backend request");
+
+        let oversized_id = json!(format!(
+            "{}ID_TAIL_MUST_NOT_ESCAPE",
+            "i".repeat(MAX_MCP_ERROR_RESPONSE_BYTES * 2)
+        ));
+        let oversized_message = format!(
+            "{}MESSAGE_TAIL_MUST_NOT_ESCAPE",
+            "m".repeat(MAX_MCP_ERROR_MESSAGE_BYTES * 2)
+        );
+        for mode in [McpResponseMode::Json, McpResponseMode::EventStream] {
+            let response = rpc_error_response(
+                mode,
+                400,
+                oversized_id.clone(),
+                -32000,
+                oversized_message.clone(),
+            )
+            .expect("bounded error response");
+            let bytes = response.body.buffered().expect("buffered error");
+            assert!(bytes.len() <= MAX_MCP_ERROR_RESPONSE_BYTES);
+            let text = std::str::from_utf8(bytes).expect("utf8 error");
+            assert!(!text.contains("ID_TAIL_MUST_NOT_ESCAPE"));
+            assert!(!text.contains("MESSAGE_TAIL_MUST_NOT_ESCAPE"));
+        }
+    }
+
+    #[tokio::test]
     async fn mcp_proxy_tool_retries_configured_retryable_status() {
         let backend_result = json!({
             "jsonrpc": "2.0",
@@ -11182,6 +11380,7 @@ endpointRules:
                     session_id: None,
                     protocol_version: DEFAULT_PROTOCOL_VERSION.to_string(),
                     agent_headers: Vec::new(),
+                    allow_private_target_host: false,
                 },
             );
             let id = uuid::Uuid::new_v4().to_string();
@@ -12102,7 +12301,7 @@ endpointRules:
     #[tokio::test]
     async fn stateless_http_tool_streams_and_rejects_oversized_backend_response() {
         let (base, received) = spawn_http_server(http_json_response(json!({
-            "payload":"x".repeat(512)
+            "payload":"x".repeat(4096)
         })))
         .await;
         let mut config = stateless_test_config(vec![test_tool(
@@ -12114,7 +12313,7 @@ endpointRules:
             default_input_schema(),
         )]);
         config.protocols.stateless.enabled = true;
-        config.max_response_body_bytes = 128;
+        config.max_response_body_bytes = MAX_MCP_ERROR_RESPONSE_BYTES;
         let runtime = McpRouterRuntime::new(config).expect("runtime");
         let response = runtime
             .handle_request(stateless_request(
@@ -12404,13 +12603,13 @@ endpointRules:
     async fn stateless_tools_list_fails_atomically_on_encoded_response_limit() {
         let mut config = stateless_test_config(vec![test_tool(
             "weather",
-            &"large descriptor ".repeat(32),
+            &"large descriptor ".repeat(256),
             "http://127.0.0.1:1",
             McpHttpMethod::Get,
             None,
             default_input_schema(),
         )]);
-        config.max_response_body_bytes = 128;
+        config.max_response_body_bytes = MAX_MCP_ERROR_RESPONSE_BYTES;
         let mut runtime = McpRouterRuntime::new(config).expect("runtime");
         runtime.config.protocols.stateless.enabled = true;
         let response = runtime
@@ -12429,7 +12628,7 @@ endpointRules:
     #[tokio::test]
     async fn stateless_cached_list_rechecks_final_envelope_size() {
         let mut config = stateless_test_config(Vec::new());
-        config.max_response_body_bytes = 256;
+        config.max_response_body_bytes = MAX_MCP_ERROR_RESPONSE_BYTES;
         let mut runtime = McpRouterRuntime::new(config).expect("runtime");
         runtime.config.protocols.stateless.enabled = true;
         let first = runtime
@@ -12442,7 +12641,7 @@ endpointRules:
 
         let mut oversized = stateless_request("tools/list", json!({}), None);
         let mut payload = serde_json::from_slice::<JsonValue>(&oversized.body).expect("body");
-        payload["id"] = json!("x".repeat(512));
+        payload["id"] = json!("x".repeat(4096));
         oversized.body = serde_json::to_vec(&payload).expect("body");
         let response = runtime
             .handle_request(oversized)
