@@ -2,4 +2,15 @@ enabled: ${mcp-router.enabled:true}
 path: ${mcp-router.path:/mcp}
 maxSessions: ${mcp-router.maxSessions:10000}
 maxSessionsPerClient: ${mcp-router.maxSessionsPerClient:100}
+maxRequestBodyBytes: ${mcp-router.maxRequestBodyBytes:1048576}
+maxResponseBodyBytes: ${mcp-router.maxResponseBodyBytes:4194304}
+maxJsonDepth: ${mcp-router.maxJsonDepth:128}
+originAllowlist: ${mcp-router.originAllowlist:[]}
+protocols:
+  legacy:
+    enabled: ${mcp-router.protocols.legacy.enabled:true}
+    versions: ${mcp-router.protocols.legacy.versions:[2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05]}
+  stateless:
+    enabled: ${mcp-router.protocols.stateless.enabled:false}
+    versions: ${mcp-router.protocols.stateless.versions:[]}
 tools: ${mcp-router.tools:[]}

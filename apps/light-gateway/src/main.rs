@@ -2533,11 +2533,29 @@ impl ProxyHttp for GatewayProxy {
                         Some(query) => format!("{request_path}?{query}"),
                         None => request_path.clone(),
                     };
+                    let headers = agent_headers(session);
+                    if let Some(response) = runtime
+                        .preflight_request(path_with_query.as_str(), &headers)
+                        .map_err(pingora_internal_error)?
+                    {
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                        return self.write_mcp_response(session, ctx, response).await;
+                    }
+                    let Some(body) =
+                        read_bounded_request_body(session, runtime.max_request_body_bytes())
+                            .await?
+                    else {
+                        let response = runtime
+                            .request_body_too_large_response()
+                            .map_err(pingora_internal_error)?;
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                        return self.write_mcp_response(session, ctx, response).await;
+                    };
                     let request = McpHttpRequest {
                         method: method.clone(),
                         path: path_with_query,
-                        headers: agent_headers(session),
-                        body: read_request_body(session).await?,
+                        headers,
+                        body,
                     };
                     match runtime
                         .handle_request_with_context(
@@ -2546,6 +2564,8 @@ impl ProxyHttp for GatewayProxy {
                                 auth: ctx.auth.clone(),
                                 correlation_id: ctx.correlation.correlation_id.clone(),
                                 delegation: ctx.agent_delegation.clone(),
+                                anonymous_binding: client_ip(session)
+                                    .map(|address| format!("peer:{address}")),
                             },
                         )
                         .await
@@ -3700,12 +3720,18 @@ fn access_control_status_error(status: u16, message: String) -> Box<Error> {
     Error::explain(ErrorType::HTTPStatus(status), message)
 }
 
-async fn read_request_body(session: &mut Session) -> pingora::Result<Vec<u8>> {
+async fn read_bounded_request_body(
+    session: &mut Session,
+    limit: usize,
+) -> pingora::Result<Option<Vec<u8>>> {
     let mut body = Vec::new();
     while let Some(chunk) = session.read_request_body().await? {
+        if chunk.len() > limit.saturating_sub(body.len()) {
+            return Ok(None);
+        }
         body.extend_from_slice(&chunk);
     }
-    Ok(body)
+    Ok(Some(body))
 }
 
 fn static_method_allowed(session: &Session) -> bool {
@@ -5577,14 +5603,21 @@ tools:
         // --- Initialize a session before the reload ---
         let mcp = proxy.current_mcp_router();
         let mcp = mcp.as_ref().as_ref().expect("mcp runtime");
+        let request_context = || light_pingora::McpRequestContext {
+            anonymous_binding: Some("test-peer:192.0.2.1".to_string()),
+            ..light_pingora::McpRequestContext::default()
+        };
         let init_response = mcp
-            .handle_request(light_pingora::McpHttpRequest {
-                method: "POST".to_string(),
-                path: "/mcp".to_string(),
-                headers: vec![("accept".to_string(), "application/json".to_string())],
-                body: br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}"#
-                    .to_vec(),
-            })
+            .handle_request_with_context(
+                light_pingora::McpHttpRequest {
+                    method: "POST".to_string(),
+                    path: "/mcp".to_string(),
+                    headers: vec![("accept".to_string(), "application/json".to_string())],
+                    body: br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}"#
+                        .to_vec(),
+                },
+                request_context(),
+            )
             .await
             .expect("handle")
             .expect("response");
@@ -5629,18 +5662,21 @@ tools:
 
         // tools/list with the original session ID must still succeed.
         let tools_response = mcp_after
-            .handle_request(light_pingora::McpHttpRequest {
-                method: "POST".to_string(),
-                path: "/mcp".to_string(),
-                headers: vec![
-                    ("accept".to_string(), "application/json".to_string()),
-                    (
-                        light_pingora::MCP_SESSION_ID_HEADER.to_string(),
-                        session_id.clone(),
-                    ),
-                ],
-                body: br#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#.to_vec(),
-            })
+            .handle_request_with_context(
+                light_pingora::McpHttpRequest {
+                    method: "POST".to_string(),
+                    path: "/mcp".to_string(),
+                    headers: vec![
+                        ("accept".to_string(), "application/json".to_string()),
+                        (
+                            light_pingora::MCP_SESSION_ID_HEADER.to_string(),
+                            session_id.clone(),
+                        ),
+                    ],
+                    body: br#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#.to_vec(),
+                },
+                request_context(),
+            )
             .await
             .expect("handle")
             .expect("response");

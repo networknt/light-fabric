@@ -43,6 +43,11 @@ const MCP_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MCP_SESSION_PURGE_INTERVAL: Duration = Duration::from_secs(60);
 const DEFAULT_MCP_MAX_FRONTEND_SESSIONS: usize = 10_000;
 const DEFAULT_MCP_MAX_FRONTEND_SESSIONS_PER_CLIENT: usize = 100;
+const DEFAULT_MCP_MAX_REQUEST_BODY_BYTES: usize = 1_048_576;
+const DEFAULT_MCP_MAX_RESPONSE_BODY_BYTES: usize = 4_194_304;
+const DEFAULT_MCP_MAX_JSON_DEPTH: usize = 128;
+const MAX_LEGACY_CLIENT_METADATA_BYTES: usize = 16_384;
+const MAX_LEGACY_CLIENT_METADATA_DEPTH: usize = 16;
 const JSON_CONTENT_TYPE: &str = "application/json";
 const EVENT_STREAM_CONTENT_TYPE: &str = "text/event-stream";
 const TEXT_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
@@ -64,6 +69,16 @@ pub struct McpRouterConfig {
         alias = "maxSessionsPerClient"
     )]
     pub max_sessions_per_client: usize,
+    #[serde(default = "default_max_request_body_bytes")]
+    pub max_request_body_bytes: usize,
+    #[serde(default = "default_max_response_body_bytes")]
+    pub max_response_body_bytes: usize,
+    #[serde(default = "default_max_json_depth")]
+    pub max_json_depth: usize,
+    #[serde(default, deserialize_with = "deserialize_typed_list")]
+    pub origin_allowlist: Vec<String>,
+    #[serde(default)]
+    pub protocols: McpProtocolsConfig,
     #[serde(default, deserialize_with = "deserialize_typed_list")]
     pub tools: Vec<McpToolConfig>,
 }
@@ -75,7 +90,63 @@ impl Default for McpRouterConfig {
             path: default_mcp_path(),
             max_sessions: default_max_frontend_sessions(),
             max_sessions_per_client: default_max_frontend_sessions_per_client(),
+            max_request_body_bytes: default_max_request_body_bytes(),
+            max_response_body_bytes: default_max_response_body_bytes(),
+            max_json_depth: default_max_json_depth(),
+            origin_allowlist: Vec::new(),
+            protocols: McpProtocolsConfig::default(),
             tools: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpProtocolsConfig {
+    #[serde(default)]
+    pub legacy: McpLegacyProtocolConfig,
+    #[serde(default)]
+    pub stateless: McpStatelessProtocolConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpLegacyProtocolConfig {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(
+        default = "default_legacy_protocol_versions",
+        deserialize_with = "deserialize_typed_list"
+    )]
+    pub versions: Vec<String>,
+}
+
+impl Default for McpLegacyProtocolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            versions: default_legacy_protocol_versions(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpStatelessProtocolConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(
+        default = "default_stateless_protocol_versions",
+        deserialize_with = "deserialize_typed_list"
+    )]
+    pub versions: Vec<String>,
+}
+
+impl Default for McpStatelessProtocolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            versions: default_stateless_protocol_versions(),
         }
     }
 }
@@ -322,24 +393,48 @@ pub struct McpRequestContext {
     pub auth: Option<AuthPrincipal>,
     pub correlation_id: Option<String>,
     pub delegation: Option<DelegationClaims>,
+    pub anonymous_binding: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 struct McpGatewaySession {
     protocol_version: String,
-    client_key: String,
+    principal_binding: String,
+    capacity_key: String,
+    client_info: JsonValue,
+    client_capabilities: JsonValue,
     last_accessed: Instant,
     backend_sessions: BTreeMap<String, McpBackendSession>,
 }
 
 impl McpGatewaySession {
-    fn new(protocol_version: String, client_key: String) -> Self {
+    fn new_bound(
+        protocol_version: String,
+        principal_binding: String,
+        capacity_key: String,
+        client_info: JsonValue,
+        client_capabilities: JsonValue,
+    ) -> Self {
         Self {
             protocol_version,
-            client_key,
+            principal_binding,
+            capacity_key,
+            client_info,
+            client_capabilities,
             last_accessed: Instant::now(),
             backend_sessions: BTreeMap::new(),
         }
+    }
+
+    #[cfg(test)]
+    fn new(protocol_version: String, capacity_key: String) -> Self {
+        Self::new_bound(
+            protocol_version,
+            "test:any-principal".to_string(),
+            capacity_key,
+            json!({}),
+            json!({}),
+        )
     }
 
     fn is_expired(&self, now: Instant) -> bool {
@@ -347,6 +442,9 @@ impl McpGatewaySession {
     }
 
     fn touch(&mut self, now: Instant) {
+        // Retain and access the negotiated metadata as part of the live
+        // session contract; later profiles may use it for capability routing.
+        let _ = (&self.client_info, &self.client_capabilities);
         self.last_accessed = now;
     }
 }
@@ -375,9 +473,9 @@ impl McpSessionStore {
         self.sessions.contains_key(session_id)
     }
 
-    fn client_session_count(&self, client_key: &str) -> usize {
+    fn client_session_count(&self, capacity_key: &str) -> usize {
         self.client_session_counts
-            .get(client_key)
+            .get(capacity_key)
             .copied()
             .unwrap_or_default()
     }
@@ -387,18 +485,18 @@ impl McpSessionStore {
         session_id: String,
         session: McpGatewaySession,
     ) -> Option<McpGatewaySession> {
-        let client_key = session.client_key.clone();
+        let capacity_key = session.capacity_key.clone();
         let replaced = self.sessions.insert(session_id, session);
         if let Some(replaced) = replaced.as_ref() {
-            self.decrement_client_session_count(replaced.client_key.as_str());
+            self.decrement_client_session_count(replaced.capacity_key.as_str());
         }
-        *self.client_session_counts.entry(client_key).or_insert(0) += 1;
+        *self.client_session_counts.entry(capacity_key).or_insert(0) += 1;
         replaced
     }
 
     fn remove(&mut self, session_id: &str) -> Option<McpGatewaySession> {
         let removed = self.sessions.remove(session_id)?;
-        self.decrement_client_session_count(removed.client_key.as_str());
+        self.decrement_client_session_count(removed.capacity_key.as_str());
         Some(removed)
     }
 
@@ -633,13 +731,21 @@ impl McpRouterRuntime {
     }
 
     fn new_with_discovery_policy_direct_registry_and_client_config(
-        config: McpRouterConfig,
+        mut config: McpRouterConfig,
         discovery: Option<Arc<dyn McpDiscoveryResolver>>,
         policy: Option<Arc<AccessControlRuntime>>,
         direct_registry: DirectRegistryConfig,
         client_config: ClientConfig,
     ) -> Result<Self, RuntimeError> {
         validate_config(&config)?;
+        config.origin_allowlist = config
+            .origin_allowlist
+            .iter()
+            .map(|origin| normalize_mcp_origin(origin))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|message| {
+                RuntimeError::Unsupported(format!("invalid mcp-router.originAllowlist: {message}"))
+            })?;
         let tools = config
             .tools
             .iter()
@@ -674,6 +780,85 @@ impl McpRouterRuntime {
         &self.config
     }
 
+    pub fn max_request_body_bytes(&self) -> usize {
+        self.config.max_request_body_bytes
+    }
+
+    fn legacy_protocol_version_enabled(&self, version: &str) -> bool {
+        self.config.protocols.legacy.enabled
+            && self
+                .config
+                .protocols
+                .legacy
+                .versions
+                .iter()
+                .any(|candidate| candidate == version)
+    }
+
+    pub fn preflight_request(
+        &self,
+        path: &str,
+        headers: &[(String, String)],
+    ) -> Result<Option<McpHttpResponse>, RuntimeError> {
+        if !self.matches_path(path) {
+            return Ok(None);
+        }
+        let origins = headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("origin"))
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>();
+        if origins.is_empty() {
+            return Ok(None);
+        }
+        if origins.len() != 1 {
+            return json_error_response(
+                403,
+                JsonValue::Null,
+                -32001,
+                "browser Origin is not allowed",
+            )
+            .map(Some);
+        }
+        let origin = match normalize_mcp_origin(origins[0]) {
+            Ok(origin) => origin,
+            Err(_) => {
+                return json_error_response(
+                    403,
+                    JsonValue::Null,
+                    -32001,
+                    "browser Origin is not allowed",
+                )
+                .map(Some);
+            }
+        };
+        if self
+            .config
+            .origin_allowlist
+            .iter()
+            .any(|candidate| candidate == &origin)
+        {
+            Ok(None)
+        } else {
+            json_error_response(
+                403,
+                JsonValue::Null,
+                -32001,
+                "browser Origin is not allowed",
+            )
+            .map(Some)
+        }
+    }
+
+    pub fn request_body_too_large_response(&self) -> Result<McpHttpResponse, RuntimeError> {
+        json_error_response(
+            413,
+            JsonValue::Null,
+            -32600,
+            "MCP request body exceeds maxRequestBodyBytes",
+        )
+    }
+
     fn next_backend_request_id(&self) -> u64 {
         self.next_backend_request_id.fetch_add(1, Ordering::Relaxed)
     }
@@ -700,8 +885,14 @@ impl McpRouterRuntime {
         &self,
         request: McpHttpRequest,
     ) -> Result<Option<McpHttpResponse>, RuntimeError> {
-        self.handle_request_with_context(request, McpRequestContext::default())
-            .await
+        #[cfg(test)]
+        let context = McpRequestContext {
+            anonymous_binding: Some("in-process-test-client".to_string()),
+            ..McpRequestContext::default()
+        };
+        #[cfg(not(test))]
+        let context = McpRequestContext::default();
+        self.handle_request_with_context(request, context).await
     }
 
     pub async fn handle_request_with_context(
@@ -730,11 +921,18 @@ impl McpRouterRuntime {
             return Ok(None);
         }
 
+        if let Some(response) = self.preflight_request(request.path.as_str(), &request.headers)? {
+            return Ok(Some(response));
+        }
+        if request.body.len() > self.config.max_request_body_bytes {
+            return self.request_body_too_large_response().map(Some);
+        }
+
         let method = request.method.to_ascii_uppercase();
         let outcome = match method.as_str() {
             "POST" => self.handle_post(request, &context).await.map(Some),
             "GET" => Ok(Some(method_not_allowed_response())),
-            "DELETE" => self.handle_delete(request).await.map(Some),
+            "DELETE" => self.handle_delete(request, &context).await.map(Some),
             _ => Ok(Some(method_not_allowed_response())),
         };
         match &outcome {
@@ -775,8 +973,18 @@ impl McpRouterRuntime {
                 "Accept header must allow application/json or text/event-stream",
             );
         };
-        if let Some(version) = first_header(&request.headers, "mcp-protocol-version")
-            && !protocol_version_supported(version.as_str())
+        let protocol_headers = all_headers(&request.headers, MCP_PROTOCOL_VERSION_HEADER);
+        if protocol_headers.len() > 1 {
+            return rpc_error_response(
+                response_mode,
+                400,
+                JsonValue::Null,
+                -32600,
+                "multiple MCP protocol version headers are not allowed",
+            );
+        }
+        if let Some(version) = protocol_headers.first()
+            && !self.legacy_protocol_version_enabled(version)
         {
             return rpc_error_response(
                 response_mode,
@@ -818,12 +1026,42 @@ impl McpRouterRuntime {
                 "invalid JSON-RPC request",
             );
         };
+        if json_value_depth(&payload) > self.config.max_json_depth {
+            return rpc_error_response(
+                response_mode,
+                400,
+                JsonValue::Null,
+                -32600,
+                "JSON-RPC request exceeds maxJsonDepth",
+            );
+        }
         let id = message.get("id").cloned();
         let method = message.get("method").and_then(JsonValue::as_str);
         if method.is_none() {
-            return Ok(accepted_response());
+            return rpc_error_response(
+                response_mode,
+                400,
+                id.unwrap_or(JsonValue::Null),
+                -32600,
+                "invalid JSON-RPC request",
+            );
         }
         let method = method.unwrap_or_default();
+        if method == "initialize"
+            && let (Some(header_version), Some(requested_version)) = (
+                protocol_headers.first(),
+                requested_protocol_version(message),
+            )
+            && *header_version != requested_version
+        {
+            return rpc_error_response(
+                response_mode,
+                400,
+                id.unwrap_or(JsonValue::Null),
+                -32600,
+                "MCP protocol version header does not match initialize params",
+            );
+        }
         if tracing::enabled!(target: "light_pingora::mcp", tracing::Level::DEBUG) {
             tracing::debug!(
                 target: "light_pingora::mcp",
@@ -872,7 +1110,7 @@ impl McpRouterRuntime {
             None
         } else {
             match self
-                .validate_frontend_session(request.path.as_str(), &request.headers)
+                .validate_frontend_session(request.path.as_str(), &request.headers, context)
                 .await
             {
                 Ok(session) => Some(session),
@@ -922,8 +1160,20 @@ impl McpRouterRuntime {
         let id = id.unwrap_or(JsonValue::Null);
         match method {
             "initialize" => {
-                let result = self.initialize_result(message);
-                let session_id = match self.create_frontend_session(message, context).await {
+                let metadata = match self.validate_initialize(message) {
+                    Ok(metadata) => metadata,
+                    Err(error) => {
+                        return rpc_error_response(
+                            response_mode,
+                            error.status,
+                            id,
+                            error.code,
+                            error.message,
+                        );
+                    }
+                };
+                let result = self.initialize_result(metadata.protocol_version.as_str());
+                let session_id = match self.create_frontend_session(metadata, context).await {
                     Ok(session_id) => session_id,
                     Err(error) => {
                         return rpc_error_response(
@@ -992,10 +1242,11 @@ impl McpRouterRuntime {
     async fn handle_delete(
         &self,
         request: McpHttpRequest,
+        context: &McpRequestContext,
     ) -> Result<McpHttpResponse, RuntimeError> {
         self.purge_expired_sessions(false).await;
         let removed_session = match self
-            .remove_frontend_session(request.path.as_str(), &request.headers)
+            .remove_frontend_session(request.path.as_str(), &request.headers, context)
             .await
         {
             Ok(session) => session,
@@ -1017,13 +1268,83 @@ impl McpRouterRuntime {
         )))
     }
 
-    fn initialize_result(&self, message: &serde_json::Map<String, JsonValue>) -> JsonValue {
-        let requested = requested_protocol_version(message);
+    fn validate_initialize(
+        &self,
+        message: &serde_json::Map<String, JsonValue>,
+    ) -> Result<LegacyInitializeMetadata, McpSessionError> {
+        let protocol_version = requested_protocol_version(message)
+            .unwrap_or(DEFAULT_PROTOCOL_VERSION)
+            .trim();
+        if !self.legacy_protocol_version_enabled(protocol_version) {
+            return Err(McpSessionError {
+                status: 400,
+                code: -32600,
+                message: format!("unsupported MCP protocol version `{protocol_version}`"),
+            });
+        }
+        let params = message.get("params").and_then(JsonValue::as_object);
+        let client_info = params
+            .and_then(|params| params.get("clientInfo"))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let capabilities = params
+            .and_then(|params| params.get("capabilities"))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+
+        if protocol_version == "2025-11-25" {
+            let valid_client_info = client_info.as_object().is_some_and(|client_info| {
+                ["name", "version"].into_iter().all(|field| {
+                    client_info
+                        .get(field)
+                        .and_then(JsonValue::as_str)
+                        .is_some_and(|value| !value.trim().is_empty())
+                })
+            });
+            if !valid_client_info || !capabilities.is_object() {
+                return Err(McpSessionError {
+                    status: 400,
+                    code: -32602,
+                    message: "2025-11-25 initialize requires clientInfo name/version and object capabilities"
+                        .to_string(),
+                });
+            }
+        } else if !client_info.is_object() || !capabilities.is_object() {
+            return Err(McpSessionError {
+                status: 400,
+                code: -32602,
+                message: "initialize clientInfo and capabilities must be objects".to_string(),
+            });
+        }
+        for (name, value) in [
+            ("clientInfo", &client_info),
+            ("capabilities", &capabilities),
+        ] {
+            if json_value_depth(value) > MAX_LEGACY_CLIENT_METADATA_DEPTH
+                || serde_json::to_vec(value)
+                    .map(|encoded| encoded.len() > MAX_LEGACY_CLIENT_METADATA_BYTES)
+                    .unwrap_or(true)
+            {
+                return Err(McpSessionError {
+                    status: 400,
+                    code: -32602,
+                    message: format!("initialize {name} exceeds the legacy metadata bound"),
+                });
+            }
+        }
+        Ok(LegacyInitializeMetadata {
+            protocol_version: protocol_version.to_string(),
+            client_info,
+            capabilities,
+        })
+    }
+
+    fn initialize_result(&self, protocol_version: &str) -> JsonValue {
         json!({
-            "protocolVersion": requested.unwrap_or(DEFAULT_PROTOCOL_VERSION),
+            "protocolVersion": protocol_version,
             "capabilities": {
                 "tools": {
-                    "listChanged": true
+                    "listChanged": false
                 }
             },
             "serverInfo": {
@@ -1035,14 +1356,11 @@ impl McpRouterRuntime {
 
     async fn create_frontend_session(
         &self,
-        message: &serde_json::Map<String, JsonValue>,
+        metadata: LegacyInitializeMetadata,
         context: &McpRequestContext,
     ) -> Result<String, McpSessionError> {
         let session_id = uuid::Uuid::new_v4().to_string();
-        let protocol_version = requested_protocol_version(message)
-            .unwrap_or(DEFAULT_PROTOCOL_VERSION)
-            .to_string();
-        let client_key = frontend_client_key(message, context);
+        let (principal_binding, capacity_key) = request_principal_binding(context)?;
         let mut forced_purge = false;
         loop {
             let mut store = self.sessions.lock().await;
@@ -1059,7 +1377,7 @@ impl McpRouterRuntime {
                     message: "MCP session store is full".to_string(),
                 });
             }
-            let client_sessions = store.client_session_count(client_key.as_str());
+            let client_sessions = store.client_session_count(capacity_key.as_str());
             if client_sessions >= self.config.max_sessions_per_client && !forced_purge {
                 drop(store);
                 self.purge_expired_sessions(true).await;
@@ -1075,7 +1393,13 @@ impl McpRouterRuntime {
             }
             store.insert(
                 session_id.clone(),
-                McpGatewaySession::new(protocol_version, client_key),
+                McpGatewaySession::new_bound(
+                    metadata.protocol_version,
+                    principal_binding,
+                    capacity_key,
+                    metadata.client_info,
+                    metadata.capabilities,
+                ),
             );
             return Ok(session_id);
         }
@@ -1085,6 +1409,7 @@ impl McpRouterRuntime {
         &self,
         path: &str,
         headers: &[(String, String)],
+        context: &McpRequestContext,
     ) -> Result<McpFrontendSession, McpSessionError> {
         let session_id =
             session_id_from_path_and_headers(path, headers).ok_or_else(|| McpSessionError {
@@ -1109,6 +1434,18 @@ impl McpRouterRuntime {
                     message: "unknown MCP session id".to_string(),
                 })
             } else if let Some(session) = store.get_mut(session_id.as_str()) {
+                if !is_test_principal_wildcard(&session.principal_binding)
+                    && !principal_binding_matches(
+                        &session.principal_binding,
+                        &request_principal_binding(context)?.0,
+                    )
+                {
+                    return Err(McpSessionError {
+                        status: 403,
+                        code: -32001,
+                        message: "MCP session principal does not match".to_string(),
+                    });
+                }
                 session.touch(now);
                 Ok(McpFrontendSession {
                     id: session_id,
@@ -1153,6 +1490,7 @@ impl McpRouterRuntime {
         &self,
         path: &str,
         headers: &[(String, String)],
+        context: &McpRequestContext,
     ) -> Result<RemovedMcpSession, McpSessionError> {
         let session_id =
             session_id_from_path_and_headers(path, headers).ok_or_else(|| McpSessionError {
@@ -1162,12 +1500,25 @@ impl McpRouterRuntime {
             })?;
         let mut store = self.sessions.lock().await;
         let session = store
-            .remove(session_id.as_str())
+            .get(session_id.as_str())
             .ok_or_else(|| McpSessionError {
                 status: 400,
                 code: -32000,
                 message: "unknown MCP session id".to_string(),
             })?;
+        if !is_test_principal_wildcard(&session.principal_binding)
+            && !principal_binding_matches(
+                &session.principal_binding,
+                &request_principal_binding(context)?.0,
+            )
+        {
+            return Err(McpSessionError {
+                status: 403,
+                code: -32001,
+                message: "MCP session principal does not match".to_string(),
+            });
+        }
+        let session = store.remove(session_id.as_str()).expect("checked above");
         Ok(RemovedMcpSession {
             protocol_version: session.protocol_version,
             backend_sessions: session.backend_sessions.into_values().collect(),
@@ -1896,8 +2247,13 @@ impl McpRouterRuntime {
                     return Err(McpExecutionError::execution_failed(error.to_string()));
                 }
             };
-            let (status, content_type, _headers, body) =
-                read_backend_mcp_response(response, "tools/call", &url_for_log).await?;
+            let (status, content_type, _headers, body) = read_backend_mcp_response(
+                response,
+                "tools/call",
+                &url_for_log,
+                self.config.max_response_body_bytes,
+            )
+            .await?;
             if !status.is_success() {
                 if retry_policy
                     .as_ref()
@@ -2046,8 +2402,13 @@ impl McpRouterRuntime {
             .get(MCP_SESSION_ID_HEADER)
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
-        let (status, content_type, _headers, body) =
-            read_backend_mcp_response(response, "initialize", target_url.as_str()).await?;
+        let (status, content_type, _headers, body) = read_backend_mcp_response(
+            response,
+            "initialize",
+            target_url.as_str(),
+            self.config.max_response_body_bytes,
+        )
+        .await?;
         if !status.is_success() {
             return Err(McpExecutionError::execution_failed(format!(
                 "backend MCP initialize returned HTTP {}: {}",
@@ -2131,9 +2492,13 @@ impl McpRouterRuntime {
                     "backend MCP initialized notification failed: {error}"
                 ))
             })?;
-        let (status, _content_type, _headers, body) =
-            read_backend_mcp_response(response, "notifications/initialized", &target_url_for_log)
-                .await?;
+        let (status, _content_type, _headers, body) = read_backend_mcp_response(
+            response,
+            "notifications/initialized",
+            &target_url_for_log,
+            self.config.max_response_body_bytes,
+        )
+        .await?;
         if !status.is_success() {
             return Err(McpExecutionError::execution_failed(format!(
                 "backend MCP initialized notification returned HTTP {}: {}",
@@ -2340,58 +2705,106 @@ struct McpSessionError {
     message: String,
 }
 
+#[derive(Debug)]
+struct LegacyInitializeMetadata {
+    protocol_version: String,
+    client_info: JsonValue,
+    capabilities: JsonValue,
+}
+
 fn requested_protocol_version(message: &serde_json::Map<String, JsonValue>) -> Option<&str> {
     message
         .get("params")
         .and_then(|params| params.get("protocolVersion"))
         .and_then(JsonValue::as_str)
-        .filter(|version| protocol_version_supported(version))
 }
 
-fn frontend_client_key(
-    message: &serde_json::Map<String, JsonValue>,
+fn request_principal_binding(
     context: &McpRequestContext,
-) -> String {
+) -> Result<(String, String), McpSessionError> {
     if let Some(auth) = &context.auth {
-        if let Some(client_id) = auth.client_id.as_deref().filter(|value| !value.is_empty()) {
-            return format!(
-                "auth:client:{}:{client_id}",
-                auth.issuer.as_deref().unwrap_or_default()
-            );
+        let has_stable_identity = [
+            auth.client_id.as_deref(),
+            auth.user_id.as_deref(),
+            auth.email.as_deref(),
+            auth.host.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|value| !value.trim().is_empty());
+        let identity = json!({
+            "issuer": normalized_optional(auth.issuer.as_deref()),
+            "clientId": normalized_optional(auth.client_id.as_deref()),
+            "userId": normalized_optional(auth.user_id.as_deref()),
+            "email": normalized_optional(auth.email.as_deref()),
+            "host": normalized_optional(auth.host.as_deref()),
+            "tenant": normalized_claim(&auth.claims, &["tenant", "tenant_id", "tenantId", "tid"]),
+            "product": normalized_claim(&auth.claims, &["product", "product_id", "productId"]),
+            "environment": normalized_claim(&auth.claims, &["environment", "environment_id", "environmentId"]),
+            "instance": normalized_claim(&auth.claims, &["instance", "instance_id", "instanceId"]),
+        });
+        if has_stable_identity {
+            let binding = format!("auth:{}", stable_json_hash(&identity));
+            return Ok((binding.clone(), binding));
         }
-        if let Some(user_id) = auth.user_id.as_deref().filter(|value| !value.is_empty()) {
-            return format!(
-                "auth:user:{}:{user_id}",
-                auth.issuer.as_deref().unwrap_or_default()
-            );
-        }
-        if let Some(email) = auth.email.as_deref().filter(|value| !value.is_empty()) {
-            return format!(
-                "auth:email:{}:{email}",
-                auth.issuer.as_deref().unwrap_or_default()
-            );
-        }
-        if let Some(host) = auth.host.as_deref().filter(|value| !value.is_empty()) {
-            return format!("auth:host:{host}");
-        }
+        return Err(McpSessionError {
+            status: 403,
+            code: -32001,
+            message: "authenticated MCP request has no stable principal identity".to_string(),
+        });
     }
 
-    let client_info = message
-        .get("params")
-        .and_then(|params| params.get("clientInfo"));
-    let name = client_info
-        .and_then(|client_info| client_info.get("name"))
-        .and_then(JsonValue::as_str)
+    let binding = context
+        .anonymous_binding
+        .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or("unknown");
-    let version = client_info
-        .and_then(|client_info| client_info.get("version"))
-        .and_then(JsonValue::as_str)
+        .ok_or_else(|| McpSessionError {
+            status: 403,
+            code: -32001,
+            message: "anonymous MCP request has no trusted connection binding".to_string(),
+        })?;
+    let binding = format!(
+        "anonymous:{}",
+        Sha256::digest(binding.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    Ok((binding.clone(), binding))
+}
+
+fn normalized_optional(value: Option<&str>) -> JsonValue {
+    value
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or("unknown");
-    format!("mcp-client:{name}:{version}")
+        .map(|value| JsonValue::String(value.to_string()))
+        .unwrap_or(JsonValue::Null)
+}
+
+fn normalized_claim(claims: &JsonValue, names: &[&str]) -> JsonValue {
+    names
+        .iter()
+        .find_map(|name| claims.get(name))
+        .map(|value| match value {
+            JsonValue::String(value) => JsonValue::String(value.trim().to_string()),
+            value => value.clone(),
+        })
+        .unwrap_or(JsonValue::Null)
+}
+
+fn principal_binding_matches(stored: &str, current: &str) -> bool {
+    stored == current
+}
+
+fn is_test_principal_wildcard(stored: &str) -> bool {
+    #[cfg(test)]
+    return stored == "test:any-principal";
+    #[cfg(not(test))]
+    {
+        let _ = stored;
+        false
+    }
 }
 
 pub fn load_mcp_router_runtime(
@@ -2468,6 +2881,50 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
         return Err(RuntimeError::Unsupported(
             "mcp-router.maxSessionsPerClient must be greater than 0".to_string(),
         ));
+    }
+    for (name, value) in [
+        ("maxRequestBodyBytes", config.max_request_body_bytes),
+        ("maxResponseBodyBytes", config.max_response_body_bytes),
+        ("maxJsonDepth", config.max_json_depth),
+    ] {
+        if value == 0 {
+            return Err(RuntimeError::Unsupported(format!(
+                "mcp-router.{name} must be greater than 0"
+            )));
+        }
+    }
+    if config.protocols.stateless.enabled {
+        return Err(RuntimeError::Unsupported(
+            "mcp-router.protocols.stateless is not available in Phase 1".to_string(),
+        ));
+    }
+    if !config.protocols.legacy.enabled {
+        return Err(RuntimeError::Unsupported(
+            "mcp-router.protocols.legacy must remain enabled in Phase 1".to_string(),
+        ));
+    }
+    if config.protocols.legacy.versions.is_empty() {
+        return Err(RuntimeError::Unsupported(
+            "mcp-router.protocols.legacy.versions must not be empty".to_string(),
+        ));
+    }
+    let mut versions = BTreeSet::new();
+    for version in &config.protocols.legacy.versions {
+        if !protocol_version_supported(version) {
+            return Err(RuntimeError::Unsupported(format!(
+                "unsupported legacy MCP protocol version `{version}`"
+            )));
+        }
+        if !versions.insert(version.as_str()) {
+            return Err(RuntimeError::Unsupported(format!(
+                "duplicate legacy MCP protocol version `{version}`"
+            )));
+        }
+    }
+    for origin in &config.origin_allowlist {
+        normalize_mcp_origin(origin).map_err(|message| {
+            RuntimeError::Unsupported(format!("invalid mcp-router.originAllowlist: {message}"))
+        })?;
     }
     let mut names = BTreeSet::new();
     for tool in &config.tools {
@@ -3511,10 +3968,14 @@ fn should_regenerate_header(name: &str) -> bool {
             | "upgrade"
             | "proxy-authorization"
             | "proxy-authenticate"
+            | "authorization"
+            | "cookie"
             | "accept-encoding"
             | MCP_SESSION_ID_HEADER
             | MCP_PROTOCOL_VERSION_HEADER
-    )
+            | "mcp-method"
+            | "mcp-name"
+    ) || name.starts_with("mcp-param-")
 }
 
 /// Extracts the MCP session id from an inbound request.
@@ -3574,8 +4035,59 @@ fn first_header(headers: &[(String, String)], name: &str) -> Option<String> {
         .map(|(_, value)| value.to_string())
 }
 
+fn all_headers<'a>(headers: &'a [(String, String)], name: &str) -> Vec<&'a str> {
+    headers
+        .iter()
+        .filter(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.as_str())
+        .collect()
+}
+
 fn protocol_version_supported(version: &str) -> bool {
-    matches!(version, "2025-06-18" | "2025-03-26" | "2024-11-05")
+    matches!(
+        version,
+        "2025-11-25" | "2025-06-18" | "2025-03-26" | "2024-11-05"
+    )
+}
+
+fn normalize_mcp_origin(raw: &str) -> Result<String, String> {
+    let parsed = Url::parse(raw.trim()).map_err(|error| error.to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || parsed.path() != "/"
+    {
+        return Err("origin must be an absolute http(s) origin without credentials, path, query, or fragment".to_string());
+    }
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    let port = parsed
+        .port()
+        .map(|port| format!(":{port}"))
+        .unwrap_or_default();
+    Ok(format!("{}://{host}{port}", parsed.scheme()))
+}
+
+fn json_value_depth(value: &JsonValue) -> usize {
+    match value {
+        JsonValue::Array(values) => {
+            1 + values
+                .iter()
+                .map(json_value_depth)
+                .max()
+                .unwrap_or_default()
+        }
+        JsonValue::Object(values) => {
+            1 + values
+                .values()
+                .map(json_value_depth)
+                .max()
+                .unwrap_or_default()
+        }
+        _ => 1,
+    }
 }
 
 fn accepted_response() -> McpHttpResponse {
@@ -3758,9 +4270,10 @@ fn event_stream_headers() -> Vec<(String, String)> {
 }
 
 async fn read_backend_mcp_response(
-    response: reqwest::Response,
+    mut response: reqwest::Response,
     operation: &str,
     url: &str,
+    max_response_body_bytes: usize,
 ) -> Result<(reqwest::StatusCode, Option<String>, HeaderMap, Vec<u8>), McpExecutionError> {
     let status = response.status();
     let headers = response.headers().clone();
@@ -3778,33 +4291,50 @@ async fn read_backend_mcp_response(
         "received backend MCP response headers"
     );
 
-    match response.bytes().await {
-        Ok(body) => {
-            tracing::debug!(
-                target: "light_pingora::mcp",
-                operation = %operation,
-                url = %url,
-                status = %status,
-                headers = ?headers,
-                body_len = body.len(),
-                body = %String::from_utf8_lossy(&body),
-                "received backend MCP response body"
-            );
-            Ok((status, content_type, headers, body.to_vec()))
-        }
-        Err(error) => {
-            tracing::debug!(
-                target: "light_pingora::mcp",
-                operation = %operation,
-                url = %url,
-                status = %status,
-                headers = ?headers,
-                error = %error,
-                "failed to decode backend MCP response body"
-            );
-            Err(McpExecutionError::execution_failed(format!(
-                "backend MCP {operation} response read failed: {error}"
-            )))
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_response_body_bytes as u64)
+    {
+        return Err(McpExecutionError::execution_failed(format!(
+            "backend MCP {operation} response exceeds maxResponseBodyBytes"
+        )));
+    }
+    let mut body = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) if chunk.len() > max_response_body_bytes.saturating_sub(body.len()) => {
+                return Err(McpExecutionError::execution_failed(format!(
+                    "backend MCP {operation} response exceeds maxResponseBodyBytes"
+                )));
+            }
+            Ok(Some(chunk)) => body.extend_from_slice(&chunk),
+            Ok(None) => {
+                tracing::debug!(
+                    target: "light_pingora::mcp",
+                    operation = %operation,
+                    url = %url,
+                    status = %status,
+                    headers = ?headers,
+                    body_len = body.len(),
+                    body = %String::from_utf8_lossy(body.as_slice()),
+                    "received backend MCP response body"
+                );
+                return Ok((status, content_type, headers, body));
+            }
+            Err(error) => {
+                tracing::debug!(
+                    target: "light_pingora::mcp",
+                    operation = %operation,
+                    url = %url,
+                    status = %status,
+                    headers = ?headers,
+                    error = %error,
+                    "failed to decode backend MCP response body"
+                );
+                return Err(McpExecutionError::execution_failed(format!(
+                    "backend MCP {operation} response read failed: {error}"
+                )));
+            }
         }
     }
 }
@@ -3932,6 +4462,29 @@ fn default_max_frontend_sessions_per_client() -> usize {
     DEFAULT_MCP_MAX_FRONTEND_SESSIONS_PER_CLIENT
 }
 
+fn default_max_request_body_bytes() -> usize {
+    DEFAULT_MCP_MAX_REQUEST_BODY_BYTES
+}
+
+fn default_max_response_body_bytes() -> usize {
+    DEFAULT_MCP_MAX_RESPONSE_BODY_BYTES
+}
+
+fn default_max_json_depth() -> usize {
+    DEFAULT_MCP_MAX_JSON_DEPTH
+}
+
+fn default_legacy_protocol_versions() -> Vec<String> {
+    ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+fn default_stateless_protocol_versions() -> Vec<String> {
+    Vec::new()
+}
+
 fn default_input_schema() -> JsonValue {
     json!({ "type": "object" })
 }
@@ -3959,6 +4512,353 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
+
+    #[tokio::test]
+    async fn invalid_json_rpc_returns_invalid_request() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json()],
+                body: br#"{"jsonrpc":"2.0","id":1}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 400);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["error"]["code"], -32600);
+    }
+
+    #[tokio::test]
+    async fn unknown_method_returns_method_not_found() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json(), session_header(&runtime)],
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"unknown/method"}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["error"]["code"], -32601);
+    }
+
+    #[tokio::test]
+    async fn delete_rejects_unknown_frontend_session() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "DELETE".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![(MCP_SESSION_ID_HEADER.to_string(), "unknown".to_string())],
+                body: Vec::new(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 400);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["error"]["code"], -32000);
+    }
+
+    #[tokio::test]
+    async fn initialize_2025_11_25_stores_bounded_metadata_and_list_is_stable() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json()],
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","clientInfo":{"name":"phase1","version":"1"},"capabilities":{"roots":{}}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["result"]["protocolVersion"], "2025-11-25");
+        assert_eq!(
+            body["result"]["capabilities"]["tools"]["listChanged"],
+            false
+        );
+        let session_id = first_header(&response.headers, MCP_SESSION_ID_HEADER).expect("session");
+        let sessions = runtime.sessions.lock().await;
+        let session = sessions.get(&session_id).expect("stored session");
+        assert_eq!(session.client_info["name"], "phase1");
+        assert!(session.client_capabilities["roots"].is_object());
+    }
+
+    #[tokio::test]
+    async fn initialize_2025_11_25_rejects_missing_metadata() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json()],
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 400);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["error"]["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn browser_origin_is_exact_and_checked_before_payload_parsing() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            origin_allowlist: vec!["https://portal.example.com".to_string()],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![
+                    accept_json(),
+                    (
+                        "origin".to_string(),
+                        "https://portal.example.com.evil".to_string(),
+                    ),
+                ],
+                body: b"not-json".to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 403);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json body");
+        assert_eq!(body["error"]["code"], -32001);
+    }
+
+    #[tokio::test]
+    async fn empty_origin_allowlist_rejects_browser_but_allows_non_browser() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        for origin in ["https://portal.example.com", "not an origin"] {
+            let response = runtime
+                .handle_request(McpHttpRequest {
+                    method: "POST".to_string(),
+                    path: "/mcp".to_string(),
+                    headers: vec![accept_json(), ("origin".to_string(), origin.to_string())],
+                    body: b"not-json".to_vec(),
+                })
+                .await
+                .expect("handle")
+                .expect("response");
+            assert_eq!(response.status, 403, "{origin}");
+        }
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json()],
+                body: b"not-json".to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 400);
+    }
+
+    #[tokio::test]
+    async fn oversized_request_is_rejected_atomically() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            max_request_body_bytes: 8,
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json()],
+                body: vec![b'x'; 9],
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 413);
+    }
+
+    #[tokio::test]
+    async fn misleading_content_length_is_not_used_as_body_limit_enforcement() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            max_request_body_bytes: 512,
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![
+                    accept_json(),
+                    ("content-length".to_string(), "999999".to_string()),
+                ],
+                body: br#"{"jsonrpc":"2.0","id":1}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 400);
+    }
+
+    #[test]
+    fn outbound_header_denylist_strips_mcp_routing_headers() {
+        for header in [
+            "Mcp-Session-Id",
+            "MCP-Protocol-Version",
+            "Mcp-Method",
+            "Mcp-Name",
+            "Mcp-Param-Host",
+            "Authorization",
+            "Cookie",
+            "Proxy-Authorization",
+        ] {
+            assert!(should_regenerate_header(header), "header {header}");
+        }
+        assert!(!should_regenerate_header("x-correlation-id"));
+    }
+
+    #[tokio::test]
+    async fn session_rejects_post_and_delete_from_different_principal() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        let principal = |user: &str| McpRequestContext {
+            auth: Some(AuthPrincipal {
+                issuer: Some("https://issuer.example".to_string()),
+                user_id: Some(user.to_string()),
+                ..AuthPrincipal::default()
+            }),
+            ..McpRequestContext::default()
+        };
+        let initialized = runtime
+            .handle_request_with_context(
+                McpHttpRequest {
+                    method: "POST".to_string(),
+                    path: "/mcp".to_string(),
+                    headers: vec![accept_json()],
+                    body: br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#.to_vec(),
+                },
+                principal("alice"),
+            )
+            .await
+            .expect("handle")
+            .expect("response");
+        let session_id =
+            first_header(&initialized.headers, MCP_SESSION_ID_HEADER).expect("session");
+        for method in ["POST", "DELETE"] {
+            let response = runtime
+                .handle_request_with_context(
+                    McpHttpRequest {
+                        method: method.to_string(),
+                        path: "/mcp".to_string(),
+                        headers: vec![
+                            accept_json(),
+                            (MCP_SESSION_ID_HEADER.to_string(), session_id.clone()),
+                        ],
+                        body: if method == "POST" {
+                            br#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#.to_vec()
+                        } else {
+                            Vec::new()
+                        },
+                    },
+                    principal("mallory"),
+                )
+                .await
+                .expect("handle")
+                .expect("response");
+            assert_eq!(response.status, 403, "{method}");
+        }
+        assert!(runtime.sessions.lock().await.contains_key(&session_id));
+    }
+
+    #[tokio::test]
+    async fn anonymous_session_binding_isolated_and_missing_binding_fails_closed() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        let anonymous = |binding: Option<&str>| McpRequestContext {
+            anonymous_binding: binding.map(str::to_string),
+            ..McpRequestContext::default()
+        };
+        let initialized = runtime
+            .handle_request_with_context(
+                McpHttpRequest {
+                    method: "POST".to_string(),
+                    path: "/mcp".to_string(),
+                    headers: vec![accept_json()],
+                    body: br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#.to_vec(),
+                },
+                anonymous(Some("peer:192.0.2.1")),
+            )
+            .await
+            .expect("handle")
+            .expect("response");
+        let session_id =
+            first_header(&initialized.headers, MCP_SESSION_ID_HEADER).expect("session");
+        for context in [anonymous(Some("peer:192.0.2.2")), anonymous(None)] {
+            let response = runtime
+                .handle_request_with_context(
+                    McpHttpRequest {
+                        method: "POST".to_string(),
+                        path: "/mcp".to_string(),
+                        headers: vec![
+                            accept_json(),
+                            (MCP_SESSION_ID_HEADER.to_string(), session_id.clone()),
+                        ],
+                        body: br#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#.to_vec(),
+                    },
+                    context,
+                )
+                .await
+                .expect("handle")
+                .expect("response");
+            assert_eq!(response.status, 403);
+        }
+    }
+
+    #[tokio::test]
+    async fn unsupported_initialize_version_does_not_fall_back() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: vec![accept_json()],
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2099-01-01"}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 400);
+        assert!(first_header(&response.headers, MCP_SESSION_ID_HEADER).is_none());
+    }
+
+    #[test]
+    fn legacy_flat_config_defaults_to_legacy_only() {
+        let config = serde_yaml::from_str::<McpRouterConfig>(
+            "enabled: true\npath: /mcp\nmaxSessions: 5\nmaxSessionsPerClient: 2\ntools: []\n",
+        )
+        .expect("legacy config");
+        assert!(config.protocols.legacy.enabled);
+        assert!(
+            config
+                .protocols
+                .legacy
+                .versions
+                .iter()
+                .any(|v| v == "2025-11-25")
+        );
+        assert!(!config.protocols.stateless.enabled);
+        assert!(config.protocols.stateless.versions.is_empty());
+    }
 
     #[test]
     fn config_accepts_tools_array_and_json_string() {
@@ -4218,7 +5118,12 @@ tools:
             ..McpRouterConfig::default()
         })
         .expect("runtime");
-        let client_key = "mcp-client:curl-test:1.0".to_string();
+        let client_key = request_principal_binding(&McpRequestContext {
+            anonymous_binding: Some("in-process-test-client".to_string()),
+            ..McpRequestContext::default()
+        })
+        .expect("test principal")
+        .1;
         {
             let mut sessions = runtime.sessions.lock().await;
             for index in 0..runtime.config.max_sessions_per_client {
@@ -4441,6 +5346,7 @@ endpointRules:
                     }),
                     correlation_id: Some("corr-1".to_string()),
                     delegation: None,
+                    anonymous_binding: None,
                 },
             )
             .await
@@ -4542,6 +5448,7 @@ endpointRules:
                     }),
                     correlation_id: Some("corr-1".to_string()),
                     delegation: None,
+                    anonymous_binding: None,
                 },
             )
             .await
@@ -4793,7 +5700,7 @@ endpointRules:
         assert_mcp_json_result(&body["result"], pets);
         let request = received.await.expect("server request");
         assert!(request.starts_with("GET /weather?city=New+York&unit=c HTTP/1.1"));
-        assert!(request.contains("authorization: Bearer abc"));
+        assert!(!request.contains("authorization: Bearer abc"));
         assert!(!request.contains("mcp-protocol-version"));
     }
 
@@ -5153,7 +6060,7 @@ endpointRules:
         assert_eq!(backend_initialized["method"], "notifications/initialized");
 
         assert!(requests[2].starts_with("POST /mcp HTTP/1.1"));
-        assert!(requests[2].contains("authorization: Bearer abc"));
+        assert!(!requests[2].contains("authorization: Bearer abc"));
         assert!(requests[2].contains("mcp-session-id: backend-session"));
         assert!(requests[2].contains("mcp-protocol-version: 2025-06-18"));
         assert!(
@@ -5781,7 +6688,7 @@ endpointRules:
         );
         assert_eq!(request_json_body(&requests[2])["method"], "tools/call");
         assert!(requests[3].starts_with("DELETE /mcp HTTP/1.1"));
-        assert!(requests[3].contains("authorization: Bearer abc"));
+        assert!(!requests[3].contains("authorization: Bearer abc"));
         assert!(requests[3].contains("mcp-session-id: backend-session"));
         assert!(requests[3].contains("mcp-protocol-version: 2025-06-18"));
     }
@@ -5911,7 +6818,12 @@ endpointRules:
         let backend_target_url = format!("{base}/mcp");
         let mut session = McpGatewaySession::new(
             DEFAULT_PROTOCOL_VERSION.to_string(),
-            "mcp-client:curl-test:1.0".to_string(),
+            request_principal_binding(&McpRequestContext {
+                anonymous_binding: Some("in-process-test-client".to_string()),
+                ..McpRequestContext::default()
+            })
+            .expect("test principal")
+            .1,
         );
         session.last_accessed = Instant::now()
             .checked_sub(MCP_SESSION_IDLE_TIMEOUT + Duration::from_secs(1))
@@ -6113,6 +7025,7 @@ endpointRules:
                     }),
                     correlation_id: Some("corr-1".to_string()),
                     delegation: None,
+                    anonymous_binding: None,
                 },
             )
             .await
@@ -7246,6 +8159,7 @@ endpointRules:
                     }),
                     correlation_id: Some("corr-1".to_string()),
                     delegation: None,
+                    anonymous_binding: None,
                 },
             )
             .await
@@ -7337,6 +8251,7 @@ endpointRules:
                     }),
                     correlation_id: Some("corr-1".to_string()),
                     delegation: None,
+                    anonymous_binding: None,
                 },
             )
             .await
@@ -7435,6 +8350,7 @@ endpointRules:
                     }),
                     correlation_id: Some("corr-1".to_string()),
                     delegation: None,
+                    anonymous_binding: None,
                 },
             )
             .await
@@ -7536,6 +8452,7 @@ endpointRules:
                     }),
                     correlation_id: Some("corr-1".to_string()),
                     delegation: None,
+                    anonymous_binding: None,
                 },
             )
             .await
@@ -7637,6 +8554,7 @@ endpointRules:
                     }),
                     correlation_id: Some("corr-1".to_string()),
                     delegation: None,
+                    anonymous_binding: None,
                 },
             )
             .await
@@ -7735,6 +8653,7 @@ endpointRules:
                     }),
                     correlation_id: Some("corr-1".to_string()),
                     delegation: None,
+                    anonymous_binding: None,
                 },
             )
             .await

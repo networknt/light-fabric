@@ -81,7 +81,8 @@ pub use header::{
 pub use mcp::{
     MCP_ROUTER_CONFIG_NAME, MCP_ROUTER_FILE, MCP_ROUTER_LEGACY_FILE, MCP_ROUTER_MODULE_ID,
     MCP_SESSION_ID_HEADER, McpDiscoveryResolver, McpHttpMethod, McpHttpRequest, McpHttpResponse,
-    McpRequestContext, McpRouterConfig, McpRouterRuntime, McpToolConfig, McpToolType,
+    McpLegacyProtocolConfig, McpProtocolsConfig, McpRequestContext, McpRouterConfig,
+    McpRouterRuntime, McpStatelessProtocolConfig, McpToolConfig, McpToolType,
     load_mcp_router_runtime,
 };
 pub use metrics::{
