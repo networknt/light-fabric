@@ -34,6 +34,7 @@
 - [Embedded Configuration Templates](design/embedded-config-templates.md)
 - [Handler Chain](design/handler-chain.md)
 - [MCP Router](design/mcp-router.md)
+- [MCP 2026-07-28 Dual-Profile Gateway](design/mcp-2026-07-28.md)
 - [LLM Gateway](design/llm-gateway.md)
 - [WebSocket Router](design/websocket-router.md)
 - [Stateless Auth Handler](design/stateless-auth.md)

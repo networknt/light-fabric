@@ -8,6 +8,11 @@ Phases 1, 2, 3, and 4 are implemented in `light-pingora` and
 the protocol is selected. Stateful backend MCP session mapping is implemented
 for the single-process gateway session store and documented below.
 
+This page describes the implemented legacy stateful profile. The design for
+serving that profile concurrently with the sessionless and stateless
+`2026-07-28` profile is documented in
+[`MCP 2026-07-28 Dual-Profile Gateway Design`](mcp-2026-07-28.md).
+
 ## Purpose
 
 The Java `mcp-router` module exposes a configured Model Context Protocol
@@ -25,9 +30,12 @@ This feature is separate from the existing runtime MCP control plane in
 the portal registry connection. The MCP router is an HTTP-facing gateway
 feature and is subject to the normal inbound handler chain.
 
-The transport target is MCP Streamable HTTP as defined by the current MCP
-transport specification:
+The implemented legacy transport baseline is MCP Streamable HTTP as defined by
+the `2025-06-18` transport specification:
 <https://modelcontextprotocol.io/specification/2025-06-18/basic/transports>.
+It must not be interpreted as the current MCP protocol revision; later legacy
+and stateless revision support is governed by the dual-profile design linked
+above.
 
 ## Goals
 
