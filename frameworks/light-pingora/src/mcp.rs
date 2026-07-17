@@ -6,12 +6,15 @@ use crate::config_util::deserialize_typed_list;
 use crate::direct_registry::{direct_registry_match, validate_direct_registry_protocol};
 use crate::mcp_protocol::{
     Classification, ClassificationRejection, ClassifierConfig, FrontendProfile, RequestHead,
-    STATELESS_RC_VERSION, classify_post, classify_request_head,
+    STATELESS_PROTOCOL_META_KEY, STATELESS_RC_VERSION, classify_post, classify_request_head,
 };
 use crate::mcp_resources::StatelessResourceBudgets;
 use crate::mcp_schema::{
     McpSchemaConfig, PreparedMcpTool, SchemaDiagnostic, SchemaValidationPool, ValidationOutcome,
     prepare_tools,
+};
+use crate::mcp_stateless::{
+    SERVER_INFO_META_KEY, StatelessRequestError, validate_stateless_request,
 };
 use crate::security::AuthPrincipal;
 use crate::token::{CLIENT_FILE, load_client_config};
@@ -32,6 +35,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error as StdError;
 use std::fmt;
+use std::io::{self, Write};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -759,11 +763,18 @@ impl<'a> LegacyFrontendAdapter<'a> {
     }
 }
 
-/// Phase 2 skeleton. It intentionally owns no runtime or session-store handle,
-/// and therefore cannot invoke the application core before Phase 4.
-struct StatelessFrontendAdapter;
+/// Sessionless frontend adapter. Production configuration keeps this adapter
+/// disabled until Phase 5, while Phase 4 exercises the complete discovery/list
+/// slice without granting it a session-store handle.
+struct StatelessFrontendAdapter<'a> {
+    runtime: &'a McpRouterRuntime,
+}
 
-impl StatelessFrontendAdapter {
+impl<'a> StatelessFrontendAdapter<'a> {
+    fn new(runtime: &'a McpRouterRuntime) -> Self {
+        Self { runtime }
+    }
+
     fn disabled_response(
         response_mode: McpResponseMode,
         id: JsonValue,
@@ -778,6 +789,18 @@ impl StatelessFrontendAdapter {
             format!("MCP stateless protocol version `{version}` is disabled"),
         )
     }
+
+    async fn post(
+        &self,
+        request: McpHttpRequest,
+        context: &McpRequestContext,
+        payload: JsonValue,
+        version: &str,
+    ) -> Result<McpHttpResponse, RuntimeError> {
+        self.runtime
+            .handle_stateless_post(request, context, payload, version)
+            .await
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -791,6 +814,68 @@ struct ToolsListVisibilityCache {
     max_entries: usize,
     entries: BTreeMap<String, Vec<String>>,
     order: VecDeque<String>,
+}
+
+#[derive(Debug, Clone)]
+struct StatelessCacheEntry {
+    value: JsonValue,
+    expires_at: Instant,
+}
+
+#[derive(Debug, Clone, Default)]
+struct StatelessResponseCache {
+    max_entries: usize,
+    entries: BTreeMap<String, StatelessCacheEntry>,
+    order: VecDeque<String>,
+}
+
+impl StatelessResponseCache {
+    fn new(max_entries: usize) -> Self {
+        Self {
+            max_entries,
+            entries: BTreeMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn get(&mut self, key: &str, now: Instant) -> Option<JsonValue> {
+        self.entries.retain(|_, entry| entry.expires_at > now);
+        self.order
+            .retain(|candidate| self.entries.contains_key(candidate));
+        let value = self.entries.get(key)?.value.clone();
+        self.touch(key);
+        Some(value)
+    }
+
+    fn insert(&mut self, key: String, value: JsonValue, ttl: Duration, now: Instant) {
+        if self.max_entries == 0 {
+            return;
+        }
+        self.entries.insert(
+            key.clone(),
+            StatelessCacheEntry {
+                value,
+                expires_at: now + ttl,
+            },
+        );
+        self.touch(key.as_str());
+        while self.entries.len() > self.max_entries {
+            let Some(expired) = self.order.pop_front() else {
+                break;
+            };
+            self.entries.remove(expired.as_str());
+        }
+    }
+
+    fn touch(&mut self, key: &str) {
+        self.order.retain(|candidate| candidate != key);
+        self.order.push_back(key.to_string());
+    }
 }
 
 impl ToolsListVisibilityCache {
@@ -839,13 +924,15 @@ pub struct McpRouterRuntime {
     config: McpRouterConfig,
     tools: BTreeMap<String, PreparedMcpTool>,
     schema_validation: SchemaValidationPool,
-    _stateless_resources: Arc<StatelessResourceBudgets>,
+    stateless_resources: Arc<StatelessResourceBudgets>,
     client: reqwest::Client,
     direct_registry: DirectRegistryConfig,
     discovery: Option<Arc<dyn McpDiscoveryResolver>>,
     policy: Option<Arc<AccessControlRuntime>>,
     sessions: Arc<AsyncMutex<McpSessionStore>>,
     tools_list_cache: Arc<AsyncMutex<ToolsListVisibilityCache>>,
+    stateless_discover_cache: Arc<AsyncMutex<StatelessResponseCache>>,
+    stateless_tools_list_cache: Arc<AsyncMutex<StatelessResponseCache>>,
     last_session_purge: Arc<AsyncMutex<Option<Instant>>>,
     next_backend_request_id: Arc<AtomicU64>,
     config_revision: String,
@@ -988,13 +1075,17 @@ impl McpRouterRuntime {
             .as_ref()
             .map(|policy| policy.tools_list_access_control().max_cache_entries)
             .unwrap_or_else(|| ToolsListAccessControlConfig::default().max_cache_entries);
+        let stateless_discover_cache_entries =
+            config.protocols.stateless.max_discover_cache_entries;
+        let stateless_tools_list_cache_entries =
+            config.protocols.stateless.max_tools_list_cache_entries;
         let config_revision =
             stable_json_hash(&serde_json::to_value(&config).unwrap_or(JsonValue::Null));
         Ok(Self {
             config,
             tools,
             schema_validation,
-            _stateless_resources: Arc::new(stateless_resources),
+            stateless_resources: Arc::new(stateless_resources),
             client,
             direct_registry,
             discovery,
@@ -1002,6 +1093,12 @@ impl McpRouterRuntime {
             sessions: Arc::new(AsyncMutex::new(McpSessionStore::default())),
             tools_list_cache: Arc::new(AsyncMutex::new(ToolsListVisibilityCache::new(
                 tools_list_cache_entries,
+            ))),
+            stateless_discover_cache: Arc::new(AsyncMutex::new(StatelessResponseCache::new(
+                stateless_discover_cache_entries,
+            ))),
+            stateless_tools_list_cache: Arc::new(AsyncMutex::new(StatelessResponseCache::new(
+                stateless_tools_list_cache_entries,
             ))),
             last_session_purge: Arc::new(AsyncMutex::new(None)),
             next_backend_request_id: Arc::new(AtomicU64::new(1)),
@@ -1355,6 +1452,21 @@ impl McpRouterRuntime {
             );
         }
         let protocol_headers = all_headers(&request.headers, MCP_PROTOCOL_VERSION_HEADER);
+        let claims_stateless = protocol_headers.iter().any(|version| {
+            *version == STATELESS_RC_VERSION
+                || self
+                    .config
+                    .protocols
+                    .stateless
+                    .versions
+                    .iter()
+                    .any(|candidate| candidate == *version)
+        }) || message
+            .get("params")
+            .and_then(JsonValue::as_object)
+            .and_then(|params| params.get("_meta"))
+            .and_then(JsonValue::as_object)
+            .is_some_and(|meta| meta.contains_key(STATELESS_PROTOCOL_META_KEY));
         let classification = classify_post(
             self.classifier_config(),
             &protocol_headers,
@@ -1369,13 +1481,270 @@ impl McpRouterRuntime {
                     .await
             }
             Ok(Classification::Stateless { version, enabled }) => {
-                debug_assert!(!enabled, "Phase 2 must not enable the stateless adapter");
-                StatelessFrontendAdapter::disabled_response(response_mode, request_id, &version)
+                if enabled {
+                    StatelessFrontendAdapter::new(self)
+                        .post(request, context, payload, &version)
+                        .await
+                } else {
+                    StatelessFrontendAdapter::disabled_response(response_mode, request_id, &version)
+                }
             }
-            Err(rejection) => {
-                classification_rejection_response(response_mode, request_id, rejection)
+            Err(rejection) => classification_rejection_response_for_post(
+                response_mode,
+                request_id,
+                rejection,
+                claims_stateless,
+                &self.config.protocols.stateless.versions,
+            ),
+        }
+    }
+
+    async fn handle_stateless_post(
+        &self,
+        request: McpHttpRequest,
+        context: &McpRequestContext,
+        payload: JsonValue,
+        version: &str,
+    ) -> Result<McpHttpResponse, RuntimeError> {
+        let message = payload
+            .as_object()
+            .expect("POST classifier accepts only an object message");
+        let id = message.get("id").cloned().unwrap_or(JsonValue::Null);
+        let metadata = match validate_stateless_request(&request.headers, message) {
+            Ok(metadata) => metadata,
+            Err(error) => return stateless_error_response(id, error, version),
+        };
+        if let Some(delegation) = context.delegation.as_ref() {
+            let binding = match metadata.method.as_str() {
+                "tools/list" => delegation.validate_binding(
+                    "light-gateway",
+                    DelegationKind::ToolsList,
+                    None,
+                    chrono::Utc::now().timestamp(),
+                ),
+                _ => Err(agent_delegation::DelegationError::Binding),
+            };
+            if binding.is_err() {
+                return response_with_protocol_version(
+                    json_error_response(
+                        403,
+                        id,
+                        -32001,
+                        "delegated authority does not permit this MCP request",
+                    ),
+                    Some(version),
+                );
             }
         }
+        let (_, principal_key) = match request_principal_binding(context) {
+            Ok(binding) => binding,
+            Err(error) => {
+                return response_with_protocol_version(
+                    json_error_response(error.status, id, error.code, error.message),
+                    Some(version),
+                );
+            }
+        };
+        let Some(_permit) = self.stateless_resources.try_request(&principal_key) else {
+            return response_with_protocol_version(
+                json_error_response(
+                    429,
+                    id,
+                    -32000,
+                    "stateless MCP request exceeds a gateway resource limit",
+                ),
+                Some(version),
+            );
+        };
+        let effective = EffectiveMcpRequestContext {
+            frontend_profile: FrontendProfile::Stateless,
+            protocol_version: version,
+            frontend_session_id: None,
+            forwarded_headers: ForwardedHeaderContext::stateless(&request.headers, context),
+            request: context,
+        };
+        let result = match metadata.method.as_str() {
+            "server/discover" => self.stateless_discover_result(&effective).await,
+            "tools/list" => self.stateless_tools_list_result(message, &effective).await,
+            method => {
+                return response_with_protocol_version(
+                    json_error_response(404, id, -32601, format!("method `{method}` not found")),
+                    Some(version),
+                );
+            }
+        };
+        match result {
+            Ok(result) => {
+                let Some(response) = bounded_json_result_response(
+                    200,
+                    &id,
+                    &result,
+                    self.config.max_response_body_bytes,
+                )?
+                else {
+                    let error = if metadata.method == "tools/list" {
+                        stateless_catalog_limit_error()
+                    } else {
+                        McpSessionError {
+                            status: 400,
+                            code: -32000,
+                            message: "stateless MCP response exceeds a gateway limit".to_string(),
+                        }
+                    };
+                    return response_with_protocol_version(
+                        json_error_response(error.status, id, error.code, error.message),
+                        Some(version),
+                    );
+                };
+                Ok(apply_protocol_version_header(response, version))
+            }
+            Err(error) => response_with_protocol_version(
+                json_error_response(error.status, id, error.code, error.message),
+                Some(version),
+            ),
+        }
+    }
+
+    async fn stateless_discover_result(
+        &self,
+        effective: &EffectiveMcpRequestContext<'_>,
+    ) -> Result<JsonValue, McpSessionError> {
+        let key = self.stateless_cache_key("server/discover", effective)?;
+        let now = Instant::now();
+        if let Some(result) = self.stateless_discover_cache.lock().await.get(&key, now) {
+            return Ok(result);
+        }
+        let ttl_ms = self.config.protocols.stateless.discover_ttl_ms;
+        let result = json!({
+            "supportedVersions": self.config.protocols.stateless.versions,
+            "capabilities": {},
+            "resultType": "complete",
+            "_meta": {
+                SERVER_INFO_META_KEY: {
+                    "name": "light-gateway",
+                    "version": env!("CARGO_PKG_VERSION")
+                }
+            },
+            "instructions": "This gateway exposes an authorization-filtered MCP tool facade.",
+            "ttlMs": ttl_ms,
+            "cacheScope": "private"
+        });
+        self.stateless_discover_cache.lock().await.insert(
+            key,
+            result.clone(),
+            Duration::from_millis(ttl_ms),
+            now,
+        );
+        Ok(result)
+    }
+
+    async fn stateless_tools_list_result(
+        &self,
+        message: &JsonMap<String, JsonValue>,
+        effective: &EffectiveMcpRequestContext<'_>,
+    ) -> Result<JsonValue, McpSessionError> {
+        let params = message
+            .get("params")
+            .and_then(JsonValue::as_object)
+            .expect("stateless transport validates params");
+        if let Some(cursor) = params.get("cursor") {
+            match cursor {
+                JsonValue::Null => {}
+                JsonValue::String(cursor) if cursor.is_empty() => {}
+                JsonValue::String(_) => {
+                    return Err(McpSessionError {
+                        status: 400,
+                        code: -32602,
+                        message: "pagination cursor is not supported".to_string(),
+                    });
+                }
+                _ => {
+                    return Err(McpSessionError {
+                        status: 400,
+                        code: -32602,
+                        message: "pagination cursor must be a string".to_string(),
+                    });
+                }
+            }
+        }
+        if params
+            .get("query")
+            .or_else(|| params.get("intent"))
+            .is_some()
+        {
+            return Err(McpSessionError {
+                status: 400,
+                code: -32602,
+                message: "stateless tools/list does not support legacy query or intent".to_string(),
+            });
+        }
+        let key = self.stateless_cache_key("tools/list", effective)?;
+        let now = Instant::now();
+        if let Some(result) = self.stateless_tools_list_cache.lock().await.get(&key, now) {
+            return Ok(result);
+        }
+        let mut visible_names = Vec::new();
+        for (index, tool) in self.tools.values().enumerate() {
+            if self
+                .tool_visible_for_list(
+                    tool,
+                    index,
+                    &effective.forwarded_headers.policy_headers,
+                    effective.request,
+                )
+                .await
+            {
+                visible_names.push(tool.name.clone());
+            }
+        }
+        if visible_names.len() > self.config.protocols.stateless.max_tools_list_items {
+            return Err(stateless_catalog_limit_error());
+        }
+        let mut result = self.tools_list_response_from_names(visible_names);
+        let ttl_ms = self.config.protocols.stateless.tools_list_ttl_ms;
+        let result_object = result.as_object_mut().expect("tools/list result object");
+        result_object.insert("resultType".to_string(), json!("complete"));
+        result_object.insert("ttlMs".to_string(), json!(ttl_ms));
+        result_object.insert("cacheScope".to_string(), json!("private"));
+        let encoded = serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "id": message.get("id").cloned().unwrap_or(JsonValue::Null),
+            "result": result
+        }))
+        .expect("JSON value serialization cannot fail");
+        if encoded.len() > self.config.max_response_body_bytes {
+            return Err(stateless_catalog_limit_error());
+        }
+        self.stateless_tools_list_cache.lock().await.insert(
+            key,
+            result.clone(),
+            Duration::from_millis(ttl_ms),
+            now,
+        );
+        Ok(result)
+    }
+
+    fn stateless_cache_key(
+        &self,
+        operation: &str,
+        effective: &EffectiveMcpRequestContext<'_>,
+    ) -> Result<String, McpSessionError> {
+        let (principal, _) = request_principal_binding(effective.request)?;
+        let policy_revision = self
+            .policy
+            .as_ref()
+            .map(|policy| policy.policy_revision())
+            .unwrap_or_else(|| "none".to_string());
+        let identity = json!({
+            "operation": operation,
+            "profile": "stateless",
+            "protocolVersion": effective.protocol_version,
+            "principalFingerprint": stable_json_hash(&json!(principal)),
+            "headers": effective.forwarded_headers.cache_headers,
+            "configRevision": self.config_revision,
+            "policyRevision": policy_revision,
+        });
+        Ok(stable_json_hash(&identity))
     }
 
     async fn handle_legacy_post(
@@ -3455,7 +3824,7 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
     }
     if config.protocols.stateless.enabled {
         return Err(RuntimeError::Unsupported(
-            "mcp-router.protocols.stateless is not available before Phase 4".to_string(),
+            "mcp-router.protocols.stateless is not available before Phase 5".to_string(),
         ));
     }
     if !config.protocols.legacy.enabled {
@@ -4765,6 +5134,59 @@ fn classification_rejection_response(
     }
 }
 
+fn classification_rejection_response_for_post(
+    response_mode: McpResponseMode,
+    id: JsonValue,
+    rejection: ClassificationRejection,
+    claims_stateless: bool,
+    supported_stateless_versions: &[String],
+) -> Result<McpHttpResponse, RuntimeError> {
+    if claims_stateless {
+        return match rejection {
+            ClassificationRejection::MultipleProtocolVersionHeaders
+            | ClassificationRejection::ProtocolVersionMismatch => rpc_error_response(
+                response_mode,
+                400,
+                id,
+                -32020,
+                "MCP protocol version header does not match request metadata",
+            ),
+            ClassificationRejection::UnsupportedProtocolVersion(version) => rpc_error_response(
+                response_mode,
+                400,
+                id,
+                -32022,
+                format!(
+                    "unsupported MCP protocol version `{version}`; supported stateless versions: {}",
+                    supported_stateless_versions.join(", ")
+                ),
+            ),
+            other => classification_rejection_response(response_mode, id, other),
+        };
+    }
+    classification_rejection_response(response_mode, id, rejection)
+}
+
+fn stateless_error_response(
+    id: JsonValue,
+    error: StatelessRequestError,
+    version: &str,
+) -> Result<McpHttpResponse, RuntimeError> {
+    response_with_protocol_version(
+        json_error_response(error.status, id, error.code, error.message),
+        Some(version),
+    )
+}
+
+fn stateless_catalog_limit_error() -> McpSessionError {
+    McpSessionError {
+        status: 400,
+        code: -32000,
+        message: "visible catalog exceeds a gateway limit and pagination is not supported"
+            .to_string(),
+    }
+}
+
 fn accepted_response() -> McpHttpResponse {
     McpHttpResponse {
         status: 202,
@@ -4919,6 +5341,72 @@ fn json_body_response(status: u16, body: JsonValue) -> Result<McpHttpResponse, R
         body,
         streamed: false,
     })
+}
+
+#[derive(Serialize)]
+struct BorrowedJsonRpcResult<'a> {
+    jsonrpc: &'static str,
+    id: &'a JsonValue,
+    result: &'a JsonValue,
+}
+
+struct BoundedJsonWriter {
+    bytes: Vec<u8>,
+    max_bytes: usize,
+    overflowed: bool,
+}
+
+impl BoundedJsonWriter {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(max_bytes.min(16 * 1024)),
+            max_bytes,
+            overflowed: false,
+        }
+    }
+}
+
+impl Write for BoundedJsonWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > self.max_bytes.saturating_sub(self.bytes.len()) {
+            self.overflowed = true;
+            return Err(io::Error::other("bounded JSON response exceeded limit"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn bounded_json_result_response(
+    status: u16,
+    id: &JsonValue,
+    result: &JsonValue,
+    max_bytes: usize,
+) -> Result<Option<McpHttpResponse>, RuntimeError> {
+    let mut writer = BoundedJsonWriter::new(max_bytes);
+    let serialization = serde_json::to_writer(
+        &mut writer,
+        &BorrowedJsonRpcResult {
+            jsonrpc: "2.0",
+            id,
+            result,
+        },
+    );
+    if writer.overflowed {
+        return Ok(None);
+    }
+    serialization?;
+    Ok(Some(McpHttpResponse {
+        status,
+        content_type: JSON_CONTENT_TYPE.to_string(),
+        headers: protocol_headers(),
+        body: writer.bytes,
+        streamed: false,
+    }))
 }
 
 fn event_stream_response(status: u16, body: JsonValue) -> Result<McpHttpResponse, RuntimeError> {
@@ -8069,6 +8557,67 @@ endpointRules:
         )
     }
 
+    fn stateless_test_config(tools: Vec<McpToolConfig>) -> McpRouterConfig {
+        McpRouterConfig {
+            protocols: McpProtocolsConfig {
+                legacy: McpLegacyProtocolConfig::default(),
+                stateless: McpStatelessProtocolConfig {
+                    enabled: false,
+                    versions: vec![STATELESS_RC_VERSION.to_string()],
+                    ..McpStatelessProtocolConfig::default()
+                },
+            },
+            tools,
+            ..McpRouterConfig::default()
+        }
+    }
+
+    fn stateless_test_runtime(tools: Vec<McpToolConfig>) -> McpRouterRuntime {
+        McpRouterRuntime::new(stateless_test_config(tools)).expect("runtime")
+    }
+
+    fn stateless_request(
+        method: &str,
+        params: JsonValue,
+        stale_session_id: Option<&str>,
+    ) -> McpHttpRequest {
+        let mut params = params.as_object().cloned().expect("params object");
+        params.insert(
+            "_meta".to_string(),
+            json!({
+                "io.modelcontextprotocol/protocolVersion": STATELESS_RC_VERSION,
+                "io.modelcontextprotocol/clientInfo": {"name":"phase4-test","version":"1"},
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }),
+        );
+        let mut headers = vec![
+            accept_json(),
+            ("content-type".to_string(), JSON_CONTENT_TYPE.to_string()),
+            (
+                MCP_PROTOCOL_VERSION_HEADER.to_string(),
+                STATELESS_RC_VERSION.to_string(),
+            ),
+            ("mcp-method".to_string(), method.to_string()),
+        ];
+        if let Some(session_id) = stale_session_id {
+            headers.push((MCP_SESSION_ID_HEADER.to_string(), session_id.to_string()));
+        }
+        McpHttpRequest {
+            method: "POST".to_string(),
+            path: stale_session_id
+                .map(|session_id| format!("/mcp?sessionId={session_id}"))
+                .unwrap_or_else(|| "/mcp".to_string()),
+            headers,
+            body: serde_json::to_vec(&json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": method,
+                "params": params
+            }))
+            .expect("body"),
+        }
+    }
+
     fn accept_sse() -> (String, String) {
         (
             "accept".to_string(),
@@ -8924,6 +9473,333 @@ endpointRules:
         assert_eq!(response.status, 400);
         assert!(String::from_utf8_lossy(&response.body).contains("is disabled"));
         assert_eq!(runtime.sessions.lock().await.len(), before);
+    }
+
+    #[tokio::test]
+    async fn stateless_discover_is_complete_private_and_sessionless() {
+        let mut runtime = stateless_test_runtime(Vec::new());
+        let stale_session_id = {
+            let mut store = runtime.sessions.lock().await;
+            let id = uuid::Uuid::new_v4().to_string();
+            store.insert(
+                id.clone(),
+                McpGatewaySession::new(DEFAULT_PROTOCOL_VERSION.to_string(), "stale".to_string()),
+            );
+            id
+        };
+        runtime.config.protocols.stateless.enabled = true;
+        let response = runtime
+            .handle_request(stateless_request(
+                "server/discover",
+                json!({}),
+                Some(stale_session_id.as_str()),
+            ))
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 200);
+        assert_eq!(
+            first_header(&response.headers, MCP_PROTOCOL_VERSION_HEADER).as_deref(),
+            Some(STATELESS_RC_VERSION)
+        );
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        assert_eq!(body["result"]["resultType"], "complete");
+        assert_eq!(body["result"]["cacheScope"], "private");
+        assert_eq!(body["result"]["ttlMs"], 30_000);
+        assert_eq!(body["result"]["capabilities"], json!({}));
+        assert_eq!(
+            body["result"]["supportedVersions"],
+            json!([STATELESS_RC_VERSION])
+        );
+        assert!(body["result"]["capabilities"].get("tools").is_none());
+        assert_eq!(
+            body["result"]["_meta"][SERVER_INFO_META_KEY]["name"],
+            "light-gateway"
+        );
+        assert!(
+            runtime
+                .sessions
+                .lock()
+                .await
+                .contains_key(&stale_session_id)
+        );
+        assert_eq!(runtime.stateless_discover_cache.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stateless_discover_is_replica_and_backend_snapshot_independent() {
+        let discovery = Arc::new(FakeDiscovery::new(discovery_snapshot(
+            "http://127.0.0.1:8080",
+            "service-a",
+            Some("dev"),
+            None,
+        )));
+        let mut first = McpRouterRuntime::new_with_discovery(
+            stateless_test_config(Vec::new()),
+            Some(discovery.clone()),
+        )
+        .expect("runtime");
+        first.config.protocols.stateless.enabled = true;
+        let mut second = stateless_test_runtime(Vec::new());
+        second.config.protocols.stateless.enabled = true;
+        let first_body = first
+            .handle_request(stateless_request("server/discover", json!({}), None))
+            .await
+            .expect("handle")
+            .expect("response")
+            .body;
+        let second_body = second
+            .handle_request(stateless_request("server/discover", json!({}), None))
+            .await
+            .expect("handle")
+            .expect("response")
+            .body;
+        assert_eq!(first_body, second_body);
+        assert!(discovery.lookups.lock().expect("lookups").is_empty());
+    }
+
+    #[tokio::test]
+    async fn stateless_tools_list_is_deterministic_bounded_and_principal_private() {
+        let mut runtime = stateless_test_runtime(vec![
+            test_tool(
+                "zeta",
+                "Zeta",
+                "http://127.0.0.1:1",
+                McpHttpMethod::Get,
+                None,
+                default_input_schema(),
+            ),
+            test_tool(
+                "alpha",
+                "Alpha",
+                "http://127.0.0.1:1",
+                McpHttpMethod::Get,
+                None,
+                default_input_schema(),
+            ),
+        ]);
+        runtime.config.protocols.stateless.enabled = true;
+        for user in ["alice", "bob"] {
+            let response = runtime
+                .handle_request_with_context(
+                    stateless_request("tools/list", json!({}), None),
+                    McpRequestContext {
+                        auth: Some(AuthPrincipal {
+                            issuer: Some("https://issuer.example".to_string()),
+                            user_id: Some(user.to_string()),
+                            ..AuthPrincipal::default()
+                        }),
+                        ..McpRequestContext::default()
+                    },
+                )
+                .await
+                .expect("handle")
+                .expect("response");
+            let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+            assert_eq!(body["result"]["resultType"], "complete");
+            assert_eq!(body["result"]["cacheScope"], "private");
+            assert!(body["result"].get("nextCursor").is_none());
+            let names = body["result"]["tools"]
+                .as_array()
+                .expect("tools")
+                .iter()
+                .map(|tool| tool["name"].as_str().expect("name"))
+                .collect::<Vec<_>>();
+            assert_eq!(names, vec!["alpha", "zeta"]);
+        }
+        assert_eq!(runtime.sessions.lock().await.len(), 0);
+        assert_eq!(runtime.stateless_tools_list_cache.lock().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn stateless_tools_list_fails_atomically_before_cache_on_catalog_limit() {
+        let mut config = stateless_test_config(vec![
+            test_tool(
+                "one",
+                "One",
+                "http://127.0.0.1:1",
+                McpHttpMethod::Get,
+                None,
+                default_input_schema(),
+            ),
+            test_tool(
+                "two",
+                "Two",
+                "http://127.0.0.1:1",
+                McpHttpMethod::Get,
+                None,
+                default_input_schema(),
+            ),
+        ]);
+        config.protocols.stateless.max_tools_list_items = 1;
+        let mut runtime = McpRouterRuntime::new(config).expect("runtime");
+        runtime.config.protocols.stateless.enabled = true;
+        let response = runtime
+            .handle_request(stateless_request("tools/list", json!({}), None))
+            .await
+            .expect("handle")
+            .expect("response");
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        assert_eq!(body["error"]["code"], -32000);
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("pagination")
+        );
+        assert_eq!(runtime.stateless_tools_list_cache.lock().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn stateless_tools_list_fails_atomically_on_encoded_response_limit() {
+        let mut config = stateless_test_config(vec![test_tool(
+            "weather",
+            &"large descriptor ".repeat(32),
+            "http://127.0.0.1:1",
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        )]);
+        config.max_response_body_bytes = 128;
+        let mut runtime = McpRouterRuntime::new(config).expect("runtime");
+        runtime.config.protocols.stateless.enabled = true;
+        let response = runtime
+            .handle_request(stateless_request("tools/list", json!({}), None))
+            .await
+            .expect("handle")
+            .expect("response");
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        assert_eq!(body["error"]["code"], -32000);
+        assert_eq!(runtime.stateless_tools_list_cache.lock().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn stateless_cached_list_rechecks_final_envelope_size() {
+        let mut config = stateless_test_config(Vec::new());
+        config.max_response_body_bytes = 256;
+        let mut runtime = McpRouterRuntime::new(config).expect("runtime");
+        runtime.config.protocols.stateless.enabled = true;
+        let first = runtime
+            .handle_request(stateless_request("tools/list", json!({}), None))
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(first.status, 200);
+        assert_eq!(runtime.stateless_tools_list_cache.lock().await.len(), 1);
+
+        let mut oversized = stateless_request("tools/list", json!({}), None);
+        let mut payload = serde_json::from_slice::<JsonValue>(&oversized.body).expect("body");
+        payload["id"] = json!("x".repeat(512));
+        oversized.body = serde_json::to_vec(&payload).expect("body");
+        let response = runtime
+            .handle_request(oversized)
+            .await
+            .expect("handle")
+            .expect("response");
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        assert_eq!(body["error"]["code"], -32000);
+        assert_eq!(runtime.stateless_tools_list_cache.lock().await.len(), 1);
+    }
+
+    #[test]
+    fn stateless_response_cache_is_bounded_and_expires_at_advertised_ttl() {
+        let now = Instant::now();
+        let mut cache = StatelessResponseCache::new(1);
+        cache.insert(
+            "first".to_string(),
+            json!({"value":1}),
+            Duration::from_millis(10),
+            now,
+        );
+        assert_eq!(cache.get("first", now), Some(json!({"value":1})));
+        cache.insert(
+            "second".to_string(),
+            json!({"value":2}),
+            Duration::from_millis(10),
+            now,
+        );
+        assert!(cache.get("first", now).is_none());
+        assert!(
+            cache
+                .get("second", now + Duration::from_millis(10))
+                .is_none()
+        );
+        assert!(
+            bounded_json_result_response(200, &json!(1), &json!("x".repeat(256)), 32)
+                .expect("bounded serialization")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn stateless_list_rejects_cursor_legacy_query_and_unknown_method() {
+        let mut runtime = stateless_test_runtime(Vec::new());
+        runtime.config.protocols.stateless.enabled = true;
+        for params in [
+            json!({"cursor":"opaque"}),
+            json!({"cursor":7}),
+            json!({"query":"weather"}),
+        ] {
+            let response = runtime
+                .handle_request(stateless_request("tools/list", params, None))
+                .await
+                .expect("handle")
+                .expect("response");
+            let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+            assert_eq!(body["error"]["code"], -32602);
+        }
+        let response = runtime
+            .handle_request(stateless_request("unknown/method", json!({}), None))
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 404);
+        assert_eq!(response.content_type, JSON_CONTENT_TYPE);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        assert_eq!(body["error"]["code"], -32601);
+    }
+
+    #[tokio::test]
+    async fn stateless_transport_returns_frozen_header_and_version_errors() {
+        let mut runtime = stateless_test_runtime(Vec::new());
+        runtime.config.protocols.stateless.enabled = true;
+        let mut mismatch = stateless_request("server/discover", json!({}), None);
+        mismatch
+            .headers
+            .retain(|(name, _)| !name.eq_ignore_ascii_case(MCP_PROTOCOL_VERSION_HEADER));
+        let response = runtime
+            .handle_request(mismatch)
+            .await
+            .expect("handle")
+            .expect("response");
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        assert_eq!(body["error"]["code"], -32020);
+
+        let mut unsupported = stateless_request("server/discover", json!({}), None);
+        for (_, value) in unsupported
+            .headers
+            .iter_mut()
+            .filter(|(name, _)| name.eq_ignore_ascii_case(MCP_PROTOCOL_VERSION_HEADER))
+        {
+            *value = "2099-01-01".to_string();
+        }
+        let mut payload = serde_json::from_slice::<JsonValue>(&unsupported.body).expect("body");
+        payload["params"]["_meta"][STATELESS_PROTOCOL_META_KEY] = json!("2099-01-01");
+        unsupported.body = serde_json::to_vec(&payload).expect("body");
+        let response = runtime
+            .handle_request(unsupported)
+            .await
+            .expect("handle")
+            .expect("response");
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        assert_eq!(body["error"]["code"], -32022);
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains(STATELESS_RC_VERSION)
+        );
+        assert_eq!(runtime.sessions.lock().await.len(), 0);
     }
 
     #[tokio::test]
