@@ -19,7 +19,7 @@ protocols:
     enabled: ${mcp-router.protocols.legacy.enabled:true}
     versions: ${mcp-router.protocols.legacy.versions:[2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05]}
   stateless:
-    enabled: ${mcp-router.protocols.stateless.enabled:false}
+    enabled: ${mcp-router.protocols.stateless.enabled:true}
     versions: ${mcp-router.protocols.stateless.versions:[2026-07-28]}
     discoverTtlMs: ${mcp-router.protocols.stateless.discoverTtlMs:30000}
     discoverCacheScope: ${mcp-router.protocols.stateless.discoverCacheScope:private}
