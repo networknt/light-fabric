@@ -9,6 +9,8 @@ mod handler;
 mod header;
 mod mcp;
 mod mcp_protocol;
+mod mcp_resources;
+mod mcp_schema;
 mod metrics;
 mod msal_auth;
 mod msal_exchange;

@@ -16,6 +16,7 @@ chrono = { workspace = true }
 hmac = { workspace = true }
 hex = { workspace = true }
 jsonwebtoken = "9.3"
+jsonschema = { workspace = true }
 pbkdf2 = "0.12"
 pingora = { version = "0.8.0", features = ["proxy", "rustls"] }
 rand = "0.8"

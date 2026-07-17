@@ -8,6 +8,11 @@ use crate::mcp_protocol::{
     Classification, ClassificationRejection, ClassifierConfig, FrontendProfile, RequestHead,
     STATELESS_RC_VERSION, classify_post, classify_request_head,
 };
+use crate::mcp_resources::StatelessResourceBudgets;
+use crate::mcp_schema::{
+    McpSchemaConfig, PreparedMcpTool, SchemaDiagnostic, SchemaValidationPool, ValidationOutcome,
+    prepare_tools,
+};
 use crate::security::AuthPrincipal;
 use crate::token::{CLIENT_FILE, load_client_config};
 use agent_delegation::{DelegationClaims, DelegationKind};
@@ -84,6 +89,8 @@ pub struct McpRouterConfig {
     pub origin_allowlist: Vec<String>,
     #[serde(default)]
     pub protocols: McpProtocolsConfig,
+    #[serde(default)]
+    pub schema: McpSchemaConfig,
     #[serde(default, deserialize_with = "deserialize_typed_list")]
     pub tools: Vec<McpToolConfig>,
 }
@@ -100,6 +107,7 @@ impl Default for McpRouterConfig {
             max_json_depth: default_max_json_depth(),
             origin_allowlist: Vec::new(),
             protocols: McpProtocolsConfig::default(),
+            schema: McpSchemaConfig::default(),
             tools: Vec::new(),
         }
     }
@@ -145,6 +153,20 @@ pub struct McpStatelessProtocolConfig {
         deserialize_with = "deserialize_typed_list"
     )]
     pub versions: Vec<String>,
+    #[serde(default = "default_stateless_discover_ttl_ms")]
+    pub discover_ttl_ms: u64,
+    #[serde(default = "default_stateless_tools_list_ttl_ms")]
+    pub tools_list_ttl_ms: u64,
+    #[serde(default = "default_stateless_discover_cache_entries")]
+    pub max_discover_cache_entries: usize,
+    #[serde(default = "default_stateless_tools_list_cache_entries")]
+    pub max_tools_list_cache_entries: usize,
+    #[serde(default = "default_stateless_tools_list_items")]
+    pub max_tools_list_items: usize,
+    #[serde(default = "default_stateless_concurrent_requests")]
+    pub max_concurrent_requests: usize,
+    #[serde(default = "default_stateless_concurrent_requests_per_principal")]
+    pub max_concurrent_requests_per_principal: usize,
 }
 
 impl Default for McpStatelessProtocolConfig {
@@ -152,6 +174,14 @@ impl Default for McpStatelessProtocolConfig {
         Self {
             enabled: false,
             versions: default_stateless_protocol_versions(),
+            discover_ttl_ms: default_stateless_discover_ttl_ms(),
+            tools_list_ttl_ms: default_stateless_tools_list_ttl_ms(),
+            max_discover_cache_entries: default_stateless_discover_cache_entries(),
+            max_tools_list_cache_entries: default_stateless_tools_list_cache_entries(),
+            max_tools_list_items: default_stateless_tools_list_items(),
+            max_concurrent_requests: default_stateless_concurrent_requests(),
+            max_concurrent_requests_per_principal:
+                default_stateless_concurrent_requests_per_principal(),
         }
     }
 }
@@ -185,6 +215,8 @@ pub struct McpToolConfig {
     pub api_type: McpToolType,
     #[serde(default = "default_input_schema", alias = "inputSchema")]
     pub input_schema: JsonValue,
+    #[serde(default, alias = "outputSchema")]
+    pub output_schema: Option<JsonValue>,
     #[serde(skip)]
     pub input_schema_configured: bool,
     #[serde(
@@ -231,6 +263,12 @@ impl<'de> Deserialize<'de> for McpToolConfig {
             )]
             input_schema: Option<JsonValue>,
             #[serde(
+                default,
+                alias = "outputSchema",
+                deserialize_with = "deserialize_optional_json_value"
+            )]
+            output_schema: Option<JsonValue>,
+            #[serde(
                 default = "default_object",
                 alias = "toolMetadata",
                 deserialize_with = "deserialize_json_value"
@@ -253,6 +291,7 @@ impl<'de> Deserialize<'de> for McpToolConfig {
             endpoint: raw.endpoint,
             api_type: raw.api_type,
             input_schema: raw.input_schema.unwrap_or_else(default_input_schema),
+            output_schema: raw.output_schema,
             input_schema_configured,
             tool_metadata: raw.tool_metadata,
         })
@@ -798,7 +837,9 @@ impl ToolsListVisibilityCache {
 #[derive(Clone)]
 pub struct McpRouterRuntime {
     config: McpRouterConfig,
-    tools: BTreeMap<String, McpToolConfig>,
+    tools: BTreeMap<String, PreparedMcpTool>,
+    schema_validation: SchemaValidationPool,
+    _stateless_resources: Arc<StatelessResourceBudgets>,
     client: reqwest::Client,
     direct_registry: DirectRegistryConfig,
     discovery: Option<Arc<dyn McpDiscoveryResolver>>,
@@ -921,11 +962,23 @@ impl McpRouterRuntime {
             .map_err(|message| {
                 RuntimeError::Unsupported(format!("invalid mcp-router.originAllowlist: {message}"))
             })?;
-        let tools = config
-            .tools
-            .iter()
-            .map(|tool| (tool.name.clone(), tool.clone()))
-            .collect::<BTreeMap<_, _>>();
+        let tools = prepare_tools(
+            &config.tools,
+            &config.schema,
+            config.protocols.stateless.enabled,
+        )
+        .map_err(|message| RuntimeError::Unsupported(format!("invalid MCP schema: {message}")))?;
+        let schema_validation = SchemaValidationPool::new(&config.schema).map_err(|message| {
+            RuntimeError::Unsupported(format!("invalid MCP schema validation pool: {message}"))
+        })?;
+        let stateless_resources = StatelessResourceBudgets::new(
+            config.protocols.stateless.max_concurrent_requests,
+            config
+                .protocols
+                .stateless
+                .max_concurrent_requests_per_principal,
+        )
+        .map_err(|message| RuntimeError::Unsupported(format!("invalid MCP limits: {message}")))?;
         let client = ClientFactory::from_config(&client_config)
             .reqwest_client(EndpointOptions::default())
             .map_err(|error| {
@@ -940,6 +993,8 @@ impl McpRouterRuntime {
         Ok(Self {
             config,
             tools,
+            schema_validation,
+            _stateless_resources: Arc::new(stateless_resources),
             client,
             direct_registry,
             discovery,
@@ -1921,11 +1976,18 @@ impl McpRouterRuntime {
             .into_iter()
             .filter_map(|tool_name| self.tools.get(tool_name.as_str()))
             .map(|tool| {
-                json!({
+                let mut descriptor = json!({
                     "name": tool.name,
                     "description": tool.description,
                     "inputSchema": tool.input_schema
-                })
+                });
+                if let Some(output_schema) = tool.output_schema.as_ref() {
+                    descriptor
+                        .as_object_mut()
+                        .expect("tool descriptor is an object")
+                        .insert("outputSchema".to_string(), output_schema.clone());
+                }
+                descriptor
             })
             .collect::<Vec<_>>();
         json!({ "tools": tools })
@@ -2064,6 +2126,49 @@ impl McpRouterRuntime {
         let started = Instant::now();
         let mut policy_outcome = "not_configured";
 
+        if let Some(policy) = self.policy.as_ref()
+            && let AccessDecision::Denied(message) = policy.authorize_tool_by_claims(
+                tool.name.as_str(),
+                endpoint.as_str(),
+                context.auth.as_ref(),
+            )
+        {
+            log_mcp_tool_call(
+                tool,
+                endpoint.as_str(),
+                started,
+                "denied",
+                "denied",
+                context,
+            );
+            return Err(McpExecutionError {
+                code: -32001,
+                message,
+            });
+        }
+
+        match self
+            .schema_validation
+            .validate(Arc::clone(&tool.input_validator), arguments.clone())
+            .await
+        {
+            ValidationOutcome::Valid => {}
+            ValidationOutcome::Invalid(diagnostics) => {
+                return Ok(mcp_schema_error_result(
+                    "Tool arguments did not conform to inputSchema",
+                    &diagnostics,
+                ));
+            }
+            ValidationOutcome::Overloaded => {
+                return Ok(mcp_tool_error_result(
+                    "Schema validation capacity is temporarily exhausted",
+                ));
+            }
+            ValidationOutcome::WorkerFailed => {
+                return Ok(mcp_tool_error_result("Schema validation failed safely"));
+            }
+        }
+
         if let Some(policy) = self.policy.as_ref() {
             match policy
                 .authorize_tool(
@@ -2131,7 +2236,7 @@ impl McpRouterRuntime {
         };
 
         let backend_result_is_error = is_mcp_error_result(&result);
-        let (result, status) = if let Some(policy) = self.policy.as_ref() {
+        let (mut result, status) = if let Some(policy) = self.policy.as_ref() {
             let filtered = policy
                 .filter_mcp_response(
                     tool.name.as_str(),
@@ -2159,6 +2264,66 @@ impl McpRouterRuntime {
             }
         } else {
             (result, "success")
+        };
+        let (result, status) = if !is_mcp_error_result(&result) {
+            if let Some(validator) = tool.output_validator.as_ref() {
+                let Some(mut structured_content) = result.get("structuredContent").cloned() else {
+                    let result = mcp_tool_error_result(
+                        "Tool output did not provide required structuredContent",
+                    );
+                    log_mcp_tool_call(
+                        tool,
+                        endpoint.as_str(),
+                        started,
+                        "output_schema_error",
+                        policy_outcome,
+                        context,
+                    );
+                    return Ok(result);
+                };
+                if tool
+                    .output_schema
+                    .as_ref()
+                    .is_some_and(schema_declares_array_root)
+                    && let Some(items) = structured_content
+                        .as_object()
+                        .filter(|object| object.len() == 1)
+                        .and_then(|object| object.get("items"))
+                        .filter(|items| items.is_array())
+                        .cloned()
+                {
+                    structured_content = items;
+                    replace_structured_content(&mut result, structured_content.clone());
+                }
+                match self
+                    .schema_validation
+                    .validate(Arc::clone(validator), structured_content)
+                    .await
+                {
+                    ValidationOutcome::Valid => (result, status),
+                    ValidationOutcome::Invalid(diagnostics) => (
+                        mcp_schema_error_result(
+                            "Tool output did not conform to outputSchema",
+                            &diagnostics,
+                        ),
+                        "output_schema_error",
+                    ),
+                    ValidationOutcome::Overloaded => (
+                        mcp_tool_error_result(
+                            "Schema validation capacity is temporarily exhausted",
+                        ),
+                        "output_schema_error",
+                    ),
+                    ValidationOutcome::WorkerFailed => (
+                        mcp_tool_error_result("Schema validation failed safely"),
+                        "output_schema_error",
+                    ),
+                }
+            } else {
+                (result, status)
+            }
+        } else {
+            (result, status)
         };
         log_mcp_tool_call(
             tool,
@@ -2958,7 +3123,7 @@ impl McpRouterRuntime {
         parse_base_url(discovery_node_base_url(node).as_str(), &tool.name, true)
     }
 
-    fn get_tool(&self, requested_name: &str) -> Option<&McpToolConfig> {
+    fn get_tool(&self, requested_name: &str) -> Option<&PreparedMcpTool> {
         if let Some(tool) = self.tools.get(requested_name) {
             return Some(tool);
         }
@@ -2999,6 +3164,35 @@ fn mcp_text_result(text: impl Into<String>) -> JsonValue {
     })
 }
 
+fn mcp_tool_error_result(message: impl Into<String>) -> JsonValue {
+    json!({
+        "content": [{"type": "text", "text": message.into()}],
+        "isError": true,
+        "resultType": "complete"
+    })
+}
+
+fn mcp_schema_error_result(prefix: &str, diagnostics: &[SchemaDiagnostic]) -> JsonValue {
+    let details = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let path = if diagnostic.path.is_empty() {
+                "/"
+            } else {
+                diagnostic.path.as_str()
+            };
+            format!("{path}: {}", diagnostic.constraint)
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let message = if details.is_empty() {
+        prefix.to_string()
+    } else {
+        format!("{prefix}: {details}")
+    };
+    mcp_tool_error_result(message)
+}
+
 fn mcp_json_result(value: JsonValue) -> JsonValue {
     let structured_content = if value.is_array() {
         json!({ "items": value })
@@ -3016,6 +3210,30 @@ fn mcp_json_result(value: JsonValue) -> JsonValue {
         ],
         "structuredContent": structured_content
     })
+}
+
+fn replace_structured_content(result: &mut JsonValue, value: JsonValue) {
+    let text = serde_json::to_string(&value).unwrap_or_else(|_| value.to_string());
+    if let Some(object) = result.as_object_mut() {
+        object.insert("structuredContent".to_string(), value);
+    }
+    if let Some(item) = result
+        .get_mut("content")
+        .and_then(JsonValue::as_array_mut)
+        .and_then(|content| content.first_mut())
+        .and_then(JsonValue::as_object_mut)
+        .filter(|item| item.get("type").and_then(JsonValue::as_str) == Some("text"))
+    {
+        item.insert("text".to_string(), JsonValue::String(text));
+    }
+}
+
+fn schema_declares_array_root(schema: &JsonValue) -> bool {
+    match schema.get("type") {
+        Some(JsonValue::String(kind)) => kind == "array",
+        Some(JsonValue::Array(kinds)) => kinds.iter().any(|kind| kind.as_str() == Some("array")),
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -3237,12 +3455,12 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
     }
     if config.protocols.stateless.enabled {
         return Err(RuntimeError::Unsupported(
-            "mcp-router.protocols.stateless is not available in Phase 2".to_string(),
+            "mcp-router.protocols.stateless is not available before Phase 4".to_string(),
         ));
     }
     if !config.protocols.legacy.enabled {
         return Err(RuntimeError::Unsupported(
-            "mcp-router.protocols.legacy must remain enabled in Phase 2".to_string(),
+            "mcp-router.protocols.legacy must remain enabled before Phase 4".to_string(),
         ));
     }
     if config.protocols.legacy.versions.is_empty() {
@@ -3273,6 +3491,50 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
         if !stateless_versions.insert(version.as_str()) {
             return Err(RuntimeError::Unsupported(format!(
                 "duplicate stateless MCP protocol version `{version}`"
+            )));
+        }
+    }
+    for (name, value) in [
+        ("discoverTtlMs", config.protocols.stateless.discover_ttl_ms),
+        (
+            "toolsListTtlMs",
+            config.protocols.stateless.tools_list_ttl_ms,
+        ),
+    ] {
+        if value == 0 {
+            return Err(RuntimeError::Unsupported(format!(
+                "mcp-router.protocols.stateless.{name} must be greater than 0"
+            )));
+        }
+    }
+    for (name, value) in [
+        (
+            "maxDiscoverCacheEntries",
+            config.protocols.stateless.max_discover_cache_entries,
+        ),
+        (
+            "maxToolsListCacheEntries",
+            config.protocols.stateless.max_tools_list_cache_entries,
+        ),
+        (
+            "maxToolsListItems",
+            config.protocols.stateless.max_tools_list_items,
+        ),
+        (
+            "maxConcurrentRequests",
+            config.protocols.stateless.max_concurrent_requests,
+        ),
+        (
+            "maxConcurrentRequestsPerPrincipal",
+            config
+                .protocols
+                .stateless
+                .max_concurrent_requests_per_principal,
+        ),
+    ] {
+        if value == 0 {
+            return Err(RuntimeError::Unsupported(format!(
+                "mcp-router.protocols.stateless.{name} must be greater than 0"
             )));
         }
     }
@@ -4898,6 +5160,34 @@ fn default_stateless_protocol_versions() -> Vec<String> {
     Vec::new()
 }
 
+fn default_stateless_discover_ttl_ms() -> u64 {
+    30_000
+}
+
+fn default_stateless_tools_list_ttl_ms() -> u64 {
+    30_000
+}
+
+fn default_stateless_discover_cache_entries() -> usize {
+    1_024
+}
+
+fn default_stateless_tools_list_cache_entries() -> usize {
+    4_096
+}
+
+fn default_stateless_tools_list_items() -> usize {
+    1_024
+}
+
+fn default_stateless_concurrent_requests() -> usize {
+    1_024
+}
+
+fn default_stateless_concurrent_requests_per_principal() -> usize {
+    32
+}
+
 fn default_input_schema() -> JsonValue {
     json!({ "type": "object" })
 }
@@ -6233,6 +6523,7 @@ endpointRules:
                     endpoint: None,
                     api_type: McpToolType::Http,
                     input_schema: default_input_schema(),
+                    output_schema: None,
                     input_schema_configured: true,
                     tool_metadata: allow_private_target_metadata(),
                 }],
@@ -6290,6 +6581,7 @@ endpointRules:
                     endpoint: None,
                     api_type: McpToolType::Http,
                     input_schema: default_input_schema(),
+                    output_schema: None,
                     input_schema_configured: true,
                     tool_metadata: allow_private_target_metadata(),
                 }],
@@ -6354,6 +6646,7 @@ endpointRules:
                         },
                         "required": ["apiName"]
                     }),
+                    output_schema: None,
                     input_schema_configured: true,
                     tool_metadata: allow_private_target_metadata(),
                 }],
@@ -6424,6 +6717,7 @@ endpointRules:
                 endpoint: None,
                 api_type: McpToolType::Mcp,
                 input_schema: default_input_schema(),
+                output_schema: None,
                 input_schema_configured: true,
                 tool_metadata: allow_private_target_metadata(),
             }],
@@ -6521,6 +6815,7 @@ endpointRules:
                 endpoint: None,
                 api_type: McpToolType::Mcp,
                 input_schema: default_input_schema(),
+                output_schema: None,
                 input_schema_configured: true,
                 tool_metadata: allow_private_target_metadata(),
             }],
@@ -6588,6 +6883,7 @@ endpointRules:
                 endpoint: None,
                 api_type: McpToolType::Mcp,
                 input_schema: default_input_schema(),
+                output_schema: None,
                 input_schema_configured: true,
                 tool_metadata: allow_private_target_metadata(),
             }],
@@ -6647,6 +6943,7 @@ endpointRules:
                 endpoint: None,
                 api_type: McpToolType::Mcp,
                 input_schema: default_input_schema(),
+                output_schema: None,
                 input_schema_configured: true,
                 tool_metadata: allow_private_target_metadata(),
             }],
@@ -6713,6 +7010,7 @@ endpointRules:
                     "properties": {"message": {"type": "string"}},
                     "required": ["message"]
                 }),
+                output_schema: None,
                 input_schema_configured: true,
                 tool_metadata: allow_private_target_metadata(),
             }],
@@ -6791,6 +7089,7 @@ endpointRules:
                         }
                     }
                 }),
+                output_schema: None,
                 input_schema_configured: true,
                 tool_metadata: allow_private_target_metadata(),
             }],
@@ -6860,6 +7159,7 @@ endpointRules:
                         }
                     }
                 }),
+                output_schema: None,
                 input_schema_configured: true,
                 tool_metadata: allow_private_target_metadata(),
             }],
@@ -6970,6 +7270,7 @@ endpointRules:
                 endpoint: None,
                 api_type: McpToolType::Mcp,
                 input_schema: default_input_schema(),
+                output_schema: None,
                 input_schema_configured: true,
                 tool_metadata: allow_private_target_metadata(),
             }],
@@ -7044,6 +7345,7 @@ endpointRules:
                 endpoint: None,
                 api_type: McpToolType::Mcp,
                 input_schema: default_input_schema(),
+                output_schema: None,
                 input_schema_configured: true,
                 tool_metadata: allow_private_target_metadata(),
             }],
@@ -7299,6 +7601,7 @@ endpointRules:
                 endpoint: None,
                 api_type: McpToolType::Mcp,
                 input_schema: default_input_schema(),
+                output_schema: None,
                 input_schema_configured: false,
                 tool_metadata: allow_private_target_metadata(),
             }],
@@ -7475,6 +7778,138 @@ endpointRules:
         assert_eq!(body["error"]["code"], -32700);
     }
 
+    #[tokio::test]
+    async fn input_schema_failure_is_a_tool_error_without_backend_traffic() {
+        let tool = test_tool(
+            "weather",
+            "Get weather",
+            "http://127.0.0.1:1",
+            McpHttpMethod::Get,
+            None,
+            json!({
+                "type": "object",
+                "required": ["city"],
+                "properties": {"city": {"type": "string"}}
+            }),
+        );
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![tool],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather","arguments":{}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        assert_eq!(body["result"]["isError"], true);
+        assert_eq!(body["result"]["resultType"], "complete");
+        assert!(body["error"].is_null());
+        assert!(!body["result"].to_string().contains("properties"));
+    }
+
+    #[tokio::test]
+    async fn output_schema_failure_discards_contradictory_structured_content() {
+        let (base, received) = spawn_http_server(http_json_response(json!({"ok": true}))).await;
+        let mut tool = test_tool(
+            "weather",
+            "Get weather",
+            base.as_str(),
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        );
+        tool.output_schema = Some(json!({"type": "array"}));
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![tool],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"weather","arguments":{}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        assert_eq!(body["result"]["isError"], true);
+        assert_eq!(body["result"]["resultType"], "complete");
+        assert!(body["result"].get("structuredContent").is_none());
+        received.await.expect("backend request");
+    }
+
+    #[tokio::test]
+    async fn declared_array_output_preserves_arbitrary_structured_root() {
+        let (base, received) = spawn_http_server(http_json_response(json!([1, 2]))).await;
+        let mut tool = test_tool(
+            "weather",
+            "Get weather",
+            base.as_str(),
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        );
+        tool.output_schema = Some(json!({"type": "array", "items": {"type": "integer"}}));
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![tool],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"weather","arguments":{}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        assert_eq!(body["result"]["structuredContent"], json!([1, 2]));
+        assert_eq!(
+            serde_json::from_str::<JsonValue>(
+                body["result"]["content"][0]["text"].as_str().unwrap()
+            )
+            .unwrap(),
+            json!([1, 2])
+        );
+        received.await.expect("backend request");
+    }
+
+    #[test]
+    fn candidate_runtime_rejects_invalid_output_schema_atomically() {
+        let mut tool = test_tool(
+            "weather",
+            "Get weather",
+            "https://example.com",
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        );
+        tool.output_schema = Some(json!({"$ref": "https://example.com/schema"}));
+        assert!(
+            McpRouterRuntime::new(McpRouterConfig {
+                tools: vec![tool],
+                ..McpRouterConfig::default()
+            })
+            .is_err()
+        );
+    }
+
     #[test]
     fn apply_tool_path_appends_tool_path_to_base_path() {
         let mut tool = test_tool(
@@ -7597,6 +8032,7 @@ endpointRules:
             endpoint: endpoint.map(str::to_string),
             api_type: McpToolType::Http,
             input_schema,
+            output_schema: None,
             input_schema_configured: true,
             tool_metadata: allow_private_target_metadata(),
         }
@@ -8107,6 +8543,7 @@ endpointRules:
                 endpoint: None,
                 api_type: McpToolType::Mcp,
                 input_schema: default_input_schema(),
+                output_schema: None,
                 input_schema_configured: true,
                 tool_metadata: retry_target_metadata(&[503]),
             }],

@@ -447,6 +447,85 @@ impl AccessControlRuntime {
         }
     }
 
+    /// Performs the claim-only portion of MCP tool authorization before an
+    /// input schema is evaluated. This deliberately ignores the tools/list
+    /// visibility mode: a caller must not learn schema details for a tool that
+    /// its verified claims cannot invoke.
+    pub fn authorize_tool_by_claims(
+        &self,
+        tool_name: &str,
+        endpoint: &str,
+        auth: Option<&AuthPrincipal>,
+    ) -> AccessDecision {
+        let Some(config) = self.active_config_for_mcp_tool(tool_name, endpoint) else {
+            return AccessDecision::Allowed;
+        };
+        let Some((_service_entry, endpoint_rules)) = self.find_service_entry(endpoint) else {
+            return if config.default_deny {
+                AccessDecision::Denied(format!(
+                    "Access denied: no access control rule defined for {endpoint}"
+                ))
+            } else {
+                AccessDecision::Allowed
+            };
+        };
+        if let Some(visibility) = endpoint_rules.get("visibility") {
+            return if permission_matches_claims(visibility, auth, self.claim_mappings.as_ref()) {
+                AccessDecision::Allowed
+            } else {
+                AccessDecision::Denied(format!(
+                    "Access denied by access control rule for {endpoint}"
+                ))
+            };
+        }
+        let rule_ids = rule_ids_for(endpoint_rules, REQUEST_ACCESS);
+        if rule_ids.is_empty() {
+            return if config.default_deny {
+                AccessDecision::Denied(format!(
+                    "Access denied: no access control rule defined for {endpoint}"
+                ))
+            } else {
+                AccessDecision::Allowed
+            };
+        }
+        let permission = permission_for(endpoint_rules)
+            .map(JsonValue::Object)
+            .unwrap_or_else(|| json!({}));
+        let mut outcomes = Vec::new();
+        let mut deferred_to_arguments = false;
+        for rule_id in rule_ids {
+            let Some(rule) = self.rules.rule_bodies.get(rule_id.as_str()) else {
+                outcomes.push(unknown_rule_visible(config));
+                continue;
+            };
+            match rule_visibility_match(rule, &permission, auth, self.claim_mappings.as_ref()) {
+                RuleVisibilityMatch::Matched(value) => outcomes.push(value),
+                RuleVisibilityMatch::Ignored | RuleVisibilityMatch::Unknown => {
+                    deferred_to_arguments = true
+                }
+            }
+        }
+        let allowed =
+            if config.access_rule_logic.eq_ignore_ascii_case("all") && deferred_to_arguments {
+                outcomes.iter().all(|allowed| *allowed)
+            } else if deferred_to_arguments {
+                true
+            } else if outcomes.is_empty() {
+                !config.default_deny
+            } else if config.access_rule_logic.eq_ignore_ascii_case("all") {
+                outcomes.iter().all(|allowed| *allowed)
+            } else {
+                outcomes.iter().any(|allowed| *allowed)
+            };
+        if allowed {
+            AccessDecision::Allowed
+        } else {
+            AccessDecision::Denied(format!(
+                "Access denied by access control rule for {endpoint}"
+            ))
+        }
+    }
+
     pub async fn authorize_http_endpoint(
         &self,
         endpoint: &str,
@@ -1506,8 +1585,7 @@ impl RuleActionPlugin for ResponseColumnFilterAction {
         let Some(body) = response_body_json_mut(rule_context) else {
             return Ok(false);
         };
-        apply_column_filter_specs(body, &filter_specs);
-        Ok(true)
+        Ok(apply_column_filter_specs(body, &filter_specs))
     }
 }
 
@@ -1534,6 +1612,9 @@ impl RuleActionPlugin for ResponseRowFilterAction {
             let Some(body) = response_body_json_mut(rule_context) else {
                 return Ok(false);
             };
+            if !row_filter_root_supported(body) {
+                return Ok(false);
+            }
             apply_row_filter_groups(body, &filter_groups, default_include)
         };
         if denied {
@@ -1648,23 +1729,30 @@ fn matching_column_filters(
     specs
 }
 
-fn apply_column_filter_specs(body: &mut JsonValue, specs: &[(bool, Vec<String>)]) {
+fn apply_column_filter_specs(body: &mut JsonValue, specs: &[(bool, Vec<String>)]) -> bool {
     if let Some(items) = body.as_array_mut() {
+        if items.iter().any(|item| !item.is_object()) {
+            return false;
+        }
         for item in items.iter_mut().filter_map(JsonValue::as_object_mut) {
             apply_column_specs_to_object(item, specs);
         }
-        return;
+        return true;
     }
     let Some(obj) = body.as_object_mut() else {
-        return;
+        return false;
     };
     if let Some(items) = obj.get_mut("items").and_then(JsonValue::as_array_mut) {
+        if items.iter().any(|item| !item.is_object()) {
+            return false;
+        }
         for item in items.iter_mut().filter_map(JsonValue::as_object_mut) {
             apply_column_specs_to_object(item, specs);
         }
-        return;
+        return true;
     }
     apply_column_specs_to_object(obj, specs);
+    true
 }
 
 fn apply_column_specs_to_object(
@@ -1731,6 +1819,13 @@ fn apply_row_filter_groups(
         return true;
     }
     false
+}
+
+fn row_filter_root_supported(body: &JsonValue) -> bool {
+    body.is_object()
+        || body
+            .as_array()
+            .is_some_and(|items| items.iter().all(JsonValue::is_object))
 }
 
 fn row_matches_filter_groups(
@@ -2045,6 +2140,27 @@ mod tests {
             role: Some(role.to_string()),
             claims: json!({ "role": role }),
             ..AuthPrincipal::default()
+        }
+    }
+
+    #[test]
+    fn row_and_column_filters_reject_unsupported_structured_roots() {
+        let specs = vec![(false, vec!["visible".to_string()])];
+        for mut value in [
+            JsonValue::Null,
+            json!("text"),
+            json!(1),
+            json!(true),
+            json!([{"visible": 1}, "unfilterable"]),
+            json!({"items": [{"visible": 1}, null]}),
+        ] {
+            let original = value.clone();
+            assert!(!apply_column_filter_specs(&mut value, &specs));
+            assert_eq!(value, original);
+        }
+
+        for value in [JsonValue::Null, json!("text"), json!(1), json!(true)] {
+            assert!(!row_filter_root_supported(&value));
         }
     }
 
@@ -4304,6 +4420,53 @@ allow-scp-claim-group-access-control.lightapi.net:
                 .await,
             AccessDecision::Denied(
                 "Access denied by access control rule for /v1/accounts@get".to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn coarse_tool_authorization_defers_argument_dependent_rules() {
+        let policy = AccessControlRuntime::new(
+            Some(AccessControlConfig {
+                default_deny: true,
+                ..AccessControlConfig::default()
+            }),
+            serde_yaml::from_str::<RuleFileConfig>(
+                r#"
+ruleBodies:
+  argument-city:
+    common: Y
+    ruleId: argument-city
+    ruleName: Argument-dependent city access
+    ruleType: req-acc
+    expression: "toolArguments.city == 'Toronto'"
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+endpointRules:
+  /weather@get:
+    req-acc: [argument-city]
+"#,
+            )
+            .expect("rule config"),
+        );
+
+        assert_eq!(
+            policy.authorize_tool_by_claims("weather", "/weather@get", None),
+            AccessDecision::Allowed
+        );
+        assert_eq!(
+            policy
+                .authorize_tool(
+                    "weather",
+                    "/weather@get",
+                    &[],
+                    None,
+                    &json!({"city": "Ottawa"}),
+                    None,
+                )
+                .await,
+            AccessDecision::Denied(
+                "Access denied by access control rule for /weather@get".to_string()
             )
         );
     }
