@@ -10,11 +10,12 @@ use crate::mcp_protocol::{
 };
 use crate::mcp_resources::StatelessResourceBudgets;
 use crate::mcp_schema::{
-    McpSchemaConfig, PreparedMcpTool, SchemaDiagnostic, SchemaValidationPool, ValidationOutcome,
-    prepare_tools,
+    HeaderValueKind, McpSchemaConfig, PreparedMcpTool, SchemaDiagnostic, SchemaValidationPool,
+    ValidationOutcome, prepare_tools,
 };
 use crate::mcp_stateless::{
-    SERVER_INFO_META_KEY, StatelessRequestError, validate_stateless_request,
+    ExpectedParameterHeader, ExpectedParameterValue, SERVER_INFO_META_KEY, StatelessRequestError,
+    validate_parameter_headers, validate_stateless_request,
 };
 use crate::security::AuthPrincipal;
 use crate::token::{CLIENT_FILE, load_client_config};
@@ -171,6 +172,8 @@ pub struct McpStatelessProtocolConfig {
     pub max_concurrent_requests: usize,
     #[serde(default = "default_stateless_concurrent_requests_per_principal")]
     pub max_concurrent_requests_per_principal: usize,
+    #[serde(default = "default_stateless_concurrent_backend_calls_per_target")]
+    pub max_concurrent_backend_calls_per_target: usize,
 }
 
 impl Default for McpStatelessProtocolConfig {
@@ -186,6 +189,8 @@ impl Default for McpStatelessProtocolConfig {
             max_concurrent_requests: default_stateless_concurrent_requests(),
             max_concurrent_requests_per_principal:
                 default_stateless_concurrent_requests_per_principal(),
+            max_concurrent_backend_calls_per_target:
+                default_stateless_concurrent_backend_calls_per_target(),
         }
     }
 }
@@ -510,6 +515,14 @@ impl ForwardedHeaderContext {
             if let Some(host) = auth.host.as_deref() {
                 admitted.push(("x-host-id".to_string(), host.to_string()));
             }
+            if let Some(tenant) =
+                normalized_claim(&auth.claims, &["tenant", "tenant_id", "tenantId", "tid"])
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+            {
+                admitted.push(("x-tenant-id".to_string(), tenant.to_string()));
+            }
         }
         let legacy_shape = Self::legacy(&admitted);
         Self {
@@ -527,6 +540,7 @@ struct EffectiveMcpRequestContext<'a> {
     protocol_version: &'a str,
     frontend_session_id: Option<&'a str>,
     forwarded_headers: ForwardedHeaderContext,
+    transport_headers: &'a [(String, String)],
     request: &'a McpRequestContext,
 }
 
@@ -1522,6 +1536,16 @@ impl McpRouterRuntime {
                     None,
                     chrono::Utc::now().timestamp(),
                 ),
+                "tools/call" => delegation.validate_binding(
+                    "light-gateway",
+                    DelegationKind::ToolCall,
+                    message
+                        .get("params")
+                        .and_then(JsonValue::as_object)
+                        .and_then(|params| params.get("name"))
+                        .and_then(JsonValue::as_str),
+                    chrono::Utc::now().timestamp(),
+                ),
                 _ => Err(agent_delegation::DelegationError::Binding),
             };
             if binding.is_err() {
@@ -1561,11 +1585,21 @@ impl McpRouterRuntime {
             protocol_version: version,
             frontend_session_id: None,
             forwarded_headers: ForwardedHeaderContext::stateless(&request.headers, context),
+            transport_headers: &request.headers,
             request: context,
         };
         let result = match metadata.method.as_str() {
             "server/discover" => self.stateless_discover_result(&effective).await,
             "tools/list" => self.stateless_tools_list_result(message, &effective).await,
+            "tools/call" => self
+                .handle_tool_call(message, &effective)
+                .await
+                .map(stateless_tool_result)
+                .map_err(|error| McpSessionError {
+                    status: if error.code == -32020 { 400 } else { 200 },
+                    code: error.code,
+                    message: error.message,
+                }),
             method => {
                 return response_with_protocol_version(
                     json_error_response(404, id, -32601, format!("method `{method}` not found")),
@@ -1617,7 +1651,7 @@ impl McpRouterRuntime {
         let ttl_ms = self.config.protocols.stateless.discover_ttl_ms;
         let result = json!({
             "supportedVersions": self.config.protocols.stateless.versions,
-            "capabilities": {},
+            "capabilities": {"tools": {"listChanged": false}},
             "resultType": "complete",
             "_meta": {
                 SERVER_INFO_META_KEY: {
@@ -1918,6 +1952,7 @@ impl McpRouterRuntime {
                     protocol_version: session.protocol_version.as_str(),
                     frontend_session_id: Some(session.id.as_str()),
                     forwarded_headers: ForwardedHeaderContext::legacy(&request.headers),
+                    transport_headers: &request.headers,
                     request: context,
                 };
                 response_with_protocol_version(
@@ -1937,6 +1972,7 @@ impl McpRouterRuntime {
                     protocol_version: session.protocol_version.as_str(),
                     frontend_session_id: Some(session.id.as_str()),
                     forwarded_headers: ForwardedHeaderContext::legacy(&request.headers),
+                    transport_headers: &request.headers,
                     request: context,
                 };
                 match self.handle_tool_call(message, &effective).await {
@@ -2538,6 +2574,16 @@ impl McpRouterRuntime {
             }
         }
 
+        if effective.frontend_profile == FrontendProfile::Stateless {
+            let expected_headers = expected_parameter_headers(tool, &arguments)?;
+            validate_parameter_headers(effective.transport_headers, &expected_headers).map_err(
+                |error| McpExecutionError {
+                    code: error.code,
+                    message: error.message,
+                },
+            )?;
+        }
+
         if let Some(policy) = self.policy.as_ref() {
             match policy
                 .authorize_tool(
@@ -2573,20 +2619,48 @@ impl McpRouterRuntime {
 
         let masked_arguments = mask_tool_arguments(tool, &arguments);
 
+        let _backend_permit = if effective.frontend_profile == FrontendProfile::Stateless
+            && tool.api_type == McpToolType::Http
+        {
+            Some(
+                self.stateless_resources
+                    .try_backend_call(
+                        stateless_target_key(tool).as_str(),
+                        self.config
+                            .protocols
+                            .stateless
+                            .max_concurrent_backend_calls_per_target,
+                    )
+                    .ok_or_else(|| {
+                        McpExecutionError::execution_failed(
+                            "stateless MCP backend target exceeds a gateway resource limit",
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
+
         let execution = match tool.api_type {
             McpToolType::Http => {
                 self.execute_http_tool(tool, &masked_arguments, backend_headers)
                     .await
             }
             McpToolType::Mcp => {
-                let backend_profile = effective.legacy_backend_profile()?;
-                self.execute_mcp_proxy_tool(
-                    tool,
-                    &masked_arguments,
-                    backend_headers,
-                    backend_profile,
-                )
-                .await
+                if effective.frontend_profile == FrontendProfile::Stateless {
+                    Ok(mcp_tool_error_result(
+                        "Gateway does not support stateless calls to this MCP backend profile",
+                    ))
+                } else {
+                    let backend_profile = effective.legacy_backend_profile()?;
+                    self.execute_mcp_proxy_tool(
+                        tool,
+                        &masked_arguments,
+                        backend_headers,
+                        backend_profile,
+                    )
+                    .await
+                }
             }
         };
         let result = match execution {
@@ -2932,7 +3006,7 @@ impl McpRouterRuntime {
                 request = request.json(body);
             }
 
-            let response = match request.send().await {
+            let mut response = match request.send().await {
                 Ok(response) => response,
                 Err(error) => {
                     if retry_policy
@@ -2972,10 +3046,34 @@ impl McpRouterRuntime {
                 .get(reqwest::header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_string);
-            let body = response
-                .bytes()
+            if response
+                .content_length()
+                .is_some_and(|length| length > self.config.max_response_body_bytes as u64)
+            {
+                return Err(McpExecutionError::execution_failed(format!(
+                    "tool `{}` response exceeds maxResponseBodyBytes",
+                    tool.name
+                )));
+            }
+            let mut body = Vec::new();
+            while let Some(chunk) = response
+                .chunk()
                 .await
-                .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
+                .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?
+            {
+                if chunk.len()
+                    > self
+                        .config
+                        .max_response_body_bytes
+                        .saturating_sub(body.len())
+                {
+                    return Err(McpExecutionError::execution_failed(format!(
+                        "tool `{}` response exceeds maxResponseBodyBytes",
+                        tool.name
+                    )));
+                }
+                body.extend_from_slice(&chunk);
+            }
             if !status.is_success() {
                 if retry_policy
                     .as_ref()
@@ -3541,6 +3639,90 @@ fn mcp_tool_error_result(message: impl Into<String>) -> JsonValue {
     })
 }
 
+fn stateless_tool_result(mut result: JsonValue) -> JsonValue {
+    let Some(result) = result.as_object_mut() else {
+        return mcp_tool_error_result("Tool returned an invalid result envelope");
+    };
+    result.insert(
+        "resultType".to_string(),
+        JsonValue::String("complete".to_string()),
+    );
+    let meta = result
+        .entry("_meta".to_string())
+        .or_insert_with(|| JsonValue::Object(JsonMap::new()));
+    if !meta.is_object() {
+        *meta = JsonValue::Object(JsonMap::new());
+    }
+    meta.as_object_mut().expect("meta object").insert(
+        SERVER_INFO_META_KEY.to_string(),
+        json!({
+            "name": "light-gateway",
+            "version": env!("CARGO_PKG_VERSION")
+        }),
+    );
+    JsonValue::Object(result.clone())
+}
+
+fn expected_parameter_headers(
+    tool: &PreparedMcpTool,
+    arguments: &JsonValue,
+) -> Result<Vec<ExpectedParameterHeader>, McpExecutionError> {
+    tool.header_extractions
+        .iter()
+        .map(|extraction| {
+            let value = match value_at_property_path(arguments, &extraction.property_path)
+                .filter(|value| !value.is_null())
+            {
+                None => None,
+                Some(value) => Some(
+                    match extraction.value_kind {
+                        HeaderValueKind::String => value
+                            .as_str()
+                            .map(|value| ExpectedParameterValue::String(value.to_string())),
+                        HeaderValueKind::Integer => {
+                            value.as_i64().map(ExpectedParameterValue::Integer)
+                        }
+                        HeaderValueKind::Boolean => {
+                            value.as_bool().map(ExpectedParameterValue::Boolean)
+                        }
+                    }
+                    .ok_or_else(|| {
+                        McpExecutionError::invalid_params(format!(
+                            "tool `{}` header-mirrored argument has an invalid primitive value",
+                            tool.name
+                        ))
+                    })?,
+                ),
+            };
+            Ok(ExpectedParameterHeader {
+                name: extraction.header_name.clone(),
+                value,
+            })
+        })
+        .collect()
+}
+
+fn value_at_property_path<'a>(value: &'a JsonValue, path: &[String]) -> Option<&'a JsonValue> {
+    path.iter()
+        .try_fold(value, |current, property| current.get(property))
+}
+
+fn stateless_target_key(tool: &McpToolConfig) -> String {
+    if let Some(target) = tool
+        .target_host
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return format!("target:{target}");
+    }
+    format!(
+        "service:{}:{}",
+        tool.service_id.as_deref().unwrap_or_default().trim(),
+        tool.env_tag.as_deref().unwrap_or_default().trim()
+    )
+}
+
 fn mcp_schema_error_result(prefix: &str, diagnostics: &[SchemaDiagnostic]) -> JsonValue {
     let details = diagnostics
         .iter()
@@ -3822,14 +4004,15 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
             )));
         }
     }
-    if config.protocols.stateless.enabled {
-        return Err(RuntimeError::Unsupported(
-            "mcp-router.protocols.stateless is not available before Phase 5".to_string(),
-        ));
-    }
     if !config.protocols.legacy.enabled {
         return Err(RuntimeError::Unsupported(
-            "mcp-router.protocols.legacy must remain enabled before Phase 4".to_string(),
+            "mcp-router.protocols.legacy must remain enabled for the dual-profile milestone"
+                .to_string(),
+        ));
+    }
+    if config.protocols.stateless.enabled && config.protocols.stateless.versions.is_empty() {
+        return Err(RuntimeError::Unsupported(
+            "mcp-router.protocols.stateless.versions must not be empty when enabled".to_string(),
         ));
     }
     if config.protocols.legacy.versions.is_empty() {
@@ -3899,6 +4082,13 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
                 .protocols
                 .stateless
                 .max_concurrent_requests_per_principal,
+        ),
+        (
+            "maxConcurrentBackendCallsPerTarget",
+            config
+                .protocols
+                .stateless
+                .max_concurrent_backend_calls_per_target,
         ),
     ] {
         if value == 0 {
@@ -5673,6 +5863,10 @@ fn default_stateless_concurrent_requests() -> usize {
 }
 
 fn default_stateless_concurrent_requests_per_principal() -> usize {
+    32
+}
+
+fn default_stateless_concurrent_backend_calls_per_target() -> usize {
     32
 }
 
@@ -8247,6 +8441,111 @@ endpointRules:
     }
 
     #[tokio::test]
+    async fn legacy_and_stateless_http_calls_share_policy_and_masking_core() {
+        let (base, received) = spawn_http_sequence_server(vec![
+            http_json_response(json!({"ok": true})),
+            http_json_response(json!({"ok": true})),
+        ])
+        .await;
+        let policy = Arc::new(crate::access_control::AccessControlRuntime::new(
+            Some(crate::access_control::AccessControlConfig::default()),
+            serde_yaml::from_str::<crate::access_control::RuleFileConfig>(
+                r#"
+ruleBodies:
+  allow:
+    common: Y
+    ruleId: allow
+    ruleName: Allow MCP reader
+    ruleType: req-acc
+    expression: "'role' in auditInfo.subject_claims.ClaimsMap"
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+    actions:
+      - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
+endpointRules:
+  weather@call:
+    req-acc:
+      - allow
+    permission:
+      roles: mcp-reader
+"#,
+            )
+            .expect("rule config"),
+        ));
+        let mut config = stateless_test_config(vec![test_tool(
+            "weather",
+            "Get weather",
+            base.as_str(),
+            McpHttpMethod::Post,
+            Some("weather@call"),
+            json!({
+                "type":"object",
+                "properties":{
+                    "ssn":{"type":"string","x-mask":true,"x-mask-pattern":"^(.*)$"},
+                    "city":{"type":"string"}
+                }
+            }),
+        )]);
+        config.protocols.stateless.enabled = true;
+        let runtime = McpRouterRuntime::new_with_policy(config, Some(policy)).expect("runtime");
+        let context = McpRequestContext {
+            auth: Some(AuthPrincipal {
+                user_id: Some("alice".into()),
+                role: Some("mcp-reader".into()),
+                claims: json!({"role":"mcp-reader"}),
+                ..AuthPrincipal::default()
+            }),
+            correlation_id: Some("corr-equivalence".into()),
+            ..McpRequestContext::default()
+        };
+        let arguments = json!({"ssn":"123-45-6789","city":"Toronto"});
+        let legacy = runtime
+            .handle_request_with_context(
+                McpHttpRequest {
+                    method: "POST".into(),
+                    path: "/mcp".into(),
+                    headers: accept_json_with_session(&runtime),
+                    body: serde_json::to_vec(&json!({
+                        "jsonrpc":"2.0","id":1,"method":"tools/call",
+                        "params":{"name":"weather","arguments":arguments}
+                    }))
+                    .expect("body"),
+                },
+                context.clone(),
+            )
+            .await
+            .expect("handle")
+            .expect("response");
+        let modern = runtime
+            .handle_request_with_context(
+                stateless_request(
+                    "tools/call",
+                    json!({"name":"weather","arguments":arguments}),
+                    None,
+                ),
+                context,
+            )
+            .await
+            .expect("handle")
+            .expect("response");
+        let legacy = serde_json::from_slice::<JsonValue>(&legacy.body).expect("legacy json");
+        let modern = serde_json::from_slice::<JsonValue>(&modern.body).expect("modern json");
+        assert_eq!(
+            legacy["result"]["structuredContent"],
+            modern["result"]["structuredContent"]
+        );
+        assert_eq!(modern["result"]["resultType"], "complete");
+
+        let requests = received.await.expect("backend requests");
+        assert_eq!(requests.len(), 2);
+        for request in requests {
+            let body = request.split("\r\n\r\n").nth(1).expect("request body");
+            assert!(body.contains("******"));
+            assert!(!body.contains("123-45-6789"));
+        }
+    }
+
+    #[tokio::test]
     async fn malformed_json_returns_parse_error() {
         let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
 
@@ -8599,6 +8898,11 @@ endpointRules:
             ),
             ("mcp-method".to_string(), method.to_string()),
         ];
+        if method == "tools/call"
+            && let Some(name) = params.get("name").and_then(JsonValue::as_str)
+        {
+            headers.push(("mcp-name".to_string(), name.to_string()));
+        }
         if let Some(session_id) = stale_session_id {
             headers.push((MCP_SESSION_ID_HEADER.to_string(), session_id.to_string()));
         }
@@ -9506,12 +9810,18 @@ endpointRules:
         assert_eq!(body["result"]["resultType"], "complete");
         assert_eq!(body["result"]["cacheScope"], "private");
         assert_eq!(body["result"]["ttlMs"], 30_000);
-        assert_eq!(body["result"]["capabilities"], json!({}));
+        assert_eq!(
+            body["result"]["capabilities"],
+            json!({"tools":{"listChanged":false}})
+        );
         assert_eq!(
             body["result"]["supportedVersions"],
             json!([STATELESS_RC_VERSION])
         );
-        assert!(body["result"]["capabilities"].get("tools").is_none());
+        assert_eq!(
+            body["result"]["capabilities"]["tools"]["listChanged"],
+            false
+        );
         assert_eq!(
             body["result"]["_meta"][SERVER_INFO_META_KEY]["name"],
             "light-gateway"
@@ -9524,6 +9834,279 @@ endpointRules:
                 .contains_key(&stale_session_id)
         );
         assert_eq!(runtime.stateless_discover_cache.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stateless_tools_call_executes_http_without_session_and_uses_typed_headers() {
+        let (base, received) = spawn_http_server(http_json_response(json!({"ok": true}))).await;
+        let tool = test_tool(
+            "weather",
+            "Get weather",
+            base.as_str(),
+            McpHttpMethod::Get,
+            None,
+            json!({
+                "type":"object",
+                "required":["region"],
+                "properties":{
+                    "region":{"type":"string","x-mcp-header":"Mcp-Param-Region"}
+                }
+            }),
+        );
+        let mut config = stateless_test_config(vec![tool]);
+        config.protocols.stateless.enabled = true;
+        let runtime = McpRouterRuntime::new(config).expect("runtime");
+        let mut request = stateless_request(
+            "tools/call",
+            json!({"name":"weather","arguments":{"region":"ca-central-1"}}),
+            None,
+        );
+        request.headers.extend([
+            ("Mcp-Param-Region".into(), "ca-central-1".into()),
+            ("Accept-Language".into(), "fr-CA".into()),
+            (
+                "Traceparent".into(),
+                "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01".into(),
+            ),
+            ("Authorization".into(), "Bearer frontend-secret".into()),
+            ("Cookie".into(), "session=frontend-secret".into()),
+            ("X-Forwarded-For".into(), "203.0.113.5".into()),
+            ("X-Correlation-Id".into(), "spoofed".into()),
+            ("X-Tenant-Id".into(), "spoofed".into()),
+            ("Mcp-Unknown".into(), "spoofed".into()),
+            ("X-Backend-Token".into(), "spoofed".into()),
+            ("Idempotency-Key".into(), "attacker-chosen-key".into()),
+        ]);
+        let response = runtime
+            .handle_request_with_context(
+                request,
+                McpRequestContext {
+                    auth: Some(AuthPrincipal {
+                        issuer: Some("https://issuer.example".into()),
+                        user_id: Some("alice".into()),
+                        host: Some("host-1".into()),
+                        claims: json!({"tenant":"tenant-1"}),
+                        ..AuthPrincipal::default()
+                    }),
+                    correlation_id: Some("trusted-correlation".into()),
+                    ..McpRequestContext::default()
+                },
+            )
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        assert_eq!(body["result"]["resultType"], "complete");
+        assert_eq!(body["result"]["structuredContent"], json!({"ok":true}));
+        assert_eq!(
+            body["result"]["_meta"][SERVER_INFO_META_KEY]["name"],
+            "light-gateway"
+        );
+        assert_eq!(runtime.sessions.lock().await.len(), 0);
+
+        let request = received
+            .await
+            .expect("backend request")
+            .to_ascii_lowercase();
+        for expected in [
+            "accept-language: fr-ca",
+            "traceparent: 00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+            "x-correlation-id: trusted-correlation",
+            "x-user-id: alice",
+            "x-host-id: host-1",
+            "x-tenant-id: tenant-1",
+        ] {
+            assert!(request.contains(expected), "missing {expected}: {request}");
+        }
+        for forbidden in [
+            "frontend-secret",
+            "x-forwarded-for:",
+            "x-correlation-id: spoofed",
+            "x-tenant-id: spoofed",
+            "mcp-unknown:",
+            "mcp-param-region:",
+            "x-backend-token:",
+            "idempotency-key:",
+            "attacker-chosen-key",
+        ] {
+            assert!(
+                !request.contains(forbidden),
+                "leaked {forbidden}: {request}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn stateless_tools_call_rejects_header_mismatch_before_backend_traffic() {
+        let tool = test_tool(
+            "weather",
+            "Get weather",
+            "http://127.0.0.1:1",
+            McpHttpMethod::Get,
+            None,
+            json!({
+                "type":"object",
+                "required":["region"],
+                "properties":{
+                    "region":{"type":"string","x-mcp-header":"Mcp-Param-Region"}
+                }
+            }),
+        );
+        let mut config = stateless_test_config(vec![tool]);
+        config.protocols.stateless.enabled = true;
+        let runtime = McpRouterRuntime::new(config).expect("runtime");
+        let mut request = stateless_request(
+            "tools/call",
+            json!({"name":"weather","arguments":{"region":"ca-central-1"}}),
+            None,
+        );
+        request
+            .headers
+            .push(("Mcp-Param-Region".into(), "us-east-1".into()));
+        let response = runtime
+            .handle_request(request)
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 400);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        assert_eq!(body["error"]["code"], -32020);
+        assert_eq!(runtime.sessions.lock().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn stateless_tools_call_returns_explicit_error_for_legacy_mcp_backend() {
+        let mut tool = test_tool(
+            "legacy_backend",
+            "Legacy backend",
+            "http://127.0.0.1:1",
+            McpHttpMethod::Post,
+            None,
+            default_input_schema(),
+        );
+        tool.api_type = McpToolType::Mcp;
+        let mut config = stateless_test_config(vec![tool]);
+        config.protocols.stateless.enabled = true;
+        let runtime = McpRouterRuntime::new(config).expect("runtime");
+        let response = runtime
+            .handle_request(stateless_request(
+                "tools/call",
+                json!({"name":"legacy_backend","arguments":{}}),
+                None,
+            ))
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        assert_eq!(body["result"]["isError"], true);
+        assert_eq!(body["result"]["resultType"], "complete");
+        assert!(
+            body["result"]["content"][0]["text"]
+                .as_str()
+                .expect("text")
+                .contains("does not support stateless calls")
+        );
+        assert_eq!(runtime.sessions.lock().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn stateless_http_tool_streams_and_rejects_oversized_backend_response() {
+        let (base, received) = spawn_http_server(http_json_response(json!({
+            "payload":"x".repeat(512)
+        })))
+        .await;
+        let mut config = stateless_test_config(vec![test_tool(
+            "weather",
+            "Get weather",
+            base.as_str(),
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        )]);
+        config.protocols.stateless.enabled = true;
+        config.max_response_body_bytes = 128;
+        let runtime = McpRouterRuntime::new(config).expect("runtime");
+        let response = runtime
+            .handle_request(stateless_request(
+                "tools/call",
+                json!({"name":"weather","arguments":{}}),
+                None,
+            ))
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 200);
+        let body = serde_json::from_slice::<JsonValue>(&response.body).expect("json");
+        assert_eq!(body["error"]["code"], -32000);
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("maxResponseBodyBytes")
+        );
+        received.await.expect("backend request");
+    }
+
+    #[tokio::test]
+    async fn stateless_http_tool_enforces_live_per_target_concurrency() {
+        let (base, first_seen, release, received) =
+            spawn_http_sequence_server_with_first_response_gate(vec![http_json_response(json!({
+                "ok": true
+            }))])
+            .await;
+        let mut config = stateless_test_config(vec![test_tool(
+            "weather",
+            "Get weather",
+            base.as_str(),
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        )]);
+        config.protocols.stateless.enabled = true;
+        config
+            .protocols
+            .stateless
+            .max_concurrent_backend_calls_per_target = 1;
+        let runtime = McpRouterRuntime::new(config).expect("runtime");
+        let first_runtime = runtime.clone();
+        let first = tokio::spawn(async move {
+            first_runtime
+                .handle_request(stateless_request(
+                    "tools/call",
+                    json!({"name":"weather","arguments":{}}),
+                    None,
+                ))
+                .await
+                .expect("handle")
+                .expect("response")
+        });
+        first_seen.await.expect("first backend call");
+
+        let second = runtime
+            .handle_request(stateless_request(
+                "tools/call",
+                json!({"name":"weather","arguments":{}}),
+                None,
+            ))
+            .await
+            .expect("handle")
+            .expect("response");
+        let second = serde_json::from_slice::<JsonValue>(&second.body).expect("json");
+        assert_eq!(second["error"]["code"], -32000);
+        assert!(
+            second["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("backend target exceeds")
+        );
+
+        release.send(()).expect("release first response");
+        let first = first.await.expect("first task");
+        let first = serde_json::from_slice::<JsonValue>(&first.body).expect("json");
+        assert_eq!(first["result"]["structuredContent"]["ok"], true);
+        assert_eq!(received.await.expect("backend requests").len(), 1);
     }
 
     #[tokio::test]

@@ -21,6 +21,19 @@ pub(crate) struct StatelessRequestMetadata {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ExpectedParameterValue {
+    String(String),
+    Integer(i64),
+    Boolean(bool),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExpectedParameterHeader {
+    pub name: String,
+    pub value: Option<ExpectedParameterValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StatelessRequestError {
     pub status: u16,
     pub code: i64,
@@ -152,9 +165,10 @@ pub(crate) fn validate_stateless_request(
             "Mcp-Name header is not applicable to this method",
         ));
     }
-    if headers
-        .iter()
-        .any(|(name, _)| name.to_ascii_lowercase().starts_with("mcp-param-"))
+    if method != "tools/call"
+        && headers
+            .iter()
+            .any(|(name, _)| name.to_ascii_lowercase().starts_with("mcp-param-"))
     {
         return Err(StatelessRequestError::header(
             "Mcp-Param headers are not applicable to this method",
@@ -164,6 +178,51 @@ pub(crate) fn validate_stateless_request(
     Ok(StatelessRequestMetadata {
         method: method.to_string(),
     })
+}
+
+pub(crate) fn validate_parameter_headers(
+    headers: &[(String, String)],
+    expected: &[ExpectedParameterHeader],
+) -> Result<(), StatelessRequestError> {
+    for parameter in expected {
+        let actual = one_header(headers, parameter.name.as_str())?;
+        match (&parameter.value, actual) {
+            (None, None) => {}
+            (None, Some(_)) => {
+                return Err(StatelessRequestError::header(format!(
+                    "{} header is not applicable when its argument is absent or null",
+                    parameter.name
+                )));
+            }
+            (Some(_), None) => {
+                return Err(StatelessRequestError::header(format!(
+                    "missing {} header",
+                    parameter.name
+                )));
+            }
+            (Some(expected), Some(actual)) => {
+                let actual = decode_header_value(actual)?;
+                let matches = match expected {
+                    ExpectedParameterValue::String(expected) => actual == *expected,
+                    ExpectedParameterValue::Integer(expected) => actual
+                        .parse::<i64>()
+                        .is_ok_and(|actual| actual == *expected),
+                    ExpectedParameterValue::Boolean(expected) => match actual.as_str() {
+                        "true" => *expected,
+                        "false" => !*expected,
+                        _ => false,
+                    },
+                };
+                if !matches {
+                    return Err(StatelessRequestError::header(format!(
+                        "{} header does not match its tool argument",
+                        parameter.name
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn require_json_content_type(headers: &[(String, String)]) -> Result<(), StatelessRequestError> {
@@ -366,5 +425,50 @@ mod tests {
         );
         assert!(decode_header_value("=?utf-8?B?dMOpc3Q=?=").is_err());
         assert!(decode_header_value(" padded ").is_err());
+    }
+
+    #[test]
+    fn parameter_headers_match_typed_body_values_and_null_omission() {
+        let expected = vec![
+            ExpectedParameterHeader {
+                name: "Mcp-Param-Region".into(),
+                value: Some(ExpectedParameterValue::String("Montréal".into())),
+            },
+            ExpectedParameterHeader {
+                name: "Mcp-Param-Limit".into(),
+                value: Some(ExpectedParameterValue::Integer(42)),
+            },
+            ExpectedParameterHeader {
+                name: "Mcp-Param-Active".into(),
+                value: Some(ExpectedParameterValue::Boolean(true)),
+            },
+            ExpectedParameterHeader {
+                name: "Mcp-Param-Optional".into(),
+                value: None,
+            },
+        ];
+        let headers = vec![
+            ("mcp-param-region".into(), "=?base64?TW9udHLDqWFs?=".into()),
+            ("Mcp-Param-Limit".into(), "042".into()),
+            ("Mcp-Param-Active".into(), "true".into()),
+        ];
+        validate_parameter_headers(&headers, &expected).expect("matching headers");
+
+        let mut missing = headers.clone();
+        missing.retain(|(name, _)| !name.eq_ignore_ascii_case("Mcp-Param-Limit"));
+        assert_eq!(
+            validate_parameter_headers(&missing, &expected)
+                .unwrap_err()
+                .code,
+            -32020
+        );
+        let mut duplicate = headers;
+        duplicate.push(("mcp-param-active".into(), "true".into()));
+        assert_eq!(
+            validate_parameter_headers(&duplicate, &expected)
+                .unwrap_err()
+                .code,
+            -32020
+        );
     }
 }

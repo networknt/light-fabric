@@ -12,5 +12,13 @@ protocols:
     versions: ${mcp-router.protocols.legacy.versions:[2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05]}
   stateless:
     enabled: ${mcp-router.protocols.stateless.enabled:false}
-    versions: ${mcp-router.protocols.stateless.versions:[]}
+    versions: ${mcp-router.protocols.stateless.versions:[DRAFT-2026-v1]}
+    discoverTtlMs: ${mcp-router.protocols.stateless.discoverTtlMs:30000}
+    toolsListTtlMs: ${mcp-router.protocols.stateless.toolsListTtlMs:30000}
+    maxDiscoverCacheEntries: ${mcp-router.protocols.stateless.maxDiscoverCacheEntries:1024}
+    maxToolsListCacheEntries: ${mcp-router.protocols.stateless.maxToolsListCacheEntries:1024}
+    maxToolsListItems: ${mcp-router.protocols.stateless.maxToolsListItems:1024}
+    maxConcurrentRequests: ${mcp-router.protocols.stateless.maxConcurrentRequests:1024}
+    maxConcurrentRequestsPerPrincipal: ${mcp-router.protocols.stateless.maxConcurrentRequestsPerPrincipal:32}
+    maxConcurrentBackendCallsPerTarget: ${mcp-router.protocols.stateless.maxConcurrentBackendCallsPerTarget:32}
 tools: ${mcp-router.tools:[]}
