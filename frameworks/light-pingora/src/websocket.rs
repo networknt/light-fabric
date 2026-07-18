@@ -595,10 +595,12 @@ impl WebSocketRouterRuntime {
                 AccessDecision::Allowed
             };
         };
-        if endpoint == CONTROLLER_MCP_CONNECT_ENDPOINT && !policy.authorization_enabled() {
-            return AccessDecision::Denied(
-                "Access denied: connection policy is not enabled".to_string(),
-            );
+        if endpoint == CONTROLLER_MCP_CONNECT_ENDPOINT
+            && let Err(error) = policy.validate_request_policy(endpoint)
+        {
+            return AccessDecision::Denied(format!(
+                "Access denied: connection policy is invalid: {error}"
+            ));
         }
         let arguments = json!({
             "serviceId": decision.service_id.as_str(),
@@ -761,12 +763,11 @@ pub fn load_websocket_router_runtime_with_policy(
             |policy| policy.validate_request_policy(CONTROLLER_MCP_CONNECT_ENDPOINT),
         );
         if let Err(error) = validation {
-            tracing::error!(
+            tracing::warn!(
                 policy_endpoint = CONTROLLER_MCP_CONNECT_ENDPOINT,
                 reason = %error,
-                "controller websocket connection policy validation failed"
+                "controller websocket connection policy is not ready; controller connections will be denied"
             );
-            return Err(RuntimeError::Config(error));
         }
     }
     runtime_config.module_registry.register_loaded_config(
@@ -1791,6 +1792,45 @@ pathPrefixService:
     }
 
     #[tokio::test]
+    async fn controller_connection_rejects_policy_without_fail_closed_defaults() {
+        let policy = Arc::new(crate::access_control::AccessControlRuntime::new(
+            Some(crate::access_control::AccessControlConfig {
+                default_deny: false,
+                ..crate::access_control::AccessControlConfig::default()
+            }),
+            crate::access_control::RuleFileConfig::default(),
+        ));
+        let runtime = WebSocketRouterRuntime::new_with_policy(
+            protected_runtime().config().clone(),
+            Some(policy),
+        )
+        .expect("runtime with non-fail-closed policy");
+        let decision = runtime
+            .resolve(
+                CONTROLLER_MCP_PATH,
+                None,
+                std::iter::empty::<(&str, &str)>(),
+            )
+            .expect("resolve controller route");
+
+        assert_eq!(
+            runtime
+                .authorize(
+                    &decision,
+                    CONTROLLER_MCP_CONNECT_ENDPOINT,
+                    &[],
+                    None,
+                    None,
+                )
+                .await,
+            AccessDecision::Denied(
+                "Access denied: connection policy is invalid: access-control defaultDeny must be true"
+                    .to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
     async fn controller_connection_admits_only_exact_administrative_roles() {
         let policy = Arc::new(crate::access_control::AccessControlRuntime::new(
             Some(crate::access_control::AccessControlConfig::default()),
@@ -2115,6 +2155,77 @@ pathPrefixService:
                 .module_summaries()
                 .iter()
                 .any(|entry| entry.module_id == WEBSOCKET_ROUTER_MODULE_ID && entry.active)
+        );
+    }
+
+    #[tokio::test]
+    async fn loader_allows_controller_route_without_policy_and_denies_connection() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        std::fs::write(
+            config_dir.path().join(WEBSOCKET_ROUTER_FILE),
+            r#"
+pathPrefixService:
+  /ctrl/mcp: com.networknt.controller-1.0.0
+"#,
+        )
+        .expect("write config");
+        let runtime = runtime_config(&config_dir);
+
+        let router = load_websocket_router_runtime_with_policy(&runtime, true, None)
+            .expect("load runtime without access-control policy")
+            .expect("router runtime");
+        let decision = router
+            .resolve(
+                CONTROLLER_MCP_PATH,
+                None,
+                std::iter::empty::<(&str, &str)>(),
+            )
+            .expect("resolve controller route");
+
+        assert_eq!(
+            router
+                .authorize(&decision, CONTROLLER_MCP_CONNECT_ENDPOINT, &[], None, None,)
+                .await,
+            AccessDecision::Denied("Access denied: connection policy is unavailable".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn loader_allows_controller_route_with_incomplete_policy_and_denies_connection() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        std::fs::write(
+            config_dir.path().join(WEBSOCKET_ROUTER_FILE),
+            r#"
+pathPrefixService:
+  /ctrl/mcp: com.networknt.controller-1.0.0
+"#,
+        )
+        .expect("write config");
+        let runtime = runtime_config(&config_dir);
+        let policy = Arc::new(crate::access_control::AccessControlRuntime::new(
+            Some(crate::access_control::AccessControlConfig::default()),
+            crate::access_control::RuleFileConfig::default(),
+        ));
+
+        let router = load_websocket_router_runtime_with_policy(&runtime, true, Some(policy))
+            .expect("load runtime with incomplete access-control policy")
+            .expect("router runtime");
+        let decision = router
+            .resolve(
+                CONTROLLER_MCP_PATH,
+                None,
+                std::iter::empty::<(&str, &str)>(),
+            )
+            .expect("resolve controller route");
+
+        assert_eq!(
+            router
+                .authorize(&decision, CONTROLLER_MCP_CONNECT_ENDPOINT, &[], None, None,)
+                .await,
+            AccessDecision::Denied(
+                "Access denied: connection policy is invalid: access-control endpoint `/ctrl/mcp@connect` is not configured"
+                    .to_string()
+            )
         );
     }
 

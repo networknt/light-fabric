@@ -86,6 +86,7 @@
   - [Run Kubernetes](product/light-deployer/run-kubernetes.md)
 - [Light-Gateway](product/light-gateway.md)
   - [Light Rule](product/light-gateway/light-rule.md)
+  - [LLM Gateway](product/light-gateway/llm-gateway.md)
   - [Deploy Native](product/light-gateway/deploy-native.md)
   - [Deploy Kubernetes](product/light-gateway/deploy-kubernetes.md)
   - [Kubernetes Gateway API](product/light-gateway/k8s-gateway-api.md)
