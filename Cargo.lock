@@ -3841,6 +3841,7 @@ dependencies = [
  "light-rule",
  "light-runtime",
  "light-security",
+ "llm-gateway",
  "pbkdf2",
  "pingora",
  "rand 0.8.5",
@@ -4010,8 +4011,10 @@ name = "llm-gateway"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "async-stream",
  "async-trait",
  "axum",
+ "bytes",
  "futures-util",
  "model-provider",
  "reqwest",

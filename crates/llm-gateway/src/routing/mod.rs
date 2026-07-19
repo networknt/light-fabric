@@ -1,6 +1,7 @@
 use model_provider::inference::{
     ContentBlock, InferenceError, InferenceErrorCategory, InferenceRequest, RetryDisposition,
 };
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -23,6 +24,30 @@ impl CircuitPermit<'_> {
 }
 
 impl Drop for CircuitPermit<'_> {
+    fn drop(&mut self) {
+        if self.half_open {
+            self.circuit.probe_active.store(false, Ordering::Release);
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct OwnedCircuitPermit {
+    circuit: Arc<PassiveCircuit>,
+    half_open: bool,
+}
+
+impl OwnedCircuitPermit {
+    pub fn success(self) {
+        self.circuit.success();
+    }
+
+    pub fn failure(self, error: &InferenceError, now: Instant) {
+        self.circuit.failure(error, now);
+    }
+}
+
+impl Drop for OwnedCircuitPermit {
     fn drop(&mut self) {
         if self.half_open {
             self.circuit.probe_active.store(false, Ordering::Release);
@@ -73,6 +98,29 @@ impl PassiveCircuit {
             }),
             Err(_) => Err(LlmGatewayError::ProviderUnavailable),
         }
+    }
+
+    pub fn acquire_owned(
+        self: &Arc<Self>,
+        now: Instant,
+    ) -> Result<OwnedCircuitPermit, LlmGatewayError> {
+        let until = self.open_until_ms.load(Ordering::Acquire);
+        if until == 0 {
+            return Ok(OwnedCircuitPermit {
+                circuit: Arc::clone(self),
+                half_open: false,
+            });
+        }
+        if elapsed_ms(self.epoch, now) < until {
+            return Err(LlmGatewayError::ProviderUnavailable);
+        }
+        self.probe_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| LlmGatewayError::ProviderUnavailable)?;
+        Ok(OwnedCircuitPermit {
+            circuit: Arc::clone(self),
+            half_open: true,
+        })
     }
 
     pub fn success(&self) {

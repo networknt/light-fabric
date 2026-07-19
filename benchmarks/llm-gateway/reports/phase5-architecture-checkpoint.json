@@ -1,0 +1,20 @@
+{
+  "phase": 5,
+  "scope": ["PERF-1", "LF-6B"],
+  "status": "pending-external-performance-evidence",
+  "perf1": {
+    "usageAdmission": "enabled",
+    "audit": "disabled",
+    "streaming": "not-applicable",
+    "closureGate": "scripts/run-llm-architecture-checkpoint.sh"
+  },
+  "lf6b": {
+    "boundedChannel": true,
+    "downstreamWriteDeadline": true,
+    "disconnectCancellation": true,
+    "permitRecovery": true,
+    "noFallbackAfterVisibleOutput": true,
+    "doneOnlyOnSuccess": true,
+    "durableStartBeforeHeaders": true
+  }
+}

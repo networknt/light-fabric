@@ -16,7 +16,7 @@ use std::time::Instant;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
     let command = args.next().ok_or(
-        "usage: llm-phase0-spikes <body|snapshot|projection-secret|wal|validate|validate-closure|validate-comparison> [output-or-candidate]",
+        "usage: llm-phase0-spikes <body|snapshot|projection-secret|wal|validate|validate-closure|validate-comparison|validate-perf1|validate-perf1-implementation> [output-or-candidate]",
     )?;
     let output = args.next().map(PathBuf::from);
     match command.as_str() {
@@ -33,9 +33,198 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("validate-comparison requires a candidate name")?;
             validate_comparison(candidate)?;
         }
+        "validate-perf1" => validate_perf1(true)?,
+        "validate-perf1-implementation" => validate_perf1(false)?,
         _ => return Err(format!("unknown command `{command}`").into()),
     }
     Ok(())
+}
+
+fn validate_perf1(require_results: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let root = workspace_root();
+    let manifest_path = root.join("benchmarks/llm-gateway/manifests/perf1-manifest.json");
+    let manifest: Value = serde_json::from_slice(&fs::read(&manifest_path)?)?;
+    if manifest["usageAdmission"] != "enabled"
+        || manifest["audit"] != "disabled"
+        || manifest["streaming"] != "not-applicable"
+        || manifest["runs"].as_array().is_none_or(Vec::is_empty)
+    {
+        return Err("PERF-1 safety flags or run matrix are incomplete".into());
+    }
+    validate_comparison("bifrost")?;
+    validate_comparison("agentgateway")?;
+    let runs = manifest["runs"].as_array().ok_or("PERF-1 runs missing")?;
+    if !require_results {
+        println!(
+            "PERF-1 implementation contract is internally consistent; external results remain required for closure"
+        );
+        return Ok(());
+    }
+    let required_measurements = manifest["requiredSidecars"]["requiredResourceMeasurements"]
+        .as_array()
+        .ok_or("PERF-1 resource measurements are missing")?;
+    for candidate in ["direct", "light", "bifrost", "agentgateway"] {
+        let path = root
+            .join("benchmarks/llm-gateway/reports/perf1")
+            .join(candidate)
+            .join("environment.json");
+        if !path.is_file() {
+            return Err(format!("PERF-1 closure missing {}", relative(&path)).into());
+        }
+        let environment: Value = serde_json::from_slice(&fs::read(&path)?)?;
+        let revision = environment["revision"]
+            .as_str()
+            .ok_or_else(|| format!("PERF-1 `{candidate}` revision is missing"))?;
+        if environment["candidate"] != candidate
+            || revision.len() != 40
+            || !revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || environment["cpuLimit"] != "2 vCPU"
+            || environment["memoryLimitBytes"] != 4_294_967_296_u64
+            || environment["keepAlive"] != true
+            || environment["audit"] != "disabled"
+        {
+            return Err(
+                format!("PERF-1 environment contract mismatch: {}", relative(&path)).into(),
+            );
+        }
+        for measurement in required_measurements {
+            let name = measurement.as_str().ok_or("invalid resource measurement")?;
+            if environment["measurements"][name] != true {
+                return Err(format!("PERF-1 `{candidate}` does not capture `{name}`").into());
+            }
+        }
+        if candidate == "light" && environment["usageAdmission"] != "enabled" {
+            return Err("PERF-1 Light run disabled usage admission".into());
+        }
+    }
+    let dispatch_path = root.join(
+        manifest["requiredSidecars"]["lightDispatchAllocation"]
+            .as_str()
+            .ok_or("PERF-1 dispatch sidecar path missing")?,
+    );
+    if !dispatch_path.is_file() {
+        return Err(format!("PERF-1 closure missing {}", relative(&dispatch_path)).into());
+    }
+    let dispatch: Value = serde_json::from_slice(&fs::read(&dispatch_path)?)?;
+    for profile in ["dynamic500", "sealed500", "dynamic5000", "sealed5000"] {
+        if dispatch[profile]["completed"].as_u64().is_none()
+            || dispatch[profile]["allocationBytes"].as_u64().is_none()
+            || dispatch[profile]["p99Micros"].as_u64().is_none()
+        {
+            return Err(
+                format!("PERF-1 dispatch/allocation profile `{profile}` is incomplete").into(),
+            );
+        }
+    }
+    if !matches!(
+        dispatch["decision"].as_str(),
+        Some("retain-dynamic") | Some("choose-sealed")
+    ) {
+        return Err("PERF-1 dispatch decision is missing".into());
+    }
+    let schema = root.join("benchmarks/llm-gateway/schemas/result.schema.json");
+    let mut by_candidate = BTreeMap::<String, Vec<Value>>::new();
+    for run in runs {
+        let candidate = run["candidate"].as_str().ok_or("run candidate missing")?;
+        let offered_rps = run["offeredRps"].as_u64().ok_or("run RPS missing")?;
+        let count = run["count"].as_u64().ok_or("run count missing")?;
+        let directory = run["directory"].as_str().ok_or("run directory missing")?;
+        for index in 1..=count {
+            let path = root
+                .join(directory)
+                .join(format!("{offered_rps}rps-run{index}.json"));
+            if !path.is_file() {
+                return Err(format!("PERF-1 closure missing {}", relative(&path)).into());
+            }
+            validate_instances(&schema, std::slice::from_ref(&path))?;
+            let result: Value = serde_json::from_slice(&fs::read(&path)?)?;
+            if result["candidate"] != candidate
+                || result["profile"] != "stable-60ms"
+                || result["offeredRps"] != offered_rps
+                || result["generatorSaturated"] != false
+                || result["offered"] != result["admitted"]
+                || result["admitted"] != result["completed"]
+                || result["failed"] != 0
+            {
+                return Err(format!(
+                    "PERF-1 run failed admission/completion invariants: {}",
+                    relative(&path)
+                )
+                .into());
+            }
+            by_candidate
+                .entry(format!("{candidate}:{offered_rps}"))
+                .or_default()
+                .push(result);
+        }
+    }
+    let direct = medians(
+        by_candidate
+            .get("direct:500")
+            .ok_or("direct 500 results missing")?,
+    );
+    let light = medians(
+        by_candidate
+            .get("light:500")
+            .ok_or("Light 500 results missing")?,
+    );
+    let bifrost = medians(
+        by_candidate
+            .get("bifrost:500")
+            .ok_or("Bifrost 500 results missing")?,
+    );
+    let light_completed = median_completed(
+        by_candidate
+            .get("light:500")
+            .ok_or("Light 500 results missing")?,
+    );
+    let bifrost_completed = median_completed(
+        by_candidate
+            .get("bifrost:500")
+            .ok_or("Bifrost 500 results missing")?,
+    );
+    if light[0].saturating_sub(direct[0]) > 1_000 || light[2].saturating_sub(direct[2]) > 5_000 {
+        return Err("PERF-1 gateway-added latency exceeds the absolute budget".into());
+    }
+    for index in 0..3 {
+        if light[index] > bifrost[index].saturating_mul(105).div_ceil(100) {
+            return Err(format!(
+                "PERF-1 Light latency exceeds the Bifrost non-inferiority margin at percentile index {index}"
+            )
+            .into());
+        }
+    }
+    if light_completed.saturating_mul(100) < bifrost_completed.saturating_mul(95) {
+        return Err(
+            "PERF-1 Light throughput falls below the Bifrost non-inferiority margin".into(),
+        );
+    }
+    println!(
+        "PERF-1 closure passed with usage admission enabled and declared comparator asymmetries"
+    );
+    Ok(())
+}
+
+fn median_completed(results: &[Value]) -> u64 {
+    let mut values = results
+        .iter()
+        .map(|result| result["completed"].as_u64().unwrap_or_default())
+        .collect::<Vec<_>>();
+    values.sort_unstable();
+    values[values.len() / 2]
+}
+
+fn medians(results: &[Value]) -> [u64; 3] {
+    let mut values = [Vec::new(), Vec::new(), Vec::new()];
+    for result in results {
+        values[0].push(result["latency"]["p50Micros"].as_u64().unwrap_or(u64::MAX));
+        values[1].push(result["latency"]["p95Micros"].as_u64().unwrap_or(u64::MAX));
+        values[2].push(result["latency"]["p99Micros"].as_u64().unwrap_or(u64::MAX));
+    }
+    for value in &mut values {
+        value.sort_unstable();
+    }
+    std::array::from_fn(|index| values[index][values[index].len() / 2])
 }
 
 fn body_capture_spike() -> Result<Value, Box<dyn std::error::Error>> {
@@ -440,7 +629,7 @@ fn wal_spike() -> Result<Value, Box<dyn std::error::Error>> {
     let truncation_detected = recover_wal(&truncated_path).is_err();
     let capped_path = dir.path().join("capped.wal");
     let mut capped = WalWriter::open(&capped_path, 64)?;
-    let full_volume_detected = capped.append(&vec![0_u8; 128]).is_err();
+    let full_volume_detected = capped.append(&[0_u8; 128]).is_err();
     let read_only_dir = dir.path().join("read-only");
     fs::create_dir(&read_only_dir)?;
     let mut permissions = fs::metadata(&read_only_dir)?.permissions();
@@ -615,7 +804,17 @@ fn validate_phase0() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
-    let reports = json_files_under(&root.join("benchmarks/llm-gateway/reports"))?;
+    let reports = json_files_under(&root.join("benchmarks/llm-gateway/reports"))?
+        .into_iter()
+        .filter(|path| {
+            fs::read(path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .is_some_and(|value| {
+                    value.get("schemaVersion").is_some() && value.get("candidate").is_some()
+                })
+        })
+        .collect::<Vec<_>>();
     if !reports.is_empty() {
         validate_instances(&schemas.join("result.schema.json"), &reports)?;
     }
@@ -784,13 +983,14 @@ fn validate_comparison(candidate: &str) -> Result<(), Box<dyn std::error::Error>
             )
             .into());
         }
-        if light_status == "light-only-required" && comparator_status == "equivalent" {
-            if light["enabled"].as_bool() != comparator["enabled"].as_bool() {
-                return Err(format!(
-                    "comparison refused: declared equivalent feature `{name}` has different flags"
-                )
-                .into());
-            }
+        if light_status == "light-only-required"
+            && comparator_status == "equivalent"
+            && light["enabled"].as_bool() != comparator["enabled"].as_bool()
+        {
+            return Err(format!(
+                "comparison refused: declared equivalent feature `{name}` has different flags"
+            )
+            .into());
         }
     }
     println!("feature-equivalence gate passed for light versus {candidate}");

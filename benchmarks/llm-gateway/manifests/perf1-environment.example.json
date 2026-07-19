@@ -1,0 +1,21 @@
+{
+  "candidate": "light",
+  "revision": "REPLACE_WITH_40_HEX_COMMIT",
+  "cpuLimit": "2 vCPU",
+  "memoryLimitBytes": 4294967296,
+  "keepAlive": true,
+  "usageAdmission": "enabled",
+  "audit": "disabled",
+  "measurements": {
+    "cpu": true,
+    "rss": true,
+    "allocations": true,
+    "tasks": true,
+    "connections": true,
+    "queueDepth": true
+  },
+  "evidence": {
+    "resourceReport": "REPLACE_WITH_REPORT_PATH",
+    "deploymentManifest": "REPLACE_WITH_DEPLOYMENT_PATH"
+  }
+}

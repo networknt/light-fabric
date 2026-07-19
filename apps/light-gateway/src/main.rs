@@ -39,7 +39,10 @@ use llm_gateway::LlmRuntime;
 use llm_gateway::audit::ProcessAudit;
 use llm_gateway::config::{LLM_ROUTER_FILE, LLM_ROUTER_MODULE_ID, LlmRouterConfig};
 use llm_gateway::credentials::EnvironmentSecretResolver;
-use llm_gateway::http::{AllowBodyAccessControl, BufferedHttpRequest, LlmBufferedHttp};
+use llm_gateway::http::{
+    AllowBodyAccessControl, BufferedHttpRequest, LlmBufferedHttp, LlmHttpResponse,
+    StreamingHttpResponse,
+};
 use llm_gateway::runtime::{LlmCompiler, LlmSnapshotStore};
 use pingora::http::ResponseHeader;
 use pingora::prelude::{HttpPeer, ProxyHttp, Session};
@@ -152,9 +155,11 @@ fn load_llm_gateway_module(
     let snapshot = compiler
         .compile(&config, generation, previous_snapshot.as_deref())
         .map_err(|error| RuntimeError::Config(error.to_string()))?;
-    let runtime = match previous
-        .filter(|module| module.runtime.snapshot().global_concurrency == config.global_concurrency)
-    {
+    let runtime = match previous.filter(|module| {
+        let snapshot = module.runtime.snapshot();
+        snapshot.global_concurrency == config.global_concurrency
+            && snapshot.global_stream_concurrency == config.global_stream_concurrency
+    }) {
         Some(previous) => {
             previous.runtime.publish(snapshot);
             Arc::clone(&previous.runtime)
@@ -1202,6 +1207,28 @@ impl GatewayProxy {
             session.write_response_body(Some(frame), false).await?;
         }
         session.write_response_body(None, true).await?;
+        self.record_metrics(ctx, status);
+        self.log_handler_durations(ctx);
+        Ok(true)
+    }
+
+    async fn write_llm_streaming_response(
+        &self,
+        session: &mut Session,
+        ctx: &mut GatewayRequestContext,
+        response: StreamingHttpResponse,
+    ) -> pingora::Result<bool> {
+        let StreamingHttpResponse {
+            status,
+            headers,
+            stream,
+        } = response;
+        let mut header = ResponseHeader::build(status, Some(8 + headers.len()))?;
+        for (name, value) in &headers {
+            header.append_header(name.to_string(), value.to_string())?;
+        }
+        self.apply_response_headers(&mut header, ctx)?;
+        light_pingora::write_llm_sse_response(session, header, stream).await?;
         self.record_metrics(ctx, status);
         self.log_handler_durations(ctx);
         Ok(true)
@@ -2768,7 +2795,7 @@ impl ProxyHttp for GatewayProxy {
                         .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
                     let response = module
                         .http
-                        .handle(BufferedHttpRequest {
+                        .handle_route(BufferedHttpRequest {
                             method: method.clone(),
                             path: request_path.clone(),
                             headers,
@@ -2777,29 +2804,36 @@ impl ProxyHttp for GatewayProxy {
                             trusted_request_id,
                         })
                         .await;
-                    let content_type = response
-                        .headers
-                        .get("content-type")
-                        .map(String::as_str)
-                        .unwrap_or("application/json");
-                    let extra_headers = response
-                        .headers
-                        .iter()
-                        .filter(|(name, _)| name.as_str() != "content-type")
-                        .map(|(name, value)| (name.clone(), value.clone()))
-                        .collect::<Vec<_>>();
                     ctx.record_handler_duration(&handler_id, started.elapsed());
-                    return self
-                        .write_bytes_response_with_headers(
-                            session,
-                            ctx,
-                            response.status,
-                            content_type,
-                            None,
-                            Bytes::from(response.body),
-                            &extra_headers,
-                        )
-                        .await;
+                    return match response {
+                        LlmHttpResponse::Buffered(response) => {
+                            let content_type = response
+                                .headers
+                                .get("content-type")
+                                .map(String::as_str)
+                                .unwrap_or("application/json");
+                            let extra_headers = response
+                                .headers
+                                .iter()
+                                .filter(|(name, _)| name.as_str() != "content-type")
+                                .map(|(name, value)| (name.clone(), value.clone()))
+                                .collect::<Vec<_>>();
+                            self.write_bytes_response_with_headers(
+                                session,
+                                ctx,
+                                response.status,
+                                content_type,
+                                None,
+                                Bytes::from(response.body),
+                                &extra_headers,
+                            )
+                            .await
+                        }
+                        LlmHttpResponse::Streaming(response) => {
+                            self.write_llm_streaming_response(session, ctx, response)
+                                .await
+                        }
+                    };
                 }
                 "mcp" => {
                     let runtime = self.mcp_router.load();
@@ -4562,7 +4596,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
     use tempfile::TempDir;
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::oneshot;
     use tokio::time::{Duration as TokioDuration, sleep, timeout};
@@ -6452,6 +6486,143 @@ tools: []
         .expect("terminal result timeout");
 
         running.shutdown().await.expect("shutdown gateway");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn llm_sse_smoke_streams_openai_frames_over_live_pingora() {
+        let provider_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock provider");
+        let provider_address = provider_listener.local_addr().expect("provider address");
+        let provider_task = tokio::spawn(async move {
+            let (mut socket, _) = provider_listener.accept().await.expect("provider accept");
+            let mut request = vec![0_u8; 8192];
+            let read = socket.read(&mut request).await.expect("provider read");
+            assert!(String::from_utf8_lossy(&request[..read]).contains("\"stream\":true"));
+            let body = concat!(
+                "data: {\"id\":\"mock\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"id\":\"mock\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: {\"id\":\"mock\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}\n\n",
+                "data: [DONE]\n\n"
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("provider write");
+        });
+
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        let gateway_port = free_tcp_port();
+        let gateway_address = format!("127.0.0.1:{gateway_port}")
+            .parse::<std::net::SocketAddr>()
+            .expect("gateway address");
+        std::fs::write(
+            config_dir.path().join("server.yml"),
+            format!(
+                "ip: 127.0.0.1\nadvertisedAddress: 127.0.0.1\nhttpPort: {gateway_port}\nenableHttp: true\nhttpsPort: 8443\nenableHttps: false\nserviceId: com.networknt.light-gateway-1.0.0\nenableRegistry: false\nstartOnRegistryFailure: true\ndynamicPort: false\nenvironment: dev\nshutdownGracefulPeriod: 100\n"
+            ),
+        )
+        .expect("write server config");
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            r#"
+handlers: [correlation, unified-security, limit, access-control, llm]
+paths:
+  - path: /v1/chat/completions
+    method: POST
+    exec: [correlation, unified-security, limit, access-control, llm]
+defaultHandlers: []
+"#,
+        )
+        .expect("write handler config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::UNIFIED_SECURITY_FILE),
+            "enabled: true\nanonymousPrefixes: [/v1/chat/completions]\npathPrefixAuths: []\n",
+        )
+        .expect("write unified security config");
+        std::fs::write(
+            config_dir.path().join(LLM_ROUTER_FILE),
+            format!(
+                r#"
+enabled: true
+developmentFixtures: true
+globalConcurrency: 4
+globalStreamConcurrency: 1
+streamChannelCapacity: 1
+streamWriteTimeoutMs: 1000
+providers:
+  mock:
+    format: openai
+    baseUrl: http://{provider_address}/v1
+    secretRef: env:LIGHT_GATEWAY_LF6B_TEST_KEY
+deployments:
+  mock:
+    provider: mock
+    model: mock-model
+    concurrency: 1
+    inputMicrosPerMillion: 1
+    outputMicrosPerMillion: 1
+    conformanceDigest: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aliases:
+  public-model:
+    deployments: [mock]
+    maxAttempts: 1
+    concurrency: 1
+    maxInputTokens: 1000
+    maxOutputTokens: 100
+    maxCostMicros: 1000
+    audit: disabled
+"#
+            ),
+        )
+        .expect("write LLM config");
+        // SAFETY: the test uses a unique process-local variable and removes it
+        // immediately after off-path client construction.
+        unsafe { std::env::set_var("LIGHT_GATEWAY_LF6B_TEST_KEY", "test-key") };
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp))
+            .with_config_dir(config_dir.path())
+            .with_external_config_dir(external_dir.path())
+            .build();
+        let running = runtime.start().await.expect("start gateway");
+        unsafe { std::env::remove_var("LIGHT_GATEWAY_LF6B_TEST_KEY") };
+        wait_for_tcp(gateway_address).await;
+
+        let body = r#"{"model":"public-model","messages":[{"role":"user","content":"hello"}],"stream":true}"#;
+        let request = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let mut client = TcpStream::connect(gateway_address)
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(request.as_bytes())
+            .await
+            .expect("write request");
+        let mut response = Vec::new();
+        timeout(
+            TokioDuration::from_secs(5),
+            client.read_to_end(&mut response),
+        )
+        .await
+        .expect("SSE response timeout")
+        .expect("read SSE response");
+        let response = String::from_utf8_lossy(&response).to_ascii_lowercase();
+        assert!(response.contains("http/1.1 200"), "response: {response}");
+        assert!(response.contains("content-type: text/event-stream"));
+        assert!(response.contains("\"content\":\"hello\""));
+        let finish = response.find("\"finish_reason\":\"stop\"").unwrap();
+        let usage = response.find("\"usage\"").unwrap();
+        let done = response.find("data: [done]").unwrap();
+        assert!(finish < usage && usage < done);
+
+        running.shutdown().await.expect("shutdown gateway");
+        provider_task.await.expect("provider task");
     }
 
     #[tokio::test]

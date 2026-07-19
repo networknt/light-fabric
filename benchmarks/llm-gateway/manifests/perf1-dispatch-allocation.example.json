@@ -1,0 +1,8 @@
+{
+  "dynamic500": {"completed": 0, "allocationBytes": 0, "p99Micros": 0},
+  "sealed500": {"completed": 0, "allocationBytes": 0, "p99Micros": 0},
+  "dynamic5000": {"completed": 0, "allocationBytes": 0, "p99Micros": 0},
+  "sealed5000": {"completed": 0, "allocationBytes": 0, "p99Micros": 0},
+  "decision": "retain-dynamic",
+  "rationale": "REPLACE_WITH_MEASUREMENT_BASED_DECISION"
+}

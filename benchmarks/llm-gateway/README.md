@@ -48,6 +48,41 @@ every candidate. The candidate runner validates that matrix before it sends a
 request and refuses undeclared feature differences. Five runs are mandatory
 for each declared workload.
 
+## PERF-1 and LF-6B architecture checkpoint
+
+The PERF-1 matrix is pinned in `manifests/perf1-manifest.json`. Usage admission
+must remain enabled, early audit remains explicitly disabled, and comparator
+asymmetries are reported instead of weakening the Light safety floor. While
+external reports are being collected, validate the implementation with:
+
+```bash
+./scripts/run-llm-architecture-checkpoint.sh --implementation
+```
+
+Capture each pinned candidate into the exact closure layout with:
+
+```bash
+./benchmarks/llm-gateway/scripts/run-perf1-candidate.sh light http://127.0.0.1:8082/v1/chat/completions
+LLM_BENCH_RPS=5000 ./benchmarks/llm-gateway/scripts/run-perf1-candidate.sh light http://127.0.0.1:8082/v1/chat/completions
+```
+
+Default closure mode fails until all five-run 500-RPS reports and the short
+Light 5,000-RPS sample satisfy admission, absolute latency, and Bifrost
+non-inferiority checks. It also requires one `environment.json` per candidate
+proving the 2-vCPU/4-GiB setup and CPU/RSS/allocation/task/connection/queue
+capture, plus Light's dynamic-versus-sealed `dispatch-allocation.json` at 500
+and 5,000 RPS. Missing sidecars fail closed rather than silently weakening the
+checkpoint.
+
+```bash
+./scripts/run-llm-architecture-checkpoint.sh
+```
+
+LF-6B is deliberately thin: one eligible deployment and one attempt, a bounded
+channel, one downstream write deadline, disconnect cancellation and permit
+recovery, `[DONE]` only on success, and a durable-start barrier before headers.
+Multi-provider conversion and the full slow-client matrix remain deferred.
+
 ## LF-2 evidence and gates
 
 Generate machine-local measurements explicitly:

@@ -10,6 +10,9 @@ maxJsonDepth: ${llm-router.maxJsonDepth:64}
 maxReplayBytes: ${llm-router.maxReplayBytes:1048576}
 requestTimeoutMs: ${llm-router.requestTimeoutMs:30000}
 globalConcurrency: ${llm-router.globalConcurrency:256}
+globalStreamConcurrency: ${llm-router.globalStreamConcurrency:64}
+streamChannelCapacity: ${llm-router.streamChannelCapacity:8}
+streamWriteTimeoutMs: ${llm-router.streamWriteTimeoutMs:5000}
 developmentFixtures: ${llm-router.developmentFixtures:false}
 
 # OpenAI-only request fields may be allowlisted here. Mixed-format aliases use

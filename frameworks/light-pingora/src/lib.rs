@@ -7,6 +7,7 @@ mod cors;
 mod direct_registry;
 mod handler;
 mod header;
+mod llm_sse;
 mod mcp;
 mod mcp_protocol;
 mod mcp_resources;
@@ -82,6 +83,7 @@ pub use header::{
     HEADER_CONFIG_NAME, HEADER_FILE, HEADER_MODULE_ID, HeaderConfig, HeaderMutation,
     HeaderPathPrefixConfig, apply_header_request, apply_header_response, load_header_config,
 };
+pub use llm_sse::write_llm_sse_response;
 pub use mcp::{
     MCP_ROUTER_CONFIG_NAME, MCP_ROUTER_FILE, MCP_ROUTER_LEGACY_FILE, MCP_ROUTER_MODULE_ID,
     MCP_SESSION_ID_HEADER, McpDiscoveryResolver, McpHttpMethod, McpHttpRequest, McpHttpResponse,

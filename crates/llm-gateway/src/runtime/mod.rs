@@ -1,6 +1,7 @@
 mod compiler;
 mod snapshot;
 mod store;
+mod streaming;
 
 pub use compiler::{CompileProbe, LlmCompiler};
 pub use snapshot::{
@@ -8,6 +9,7 @@ pub use snapshot::{
     ProviderAccountRuntime,
 };
 pub use store::{LlmSnapshotStore, PublishOutcome};
+pub use streaming::{ImmediateStreamStartBarrier, LlmStreamExecution, StreamStartBarrier};
 
 use crate::admission::fail_fast_permits;
 use crate::audit::{AuditAdmission, AuditFinish, AuditReservation, AuditStart};
@@ -54,16 +56,26 @@ pub struct LlmRuntime {
     store: Arc<LlmSnapshotStore>,
     audit: Arc<dyn AuditAdmission>,
     global_permits: Arc<Semaphore>,
+    stream_permits: Arc<Semaphore>,
+    stream_start_barrier: Arc<dyn StreamStartBarrier>,
 }
 
 impl LlmRuntime {
     pub fn new(store: Arc<LlmSnapshotStore>, audit: Arc<dyn AuditAdmission>) -> Self {
         let permits = store.load().global_concurrency;
+        let stream_permits = store.load().global_stream_concurrency;
         Self {
             store,
             audit,
             global_permits: Arc::new(Semaphore::new(permits)),
+            stream_permits: Arc::new(Semaphore::new(stream_permits)),
+            stream_start_barrier: Arc::new(ImmediateStreamStartBarrier),
         }
+    }
+
+    pub fn with_stream_start_barrier(mut self, barrier: Arc<dyn StreamStartBarrier>) -> Self {
+        self.stream_start_barrier = barrier;
+        self
     }
 
     pub fn snapshot(&self) -> Arc<LlmPublishedSnapshot> {

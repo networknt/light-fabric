@@ -21,4 +21,4 @@ pub use request::{
 pub use response::{
     FinishReason, InferenceResponse, NormalizedUsage, ProviderEvidence, TerminalState,
 };
-pub use stream::{InferenceEvent, ToolCallDelta};
+pub use stream::{InferenceEvent, StreamDecoder, ToolCallDelta};

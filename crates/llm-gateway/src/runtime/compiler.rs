@@ -177,6 +177,9 @@ impl LlmCompiler {
             generation,
             digest,
             global_concurrency: config.global_concurrency,
+            global_stream_concurrency: config.global_stream_concurrency,
+            stream_channel_capacity: config.stream_channel_capacity,
+            stream_write_timeout_ms: config.stream_write_timeout_ms,
             max_replay_bytes: config.max_replay_bytes,
             aliases,
             deployments,
@@ -208,7 +211,12 @@ fn warn_on_mixed_format_extension_narrowing(config: &LlmRouterConfig) {
 }
 
 fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
-    if config.path_prefix != "/v1" || config.global_concurrency == 0 || config.max_replay_bytes == 0
+    if config.path_prefix != "/v1"
+        || config.global_concurrency == 0
+        || config.global_stream_concurrency == 0
+        || config.stream_channel_capacity == 0
+        || config.stream_write_timeout_ms == 0
+        || config.max_replay_bytes == 0
     {
         return Err(LlmGatewayError::Config(
             "invalid LLM router bounds or path prefix".to_string(),

@@ -10,6 +10,7 @@ light-client = { path = "../../crates/light-client" }
 light-security = { path = "../../crates/light-security" }
 light-runtime = { path = "../../crates/light-runtime" }
 light-rule = { path = "../../crates/light-rule" }
+llm-gateway = { path = "../../crates/llm-gateway" }
 async-trait = { workspace = true }
 base64 = "0.22"
 bytes = { workspace = true }

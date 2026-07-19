@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::error::LlmGatewayError;
-use crate::runtime::{LlmRequestContext, LlmRuntime};
+use crate::runtime::{LlmRequestContext, LlmRuntime, LlmStreamExecution};
 
 #[derive(Debug, Clone)]
 pub struct BufferedHttpRequest {
@@ -26,6 +26,17 @@ pub struct BufferedHttpResponse {
     pub status: u16,
     pub headers: BTreeMap<String, String>,
     pub body: Vec<u8>,
+}
+
+pub struct StreamingHttpResponse {
+    pub status: u16,
+    pub headers: BTreeMap<String, String>,
+    pub stream: LlmStreamExecution,
+}
+
+pub enum LlmHttpResponse {
+    Buffered(BufferedHttpResponse),
+    Streaming(StreamingHttpResponse),
 }
 
 #[async_trait]
@@ -83,22 +94,43 @@ impl LlmBufferedHttp {
     }
 
     pub async fn handle(&self, request: BufferedHttpRequest) -> BufferedHttpResponse {
+        let request_id = request.trusted_request_id.clone();
+        match self.handle_route(request).await {
+            LlmHttpResponse::Buffered(response) => response,
+            LlmHttpResponse::Streaming(_) => public_error(
+                LlmGatewayError::InvalidRequest(
+                    "streaming response requires a streaming writer".to_string(),
+                ),
+                &request_id,
+            ),
+        }
+    }
+
+    pub async fn handle_route(&self, request: BufferedHttpRequest) -> LlmHttpResponse {
         let result = self.handle_inner(&request).await;
         match result {
-            Ok(mut response) => {
+            Ok(LlmHttpResponse::Buffered(mut response)) => {
                 response
                     .headers
                     .insert("x-request-id".to_string(), request.trusted_request_id);
-                response
+                LlmHttpResponse::Buffered(response)
             }
-            Err(error) => public_error(error, &request.trusted_request_id),
+            Ok(LlmHttpResponse::Streaming(mut response)) => {
+                response
+                    .headers
+                    .insert("x-request-id".to_string(), request.trusted_request_id);
+                LlmHttpResponse::Streaming(response)
+            }
+            Err(error) => {
+                LlmHttpResponse::Buffered(public_error(error, &request.trusted_request_id))
+            }
         }
     }
 
     async fn handle_inner(
         &self,
         request: &BufferedHttpRequest,
-    ) -> Result<BufferedHttpResponse, LlmGatewayError> {
+    ) -> Result<LlmHttpResponse, LlmGatewayError> {
         if request.path == "/v1/models" {
             if request.method != "GET" {
                 return Err(LlmGatewayError::MethodNotAllowed);
@@ -109,7 +141,8 @@ impl LlmBufferedHttp {
                 .into_iter()
                 .map(|id| json!({"id":id,"object":"model","owned_by":"light-gateway"}))
                 .collect::<Vec<_>>();
-            return json_response(200, json!({"object":"list","data":data}));
+            return json_response(200, json!({"object":"list","data":data}))
+                .map(LlmHttpResponse::Buffered);
         }
         if request.path != "/v1/chat/completions" {
             return Err(LlmGatewayError::ModelUnavailable);
@@ -144,7 +177,7 @@ impl LlmBufferedHttp {
 
         // Body-aware authorization is deliberately before JSON/alias parsing.
         self.access.authorize(request, &request.body).await?;
-        let raw: Value = serde_json::from_slice(&request.body)
+        let mut raw: Value = serde_json::from_slice(&request.body)
             .map_err(|_| LlmGatewayError::InvalidRequest("invalid JSON".to_string()))?;
         if json_depth(&raw) > self.max_json_depth {
             return Err(LlmGatewayError::InvalidRequest(
@@ -156,10 +189,32 @@ impl LlmBufferedHttp {
                 "model is required".to_string(),
             ));
         }
+        let streaming = match raw.get("stream") {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => false,
+            Some(Value::Bool(true)) => true,
+            Some(_) => {
+                return Err(LlmGatewayError::InvalidRequest(
+                    "stream must be a boolean".to_string(),
+                ));
+            }
+        };
+        if streaming {
+            raw.as_object_mut()
+                .ok_or_else(|| {
+                    LlmGatewayError::InvalidRequest("request must be a JSON object".to_string())
+                })?
+                .insert("stream".to_string(), Value::Bool(false));
+        }
+        let parse_body = if streaming {
+            serde_json::to_vec(&raw)
+                .map_err(|_| LlmGatewayError::InvalidRequest("invalid JSON".to_string()))?
+        } else {
+            request.body.clone()
+        };
         let root = self.runtime.snapshot();
         let mut canonical: InferenceRequest = self
             .parser
-            .parse_request(&request.body, ProviderFormat::OpenAi)
+            .parse_request(&parse_body, ProviderFormat::OpenAi)
             .map_err(|error| LlmGatewayError::InvalidRequest(error.detail))?;
         let formats = self
             .runtime
@@ -167,7 +222,7 @@ impl LlmBufferedHttp {
         if formats.contains(&ProviderFormat::Anthropic) {
             canonical = self
                 .parser
-                .parse_request(&request.body, ProviderFormat::Anthropic)
+                .parse_request(&parse_body, ProviderFormat::Anthropic)
                 .map_err(|error| LlmGatewayError::InvalidRequest(error.detail))?;
         }
         if canonical.messages.len() > 256 || canonical.tools.len() > 128 {
@@ -193,6 +248,21 @@ impl LlmBufferedHttp {
             principal_id: request.principal_id.clone(),
             deadline: std::time::Instant::now() + self.timeout,
         };
+        if streaming {
+            let stream = self
+                .runtime
+                .execute_stream_with_snapshot(context, root, canonical)
+                .await?;
+            return Ok(LlmHttpResponse::Streaming(StreamingHttpResponse {
+                status: 200,
+                headers: BTreeMap::from([
+                    ("content-type".to_string(), "text/event-stream".to_string()),
+                    ("cache-control".to_string(), "no-cache".to_string()),
+                    ("x-accel-buffering".to_string(), "no".to_string()),
+                ]),
+                stream,
+            }));
+        }
         let execution = self
             .runtime
             .execute_with_snapshot(context, root, canonical)
@@ -221,6 +291,7 @@ impl LlmBufferedHttp {
                 "usage":{"prompt_tokens":usage.input_tokens,"completion_tokens":usage.output_tokens,"total_tokens":total_tokens}
             }),
         )
+        .map(LlmHttpResponse::Buffered)
     }
 }
 

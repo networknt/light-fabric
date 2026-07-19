@@ -1,9 +1,14 @@
+use async_stream::try_stream;
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use model_provider::inference::{
     InferenceError, InferenceProvider, InferenceRequest, InferenceResponse, InferenceStream,
-    ProviderCapabilities, ProviderFormat, ProviderRequestContext,
+    ProviderCapabilities, ProviderFormat, ProviderRequestContext, StreamDecoder,
 };
-use model_provider::providers::{anthropic::AnthropicCodec, openai::OpenAiCodec};
+use model_provider::providers::{
+    anthropic::{AnthropicCodec, AnthropicStreamDecoder},
+    openai::{OpenAiCodec, OpenAiStreamDecoder},
+};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use std::time::Duration;
 
@@ -151,11 +156,73 @@ impl InferenceProvider for HttpInferenceProvider {
 
     async fn stream(
         &self,
-        _context: ProviderRequestContext,
-        _request: InferenceRequest,
+        context: ProviderRequestContext,
+        request: InferenceRequest,
     ) -> Result<InferenceStream, InferenceError> {
-        Err(InferenceError::unsupported(
-            "buffered HTTP runtime does not expose streaming",
-        ))
+        context.check_active()?;
+        let body = match self.format {
+            ProviderFormat::OpenAi => OpenAiCodec.encode_request(&request, true)?,
+            ProviderFormat::Anthropic => AnthropicCodec.encode_request(&request, true)?,
+        };
+        let outbound = self
+            .client
+            .post(self.endpoint())
+            .headers(self.headers.clone())
+            .json(&body);
+        let response = tokio::select! {
+            _ = context.cancellation.cancelled() => return Err(InferenceError::cancelled()),
+            response = outbound.send() => response.map_err(|error| {
+                if error.is_timeout() { InferenceError::timeout_after_possible_acceptance() }
+                else { InferenceError::network("provider stream transport failed") }
+            })?,
+        };
+        let status = response.status().as_u16();
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        if !(200..300).contains(&status) {
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|_| InferenceError::network("provider error body failed"))?;
+            return Err(match self.format {
+                ProviderFormat::OpenAi => {
+                    OpenAiCodec.decode_error(status, retry_after.as_deref(), &bytes)
+                }
+                ProviderFormat::Anthropic => {
+                    AnthropicCodec.decode_error(status, retry_after.as_deref(), &bytes)
+                }
+            });
+        }
+        let mut decoder: Box<dyn StreamDecoder + Send> = match self.format {
+            ProviderFormat::OpenAi => Box::new(OpenAiStreamDecoder::default()),
+            ProviderFormat::Anthropic => Box::new(AnthropicStreamDecoder::default()),
+        };
+        let cancellation = context.cancellation;
+        let bytes = response.bytes_stream();
+        let output = try_stream! {
+            futures_util::pin_mut!(bytes);
+            loop {
+                let next = tokio::select! {
+                    _ = cancellation.cancelled() => None,
+                    next = bytes.next() => Some(next),
+                };
+                let Some(next) = next else {
+                    Err(InferenceError::cancelled())?;
+                    unreachable!();
+                };
+                let Some(chunk) = next else { break };
+                let chunk = chunk.map_err(|_| InferenceError::network("provider stream body failed"))?;
+                for event in decoder.push(&chunk)? {
+                    yield event;
+                }
+            }
+            for event in decoder.finish()? {
+                yield event;
+            }
+        };
+        Ok(Box::pin(output))
     }
 }

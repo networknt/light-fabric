@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "1",
+  "checkpoint": "PERF-1",
+  "environment": {
+    "cpu": "2 vCPU",
+    "memory": "4 GiB",
+    "providerProfile": "stable-60ms",
+    "payload": "small-text",
+    "openLoop": true,
+    "keepAlive": true
+  },
+  "usageAdmission": "enabled",
+  "audit": "disabled",
+  "streaming": "not-applicable",
+  "comparatorPolicy": {
+    "matrix": "benchmarks/llm-gateway/manifests/feature-equivalence.json",
+    "lightOnlyControlsRemainEnabled": true,
+    "agentgatewayUsageAccounting": "unsupported-reported"
+  },
+  "runs": [
+    {"candidate":"direct","offeredRps":500,"count":5,"directory":"benchmarks/llm-gateway/reports/perf1/direct"},
+    {"candidate":"light","offeredRps":500,"count":5,"directory":"benchmarks/llm-gateway/reports/perf1/light"},
+    {"candidate":"bifrost","offeredRps":500,"count":5,"directory":"benchmarks/llm-gateway/reports/perf1/bifrost"},
+    {"candidate":"agentgateway","offeredRps":500,"count":5,"directory":"benchmarks/llm-gateway/reports/perf1/agentgateway"},
+    {"candidate":"light","offeredRps":5000,"count":1,"directory":"benchmarks/llm-gateway/reports/perf1/light"}
+  ],
+  "thresholds": {
+    "allOfferedAdmittedAndCompleted": true,
+    "gatewayAddedP50Micros": 1000,
+    "gatewayAddedP99Micros": 5000,
+    "bifrostNonInferiorityPercent": 5
+  },
+  "requiredSidecars": {
+    "environmentPerCandidate": "environment.json",
+    "lightDispatchAllocation": "benchmarks/llm-gateway/reports/perf1/light/dispatch-allocation.json",
+    "requiredResourceMeasurements": ["cpu", "rss", "allocations", "tasks", "connections", "queueDepth"]
+  }
+}

@@ -22,6 +22,12 @@ pub struct LlmRouterConfig {
     pub request_timeout_ms: u64,
     #[serde(default = "default_global_concurrency")]
     pub global_concurrency: usize,
+    #[serde(default = "default_global_stream_concurrency")]
+    pub global_stream_concurrency: usize,
+    #[serde(default = "default_stream_channel_capacity")]
+    pub stream_channel_capacity: usize,
+    #[serde(default = "default_stream_write_timeout_ms")]
+    pub stream_write_timeout_ms: u64,
     #[serde(default)]
     pub development_fixtures: bool,
     #[serde(default)]
@@ -44,6 +50,9 @@ impl Default for LlmRouterConfig {
             max_replay_bytes: default_replay_bytes(),
             request_timeout_ms: default_timeout_ms(),
             global_concurrency: default_global_concurrency(),
+            global_stream_concurrency: default_global_stream_concurrency(),
+            stream_channel_capacity: default_stream_channel_capacity(),
+            stream_write_timeout_ms: default_stream_write_timeout_ms(),
             development_fixtures: false,
             openai_extension_allowlist: BTreeSet::new(),
             providers: BTreeMap::new(),
@@ -136,6 +145,15 @@ fn default_timeout_ms() -> u64 {
 }
 fn default_global_concurrency() -> usize {
     256
+}
+fn default_global_stream_concurrency() -> usize {
+    64
+}
+fn default_stream_channel_capacity() -> usize {
+    8
+}
+fn default_stream_write_timeout_ms() -> u64 {
+    5_000
 }
 fn default_deployment_concurrency() -> usize {
     32

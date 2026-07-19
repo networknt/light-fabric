@@ -1,25 +1,27 @@
 use async_trait::async_trait;
+use futures_util::stream;
 use llm_gateway::audit::{AuditAdmission, AuditFinish, AuditReservation, AuditStart};
 use llm_gateway::config::{
     AliasConfig, AuditMode, DeploymentConfig, LlmRouterConfig, ProviderConfig,
 };
 use llm_gateway::credentials::MapSecretResolver;
-use llm_gateway::http::{BodyAccessControl, BufferedHttpRequest, LlmBufferedHttp};
+use llm_gateway::http::{BodyAccessControl, BufferedHttpRequest, LlmBufferedHttp, LlmHttpResponse};
 use llm_gateway::routing::PassiveCircuit;
 use llm_gateway::runtime::{
     AliasPlan, CompileProbe, DeploymentRuntime, LlmCompiler, LlmPublishedSnapshot,
     LlmSnapshotStore, PrincipalPermitStripes, ProviderAccountRuntime, PublishOutcome,
+    StreamStartBarrier,
 };
 use llm_gateway::usage::{Price, UsageLedger, UsageReservation};
 use llm_gateway::{LlmGatewayError, LlmRequestContext, LlmRuntime};
 use model_provider::inference::{
     AcceptanceEvidence, ContentBlock, ContentCapabilities, FinishReason, InferenceError,
-    InferenceProvider, InferenceRequest, InferenceResponse, InferenceStream, NormalizedUsage,
-    Operation, ProviderCapabilities, ProviderEvidence, ProviderFormat, ProviderRequestContext,
-    TerminalState,
+    InferenceEvent, InferenceProvider, InferenceRequest, InferenceResponse, InferenceStream,
+    NormalizedUsage, Operation, ProviderCapabilities, ProviderEvidence, ProviderFormat,
+    ProviderRequestContext, TerminalState,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
@@ -29,6 +31,99 @@ struct ScriptedProvider {
     results: Mutex<VecDeque<Result<InferenceResponse, InferenceError>>>,
     calls: AtomicUsize,
     capabilities: ProviderCapabilities,
+}
+
+struct SseProvider {
+    events: Vec<Result<InferenceEvent, InferenceError>>,
+    calls: AtomicUsize,
+    wait_for_cancellation: bool,
+    cancellation_observed: Arc<AtomicBool>,
+}
+
+impl SseProvider {
+    fn success() -> Self {
+        Self {
+            events: vec![
+                Ok(InferenceEvent::TextDelta {
+                    text: "hello".to_string(),
+                }),
+                Ok(InferenceEvent::MessageEnd {
+                    finish_reason: FinishReason::Stop,
+                    terminal_state: TerminalState::Complete,
+                }),
+                Ok(InferenceEvent::Usage {
+                    usage: NormalizedUsage {
+                        input_tokens: Some(3),
+                        output_tokens: Some(1),
+                        cached_input_tokens: None,
+                        reasoning_tokens: None,
+                    },
+                }),
+            ],
+            calls: AtomicUsize::new(0),
+            wait_for_cancellation: false,
+            cancellation_observed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+#[async_trait]
+impl InferenceProvider for SseProvider {
+    fn format(&self) -> ProviderFormat {
+        ProviderFormat::OpenAi
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        capabilities(true, true, true)
+    }
+
+    async fn infer(
+        &self,
+        _context: ProviderRequestContext,
+        _request: InferenceRequest,
+    ) -> Result<InferenceResponse, InferenceError> {
+        Err(InferenceError::unsupported("stream-only test provider"))
+    }
+
+    async fn stream(
+        &self,
+        context: ProviderRequestContext,
+        _request: InferenceRequest,
+    ) -> Result<InferenceStream, InferenceError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let events = self.events.clone();
+        if !self.wait_for_cancellation {
+            return Ok(Box::pin(stream::iter(events)));
+        }
+        let observed = Arc::clone(&self.cancellation_observed);
+        let cancellation = context.cancellation;
+        tokio::spawn({
+            let cancellation = cancellation.clone();
+            let observed = Arc::clone(&observed);
+            async move {
+                cancellation.cancelled().await;
+                observed.store(true, Ordering::SeqCst);
+            }
+        });
+        Ok(Box::pin(stream::unfold(
+            (events.into_iter(), false),
+            move |(mut events, cancelled)| {
+                let cancellation = cancellation.clone();
+                let observed = Arc::clone(&observed);
+                async move {
+                    if let Some(event) = events.next() {
+                        return Some((event, (events, cancelled)));
+                    }
+                    if !cancelled {
+                        cancellation.cancelled().await;
+                        observed.store(true, Ordering::SeqCst);
+                        return Some((Err(InferenceError::cancelled()), (events, true)));
+                    }
+                    None
+                }
+            },
+        )))
+    }
 }
 
 impl ScriptedProvider {
@@ -93,6 +188,11 @@ struct RecordingReservation {
 struct FailingFinishAudit;
 struct FailingFinishReservation;
 
+struct BlockingStartBarrier {
+    entered: AtomicBool,
+    release: Semaphore,
+}
+
 #[async_trait]
 impl AuditAdmission for RecordingAudit {
     async fn reserve(
@@ -130,6 +230,19 @@ impl AuditAdmission for FailingFinishAudit {
 impl AuditReservation for FailingFinishReservation {
     async fn finish(self: Box<Self>, _finish: AuditFinish) -> Result<(), LlmGatewayError> {
         Err(LlmGatewayError::AuditUnavailable)
+    }
+}
+
+#[async_trait]
+impl StreamStartBarrier for BlockingStartBarrier {
+    async fn wait_until_durable(&self, _request_id: &str) -> Result<(), LlmGatewayError> {
+        self.entered.store(true, Ordering::SeqCst);
+        self.release
+            .acquire()
+            .await
+            .map_err(|_| LlmGatewayError::AuditUnavailable)?
+            .forget();
+        Ok(())
     }
 }
 
@@ -229,6 +342,9 @@ fn runtime_with(
         generation: 4,
         digest: "root".to_string(),
         global_concurrency: 2,
+        global_stream_concurrency: 1,
+        stream_channel_capacity: 1,
+        stream_write_timeout_ms: 100,
         max_replay_bytes: max_replay,
         aliases: BTreeMap::from([
             ("public-model".to_string(), alias),
@@ -613,7 +729,13 @@ async fn buffered_response_uses_trusted_id_and_hides_physical_provider_evidence(
         vec![Ok(success_response())],
     ));
     let runtime = runtime_with(vec![provider], 1, 4096, Arc::new(RecordingAudit::default()));
-    let http = LlmBufferedHttp::new(runtime, Arc::new(Allow), 4096, 32, Duration::from_secs(1));
+    let http = LlmBufferedHttp::new(
+        Arc::clone(&runtime),
+        Arc::new(Allow),
+        4096,
+        32,
+        Duration::from_secs(1),
+    );
     let response = http
         .handle(http_request(
             br#"{"model":"public-model","messages":[{"role":"user","content":"hello"}]}"#,
@@ -718,6 +840,234 @@ async fn mixed_format_alias_rejects_allowlisted_openai_only_extensions() {
     assert_eq!(response.status, 400);
     assert_eq!(openai.calls.load(Ordering::SeqCst), 0);
     assert_eq!(anthropic.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn early_sse_smoke_frames_success_and_done_through_bounded_channel() {
+    let provider = Arc::new(SseProvider::success());
+    let audit = Arc::new(RecordingAudit::default());
+    let runtime = runtime_with(vec![provider.clone()], 1, 4096, audit.clone());
+    let http = LlmBufferedHttp::new(
+        Arc::clone(&runtime),
+        Arc::new(Allow),
+        4096,
+        32,
+        Duration::from_secs(1),
+    );
+    let response = http
+        .handle_route(http_request(
+            br#"{"model":"public-model","messages":[{"role":"user","content":"hello"}],"stream":true}"#,
+        ))
+        .await;
+    let LlmHttpResponse::Streaming(mut response) = response else {
+        panic!("expected SSE response");
+    };
+    assert_eq!(response.status, 200);
+    assert_eq!(response.headers["content-type"], "text/event-stream");
+    let mut body = Vec::new();
+    while let Some(frame) = response.stream.next_frame().await {
+        body.extend_from_slice(&frame);
+    }
+    let body = String::from_utf8(body).unwrap();
+    assert!(body.contains("hello"));
+    let finish = body.find("\"finish_reason\":\"stop\"").unwrap();
+    let usage = body.find("\"usage\"").unwrap();
+    let done = body.find("data: [DONE]").unwrap();
+    assert!(finish < usage && usage < done);
+    assert!(body.ends_with("data: [DONE]\n\n"));
+    assert_eq!(
+        runtime.snapshot().aliases["public-model"].ledger.charged(),
+        5
+    );
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(*audit.events.lock().unwrap(), ["reserve", "finish"]);
+}
+
+#[tokio::test]
+async fn early_sse_disconnect_cancels_upstream_and_releases_stream_permits() {
+    let observed = Arc::new(AtomicBool::new(false));
+    let provider = Arc::new(SseProvider {
+        events: vec![Ok(InferenceEvent::TextDelta {
+            text: "first".to_string(),
+        })],
+        calls: AtomicUsize::new(0),
+        wait_for_cancellation: true,
+        cancellation_observed: Arc::clone(&observed),
+    });
+    let runtime = runtime_with(
+        vec![provider.clone()],
+        1,
+        4096,
+        Arc::new(RecordingAudit::default()),
+    );
+    let http = LlmBufferedHttp::new(
+        Arc::clone(&runtime),
+        Arc::new(Allow),
+        4096,
+        32,
+        Duration::from_secs(1),
+    );
+    let response = http
+        .handle_route(http_request(
+            br#"{"model":"public-model","messages":[{"role":"user","content":"hello"}],"stream":true}"#,
+        ))
+        .await;
+    let LlmHttpResponse::Streaming(mut response) = response else {
+        panic!("expected SSE response");
+    };
+    assert!(response.stream.next_frame().await.is_some());
+    drop(response);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !observed.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("upstream cancellation must be observed");
+
+    let second = runtime
+        .execute_stream_with_snapshot(
+            LlmRequestContext::with_timeout("user", Duration::from_secs(1)),
+            runtime.snapshot(),
+            InferenceRequest::text("public-model", "second"),
+        )
+        .await
+        .expect("disconnect must release the single stream permit");
+    drop(second);
+}
+
+#[tokio::test]
+async fn early_sse_deadline_cancels_a_trickling_provider_and_releases_permits() {
+    let observed = Arc::new(AtomicBool::new(false));
+    let provider = Arc::new(SseProvider {
+        events: vec![Ok(InferenceEvent::TextDelta {
+            text: "first".to_string(),
+        })],
+        calls: AtomicUsize::new(0),
+        wait_for_cancellation: true,
+        cancellation_observed: Arc::clone(&observed),
+    });
+    let runtime = runtime_with(vec![provider], 1, 4096, Arc::new(RecordingAudit::default()));
+    let http = LlmBufferedHttp::new(
+        Arc::clone(&runtime),
+        Arc::new(Allow),
+        4096,
+        32,
+        Duration::from_millis(25),
+    );
+    let LlmHttpResponse::Streaming(mut response) = http
+        .handle_route(http_request(
+            br#"{"model":"public-model","messages":[{"role":"user","content":"hello"}],"stream":true}"#,
+        ))
+        .await
+    else {
+        panic!("expected SSE response");
+    };
+    let mut body = Vec::new();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while let Some(frame) = response.stream.next_frame().await {
+            body.extend_from_slice(&frame);
+        }
+    })
+    .await
+    .expect("the request deadline must terminate a trickling stream");
+    let body = String::from_utf8(body).unwrap();
+    assert!(body.contains("first"));
+    assert!(!body.contains("[DONE]"));
+    assert!(observed.load(Ordering::SeqCst));
+
+    let second = runtime
+        .execute_stream_with_snapshot(
+            LlmRequestContext::with_timeout("user", Duration::from_secs(1)),
+            runtime.snapshot(),
+            InferenceRequest::text("public-model", "second"),
+        )
+        .await
+        .expect("deadline termination must release the stream permit");
+    drop(second);
+}
+
+#[tokio::test]
+async fn early_sse_headers_wait_for_the_durable_start_barrier() {
+    let provider = Arc::new(SseProvider::success());
+    let barrier = Arc::new(BlockingStartBarrier {
+        entered: AtomicBool::new(false),
+        release: Semaphore::new(0),
+    });
+    let runtime = Arc::try_unwrap(runtime_with(
+        vec![provider.clone()],
+        1,
+        4096,
+        Arc::new(RecordingAudit::default()),
+    ))
+    .ok()
+    .expect("runtime has one owner")
+    .with_stream_start_barrier(barrier.clone());
+    let http = Arc::new(LlmBufferedHttp::new(
+        Arc::new(runtime),
+        Arc::new(Allow),
+        4096,
+        32,
+        Duration::from_secs(1),
+    ));
+    let task = tokio::spawn({
+        let http = Arc::clone(&http);
+        async move {
+            http.handle_route(http_request(
+                br#"{"model":"public-model","messages":[{"role":"user","content":"hello"}],"stream":true}"#,
+            ))
+            .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !barrier.entered.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("barrier must be reached");
+    assert!(!task.is_finished());
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    barrier.release.add_permits(1);
+    assert!(matches!(task.await.unwrap(), LlmHttpResponse::Streaming(_)));
+}
+
+#[tokio::test]
+async fn early_sse_never_emits_done_or_retries_after_visible_output_error() {
+    let provider = Arc::new(SseProvider {
+        events: vec![
+            Ok(InferenceEvent::TextDelta {
+                text: "visible".to_string(),
+            }),
+            Err(InferenceError::from_status(503, None, "down")),
+        ],
+        calls: AtomicUsize::new(0),
+        wait_for_cancellation: false,
+        cancellation_observed: Arc::new(AtomicBool::new(false)),
+    });
+    let runtime = runtime_with(
+        vec![provider.clone()],
+        1,
+        4096,
+        Arc::new(RecordingAudit::default()),
+    );
+    let http = LlmBufferedHttp::new(runtime, Arc::new(Allow), 4096, 32, Duration::from_secs(1));
+    let LlmHttpResponse::Streaming(mut response) = http
+        .handle_route(http_request(
+            br#"{"model":"public-model","messages":[{"role":"user","content":"hello"}],"stream":true}"#,
+        ))
+        .await
+    else {
+        panic!("expected SSE response");
+    };
+    let mut body = Vec::new();
+    while let Some(frame) = response.stream.next_frame().await {
+        body.extend_from_slice(&frame);
+    }
+    let body = String::from_utf8(body).unwrap();
+    assert!(body.contains("visible"));
+    assert!(!body.contains("[DONE]"));
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
