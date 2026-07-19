@@ -182,11 +182,16 @@ fn validation_worker(receiver: Arc<Mutex<mpsc::Receiver<ValidationJob>>>, watchd
                 Err(_) => return,
             }
         };
+        let ValidationJob {
+            validator,
+            instance,
+            response,
+            _permit,
+        } = job;
         let started = Instant::now();
         let outcome = catch_unwind(AssertUnwindSafe(|| {
-            let diagnostics = job
-                .validator
-                .iter_errors(&job.instance)
+            let diagnostics = validator
+                .iter_errors(&instance)
                 .take(3)
                 .map(|error| SchemaDiagnostic {
                     path: bounded(error.instance_path().to_string(), 256),
@@ -210,6 +215,7 @@ fn validation_worker(receiver: Arc<Mutex<mpsc::Receiver<ValidationJob>>>, watchd
             }
         }))
         .unwrap_or(ValidationOutcome::WorkerFailed);
+        drop(_permit);
         if started.elapsed() > watchdog {
             tracing::warn!(
                 target: "light_pingora::mcp",
@@ -218,7 +224,7 @@ fn validation_worker(receiver: Arc<Mutex<mpsc::Receiver<ValidationJob>>>, watchd
                 "MCP schema validation exceeded observational watchdog"
             );
         }
-        let _ = job.response.send(outcome);
+        let _ = response.send(outcome);
     }
 }
 
