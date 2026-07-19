@@ -235,6 +235,7 @@ fn load_llm_gateway_module(
     previous: Option<&Arc<LlmGatewayModule>>,
 ) -> Result<Option<Arc<LlmGatewayModule>>, RuntimeError> {
     if !active {
+        stop_llm_background_tasks(previous);
         return Ok(None);
     }
     let config: LlmRouterConfig = runtime_config
@@ -251,6 +252,7 @@ fn load_llm_gateway_module(
         true,
     )?;
     if !config.enabled {
+        stop_llm_background_tasks(previous);
         return Ok(None);
     }
     let resolver: Arc<dyn SecretResolver> = if config.production_projection.enabled {
@@ -406,6 +408,17 @@ fn load_llm_gateway_module(
         audit_sink_task,
         audit_fingerprint,
     })))
+}
+
+fn stop_llm_background_tasks(previous: Option<&Arc<LlmGatewayModule>>) {
+    if let Some(module) = previous {
+        if let Some(task) = module.projection_task.as_ref() {
+            task.stop();
+        }
+        if let Some(task) = module.audit_sink_task.as_ref() {
+            task.stop();
+        }
+    }
 }
 
 #[async_trait]
@@ -4909,6 +4922,64 @@ mod tests {
         let module = load_llm_gateway_module(&config, false, 1, None)
             .expect("inactive LLM handler must not require llm-router.yml");
         assert!(module.is_none());
+    }
+
+    #[tokio::test]
+    async fn disabling_llm_module_stops_the_existing_projection_worker() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        std::fs::write(
+            config_dir.path().join(LLM_ROUTER_FILE),
+            r#"
+enabled: true
+developmentFixtures: true
+providers:
+  mock:
+    format: openai
+    baseUrl: http://127.0.0.1:18080/v1
+    secretRef: env:LIGHT_GATEWAY_REL1_TEST_KEY
+deployments:
+  mock:
+    provider: mock
+    model: mock-model
+    concurrency: 1
+    inputMicrosPerMillion: 1
+    outputMicrosPerMillion: 1
+    conformanceDigest: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aliases:
+  public-model:
+    deployments: [mock]
+    maxAttempts: 1
+    concurrency: 1
+    maxInputTokens: 1000
+    maxOutputTokens: 100
+    maxCostMicros: 1000
+    audit: disabled
+"#,
+        )
+        .expect("write LLM config");
+        // SAFETY: the test uses a unique process-local variable and removes it
+        // immediately after off-path client construction.
+        unsafe { std::env::set_var("LIGHT_GATEWAY_REL1_TEST_KEY", "test-key") };
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+        let mut module = load_llm_gateway_module(&config, true, 1, None)
+            .expect("load enabled module")
+            .expect("enabled module");
+        unsafe { std::env::remove_var("LIGHT_GATEWAY_REL1_TEST_KEY") };
+        let task = Arc::new(LlmProjectionTask {
+            fingerprint: "rollout-disable-test".to_string(),
+            handle: tokio::spawn(std::future::pending()),
+        });
+        Arc::get_mut(&mut module)
+            .expect("module has one owner")
+            .projection_task = Some(Arc::clone(&task));
+
+        let disabled =
+            load_llm_gateway_module(&config, false, 2, Some(&module)).expect("disable module");
+        tokio::task::yield_now().await;
+
+        assert!(disabled.is_none());
+        assert!(task.handle.is_finished());
     }
 
     #[test]

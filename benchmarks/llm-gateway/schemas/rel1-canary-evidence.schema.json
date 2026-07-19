@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "release", "revision", "capturedAt", "requiredProvenance", "liveCodecValidation", "replicas", "stages", "approvedBy"],
+  "properties": {
+    "schemaVersion": {"const": "1"},
+    "release": {"type": "string", "minLength": 1},
+    "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "capturedAt": {"type": "string", "format": "date-time"},
+    "requiredProvenance": {"const": "captured_sanitized"},
+    "liveCodecValidation": {"const": "pass"},
+    "replicas": {
+      "type": "array", "minItems": 2, "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "stages": {
+      "type": "array", "minItems": 4, "maxItems": 4,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "startedAt", "endedAt", "publicationDigest", "replicaDigests", "metrics", "status"],
+        "properties": {
+          "id": {"enum": ["disabled", "internal", "principals", "expanded"]},
+          "startedAt": {"type": "string", "format": "date-time"},
+          "endedAt": {"type": "string", "format": "date-time"},
+          "publicationDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "replicaDigests": {"type": "object", "minProperties": 2, "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+          "metrics": {
+            "type": "object", "additionalProperties": false,
+            "required": ["errorRatePercent", "ttftP99Millis", "auditSinkLagSeconds", "walUtilizationPercent", "retainedSnapshots", "fallbackRatePercent", "replicaDigestDivergenceSeconds"],
+            "properties": {
+              "errorRatePercent": {"type": "number", "minimum": 0},
+              "ttftP99Millis": {"type": "number", "minimum": 0},
+              "auditSinkLagSeconds": {"type": "number", "minimum": 0},
+              "walUtilizationPercent": {"type": "number", "minimum": 0, "maximum": 100},
+              "retainedSnapshots": {"type": "integer", "minimum": 0},
+              "fallbackRatePercent": {"type": "number", "minimum": 0},
+              "replicaDigestDivergenceSeconds": {"type": "number", "minimum": 0}
+            }
+          },
+          "status": {"const": "pass"}
+        }
+      }
+    },
+    "approvedBy": {"type": "string", "minLength": 1}
+  }
+}

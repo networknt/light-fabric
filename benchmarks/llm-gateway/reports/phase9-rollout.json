@@ -1,0 +1,34 @@
+{
+  "phase": 9,
+  "scope": ["REL-1"],
+  "status": "implementation-pass-pending-live-canary-and-rollback-evidence",
+  "sourceTree": "worktree",
+  "baseCommit": "ee54f8d7787ad5c6b5fcb15f9785d5470c747373",
+  "generatedDate": "2026-07-19",
+  "gates": {
+    "implementation": "scripts/run-llm-rollout-gates.sh",
+    "closure": "scripts/run-llm-rollout-gates.sh --require-live-evidence"
+  },
+  "implemented": {
+    "orderedFourStageCanary": true,
+    "twoReplicaDigestConvergence": true,
+    "boundedPromotionThresholds": true,
+    "capturedProviderProvenanceRequired": true,
+    "liveCodecValidationRequired": true,
+    "monotonicPriorManifestRollback": true,
+    "handlerDisableRequestsBackgroundTaskCancellation": true,
+    "sanitizedEvidenceSchemas": true
+  },
+  "validation": {
+    "rollbackProjectionTest": "pass",
+    "projectionStopTest": "pass",
+    "auditSinkStopTest": "pass",
+    "rolloutImplementationGate": "pass",
+    "rolloutClosureGate": "expected fail until external evidence exists"
+  },
+  "limits": [
+    "No canary or rollback measurements were fabricated",
+    "REL-1 remains blocked while PERF-3 and live rollout evidence are absent",
+    "canaryAllowed remains false"
+  ]
+}

@@ -843,6 +843,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn in_flight_reservation_retains_writer_lock_until_terminal_audit_drains() {
+        let directory = tempfile::tempdir().unwrap();
+        let wal_config = config(directory.path());
+        let audit = WalAudit::open(wal_config.clone(), "host-a").unwrap();
+        let reservation = audit.reserve(AuditMode::Required, start()).await.unwrap();
+
+        // Disabling the module drops its owner, but an admitted request keeps
+        // the WAL alive until its terminal event has been submitted.
+        drop(audit);
+        let error = AuditWal::open(wal_config.clone())
+            .err()
+            .expect("re-enable must not steal the in-flight writer lock");
+        assert!(error.to_string().contains("already has an active writer"));
+
+        reservation
+            .finish(AuditFinish {
+                terminal: "complete",
+                attempts: 0,
+                charged_micros: 0,
+                usage_complete: false,
+            })
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Ok(reopened) = AuditWal::open(wal_config.clone()) {
+                    drop(reopened);
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("writer lock must transfer after terminal audit drains");
+    }
+
+    #[tokio::test]
     async fn wal_lock_process_helper() {
         let Ok(directory) = std::env::var("LLM_AUDIT_LOCK_HELPER_DIR") else {
             return;

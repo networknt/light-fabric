@@ -33,10 +33,16 @@ pub struct AuditSinkTask {
     handle: tokio::task::JoinHandle<()>,
 }
 
-impl Drop for AuditSinkTask {
-    fn drop(&mut self) {
+impl AuditSinkTask {
+    pub fn stop(&self) {
         self.cancellation.cancel();
         self.handle.abort();
+    }
+}
+
+impl Drop for AuditSinkTask {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
@@ -211,4 +217,24 @@ async fn ingest_record(
 
 fn protocol_error(error: impl std::fmt::Display) -> sqlx::Error {
     sqlx::Error::Protocol(format!("invalid LLM audit WAL event: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn explicit_stop_aborts_the_audit_sink_worker() {
+        let cancellation = CancellationToken::new();
+        let task = AuditSinkTask {
+            cancellation: cancellation.clone(),
+            handle: tokio::spawn(std::future::pending()),
+        };
+
+        task.stop();
+        tokio::task::yield_now().await;
+
+        assert!(cancellation.is_cancelled());
+        assert!(task.handle.is_finished());
+    }
 }

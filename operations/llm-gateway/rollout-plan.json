@@ -1,0 +1,64 @@
+{
+  "schemaVersion": "1",
+  "checkpoint": "REL-1",
+  "owner": "gateway-sre",
+  "prerequisites": {
+    "releaseCheckpoints": ["PERF-3", "OBS-1", "SEC-1"],
+    "requiredProvenance": "captured_sanitized",
+    "liveCodecValidation": true,
+    "minimumReplicaCount": 2
+  },
+  "stages": [
+    {
+      "id": "disabled",
+      "scope": "handler disabled on every replica",
+      "minimumObservationMinutes": 15,
+      "promotionRequires": ["projection-converged", "audit-healthy", "wal-within-limit", "snapshot-retained"],
+      "abortThresholds": ["replica-digest-divergence", "audit-sink-lag", "wal-high-watermark"]
+    },
+    {
+      "id": "internal",
+      "scope": "one internal host and one public alias against the approved staging deployment",
+      "minimumObservationMinutes": 30,
+      "promotionRequires": ["codec-capture-valid", "zero-policy-bypass", "zero-secret-exposure", "terminal-audit-complete"],
+      "abortThresholds": ["error-rate", "ttft-p99", "audit-sink-lag", "wal-high-watermark", "fallback-rate"]
+    },
+    {
+      "id": "principals",
+      "scope": "small allowlist of authenticated production principals",
+      "minimumObservationMinutes": 60,
+      "promotionRequires": ["all-slo-windows-pass", "replica-digest-converged", "no-open-security-alert"],
+      "abortThresholds": ["error-rate", "ttft-p99", "audit-sink-lag", "wal-high-watermark", "snapshot-retention", "fallback-rate"]
+    },
+    {
+      "id": "expanded",
+      "scope": "expand by explicit public alias and host batches",
+      "minimumObservationMinutes": 120,
+      "promotionRequires": ["all-slo-windows-pass", "rollback-drill-pass", "owner-approval"],
+      "abortThresholds": ["error-rate", "ttft-p99", "audit-sink-lag", "wal-high-watermark", "snapshot-retention", "fallback-rate"]
+    }
+  ],
+  "thresholds": {
+    "errorRatePercentMax": 1.0,
+    "ttftP99MillisMax": 1500,
+    "auditSinkLagSecondsMax": 30,
+    "walUtilizationPercentMax": 70,
+    "minimumRetainedSnapshots": 2,
+    "fallbackRatePercentMax": 5.0,
+    "replicaDigestDivergenceSecondsMax": 30,
+    "rollbackRecoverySecondsMax": 300
+  },
+  "rollback": {
+    "firstAction": "publish-previous-manifest-as-new-sequence",
+    "requiresMonotonicSequence": true,
+    "requiresAllReplicaAcknowledgements": true,
+    "secondActionWhenDataPlaneSuspect": "disable-llm-handler",
+    "backgroundTaskCancellationRequestedOnDisable": ["projection", "audit-sink"],
+    "recoveryRequires": ["previous-digest-active", "audit-backlog-drained", "no-incomplete-canary-requests"]
+  },
+  "evidence": {
+    "canary": "benchmarks/llm-gateway/reports/rel1/canary-evidence.json",
+    "rollbackDrill": "benchmarks/llm-gateway/reports/rel1/rollback-drill.json",
+    "runbook": "operations/llm-gateway/runbooks/rollout-and-rollback.md"
+  }
+}

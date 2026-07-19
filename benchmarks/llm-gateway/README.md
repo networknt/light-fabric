@@ -166,6 +166,38 @@ the preauthorized parser adapter is called.
 pending. REL-1 must update it only after real performance evidence, synthetic
 alert exercises, security approval, and artifact digests are recorded.
 
+## REL-1 canary and rollback
+
+The rollout contract is `operations/llm-gateway/rollout-plan.json`. It requires
+PERF-3/OBS-1/SEC-1 closure, `captured_sanitized` provider evidence, live codec
+validation, and at least two replicas. Promotion is ordered: disabled health,
+one internal host/public alias, a small authenticated-principal allowlist, then
+explicit alias/host batches. Each stage records the same publication digest on
+every replica and stays within the declared error, TTFT, audit lag, WAL,
+snapshot-retention, fallback, and convergence thresholds.
+
+Validate the implementation without claiming a production rollout:
+
+```bash
+./scripts/run-llm-rollout-gates.sh
+```
+
+After capturing the real canary and rollback drill files named by the plan,
+close REL-1 with:
+
+```bash
+./scripts/run-llm-rollout-gates.sh --require-live-evidence
+```
+
+Rollback republishes the prior immutable resources in a new, higher-sequence
+manifest. It never moves the sequence backwards. If the data plane is suspect,
+the second action disables the LLM handler and requests cancellation of the
+projection and audit-sink tasks. In-flight requests can retain the WAL writer
+lock until their terminal audit records drain, so a rapid re-enable may need a
+safe reload retry. The live gate rejects missing evidence, replica digest
+divergence, abbreviated observation windows, threshold violations,
+non-monotonic rollback, incomplete audit recovery, or missing approval.
+
 ## LF-2 evidence and gates
 
 Generate machine-local measurements explicitly:

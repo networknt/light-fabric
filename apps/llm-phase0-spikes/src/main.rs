@@ -1,4 +1,5 @@
 use bytes::{Bytes, BytesMut};
+use chrono::{DateTime, Utc};
 use config_loader::ConfigManager as ArcSwapConfigManager;
 use jsonschema::Validator;
 use light_runtime::ConfigManager as LockedConfigManager;
@@ -16,7 +17,7 @@ use std::time::Instant;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
     let command = args.next().ok_or(
-        "usage: llm-phase0-spikes <body|snapshot|projection-secret|wal|validate|validate-closure|validate-comparison|validate-perf1|validate-perf1-implementation|validate-release|validate-release-implementation> [output-or-candidate]",
+        "usage: llm-phase0-spikes <body|snapshot|projection-secret|wal|validate|validate-closure|validate-comparison|validate-perf1|validate-perf1-implementation|validate-release|validate-release-implementation|validate-rollout|validate-rollout-implementation> [output-or-candidate]",
     )?;
     let output = args.next().map(PathBuf::from);
     match command.as_str() {
@@ -37,8 +38,219 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "validate-perf1-implementation" => validate_perf1(false)?,
         "validate-release" => validate_release(true)?,
         "validate-release-implementation" => validate_release(false)?,
+        "validate-rollout" => validate_rollout(true)?,
+        "validate-rollout-implementation" => validate_rollout(false)?,
         _ => return Err(format!("unknown command `{command}`").into()),
     }
+    Ok(())
+}
+
+fn validate_rollout(require_live: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let root = workspace_root();
+    let plan_path = root.join("operations/llm-gateway/rollout-plan.json");
+    let plan: Value = serde_json::from_slice(&fs::read(&plan_path)?)?;
+    if plan["checkpoint"] != "REL-1"
+        || plan["owner"].as_str().is_none_or(str::is_empty)
+        || plan["prerequisites"]["requiredProvenance"] != "captured_sanitized"
+        || plan["prerequisites"]["liveCodecValidation"] != true
+        || plan["prerequisites"]["minimumReplicaCount"]
+            .as_u64()
+            .is_none_or(|count| count < 2)
+    {
+        return Err("REL-1 prerequisite contract is incomplete".into());
+    }
+    for checkpoint in ["PERF-3", "OBS-1", "SEC-1"] {
+        if !plan["prerequisites"]["releaseCheckpoints"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item == checkpoint))
+        {
+            return Err(format!("REL-1 prerequisite `{checkpoint}` is missing").into());
+        }
+    }
+    let stages = plan["stages"].as_array().ok_or("REL-1 stages missing")?;
+    let expected_stages = ["disabled", "internal", "principals", "expanded"];
+    if stages.len() != expected_stages.len() {
+        return Err("REL-1 must define exactly four rollout stages".into());
+    }
+    for (stage, expected) in stages.iter().zip(expected_stages) {
+        if stage["id"] != expected
+            || stage["minimumObservationMinutes"]
+                .as_u64()
+                .is_none_or(|minutes| minutes == 0)
+            || stage["promotionRequires"]
+                .as_array()
+                .is_none_or(Vec::is_empty)
+            || stage["abortThresholds"]
+                .as_array()
+                .is_none_or(Vec::is_empty)
+        {
+            return Err(format!("REL-1 stage `{expected}` is incomplete").into());
+        }
+    }
+    let rollback = &plan["rollback"];
+    if rollback["firstAction"] != "publish-previous-manifest-as-new-sequence"
+        || rollback["requiresMonotonicSequence"] != true
+        || rollback["requiresAllReplicaAcknowledgements"] != true
+        || rollback["secondActionWhenDataPlaneSuspect"] != "disable-llm-handler"
+        || !rollback["backgroundTaskCancellationRequestedOnDisable"]
+            .as_array()
+            .is_some_and(|tasks| {
+                tasks.iter().any(|task| task == "projection")
+                    && tasks.iter().any(|task| task == "audit-sink")
+            })
+    {
+        return Err("REL-1 rollback contract is incomplete".into());
+    }
+    for key in ["canary", "rollbackDrill", "runbook"] {
+        let path = plan["evidence"][key]
+            .as_str()
+            .ok_or_else(|| format!("REL-1 evidence path `{key}` is missing"))?;
+        if key == "runbook" && !root.join(path).is_file() {
+            return Err(format!("REL-1 runbook `{path}` is missing").into());
+        }
+    }
+
+    let release: Value = serde_json::from_slice(&fs::read(
+        root.join("benchmarks/llm-gateway/manifests/release-manifest.json"),
+    )?)?;
+    if release["owners"]["rollout"] != plan["owner"] {
+        return Err("REL-1 rollout owner does not match the release manifest".into());
+    }
+    if !require_live {
+        if release["status"]["PERF-3"]
+            .as_str()
+            .is_some_and(|status| status.starts_with("pending"))
+            && release["canaryAllowed"] != false
+        {
+            return Err("REL-1 must remain fail-closed while PERF-3 is pending".into());
+        }
+        println!(
+            "REL-1 rollout and rollback implementation contracts passed; live canary evidence remains required"
+        );
+        return Ok(());
+    }
+
+    validate_release(true)?;
+    if release["canaryAllowed"] != true
+        || release["status"]["REL-1"] != "complete"
+        || release["status"]["PERF-3"] != "complete"
+        || release["status"]["OBS-1"] != "complete"
+        || release["status"]["SEC-1"] != "complete"
+    {
+        return Err("REL-1 release manifest is not approved for completed canary rollout".into());
+    }
+
+    let canary_path = root.join(plan["evidence"]["canary"].as_str().unwrap());
+    let rollback_path = root.join(plan["evidence"]["rollbackDrill"].as_str().unwrap());
+    validate_instances(
+        &root.join("benchmarks/llm-gateway/schemas/rel1-canary-evidence.schema.json"),
+        std::slice::from_ref(&canary_path),
+    )?;
+    validate_instances(
+        &root.join("benchmarks/llm-gateway/schemas/rel1-rollback-evidence.schema.json"),
+        std::slice::from_ref(&rollback_path),
+    )?;
+    let canary: Value = serde_json::from_slice(&fs::read(&canary_path)?)?;
+    let drill: Value = serde_json::from_slice(&fs::read(&rollback_path)?)?;
+    let revision = release["baseCommit"]
+        .as_str()
+        .ok_or("release revision missing")?;
+    if canary["revision"] != revision || drill["revision"] != revision {
+        return Err("REL-1 evidence revision does not match the release".into());
+    }
+    let replicas = canary["replicas"]
+        .as_array()
+        .ok_or("canary replicas missing")?;
+    let thresholds = &plan["thresholds"];
+    for ((stage, contract), expected) in canary["stages"]
+        .as_array()
+        .ok_or("canary stages missing")?
+        .iter()
+        .zip(stages)
+        .zip(expected_stages)
+    {
+        if stage["id"] != expected {
+            return Err("REL-1 canary stages are not in required order".into());
+        }
+        let started = DateTime::parse_from_rfc3339(
+            stage["startedAt"].as_str().ok_or("stage start missing")?,
+        )?
+        .with_timezone(&Utc);
+        let ended =
+            DateTime::parse_from_rfc3339(stage["endedAt"].as_str().ok_or("stage end missing")?)?
+                .with_timezone(&Utc);
+        let required_minutes = contract["minimumObservationMinutes"].as_i64().unwrap();
+        if ended.signed_duration_since(started).num_minutes() < required_minutes {
+            return Err(format!("REL-1 stage `{expected}` observation window is too short").into());
+        }
+        let digest = stage["publicationDigest"].as_str().unwrap();
+        let replica_digests = stage["replicaDigests"].as_object().unwrap();
+        if replica_digests.len() != replicas.len()
+            || replicas.iter().any(|replica| {
+                replica
+                    .as_str()
+                    .and_then(|name| replica_digests.get(name))
+                    .and_then(Value::as_str)
+                    != Some(digest)
+            })
+        {
+            return Err(format!("REL-1 stage `{expected}` replicas did not converge").into());
+        }
+        let metrics = &stage["metrics"];
+        let exceeds = metrics["errorRatePercent"].as_f64().unwrap()
+            > thresholds["errorRatePercentMax"].as_f64().unwrap()
+            || metrics["ttftP99Millis"].as_f64().unwrap()
+                > thresholds["ttftP99MillisMax"].as_f64().unwrap()
+            || metrics["auditSinkLagSeconds"].as_f64().unwrap()
+                > thresholds["auditSinkLagSecondsMax"].as_f64().unwrap()
+            || metrics["walUtilizationPercent"].as_f64().unwrap()
+                > thresholds["walUtilizationPercentMax"].as_f64().unwrap()
+            || metrics["retainedSnapshots"].as_u64().unwrap()
+                < thresholds["minimumRetainedSnapshots"].as_u64().unwrap()
+            || metrics["fallbackRatePercent"].as_f64().unwrap()
+                > thresholds["fallbackRatePercentMax"].as_f64().unwrap()
+            || metrics["replicaDigestDivergenceSeconds"].as_f64().unwrap()
+                > thresholds["replicaDigestDivergenceSecondsMax"]
+                    .as_f64()
+                    .unwrap();
+        if exceeds {
+            return Err(format!("REL-1 stage `{expected}` exceeded an abort threshold").into());
+        }
+    }
+    let failed_sequence = drill["failedSequence"].as_u64().unwrap();
+    let rollback_sequence = drill["rollbackSequence"].as_u64().unwrap();
+    if rollback_sequence <= failed_sequence
+        || drill["previousResourceSetDigest"] != drill["rollbackResourceSetDigest"]
+        || drill["failedResourceSetDigest"] == drill["rollbackResourceSetDigest"]
+        || drill["recoverySeconds"].as_f64().unwrap()
+            > thresholds["rollbackRecoverySecondsMax"].as_f64().unwrap()
+        || drill["replicaAcknowledgements"]
+            .as_object()
+            .is_none_or(|acks| {
+                acks.len() != replicas.len()
+                    || replicas.iter().any(|replica| {
+                        replica
+                            .as_str()
+                            .and_then(|name| acks.get(name))
+                            .and_then(Value::as_u64)
+                            != Some(rollback_sequence)
+                    })
+            })
+        || drill["replicaDigests"].as_object().is_none_or(|digests| {
+            let expected = drill["rollbackManifestDigest"].as_str();
+            digests.len() != replicas.len()
+                || replicas.iter().any(|replica| {
+                    replica
+                        .as_str()
+                        .and_then(|name| digests.get(name))
+                        .and_then(Value::as_str)
+                        != expected
+                })
+        })
+    {
+        return Err("REL-1 rollback did not converge at a new monotonic sequence".into());
+    }
+    println!("REL-1 canary evidence and rollback drill passed");
     Ok(())
 }
 
@@ -228,8 +440,11 @@ fn validate_release(require_performance: bool) -> Result<(), Box<dyn std::error:
             return Err(format!("release owner `{owner}` is missing").into());
         }
     }
-    if release["canaryAllowed"] != false {
-        return Err("release manifest must remain fail-closed before REL-1".into());
+    let performance_pending = release["status"]["PERF-3"]
+        .as_str()
+        .is_some_and(|status| status.starts_with("pending"));
+    if performance_pending && release["canaryAllowed"] != false {
+        return Err("release manifest must remain fail-closed while PERF-3 is pending".into());
     }
     let base_commit = release["baseCommit"]
         .as_str()
@@ -258,6 +473,9 @@ fn validate_release(require_performance: bool) -> Result<(), Box<dyn std::error:
 
     if require_performance {
         validate_perf3_results(&root, &perf)?;
+        if release["canaryAllowed"] != true {
+            return Err("release qualification passed but canary approval is not recorded".into());
+        }
         println!("PERF-3, OBS-1, and SEC-1 release qualification passed");
     } else {
         println!(

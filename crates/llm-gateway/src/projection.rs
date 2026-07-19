@@ -1287,6 +1287,79 @@ mod tests {
     }
 
     #[test]
+    fn rollback_republishes_prior_resources_at_a_new_monotonic_sequence() {
+        let directory = tempfile::tempdir().unwrap();
+        let resolver = Arc::new(RotatingResolver::default());
+        resolver.0.write().unwrap().insert(
+            "credential://host-a/openai".to_string(),
+            "secret".to_string(),
+        );
+        let compiler = Arc::new(LlmCompiler::new(resolver));
+        let original = bundle(1);
+        let source = Arc::new(MemorySource(Arc::new(Mutex::new(original.clone()))));
+        let acknowledgements = Arc::new(MemoryAcknowledgements::default());
+        let store = initial_store(&compiler, &original);
+        let mut worker = LlmProjectionWorker::new(
+            source.clone(),
+            acknowledgements.clone(),
+            compiler,
+            store.clone(),
+            directory.path().join("state.json"),
+            "gateway-a",
+            LlmRouterConfig::default(),
+        )
+        .unwrap();
+        worker.apply_latest().unwrap();
+        let original_root = store.load();
+        let original_price = original_root.deployments["openai-primary"].price;
+        let original_circuit = original_root.deployments["openai-primary"].circuit.clone();
+
+        let mut changed = bundle(2);
+        let pricing = changed
+            .resources
+            .get_mut("llm-pricing/openai-primary-price")
+            .unwrap();
+        pricing.payload["outputMicrosPerMillion"] = serde_json::json!(9_999);
+        pricing.digest.clear();
+        let mut pricing_value = serde_json::to_value(&*pricing).unwrap();
+        remove_field(&mut pricing_value, "digest").unwrap();
+        pricing.digest = canonical_digest(&pricing_value).unwrap();
+        refresh_manifest(&mut changed);
+        *source.0.lock().unwrap() = changed;
+        worker.apply_latest().unwrap();
+        assert_ne!(
+            store.load().deployments["openai-primary"].price,
+            original_price
+        );
+
+        // Rollback is a new publication that references the last-known-good
+        // immutable resources. The control-plane sequence never moves back.
+        let mut rollback = original;
+        rollback.manifest.sequence = 3;
+        refresh_manifest(&mut rollback);
+        let rollback_digest = rollback.manifest.root_digest.clone();
+        *source.0.lock().unwrap() = rollback;
+        assert_eq!(
+            worker.apply_latest().unwrap(),
+            ProjectionApplyOutcome::Published
+        );
+
+        let restored = store.load();
+        assert_eq!(restored.generation, 3);
+        assert_eq!(restored.digest, rollback_digest);
+        assert_eq!(restored.deployments["openai-primary"].price, original_price);
+        assert!(Arc::ptr_eq(
+            &restored.deployments["openai-primary"].circuit,
+            &original_circuit
+        ));
+        assert_eq!(worker.status().last_applied_sequence, 3);
+        assert_eq!(
+            acknowledgements.0.lock().unwrap().last().unwrap().sequence,
+            3
+        );
+    }
+
+    #[test]
     fn phase0_canonical_digest_vectors_remain_compatible() {
         let manifest: Value = serde_json::from_slice(include_bytes!(
             "../../../benchmarks/llm-gateway/manifests/projection-manifest.json"

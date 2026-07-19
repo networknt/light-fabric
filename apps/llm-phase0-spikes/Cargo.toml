@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 bytes.workspace = true
+chrono.workspace = true
 config-loader = { path = "../../crates/config-loader" }
 jsonschema.workspace = true
 light-runtime = { path = "../../crates/light-runtime" }
@@ -14,4 +15,3 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tempfile = "3"
-

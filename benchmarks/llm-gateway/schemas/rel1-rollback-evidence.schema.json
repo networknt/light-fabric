@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "revision", "startedAt", "completedAt", "failedSequence", "rollbackSequence", "previousResourceSetDigest", "failedResourceSetDigest", "rollbackResourceSetDigest", "rollbackManifestDigest", "replicaAcknowledgements", "replicaDigests", "recoverySeconds", "handlerDisableDrill", "auditBacklogDrained", "incompleteCanaryRequests", "status", "approvedBy"],
+  "properties": {
+    "schemaVersion": {"const": "1"},
+    "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "startedAt": {"type": "string", "format": "date-time"},
+    "completedAt": {"type": "string", "format": "date-time"},
+    "failedSequence": {"type": "integer", "minimum": 1},
+    "rollbackSequence": {"type": "integer", "minimum": 2},
+    "previousResourceSetDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "failedResourceSetDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "rollbackResourceSetDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "rollbackManifestDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "replicaAcknowledgements": {"type": "object", "minProperties": 2, "additionalProperties": {"type": "integer", "minimum": 2}},
+    "replicaDigests": {"type": "object", "minProperties": 2, "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+    "recoverySeconds": {"type": "number", "minimum": 0},
+    "handlerDisableDrill": {"const": "pass"},
+    "auditBacklogDrained": {"const": true},
+    "incompleteCanaryRequests": {"const": 0},
+    "status": {"const": "pass"},
+    "approvedBy": {"type": "string", "minLength": 1}
+  }
+}
