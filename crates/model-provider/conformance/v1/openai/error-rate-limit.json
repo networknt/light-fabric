@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1",
+  "id": "openai-error-rate-limit",
+  "provider": "openai",
+  "kind": "error",
+  "input": {"status": 429, "retryAfter": "2", "body": {"error": {"message": "rate limited", "type": "rate_limit"}}},
+  "expected": {
+    "category": "rate_limited",
+    "providerStatus": 429,
+    "retry": "safe",
+    "acceptance": "not_accepted",
+    "retryAfterMs": 2000,
+    "detail": "rate limited"
+  }
+}

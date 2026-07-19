@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1",
+  "id": "anthropic-error-overload",
+  "provider": "anthropic",
+  "kind": "error",
+  "input": {"status": 529, "retryAfter": "1", "body": {"error": {"type": "overloaded_error", "message": "overloaded"}}},
+  "expected": {
+    "category": "provider_overload",
+    "providerStatus": 529,
+    "retry": "conditional",
+    "acceptance": "possibly_accepted",
+    "retryAfterMs": 1000,
+    "detail": "overloaded"
+  }
+}

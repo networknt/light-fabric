@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "1",
+  "id": "openai-response-usage-reasoning-redaction",
+  "provider": "openai",
+  "kind": "response",
+  "input": {
+    "id": "chatcmpl-1",
+    "model": "gpt-test-2026-07",
+    "future_field": "ignored-drift-field",
+    "choices": [{
+      "message": {"content": "answer", "reasoning_content": "private chain"},
+      "finish_reason": "stop"
+    }],
+    "usage": {
+      "prompt_tokens": 20,
+      "completion_tokens": 7,
+      "prompt_tokens_details": {"cached_tokens": 4},
+      "completion_tokens_details": {"reasoning_tokens": 3}
+    }
+  },
+  "expected": {
+    "content": [{"type": "text", "text": "answer"}],
+    "finishReason": "stop",
+    "usage": {"inputTokens": 20, "outputTokens": 7, "cachedInputTokens": 4, "reasoningTokens": 3},
+    "evidence": {"requestId": "chatcmpl-1", "physicalModel": "gpt-test-2026-07", "rawFinishReason": "stop"},
+    "terminalState": "complete"
+  }
+}

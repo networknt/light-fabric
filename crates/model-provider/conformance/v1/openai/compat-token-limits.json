@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "1",
+  "id": "compat-token-limits-agree",
+  "provider": "openai",
+  "kind": "compatibility",
+  "input": {"request": {"model": "public-alias", "messages": [{"role": "user", "content": "hello"}], "max_tokens": 64, "max_completion_tokens": 64}},
+  "expected": {
+    "model": "public-alias",
+    "messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
+    "sampling": {},
+    "tokenLimits": {"maxOutputTokens": 64}
+  }
+}

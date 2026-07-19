@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "1",
+  "id": "anthropic-cross-format-extension-rejected",
+  "provider": "anthropic",
+  "kind": "compatibility",
+  "input": {"request": {"model": "public-alias", "messages": [], "metadata": {"tenant": "demo"}}},
+  "expected": {"errorCategory": "unsupported_feature"}
+}

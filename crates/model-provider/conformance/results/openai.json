@@ -1,0 +1,142 @@
+{
+  "schemaVersion": "1",
+  "provider": "openai",
+  "providerCodecVersion": "openai-chat-completions-v1",
+  "physicalModel": "gpt-test",
+  "apiVersion": "2026-07-01",
+  "testedOperations": [
+    "chat_completions"
+  ],
+  "capabilities": {
+    "operations": [
+      "chat_completions"
+    ],
+    "content": {
+      "text": true,
+      "images": true,
+      "tools": true,
+      "parallelTools": true,
+      "structuredJson": true,
+      "reasoningUsage": true
+    },
+    "streaming": true
+  },
+  "capabilityEvidence": {
+    "chat_completions": {
+      "fixtureIds": [
+        "openai-request-multimodal-tools"
+      ],
+      "provenances": [
+        "synthetic_spec_derived"
+      ]
+    },
+    "text": {
+      "fixtureIds": [
+        "openai-request-multimodal-tools",
+        "openai-response-usage-reasoning-redaction"
+      ],
+      "provenances": [
+        "synthetic_spec_derived"
+      ]
+    },
+    "images": {
+      "fixtureIds": [
+        "openai-request-multimodal-tools"
+      ],
+      "provenances": [
+        "synthetic_spec_derived"
+      ]
+    },
+    "tools": {
+      "fixtureIds": [
+        "openai-request-multimodal-tools",
+        "openai-stream-parallel-tools"
+      ],
+      "provenances": [
+        "synthetic_spec_derived"
+      ]
+    },
+    "parallel_tools": {
+      "fixtureIds": [
+        "openai-stream-parallel-tools"
+      ],
+      "provenances": [
+        "synthetic_spec_derived"
+      ]
+    },
+    "structured_json": {
+      "fixtureIds": [
+        "openai-request-multimodal-tools"
+      ],
+      "provenances": [
+        "synthetic_spec_derived"
+      ]
+    },
+    "reasoning_usage": {
+      "fixtureIds": [
+        "openai-response-usage-reasoning-redaction"
+      ],
+      "provenances": [
+        "synthetic_spec_derived"
+      ]
+    },
+    "streaming": {
+      "fixtureIds": [
+        "openai-stream-parallel-tools"
+      ],
+      "provenances": [
+        "synthetic_spec_derived"
+      ]
+    }
+  },
+  "state": "pass",
+  "corpusVersion": "1.1.0",
+  "corpusDigest": "ef0565badd856a00ca3977bd74e6ec5985fe008d98f2e66ee6f341d207f6ef53",
+  "testedAt": "2026-07-19T00:00:00Z",
+  "validUntil": "2026-07-26T00:00:00Z",
+  "refreshBeforeSeconds": 86400,
+  "piiPreservation": null,
+  "cases": [
+    {
+      "id": "compat-bounded-allowlisted-extension",
+      "passed": true
+    },
+    {
+      "id": "compat-token-limits-conflict",
+      "passed": true
+    },
+    {
+      "id": "compat-max-completion-token-only",
+      "passed": true
+    },
+    {
+      "id": "compat-token-limits-agree",
+      "passed": true
+    },
+    {
+      "id": "compat-non-default-unsupported",
+      "passed": true
+    },
+    {
+      "id": "openai-error-rate-limit",
+      "passed": true
+    },
+    {
+      "id": "openai-request-multimodal-tools",
+      "passed": true
+    },
+    {
+      "id": "openai-response-usage-reasoning-redaction",
+      "passed": true
+    },
+    {
+      "id": "openai-stream-parallel-tools",
+      "passed": true
+    },
+    {
+      "id": "openai-stream-malformed-event",
+      "passed": true
+    }
+  ],
+  "digest": "b8a824ffc02eeb85eb2f27bf0d95cac133db24b9968f025bca647e7205ff8661"
+}

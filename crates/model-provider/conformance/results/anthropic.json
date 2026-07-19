@@ -1,0 +1,116 @@
+{
+  "schemaVersion": "1",
+  "provider": "anthropic",
+  "providerCodecVersion": "anthropic-messages-v1",
+  "physicalModel": "claude-test",
+  "apiVersion": "2023-06-01",
+  "testedOperations": [
+    "chat_completions"
+  ],
+  "capabilities": {
+    "operations": [
+      "chat_completions"
+    ],
+    "content": {
+      "text": true,
+      "images": true,
+      "tools": true,
+      "parallelTools": true,
+      "structuredJson": false,
+      "reasoningUsage": false
+    },
+    "streaming": true
+  },
+  "capabilityEvidence": {
+    "chat_completions": {
+      "fixtureIds": [
+        "anthropic-request-cross-format"
+      ],
+      "provenances": [
+        "synthetic_spec_derived"
+      ]
+    },
+    "text": {
+      "fixtureIds": [
+        "anthropic-request-cross-format",
+        "anthropic-response-tools-usage"
+      ],
+      "provenances": [
+        "synthetic_spec_derived"
+      ]
+    },
+    "images": {
+      "fixtureIds": [
+        "anthropic-request-cross-format"
+      ],
+      "provenances": [
+        "synthetic_spec_derived"
+      ]
+    },
+    "tools": {
+      "fixtureIds": [
+        "anthropic-request-cross-format",
+        "anthropic-response-parallel-tools",
+        "anthropic-response-tools-usage",
+        "anthropic-stream-tool"
+      ],
+      "provenances": [
+        "synthetic_spec_derived"
+      ]
+    },
+    "parallel_tools": {
+      "fixtureIds": [
+        "anthropic-response-parallel-tools"
+      ],
+      "provenances": [
+        "synthetic_spec_derived"
+      ]
+    },
+    "streaming": {
+      "fixtureIds": [
+        "anthropic-stream-tool"
+      ],
+      "provenances": [
+        "synthetic_spec_derived"
+      ]
+    }
+  },
+  "state": "pass",
+  "corpusVersion": "1.1.0",
+  "corpusDigest": "ef0565badd856a00ca3977bd74e6ec5985fe008d98f2e66ee6f341d207f6ef53",
+  "testedAt": "2026-07-19T00:00:00Z",
+  "validUntil": "2026-07-26T00:00:00Z",
+  "refreshBeforeSeconds": 86400,
+  "piiPreservation": null,
+  "cases": [
+    {
+      "id": "anthropic-cross-format-extension-rejected",
+      "passed": true
+    },
+    {
+      "id": "anthropic-error-overload",
+      "passed": true
+    },
+    {
+      "id": "anthropic-request-cross-format",
+      "passed": true
+    },
+    {
+      "id": "anthropic-response-tools-usage",
+      "passed": true
+    },
+    {
+      "id": "anthropic-response-parallel-tools",
+      "passed": true
+    },
+    {
+      "id": "anthropic-stream-tool",
+      "passed": true
+    },
+    {
+      "id": "anthropic-stream-unknown-event",
+      "passed": true
+    }
+  ],
+  "digest": "42fda39c867639ee97895ede7b18cb0526797e84eb5a63c4615074ee39ab0316"
+}

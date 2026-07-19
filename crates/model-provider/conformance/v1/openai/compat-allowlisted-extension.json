@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1",
+  "id": "compat-bounded-allowlisted-extension",
+  "provider": "openai",
+  "kind": "compatibility",
+  "input": {"request": {"model": "public-alias", "messages": [], "metadata": {"tenant": "demo"}, "seed": null}},
+  "expected": {
+    "model": "public-alias",
+    "messages": [],
+    "sampling": {},
+    "tokenLimits": {},
+    "extensions": {"metadata": {"tenant": "demo"}}
+  }
+}

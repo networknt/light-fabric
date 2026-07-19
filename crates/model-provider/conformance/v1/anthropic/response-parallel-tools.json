@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "1",
+  "id": "anthropic-response-parallel-tools",
+  "provider": "anthropic",
+  "kind": "response",
+  "input": {
+    "id": "msg-parallel",
+    "model": "claude-test-202607",
+    "stop_reason": "tool_use",
+    "content": [
+      {"type": "tool_use", "id": "call-1", "name": "lookup_one", "input": {"id": 1}},
+      {"type": "tool_use", "id": "call-2", "name": "lookup_two", "input": {"id": 2}}
+    ],
+    "usage": {"input_tokens": 12, "output_tokens": 8}
+  },
+  "expected": {
+    "content": [
+      {"type": "tool_call", "call": {"id": "call-1", "name": "lookup_one", "arguments": {"id": 1}}},
+      {"type": "tool_call", "call": {"id": "call-2", "name": "lookup_two", "arguments": {"id": 2}}}
+    ],
+    "finishReason": "tool_calls",
+    "usage": {"inputTokens": 12, "outputTokens": 8},
+    "evidence": {"requestId": "msg-parallel", "physicalModel": "claude-test-202607", "rawFinishReason": "tool_use"},
+    "terminalState": "complete"
+  }
+}

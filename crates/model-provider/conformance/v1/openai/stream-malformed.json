@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "1",
+  "id": "openai-stream-malformed-event",
+  "provider": "openai",
+  "kind": "stream",
+  "input": {"chunks": ["data: {not-json}\n\n"]},
+  "expected": {"errorCategory": "protocol"}
+}

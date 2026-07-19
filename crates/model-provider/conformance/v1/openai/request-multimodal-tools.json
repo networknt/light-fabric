@@ -1,0 +1,39 @@
+{
+  "schemaVersion": "1",
+  "id": "openai-request-multimodal-tools",
+  "provider": "openai",
+  "kind": "request",
+  "input": {
+    "model": "gpt-test",
+    "messages": [
+      {"role": "system", "content": [{"type": "text", "text": "Be concise"}]},
+      {"role": "user", "content": [
+        {"type": "text", "text": "Describe"},
+        {"type": "image", "source": {"url": "https://example.invalid/image.png", "mediaType": "image/png"}}
+      ]}
+    ],
+    "tools": [{"name": "lookup", "description": "Lookup data", "inputSchema": {"type": "object"}}],
+    "toolChoice": {"type": "auto"},
+    "responseFormat": {"type": "json_object"},
+    "sampling": {"temperature": 0.2, "topP": 0.9, "stop": ["END"]},
+    "tokenLimits": {"maxOutputTokens": 128}
+  },
+  "expected": {
+    "model": "gpt-test",
+    "messages": [
+      {"role": "system", "content": "Be concise"},
+      {"role": "user", "content": [
+        {"type": "text", "text": "Describe"},
+        {"type": "image_url", "image_url": {"url": "https://example.invalid/image.png"}}
+      ]}
+    ],
+    "stream": false,
+    "temperature": 0.2,
+    "top_p": 0.9,
+    "stop": ["END"],
+    "max_completion_tokens": 128,
+    "tools": [{"type": "function", "function": {"name": "lookup", "description": "Lookup data", "parameters": {"type": "object"}}}],
+    "tool_choice": "auto",
+    "response_format": {"type": "json_object"}
+  }
+}

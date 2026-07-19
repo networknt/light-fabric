@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "1",
+  "id": "openai-stream-parallel-tools",
+  "provider": "openai",
+  "kind": "stream",
+  "input": {"chunks": [
+    "data: {\"choices\":[{\"delta\":{\"content\":\"hi\",\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"one\",\"arguments\":\"{\\\"x\\\":\"}},{\"index\":1,\"id\":\"c2\",\"function\":{\"name\":\"two\",\"arguments\":\"{\\\"y\\\":\"}}]}}]}\n\n",
+    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"1}\"}},{\"index\":1,\"function\":{\"arguments\":\"2}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n"
+  ]},
+  "expected": [
+    {"type": "text_delta", "text": "hi"},
+    {"type": "tool_call_delta", "delta": {"index": 0, "id": "c1", "name": "one", "argumentsFragment": "{\"x\":"}},
+    {"type": "tool_call_delta", "delta": {"index": 1, "id": "c2", "name": "two", "argumentsFragment": "{\"y\":"}},
+    {"type": "tool_call_delta", "delta": {"index": 0, "argumentsFragment": "1}"}},
+    {"type": "tool_call_delta", "delta": {"index": 1, "argumentsFragment": "2}"}},
+    {"type": "message_end", "finishReason": "tool_calls", "terminalState": "complete"}
+  ]
+}

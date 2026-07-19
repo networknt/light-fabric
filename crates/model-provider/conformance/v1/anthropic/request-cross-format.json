@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "1",
+  "id": "anthropic-request-cross-format",
+  "provider": "anthropic",
+  "kind": "request",
+  "input": {
+    "model": "claude-test",
+    "messages": [
+      {"role": "system", "content": [{"type": "text", "text": "Be safe"}]},
+      {"role": "user", "content": [{"type": "text", "text": "Look"}, {"type": "image", "source": {"url": "data:image/png;base64,Zm9v", "mediaType": "image/png"}}]},
+      {"role": "assistant", "content": [{"type": "tool_call", "call": {"id": "call-1", "name": "lookup", "arguments": {"id": 7}}}]},
+      {"role": "tool", "content": [{"type": "tool_result", "result": {"toolCallId": "call-1", "content": [{"type": "text", "text": "found"}], "isError": false}}]}
+    ],
+    "tools": [{"name": "lookup", "description": "Lookup", "inputSchema": {"type": "object"}}],
+    "toolChoice": {"type": "required"},
+    "sampling": {"temperature": 0.1, "stop": []},
+    "tokenLimits": {"maxOutputTokens": 96}
+  },
+  "expected": {
+    "model": "claude-test",
+    "max_tokens": 96,
+    "messages": [
+      {"role": "user", "content": [{"type": "text", "text": "Look"}, {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "Zm9v"}}]},
+      {"role": "assistant", "content": [{"type": "tool_use", "id": "call-1", "name": "lookup", "input": {"id": 7}}]},
+      {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call-1", "content": [{"type": "text", "text": "found"}], "is_error": false}]}
+    ],
+    "stream": false,
+    "system": [{"type": "text", "text": "Be safe"}],
+    "temperature": 0.1,
+    "tools": [{"name": "lookup", "description": "Lookup", "input_schema": {"type": "object"}}],
+    "tool_choice": {"type": "any"}
+  }
+}

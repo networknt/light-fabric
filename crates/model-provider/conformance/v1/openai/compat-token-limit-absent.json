@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "1",
+  "id": "compat-max-completion-token-only",
+  "provider": "openai",
+  "kind": "compatibility",
+  "input": {"request": {"model": "public-alias", "messages": [], "max_completion_tokens": 32}},
+  "expected": {
+    "model": "public-alias",
+    "messages": [],
+    "sampling": {},
+    "tokenLimits": {"maxOutputTokens": 32}
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "1",
+  "id": "anthropic-response-tools-usage",
+  "provider": "anthropic",
+  "kind": "response",
+  "input": {
+    "id": "msg-1",
+    "model": "claude-test-202607",
+    "stop_reason": "tool_use",
+    "content": [
+      {"type": "thinking", "thinking": "private reasoning"},
+      {"type": "text", "text": "checking"},
+      {"type": "tool_use", "id": "call-1", "name": "lookup", "input": {"id": 7}}
+    ],
+    "usage": {"input_tokens": 30, "output_tokens": 9, "cache_read_input_tokens": 5}
+  },
+  "expected": {
+    "content": [
+      {"type": "text", "text": "checking"},
+      {"type": "tool_call", "call": {"id": "call-1", "name": "lookup", "arguments": {"id": 7}}}
+    ],
+    "finishReason": "tool_calls",
+    "usage": {"inputTokens": 30, "outputTokens": 9, "cachedInputTokens": 5},
+    "evidence": {"requestId": "msg-1", "physicalModel": "claude-test-202607", "rawFinishReason": "tool_use"},
+    "terminalState": "complete"
+  }
+}

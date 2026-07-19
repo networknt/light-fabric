@@ -17,8 +17,11 @@ uuid = { workspace = true }
 futures-util = { workspace = true }
 chrono = { workspace = true }
 base64 = "0.22"
+bytes.workspace = true
 hmac = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 directories = "5.0"
 parking_lot = { workspace = true }
+thiserror.workspace = true
+tokio-util = { version = "0.7", features = ["rt"] }

@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "1",
+  "corpusVersion": "1.1.0",
+  "validForSeconds": 604800,
+  "refreshBeforeSeconds": 86400,
+  "profiles": [
+    {"provider": "openai", "physicalModel": "gpt-test", "apiVersion": "2026-07-01"},
+    {"provider": "anthropic", "physicalModel": "claude-test", "apiVersion": "2023-06-01"}
+  ],
+  "fixtures": [
+    {"path": "openai/compat-allowlisted-extension.json", "sha256": "b8fda8edc5ffb6813dea42628505123797397cb7c1adcc20f04effb88a15d1d7", "provenance": "synthetic_spec_derived", "covers": []},
+    {"path": "openai/compat-token-conflict.json", "sha256": "85234e21da602fa22644bce4d863f36a0df1b58151c2bb1c276d41be957cc969", "provenance": "synthetic_spec_derived", "covers": []},
+    {"path": "openai/compat-token-limit-absent.json", "sha256": "3708bfbf1b6f7d530b9609f562a6ff1d857da01b01b51a83010b9f854b5f1bed", "provenance": "synthetic_spec_derived", "covers": []},
+    {"path": "openai/compat-token-limits.json", "sha256": "d04b23dab9fe379d8582b8a0a46227fa843dddcf13f394c7535e00736de51cf3", "provenance": "synthetic_spec_derived", "covers": []},
+    {"path": "openai/compat-unsupported.json", "sha256": "59c2e9cad4f1f4f09d7fb7228ca1fbc03e96a450a9fbb56bab89968b86b5be66", "provenance": "synthetic_spec_derived", "covers": []},
+    {"path": "openai/error-rate-limit.json", "sha256": "57d50b6f2999f5cc77539f94cbc56a712ef7d1d2e2103e5bf19417b29abb50b4", "provenance": "synthetic_spec_derived", "covers": []},
+    {"path": "openai/request-multimodal-tools.json", "sha256": "8e288d08a34cf5db4bdb5911d7b86923a3ce23f46b2d863f78023285cf0697f1", "provenance": "synthetic_spec_derived", "covers": ["chat_completions", "text", "images", "tools", "structured_json"]},
+    {"path": "openai/response-usage-reasoning-redaction.json", "sha256": "62f09ceb2ad26261e35f6f62f9b82a8f681b53e0ea23747a844f0d58ff995bf9", "provenance": "synthetic_spec_derived", "covers": ["text", "reasoning_usage"]},
+    {"path": "openai/stream-parallel-tools.json", "sha256": "36d5a91a47259cdc358280fa124d547222b87fd022c08c3c294aedade6f9f91c", "provenance": "synthetic_spec_derived", "covers": ["streaming", "tools", "parallel_tools"]},
+    {"path": "openai/stream-malformed.json", "sha256": "8c653b547e323d960786f128fe00bcd16c73bf81287225f6f78b29d43802df2a", "provenance": "synthetic_spec_derived", "covers": []},
+    {"path": "anthropic/compat-extension-rejected.json", "sha256": "1bd723fc6fbfec977c4cedef8a50806f83cc57fd48b14551418f4fcf0714ba47", "provenance": "synthetic_spec_derived", "covers": []},
+    {"path": "anthropic/error-overload.json", "sha256": "1448e5943b7d98e3a4e06d6bc6704cd4f577bff8e9a44bc33a3008c84422149f", "provenance": "synthetic_spec_derived", "covers": []},
+    {"path": "anthropic/request-cross-format.json", "sha256": "d91eaeffeb50eb1b65d6c5d3c1844688bb12b6ac1cf74e2e0ba075516732b5f9", "provenance": "synthetic_spec_derived", "covers": ["chat_completions", "text", "images", "tools"]},
+    {"path": "anthropic/response-tools-usage.json", "sha256": "7434723e9fceb3e9af91cd4104d57411511fd1f206dda32fe541f6cc2a4e906a", "provenance": "synthetic_spec_derived", "covers": ["text", "tools"]},
+    {"path": "anthropic/response-parallel-tools.json", "sha256": "df61b07b136b014047bfbaf2947f23f93d7b6d874eea8ff89d0d9813e260268e", "provenance": "synthetic_spec_derived", "covers": ["tools", "parallel_tools"]},
+    {"path": "anthropic/stream-tool.json", "sha256": "465faadcfbee22df52875f353831de12a7c437fcf90c709365446769b6854b71", "provenance": "synthetic_spec_derived", "covers": ["streaming", "tools"]},
+    {"path": "anthropic/stream-unknown-event.json", "sha256": "e89bd2ff9e39db5652848c19b7ce2585e6cafb0a4e6418382d80b026021cf9ef", "provenance": "synthetic_spec_derived", "covers": []}
+  ]
+}

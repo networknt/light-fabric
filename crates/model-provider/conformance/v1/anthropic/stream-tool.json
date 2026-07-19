@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "1",
+  "id": "anthropic-stream-tool",
+  "provider": "anthropic",
+  "kind": "stream",
+  "input": {"chunks": [
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-1\",\"model\":\"claude-test\",\"usage\":{\"input_tokens\":4}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call-1\",\"name\":\"lookup\"}}\n\n",
+    "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"id\\\":7}\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":3}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+  ]},
+  "expected": [
+    {"type": "message_start", "evidence": {"requestId": "msg-1", "physicalModel": "claude-test"}},
+    {"type": "usage", "usage": {"inputTokens": 4}},
+    {"type": "tool_call_delta", "delta": {"index": 0, "id": "call-1", "name": "lookup", "argumentsFragment": ""}},
+    {"type": "tool_call_delta", "delta": {"index": 0, "argumentsFragment": "{\"id\":7}"}},
+    {"type": "usage", "usage": {"outputTokens": 3}},
+    {"type": "message_end", "finishReason": "tool_calls", "terminalState": "complete"}
+  ]
+}
