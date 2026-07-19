@@ -33,6 +33,8 @@ pub struct LlmRouterConfig {
     #[serde(default)]
     pub openai_extension_allowlist: BTreeSet<String>,
     #[serde(default)]
+    pub production_projection: ProductionProjectionConfig,
+    #[serde(default)]
     pub providers: BTreeMap<String, ProviderConfig>,
     #[serde(default)]
     pub deployments: BTreeMap<String, DeploymentConfig>,
@@ -55,9 +57,48 @@ impl Default for LlmRouterConfig {
             stream_write_timeout_ms: default_stream_write_timeout_ms(),
             development_fixtures: false,
             openai_extension_allowlist: BTreeSet::new(),
+            production_projection: ProductionProjectionConfig::default(),
             providers: BTreeMap::new(),
             deployments: BTreeMap::new(),
             aliases: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionProjectionConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_projection_root")]
+    pub root_directory: String,
+    #[serde(default = "default_projection_checkpoint")]
+    pub checkpoint_path: String,
+    #[serde(default = "default_projection_acknowledgements")]
+    pub acknowledgement_directory: String,
+    #[serde(default = "default_gateway_instance")]
+    pub gateway_instance: String,
+    #[serde(default = "default_projection_poll_ms")]
+    pub poll_interval_ms: u64,
+    #[serde(default = "default_projection_artifact_bytes")]
+    pub max_artifact_bytes: usize,
+    /// Maps opaque `credential://` references to application-owned environment
+    /// variable names. Values are names, never secret material.
+    #[serde(default)]
+    pub credential_environment: BTreeMap<String, String>,
+}
+
+impl Default for ProductionProjectionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            root_directory: default_projection_root(),
+            checkpoint_path: default_projection_checkpoint(),
+            acknowledgement_directory: default_projection_acknowledgements(),
+            gateway_instance: default_gateway_instance(),
+            poll_interval_ms: default_projection_poll_ms(),
+            max_artifact_bytes: default_projection_artifact_bytes(),
+            credential_environment: BTreeMap::new(),
         }
     }
 }
@@ -166,4 +207,22 @@ fn default_attempts() -> usize {
 }
 fn default_true() -> bool {
     true
+}
+fn default_projection_root() -> String {
+    "config-cache/llm-projection".to_string()
+}
+fn default_projection_checkpoint() -> String {
+    "data/llm-projection/checkpoint.json".to_string()
+}
+fn default_projection_acknowledgements() -> String {
+    "data/llm-projection/acknowledgements".to_string()
+}
+fn default_gateway_instance() -> String {
+    "gateway-local".to_string()
+}
+fn default_projection_poll_ms() -> u64 {
+    1_000
+}
+fn default_projection_artifact_bytes() -> usize {
+    4 * 1024 * 1024
 }

@@ -82,6 +82,12 @@ impl LlmRuntime {
         self.store.load()
     }
 
+    /// Off-path projection workers publish through the same store as request
+    /// execution; request handlers still capture only one immutable root.
+    pub fn snapshot_store(&self) -> Arc<LlmSnapshotStore> {
+        Arc::clone(&self.store)
+    }
+
     pub fn publish(&self, candidate: LlmPublishedSnapshot) -> PublishOutcome {
         self.store.publish(candidate)
     }

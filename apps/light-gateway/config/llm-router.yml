@@ -21,6 +21,20 @@ developmentFixtures: ${llm-router.developmentFixtures:false}
 # The compiler emits a warning when that compatibility narrowing is present.
 openaiExtensionAllowlist: []
 
+# Production-only config-server `/files` projection. When enabled, startup
+# fails closed until a valid full root is available in config-cache. Every
+# replica writes its own acknowledgement; credentialEnvironment maps opaque
+# references to environment-variable names, never values.
+productionProjection:
+  enabled: ${llm-router.productionProjection.enabled:false}
+  rootDirectory: ${llm-router.productionProjection.rootDirectory:config-cache/llm-projection}
+  checkpointPath: ${llm-router.productionProjection.checkpointPath:data/llm-projection/checkpoint.json}
+  acknowledgementDirectory: ${llm-router.productionProjection.acknowledgementDirectory:data/llm-projection/acknowledgements}
+  gatewayInstance: ${llm-router.productionProjection.gatewayInstance:gateway-local}
+  pollIntervalMs: ${llm-router.productionProjection.pollIntervalMs:1000}
+  maxArtifactBytes: ${llm-router.productionProjection.maxArtifactBytes:4194304}
+  credentialEnvironment: {}
+
 providers:
   openai-local:
     format: openai

@@ -9,6 +9,7 @@ arc-swap = "1.7"
 async-stream = "0.3"
 async-trait.workspace = true
 bytes.workspace = true
+chrono.workspace = true
 futures-util.workspace = true
 model-provider = { path = "../model-provider" }
 reqwest.workspace = true

@@ -6,6 +6,8 @@ use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Row, Transaction, postgres::PgListener};
 use uuid::Uuid;
 
+use crate::governed_model::GATEWAY_PROVIDER_ID;
+
 use coding_agent_runtime::{CodingFixtureRequest, CodingTurnSpec, ImmutableRepositoryInput};
 use execution_runner_protocol::{
     CommandExecutionSpec, ExecutionRequirements, HostExposure, IsolationBoundary,
@@ -14,6 +16,81 @@ use execution_runner_protocol::{
 #[derive(Clone)]
 pub struct AgentRepository {
     pool: PgPool,
+}
+
+async fn resolve_agent_model_binding(
+    tx: &mut Transaction<'_, Postgres>,
+    host_id: Uuid,
+    agent_def_id: Uuid,
+    definition_version: i64,
+) -> Result<(String, String)> {
+    let row = sqlx::query(
+        "SELECT d.model_alias_id,d.model_policy_id,d.model_provider,d.model_name,
+                direct.alias_name direct_alias,
+                (SELECT count(*) FROM llm_model_policy_binding_t b
+                   JOIN llm_public_alias_t a ON a.host_id=b.host_id
+                    AND a.public_alias_id=b.public_alias_id
+                  WHERE b.host_id=d.host_id AND b.model_policy_id=d.model_policy_id
+                    AND b.subject_type='AGENT' AND b.subject_id=d.agent_def_id::text
+                    AND b.agent_default IS TRUE AND b.active IS TRUE
+                    AND a.active IS TRUE AND a.lifecycle_status='ACTIVE') policy_default_count,
+                (SELECT max(a.alias_name) FROM llm_model_policy_binding_t b
+                   JOIN llm_public_alias_t a ON a.host_id=b.host_id
+                    AND a.public_alias_id=b.public_alias_id
+                  WHERE b.host_id=d.host_id AND b.model_policy_id=d.model_policy_id
+                    AND b.subject_type='AGENT' AND b.subject_id=d.agent_def_id::text
+                    AND b.agent_default IS TRUE AND b.active IS TRUE
+                    AND a.active IS TRUE AND a.lifecycle_status='ACTIVE') policy_alias
+           FROM agent_definition_t d
+           LEFT JOIN llm_public_alias_t direct ON direct.host_id=d.host_id
+            AND direct.public_alias_id=d.model_alias_id AND direct.active IS TRUE
+            AND direct.lifecycle_status='ACTIVE'
+          WHERE d.host_id=$1 AND d.agent_def_id=$2 AND d.aggregate_version=$3",
+    )
+    .bind(host_id)
+    .bind(agent_def_id)
+    .bind(definition_version)
+    .fetch_one(&mut **tx)
+    .await?;
+    let alias_id: Option<Uuid> = row.try_get("model_alias_id")?;
+    let policy_id: Option<Uuid> = row.try_get("model_policy_id")?;
+    match (alias_id, policy_id) {
+        (Some(_), None) => {
+            let alias: Option<String> = row.try_get("direct_alias")?;
+            Ok((
+                GATEWAY_PROVIDER_ID.to_string(),
+                alias
+                    .filter(|value| !value.trim().is_empty())
+                    .context("governed model alias is inactive or unauthorized")?,
+            ))
+        }
+        (None, Some(_)) => {
+            let count: i64 = row.try_get("policy_default_count")?;
+            let alias: Option<String> = row.try_get("policy_alias")?;
+            if count != 1 {
+                bail!("governed model policy must resolve exactly one agent-default alias")
+            }
+            Ok((
+                GATEWAY_PROVIDER_ID.to_string(),
+                alias
+                    .filter(|value| !value.trim().is_empty())
+                    .context("governed model policy default is inactive or unauthorized")?,
+            ))
+        }
+        (None, None) => {
+            let provider: Option<String> = row.try_get("model_provider")?;
+            let model: Option<String> = row.try_get("model_name")?;
+            let provider = provider.filter(|value| !value.trim().is_empty());
+            let model = model.filter(|value| !value.trim().is_empty());
+            match (provider, model) {
+                (Some(provider), Some(model)) => Ok((provider, model)),
+                _ => {
+                    bail!("agent has neither a governed alias nor a complete legacy model binding")
+                }
+            }
+        }
+        (Some(_), Some(_)) => bail!("agent has conflicting governed model selectors"),
+    }
 }
 
 pub struct SessionSpec {
@@ -1225,13 +1302,20 @@ impl AgentRepository {
         persist_policy(&mut tx, spec.host_id, spec.agent_def_id, &spec.policy).await?;
         let policy_digest =
             sha256_digest(&serde_json::to_vec(&serde_json::to_value(&spec.policy)?)?);
-        let (definition_version, provider): (i64, String) = sqlx::query_as(
-            "SELECT aggregate_version,model_provider
+        let definition_version: i64 = sqlx::query_scalar(
+            "SELECT aggregate_version
             FROM agent_definition_t WHERE host_id=$1 AND agent_def_id=$2",
         )
         .bind(spec.host_id)
         .bind(spec.agent_def_id)
         .fetch_one(&mut *tx)
+        .await?;
+        let (provider, _) = resolve_agent_model_binding(
+            &mut tx,
+            spec.host_id,
+            spec.agent_def_id,
+            definition_version,
+        )
         .await?;
         let pool = resolve_pool(
             &mut tx,
@@ -1331,8 +1415,7 @@ impl AgentRepository {
         let row = sqlx::query(
             "SELECT next_turn_sequence,next_queue_sequence,policy_snapshot_id,
               p.policy_digest,p.data_boundary_digest,p.product_profile_digest,maximum_expires_ts,
-              s.principal_id,s.agent_def_id,s.agent_definition_version,s.service_pool_id,
-              d.model_provider,d.model_name
+              s.principal_id,s.agent_def_id,s.agent_definition_version,s.service_pool_id
               FROM agent_session_t s JOIN agent_policy_snapshot_t p ON p.host_id=s.host_id
                 AND p.policy_snapshot_id=s.policy_snapshot_id AND p.revoked_ts IS NULL
               JOIN agent_definition_t d ON d.host_id=s.host_id AND d.agent_def_id=s.agent_def_id
@@ -1365,8 +1448,9 @@ impl AgentRepository {
         let agent: Uuid = row.try_get("agent_def_id")?;
         let pool: Option<Uuid> = row.try_get("service_pool_id")?;
         let profile: String = row.try_get("product_profile_digest")?;
-        let model_provider: String = row.try_get("model_provider")?;
-        let model_name: String = row.try_get("model_name")?;
+        let definition_version: i64 = row.try_get("agent_definition_version")?;
+        let (model_provider, model_name) =
+            resolve_agent_model_binding(&mut tx, host_id, agent, definition_version).await?;
         let rate = sqlx::query(
             "SELECT input_cost_micros_per_million,output_cost_micros_per_million
              FROM agent_model_rate_t WHERE host_id=$1 AND provider=$2 AND model=$3

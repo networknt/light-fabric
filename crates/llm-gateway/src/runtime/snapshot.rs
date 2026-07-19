@@ -15,6 +15,7 @@ pub struct ProviderAccountRuntime {
 pub struct DeploymentRuntime {
     pub id: String,
     pub model: String,
+    pub configured_concurrency: usize,
     pub provider: Arc<dyn InferenceProvider>,
     pub provider_digest: String,
     pub capabilities: ProviderCapabilities,
@@ -36,6 +37,7 @@ pub struct AliasPlan {
     pub public_name: String,
     pub deployments: Vec<Arc<DeploymentRuntime>>,
     pub max_attempts: usize,
+    pub configured_concurrency: usize,
     pub permits: Arc<Semaphore>,
     pub max_input_tokens: Option<u64>,
     pub max_output_tokens: Option<u64>,
@@ -68,6 +70,7 @@ impl PrincipalPermitStripes {
 
 pub struct LlmPublishedSnapshot {
     pub generation: u64,
+    /// Public, secret-free publication digest.
     pub digest: String,
     pub global_concurrency: usize,
     pub global_stream_concurrency: usize,
@@ -76,5 +79,5 @@ pub struct LlmPublishedSnapshot {
     pub max_replay_bytes: usize,
     pub aliases: BTreeMap<String, Arc<AliasPlan>>,
     pub deployments: BTreeMap<String, Arc<DeploymentRuntime>>,
-    pub principal_permits: PrincipalPermitStripes,
+    pub principal_permits: Arc<PrincipalPermitStripes>,
 }

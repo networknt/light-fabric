@@ -33,6 +33,17 @@
       "name": "policy-without-default",
       "request": {"hostId": "10000000-0000-0000-0000-000000000001", "agentDefId": "20000000-0000-0000-0000-000000000004"},
       "response": {"schemaVersion": "1", "agentDefId": "20000000-0000-0000-0000-000000000004", "models": [], "resolvedModel": null, "resolutionStatus": "NO_DEFAULT"}
+    },
+    {
+      "name": "approved-internal-legacy-alias",
+      "request": {"hostId": "10000000-0000-0000-0000-000000000001", "agentDefId": "20000000-0000-0000-0000-000000000005"},
+      "response": {
+        "schemaVersion": "1",
+        "agentDefId": "20000000-0000-0000-0000-000000000005",
+        "models": [{"public_alias_id": "30000000-0000-0000-0000-000000000005", "alias_name": "legacy-agent-internal", "selection_mode": "INTERNAL_LEGACY", "selected": true}],
+        "resolvedModel": "legacy-agent-internal",
+        "resolutionStatus": "RESOLVED"
+      }
     }
   ]
 }

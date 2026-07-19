@@ -40,7 +40,7 @@ echo "[llm-portal-control-plane] running GC-1/GQ-1 contract tests"
 
 echo "[llm-portal-control-plane] running gateway fixture consumer"
 (cd "$repo_root" && cargo test -p llm-gateway --test local_data_plane portal_agent_eligibility_contract_is_safe_for_gateway_model_resolution)
-(cd "$repo_root" && cargo test -p light-agent portal_llm_contract_tests)
+(cd "$repo_root" && cargo test -p light-agent shared_portal_contract_drives_governed_alias_selection)
 
 echo "[llm-portal-control-plane] building PV-1"
 (cd "$workspace_root/portal-view" && jq empty src/data/Forms.json \

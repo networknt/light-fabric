@@ -2250,6 +2250,44 @@ unless enabled identically for every candidate.
 19. Add semantic caching only with separate embedding/vector admission,
     deadline and cost slices, stampede control, and named performance profiles.
 
+## Production Projection And Agent Cutover
+
+Production projection is opt-in under `llm-router.yml` at
+`productionProjection.enabled`. Config server delivers `manifest.json` and the
+referenced immutable files beneath `config-cache/llm-projection`. The gateway
+validates canonical digests, schema/compiler compatibility, host/environment,
+resource versions, and sequence before compiling and atomically swapping one
+root. A missing, bad, conflicting, or unsupported publication leaves the last
+valid root active; an enabled gateway with no valid bootstrap root fails
+closed.
+
+Every replica writes an independent acknowledgement containing only host,
+environment, sequence, root digest, application time, gateway version, and
+instance ID. Configure a unique `gatewayInstance` per replica. If delivery of
+that acknowledgement fails after publication, the root remains active and the
+worker retries the same acknowledgement before processing another root. The
+`credentialEnvironment` map authorizes each opaque `credential://` reference
+to one application-owned environment-variable name. Neither this map nor the
+projection contains secret values. Rotation is detected off the request path;
+only affected provider clients are replaced, while provider-account capacity,
+principal permits, in-flight roots, and unchanged subgraphs remain stable. A
+pricing-only root replaces the price-bearing deployment and alias views but
+retains their circuit, semaphore, usage-ledger, provider-client, account, and
+principal-stripe state.
+
+Migrated light-agent definitions resolve a direct alias or exactly one policy
+default before a turn is persisted. The immutable turn stores provider
+`gateway` plus that alias, and the gateway client sends it in the ordinary
+OpenAI `model` field. `INTERNAL_LEGACY` aliases require an explicit agent
+binding (`aliasVisibility: INTERNAL_LEGACY` plus `boundAgentDefId` in Portal),
+are returned only to that agent, and remain absent from `/v1/models`.
+Endpoint URLs and service credentials come only from
+`llm-gateway-client.yml`; agent records cannot supply them.
+
+Run `scripts/run-llm-production-integration-gates.sh`. Pass a disposable
+PostgreSQL URL (or set `PORTAL_LLM_TEST_DATABASE_URL`) to include the additive
+schema and internal-alias ownership gate.
+
 ## Acceptance Criteria For The MVP
 
 - An OpenAI SDK can call an authorized public alias by changing only its base

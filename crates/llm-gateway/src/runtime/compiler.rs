@@ -122,24 +122,39 @@ impl LlmCompiler {
                 )?,
             };
             let (provider, provider_digest) = &providers[&deployment.provider];
-            let reusable = previous
-                .and_then(|old| old.deployments.get(id))
+            let previous_deployment = previous.and_then(|old| old.deployments.get(id));
+            let reusable = previous_deployment
                 .filter(|old| {
                     old.model == deployment.model
+                        && old.configured_concurrency == deployment.concurrency
                         && old.capabilities == capabilities
                         && old.price == price
                         && old.provider_digest == *provider_digest
                 })
                 .cloned();
             let runtime = reusable.unwrap_or_else(|| {
+                let retained_state = previous_deployment.filter(|old| {
+                    old.model == deployment.model
+                        && old.configured_concurrency == deployment.concurrency
+                        && old.capabilities == capabilities
+                        && old.provider_digest == *provider_digest
+                        && old.account.quota_group_id == quota
+                });
                 Arc::new(DeploymentRuntime {
                     id: id.clone(),
                     model: deployment.model.clone(),
+                    configured_concurrency: deployment.concurrency,
                     provider: Arc::clone(provider),
                     provider_digest: provider_digest.clone(),
                     capabilities,
-                    permits: Arc::new(Semaphore::new(deployment.concurrency)),
-                    circuit: Arc::new(PassiveCircuit::new(3, Duration::from_secs(30))),
+                    permits: retained_state
+                        .map(|old| Arc::clone(&old.permits))
+                        .unwrap_or_else(|| Arc::new(Semaphore::new(deployment.concurrency))),
+                    circuit: retained_state
+                        .map(|old| Arc::clone(&old.circuit))
+                        .unwrap_or_else(|| {
+                            Arc::new(PassiveCircuit::new(3, Duration::from_secs(30)))
+                        }),
                     account: Arc::clone(&accounts[&quota]),
                     price,
                 })
@@ -154,25 +169,61 @@ impl LlmCompiler {
                     .deployments
                     .iter()
                     .map(|id| Arc::clone(&deployments[id]))
-                    .collect();
+                    .collect::<Vec<_>>();
+                let previous_alias = previous.and_then(|old| old.aliases.get(name));
+                let same_alias_contract = |old: &AliasPlan| {
+                    old.deployments.len() == plans.len()
+                        && old
+                            .deployments
+                            .iter()
+                            .zip(&plans)
+                            .all(|(old, new)| old.id == new.id)
+                        && old.max_attempts == alias.max_attempts
+                        && old.configured_concurrency == alias.concurrency
+                        && old.max_input_tokens == alias.max_input_tokens
+                        && old.max_output_tokens == alias.max_output_tokens
+                        && old.max_cost_micros == alias.max_cost_micros
+                        && old.internal == alias.internal
+                        && old.bound_principal == alias.bound_principal
+                        && old.audit == alias.audit
+                };
+                let retained_state = previous_alias.filter(|old| same_alias_contract(old));
+                let reusable = retained_state
+                    .filter(|old| {
+                        old.deployments
+                            .iter()
+                            .zip(&plans)
+                            .all(|(old, new)| Arc::ptr_eq(old, new))
+                    })
+                    .cloned();
                 (
                     name.clone(),
-                    Arc::new(AliasPlan {
-                        public_name: name.clone(),
-                        deployments: plans,
-                        max_attempts: alias.max_attempts,
-                        permits: Arc::new(Semaphore::new(alias.concurrency)),
-                        max_input_tokens: alias.max_input_tokens,
-                        max_output_tokens: alias.max_output_tokens,
-                        max_cost_micros: alias.max_cost_micros,
-                        internal: alias.internal,
-                        bound_principal: alias.bound_principal.clone(),
-                        audit: alias.audit,
-                        ledger: Arc::new(UsageLedger::default()),
+                    reusable.unwrap_or_else(|| {
+                        Arc::new(AliasPlan {
+                            public_name: name.clone(),
+                            deployments: plans,
+                            max_attempts: alias.max_attempts,
+                            configured_concurrency: alias.concurrency,
+                            permits: retained_state
+                                .map(|old| Arc::clone(&old.permits))
+                                .unwrap_or_else(|| Arc::new(Semaphore::new(alias.concurrency))),
+                            max_input_tokens: alias.max_input_tokens,
+                            max_output_tokens: alias.max_output_tokens,
+                            max_cost_micros: alias.max_cost_micros,
+                            internal: alias.internal,
+                            bound_principal: alias.bound_principal.clone(),
+                            audit: alias.audit,
+                            ledger: retained_state
+                                .map(|old| Arc::clone(&old.ledger))
+                                .unwrap_or_else(|| Arc::new(UsageLedger::default())),
+                        })
                     }),
                 )
             })
             .collect();
+        let principal_permits = previous
+            .map(|old| Arc::clone(&old.principal_permits))
+            .unwrap_or_else(|| Arc::new(PrincipalPermitStripes::new(64, 16)));
         Ok(LlmPublishedSnapshot {
             generation,
             digest,
@@ -183,7 +234,7 @@ impl LlmCompiler {
             max_replay_bytes: config.max_replay_bytes,
             aliases,
             deployments,
-            principal_permits: PrincipalPermitStripes::new(64, 16),
+            principal_permits,
         })
     }
 }
@@ -233,11 +284,13 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
             || host
                 .parse::<std::net::IpAddr>()
                 .is_ok_and(|address| address.is_loopback());
+        let production_reference = provider.secret_ref.starts_with("env:")
+            || provider.secret_ref.starts_with("credential://");
         if !config.development_fixtures
-            && (url.scheme() != "https" || local || !provider.secret_ref.starts_with("env:"))
+            && (url.scheme() != "https" || local || !production_reference)
         {
             return Err(LlmGatewayError::Config(format!(
-                "provider `{id}` must use HTTPS, a non-loopback host, and env:<NAME> credentials outside development fixtures"
+                "provider `{id}` must use HTTPS, a non-loopback host, and an approved credential reference outside development fixtures"
             )));
         }
     }

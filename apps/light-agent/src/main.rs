@@ -2470,6 +2470,39 @@ fn build_model_provider(
                 temperature,
             }
         }
+        "gateway" | "light-gateway" => {
+            // The alias comes only from the immutable turn binding resolved
+            // from Portal. Endpoint and service credential remain
+            // application-owned configuration and are never agent fields.
+            let provider_config: CompatibleConfig = load_agent_registered_config(
+                runtime_config,
+                "llm-gateway-client.yml",
+                "light-agent/llm-gateway-client",
+                "llm-gateway-client",
+                provider_secret_masks(),
+            )?;
+            let base_url = required_config_value(
+                optional_str(&provider_config.base_url),
+                "llm-gateway-client.baseUrl",
+            )?;
+            let model = choose_model(config, None, None, "llm-gateway-client")?;
+            let mut provider = CompatibleProvider::new(
+                optional_str(&provider_config.name).unwrap_or("light-gateway"),
+                base_url,
+                optional_str(&provider_config.api_key),
+            )
+            .map_err(|e| RuntimeError::Config(format!("failed to build gateway provider: {e}")))?;
+            if let Some(max_tokens) =
+                optional_u32(&provider_config.max_tokens, "llm-gateway-client.maxTokens")?
+            {
+                provider = provider.with_max_tokens(Some(max_tokens));
+            }
+            ModelProviderSelection {
+                provider: Box::new(provider),
+                model,
+                temperature,
+            }
+        }
         "gemini" | "google-gemini" => {
             let provider_config: ApiModelProviderConfig =
                 load_provider_config(runtime_config, "gemini.yml", "gemini")?;

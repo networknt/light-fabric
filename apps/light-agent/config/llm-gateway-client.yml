@@ -1,0 +1,7 @@
+# Governed model path. The model value is deliberately absent: light-agent
+# obtains the concrete public or approved internal alias from the immutable
+# agent profile/turn binding and sends it in the standard OpenAI `model` field.
+name: light-gateway
+baseUrl: ${llm-gateway-client.baseUrl:https://light-gateway:8443/v1}
+apiKey: ${llm-gateway-client.apiKey:}
+maxTokens: ${llm-gateway-client.maxTokens:}

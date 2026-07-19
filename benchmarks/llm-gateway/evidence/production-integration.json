@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "phase": "DIST-1/LF-7/LA-1",
+  "status": "implementation-pass",
+  "sourceTree": "worktree",
+  "baseCommit": "f1b00d0c97b911da4e2a61533d3b85eeb0d3b13f",
+  "generatedDate": "2026-07-19",
+  "gate": "scripts/run-llm-production-integration-gates.sh",
+  "assertions": [
+    "two independent replicas converge on one canonical root and acknowledge independently",
+    "invalid, conflicting, backward, and gapped roots retain the last valid snapshot",
+    "resource identifiers reject traversal components and canonical resource paths cannot escape through symlinks",
+    "an acknowledgement failure after publication is retried before processing another root",
+    "credential rotation replaces affected provider clients while provider-account capacity remains stable",
+    "pricing-only publication retains provider, account, circuit, semaphore, ledger, and principal capacity state",
+    "agents resolve direct, policy-default, and bound internal legacy aliases without accepting provider topology",
+    "internal legacy aliases are agent-bound and are never enumerated through the public models endpoint"
+  ],
+  "validation": {
+    "llmGatewayUnitTests": 8,
+    "llmGatewayIntegrationTests": 25,
+    "lightAgentLibraryTests": 5,
+    "lightAgentBinaryTests": 20,
+    "lightGatewayTests": 34,
+    "portalViewContractTests": 5,
+    "postgresSchemaGate": "pass"
+  },
+  "artifactDigests": {
+    "crates/llm-gateway/src/projection.rs": "sha256:09d70e939a22aec392cd9f38ef73ce27d149a9cc27ba09a4cf3447476d3dcc93",
+    "apps/light-agent/src/governed_model.rs": "sha256:54a7a3e097399ef959c91273ad21d0d5472a64d5e6bf97e2a4e0ae2780bdeb4c",
+    "benchmarks/llm-gateway/contracts/v1/get-eligible-llm-models-for-agent.fixture.json": "sha256:416ba854b9ac2b9c7f2d8e6b27625221ec92d1b0ca6b190a21653015003e0d40",
+    "../portal-db/postgres/patch_20260719_03_llm_production_integration.sql": "sha256:62649ecc1e18d345d0a28014b21077c12de788528775a1b4fda98e910f109ce3"
+  },
+  "limits": [
+    "the evidence is bound to an uncommitted worktree rather than a source commit",
+    "live provider endpoint compatibility remains an enablement gate and is not claimed by this evidence"
+  ]
+}

@@ -29,7 +29,14 @@ impl LlmSnapshotStore {
 
     pub fn publish(&self, candidate: LlmPublishedSnapshot) -> PublishOutcome {
         let current = self.load();
-        if current.digest == candidate.digest {
+        let same_materialization = current.deployments.len() == candidate.deployments.len()
+            && current.deployments.iter().all(|(id, deployment)| {
+                candidate
+                    .deployments
+                    .get(id)
+                    .is_some_and(|other| other.provider_digest == deployment.provider_digest)
+            });
+        if current.digest == candidate.digest && same_materialization {
             return PublishOutcome::Unchanged;
         }
         let previous = self.current.swap(Arc::new(candidate));

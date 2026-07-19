@@ -38,10 +38,15 @@ use light_runtime::{
 use llm_gateway::LlmRuntime;
 use llm_gateway::audit::ProcessAudit;
 use llm_gateway::config::{LLM_ROUTER_FILE, LLM_ROUTER_MODULE_ID, LlmRouterConfig};
-use llm_gateway::credentials::EnvironmentSecretResolver;
+use llm_gateway::credentials::{
+    EnvironmentReferenceSecretResolver, EnvironmentSecretResolver, SecretResolver,
+};
 use llm_gateway::http::{
     AllowBodyAccessControl, BufferedHttpRequest, LlmBufferedHttp, LlmHttpResponse,
     StreamingHttpResponse,
+};
+use llm_gateway::projection::{
+    FileAcknowledgementSink, FileProjectionSource, LlmProjectionWorker, ProjectionApplyOutcome,
 };
 use llm_gateway::runtime::{LlmCompiler, LlmSnapshotStore};
 use pingora::http::ResponseHeader;
@@ -52,6 +57,7 @@ use serde_json::{Value as JsonValue, json};
 use sqlx::postgres::PgPoolOptions;
 use std::collections::BTreeMap;
 use std::io::BufReader;
+use std::path::{Component, Path};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -123,6 +129,101 @@ struct LlmGatewayModule {
     runtime: Arc<LlmRuntime>,
     http: LlmBufferedHttp,
     max_request_body_bytes: usize,
+    projection_task: Option<Arc<LlmProjectionTask>>,
+}
+
+struct LlmProjectionTask {
+    fingerprint: String,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for LlmProjectionTask {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
+impl LlmProjectionTask {
+    fn stop(&self) {
+        self.handle.abort();
+    }
+}
+
+fn is_config_cache_projection_root(path: &Path) -> bool {
+    let mut config_cache = false;
+    for component in path.components() {
+        match component {
+            Component::ParentDir => return false,
+            Component::Normal(value) if value == EXTERNAL_CONFIG_DIR => config_cache = true,
+            _ => {}
+        }
+    }
+    config_cache
+}
+
+fn start_llm_projection_task(
+    config: &LlmRouterConfig,
+    compiler: Arc<LlmCompiler>,
+    runtime: Arc<LlmRuntime>,
+) -> Result<Arc<LlmProjectionTask>, RuntimeError> {
+    let projection = &config.production_projection;
+    if !is_config_cache_projection_root(Path::new(&projection.root_directory)) {
+        return Err(RuntimeError::Config(
+            "LLM production projection rootDirectory must be inside config-cache".to_string(),
+        ));
+    }
+    let fingerprint =
+        serde_json::to_string(config).map_err(|error| RuntimeError::Config(error.to_string()))?;
+    let source = Arc::new(FileProjectionSource::new(
+        &projection.root_directory,
+        projection.max_artifact_bytes,
+    ));
+    let acknowledgements = Arc::new(FileAcknowledgementSink::new(
+        &projection.acknowledgement_directory,
+    ));
+    let mut worker = LlmProjectionWorker::new(
+        source,
+        acknowledgements,
+        compiler,
+        runtime.snapshot_store(),
+        &projection.checkpoint_path,
+        &projection.gateway_instance,
+        config.clone(),
+    )
+    .map_err(|error| RuntimeError::Config(error.to_string()))?;
+    worker
+        .resync_latest()
+        .map_err(|error| RuntimeError::Config(error.to_string()))?;
+    let worker = Arc::new(Mutex::new(worker));
+    let poll_interval = Duration::from_millis(projection.poll_interval_ms.max(100));
+    let handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(poll_interval);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let worker = Arc::clone(&worker);
+            let result = tokio::task::spawn_blocking(move || {
+                let mut worker = worker.lock().unwrap_or_else(|error| error.into_inner());
+                match worker.apply_latest() {
+                    Ok(ProjectionApplyOutcome::Duplicate) => worker.reload_secrets(),
+                    other => other,
+                }
+            })
+            .await;
+            match result {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => {
+                    warn!(error = %error, "LLM production projection retained the last valid root")
+                }
+                Err(error) => warn!(error = %error, "LLM production projection worker failed"),
+            }
+        }
+    });
+    Ok(Arc::new(LlmProjectionTask {
+        fingerprint,
+        handle,
+    }))
 }
 
 fn load_llm_gateway_module(
@@ -150,18 +251,41 @@ fn load_llm_gateway_module(
     if !config.enabled {
         return Ok(None);
     }
-    let compiler = LlmCompiler::new(Arc::new(EnvironmentSecretResolver));
+    let resolver: Arc<dyn SecretResolver> = if config.production_projection.enabled {
+        Arc::new(EnvironmentReferenceSecretResolver::new(
+            config.production_projection.credential_environment.clone(),
+        ))
+    } else {
+        Arc::new(EnvironmentSecretResolver)
+    };
+    let compiler = Arc::new(LlmCompiler::new(resolver));
     let previous_snapshot = previous.map(|module| module.runtime.snapshot());
+    let mut bootstrap_config = config.clone();
+    if config.production_projection.enabled {
+        // Production topology is authoritative in the immutable projection;
+        // never materialize the local fixture/provider maps first.
+        bootstrap_config.providers.clear();
+        bootstrap_config.deployments.clear();
+        bootstrap_config.aliases.clear();
+    }
     let snapshot = compiler
-        .compile(&config, generation, previous_snapshot.as_deref())
+        .compile(&bootstrap_config, generation, previous_snapshot.as_deref())
         .map_err(|error| RuntimeError::Config(error.to_string()))?;
+    let projection_fingerprint =
+        serde_json::to_string(&config).map_err(|error| RuntimeError::Config(error.to_string()))?;
+    let reusable_projection = config.production_projection.enabled
+        && previous
+            .and_then(|module| module.projection_task.as_ref())
+            .is_some_and(|task| task.fingerprint == projection_fingerprint);
     let runtime = match previous.filter(|module| {
         let snapshot = module.runtime.snapshot();
         snapshot.global_concurrency == config.global_concurrency
             && snapshot.global_stream_concurrency == config.global_stream_concurrency
     }) {
         Some(previous) => {
-            previous.runtime.publish(snapshot);
+            if !reusable_projection {
+                previous.runtime.publish(snapshot);
+            }
             Arc::clone(&previous.runtime)
         }
         None => {
@@ -169,6 +293,19 @@ fn load_llm_gateway_module(
             let audit = Arc::new(ProcessAudit::default());
             Arc::new(LlmRuntime::new(store, audit))
         }
+    };
+    let projection_task = if config.production_projection.enabled {
+        if reusable_projection {
+            previous.and_then(|module| module.projection_task.clone())
+        } else {
+            Some(start_llm_projection_task(
+                &config,
+                Arc::clone(&compiler),
+                Arc::clone(&runtime),
+            )?)
+        }
+    } else {
+        None
     };
     let http = LlmBufferedHttp::new(
         Arc::clone(&runtime),
@@ -178,10 +315,18 @@ fn load_llm_gateway_module(
         Duration::from_millis(config.request_timeout_ms),
     )
     .with_openai_extension_allowlist(config.openai_extension_allowlist.clone());
+    if let Some(previous_task) = previous.and_then(|module| module.projection_task.as_ref())
+        && projection_task
+            .as_ref()
+            .is_none_or(|task| !Arc::ptr_eq(task, previous_task))
+    {
+        previous_task.stop();
+    }
     Ok(Some(Arc::new(LlmGatewayModule {
         runtime,
         http,
         max_request_body_bytes: config.max_request_body_bytes,
+        projection_task,
     })))
 }
 
@@ -4651,6 +4796,22 @@ mod tests {
         let module = load_llm_gateway_module(&config, false, 1, None)
             .expect("inactive LLM handler must not require llm-router.yml");
         assert!(module.is_none());
+    }
+
+    #[test]
+    fn llm_production_projection_is_confined_to_config_cache() {
+        assert!(is_config_cache_projection_root(Path::new(
+            "config-cache/llm-projection"
+        )));
+        assert!(is_config_cache_projection_root(Path::new(
+            "/srv/light-gateway/config-cache/llm-projection"
+        )));
+        assert!(!is_config_cache_projection_root(Path::new(
+            "data/llm-projection"
+        )));
+        assert!(!is_config_cache_projection_root(Path::new(
+            "config-cache/../secrets"
+        )));
     }
 
     #[test]

@@ -284,6 +284,7 @@ fn deployment(id: &str, provider: Arc<dyn InferenceProvider>) -> Arc<DeploymentR
     Arc::new(DeploymentRuntime {
         id: id.to_string(),
         model: format!("{id}-physical"),
+        configured_concurrency: 2,
         capabilities: provider.capabilities(),
         provider,
         provider_digest: id.to_string(),
@@ -316,6 +317,7 @@ fn runtime_with(
         public_name: "public-model".to_string(),
         deployments: deployments.clone(),
         max_attempts: attempts,
+        configured_concurrency: 2,
         permits: Arc::new(Semaphore::new(2)),
         max_input_tokens: Some(10_000),
         max_output_tokens: Some(100),
@@ -329,6 +331,7 @@ fn runtime_with(
         public_name: "legacy-agent-internal".to_string(),
         deployments: vec![Arc::clone(&deployments[0])],
         max_attempts: 1,
+        configured_concurrency: 1,
         permits: Arc::new(Semaphore::new(1)),
         max_input_tokens: Some(10_000),
         max_output_tokens: Some(100),
@@ -354,7 +357,7 @@ fn runtime_with(
             .into_iter()
             .map(|deployment| (deployment.id.clone(), deployment))
             .collect(),
-        principal_permits: PrincipalPermitStripes::new(8, 2),
+        principal_permits: Arc::new(PrincipalPermitStripes::new(8, 2)),
     };
     Arc::new(LlmRuntime::new(
         Arc::new(LlmSnapshotStore::new(snapshot, 2)),
@@ -583,6 +586,14 @@ fn portal_agent_eligibility_contract_is_safe_for_gateway_model_resolution() {
             .iter()
             .any(|case| case["response"]["resolutionStatus"] == "NO_DEFAULT")
     );
+    assert!(cases.iter().any(|case| {
+        case["response"]["models"].as_array().is_some_and(|models| {
+            models.iter().any(|model| {
+                model["selection_mode"] == "INTERNAL_LEGACY"
+                    && model["alias_name"] == "legacy-agent-internal"
+            })
+        })
+    }));
     for case in cases {
         let response = &case["response"];
         let encoded = serde_json::to_string(response).expect("encode contract response");
@@ -617,6 +628,14 @@ fn compiler_resolves_secrets_and_clients_off_path_and_reuses_deployments() {
     assert!(Arc::ptr_eq(
         &first.deployments["d"],
         &second.deployments["d"]
+    ));
+    assert!(Arc::ptr_eq(
+        &first.aliases["public-model"],
+        &second.aliases["public-model"]
+    ));
+    assert!(Arc::ptr_eq(
+        &first.principal_permits,
+        &second.principal_permits
     ));
     let before = (
         probe.secret_resolutions.load(Ordering::SeqCst),

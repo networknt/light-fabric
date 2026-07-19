@@ -16,7 +16,7 @@ impl SecretResolver for MapSecretResolver {
             .cloned()
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
-                LlmGatewayError::Config(format!("unresolved secret reference `{secret_ref}`"))
+                LlmGatewayError::Config("provider credential could not be materialized".to_string())
             })
     }
 }
@@ -33,7 +33,35 @@ impl SecretResolver for EnvironmentSecretResolver {
             .ok()
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
-                LlmGatewayError::Config(format!("unresolved secret reference `{secret_ref}`"))
+                LlmGatewayError::Config("provider credential could not be materialized".to_string())
+            })
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct EnvironmentReferenceSecretResolver {
+    references: BTreeMap<String, String>,
+}
+
+impl EnvironmentReferenceSecretResolver {
+    pub fn new(references: BTreeMap<String, String>) -> Self {
+        Self { references }
+    }
+}
+
+impl SecretResolver for EnvironmentReferenceSecretResolver {
+    fn resolve(&self, secret_ref: &str) -> Result<String, LlmGatewayError> {
+        if secret_ref.starts_with("env:") {
+            return EnvironmentSecretResolver.resolve(secret_ref);
+        }
+        let environment_name = self.references.get(secret_ref).ok_or_else(|| {
+            LlmGatewayError::Config("provider credential reference is not authorized".to_string())
+        })?;
+        std::env::var(environment_name)
+            .ok()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                LlmGatewayError::Config("provider credential could not be materialized".to_string())
             })
     }
 }
