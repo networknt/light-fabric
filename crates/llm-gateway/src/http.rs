@@ -198,12 +198,37 @@ impl LlmBufferedHttp {
                 ));
             }
         };
+        let client_include_usage = if streaming {
+            match raw.get("stream_options") {
+                None | Some(Value::Null) => false,
+                Some(Value::Object(options))
+                    if options.keys().all(|key| key.as_str() == "include_usage") =>
+                {
+                    match options.get("include_usage") {
+                        None | Some(Value::Null) | Some(Value::Bool(false)) => false,
+                        Some(Value::Bool(true)) => true,
+                        Some(_) => {
+                            return Err(LlmGatewayError::InvalidRequest(
+                                "stream_options.include_usage must be a boolean".to_string(),
+                            ));
+                        }
+                    }
+                }
+                Some(_) => {
+                    return Err(LlmGatewayError::InvalidRequest(
+                        "stream_options contains unsupported fields".to_string(),
+                    ));
+                }
+            }
+        } else {
+            false
+        };
         if streaming {
-            raw.as_object_mut()
-                .ok_or_else(|| {
-                    LlmGatewayError::InvalidRequest("request must be a JSON object".to_string())
-                })?
-                .insert("stream".to_string(), Value::Bool(false));
+            let object = raw.as_object_mut().ok_or_else(|| {
+                LlmGatewayError::InvalidRequest("request must be a JSON object".to_string())
+            })?;
+            object.insert("stream".to_string(), Value::Bool(false));
+            object.remove("stream_options");
         }
         let parse_body = if streaming {
             serde_json::to_vec(&raw)
@@ -244,14 +269,22 @@ impl LlmBufferedHttp {
         }
         validate_images(&canonical)?;
         let context = LlmRequestContext {
-            request_id: request.trusted_request_id.clone(),
+            // Audit/request identity is always gateway-issued UUIDv7. The
+            // independently trusted correlation ID remains the response
+            // header and is never forced into the audit database UUID key.
+            request_id: uuid::Uuid::now_v7().to_string(),
             principal_id: request.principal_id.clone(),
             deadline: std::time::Instant::now() + self.timeout,
         };
         if streaming {
             let stream = self
                 .runtime
-                .execute_stream_with_snapshot(context, root, canonical)
+                .execute_stream_with_snapshot_options(
+                    context,
+                    root,
+                    canonical,
+                    client_include_usage,
+                )
                 .await?;
             return Ok(LlmHttpResponse::Streaming(StreamingHttpResponse {
                 status: 200,

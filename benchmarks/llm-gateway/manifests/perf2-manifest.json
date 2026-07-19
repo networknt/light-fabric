@@ -1,0 +1,45 @@
+{
+  "schemaVersion": "1",
+  "checkpoint": "PERF-2",
+  "environment": {
+    "cpu": "2 vCPU",
+    "memory": "4 GiB",
+    "providerProfile": "stable-60ms",
+    "payload": "small-text",
+    "openLoop": true,
+    "keepAlive": true
+  },
+  "profiles": {
+    "bounded-async": {
+      "offeredRps": 500,
+      "runs": 5,
+      "auditRequired": true,
+      "waitForCommit": false,
+      "compareAgainstPinnedBifrost": true
+    },
+    "local-durable": {
+      "offeredRps": 100,
+      "runs": 5,
+      "auditRequired": true,
+      "persistentStorageRequired": true,
+      "waitForAttemptStartCommit": true,
+      "compareAgainstPinnedBifrost": false
+    }
+  },
+  "requiredMeasurements": [
+    "offered", "admitted", "completed", "rejected", "failed",
+    "latencyP50", "latencyP95", "latencyP99", "cpu", "rss",
+    "walBytes", "walSegments", "durableWatermark", "fdatasyncP50",
+    "fdatasyncP95", "fdatasyncP99", "commitWaitP50", "commitWaitP95",
+    "commitWaitP99", "oldestUnacknowledgedAge", "sinkLag"
+  ],
+  "requiredSidecars": {
+    "environment": "one validated environment.json per candidate/profile",
+    "auditMetrics": "one audit metrics JSON per raw load run"
+  },
+  "thresholds": {
+    "boundedAsyncBifrostNonInferiorityPercent": 5,
+    "growingInternalQueueAllowed": false,
+    "silentAuditLossAllowed": false
+  }
+}

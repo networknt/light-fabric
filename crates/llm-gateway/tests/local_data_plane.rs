@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use futures_util::stream;
-use llm_gateway::audit::{AuditAdmission, AuditFinish, AuditReservation, AuditStart};
+use llm_gateway::audit::{
+    AuditAdmission, AuditFinish, AuditReservation, AuditStart, WalAudit, WalConfig,
+};
 use llm_gateway::config::{
     AliasConfig, AuditMode, DeploymentConfig, LlmRouterConfig, ProviderConfig,
 };
@@ -34,15 +36,53 @@ struct ScriptedProvider {
 }
 
 struct SseProvider {
+    format: ProviderFormat,
     events: Vec<Result<InferenceEvent, InferenceError>>,
     calls: AtomicUsize,
     wait_for_cancellation: bool,
     cancellation_observed: Arc<AtomicBool>,
 }
 
+struct DurableStartProvider {
+    audit: Arc<WalAudit>,
+    durable_before_dispatch: AtomicBool,
+}
+
+#[async_trait]
+impl InferenceProvider for DurableStartProvider {
+    fn format(&self) -> ProviderFormat {
+        ProviderFormat::OpenAi
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        capabilities(true, true, true)
+    }
+
+    async fn infer(
+        &self,
+        _context: ProviderRequestContext,
+        _request: InferenceRequest,
+    ) -> Result<InferenceResponse, InferenceError> {
+        self.durable_before_dispatch
+            .store(self.audit.status().durable_sequence >= 2, Ordering::SeqCst);
+        Ok(success_response())
+    }
+
+    async fn stream(
+        &self,
+        _context: ProviderRequestContext,
+        _request: InferenceRequest,
+    ) -> Result<InferenceStream, InferenceError> {
+        self.durable_before_dispatch
+            .store(self.audit.status().durable_sequence >= 2, Ordering::SeqCst);
+        Ok(Box::pin(stream::iter(SseProvider::success().events)))
+    }
+}
+
 impl SseProvider {
     fn success() -> Self {
         Self {
+            format: ProviderFormat::OpenAi,
             events: vec![
                 Ok(InferenceEvent::TextDelta {
                     text: "hello".to_string(),
@@ -70,7 +110,7 @@ impl SseProvider {
 #[async_trait]
 impl InferenceProvider for SseProvider {
     fn format(&self) -> ProviderFormat {
-        ProviderFormat::OpenAi
+        self.format
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
@@ -308,6 +348,16 @@ fn runtime_with(
     max_replay: usize,
     audit: Arc<dyn AuditAdmission>,
 ) -> Arc<LlmRuntime> {
+    runtime_with_mode(providers, attempts, max_replay, audit, AuditMode::Required)
+}
+
+fn runtime_with_mode(
+    providers: Vec<Arc<dyn InferenceProvider>>,
+    attempts: usize,
+    max_replay: usize,
+    audit: Arc<dyn AuditAdmission>,
+    audit_mode: AuditMode,
+) -> Arc<LlmRuntime> {
     let deployments = providers
         .into_iter()
         .enumerate()
@@ -324,7 +374,7 @@ fn runtime_with(
         max_cost_micros: Some(10_000),
         internal: false,
         bound_principal: None,
-        audit: AuditMode::Required,
+        audit: audit_mode,
         ledger: Arc::new(UsageLedger::default()),
     });
     let internal_alias = Arc::new(AliasPlan {
@@ -338,7 +388,7 @@ fn runtime_with(
         max_cost_micros: Some(10_000),
         internal: true,
         bound_principal: Some("test-agent".to_string()),
-        audit: AuditMode::Required,
+        audit: audit_mode,
         ledger: Arc::new(UsageLedger::default()),
     });
     let snapshot = LlmPublishedSnapshot {
@@ -348,6 +398,10 @@ fn runtime_with(
         global_stream_concurrency: 1,
         stream_channel_capacity: 1,
         stream_write_timeout_ms: 100,
+        stream_setup_timeout_ms: 100,
+        stream_idle_timeout_ms: 100,
+        stream_minimum_drain_bytes_per_second: 1,
+        stream_drain_grace_ms: 100,
         max_replay_bytes: max_replay,
         aliases: BTreeMap::from([
             ("public-model".to_string(), alias),
@@ -840,6 +894,15 @@ async fn buffered_http_rejects_method_media_size_and_operated_field_conflicts() 
         br#"{"model":"public-model","messages":[],"max_tokens":1,"max_completion_tokens":2}"#,
     );
     assert_eq!(http.handle(request).await.status, 400);
+
+    let request = http_request(
+        br#"{"model":"public-model","messages":[],"stream":true,"stream_options":{"include_usage":"yes"}}"#,
+    );
+    assert_eq!(http.handle(request).await.status, 400);
+    let request = http_request(
+        br#"{"model":"public-model","messages":[],"stream":true,"stream_options":{"future_option":true}}"#,
+    );
+    assert_eq!(http.handle(request).await.status, 400);
     assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
 }
 
@@ -914,7 +977,7 @@ async fn early_sse_smoke_frames_success_and_done_through_bounded_channel() {
     );
     let response = http
         .handle_route(http_request(
-            br#"{"model":"public-model","messages":[{"role":"user","content":"hello"}],"stream":true}"#,
+            br#"{"model":"public-model","messages":[{"role":"user","content":"hello"}],"stream":true,"stream_options":{"include_usage":true}}"#,
         ))
         .await;
     let LlmHttpResponse::Streaming(mut response) = response else {
@@ -942,9 +1005,80 @@ async fn early_sse_smoke_frames_success_and_done_through_bounded_channel() {
 }
 
 #[tokio::test]
+async fn full_sse_falls_back_before_visible_output_across_provider_formats() {
+    let first = Arc::new(SseProvider {
+        format: ProviderFormat::OpenAi,
+        events: vec![Err(InferenceError::from_status(429, None, "limited"))],
+        calls: AtomicUsize::new(0),
+        wait_for_cancellation: false,
+        cancellation_observed: Arc::new(AtomicBool::new(false)),
+    });
+    let mut second_provider = SseProvider::success();
+    second_provider.format = ProviderFormat::Anthropic;
+    let second = Arc::new(second_provider);
+    let runtime = runtime_with(
+        vec![first.clone(), second.clone()],
+        2,
+        4096,
+        Arc::new(RecordingAudit::default()),
+    );
+    let http = LlmBufferedHttp::new(runtime, Arc::new(Allow), 4096, 32, Duration::from_secs(1));
+    let LlmHttpResponse::Streaming(mut response) = http
+        .handle_route(http_request(
+            br#"{"model":"public-model","messages":[{"role":"user","content":"hello"}],"stream":true,"stream_options":{"include_usage":true}}"#,
+        ))
+        .await
+    else {
+        panic!("expected SSE response");
+    };
+    let mut body = Vec::new();
+    while let Some(frame) = response.stream.next_frame().await {
+        body.extend_from_slice(&frame);
+    }
+    let body = String::from_utf8(body).unwrap();
+    assert!(body.contains("hello"));
+    assert!(body.ends_with("data: [DONE]\n\n"));
+    assert_eq!(first.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(second.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn full_sse_preserves_client_usage_preference_while_accounting_upstream_usage() {
+    let provider = Arc::new(SseProvider::success());
+    let runtime = runtime_with(vec![provider], 1, 4096, Arc::new(RecordingAudit::default()));
+    let http = LlmBufferedHttp::new(
+        Arc::clone(&runtime),
+        Arc::new(Allow),
+        4096,
+        32,
+        Duration::from_secs(1),
+    );
+    let LlmHttpResponse::Streaming(mut response) = http
+        .handle_route(http_request(
+            br#"{"model":"public-model","messages":[{"role":"user","content":"hello"}],"stream":true}"#,
+        ))
+        .await
+    else {
+        panic!("expected SSE response");
+    };
+    let mut body = Vec::new();
+    while let Some(frame) = response.stream.next_frame().await {
+        body.extend_from_slice(&frame);
+    }
+    let body = String::from_utf8(body).unwrap();
+    assert!(!body.contains("\"usage\""));
+    assert!(body.ends_with("data: [DONE]\n\n"));
+    assert_eq!(
+        runtime.snapshot().aliases["public-model"].ledger.charged(),
+        5
+    );
+}
+
+#[tokio::test]
 async fn early_sse_disconnect_cancels_upstream_and_releases_stream_permits() {
     let observed = Arc::new(AtomicBool::new(false));
     let provider = Arc::new(SseProvider {
+        format: ProviderFormat::OpenAi,
         events: vec![Ok(InferenceEvent::TextDelta {
             text: "first".to_string(),
         })],
@@ -995,9 +1129,77 @@ async fn early_sse_disconnect_cancels_upstream_and_releases_stream_permits() {
 }
 
 #[tokio::test]
+async fn full_sse_slow_consumer_is_bounded_and_releases_stream_permits() {
+    let provider = Arc::new(SseProvider::success());
+    let runtime = runtime_with(vec![provider], 1, 4096, Arc::new(RecordingAudit::default()));
+    let first = runtime
+        .execute_stream_with_snapshot(
+            LlmRequestContext::with_timeout("user", Duration::from_secs(1)),
+            runtime.snapshot(),
+            InferenceRequest::text("public-model", "first"),
+        )
+        .await
+        .unwrap();
+    // The one-frame channel remains full. The producer must stop at the
+    // independent write-progress deadline rather than buffering the stream.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let second = runtime
+        .execute_stream_with_snapshot(
+            LlmRequestContext::with_timeout("user", Duration::from_secs(1)),
+            runtime.snapshot(),
+            InferenceRequest::text("public-model", "second"),
+        )
+        .await
+        .expect("slow consumer must release the single stream permit");
+    drop(first);
+    drop(second);
+}
+
+#[tokio::test]
+async fn full_sse_rejects_duplicate_terminal_events_without_done() {
+    let provider = Arc::new(SseProvider {
+        format: ProviderFormat::OpenAi,
+        events: vec![
+            Ok(InferenceEvent::TextDelta {
+                text: "visible".to_string(),
+            }),
+            Ok(InferenceEvent::MessageEnd {
+                finish_reason: FinishReason::Stop,
+                terminal_state: TerminalState::Complete,
+            }),
+            Ok(InferenceEvent::MessageEnd {
+                finish_reason: FinishReason::Stop,
+                terminal_state: TerminalState::Complete,
+            }),
+        ],
+        calls: AtomicUsize::new(0),
+        wait_for_cancellation: false,
+        cancellation_observed: Arc::new(AtomicBool::new(false)),
+    });
+    let runtime = runtime_with(vec![provider], 1, 4096, Arc::new(RecordingAudit::default()));
+    let mut execution = runtime
+        .execute_stream_with_snapshot(
+            LlmRequestContext::with_timeout("user", Duration::from_secs(1)),
+            runtime.snapshot(),
+            InferenceRequest::text("public-model", "hello"),
+        )
+        .await
+        .unwrap();
+    let mut body = Vec::new();
+    while let Some(frame) = execution.next_frame().await {
+        body.extend_from_slice(&frame);
+    }
+    let body = String::from_utf8(body).unwrap();
+    assert!(body.contains("visible"));
+    assert!(body.contains("provider_error"));
+    assert!(!body.contains("[DONE]"));
+}
+
+#[tokio::test]
 async fn early_sse_deadline_cancels_a_trickling_provider_and_releases_permits() {
     let observed = Arc::new(AtomicBool::new(false));
     let provider = Arc::new(SseProvider {
+        format: ProviderFormat::OpenAi,
         events: vec![Ok(InferenceEvent::TextDelta {
             text: "first".to_string(),
         })],
@@ -1046,6 +1248,38 @@ async fn early_sse_deadline_cancels_a_trickling_provider_and_releases_permits() 
 }
 
 #[tokio::test]
+async fn full_sse_setup_deadline_cancels_a_provider_that_stalls_before_first_event() {
+    let observed = Arc::new(AtomicBool::new(false));
+    let provider = Arc::new(SseProvider {
+        format: ProviderFormat::OpenAi,
+        events: Vec::new(),
+        calls: AtomicUsize::new(0),
+        wait_for_cancellation: true,
+        cancellation_observed: Arc::clone(&observed),
+    });
+    let runtime = runtime_with(vec![provider], 1, 4096, Arc::new(RecordingAudit::default()));
+    let started = Instant::now();
+    assert!(
+        runtime
+            .execute_stream_with_snapshot(
+                LlmRequestContext::with_timeout("user", Duration::from_secs(1)),
+                runtime.snapshot(),
+                InferenceRequest::text("public-model", "hello"),
+            )
+            .await
+            .is_err()
+    );
+    assert!(started.elapsed() < Duration::from_millis(500));
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !observed.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("setup timeout must cancel the stalled provider");
+}
+
+#[tokio::test]
 async fn early_sse_headers_wait_for_the_durable_start_barrier() {
     let provider = Arc::new(SseProvider::success());
     let barrier = Arc::new(BlockingStartBarrier {
@@ -1091,8 +1325,99 @@ async fn early_sse_headers_wait_for_the_durable_start_barrier() {
 }
 
 #[tokio::test]
+async fn local_durable_audit_commits_attempt_start_before_provider_dispatch() {
+    let directory = tempfile::tempdir().unwrap();
+    let audit = Arc::new(
+        WalAudit::open(
+            WalConfig {
+                directory: directory.path().to_path_buf(),
+                gateway_instance: "gateway-test".to_string(),
+                max_record_bytes: 4096,
+                max_segment_bytes: 32 * 1024,
+                max_spool_bytes: 128 * 1024,
+                queue_records: 16,
+                batch_records: 8,
+                batch_bytes: 32 * 1024,
+                commit_delay: Duration::from_millis(5),
+                terminal_commit_before_response: false,
+                persistent_volume: true,
+            },
+            "host-a",
+        )
+        .unwrap(),
+    );
+    let provider = Arc::new(DurableStartProvider {
+        audit: Arc::clone(&audit),
+        durable_before_dispatch: AtomicBool::new(false),
+    });
+    let runtime = runtime_with_mode(
+        vec![provider.clone()],
+        1,
+        4096,
+        audit,
+        AuditMode::LocalDurable,
+    );
+    let http = LlmBufferedHttp::new(runtime, Arc::new(Allow), 4096, 32, Duration::from_secs(1));
+    let LlmHttpResponse::Streaming(mut response) = http
+        .handle_route(http_request(
+            br#"{"model":"public-model","messages":[{"role":"user","content":"hello"}],"stream":true}"#,
+        ))
+        .await
+    else {
+        panic!("expected SSE response");
+    };
+    while response.stream.next_frame().await.is_some() {}
+    assert!(provider.durable_before_dispatch.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn local_durable_buffered_audit_commits_attempt_start_before_provider_dispatch() {
+    let directory = tempfile::tempdir().unwrap();
+    let audit = Arc::new(
+        WalAudit::open(
+            WalConfig {
+                directory: directory.path().to_path_buf(),
+                gateway_instance: "gateway-buffered-test".to_string(),
+                max_record_bytes: 4096,
+                max_segment_bytes: 32 * 1024,
+                max_spool_bytes: 128 * 1024,
+                queue_records: 16,
+                batch_records: 8,
+                batch_bytes: 32 * 1024,
+                commit_delay: Duration::from_millis(5),
+                terminal_commit_before_response: false,
+                persistent_volume: true,
+            },
+            "host-a",
+        )
+        .unwrap(),
+    );
+    let provider = Arc::new(DurableStartProvider {
+        audit: Arc::clone(&audit),
+        durable_before_dispatch: AtomicBool::new(false),
+    });
+    let runtime = runtime_with_mode(
+        vec![provider.clone()],
+        1,
+        4096,
+        audit,
+        AuditMode::LocalDurable,
+    );
+    let http = LlmBufferedHttp::new(runtime, Arc::new(Allow), 4096, 32, Duration::from_secs(1));
+    assert!(matches!(
+        http.handle_route(http_request(
+            br#"{"model":"public-model","messages":[{"role":"user","content":"hello"}]}"#,
+        ))
+        .await,
+        LlmHttpResponse::Buffered(_)
+    ));
+    assert!(provider.durable_before_dispatch.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
 async fn early_sse_never_emits_done_or_retries_after_visible_output_error() {
     let provider = Arc::new(SseProvider {
+        format: ProviderFormat::OpenAi,
         events: vec![
             Ok(InferenceEvent::TextDelta {
                 text: "visible".to_string(),
@@ -1124,6 +1449,8 @@ async fn early_sse_never_emits_done_or_retries_after_visible_output_error() {
     }
     let body = String::from_utf8(body).unwrap();
     assert!(body.contains("visible"));
+    assert!(body.contains("The model stream terminated before completion."));
+    assert!(!body.contains("down"));
     assert!(!body.contains("[DONE]"));
     assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
 }

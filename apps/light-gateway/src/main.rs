@@ -36,7 +36,7 @@ use light_runtime::{
     ReloadableModule, RuntimeConfig, RuntimeError, TracingOptions, init_tracing,
 };
 use llm_gateway::LlmRuntime;
-use llm_gateway::audit::ProcessAudit;
+use llm_gateway::audit::{AuditSinkConfig, AuditSinkTask, ProcessAudit, WalAudit, WalConfig};
 use llm_gateway::config::{LLM_ROUTER_FILE, LLM_ROUTER_MODULE_ID, LlmRouterConfig};
 use llm_gateway::credentials::{
     EnvironmentReferenceSecretResolver, EnvironmentSecretResolver, SecretResolver,
@@ -130,6 +130,8 @@ struct LlmGatewayModule {
     http: LlmBufferedHttp,
     max_request_body_bytes: usize,
     projection_task: Option<Arc<LlmProjectionTask>>,
+    audit_sink_task: Option<Arc<AuditSinkTask>>,
+    audit_fingerprint: String,
 }
 
 struct LlmProjectionTask {
@@ -273,25 +275,96 @@ fn load_llm_gateway_module(
         .map_err(|error| RuntimeError::Config(error.to_string()))?;
     let projection_fingerprint =
         serde_json::to_string(&config).map_err(|error| RuntimeError::Config(error.to_string()))?;
+    let audit_fingerprint = serde_json::to_string(&config.audit_runtime)
+        .map_err(|error| RuntimeError::Config(error.to_string()))?;
+    if previous.is_some_and(|module| module.audit_fingerprint != audit_fingerprint) {
+        return Err(RuntimeError::Config(
+            "LLM auditRuntime changes require a gateway restart to preserve single-writer WAL ownership"
+                .to_string(),
+        ));
+    }
     let reusable_projection = config.production_projection.enabled
         && previous
             .and_then(|module| module.projection_task.as_ref())
             .is_some_and(|task| task.fingerprint == projection_fingerprint);
-    let runtime = match previous.filter(|module| {
+    let reusable_runtime = previous.filter(|module| {
         let snapshot = module.runtime.snapshot();
         snapshot.global_concurrency == config.global_concurrency
             && snapshot.global_stream_concurrency == config.global_stream_concurrency
-    }) {
+            && module.audit_fingerprint == audit_fingerprint
+    });
+    let (runtime, audit_sink_task) = match reusable_runtime {
         Some(previous) => {
             if !reusable_projection {
                 previous.runtime.publish(snapshot);
             }
-            Arc::clone(&previous.runtime)
+            (
+                Arc::clone(&previous.runtime),
+                previous.audit_sink_task.clone(),
+            )
         }
         None => {
             let store = Arc::new(LlmSnapshotStore::new(snapshot, 2));
-            let audit = Arc::new(ProcessAudit::default());
-            Arc::new(LlmRuntime::new(store, audit))
+            let (audit, audit_sink_task): (
+                Arc<dyn llm_gateway::audit::AuditAdmission>,
+                Option<Arc<AuditSinkTask>>,
+            ) = if config.production_projection.enabled {
+                let wal_audit = WalAudit::open(
+                    WalConfig {
+                        directory: config.audit_runtime.directory.clone().into(),
+                        gateway_instance: config.audit_runtime.gateway_instance.clone(),
+                        max_record_bytes: config.audit_runtime.max_record_bytes,
+                        max_segment_bytes: config.audit_runtime.max_segment_bytes,
+                        max_spool_bytes: config.audit_runtime.max_spool_bytes,
+                        queue_records: config.audit_runtime.queue_records,
+                        batch_records: config.audit_runtime.batch_records,
+                        batch_bytes: config.audit_runtime.batch_bytes,
+                        commit_delay: Duration::from_millis(config.audit_runtime.commit_delay_ms),
+                        terminal_commit_before_response: config
+                            .audit_runtime
+                            .terminal_commit_before_response,
+                        persistent_volume: config.audit_runtime.persistent_volume,
+                    },
+                    config.audit_runtime.host_id.clone(),
+                )
+                .map_err(|error| RuntimeError::Config(error.to_string()))?;
+                let sink_task = config
+                    .audit_runtime
+                    .sink_database_url_env
+                    .as_deref()
+                    .map(|name| {
+                        let url = std::env::var(name).map_err(|_| {
+                            RuntimeError::Config(format!(
+                                "LLM audit sink database environment variable {name} is unavailable"
+                            ))
+                        })?;
+                        let pool = sqlx::postgres::PgPoolOptions::new()
+                            .max_connections(4)
+                            .connect_lazy(&url)
+                            .map_err(|error| RuntimeError::Config(error.to_string()))?;
+                        Ok::<_, RuntimeError>(Arc::new(wal_audit.start_postgres_sink(
+                            pool,
+                            AuditSinkConfig {
+                                batch_records: config.audit_runtime.sink_batch_records,
+                                batch_bytes: config.audit_runtime.sink_batch_bytes,
+                                poll_interval: Duration::from_millis(
+                                    config.audit_runtime.sink_poll_ms,
+                                ),
+                                retry_initial: Duration::from_millis(
+                                    config.audit_runtime.sink_poll_ms,
+                                ),
+                                retry_max: Duration::from_millis(
+                                    config.audit_runtime.sink_retry_max_ms,
+                                ),
+                            },
+                        )))
+                    })
+                    .transpose()?;
+                (Arc::new(wal_audit), sink_task)
+            } else {
+                (Arc::new(ProcessAudit::default()), None)
+            };
+            (Arc::new(LlmRuntime::new(store, audit)), audit_sink_task)
         }
     };
     let projection_task = if config.production_projection.enabled {
@@ -327,6 +400,8 @@ fn load_llm_gateway_module(
         http,
         max_request_body_bytes: config.max_request_body_bytes,
         projection_task,
+        audit_sink_task,
+        audit_fingerprint,
     })))
 }
 
@@ -6753,7 +6828,7 @@ aliases:
         unsafe { std::env::remove_var("LIGHT_GATEWAY_LF6B_TEST_KEY") };
         wait_for_tcp(gateway_address).await;
 
-        let body = r#"{"model":"public-model","messages":[{"role":"user","content":"hello"}],"stream":true}"#;
+        let body = r#"{"model":"public-model","messages":[{"role":"user","content":"hello"}],"stream":true,"stream_options":{"include_usage":true}}"#;
         let request = format!(
             "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()

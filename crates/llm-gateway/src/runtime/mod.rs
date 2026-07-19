@@ -12,7 +12,10 @@ pub use store::{LlmSnapshotStore, PublishOutcome};
 pub use streaming::{ImmediateStreamStartBarrier, LlmStreamExecution, StreamStartBarrier};
 
 use crate::admission::fail_fast_permits;
-use crate::audit::{AuditAdmission, AuditFinish, AuditReservation, AuditStart};
+use crate::audit::{
+    AuditAdmission, AuditAttemptFinish, AuditAttemptStart, AuditFinish, AuditReservation,
+    AuditStart,
+};
 use crate::error::LlmGatewayError;
 use crate::routing::{request_capabilities, retryable};
 use crate::usage::{ReconciledUsage, UsageReservation, cost};
@@ -134,6 +137,8 @@ impl LlmRuntime {
                     principal_id: context.principal_id.clone(),
                     alias: alias.public_name.clone(),
                     generation: root.generation,
+                    snapshot_digest: root.digest.clone(),
+                    max_attempts: alias.max_attempts,
                 },
             )
             .await?;
@@ -257,7 +262,31 @@ impl LlmRuntime {
                 Ok(permit) => permit,
                 Err(_) => continue,
             };
-            attempts += 1;
+            let next_attempt = attempts + 1;
+            if let Err(audit_error) = audit
+                .attempt_started(AuditAttemptStart {
+                    attempt: next_attempt,
+                    deployment_id: deployment.id.clone(),
+                })
+                .await
+            {
+                let usage =
+                    reservation.reconcile(deployment.price, None, AcceptanceEvidence::NotAccepted);
+                finish_audit(
+                    audit,
+                    AuditFinish {
+                        terminal: "audit_failed",
+                        attempts,
+                        charged_micros: usage.charged_micros,
+                        usage_complete: usage.complete,
+                    },
+                    audit_error.public_status(),
+                    audit_error.public_code(),
+                )
+                .await?;
+                return Err(audit_error);
+            }
+            attempts = next_attempt;
             attempted_envelope = attempted_envelope.saturating_add(cost(
                 deployment.price,
                 estimated_input,
@@ -282,6 +311,28 @@ impl LlmRuntime {
                         response.usage.as_ref(),
                         AcceptanceEvidence::Accepted,
                     );
+                    let attempt_audit = audit
+                        .attempt_finished(AuditAttemptFinish {
+                            attempt: attempts,
+                            terminal: "complete",
+                            category: "success",
+                        })
+                        .await;
+                    if let Err(audit_error) = attempt_audit {
+                        finish_audit(
+                            audit,
+                            AuditFinish {
+                                terminal: "audit_failed",
+                                attempts,
+                                charged_micros: usage.charged_micros,
+                                usage_complete: usage.complete,
+                            },
+                            audit_error.public_status(),
+                            audit_error.public_code(),
+                        )
+                        .await?;
+                        return Err(audit_error);
+                    }
                     finish_audit(
                         audit,
                         AuditFinish {
@@ -305,6 +356,34 @@ impl LlmRuntime {
                 }
                 Err(error) => {
                     circuit_permit.failure(&error, Instant::now());
+                    let attempt_audit = audit
+                        .attempt_finished(AuditAttemptFinish {
+                            attempt: attempts,
+                            terminal: "failed",
+                            category: inference_error_category(error.category),
+                        })
+                        .await;
+                    if let Err(audit_error) = attempt_audit {
+                        let usage = reservation.reconcile_with_ambiguous_bound(
+                            deployment.price,
+                            None,
+                            error.acceptance,
+                            attempted_envelope,
+                        );
+                        finish_audit(
+                            audit,
+                            AuditFinish {
+                                terminal: "audit_failed",
+                                attempts,
+                                charged_micros: usage.charged_micros,
+                                usage_complete: usage.complete,
+                            },
+                            audit_error.public_status(),
+                            audit_error.public_code(),
+                        )
+                        .await?;
+                        return Err(audit_error);
+                    }
                     let can_retry = retryable(&error) && attempts < alias.max_attempts;
                     last_error = Some(error);
                     if !can_retry {
@@ -403,4 +482,23 @@ fn estimate_tokens(request: &InferenceRequest) -> u64 {
     // provider-aware tokenizers. JSON framing and tool schemas are included.
     let bytes = serde_json::to_vec(request).map_or(0, |bytes| bytes.len() as u64);
     bytes.saturating_add(3) / 4
+}
+
+fn inference_error_category(
+    category: model_provider::inference::InferenceErrorCategory,
+) -> &'static str {
+    use model_provider::inference::InferenceErrorCategory as Category;
+    match category {
+        Category::InvalidRequest => "invalid_request",
+        Category::Authentication => "authentication",
+        Category::PermissionDenied => "permission_denied",
+        Category::RateLimited => "rate_limited",
+        Category::TimeoutBeforeAcceptance => "timeout_before_acceptance",
+        Category::TimeoutAfterPossibleAcceptance => "timeout_after_possible_acceptance",
+        Category::ProviderOverload => "provider_overload",
+        Category::Network => "network",
+        Category::Protocol => "protocol",
+        Category::Cancelled => "cancelled",
+        Category::UnsupportedFeature => "unsupported_feature",
+    }
 }

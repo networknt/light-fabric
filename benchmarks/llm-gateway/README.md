@@ -83,6 +83,48 @@ channel, one downstream write deadline, disconnect cancellation and permit
 recovery, `[DONE]` only on success, and a durable-start barrier before headers.
 Multi-provider conversion and the full slow-client matrix remain deferred.
 
+## LF-8, PERF-2, and LF-9
+
+LF-8 replaces the process-only audit seam in production projection mode with a
+bounded, segmented, checksummed WAL. `local_durable` waits for each
+`attempt_started` record to cross the fdatasync watermark before provider
+dispatch. A separately credentialed PostgreSQL sink replays bounded batches in
+one transaction, treats duplicate event IDs as success, persists its local
+checkpoint before reclaiming only fully acknowledged inactive segments, and
+never stores prompt/completion/tool/credential content. An OS advisory lock is
+held by the writer thread for its entire lifetime, so a duplicate process
+cannot concurrently own the same WAL directory even with the same instance ID.
+`persistentVolume: true` is an operator attestation, not filesystem detection.
+Before using `local_durable` on network storage, verify that the exact mount and
+failover configuration preserves `flock`, `fdatasync`, atomic rename, and
+post-crash directory-entry durability. An unverified NFS/network mount does not
+satisfy the local-durable profile merely because its data outlives a pod.
+
+Set `auditRuntime.sinkDatabaseUrlEnv` to the name of an environment variable
+containing the dedicated audit database URL. Apply
+`crates/llm-gateway/migrations/audit-postgres/0001_llm_audit.sql` with the
+schema-owner role; gateway, auditor, retention, and dataset export privileges
+are separate NOLOGIN group roles. Validate with a disposable database:
+
+```bash
+./scripts/run-llm-audit-wal-gate.sh \
+  postgresql://audit_owner:password@127.0.0.1:5432/llm_audit
+./scripts/run-llm-audit-streaming-gates.sh
+```
+
+LF-9 supports fallback only before visible output, both provider formats,
+bounded per-stream channels, absolute/idle/write-progress/minimum-drain limits,
+disconnect cancellation, sanitized terminal error frames without `[DONE]`, and
+client-controlled usage visibility while retaining upstream usage for
+accounting.
+
+PERF-2 is pinned in `manifests/perf2-manifest.json`. Capture the matched
+bounded-async Light/Bifrost runs and the separate Light-only local-durable lane
+with `scripts/run-perf2-candidate.sh`. Implementation gates do not manufacture
+or substitute performance evidence: Phase 7 remains performance-pending until
+the five-run reports and declared CPU/RSS/WAL/fdatasync/commit-wait/sink-lag
+sidecars are collected in the named 2-vCPU/4-GiB environment.
+
 ## LF-2 evidence and gates
 
 Generate machine-local measurements explicitly:

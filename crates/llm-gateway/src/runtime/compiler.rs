@@ -231,6 +231,10 @@ impl LlmCompiler {
             global_stream_concurrency: config.global_stream_concurrency,
             stream_channel_capacity: config.stream_channel_capacity,
             stream_write_timeout_ms: config.stream_write_timeout_ms,
+            stream_setup_timeout_ms: config.stream_setup_timeout_ms,
+            stream_idle_timeout_ms: config.stream_idle_timeout_ms,
+            stream_minimum_drain_bytes_per_second: config.stream_minimum_drain_bytes_per_second,
+            stream_drain_grace_ms: config.stream_drain_grace_ms,
             max_replay_bytes: config.max_replay_bytes,
             aliases,
             deployments,
@@ -267,7 +271,22 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
         || config.global_stream_concurrency == 0
         || config.stream_channel_capacity == 0
         || config.stream_write_timeout_ms == 0
+        || config.stream_setup_timeout_ms == 0
+        || config.stream_idle_timeout_ms == 0
+        || config.stream_minimum_drain_bytes_per_second == 0
+        || config.stream_drain_grace_ms == 0
         || config.max_replay_bytes == 0
+        || config.audit_runtime.max_record_bytes == 0
+        || config.audit_runtime.max_segment_bytes == 0
+        || config.audit_runtime.max_spool_bytes < config.audit_runtime.max_segment_bytes
+        || config.audit_runtime.queue_records == 0
+        || config.audit_runtime.batch_records == 0
+        || config.audit_runtime.batch_bytes < config.audit_runtime.max_record_bytes
+        || config.audit_runtime.commit_delay_ms == 0
+        || config.audit_runtime.sink_batch_records == 0
+        || config.audit_runtime.sink_batch_bytes < config.audit_runtime.max_record_bytes
+        || config.audit_runtime.sink_poll_ms == 0
+        || config.audit_runtime.sink_retry_max_ms < config.audit_runtime.sink_poll_ms
     {
         return Err(LlmGatewayError::Config(
             "invalid LLM router bounds or path prefix".to_string(),
@@ -306,6 +325,28 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
         if alias.internal && alias.bound_principal.as_deref().is_none_or(str::is_empty) {
             return Err(LlmGatewayError::Config(format!(
                 "internal alias `{name}` must bind a principal"
+            )));
+        }
+        if alias.audit.is_local_durable() && !config.audit_runtime.persistent_volume {
+            return Err(LlmGatewayError::Config(format!(
+                "local-durable alias `{name}` requires declared persistent audit storage"
+            )));
+        }
+        if config.production_projection.enabled
+            && alias.audit != crate::config::AuditMode::Disabled
+            && config
+                .audit_runtime
+                .sink_database_url_env
+                .as_deref()
+                .is_none_or(str::is_empty)
+        {
+            return Err(LlmGatewayError::Config(format!(
+                "audited production alias `{name}` requires auditRuntime.sinkDatabaseUrlEnv"
+            )));
+        }
+        if alias.audit == crate::config::AuditMode::RemoteDurable {
+            return Err(LlmGatewayError::Config(format!(
+                "remote-durable alias `{name}` is not implemented"
             )));
         }
         for deployment in &alias.deployments {

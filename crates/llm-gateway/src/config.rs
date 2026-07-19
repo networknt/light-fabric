@@ -28,12 +28,22 @@ pub struct LlmRouterConfig {
     pub stream_channel_capacity: usize,
     #[serde(default = "default_stream_write_timeout_ms")]
     pub stream_write_timeout_ms: u64,
+    #[serde(default = "default_stream_setup_timeout_ms")]
+    pub stream_setup_timeout_ms: u64,
+    #[serde(default = "default_stream_idle_timeout_ms")]
+    pub stream_idle_timeout_ms: u64,
+    #[serde(default = "default_stream_minimum_drain_rate")]
+    pub stream_minimum_drain_bytes_per_second: u64,
+    #[serde(default = "default_stream_drain_grace_ms")]
+    pub stream_drain_grace_ms: u64,
     #[serde(default)]
     pub development_fixtures: bool,
     #[serde(default)]
     pub openai_extension_allowlist: BTreeSet<String>,
     #[serde(default)]
     pub production_projection: ProductionProjectionConfig,
+    #[serde(default)]
+    pub audit_runtime: AuditRuntimeConfig,
     #[serde(default)]
     pub providers: BTreeMap<String, ProviderConfig>,
     #[serde(default)]
@@ -55,12 +65,82 @@ impl Default for LlmRouterConfig {
             global_stream_concurrency: default_global_stream_concurrency(),
             stream_channel_capacity: default_stream_channel_capacity(),
             stream_write_timeout_ms: default_stream_write_timeout_ms(),
+            stream_setup_timeout_ms: default_stream_setup_timeout_ms(),
+            stream_idle_timeout_ms: default_stream_idle_timeout_ms(),
+            stream_minimum_drain_bytes_per_second: default_stream_minimum_drain_rate(),
+            stream_drain_grace_ms: default_stream_drain_grace_ms(),
             development_fixtures: false,
             openai_extension_allowlist: BTreeSet::new(),
             production_projection: ProductionProjectionConfig::default(),
+            audit_runtime: AuditRuntimeConfig::default(),
             providers: BTreeMap::new(),
             deployments: BTreeMap::new(),
             aliases: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditRuntimeConfig {
+    #[serde(default = "default_audit_directory")]
+    pub directory: String,
+    #[serde(default = "default_gateway_instance")]
+    pub gateway_instance: String,
+    #[serde(default = "default_audit_host")]
+    pub host_id: String,
+    #[serde(default = "default_audit_record_bytes")]
+    pub max_record_bytes: usize,
+    #[serde(default = "default_audit_segment_bytes")]
+    pub max_segment_bytes: u64,
+    #[serde(default = "default_audit_spool_bytes")]
+    pub max_spool_bytes: u64,
+    #[serde(default = "default_audit_queue_records")]
+    pub queue_records: usize,
+    #[serde(default = "default_audit_batch_records")]
+    pub batch_records: usize,
+    #[serde(default = "default_audit_batch_bytes")]
+    pub batch_bytes: usize,
+    #[serde(default = "default_audit_commit_delay_ms")]
+    pub commit_delay_ms: u64,
+    #[serde(default)]
+    pub terminal_commit_before_response: bool,
+    #[serde(default)]
+    pub persistent_volume: bool,
+    /// Environment variable containing the separately credentialed audit
+    /// PostgreSQL URL. The URL itself is never stored in this config.
+    #[serde(default)]
+    pub sink_database_url_env: Option<String>,
+    #[serde(default = "default_audit_sink_batch_records")]
+    pub sink_batch_records: usize,
+    #[serde(default = "default_audit_sink_batch_bytes")]
+    pub sink_batch_bytes: usize,
+    #[serde(default = "default_audit_sink_poll_ms")]
+    pub sink_poll_ms: u64,
+    #[serde(default = "default_audit_sink_retry_max_ms")]
+    pub sink_retry_max_ms: u64,
+}
+
+impl Default for AuditRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            directory: default_audit_directory(),
+            gateway_instance: default_gateway_instance(),
+            host_id: default_audit_host(),
+            max_record_bytes: default_audit_record_bytes(),
+            max_segment_bytes: default_audit_segment_bytes(),
+            max_spool_bytes: default_audit_spool_bytes(),
+            queue_records: default_audit_queue_records(),
+            batch_records: default_audit_batch_records(),
+            batch_bytes: default_audit_batch_bytes(),
+            commit_delay_ms: default_audit_commit_delay_ms(),
+            terminal_commit_before_response: false,
+            persistent_volume: false,
+            sink_database_url_env: None,
+            sink_batch_records: default_audit_sink_batch_records(),
+            sink_batch_bytes: default_audit_sink_batch_bytes(),
+            sink_poll_ms: default_audit_sink_poll_ms(),
+            sink_retry_max_ms: default_audit_sink_retry_max_ms(),
         }
     }
 }
@@ -165,8 +245,20 @@ pub struct AliasConfig {
 pub enum AuditMode {
     #[default]
     Disabled,
+    BestEffort,
+    BoundedAsync,
+    LocalDurable,
+    RemoteDurable,
+    /// Backward-compatible spelling for required bounded-async audit.
     Required,
+    /// Backward-compatible spelling for required local-durable audit.
     Durable,
+}
+
+impl AuditMode {
+    pub fn is_local_durable(self) -> bool {
+        matches!(self, Self::LocalDurable | Self::Durable)
+    }
 }
 
 fn default_path_prefix() -> String {
@@ -196,6 +288,18 @@ fn default_stream_channel_capacity() -> usize {
 fn default_stream_write_timeout_ms() -> u64 {
     5_000
 }
+fn default_stream_setup_timeout_ms() -> u64 {
+    10_000
+}
+fn default_stream_idle_timeout_ms() -> u64 {
+    15_000
+}
+fn default_stream_minimum_drain_rate() -> u64 {
+    128
+}
+fn default_stream_drain_grace_ms() -> u64 {
+    1_000
+}
 fn default_deployment_concurrency() -> usize {
     32
 }
@@ -207,6 +311,45 @@ fn default_attempts() -> usize {
 }
 fn default_true() -> bool {
     true
+}
+fn default_audit_directory() -> String {
+    "data/llm-audit".to_string()
+}
+fn default_audit_host() -> String {
+    "host-local".to_string()
+}
+fn default_audit_record_bytes() -> usize {
+    4 * 1024
+}
+fn default_audit_segment_bytes() -> u64 {
+    64 * 1024 * 1024
+}
+fn default_audit_spool_bytes() -> u64 {
+    1024 * 1024 * 1024
+}
+fn default_audit_queue_records() -> usize {
+    8_192
+}
+fn default_audit_batch_records() -> usize {
+    64
+}
+fn default_audit_batch_bytes() -> usize {
+    256 * 1024
+}
+fn default_audit_commit_delay_ms() -> u64 {
+    5
+}
+fn default_audit_sink_batch_records() -> usize {
+    256
+}
+fn default_audit_sink_batch_bytes() -> usize {
+    1024 * 1024
+}
+fn default_audit_sink_poll_ms() -> u64 {
+    100
+}
+fn default_audit_sink_retry_max_ms() -> u64 {
+    10_000
 }
 fn default_projection_root() -> String {
     "config-cache/llm-projection".to_string()

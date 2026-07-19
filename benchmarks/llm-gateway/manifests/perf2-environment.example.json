@@ -1,0 +1,12 @@
+{
+  "candidate": "light",
+  "revision": "REPLACE_WITH_40_HEX_COMMIT",
+  "cpuLimit": "2 vCPU",
+  "memoryLimitBytes": 4294967296,
+  "keepAlive": true,
+  "auditMode": "bounded_async",
+  "persistentStorage": false,
+  "providerProfile": "stable-60ms",
+  "deploymentManifest": "REPLACE_WITH_DEPLOYMENT_PATH",
+  "resourceCollector": "REPLACE_WITH_COLLECTOR_AND_VERSION"
+}

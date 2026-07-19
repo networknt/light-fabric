@@ -13,6 +13,10 @@ globalConcurrency: ${llm-router.globalConcurrency:256}
 globalStreamConcurrency: ${llm-router.globalStreamConcurrency:64}
 streamChannelCapacity: ${llm-router.streamChannelCapacity:8}
 streamWriteTimeoutMs: ${llm-router.streamWriteTimeoutMs:5000}
+streamSetupTimeoutMs: ${llm-router.streamSetupTimeoutMs:10000}
+streamIdleTimeoutMs: ${llm-router.streamIdleTimeoutMs:15000}
+streamMinimumDrainBytesPerSecond: ${llm-router.streamMinimumDrainBytesPerSecond:128}
+streamDrainGraceMs: ${llm-router.streamDrainGraceMs:1000}
 developmentFixtures: ${llm-router.developmentFixtures:false}
 
 # OpenAI-only request fields may be allowlisted here. Mixed-format aliases use
@@ -34,6 +38,37 @@ productionProjection:
   pollIntervalMs: ${llm-router.productionProjection.pollIntervalMs:1000}
   maxArtifactBytes: ${llm-router.productionProjection.maxArtifactBytes:4194304}
   credentialEnvironment: {}
+
+# Production projection uses the bounded single-writer WAL. `required` aliases
+# map to bounded-async; `local_durable` aliases additionally require
+# persistentVolume=true and wait for attempt-start fdatasync before dispatch.
+# Persistent network filesystems are not automatically equivalent: operators
+# must verify that the mounted filesystem preserves flock exclusion, fdatasync
+# durability, atomic rename, and crash recovery semantics before enabling
+# local_durable. NFS or an unverified network volume must not be declared safe
+# merely because it survives pod replacement.
+# auditRuntime and its database credential rotate only through a gateway
+# restart so two reload generations can never own the same WAL concurrently.
+auditRuntime:
+  directory: ${llm-router.auditRuntime.directory:data/llm-audit}
+  gatewayInstance: ${llm-router.auditRuntime.gatewayInstance:gateway-local}
+  hostId: ${llm-router.auditRuntime.hostId:host-local}
+  maxRecordBytes: ${llm-router.auditRuntime.maxRecordBytes:4096}
+  maxSegmentBytes: ${llm-router.auditRuntime.maxSegmentBytes:67108864}
+  maxSpoolBytes: ${llm-router.auditRuntime.maxSpoolBytes:1073741824}
+  queueRecords: ${llm-router.auditRuntime.queueRecords:8192}
+  batchRecords: ${llm-router.auditRuntime.batchRecords:64}
+  batchBytes: ${llm-router.auditRuntime.batchBytes:262144}
+  commitDelayMs: ${llm-router.auditRuntime.commitDelayMs:5}
+  terminalCommitBeforeResponse: ${llm-router.auditRuntime.terminalCommitBeforeResponse:false}
+  persistentVolume: ${llm-router.auditRuntime.persistentVolume:false}
+  # Set sinkDatabaseUrlEnv to the name (not value) of an environment variable
+  # holding the separately credentialed dedicated-audit PostgreSQL URL.
+  # sinkDatabaseUrlEnv: LIGHT_GATEWAY_LLM_AUDIT_DATABASE_URL
+  sinkBatchRecords: ${llm-router.auditRuntime.sinkBatchRecords:256}
+  sinkBatchBytes: ${llm-router.auditRuntime.sinkBatchBytes:1048576}
+  sinkPollMs: ${llm-router.auditRuntime.sinkPollMs:100}
+  sinkRetryMaxMs: ${llm-router.auditRuntime.sinkRetryMaxMs:10000}
 
 providers:
   openai-local:
