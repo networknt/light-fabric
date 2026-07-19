@@ -1,0 +1,23 @@
+{
+  "phase": 3,
+  "scope": ["LF-5", "LF-5B"],
+  "requestPath": {
+    "singleRootCapture": true,
+    "secretResolutionOnRequestPath": false,
+    "clientConstructionOnRequestPath": false,
+    "providerLookupOnRequestPath": false,
+    "failFastAdmission": true,
+    "auditBeforeEstimate": true
+  },
+  "reliability": {
+    "singleAttemptOwnedByLf5": true,
+    "finalAttemptCoordinatorOwnedByLf5b": true,
+    "safeRetryOnly": true,
+    "boundedReplay": true,
+    "passiveCircuitHalfOpenProbe": true,
+    "halfOpenProbeReleasedOnAllOutcomes": true,
+    "auditFinalizationFailClosedWithSuppressedResultTelemetry": true,
+    "conservativeAmbiguousAccounting": true
+  },
+  "gate": "scripts/run-llm-accounting-circuit-replay-gate.sh"
+}

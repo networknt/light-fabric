@@ -1,5 +1,6 @@
 use agent_delegation::{DelegationClaims, DelegationVerifier, TOKEN_PREFIX};
 use anyhow::{Context, Result};
+use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -31,9 +32,15 @@ use light_pingora::{
     verify_jwt_request, verify_unified_security,
 };
 use light_runtime::{
-    CacheRegistry, ConfigManager, LightRuntimeBuilder, ReloadContext, ReloadOutcome,
+    CacheRegistry, ConfigManager, LightRuntimeBuilder, ModuleKind, ReloadContext, ReloadOutcome,
     ReloadableModule, RuntimeConfig, RuntimeError, TracingOptions, init_tracing,
 };
+use llm_gateway::LlmRuntime;
+use llm_gateway::audit::ProcessAudit;
+use llm_gateway::config::{LLM_ROUTER_FILE, LLM_ROUTER_MODULE_ID, LlmRouterConfig};
+use llm_gateway::credentials::EnvironmentSecretResolver;
+use llm_gateway::http::{AllowBodyAccessControl, BufferedHttpRequest, LlmBufferedHttp};
+use llm_gateway::runtime::{LlmCompiler, LlmSnapshotStore};
 use pingora::http::ResponseHeader;
 use pingora::prelude::{HttpPeer, ProxyHttp, Session};
 use pingora::utils::tls::CertKey;
@@ -93,6 +100,7 @@ struct GatewayProxy {
     access_control: Arc<ConfigManager<Option<AccessControlRuntime>>>,
     mcp_router: Arc<ConfigManager<Option<McpRouterRuntime>>>,
     websocket_router: Arc<ConfigManager<Option<WebSocketRouterRuntime>>>,
+    llm_gateway: Arc<ArcSwapOption<LlmGatewayModule>>,
     metrics_recorder: Arc<MetricsRecorder>,
     proxy_route: Arc<ConfigManager<Option<ProxyRoute>>>,
     router_route: Arc<ConfigManager<Option<RouterRoute>>>,
@@ -106,6 +114,70 @@ struct GatewayProxy {
     upstream_circuits: Mutex<BTreeMap<String, UpstreamCircuitState>>,
     server_scheme: String,
     server_port: u16,
+}
+
+struct LlmGatewayModule {
+    runtime: Arc<LlmRuntime>,
+    http: LlmBufferedHttp,
+    max_request_body_bytes: usize,
+}
+
+fn load_llm_gateway_module(
+    runtime_config: &RuntimeConfig,
+    active: bool,
+    generation: u64,
+    previous: Option<&Arc<LlmGatewayModule>>,
+) -> Result<Option<Arc<LlmGatewayModule>>, RuntimeError> {
+    if !active {
+        return Ok(None);
+    }
+    let config: LlmRouterConfig = runtime_config
+        .module_registry
+        .load_config(runtime_config, LLM_ROUTER_FILE)?;
+    runtime_config.module_registry.register_loaded_config(
+        LLM_ROUTER_MODULE_ID,
+        "llm-router",
+        ModuleKind::Framework,
+        &config,
+        [],
+        config.enabled,
+        Some(config.enabled),
+        true,
+    )?;
+    if !config.enabled {
+        return Ok(None);
+    }
+    let compiler = LlmCompiler::new(Arc::new(EnvironmentSecretResolver));
+    let previous_snapshot = previous.map(|module| module.runtime.snapshot());
+    let snapshot = compiler
+        .compile(&config, generation, previous_snapshot.as_deref())
+        .map_err(|error| RuntimeError::Config(error.to_string()))?;
+    let runtime = match previous
+        .filter(|module| module.runtime.snapshot().global_concurrency == config.global_concurrency)
+    {
+        Some(previous) => {
+            previous.runtime.publish(snapshot);
+            Arc::clone(&previous.runtime)
+        }
+        None => {
+            let store = Arc::new(LlmSnapshotStore::new(snapshot, 2));
+            let audit = Arc::new(ProcessAudit::default());
+            Arc::new(LlmRuntime::new(store, audit))
+        }
+    };
+    let http = LlmBufferedHttp::new(
+        Arc::clone(&runtime),
+        Arc::new(AllowBodyAccessControl),
+        config.max_request_body_bytes,
+        config.max_json_depth,
+        Duration::from_millis(config.request_timeout_ms),
+    )
+    .with_openai_extension_allowlist(config.openai_extension_allowlist.clone());
+    Ok(Some(Arc::new(LlmGatewayModule {
+        runtime,
+        http,
+        max_request_body_bytes: config.max_request_body_bytes,
+    })))
 }
 
 #[async_trait]
@@ -291,6 +363,8 @@ impl GatewayProxy {
             active_handlers.is_handler_active("websocket"),
             access_control.clone().map(Arc::new),
         )?;
+        let llm_gateway =
+            load_llm_gateway_module(config, active_handlers.is_handler_active("llm"), 1, None)?;
         let router_route = load_router_route(config, active_handlers.is_handler_active("router"))?;
         let proxy_route = load_proxy_route(config)?;
         let static_resources = load_static_resources(config)?;
@@ -313,6 +387,7 @@ impl GatewayProxy {
         let access_control = Arc::new(ConfigManager::new(access_control));
         let mcp_router = Arc::new(ConfigManager::new(mcp_router));
         let websocket_router = Arc::new(ConfigManager::new(websocket_router));
+        let llm_gateway = Arc::new(ArcSwapOption::from(llm_gateway));
         let router_route = Arc::new(ConfigManager::new(router_route));
         let proxy_route = Arc::new(ConfigManager::new(proxy_route));
         let static_resources = Arc::new(ConfigManager::new(static_resources));
@@ -340,6 +415,7 @@ impl GatewayProxy {
                 access_control: Arc::clone(&access_control),
                 mcp_router: Arc::clone(&mcp_router),
                 websocket_router: Arc::clone(&websocket_router),
+                llm_gateway: Arc::clone(&llm_gateway),
                 router_route: Arc::clone(&router_route),
             }),
         );
@@ -495,6 +571,13 @@ impl GatewayProxy {
                 websocket_router: Arc::clone(&websocket_router),
             }),
         );
+        config.module_registry.register_reloader(
+            LLM_ROUTER_MODULE_ID,
+            Arc::new(LlmRouterReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                llm_gateway: Arc::clone(&llm_gateway),
+            }),
+        );
         let access_control_reloader: Arc<dyn ReloadableModule> = Arc::new(AccessControlReloader {
             active_handlers: Arc::clone(&active_handlers),
             access_control: Arc::clone(&access_control),
@@ -593,6 +676,7 @@ impl GatewayProxy {
             access_control,
             mcp_router,
             websocket_router,
+            llm_gateway,
             metrics_recorder,
             proxy_route,
             router_route,
@@ -1324,6 +1408,7 @@ struct HandlerReloader {
     access_control: Arc<ConfigManager<Option<AccessControlRuntime>>>,
     mcp_router: Arc<ConfigManager<Option<McpRouterRuntime>>>,
     websocket_router: Arc<ConfigManager<Option<WebSocketRouterRuntime>>>,
+    llm_gateway: Arc<ArcSwapOption<LlmGatewayModule>>,
     router_route: Arc<ConfigManager<Option<RouterRoute>>>,
 }
 
@@ -1423,6 +1508,16 @@ impl ReloadableModule for HandlerReloader {
             access_control.as_ref(),
             &self.websocket_router,
         )?;
+        let previous_llm = self.llm_gateway.load_full();
+        let llm_generation = previous_llm
+            .as_ref()
+            .map_or(1, |module| module.runtime.snapshot().generation + 1);
+        let llm_gateway = load_llm_gateway_module(
+            &ctx.runtime_config,
+            active_handlers.is_handler_active("llm"),
+            llm_generation,
+            previous_llm.as_ref(),
+        )?;
         let router_route = load_router_route(
             &ctx.runtime_config,
             active_handlers.is_handler_active("router"),
@@ -1447,8 +1542,32 @@ impl ReloadableModule for HandlerReloader {
         self.access_control.store(access_control);
         store_mcp_reload(&self.mcp_router, mcp_router);
         self.websocket_router.store(websocket_router);
+        self.llm_gateway.store(llm_gateway);
         self.router_route.store(router_route);
         Ok(ReloadOutcome::success("handler.yml reloaded"))
+    }
+}
+
+struct LlmRouterReloader {
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    llm_gateway: Arc<ArcSwapOption<LlmGatewayModule>>,
+}
+
+#[async_trait]
+impl ReloadableModule for LlmRouterReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let previous = self.llm_gateway.load_full();
+        let generation = previous
+            .as_ref()
+            .map_or(1, |module| module.runtime.snapshot().generation + 1);
+        let candidate = load_llm_gateway_module(
+            &ctx.runtime_config,
+            self.active_handlers.load().is_handler_active("llm"),
+            generation,
+            previous.as_ref(),
+        )?;
+        self.llm_gateway.store(candidate);
+        Ok(ReloadOutcome::success("llm-router.yml reloaded"))
     }
 }
 
@@ -2547,6 +2666,140 @@ impl ProxyHttp for GatewayProxy {
                                 .await;
                         }
                     }
+                }
+                "llm" => {
+                    let Some(module) = self.llm_gateway.load_full() else {
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                        continue;
+                    };
+                    let preceding = &handler_ids[..handler_index];
+                    let ordered_security = preceding.iter().any(|id| id == "correlation")
+                        && preceding
+                            .iter()
+                            .any(|id| id == "unified-security" || id == "unified")
+                        && preceding
+                            .iter()
+                            .any(|id| id == "limit" || id == "rate-limit")
+                        && preceding.iter().any(|id| id == "access-control");
+                    if !ordered_security {
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                        return self
+                            .write_text_response(
+                                session,
+                                ctx,
+                                500,
+                                "invalid llm handler security order",
+                            )
+                            .await;
+                    }
+                    let body = if method_has_request_body(&method) {
+                        let Some(body) =
+                            read_bounded_request_body(session, module.max_request_body_bytes)
+                                .await?
+                        else {
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            return self
+                                .write_text_response(session, ctx, 413, "request body is too large")
+                                .await;
+                        };
+                        if ctx.access_control_active {
+                            let exchange = access_control_exchange(
+                                ctx.endpoint.as_str(),
+                                ctx.request_path.as_str(),
+                                session.req_header().uri.query(),
+                                Some(body.as_slice()),
+                                ctx.auth.as_ref(),
+                            )
+                            .map_err(handler_rejection_error)?;
+                            let runtime = self.access_control.load();
+                            let Some(runtime) = runtime
+                                .as_ref()
+                                .as_ref()
+                                .filter(|runtime| runtime.authorization_enabled())
+                            else {
+                                return self
+                                    .write_text_response(
+                                        session,
+                                        ctx,
+                                        503,
+                                        "access control is unavailable",
+                                    )
+                                    .await;
+                            };
+                            match runtime
+                                .authorize_http_endpoint(
+                                    exchange.endpoint.as_str(),
+                                    &agent_headers(session),
+                                    ctx.auth.as_ref(),
+                                    &exchange.request_data,
+                                    ctx.correlation.correlation_id.as_deref(),
+                                )
+                                .await
+                            {
+                                AccessDecision::Allowed => {
+                                    ctx.access_control_active = false;
+                                    ctx.access_control_exchange = Some(exchange);
+                                }
+                                AccessDecision::Denied(message) => {
+                                    ctx.record_handler_duration(&handler_id, started.elapsed());
+                                    return self
+                                        .write_string_response(session, ctx, 403, message)
+                                        .await;
+                                }
+                            }
+                        }
+                        body
+                    } else {
+                        Vec::new()
+                    };
+                    let headers = agent_headers(session)
+                        .into_iter()
+                        .map(|(name, value)| (name.to_ascii_lowercase(), value))
+                        .collect();
+                    let principal_id = ctx
+                        .auth
+                        .as_ref()
+                        .and_then(|auth| auth.client_id.clone().or_else(|| auth.user_id.clone()))
+                        .unwrap_or_else(|| "anonymous".to_string());
+                    let trusted_request_id = ctx
+                        .correlation
+                        .correlation_id
+                        .clone()
+                        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+                    let response = module
+                        .http
+                        .handle(BufferedHttpRequest {
+                            method: method.clone(),
+                            path: request_path.clone(),
+                            headers,
+                            body,
+                            principal_id,
+                            trusted_request_id,
+                        })
+                        .await;
+                    let content_type = response
+                        .headers
+                        .get("content-type")
+                        .map(String::as_str)
+                        .unwrap_or("application/json");
+                    let extra_headers = response
+                        .headers
+                        .iter()
+                        .filter(|(name, _)| name.as_str() != "content-type")
+                        .map(|(name, value)| (name.clone(), value.clone()))
+                        .collect::<Vec<_>>();
+                    ctx.record_handler_duration(&handler_id, started.elapsed());
+                    return self
+                        .write_bytes_response_with_headers(
+                            session,
+                            ctx,
+                            response.status,
+                            content_type,
+                            None,
+                            Bytes::from(response.body),
+                            &extra_headers,
+                        )
+                        .await;
                 }
                 "mcp" => {
                     let runtime = self.mcp_router.load();
@@ -4272,6 +4525,7 @@ const GATEWAY_HANDLER_DESCRIPTORS: &[(&str, PingoraHandlerKind)] = &[
     ("msal-auth", PingoraHandlerKind::Security),
     ("websocket", PingoraHandlerKind::Traffic),
     ("mcp", PingoraHandlerKind::Application),
+    ("llm", PingoraHandlerKind::Application),
 ];
 
 fn gateway_handler_descriptor(
@@ -4352,6 +4606,17 @@ mod tests {
             cache_registry: None,
             registry_client: None,
         }
+    }
+
+    #[test]
+    fn llm_handler_is_registered_but_disabled_path_does_no_config_or_secret_work() {
+        assert!(gateway_handler_registry().contains("llm"));
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+        let module = load_llm_gateway_module(&config, false, 1, None)
+            .expect("inactive LLM handler must not require llm-router.yml");
+        assert!(module.is_none());
     }
 
     #[test]

@@ -16,3 +16,6 @@ handler.defaultHandlers:
   - default
 
 proxy.hosts: http://127.0.0.1:8081
+
+llm-router.enabled: false
+llm-router.pathPrefix: /v1

@@ -1,0 +1,15 @@
+{
+  "phase": 4,
+  "scope": ["LF-6"],
+  "routes": ["GET /v1/models", "POST /v1/chat/completions"],
+  "security": {
+    "bodyAuthorizationBeforeAliasParse": true,
+    "sharedCapturedBody": true,
+    "trustedRequestId": true,
+    "physicalProviderIdsHidden": true,
+    "mixedFormatStrictestWins": true,
+    "mixedFormatExtensionNarrowingWarning": true,
+    "disabledByDefault": true
+  },
+  "gate": "scripts/run-llm-buffered-gate.sh"
+}

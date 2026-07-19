@@ -6,10 +6,12 @@ license = "Apache-2.0"
 
 [dependencies]
 agent-delegation = { path = "../../crates/agent-delegation" }
+llm-gateway = { path = "../../crates/llm-gateway" }
 light-runtime = { path = "../../crates/light-runtime" }
 light-pingora = { path = "../../frameworks/light-pingora" }
 config-loader = { path = "../../crates/config-loader" }
 anyhow = { workspace = true }
+arc-swap = "1.7"
 async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }

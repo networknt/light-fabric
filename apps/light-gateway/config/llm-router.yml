@@ -1,0 +1,72 @@
+# Local LLM data plane. It is inert unless both this flag and the `llm`
+# handler are enabled. The endpoints and credentials below are development
+# fixtures and must be replaced for a production deployment.
+# The handler path must execute, in order:
+# correlation -> unified-security -> limit -> access-control -> llm
+enabled: ${llm-router.enabled:false}
+pathPrefix: ${llm-router.pathPrefix:/v1}
+maxRequestBodyBytes: ${llm-router.maxRequestBodyBytes:1048576}
+maxJsonDepth: ${llm-router.maxJsonDepth:64}
+maxReplayBytes: ${llm-router.maxReplayBytes:1048576}
+requestTimeoutMs: ${llm-router.requestTimeoutMs:30000}
+globalConcurrency: ${llm-router.globalConcurrency:256}
+developmentFixtures: ${llm-router.developmentFixtures:false}
+
+# OpenAI-only request fields may be allowlisted here. Mixed-format aliases use
+# strictest-wins parsing: adding an Anthropic fallback causes these extensions
+# to be rejected for the entire alias so every eligible fallback is encodable.
+# The compiler emits a warning when that compatibility narrowing is present.
+openaiExtensionAllowlist: []
+
+providers:
+  openai-local:
+    format: openai
+    baseUrl: ${llm-router.openaiBaseUrl:http://127.0.0.1:18081/v1}
+    secretRef: env:LIGHT_GATEWAY_LLM_OPENAI_KEY
+    quotaGroupId: openai-local
+  anthropic-local:
+    format: anthropic
+    baseUrl: ${llm-router.anthropicBaseUrl:http://127.0.0.1:18082/v1}
+    secretRef: env:LIGHT_GATEWAY_LLM_ANTHROPIC_KEY
+    quotaGroupId: anthropic-local
+
+deployments:
+  openai-primary:
+    provider: openai-local
+    model: gpt-local
+    concurrency: 32
+    inputMicrosPerMillion: 1000000
+    outputMicrosPerMillion: 2000000
+    conformanceDigest: b8a824ffc02eeb85eb2f27bf0d95cac133db24b9968f025bca647e7205ff8661
+    text: true
+    images: true
+    tools: true
+    structuredJson: true
+  anthropic-fallback:
+    provider: anthropic-local
+    model: claude-local
+    concurrency: 32
+    inputMicrosPerMillion: 1000000
+    outputMicrosPerMillion: 2000000
+    conformanceDigest: 42fda39c867639ee97895ede7b18cb0526797e84eb5a63c4615074ee39ab0316
+    text: true
+    images: true
+    tools: true
+    structuredJson: false
+
+aliases:
+  light-default:
+    deployments: [openai-primary, anthropic-fallback]
+    maxAttempts: 2
+    concurrency: 64
+    maxInputTokens: 32768
+    maxOutputTokens: 4096
+    maxCostMicros: 1000000
+    audit: required
+  legacy-agent-internal:
+    deployments: [openai-primary]
+    maxAttempts: 1
+    concurrency: 8
+    internal: true
+    boundPrincipal: test-agent
+    audit: required

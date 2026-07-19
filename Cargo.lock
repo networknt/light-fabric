@@ -3762,6 +3762,7 @@ version = "0.1.0"
 dependencies = [
  "agent-delegation",
  "anyhow",
+ "arc-swap",
  "async-trait",
  "bytes",
  "chrono",
@@ -3770,6 +3771,7 @@ dependencies = [
  "futures-util",
  "light-pingora",
  "light-runtime",
+ "llm-gateway",
  "pingora",
  "portal-registry",
  "rustls-pemfile",
@@ -4002,6 +4004,29 @@ name = "litemap"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
+
+[[package]]
+name = "llm-gateway"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "axum",
+ "futures-util",
+ "model-provider",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+ "uuid",
+]
 
 [[package]]
 name = "llm-phase0-spikes"
