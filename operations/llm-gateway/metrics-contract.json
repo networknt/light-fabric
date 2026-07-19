@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "1",
+  "owner": "gateway-sre",
+  "allowedLabels": [
+    "alias", "operation", "category", "outcome", "deployment", "circuitState",
+    "fallbackDepth", "usageEvidence", "auditMode", "publicationState", "streamOutcome"
+  ],
+  "forbiddenLabels": [
+    "prompt", "completion", "userId", "principalId", "sessionId", "requestId",
+    "providerRequestId", "providerError", "model", "credentialRef", "piiTokenId"
+  ],
+  "globalSeriesBudget": 20000,
+  "metrics": [
+    {"name":"light_llm_requests_total","type":"counter","unit":"requests","labels":["alias","operation","category"],"maxSeries":1024},
+    {"name":"light_llm_attempts_total","type":"counter","unit":"attempts","labels":["alias","deployment","outcome"],"maxSeries":4096},
+    {"name":"light_llm_request_duration_seconds","type":"histogram","unit":"seconds","labels":["alias","operation","category"],"maxSeries":1024},
+    {"name":"light_llm_provider_duration_seconds","type":"histogram","unit":"seconds","labels":["deployment","outcome"],"maxSeries":2048},
+    {"name":"light_llm_admission_active","type":"gauge","unit":"requests","labels":["operation"],"maxSeries":4},
+    {"name":"light_llm_admission_rejections_total","type":"counter","unit":"requests","labels":["alias","category"],"maxSeries":512},
+    {"name":"light_llm_fallback_total","type":"counter","unit":"attempts","labels":["alias","fallbackDepth","outcome"],"maxSeries":1024},
+    {"name":"light_llm_circuit_state","type":"gauge","unit":"state","labels":["deployment","circuitState"],"maxSeries":1024},
+    {"name":"light_llm_circuit_probes_total","type":"counter","unit":"probes","labels":["deployment","outcome"],"maxSeries":1024},
+    {"name":"light_llm_usage_tokens_total","type":"counter","unit":"tokens","labels":["alias","usageEvidence"],"maxSeries":512},
+    {"name":"light_llm_cost_micros_total","type":"counter","unit":"microcurrency","labels":["alias","usageEvidence"],"maxSeries":512},
+    {"name":"light_llm_accounting_incomplete_total","type":"counter","unit":"requests","labels":["alias","category"],"maxSeries":512},
+    {"name":"light_llm_projection_apply_seconds","type":"histogram","unit":"seconds","labels":["outcome"],"maxSeries":16},
+    {"name":"light_llm_projection_digest_convergence","type":"gauge","unit":"replicas","labels":["publicationState"],"maxSeries":16},
+    {"name":"light_llm_projection_retained_generations","type":"gauge","unit":"generations","labels":[],"maxSeries":1},
+    {"name":"light_llm_secret_materialization_total","type":"counter","unit":"credentials","labels":["outcome"],"maxSeries":16},
+    {"name":"light_llm_provider_auth_failures_total","type":"counter","unit":"attempts","labels":["deployment"],"maxSeries":512},
+    {"name":"light_llm_audit_reservation_failures_total","type":"counter","unit":"requests","labels":["auditMode","category"],"maxSeries":32},
+    {"name":"light_llm_audit_wal_bytes","type":"gauge","unit":"bytes","labels":[],"maxSeries":1},
+    {"name":"light_llm_audit_wal_segments","type":"gauge","unit":"segments","labels":[],"maxSeries":1},
+    {"name":"light_llm_audit_commit_wait_seconds","type":"histogram","unit":"seconds","labels":["auditMode","outcome"],"maxSeries":16},
+    {"name":"light_llm_audit_sink_lag_seconds","type":"gauge","unit":"seconds","labels":[],"maxSeries":1},
+    {"name":"light_llm_streams_active","type":"gauge","unit":"streams","labels":["alias"],"maxSeries":256},
+    {"name":"light_llm_stream_first_token_seconds","type":"histogram","unit":"seconds","labels":["alias","outcome"],"maxSeries":512},
+    {"name":"light_llm_stream_terminations_total","type":"counter","unit":"streams","labels":["alias","streamOutcome"],"maxSeries":1024}
+  ]
+}

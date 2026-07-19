@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "1",
+  "version": "SEC-1-2026-07-19",
+  "owner": "product-security",
+  "approver": "security-reviewer",
+  "scope": "metadata-only LLM gateway through production projection, provider dispatch, streaming, and audit sink",
+  "assets": ["provider credentials", "public aliases", "request authorization", "usage and cost evidence", "audit durability", "publication integrity"],
+  "trustBoundaries": ["client to gateway", "Portal projection to gateway", "gateway to provider", "gateway WAL to audit database", "gateway telemetry to operations"],
+  "controls": [
+    {"id":"credentials","status":"verified","evidence":["off-path authorization/materialization", "rotation retains last valid root", "secret-free publication and audit records"]},
+    {"id":"alias-authorization","status":"verified","evidence":["internal aliases never enumerate", "bound-principal mismatch returns model unavailable"]},
+    {"id":"ssrf-outbound","status":"verified","evidence":["HTTPS production policy", "redirects disabled", "private/link-local address rejection", "DNS answer filtering", "safe outbound header allowlist"]},
+    {"id":"body-access-control","status":"verified","evidence":["content type, encoding and size precede authorization", "authorization precedes JSON and alias parsing"]},
+    {"id":"error-content-redaction","status":"verified","evidence":["provider details map to sanitized public errors", "reasoning content excluded", "stream failures omit DONE"]},
+    {"id":"audit-storage","status":"verified","evidence":["separate database roles", "metadata-only WAL", "single writer lock", "bounded spool", "retention role separation"]},
+    {"id":"telemetry-artifacts","status":"verified","evidence":["metric label allowlist and series budgets", "content and credential leakage scan", "sanitized canary query"]}
+  ],
+  "exceptions": [],
+  "canaryPolicy": "No canary while a high-severity exception is open. Approval expires when any referenced contract digest changes."
+}

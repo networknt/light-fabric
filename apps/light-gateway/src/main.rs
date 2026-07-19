@@ -42,7 +42,7 @@ use llm_gateway::credentials::{
     EnvironmentReferenceSecretResolver, EnvironmentSecretResolver, SecretResolver,
 };
 use llm_gateway::http::{
-    AllowBodyAccessControl, BufferedHttpRequest, LlmBufferedHttp, LlmHttpResponse,
+    BufferedHttpRequest, LlmBufferedHttp, LlmHttpResponse, PreauthorizedBodyAccessControl,
     StreamingHttpResponse,
 };
 use llm_gateway::projection::{
@@ -382,7 +382,10 @@ fn load_llm_gateway_module(
     };
     let http = LlmBufferedHttp::new(
         Arc::clone(&runtime),
-        Arc::new(AllowBodyAccessControl),
+        // The Pingora handler requires ctx.access_control_exchange before it
+        // can call this adapter. That exchange proves the configured rule saw
+        // these exact captured bytes before LLM JSON/alias parsing.
+        Arc::new(PreauthorizedBodyAccessControl),
         config.max_request_body_bytes,
         config.max_json_depth,
         Duration::from_millis(config.request_timeout_ms),
@@ -2939,6 +2942,21 @@ impl ProxyHttp for GatewayProxy {
                             )
                             .await;
                     }
+                    if !llm_access_control_ready(
+                        &method,
+                        ctx.access_control_active,
+                        ctx.access_control_exchange.is_some(),
+                    ) {
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                        return self
+                            .write_text_response(
+                                session,
+                                ctx,
+                                503,
+                                "LLM body-aware access control is unavailable",
+                            )
+                            .await;
+                    }
                     let body = if method_has_request_body(&method) {
                         let Some(body) =
                             read_bounded_request_body(session, module.max_request_body_bytes)
@@ -3999,6 +4017,18 @@ fn method_has_request_body(method: &str) -> bool {
     )
 }
 
+fn llm_access_control_ready(
+    method: &str,
+    body_authorization_required: bool,
+    bodyless_authorization_completed: bool,
+) -> bool {
+    if method_has_request_body(method) {
+        body_authorization_required
+    } else {
+        bodyless_authorization_completed
+    }
+}
+
 fn access_control_exchange(
     endpoint: &str,
     request_path: &str,
@@ -4827,6 +4857,14 @@ mod tests {
     use tokio_tungstenite::tungstenite::http::HeaderValue;
     use tokio_tungstenite::tungstenite::protocol::Message;
     use tokio_tungstenite::{accept_async, accept_hdr_async, connect_async};
+
+    #[test]
+    fn llm_handler_requires_body_aware_access_control_proof() {
+        assert!(!llm_access_control_ready("POST", false, false));
+        assert!(llm_access_control_ready("POST", true, false));
+        assert!(!llm_access_control_ready("GET", false, false));
+        assert!(llm_access_control_ready("GET", false, true));
+    }
 
     fn runtime_config(
         config_dir: &TempDir,
@@ -6781,6 +6819,11 @@ defaultHandlers: []
             "enabled: true\nanonymousPrefixes: [/v1/chat/completions]\npathPrefixAuths: []\n",
         )
         .expect("write unified security config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::ACCESS_CONTROL_FILE),
+            "enabled: true\ndefaultDeny: false\n",
+        )
+        .expect("write access-control config");
         std::fs::write(
             config_dir.path().join(LLM_ROUTER_FILE),
             format!(

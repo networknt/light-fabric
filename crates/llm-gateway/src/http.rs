@@ -48,10 +48,13 @@ pub trait BodyAccessControl: Send + Sync {
     ) -> Result<(), LlmGatewayError>;
 }
 
-pub struct AllowBodyAccessControl;
+/// Marker used only when an enclosing gateway chain has already completed
+/// body-aware authorization over the exact captured bytes. Production callers
+/// must carry independent proof of that decision before invoking this adapter.
+pub struct PreauthorizedBodyAccessControl;
 
 #[async_trait]
-impl BodyAccessControl for AllowBodyAccessControl {
+impl BodyAccessControl for PreauthorizedBodyAccessControl {
     async fn authorize(
         &self,
         _request: &BufferedHttpRequest,

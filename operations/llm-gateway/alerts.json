@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "1",
+  "owner": "gateway-sre",
+  "alerts": [
+    {"id":"llm-capacity-knee","expression":"rate(light_llm_admission_rejections_total[5m]) > 1","for":"5m","severity":"warning","runbook":"operations/llm-gateway/runbooks/accounting.md","syntheticTrigger":"capacity-knee"},
+    {"id":"llm-provider-circuit","expression":"sum(rate(light_llm_attempts_total{outcome=~\"rate_limited|provider_overload|network\"}[5m])) > 1","for":"3m","severity":"critical","runbook":"operations/llm-gateway/runbooks/provider-circuit.md","syntheticTrigger":"provider-failure"},
+    {"id":"llm-audit-pressure","expression":"light_llm_audit_wal_bytes > 858993459","for":"2m","severity":"critical","runbook":"operations/llm-gateway/runbooks/audit-wal.md","syntheticTrigger":"audit-pressure"},
+    {"id":"llm-publication-divergence","expression":"light_llm_projection_digest_convergence < 2","for":"5m","severity":"critical","runbook":"operations/llm-gateway/runbooks/bad-publication.md","syntheticTrigger":"publication-divergence"},
+    {"id":"llm-authentication-storm","expression":"sum(rate(light_llm_provider_auth_failures_total[5m])) > 1","for":"3m","severity":"critical","runbook":"operations/llm-gateway/runbooks/secret-rotation.md","syntheticTrigger":"authentication-storm"},
+    {"id":"llm-slow-consumers","expression":"sum(rate(light_llm_stream_terminations_total{streamOutcome=\"slow_consumer\"}[5m])) > 0.1","for":"5m","severity":"warning","runbook":"operations/llm-gateway/runbooks/slow-consumers.md","syntheticTrigger":"slow-consumer"},
+    {"id":"llm-accounting-incomplete","expression":"sum(rate(light_llm_accounting_incomplete_total[10m])) > 0","for":"10m","severity":"warning","runbook":"operations/llm-gateway/runbooks/accounting.md","syntheticTrigger":"usage-incomplete"}
+  ]
+}

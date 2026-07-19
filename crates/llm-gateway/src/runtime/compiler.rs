@@ -77,6 +77,7 @@ impl LlmCompiler {
                         &secret,
                         capabilities,
                         timeout,
+                        config.development_fixtures,
                     )?) as Arc<dyn model_provider::inference::InferenceProvider>
                 }
             };

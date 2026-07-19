@@ -16,7 +16,7 @@ use std::time::Instant;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
     let command = args.next().ok_or(
-        "usage: llm-phase0-spikes <body|snapshot|projection-secret|wal|validate|validate-closure|validate-comparison|validate-perf1|validate-perf1-implementation> [output-or-candidate]",
+        "usage: llm-phase0-spikes <body|snapshot|projection-secret|wal|validate|validate-closure|validate-comparison|validate-perf1|validate-perf1-implementation|validate-release|validate-release-implementation> [output-or-candidate]",
     )?;
     let output = args.next().map(PathBuf::from);
     match command.as_str() {
@@ -35,9 +35,448 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         "validate-perf1" => validate_perf1(true)?,
         "validate-perf1-implementation" => validate_perf1(false)?,
+        "validate-release" => validate_release(true)?,
+        "validate-release-implementation" => validate_release(false)?,
         _ => return Err(format!("unknown command `{command}`").into()),
     }
     Ok(())
+}
+
+fn validate_release(require_performance: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let root = workspace_root();
+    let read = |relative_path: &str| -> Result<Value, Box<dyn std::error::Error>> {
+        Ok(serde_json::from_slice(&fs::read(
+            root.join(relative_path),
+        )?)?)
+    };
+    let perf = read("benchmarks/llm-gateway/manifests/perf3-manifest.json")?;
+    let metrics = read("operations/llm-gateway/metrics-contract.json")?;
+    let dashboards = read("operations/llm-gateway/dashboards.json")?;
+    let alerts = read("operations/llm-gateway/alerts.json")?;
+    let triggers = read("operations/llm-gateway/synthetic-triggers.json")?;
+    let security = read("security/llm-gateway/threat-model.json")?;
+    let security_evidence = read("security/llm-gateway/evidence.json")?;
+    let release = read("benchmarks/llm-gateway/manifests/release-manifest.json")?;
+
+    let required_profiles = [
+        "buffered-500",
+        "buffered-5000",
+        "streaming",
+        "overload",
+        "projection-churn",
+        "chaos",
+        "local-durable",
+    ];
+    for profile in required_profiles {
+        if perf["profiles"].get(profile).is_none() {
+            return Err(format!("PERF-3 profile `{profile}` is missing").into());
+        }
+    }
+    if perf["runsPerCandidate"] != 5
+        || perf["generator"]["openLoop"] != true
+        || perf["generator"]["separateProcess"] != true
+        || perf["thresholds"]["highThroughputRps"] != 5_000
+        || perf["thresholds"]["admissionP99Micros"] != 1_000
+        || perf["thresholds"]["unboundedMemoryGrowthAllowed"] != false
+    {
+        return Err("PERF-3 environment or threshold contract is incomplete".into());
+    }
+
+    let allowed_labels = metrics["allowedLabels"]
+        .as_array()
+        .ok_or("OBS-1 allowedLabels is missing")?;
+    let forbidden_labels = metrics["forbiddenLabels"]
+        .as_array()
+        .ok_or("OBS-1 forbiddenLabels is missing")?;
+    let metric_entries = metrics["metrics"]
+        .as_array()
+        .ok_or("OBS-1 metrics are missing")?;
+    let mut metric_names = std::collections::BTreeSet::new();
+    for metric in metric_entries {
+        let name = metric["name"].as_str().ok_or("metric name is missing")?;
+        if !metric_names.insert(name) || !name.starts_with("light_llm_") {
+            return Err(format!("invalid or duplicate metric `{name}`").into());
+        }
+        if metric["unit"].as_str().is_none_or(str::is_empty)
+            || metric["maxSeries"].as_u64().is_none_or(|value| value == 0)
+        {
+            return Err(format!("metric `{name}` lacks a unit/cardinality budget").into());
+        }
+        for label in metric["labels"].as_array().ok_or("metric labels missing")? {
+            if !allowed_labels.contains(label) || forbidden_labels.contains(label) {
+                return Err(format!("metric `{name}` uses an unbounded label").into());
+            }
+        }
+    }
+    for required in [
+        "light_llm_requests_total",
+        "light_llm_attempts_total",
+        "light_llm_circuit_probes_total",
+        "light_llm_audit_wal_bytes",
+        "light_llm_streams_active",
+        "light_llm_projection_digest_convergence",
+    ] {
+        if !metric_names.contains(required) {
+            return Err(format!("OBS-1 metric `{required}` is missing").into());
+        }
+    }
+
+    let required_dashboards = [
+        "request-attempt-slo",
+        "provider-circuit-fallback",
+        "usage-cost-evidence",
+        "projection-publication",
+        "audit-wal",
+        "stream-capacity",
+        "canary-evidence",
+    ];
+    for name in required_dashboards {
+        if !dashboards["dashboards"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["id"] == name))
+        {
+            return Err(format!("OBS-1 dashboard `{name}` is missing").into());
+        }
+    }
+    let trigger_ids = triggers["triggers"]
+        .as_array()
+        .ok_or("OBS-1 synthetic triggers missing")?
+        .iter()
+        .filter_map(|trigger| trigger["id"].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for alert in alerts["alerts"].as_array().ok_or("OBS-1 alerts missing")? {
+        let runbook = alert["runbook"].as_str().ok_or("alert runbook missing")?;
+        let trigger = alert["syntheticTrigger"]
+            .as_str()
+            .ok_or("alert synthetic trigger missing")?;
+        if !root.join(runbook).is_file() || !trigger_ids.contains(trigger) {
+            return Err(format!("alert `{}` has an invalid runbook/trigger", alert["id"]).into());
+        }
+    }
+    let canary_query = fs::read_to_string(root.join("operations/llm-gateway/canary-evidence.sql"))?;
+    for field in [
+        "public_alias",
+        "publication_digest",
+        "policy_version",
+        "pricing_version",
+        "attempt_outcome",
+    ] {
+        if !canary_query.contains(field) {
+            return Err(format!("canary evidence query does not expose `{field}`").into());
+        }
+    }
+
+    let required_threats = [
+        "credentials",
+        "alias-authorization",
+        "ssrf-outbound",
+        "body-access-control",
+        "error-content-redaction",
+        "audit-storage",
+        "telemetry-artifacts",
+    ];
+    for threat in required_threats {
+        if !security["controls"].as_array().is_some_and(|controls| {
+            controls
+                .iter()
+                .any(|control| control["id"] == threat && control["status"] == "verified")
+        }) {
+            return Err(format!("SEC-1 control `{threat}` is not verified").into());
+        }
+    }
+    if security["version"].as_str().is_none_or(str::is_empty)
+        || security["approver"].as_str().is_none_or(str::is_empty)
+        || security["exceptions"].as_array().is_none()
+        || security["exceptions"].as_array().is_some_and(|exceptions| {
+            exceptions
+                .iter()
+                .any(|exception| exception["severity"] == "high" && exception["status"] == "open")
+        })
+    {
+        return Err("SEC-1 threat model metadata or exception policy failed".into());
+    }
+    if security_evidence["tests"]
+        .as_array()
+        .is_none_or(|tests| tests.is_empty() || tests.iter().any(|test| test["status"] != "pass"))
+    {
+        return Err("SEC-1 evidence contains a missing or failed test".into());
+    }
+    for directory in [
+        "benchmarks/llm-gateway/reports",
+        "operations/llm-gateway",
+        "security/llm-gateway",
+    ] {
+        for path in json_files_under(&root.join(directory))? {
+            let bytes = fs::read(&path)?;
+            let lower = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
+            if lower.contains("sk-live-")
+                || lower.contains("sk_test_")
+                || lower.contains("\"api_key\":")
+                || lower.contains("\"authorization\":\"bearer ")
+            {
+                return Err(format!(
+                    "SEC-1 credential-like material found in {}",
+                    relative(&path)
+                )
+                .into());
+            }
+        }
+    }
+
+    for owner in ["performance", "observability", "security"] {
+        if release["owners"][owner].as_str().is_none_or(str::is_empty) {
+            return Err(format!("release owner `{owner}` is missing").into());
+        }
+    }
+    if release["canaryAllowed"] != false {
+        return Err("release manifest must remain fail-closed before REL-1".into());
+    }
+    let base_commit = release["baseCommit"]
+        .as_str()
+        .ok_or("release base commit missing")?;
+    if base_commit.len() != 40 || !base_commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("release base commit is invalid".into());
+    }
+    for (path, expected) in release["artifactDigests"]
+        .as_object()
+        .ok_or("release artifact digests missing")?
+    {
+        let path = Path::new(path);
+        if path.is_absolute()
+            || path
+                .components()
+                .any(|component| matches!(component, Component::ParentDir))
+        {
+            return Err("release artifact path escapes the repository".into());
+        }
+        let expected = expected.as_str().ok_or("invalid release artifact digest")?;
+        let actual = sha256_hex(&fs::read(root.join(path))?);
+        if expected != actual {
+            return Err(format!("release artifact digest mismatch for {}", path.display()).into());
+        }
+    }
+
+    if require_performance {
+        validate_perf3_results(&root, &perf)?;
+        println!("PERF-3, OBS-1, and SEC-1 release qualification passed");
+    } else {
+        println!(
+            "OBS-1 and SEC-1 implementation contracts passed; PERF-3 remains pending external five-run evidence"
+        );
+    }
+    Ok(())
+}
+
+fn validate_perf3_results(root: &Path, perf: &Value) -> Result<(), Box<dyn std::error::Error>> {
+    let result_schema = root.join("benchmarks/llm-gateway/schemas/result.schema.json");
+    for (profile, contract) in perf["profiles"]
+        .as_object()
+        .ok_or("PERF-3 profiles missing")?
+    {
+        for candidate in contract["candidates"]
+            .as_array()
+            .ok_or("PERF-3 candidates missing")?
+        {
+            let candidate = candidate.as_str().ok_or("invalid PERF-3 candidate")?;
+            let directory = root
+                .join("benchmarks/llm-gateway/reports/perf3")
+                .join(profile)
+                .join(candidate);
+            let environment = directory.join("environment.json");
+            if !environment.is_file() {
+                return Err(format!("PERF-3 closure missing {}", relative(&environment)).into());
+            }
+            let environment: Value = serde_json::from_slice(&fs::read(&environment)?)?;
+            if environment["candidate"] != candidate
+                || environment["profile"].as_str() != Some(profile.as_str())
+                || environment["generatorSeparate"] != true
+                || environment["revision"]
+                    .as_str()
+                    .is_none_or(|revision| revision.len() != 40)
+            {
+                return Err(
+                    format!("PERF-3 environment mismatch for `{profile}/{candidate}`").into(),
+                );
+            }
+            let offered_rps = contract["offeredRps"].as_u64().unwrap_or(500);
+            for run in 1..=5 {
+                let result = directory.join(format!("{offered_rps}rps-run{run}.json"));
+                let sidecar = directory.join(format!("{offered_rps}rps-run{run}-metrics.json"));
+                if !result.is_file() || !sidecar.is_file() {
+                    return Err(format!(
+                        "PERF-3 closure missing run {run} for `{profile}/{candidate}`"
+                    )
+                    .into());
+                }
+                validate_instances(&result_schema, std::slice::from_ref(&result))?;
+                let result_value: Value = serde_json::from_slice(&fs::read(&result)?)?;
+                let sidecar_value: Value = serde_json::from_slice(&fs::read(&sidecar)?)?;
+                if result_value["generatorSaturated"] != false
+                    || sidecar_value["cpuNanos"].as_u64().is_none()
+                    || sidecar_value["peakRssBytes"].as_u64().is_none()
+                    || sidecar_value["queueDepthEnd"].as_u64().is_none()
+                    || sidecar_value["recoverySeconds"].as_f64().is_none()
+                {
+                    return Err(format!(
+                        "PERF-3 run evidence is incomplete for `{profile}/{candidate}`"
+                    )
+                    .into());
+                }
+                for measurement in contract["requiredMeasurements"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
+                    let measurement = measurement.as_str().ok_or("invalid PERF-3 measurement")?;
+                    if sidecar_value[measurement].is_null() {
+                        return Err(format!(
+                            "PERF-3 `{profile}/{candidate}` lacks `{measurement}`"
+                        )
+                        .into());
+                    }
+                }
+                if matches!(profile.as_str(), "buffered-500" | "buffered-5000")
+                    && (result_value["offered"] != result_value["completed"]
+                        || result_value["failed"] != 0
+                        || sidecar_value["queueDepthEnd"] != 0
+                        || sidecar_value["memoryGrowthBytes"]
+                            .as_i64()
+                            .is_none_or(|value| value > 0))
+                {
+                    return Err(
+                        format!("PERF-3 absolute gate failed for `{profile}/{candidate}`").into(),
+                    );
+                }
+                if profile == "buffered-5000"
+                    && sidecar_value["admissionP99Micros"]
+                        .as_u64()
+                        .is_none_or(|value| value >= 1_000)
+                {
+                    return Err("PERF-3 5,000-RPS admission P99 exceeded 1 ms".into());
+                }
+                if profile == "buffered-500"
+                    && candidate == "light"
+                    && (result_value["latency"]["p50Micros"]
+                        .as_u64()
+                        .is_none_or(|value| value > 61_000)
+                        || result_value["latency"]["p99Micros"]
+                            .as_u64()
+                            .is_none_or(|value| value > 65_000))
+                {
+                    return Err("PERF-3 500-RPS gateway-added latency budget failed".into());
+                }
+                if profile == "overload"
+                    && (sidecar_value["gatewayRejected"]
+                        .as_u64()
+                        .is_none_or(|value| value == 0)
+                        || sidecar_value["queueDepthEnd"] != 0
+                        || sidecar_value["recoverySeconds"]
+                            .as_f64()
+                            .is_none_or(|value| value > 30.0))
+                {
+                    return Err("PERF-3 overload shedding/recovery gate failed".into());
+                }
+            }
+        }
+    }
+    for profile in ["buffered-500", "buffered-5000"] {
+        validate_perf3_non_inferiority(root, perf, profile)?;
+    }
+    Ok(())
+}
+
+fn validate_perf3_non_inferiority(
+    root: &Path,
+    perf: &Value,
+    profile: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let offered_rps = perf["profiles"][profile]["offeredRps"]
+        .as_u64()
+        .ok_or("PERF-3 comparison RPS missing")?;
+    let read_run =
+        |candidate: &str, run: u64| -> Result<(Value, Value), Box<dyn std::error::Error>> {
+            let directory = root
+                .join("benchmarks/llm-gateway/reports/perf3")
+                .join(profile)
+                .join(candidate);
+            let result = serde_json::from_slice(&fs::read(
+                directory.join(format!("{offered_rps}rps-run{run}.json")),
+            )?)?;
+            let sidecar = serde_json::from_slice(&fs::read(
+                directory.join(format!("{offered_rps}rps-run{run}-metrics.json")),
+            )?)?;
+            Ok((result, sidecar))
+        };
+    let mut throughput = Vec::new();
+    let mut p50 = Vec::new();
+    let mut p95 = Vec::new();
+    let mut p99 = Vec::new();
+    let mut cpu_per_request = Vec::new();
+    let mut peak_rss = Vec::new();
+    for run in 1..=5 {
+        let (light, light_sidecar) = read_run("light", run)?;
+        let (bifrost, bifrost_sidecar) = read_run("bifrost", run)?;
+        let ratio = |left: u64, right: u64| {
+            if right == 0 {
+                f64::INFINITY
+            } else {
+                left as f64 / right as f64
+            }
+        };
+        throughput.push(ratio(
+            light["completed"].as_u64().unwrap_or_default(),
+            bifrost["completed"].as_u64().unwrap_or_default(),
+        ));
+        for (target, percentile) in [
+            (&mut p50, "p50Micros"),
+            (&mut p95, "p95Micros"),
+            (&mut p99, "p99Micros"),
+        ] {
+            target.push(ratio(
+                light["latency"][percentile].as_u64().unwrap_or(u64::MAX),
+                bifrost["latency"][percentile].as_u64().unwrap_or_default(),
+            ));
+        }
+        let light_completed = light["completed"].as_u64().unwrap_or_default();
+        let bifrost_completed = bifrost["completed"].as_u64().unwrap_or_default();
+        cpu_per_request.push(
+            (light_sidecar["cpuNanos"].as_u64().unwrap_or(u64::MAX) as f64
+                / light_completed.max(1) as f64)
+                / (bifrost_sidecar["cpuNanos"].as_u64().unwrap_or_default() as f64
+                    / bifrost_completed.max(1) as f64),
+        );
+        peak_rss.push(ratio(
+            light_sidecar["peakRssBytes"].as_u64().unwrap_or(u64::MAX),
+            bifrost_sidecar["peakRssBytes"].as_u64().unwrap_or_default(),
+        ));
+    }
+    if confidence_interval_95(&throughput).0 < 0.95 {
+        return Err(format!("PERF-3 `{profile}` throughput is not non-inferior").into());
+    }
+    for (name, ratios) in [
+        ("P50", p50),
+        ("P95", p95),
+        ("P99", p99),
+        ("CPU/request", cpu_per_request),
+        ("peak RSS", peak_rss),
+    ] {
+        if confidence_interval_95(&ratios).1 > 1.05 {
+            return Err(format!("PERF-3 `{profile}` {name} is not non-inferior").into());
+        }
+    }
+    Ok(())
+}
+
+fn confidence_interval_95(values: &[f64]) -> (f64, f64) {
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    let variance = values
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f64>()
+        / (values.len() - 1) as f64;
+    // Student's t critical value for the required five-run sample (df=4).
+    let margin = 2.776 * variance.sqrt() / (values.len() as f64).sqrt();
+    (mean - margin, mean + margin)
 }
 
 fn validate_perf1(require_results: bool) -> Result<(), Box<dyn std::error::Error>> {

@@ -125,6 +125,47 @@ or substitute performance evidence: Phase 7 remains performance-pending until
 the five-run reports and declared CPU/RSS/WAL/fdatasync/commit-wait/sink-lag
 sidecars are collected in the named 2-vCPU/4-GiB environment.
 
+## PERF-3, OBS-1, and SEC-1
+
+The release matrix is pinned in `manifests/perf3-manifest.json`. It covers the
+500 and 5,000 RPS buffered profiles, full streaming, overload, projection
+churn, chaos, and a separately reported local-durable lane. Capture a candidate
+with:
+
+```bash
+LLM_BENCH_ENVIRONMENT_FILE=/path/to/environment.json \
+LLM_BENCH_METRICS_DIR=/path/to/run-sidecars \
+  benchmarks/llm-gateway/scripts/run-perf3-candidate.sh \
+  buffered-5000 light https://gateway.example/v1/chat/completions
+```
+
+The generator must run in a separate constrained process/host and every
+candidate/profile requires five runs. The run sidecar records CPU, RSS,
+allocation, connection, queue, memory-growth, admission, and recovery evidence.
+The implementation gate is intentionally distinct from release closure:
+
+```bash
+./scripts/run-llm-release-qualification-gates.sh
+./scripts/run-llm-release-qualification-gates.sh --require-performance
+```
+
+The first command validates the PERF-3 harness plus the owned OBS-1 and SEC-1
+artifact contracts. The second fails closed until all external reports exist
+and satisfy the absolute gate. It never creates placeholder measurements.
+
+OBS-1 artifacts live under `operations/llm-gateway`: a metric/label/cardinality
+contract, dashboard definitions, alerts, synthetic triggers, a sanitized canary
+query, and owned runbooks. SEC-1 artifacts live under `security/llm-gateway`.
+The provider boundary disables redirects and ambient proxies, rejects unsafe
+URL forms and non-public IP/DNS answers outside development fixtures, and
+allowlists non-credential outbound headers. The Pingora LLM handler also
+requires proof that body-aware access control ran over the captured bytes before
+the preauthorized parser adapter is called.
+
+`manifests/release-manifest.json` keeps `canaryAllowed` false while PERF-3 is
+pending. REL-1 must update it only after real performance evidence, synthetic
+alert exercises, security approval, and artifact digests are recorded.
+
 ## LF-2 evidence and gates
 
 Generate machine-local measurements explicitly:

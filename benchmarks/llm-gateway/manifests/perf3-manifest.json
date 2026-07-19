@@ -1,0 +1,80 @@
+{
+  "schemaVersion": "1",
+  "checkpoint": "PERF-3",
+  "runsPerCandidate": 5,
+  "generator": {
+    "openLoop": true,
+    "separateProcess": true,
+    "saturationMustBeFalse": true
+  },
+  "profiles": {
+    "buffered-500": {
+      "offeredRps": 500,
+      "payload": "small-text.json",
+      "candidates": ["light", "bifrost", "agentgateway"],
+      "cpu": "2 vCPU",
+      "memoryBytes": 4294967296,
+      "auditMode": "bounded_async"
+    },
+    "buffered-5000": {
+      "offeredRps": 5000,
+      "payload": "small-text.json",
+      "candidates": ["light", "bifrost", "agentgateway"],
+      "cpu": "4 vCPU",
+      "memoryBytes": 17179869184,
+      "auditMode": "bounded_async"
+    },
+    "streaming": {
+      "offeredRps": 500,
+      "payload": "stream-small.json",
+      "candidates": ["light", "bifrost", "agentgateway"],
+      "requiredMeasurements": ["ttftP99Micros", "chunkProcessingP99Micros", "disconnects", "upstreamCancellations"]
+    },
+    "overload": {
+      "offeredRps": 7500,
+      "payload": "small-text.json",
+      "candidates": ["light", "bifrost"],
+      "requiredMeasurements": ["admissionP99Micros", "gatewayRejected", "queueDepthMax", "queueDepthEnd", "recoverySeconds"]
+    },
+    "projection-churn": {
+      "offeredRps": 5000,
+      "payload": "small-text.json",
+      "candidates": ["light"],
+      "requiredMeasurements": ["projectionSwaps", "retainedGenerationsMax", "digestDivergenceSeconds"]
+    },
+    "chaos": {
+      "offeredRps": 500,
+      "payload": "small-text.json",
+      "candidates": ["light"],
+      "requiredMeasurements": ["providerResets", "sinkOutageSeconds", "walPressureRejects", "recoverySeconds"]
+    },
+    "local-durable": {
+      "offeredRps": 100,
+      "payload": "small-text.json",
+      "candidates": ["light"],
+      "separateFromDefaultReleaseResult": true,
+      "requiredMeasurements": ["fdatasyncP99Micros", "commitWaitP99Micros", "walBytes", "sinkLag"]
+    }
+  },
+  "thresholds": {
+    "nonInferiorityPercent": 5,
+    "highThroughputRps": 5000,
+    "admissionP99Micros": 1000,
+    "gatewayAddedP50MicrosAt500": 1000,
+    "gatewayAddedP99MicrosAt500": 5000,
+    "growingQueueAllowed": false,
+    "unboundedMemoryGrowthAllowed": false,
+    "residualBacklogAllowed": false
+  },
+  "requiredSidecarFields": [
+    "cpuNanos",
+    "peakRssBytes",
+    "allocationBytes",
+    "connectionsMax",
+    "queueDepthMax",
+    "queueDepthEnd",
+    "memoryGrowthBytes",
+    "admissionP99Micros",
+    "recoverySeconds"
+  ]
+}

@@ -1480,6 +1480,29 @@ async fn models_never_enumerate_internal_aliases() {
 }
 
 #[tokio::test]
+async fn internal_alias_invocation_is_bound_to_its_approved_principal() {
+    let provider = Arc::new(ScriptedProvider::new(
+        ProviderFormat::OpenAi,
+        vec![Ok(success_response())],
+    ));
+    let runtime = runtime_with(
+        vec![provider.clone()],
+        1,
+        4096,
+        Arc::new(RecordingAudit::default()),
+    );
+    let http = LlmBufferedHttp::new(runtime, Arc::new(Allow), 4096, 32, Duration::from_secs(1));
+    let mut request = http_request(
+        br#"{"model":"legacy-agent-internal","messages":[{"role":"user","content":"hello"}]}"#,
+    );
+    request.principal_id = "different-agent".to_string();
+    let response = http.handle(request).await;
+    assert_eq!(response.status, 404);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    assert!(!String::from_utf8_lossy(&response.body).contains("legacy-agent-internal"));
+}
+
+#[tokio::test]
 async fn buffered_errors_preserve_retry_after_and_use_client_fault_message() {
     let rate_limited = Arc::new(ScriptedProvider::new(
         ProviderFormat::OpenAi,

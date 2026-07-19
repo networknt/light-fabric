@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "1",
+  "release": "llm-gateway-mvp",
+  "generatedDate": "2026-07-19",
+  "sourceTree": "worktree",
+  "baseCommit": "ee54f8d7787ad5c6b5fcb15f9785d5470c747373",
+  "owners": {
+    "performance": "gateway-performance",
+    "observability": "gateway-sre",
+    "security": "product-security"
+  },
+  "artifacts": {
+    "performance": "benchmarks/llm-gateway/manifests/perf3-manifest.json",
+    "qualificationReport": "benchmarks/llm-gateway/reports/phase8-release-qualification.json",
+    "metrics": "operations/llm-gateway/metrics-contract.json",
+    "dashboards": "operations/llm-gateway/dashboards.json",
+    "alerts": "operations/llm-gateway/alerts.json",
+    "runbooks": "operations/llm-gateway/runbooks/README.md",
+    "security": "security/llm-gateway/threat-model.json",
+    "securityEvidence": "security/llm-gateway/evidence.json"
+  },
+  "artifactDigests": {
+    "benchmarks/llm-gateway/manifests/perf3-manifest.json": "97146bbaa08aac4cfc324b3e68d5a3b80a1035c318d72ec46411000d6b47f51f",
+    "benchmarks/llm-gateway/reports/phase8-release-qualification.json": "42e887f96f54329c672dae57683850c08fd2e9e3f06d65ae691eaf6caf518856",
+    "operations/llm-gateway/metrics-contract.json": "9dc375c35ed04e04bb09058eeefcc14253e0a90d204f616e38e5ab6fff1955a2",
+    "operations/llm-gateway/dashboards.json": "d910b95cd3b0c669a71345cce232d95af8122ab52f8587e31b9812bbd03a602c",
+    "operations/llm-gateway/alerts.json": "f2165c12ab8c1ee7f70bc1ff093864ebe5295e6e703e816cfd32e81205cca931",
+    "operations/llm-gateway/synthetic-triggers.json": "9b739b9185025079c2bf8da4314102b334350e931e56e246668964ec3d8fd066",
+    "operations/llm-gateway/canary-evidence.sql": "ff5067eac9434c44fd9cc35c02004760cce29bdcba4848c6c9eed2b20b12cc3f",
+    "security/llm-gateway/threat-model.json": "485374af8e0163d336987cd652c30e5fd919ab79d0bdeb9368bc27e458d09f36",
+    "security/llm-gateway/evidence.json": "e7c8eda094664553ee5f5ce6ab9d4ffe1494e3f62722284f5ee8ad3464576ad7"
+  },
+  "status": {
+    "PERF-3": "pending-external-five-run-evidence",
+    "OBS-1": "implementation-complete",
+    "SEC-1": "implementation-complete",
+    "REL-1": "blocked-on-PERF-3"
+  },
+  "canaryAllowed": false,
+  "syntheticMeasurementsSubstituted": false
+}

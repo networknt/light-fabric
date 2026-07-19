@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "1",
+  "owner": "gateway-sre",
+  "triggers": [
+    {"id":"capacity-knee","method":"lower test alias concurrency and offer 2x capacity","expectedAlert":"llm-capacity-knee"},
+    {"id":"provider-failure","method":"switch mock provider to connection-reset profile","expectedAlert":"llm-provider-circuit"},
+    {"id":"audit-pressure","method":"pause audit sink and fill 85 percent of test WAL budget","expectedAlert":"llm-audit-pressure"},
+    {"id":"publication-divergence","method":"hold one test replica on the prior manifest digest","expectedAlert":"llm-publication-divergence"},
+    {"id":"authentication-storm","method":"rotate test credential to a rejected value","expectedAlert":"llm-authentication-storm"},
+    {"id":"slow-consumer","method":"read SSE below configured minimum drain rate","expectedAlert":"llm-slow-consumers"},
+    {"id":"usage-incomplete","method":"terminate mock stream before usage evidence","expectedAlert":"llm-accounting-incomplete"}
+  ]
+}

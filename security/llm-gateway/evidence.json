@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "1",
+  "generatedDate": "2026-07-19",
+  "tests": [
+    {"id":"provider-url-and-dns-confinement","command":"cargo test --locked -p llm-gateway provider::tests","status":"pass"},
+    {"id":"body-authorization-order","command":"cargo test --locked -p llm-gateway --test local_data_plane buffered_security_","status":"pass"},
+    {"id":"internal-alias-enumeration","command":"cargo test --locked -p llm-gateway --test local_data_plane models_never_enumerate_internal_aliases","status":"pass"},
+    {"id":"internal-alias-invocation","command":"cargo test --locked -p llm-gateway --test local_data_plane internal_alias_invocation_is_bound_to_its_approved_principal","status":"pass"},
+    {"id":"metadata-only-audit","command":"cargo test --locked -p llm-gateway audit::tests::audit_event_is_metadata_only_and_hashes_the_principal","status":"pass"},
+    {"id":"projection-path-confinement","command":"cargo test --locked -p llm-gateway projection::tests::projection_path_components_reject_directory_traversal","status":"pass"},
+    {"id":"public-error-sanitization","command":"cargo test --locked -p llm-gateway --test local_data_plane buffered_errors_preserve_retry_after_and_use_client_fault_message","status":"pass"}
+  ],
+  "leakageScan": {
+    "roots": ["operations/llm-gateway", "benchmarks/llm-gateway/reports", "security/llm-gateway"],
+    "forbiddenContent": ["provider credential values", "prompt/completion bodies", "raw provider errors", "principal IDs", "credential references"],
+    "status": "pass"
+  }
+}

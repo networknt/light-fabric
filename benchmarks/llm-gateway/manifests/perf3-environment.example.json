@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "1",
+  "candidate": "light",
+  "profile": "buffered-5000",
+  "revision": "0000000000000000000000000000000000000000",
+  "cpuLimit": "4 vCPU",
+  "memoryLimitBytes": 17179869184,
+  "generatorSeparate": true,
+  "generatorRevision": "0000000000000000000000000000000000000000",
+  "providerProfile": "stable-60ms",
+  "providerDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+  "tls": true,
+  "httpVersion": "2",
+  "keepAlive": true,
+  "auditMode": "bounded_async"
+}

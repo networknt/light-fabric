@@ -1,0 +1,58 @@
+{
+  "phase": 8,
+  "scope": ["PERF-3", "OBS-1", "SEC-1"],
+  "status": "implementation-pass-pending-external-performance-evidence",
+  "sourceTree": "worktree",
+  "baseCommit": "ee54f8d7787ad5c6b5fcb15f9785d5470c747373",
+  "generatedDate": "2026-07-19",
+  "gates": {
+    "implementation": "scripts/run-llm-release-qualification-gates.sh",
+    "closure": "scripts/run-llm-release-qualification-gates.sh --require-performance",
+    "perf3Runner": "benchmarks/llm-gateway/scripts/run-perf3-candidate.sh"
+  },
+  "perf3": {
+    "status": "pending-external-five-run-evidence",
+    "profiles": ["buffered-500", "buffered-5000", "streaming", "overload", "projection-churn", "chaos", "local-durable"],
+    "confidenceInterval": "paired Student t 95 percent, five runs",
+    "syntheticMeasurementsSubstituted": false
+  },
+  "obs1": {
+    "status": "implementation-complete",
+    "metricLabelAllowlist": true,
+    "perMetricCardinalityBudgets": true,
+    "dashboardDomains": 7,
+    "alertsWithRunbooksAndSyntheticTriggers": 7,
+    "sanitizedCanaryEvidenceQuery": true
+  },
+  "sec1": {
+    "status": "implementation-complete",
+    "bodyAwareAuthorizationFailsClosed": true,
+    "providerRedirectsAndAmbientProxiesDisabled": true,
+    "privateAndLinkLocalIpAndDnsAnswersRejected": true,
+    "safeOutboundHeaderAllowlist": true,
+    "internalAliasEnumerationAndInvocationTests": true,
+    "metadataOnlyAuditAndArtifactLeakageChecks": true,
+    "openHighSeverityExceptions": 0
+  },
+  "validation": {
+    "llmGatewayUnitTests": 24,
+    "llmGatewayIntegrationTests": 33,
+    "lightGatewayLlmTests": 4,
+    "livePingoraSseSmoke": "pass outside restricted network sandbox",
+    "releaseImplementationGate": "pass",
+    "releaseClosureGate": "expected fail: PERF-3 reports absent"
+  },
+  "artifactDigests": {
+    "crates/llm-gateway/src/provider.rs": "sha256:8eb6e082a8ee4e3b792baecbe906081c090792ae55ba34eb9ca36867c6d01965",
+    "crates/llm-gateway/src/http.rs": "sha256:159af5ce8f0398bce648a99f90cc76b18f06f2fb2d21cdc0f634a2acb40d1b08",
+    "apps/light-gateway/src/main.rs": "sha256:62614a0e36edff37227e6489e42dbdeee74bab955a48329408aa7ffa636d43bf",
+    "apps/llm-phase0-spikes/src/main.rs": "sha256:4f10d61532eaeef538943e5a1d13b690894b482f188b2679154e01e92f881be7",
+    "scripts/run-llm-release-qualification-gates.sh": "sha256:823020245e0653d122f04873ab1a1c473c174d8882ff6440373ce53f6e222227",
+    "benchmarks/llm-gateway/scripts/run-perf3-candidate.sh": "sha256:06a54376919c8016a67bb2d90af5747cfebd260a5079096a857d5c317ab0c431"
+  },
+  "limits": [
+    "PERF-3 cannot close on this workstation without the declared external 2-vCPU and 4-vCPU environments, comparator deployments, separate generator, and five raw runs per candidate/profile",
+    "REL-1 remains blocked and canaryAllowed remains false",
+    "live provider codec validation and the production required_provenance policy remain pre-enablement decisions"
+  ]
+}

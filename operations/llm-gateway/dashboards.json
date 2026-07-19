@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "1",
+  "owner": "gateway-sre",
+  "dashboards": [
+    {"id":"request-attempt-slo","panels":["rate(light_llm_requests_total[5m])","histogram_quantile(0.99, rate(light_llm_request_duration_seconds_bucket[5m]))","rate(light_llm_admission_rejections_total[5m])"]},
+    {"id":"provider-circuit-fallback","panels":["rate(light_llm_attempts_total[5m])","light_llm_circuit_state","rate(light_llm_circuit_probes_total[5m])","rate(light_llm_fallback_total[5m])"]},
+    {"id":"usage-cost-evidence","panels":["rate(light_llm_usage_tokens_total[5m])","rate(light_llm_cost_micros_total[5m])","rate(light_llm_accounting_incomplete_total[5m])"]},
+    {"id":"projection-publication","panels":["light_llm_projection_digest_convergence","light_llm_projection_retained_generations","histogram_quantile(0.99, rate(light_llm_projection_apply_seconds_bucket[5m]))"]},
+    {"id":"audit-wal","panels":["light_llm_audit_wal_bytes","light_llm_audit_wal_segments","light_llm_audit_sink_lag_seconds","rate(light_llm_audit_reservation_failures_total[5m])"]},
+    {"id":"stream-capacity","panels":["light_llm_streams_active","histogram_quantile(0.99, rate(light_llm_stream_first_token_seconds_bucket[5m]))","rate(light_llm_stream_terminations_total[5m])"]},
+    {"id":"canary-evidence","panels":["publication digest and alias outcome table","error and fallback rate by policy/pricing version"]}
+  ]
+}
