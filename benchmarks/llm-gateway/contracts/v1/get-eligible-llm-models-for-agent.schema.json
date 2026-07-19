@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lightapi.net/contracts/llm/v1/get-eligible-llm-models-for-agent.schema.json",
+  "type": "object",
+  "required": ["schemaVersion", "cases"],
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "productionAuthority": { "const": false },
+    "cases": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "type": "object",
+        "required": ["name", "request", "response"],
+        "properties": {
+          "name": { "type": "string" },
+          "request": {
+            "type": "object",
+            "required": ["hostId", "agentDefId"],
+            "properties": {
+              "hostId": { "type": "string", "format": "uuid" },
+              "agentDefId": { "type": "string", "format": "uuid" }
+            },
+            "additionalProperties": false
+          },
+          "response": {
+            "type": "object",
+            "required": ["schemaVersion", "agentDefId", "models", "resolvedModel", "resolutionStatus"],
+            "properties": {
+              "schemaVersion": { "const": "1" },
+              "agentDefId": { "type": "string", "format": "uuid" },
+              "models": { "type": "array" },
+              "resolvedModel": { "type": ["string", "null"] },
+              "resolutionStatus": { "enum": ["RESOLVED", "NO_DEFAULT", "AMBIGUOUS_DEFAULT"] }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

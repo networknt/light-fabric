@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "1",
+  "productionAuthority": false,
+  "cases": [
+    {
+      "name": "direct-public-alias",
+      "request": {"hostId": "10000000-0000-0000-0000-000000000001", "agentDefId": "20000000-0000-0000-0000-000000000001"},
+      "response": {
+        "schemaVersion": "1",
+        "agentDefId": "20000000-0000-0000-0000-000000000001",
+        "models": [{"public_alias_id": "30000000-0000-0000-0000-000000000001", "alias_name": "support-chat", "selection_mode": "DIRECT_ALIAS", "selected": true}],
+        "resolvedModel": "support-chat",
+        "resolutionStatus": "RESOLVED"
+      }
+    },
+    {
+      "name": "policy-only-agent-default",
+      "request": {"hostId": "10000000-0000-0000-0000-000000000001", "agentDefId": "20000000-0000-0000-0000-000000000002"},
+      "response": {
+        "schemaVersion": "1",
+        "agentDefId": "20000000-0000-0000-0000-000000000002",
+        "models": [{"public_alias_id": "30000000-0000-0000-0000-000000000002", "alias_name": "policy-chat", "selection_mode": "POLICY_DEFAULT", "selected": true}],
+        "resolvedModel": "policy-chat",
+        "resolutionStatus": "RESOLVED"
+      }
+    },
+    {
+      "name": "ambiguous-policy-default",
+      "request": {"hostId": "10000000-0000-0000-0000-000000000001", "agentDefId": "20000000-0000-0000-0000-000000000003"},
+      "response": {"schemaVersion": "1", "agentDefId": "20000000-0000-0000-0000-000000000003", "models": [], "resolvedModel": null, "resolutionStatus": "AMBIGUOUS_DEFAULT"}
+    },
+    {
+      "name": "policy-without-default",
+      "request": {"hostId": "10000000-0000-0000-0000-000000000001", "agentDefId": "20000000-0000-0000-0000-000000000004"},
+      "response": {"schemaVersion": "1", "agentDefId": "20000000-0000-0000-0000-000000000004", "models": [], "resolvedModel": null, "resolutionStatus": "NO_DEFAULT"}
+    }
+  ]
+}

@@ -562,6 +562,45 @@ fn compiler_config() -> LlmRouterConfig {
 }
 
 #[test]
+fn portal_agent_eligibility_contract_is_safe_for_gateway_model_resolution() {
+    let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "../../benchmarks/llm-gateway/contracts/v1/get-eligible-llm-models-for-agent.fixture.json",
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(fixture_path).expect("read Portal eligibility contract fixture"),
+    )
+    .expect("parse Portal eligibility contract fixture");
+    assert_eq!(fixture["schemaVersion"], "1");
+    assert_eq!(fixture["productionAuthority"], false);
+    let cases = fixture["cases"].as_array().expect("contract cases");
+    assert!(
+        cases
+            .iter()
+            .any(|case| case["response"]["resolutionStatus"] == "AMBIGUOUS_DEFAULT")
+    );
+    assert!(
+        cases
+            .iter()
+            .any(|case| case["response"]["resolutionStatus"] == "NO_DEFAULT")
+    );
+    for case in cases {
+        let response = &case["response"];
+        let encoded = serde_json::to_string(response).expect("encode contract response");
+        assert!(!encoded.contains("modelPolicyId"));
+        assert!(!encoded.contains("model_policy_id"));
+        if response["resolutionStatus"] == "RESOLVED" {
+            assert!(
+                response["resolvedModel"]
+                    .as_str()
+                    .is_some_and(|model| !model.is_empty())
+            );
+        } else {
+            assert!(response["resolvedModel"].is_null());
+        }
+    }
+}
+
+#[test]
 fn compiler_resolves_secrets_and_clients_off_path_and_reuses_deployments() {
     let probe = Arc::new(CompileProbe::default());
     let compiler = LlmCompiler::with_probe(
