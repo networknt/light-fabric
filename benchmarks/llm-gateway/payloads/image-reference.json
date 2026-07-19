@@ -1,0 +1,23 @@
+{
+  "model": "benchmark-vision",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Describe the referenced fixture."
+        },
+        {
+          "type": "image_url",
+          "image_url": {
+            "url": "https://fixtures.invalid/images/phase0.png",
+            "detail": "low"
+          }
+        }
+      ]
+    }
+  ],
+  "stream": false
+}
+

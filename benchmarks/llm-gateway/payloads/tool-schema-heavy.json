@@ -1,0 +1,1293 @@
+{
+  "model": "benchmark-tools",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Call the matching tool."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_0",
+        "description": "Deterministic benchmark tool 0",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_1",
+        "description": "Deterministic benchmark tool 1",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_2",
+        "description": "Deterministic benchmark tool 2",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_3",
+        "description": "Deterministic benchmark tool 3",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_4",
+        "description": "Deterministic benchmark tool 4",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_5",
+        "description": "Deterministic benchmark tool 5",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_6",
+        "description": "Deterministic benchmark tool 6",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_7",
+        "description": "Deterministic benchmark tool 7",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_8",
+        "description": "Deterministic benchmark tool 8",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_9",
+        "description": "Deterministic benchmark tool 9",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_10",
+        "description": "Deterministic benchmark tool 10",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_11",
+        "description": "Deterministic benchmark tool 11",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_12",
+        "description": "Deterministic benchmark tool 12",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_13",
+        "description": "Deterministic benchmark tool 13",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_14",
+        "description": "Deterministic benchmark tool 14",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_15",
+        "description": "Deterministic benchmark tool 15",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_16",
+        "description": "Deterministic benchmark tool 16",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_17",
+        "description": "Deterministic benchmark tool 17",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_18",
+        "description": "Deterministic benchmark tool 18",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_19",
+        "description": "Deterministic benchmark tool 19",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_20",
+        "description": "Deterministic benchmark tool 20",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_21",
+        "description": "Deterministic benchmark tool 21",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_22",
+        "description": "Deterministic benchmark tool 22",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_23",
+        "description": "Deterministic benchmark tool 23",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_24",
+        "description": "Deterministic benchmark tool 24",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_25",
+        "description": "Deterministic benchmark tool 25",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_26",
+        "description": "Deterministic benchmark tool 26",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_27",
+        "description": "Deterministic benchmark tool 27",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_28",
+        "description": "Deterministic benchmark tool 28",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_29",
+        "description": "Deterministic benchmark tool 29",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_30",
+        "description": "Deterministic benchmark tool 30",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_31",
+        "description": "Deterministic benchmark tool 31",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "region"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "enum": [
+                "us",
+                "ca",
+                "eu"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "verbose": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "stream": false
+}
+

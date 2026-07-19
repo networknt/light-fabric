@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "candidate",
+    "profile",
+    "target",
+    "payloadSha256",
+    "offeredRps",
+    "durationSeconds",
+    "offered",
+    "admitted",
+    "completed",
+    "rejectedByGenerator",
+    "succeeded",
+    "failed",
+    "retried",
+    "cancelled",
+    "generatorSaturated",
+    "latency",
+    "samplesMicros"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1"
+    },
+    "candidate": {
+      "type": "string"
+    },
+    "profile": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target": {
+      "type": "string"
+    },
+    "payloadSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "offeredRps": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "durationSeconds": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "maxInflight": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "startedEpochSeconds": {
+      "type": "integer"
+    },
+    "offered": {
+      "type": "integer"
+    },
+    "admitted": {
+      "type": "integer"
+    },
+    "completed": {
+      "type": "integer"
+    },
+    "rejectedByGenerator": {
+      "type": "integer"
+    },
+    "succeeded": {
+      "type": "integer"
+    },
+    "failed": {
+      "type": "integer"
+    },
+    "retried": {
+      "type": "integer"
+    },
+    "cancelled": {
+      "type": "integer"
+    },
+    "responseBytes": {
+      "type": "integer"
+    },
+    "generatorSaturated": {
+      "type": "boolean"
+    },
+    "latency": {
+      "type": "object",
+      "required": [
+        "p50Micros",
+        "p95Micros",
+        "p99Micros",
+        "p999Micros",
+        "maxMicros"
+      ],
+      "properties": {
+        "p50Micros": {
+          "type": "integer"
+        },
+        "p95Micros": {
+          "type": "integer"
+        },
+        "p99Micros": {
+          "type": "integer"
+        },
+        "p999Micros": {
+          "type": "integer"
+        },
+        "maxMicros": {
+          "type": "integer"
+        }
+      }
+    },
+    "samplesMicros": {
+      "type": "array",
+      "items": {
+        "type": "integer"
+      }
+    }
+  }
+}

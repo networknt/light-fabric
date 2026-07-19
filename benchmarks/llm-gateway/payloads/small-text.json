@@ -1,0 +1,11 @@
+{
+  "model": "benchmark-small",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Reply with a deterministic short acknowledgement."
+    }
+  ],
+  "stream": false
+}
+

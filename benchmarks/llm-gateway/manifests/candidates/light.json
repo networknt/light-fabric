@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "1",
+  "name": "light",
+  "revision": "fbac85e073b61a8cb34645e7045676ea1e5485b7",
+  "source": "https://github.com/networknt/light-fabric",
+  "endpoint": "https://127.0.0.1:8443/v1/chat/completions",
+  "featureProfile": "mvp-buffered",
+  "pinned": true,
+  "availability": "begins-after-LF-5"
+}
+

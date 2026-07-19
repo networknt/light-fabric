@@ -1,0 +1,12 @@
+{
+  "name": "stable-60ms",
+  "baseLatencyMs": 60,
+  "jitterMs": 0,
+  "responseBytes": 512,
+  "firstTokenDelayMs": 30,
+  "chunkIntervalMs": 10,
+  "chunkBytes": 32,
+  "usagePromptTokens": 32,
+  "usageCompletionTokens": 16
+}
+

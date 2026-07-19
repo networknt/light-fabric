@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "hostId",
+    "environment",
+    "resourceType",
+    "resourceId",
+    "resourceVersion",
+    "sequence",
+    "digest",
+    "payload"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": "1"
+    },
+    "hostId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "environment": {
+      "type": "string",
+      "minLength": 1
+    },
+    "resourceType": {
+      "enum": [
+        "llm-deployment",
+        "llm-route",
+        "llm-policy",
+        "llm-pricing"
+      ]
+    },
+    "resourceId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "resourceVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "deploymentId",
+        "provider",
+        "credentialRef",
+        "enabled"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "deploymentId": {
+          "type": "string"
+        },
+        "provider": {
+          "enum": [
+            "openai",
+            "anthropic"
+          ]
+        },
+        "credentialRef": {
+          "type": "string",
+          "pattern": "^credential://"
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}
+

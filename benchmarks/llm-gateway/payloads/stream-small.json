@@ -1,0 +1,14 @@
+{
+  "model": "benchmark-stream",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Stream a deterministic response."
+    }
+  ],
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  }
+}
+

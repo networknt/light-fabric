@@ -1,0 +1,1 @@
+{"environment":"dev","hostId":"phase0-host","minimumGatewayVersion":"0.1.0","resources":[{"digest":"1c04643162248c10a8d65019e6d0d5dd807018327243706ecfd91900cec43ef4","resourceId":"openai-primary","resourceType":"llm-deployment","resourceVersion":"1","tombstone":false}],"schemaVersion":"1","sequence":1}

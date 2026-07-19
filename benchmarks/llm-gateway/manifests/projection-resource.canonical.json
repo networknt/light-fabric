@@ -1,0 +1,1 @@
+{"environment":"dev","hostId":"phase0-host","payload":{"credentialRef":"credential://phase0/openai-primary","deploymentId":"openai-primary","enabled":true,"provider":"openai"},"resourceId":"openai-primary","resourceType":"llm-deployment","resourceVersion":"1","schemaVersion":"1","sequence":1}

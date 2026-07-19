@@ -1,0 +1,17 @@
+[package]
+name = "llm-phase0-spikes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+bytes.workspace = true
+config-loader = { path = "../../crates/config-loader" }
+jsonschema.workspace = true
+light-runtime = { path = "../../crates/light-runtime" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile = "3"
+

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "1",
+  "name": "agentgateway",
+  "revision": "857281d108d5444b92ed66f5e4733225a4990426",
+  "source": "https://github.com/agentgateway/agentgateway",
+  "endpoint": "http://127.0.0.1:8082/v1/chat/completions",
+  "featureProfile": "compatible-subset",
+  "pinned": true,
+  "buildFromSource": true
+}
+

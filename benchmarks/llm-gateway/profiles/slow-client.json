@@ -1,0 +1,12 @@
+{
+  "name": "slow-client",
+  "baseLatencyMs": 10,
+  "jitterMs": 0,
+  "responseBytes": 16384,
+  "firstTokenDelayMs": 20,
+  "chunkIntervalMs": 5,
+  "chunkBytes": 64,
+  "usagePromptTokens": 64,
+  "usageCompletionTokens": 512
+}
+

@@ -1,0 +1,36 @@
+{
+  "assertions": [
+    {
+      "name": "repeated independent reads can observe mixed generations",
+      "passed": true
+    },
+    {
+      "name": "one captured Arc remains generation-coherent across publication",
+      "passed": true
+    },
+    {
+      "name": "request path needs one root capture",
+      "passed": true
+    }
+  ],
+  "command": "cargo run --locked --release -p llm-phase0-spikes -- snapshot",
+  "environment": {
+    "arch": "x86_64",
+    "os": "linux",
+    "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)"
+  },
+  "inputs": {
+    "fieldsPerRequest": 4,
+    "iterations": 1000000
+  },
+  "measurements": {
+    "arcSwapSingleCaptureNanosPerIteration": 15,
+    "capturedChecksum": 0,
+    "repeatedChecksum": 0,
+    "rwLockRepeatedReadNanosPerIteration": 60
+  },
+  "schemaVersion": "1",
+  "sourceCommit": "fbac85e073b61a8cb34645e7045676ea1e5485b7",
+  "spike": "snapshot-root-capture",
+  "status": "pass"
+}

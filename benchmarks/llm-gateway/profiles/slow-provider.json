@@ -1,0 +1,12 @@
+{
+  "name": "slow-provider",
+  "baseLatencyMs": 1500,
+  "jitterMs": 100,
+  "responseBytes": 4096,
+  "firstTokenDelayMs": 1200,
+  "chunkIntervalMs": 100,
+  "chunkBytes": 64,
+  "usagePromptTokens": 256,
+  "usageCompletionTokens": 128
+}
+

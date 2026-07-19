@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "1",
+  "hostId": "phase0-host",
+  "environment": "dev",
+  "sequence": 1,
+  "minimumGatewayVersion": "0.1.0",
+  "resources": [
+    {
+      "resourceType": "llm-deployment",
+      "resourceId": "openai-primary",
+      "resourceVersion": "1",
+      "digest": "1c04643162248c10a8d65019e6d0d5dd807018327243706ecfd91900cec43ef4",
+      "tombstone": false
+    }
+  ],
+  "rootDigest": "a381329d768cea0caa590a25d2f55593ff2b0ecf94ec142ae9c8f8592095cafc"
+}
+

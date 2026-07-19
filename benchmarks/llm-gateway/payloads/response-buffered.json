@@ -1,0 +1,21 @@
+{
+  "id": "chatcmpl-phase0-buffered",
+  "object": "chat.completion",
+  "created": 1721260800,
+  "model": "benchmark-model",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "deterministic buffered response"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 32,
+    "completion_tokens": 8,
+    "total_tokens": 40
+  }
+}

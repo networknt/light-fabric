@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "1",
+  "name": "bifrost",
+  "revision": "7a1543e8537b313e92810e7b1062194aaeb72b03",
+  "source": "https://github.com/maximhq/bifrost",
+  "endpoint": "http://127.0.0.1:8081/v1/chat/completions",
+  "featureProfile": "mvp-buffered",
+  "pinned": true,
+  "buildFromSource": true
+}
+

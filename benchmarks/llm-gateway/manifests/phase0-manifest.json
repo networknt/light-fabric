@@ -1,0 +1,195 @@
+{
+  "schemaVersion": "1",
+  "sourceCommit": "fbac85e073b61a8cb34645e7045676ea1e5485b7",
+  "owner": "light-fabric maintainers",
+  "startDate": "2026-07-18",
+  "decisionDeadline": "2026-07-25",
+  "candidates": [
+    {
+      "name": "direct",
+      "revision": "fbac85e073b61a8cb34645e7045676ea1e5485b7",
+      "descriptor": "benchmarks/llm-gateway/manifests/candidates/direct.json"
+    },
+    {
+      "name": "light",
+      "revision": "fbac85e073b61a8cb34645e7045676ea1e5485b7",
+      "descriptor": "benchmarks/llm-gateway/manifests/candidates/light.json"
+    },
+    {
+      "name": "bifrost",
+      "revision": "7a1543e8537b313e92810e7b1062194aaeb72b03",
+      "descriptor": "benchmarks/llm-gateway/manifests/candidates/bifrost.json"
+    },
+    {
+      "name": "agentgateway",
+      "revision": "857281d108d5444b92ed66f5e4733225a4990426",
+      "descriptor": "benchmarks/llm-gateway/manifests/candidates/agentgateway.json"
+    }
+  ],
+  "lanes": [
+    {
+      "id": "LF-1-harness",
+      "owner": "light-fabric",
+      "deadline": "2026-07-20",
+      "status": "pass",
+      "evidence": [
+        "apps/llm-provider-mock",
+        "benchmarks/llm-gateway/schemas/result.schema.json"
+      ]
+    },
+    {
+      "id": "LF-1-direct-baselines",
+      "owner": "performance",
+      "deadline": "2026-07-23",
+      "status": "pending-external",
+      "evidence": [
+        "benchmarks/llm-gateway/reports"
+      ]
+    },
+    {
+      "id": "LF-1-comparator-baselines",
+      "owner": "performance",
+      "deadline": "2026-07-25",
+      "status": "pending-external",
+      "evidence": [
+        "benchmarks/llm-gateway/manifests/candidates"
+      ]
+    },
+    {
+      "id": "LF-2-body",
+      "owner": "gateway",
+      "deadline": "2026-07-20",
+      "status": "pass",
+      "evidence": [
+        "benchmarks/llm-gateway/evidence/body-capture.json",
+        "docs/src/adr/llm-gateway/0002-application-body-contract.md"
+      ]
+    },
+    {
+      "id": "LF-2-snapshot",
+      "owner": "gateway",
+      "deadline": "2026-07-20",
+      "status": "pass",
+      "evidence": [
+        "benchmarks/llm-gateway/evidence/snapshot.json",
+        "docs/src/adr/llm-gateway/0003-runtime-snapshot.md"
+      ]
+    },
+    {
+      "id": "LF-2-projection-secret",
+      "owner": "gateway",
+      "deadline": "2026-07-22",
+      "status": "pass",
+      "evidence": [
+        "benchmarks/llm-gateway/evidence/projection-secret.json",
+        "docs/src/adr/llm-gateway/0004-publication-transport.md",
+        "docs/src/adr/llm-gateway/0005-secret-materialization.md"
+      ]
+    },
+    {
+      "id": "LF-2-wal",
+      "owner": "gateway",
+      "deadline": "2026-07-23",
+      "status": "pass",
+      "evidence": [
+        "benchmarks/llm-gateway/evidence/wal.json",
+        "docs/src/adr/llm-gateway/0007-audit-durability.md"
+      ]
+    }
+  ],
+  "payloads": [
+    {
+      "path": "benchmarks/llm-gateway/payloads/image-reference.json",
+      "sha256": "29d732060894b67748c185b723d9481dcab6011d3d95390c1ffd8e8545ee1c03"
+    },
+    {
+      "path": "benchmarks/llm-gateway/payloads/small-text.json",
+      "sha256": "364f4a73f77f0ded519be8951c88925b2a7a64d7777a620cc35df901b96a190f"
+    },
+    {
+      "path": "benchmarks/llm-gateway/payloads/stream-small.json",
+      "sha256": "2f8b6d92a9c3f7102a54ad1e365ee4d87914e2debb3082f91d2682b8f75bfac4"
+    },
+    {
+      "path": "benchmarks/llm-gateway/payloads/text-10kib.json",
+      "sha256": "1d73fe749f60301da5c91c97b63e59a8461d60343dc093a1808e92de0be86b7d"
+    },
+    {
+      "path": "benchmarks/llm-gateway/payloads/tool-schema-heavy.json",
+      "sha256": "b899e65d453b77288fa734f2698116be4c599b25e6ebb995397cc6524849485a"
+    }
+  ],
+  "responseFixtures": [
+    {
+      "path": "benchmarks/llm-gateway/payloads/response-buffered.json",
+      "sha256": "f65afb6d49aff9df2e0b0c3ad846c59487646bb08b702b25f8ba39fd3dffaa23"
+    },
+    {
+      "path": "benchmarks/llm-gateway/payloads/response-stream.sse",
+      "sha256": "132408a769f4e6b36c414886db8c24c72d517beb6dae2f718d55807ff7a9ad7f"
+    }
+  ],
+  "profiles": [
+    {
+      "path": "benchmarks/llm-gateway/profiles/connection-reset.json",
+      "sha256": "eef960b5ed2b1f19ac1744050a2a4943065b414a23f837b4399c036c4b2dc506"
+    },
+    {
+      "path": "benchmarks/llm-gateway/profiles/overload.json",
+      "sha256": "f1d6dd9d46195b69c5951fdc2d38ceb1fe8dddf3eb60d0d4242732e68dc13f96"
+    },
+    {
+      "path": "benchmarks/llm-gateway/profiles/slow-client.json",
+      "sha256": "a690ac11d4f8285ba78a3f3721f2d6f9ea2a57fff8e0416745bf2b2d49d1c03a"
+    },
+    {
+      "path": "benchmarks/llm-gateway/profiles/slow-provider.json",
+      "sha256": "7d7ea6c3ddbc5a827d8225dc3d84a9aa200b16e212306fdf8229bae36b8167d8"
+    },
+    {
+      "path": "benchmarks/llm-gateway/profiles/stable-60ms.json",
+      "sha256": "693aa864e005fd5735febd2148b38fe3d8ce692d7b0dde5d98d56167360858b0"
+    },
+    {
+      "path": "benchmarks/llm-gateway/profiles/variable-latency.json",
+      "sha256": "5cb566e603e041b3f18117f64fd26609326f63465b67d7a93a37e8a5fae207f9"
+    }
+  ],
+  "requiredBaselineRuns": [
+    {
+      "candidate": "direct",
+      "offeredRps": 500,
+      "runs": 5,
+      "profile": "stable-60ms",
+      "payload": "small-text"
+    },
+    {
+      "candidate": "direct",
+      "offeredRps": 5000,
+      "runs": 5,
+      "profile": "stable-60ms",
+      "payload": "small-text"
+    },
+    {
+      "candidate": "bifrost",
+      "offeredRps": 500,
+      "runs": 5,
+      "profile": "stable-60ms",
+      "payload": "small-text"
+    },
+    {
+      "candidate": "agentgateway",
+      "offeredRps": 500,
+      "runs": 5,
+      "profile": "stable-60ms",
+      "payload": "small-text"
+    },
+    {
+      "candidate": "direct",
+      "offeredRps": 10000,
+      "runs": 5,
+      "profile": "overload",
+      "payload": "small-text"
+    }
+  ]
+}

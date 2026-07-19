@@ -1,0 +1,25 @@
+services:
+  mock-provider:
+    build:
+      context: ../..
+      dockerfile: apps/llm-provider-mock/Dockerfile
+    environment:
+      MOCK_LISTEN: 0.0.0.0:8080
+      MOCK_PROFILE: ${MOCK_PROFILE:-stable-60ms}
+      MOCK_PROFILE_DIR: /profiles
+      RUST_LOG: llm_provider_mock=info
+    ports:
+      - "127.0.0.1:18080:8080"
+    volumes:
+      - ./profiles:/profiles:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/llm-provider-mock", "--healthcheck"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 16G
+

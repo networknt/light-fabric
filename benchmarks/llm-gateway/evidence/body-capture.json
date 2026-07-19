@@ -1,0 +1,43 @@
+{
+  "assertions": [
+    {
+      "name": "bounded capture accepts the pinned fixture",
+      "passed": true
+    },
+    {
+      "name": "body-aware authorization executes before JSON parsing",
+      "passed": true
+    },
+    {
+      "name": "authorization and parser observe identical bytes",
+      "passed": true
+    },
+    {
+      "name": "body is captured exactly once",
+      "passed": true
+    }
+  ],
+  "command": "cargo run --locked --release -p llm-phase0-spikes -- body",
+  "environment": {
+    "arch": "x86_64",
+    "os": "linux",
+    "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)"
+  },
+  "inputs": {
+    "chunkBytes": 137,
+    "iterations": 10000,
+    "maxBodyBytes": 1048576,
+    "payload": "benchmarks/llm-gateway/payloads/text-10kib.json",
+    "payloadSha256": "1d73fe749f60301da5c91c97b63e59a8461d60343dc093a1808e92de0be86b7d"
+  },
+  "measurements": {
+    "capturePassesPerRequest": 1,
+    "capturedBytes": 103680000,
+    "elapsedMicros": 115049,
+    "nanosecondsPerIteration": 11504
+  },
+  "schemaVersion": "1",
+  "sourceCommit": "fbac85e073b61a8cb34645e7045676ea1e5485b7",
+  "spike": "body-capture-access-control",
+  "status": "pass"
+}

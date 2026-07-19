@@ -1,0 +1,13 @@
+{
+  "name": "connection-reset",
+  "baseLatencyMs": 10,
+  "jitterMs": 0,
+  "responseBytes": 4096,
+  "resetAfterChunks": 2,
+  "firstTokenDelayMs": 10,
+  "chunkIntervalMs": 10,
+  "chunkBytes": 128,
+  "usagePromptTokens": 16,
+  "usageCompletionTokens": 64
+}
+

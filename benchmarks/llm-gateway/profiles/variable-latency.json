@@ -1,0 +1,12 @@
+{
+  "name": "variable-latency",
+  "baseLatencyMs": 60,
+  "jitterMs": 25,
+  "responseBytes": 512,
+  "firstTokenDelayMs": 35,
+  "chunkIntervalMs": 12,
+  "chunkBytes": 32,
+  "usagePromptTokens": 32,
+  "usageCompletionTokens": 16
+}
+

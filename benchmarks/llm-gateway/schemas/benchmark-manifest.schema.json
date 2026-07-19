@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LLM Gateway Phase 0 Manifest",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "sourceCommit",
+    "owner",
+    "startDate",
+    "decisionDeadline",
+    "candidates",
+    "lanes",
+    "payloads",
+    "responseFixtures",
+    "profiles",
+    "requiredBaselineRuns"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": "1"
+    },
+    "sourceCommit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "owner": {
+      "type": "string",
+      "minLength": 1
+    },
+    "startDate": {
+      "type": "string",
+      "format": "date"
+    },
+    "decisionDeadline": {
+      "type": "string",
+      "format": "date"
+    },
+    "candidates": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "revision",
+          "descriptor"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "enum": [
+              "direct",
+              "light",
+              "bifrost",
+              "agentgateway"
+            ]
+          },
+          "revision": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          "descriptor": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "lanes": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "owner",
+          "deadline",
+          "status",
+          "evidence"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "deadline": {
+            "type": "string",
+            "format": "date"
+          },
+          "status": {
+            "enum": [
+              "pass",
+              "fail",
+              "pending-external",
+              "approved-defer"
+            ]
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "payloads": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "$ref": "#/$defs/digestedFile"
+      }
+    },
+    "profiles": {
+      "type": "array",
+      "minItems": 6,
+      "items": {
+        "$ref": "#/$defs/digestedFile"
+      }
+    },
+    "responseFixtures": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "$ref": "#/$defs/digestedFile"
+      }
+    },
+    "requiredBaselineRuns": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "type": "object",
+        "required": [
+          "candidate",
+          "offeredRps",
+          "runs",
+          "profile",
+          "payload"
+        ],
+        "properties": {
+          "candidate": {
+            "type": "string"
+          },
+          "offeredRps": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "runs": {
+            "type": "integer",
+            "minimum": 5
+          },
+          "profile": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digestedFile": {
+      "type": "object",
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}

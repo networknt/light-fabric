@@ -1,0 +1,13 @@
+{
+  "name": "overload",
+  "baseLatencyMs": 5,
+  "jitterMs": 0,
+  "responseBytes": 128,
+  "errorStatus": 429,
+  "firstTokenDelayMs": 0,
+  "chunkIntervalMs": 1,
+  "chunkBytes": 32,
+  "usagePromptTokens": 0,
+  "usageCompletionTokens": 0
+}
+

@@ -1,0 +1,41 @@
+{
+  "assertions": [
+    {
+      "name": "all committed records recover",
+      "passed": true
+    },
+    {
+      "name": "truncated tail is detected",
+      "passed": true
+    },
+    {
+      "name": "capacity/full-volume failure is fail-closed",
+      "passed": true
+    },
+    {
+      "name": "read-only target failure is detected",
+      "passed": true
+    }
+  ],
+  "command": "cargo run --locked --release -p llm-phase0-spikes -- wal",
+  "environment": {
+    "arch": "x86_64",
+    "os": "linux",
+    "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)"
+  },
+  "inputs": {
+    "checksum": "sha256",
+    "groupSize": 64,
+    "records": 1024
+  },
+  "measurements": {
+    "durableWatermark": 1024,
+    "elapsedMicros": 79821,
+    "recoveredRecords": 1024,
+    "syncCount": 16
+  },
+  "schemaVersion": "1",
+  "sourceCommit": "fbac85e073b61a8cb34645e7045676ea1e5485b7",
+  "spike": "audit-wal-group-commit",
+  "status": "pass"
+}

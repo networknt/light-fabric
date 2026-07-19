@@ -1,0 +1,241 @@
+{
+  "schemaVersion": "1",
+  "profiles": [
+    "direct-provider",
+    "mvp-buffered",
+    "compatible-subset"
+  ],
+  "features": [
+    {
+      "feature": "openai-chat-completions",
+      "direct": {
+        "status": "not-applicable",
+        "reason": "direct provider has no gateway policy layer",
+        "enabled": false
+      },
+      "light": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      },
+      "bifrost": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      },
+      "agentgateway": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      }
+    },
+    {
+      "feature": "cached-authentication",
+      "direct": {
+        "status": "not-applicable",
+        "reason": "direct provider has no gateway policy layer",
+        "enabled": false
+      },
+      "light": {
+        "status": "light-only-required",
+        "reason": "MVP safety floor remains enabled",
+        "enabled": true
+      },
+      "bifrost": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      },
+      "agentgateway": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      }
+    },
+    {
+      "feature": "authorization",
+      "direct": {
+        "status": "not-applicable",
+        "reason": "direct provider has no gateway policy layer",
+        "enabled": false
+      },
+      "light": {
+        "status": "light-only-required",
+        "reason": "MVP safety floor remains enabled",
+        "enabled": true
+      },
+      "bifrost": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      },
+      "agentgateway": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      }
+    },
+    {
+      "feature": "request-body-limit",
+      "direct": {
+        "status": "not-applicable",
+        "reason": "direct provider has no gateway policy layer",
+        "enabled": false
+      },
+      "light": {
+        "status": "light-only-required",
+        "reason": "MVP safety floor remains enabled",
+        "enabled": true
+      },
+      "bifrost": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      },
+      "agentgateway": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      }
+    },
+    {
+      "feature": "retry",
+      "direct": {
+        "status": "not-applicable",
+        "reason": "direct provider has no gateway policy layer",
+        "enabled": false
+      },
+      "light": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      },
+      "bifrost": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      },
+      "agentgateway": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      }
+    },
+    {
+      "feature": "usage-accounting",
+      "direct": {
+        "status": "not-applicable",
+        "reason": "direct provider has no gateway policy layer",
+        "enabled": false
+      },
+      "light": {
+        "status": "light-only-required",
+        "reason": "MVP safety floor remains enabled",
+        "enabled": true
+      },
+      "bifrost": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      },
+      "agentgateway": {
+        "status": "unsupported",
+        "reason": "not available in compatible pinned subset",
+        "enabled": false
+      }
+    },
+    {
+      "feature": "bounded-async-audit",
+      "direct": {
+        "status": "not-applicable",
+        "reason": "direct provider has no gateway policy layer",
+        "enabled": false
+      },
+      "light": {
+        "status": "light-only-required",
+        "reason": "MVP safety floor remains enabled",
+        "enabled": true
+      },
+      "bifrost": {
+        "status": "unsupported",
+        "reason": "no feature-equivalent switch in pinned comparator profile",
+        "enabled": false
+      },
+      "agentgateway": {
+        "status": "unsupported",
+        "reason": "not available in compatible pinned subset",
+        "enabled": false
+      }
+    },
+    {
+      "feature": "metrics-telemetry",
+      "direct": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      },
+      "light": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      },
+      "bifrost": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      },
+      "agentgateway": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      }
+    },
+    {
+      "feature": "sse-streaming",
+      "direct": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      },
+      "light": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      },
+      "bifrost": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      },
+      "agentgateway": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      }
+    },
+    {
+      "feature": "origin-provider-latency",
+      "direct": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      },
+      "light": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      },
+      "bifrost": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      },
+      "agentgateway": {
+        "status": "equivalent",
+        "reason": "declared profile mapping",
+        "enabled": true
+      }
+    }
+  ]
+}
+
