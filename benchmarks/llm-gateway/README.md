@@ -198,6 +198,35 @@ safe reload retry. The live gate rejects missing evidence, replica digest
 divergence, abbreviated observation windows, threshold violations,
 non-monotonic rollback, incomplete audit recovery, or missing approval.
 
+## PII-1 and PERF-4
+
+PII promotion is deliberately outside the metadata-only MVP release. The
+request-scoped implementation traverses typed message blocks, nested tool
+arguments, and tool results; emits per-request HMAC-authenticated placeholders;
+keeps reversible values only in zeroizing request memory; and recovers exact
+tokens across buffered and fragmented streaming responses. Aliases cannot use a
+deployment below their declared placeholder-preservation threshold.
+
+The durable PostgreSQL boundary is separately credentialed and exposes only
+exact insert, resolve, revoke, and expiry functions. The gateway role has no
+table scan/export privilege. Session and host scopes remain rejected until
+their exact vault identity passes independent security, durability, and PERF-4
+promotion.
+
+Run the implementation gate without claiming external qualification:
+
+```bash
+./scripts/run-llm-pii-promotion-gates.sh --implementation
+```
+
+Functional, security, durability, and performance closure are separate modes.
+Each requires its own real evidence for the exact model, detector version,
+token format, scope, and vault implementation version. The `--promote` mode
+passes only after all four lanes are complete; no lane or synthetic benchmark
+can substitute for another. See
+`operations/llm-gateway/runbooks/pii-promotion.md` for capture commands and the
+fail-closed enablement procedure.
+
 ## LF-2 evidence and gates
 
 Generate machine-local measurements explicitly:

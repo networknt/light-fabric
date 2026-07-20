@@ -17,6 +17,7 @@ use super::{
 use crate::admission::fail_fast_permits;
 use crate::audit::{AuditAttemptFinish, AuditAttemptStart, AuditFinish, AuditStart};
 use crate::error::LlmGatewayError;
+use crate::pii::{RequestPiiSession, UnresolvedPiiBehavior};
 use crate::routing::{request_capabilities, retryable};
 use crate::usage::{UsageReservation, cost};
 
@@ -76,7 +77,7 @@ impl LlmRuntime {
         &self,
         context: LlmRequestContext,
         root: Arc<super::LlmPublishedSnapshot>,
-        request: InferenceRequest,
+        mut request: InferenceRequest,
         client_include_usage: bool,
     ) -> Result<LlmStreamExecution, LlmGatewayError> {
         if context.deadline <= Instant::now() {
@@ -96,6 +97,7 @@ impl LlmRuntime {
         let principal_permit = root.principal_permits.permits_for(&context.principal_id);
         let request_permits =
             fail_fast_permits(&self.stream_permits, &principal_permit, &alias.permits)?;
+        let mut pii = RequestPiiSession::new(alias.pii.clone())?;
         let audit = self
             .audit
             .reserve(
@@ -107,9 +109,35 @@ impl LlmRuntime {
                     generation: root.generation,
                     snapshot_digest: root.digest.clone(),
                     max_attempts: alias.max_attempts,
+                    pii_profile: pii.profile_id(),
                 },
             )
             .await?;
+
+        if let Err(error) = pii.tokenize_request(&mut request) {
+            finish_audit(
+                audit,
+                rejected_finish(),
+                error.public_status(),
+                error.public_code(),
+            )
+            .await?;
+            return Err(error);
+        }
+
+        if alias.pii.enabled && alias.pii.unresolved == UnresolvedPiiBehavior::RejectBuffered {
+            let error = LlmGatewayError::InvalidRequest(
+                "reject-buffered PII policy is not streaming-compatible".to_string(),
+            );
+            finish_audit(
+                audit,
+                rejected_finish(),
+                error.public_status(),
+                error.public_code(),
+            )
+            .await?;
+            return Err(error);
+        }
 
         let estimated_input = estimate_tokens(&request);
         let max_output = request
@@ -442,6 +470,7 @@ impl LlmRuntime {
             let mut visible = false;
             let mut completed = false;
             let mut stream_error = None;
+            let mut pii = pii.stream_recoverer();
             loop {
                 let next = if let Some(event) = pending.take() {
                     Some(event)
@@ -489,7 +518,17 @@ impl LlmRuntime {
                             ));
                             break;
                         }
-                        if let Some(frame) = semantic_frame(&request_id, event) {
+                        let event = match pii.recover(event) {
+                            Ok(event) => event,
+                            Err(_) => {
+                                stream_error =
+                                    Some(InferenceError::protocol("PII stream recovery failed"));
+                                break;
+                            }
+                        };
+                        if let Some(frame) =
+                            event.and_then(|event| semantic_frame(&request_id, event))
+                        {
                             if let Err(error) = send_frame(
                                 &sender,
                                 frame,
@@ -515,32 +554,63 @@ impl LlmRuntime {
 
             if stream_error.is_none() {
                 if let Some(finish_reason) = finish_reason {
-                    let terminal_frames =
-                        std::iter::once(finish_frame(&request_id, &finish_reason))
-                            .chain(
-                                client_include_usage
-                                    .then_some(usage.as_ref())
-                                    .flatten()
-                                    .map(|value| usage_frame(&request_id, value)),
-                            )
-                            .chain(std::iter::once(Bytes::from_static(b"data: [DONE]\n\n")));
-                    for frame in terminal_frames {
-                        if let Err(error) = send_frame(
-                            &sender,
-                            frame,
-                            &producer_cancellation,
-                            deadline,
-                            progress_timeout,
-                        )
-                        .await
-                        {
-                            producer_cancellation.cancel();
-                            stream_error = Some(error);
-                            break;
+                    match pii.finish() {
+                        Ok(events) => {
+                            for event in events {
+                                if let Some(frame) = semantic_frame(&request_id, event) {
+                                    if let Err(error) = send_frame(
+                                        &sender,
+                                        frame,
+                                        &producer_cancellation,
+                                        deadline,
+                                        progress_timeout,
+                                    )
+                                    .await
+                                    {
+                                        producer_cancellation.cancel();
+                                        stream_error = Some(error);
+                                        break;
+                                    }
+                                    visible = true;
+                                }
+                            }
                         }
-                        visible = true;
+                        Err(_) => {
+                            stream_error =
+                                Some(InferenceError::protocol("PII stream recovery failed"));
+                        }
                     }
-                    completed = stream_error.is_none();
+                    if stream_error.is_some() {
+                        // Do not emit a successful terminal marker after PII
+                        // recovery failed.
+                    } else {
+                        let terminal_frames =
+                            std::iter::once(finish_frame(&request_id, &finish_reason))
+                                .chain(
+                                    client_include_usage
+                                        .then_some(usage.as_ref())
+                                        .flatten()
+                                        .map(|value| usage_frame(&request_id, value)),
+                                )
+                                .chain(std::iter::once(Bytes::from_static(b"data: [DONE]\n\n")));
+                        for frame in terminal_frames {
+                            if let Err(error) = send_frame(
+                                &sender,
+                                frame,
+                                &producer_cancellation,
+                                deadline,
+                                progress_timeout,
+                            )
+                            .await
+                            {
+                                producer_cancellation.cancel();
+                                stream_error = Some(error);
+                                break;
+                            }
+                            visible = true;
+                        }
+                        completed = stream_error.is_none();
+                    }
                 } else {
                     stream_error = Some(InferenceError::protocol(
                         "provider stream ended without a terminal event",

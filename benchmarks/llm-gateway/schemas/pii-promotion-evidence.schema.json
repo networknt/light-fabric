@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "lane", "revision", "capturedAt", "identity", "checks", "status", "approvedBy"],
+  "properties": {
+    "schemaVersion": {"const": "1"},
+    "lane": {"enum": ["functional", "security", "durability"]},
+    "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "capturedAt": {"type": "string", "format": "date-time"},
+    "identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["model", "detectorVersion", "tokenFormatVersion", "scope", "vaultImplementationVersion"],
+      "properties": {
+        "model": {"type": "string", "minLength": 1},
+        "detectorVersion": {"type": "string", "minLength": 1},
+        "tokenFormatVersion": {"type": "string", "minLength": 1},
+        "scope": {"enum": ["request", "session", "host"]},
+        "vaultImplementationVersion": {"type": "string", "minLength": 1}
+      }
+    },
+    "checks": {"type": "object", "minProperties": 1, "additionalProperties": {"const": "pass"}},
+    "status": {"const": "pass"},
+    "approvedBy": {"type": "string", "minLength": 1}
+  }
+}

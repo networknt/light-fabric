@@ -8,6 +8,7 @@ use llm_gateway::config::{
 };
 use llm_gateway::credentials::MapSecretResolver;
 use llm_gateway::http::{BodyAccessControl, BufferedHttpRequest, LlmBufferedHttp, LlmHttpResponse};
+use llm_gateway::pii::{PiiKind, PiiProfile, UnresolvedPiiBehavior};
 use llm_gateway::routing::PassiveCircuit;
 use llm_gateway::runtime::{
     AliasPlan, CompileProbe, DeploymentRuntime, LlmCompiler, LlmPublishedSnapshot,
@@ -46,6 +47,63 @@ struct SseProvider {
 struct DurableStartProvider {
     audit: Arc<WalAudit>,
     durable_before_dispatch: AtomicBool,
+}
+
+struct PiiEchoProvider {
+    received: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl InferenceProvider for PiiEchoProvider {
+    fn format(&self) -> ProviderFormat {
+        ProviderFormat::OpenAi
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        capabilities(true, true, true)
+    }
+
+    async fn infer(
+        &self,
+        _context: ProviderRequestContext,
+        request: InferenceRequest,
+    ) -> Result<InferenceResponse, InferenceError> {
+        let encoded = serde_json::to_string(&request).unwrap();
+        self.received.lock().unwrap().push(encoded);
+        let ContentBlock::Text { text } = &request.messages[0].content[0] else {
+            panic!("PII test expects text")
+        };
+        let mut response = success_response();
+        response.content = vec![ContentBlock::text(text.clone())];
+        Ok(response)
+    }
+
+    async fn stream(
+        &self,
+        _context: ProviderRequestContext,
+        request: InferenceRequest,
+    ) -> Result<InferenceStream, InferenceError> {
+        let encoded = serde_json::to_string(&request).unwrap();
+        self.received.lock().unwrap().push(encoded);
+        let ContentBlock::Text { text } = &request.messages[0].content[0] else {
+            panic!("PII test expects text")
+        };
+        let marker = text.find("[[PII:").unwrap();
+        let token = &text[marker..];
+        let split = token.len() / 2;
+        Ok(Box::pin(stream::iter(vec![
+            Ok(InferenceEvent::TextDelta {
+                text: format!("echo {}", &token[..split]),
+            }),
+            Ok(InferenceEvent::TextDelta {
+                text: token[split..].to_string(),
+            }),
+            Ok(InferenceEvent::MessageEnd {
+                finish_reason: FinishReason::Stop,
+                terminal_state: TerminalState::Complete,
+            }),
+        ])))
+    }
 }
 
 #[async_trait]
@@ -358,6 +416,24 @@ fn runtime_with_mode(
     audit: Arc<dyn AuditAdmission>,
     audit_mode: AuditMode,
 ) -> Arc<LlmRuntime> {
+    runtime_with_mode_and_pii(
+        providers,
+        attempts,
+        max_replay,
+        audit,
+        audit_mode,
+        PiiProfile::default(),
+    )
+}
+
+fn runtime_with_mode_and_pii(
+    providers: Vec<Arc<dyn InferenceProvider>>,
+    attempts: usize,
+    max_replay: usize,
+    audit: Arc<dyn AuditAdmission>,
+    audit_mode: AuditMode,
+    pii: PiiProfile,
+) -> Arc<LlmRuntime> {
     let deployments = providers
         .into_iter()
         .enumerate()
@@ -375,6 +451,7 @@ fn runtime_with_mode(
         internal: false,
         bound_principal: None,
         audit: audit_mode,
+        pii: pii.clone(),
         ledger: Arc::new(UsageLedger::default()),
     });
     let internal_alias = Arc::new(AliasPlan {
@@ -389,6 +466,7 @@ fn runtime_with_mode(
         internal: true,
         bound_principal: Some("test-agent".to_string()),
         audit: audit_mode,
+        pii: Default::default(),
         ledger: Arc::new(UsageLedger::default()),
     });
     let snapshot = LlmPublishedSnapshot {
@@ -598,6 +676,7 @@ fn compiler_config() -> LlmRouterConfig {
                 images: false,
                 tools: false,
                 structured_json: false,
+                pii_placeholder_preservation_percent: 0,
             },
         )]),
         aliases: BTreeMap::from([(
@@ -612,6 +691,7 @@ fn compiler_config() -> LlmRouterConfig {
                 internal: false,
                 bound_principal: None,
                 audit: AuditMode::Disabled,
+                pii: Default::default(),
             },
         )]),
         ..Default::default()
@@ -1584,4 +1664,131 @@ async fn partial_usage_keeps_total_tokens_unknown() {
         body.pointer("/usage/total_tokens")
             .is_some_and(serde_json::Value::is_null)
     );
+}
+
+fn request_pii_profile(unresolved: UnresolvedPiiBehavior) -> PiiProfile {
+    PiiProfile {
+        enabled: true,
+        unresolved,
+        kinds: BTreeSet::from([PiiKind::Email]),
+        ..PiiProfile::default()
+    }
+}
+
+#[test]
+fn pii_alias_requires_placeholder_preservation_evidence_from_every_deployment() {
+    let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
+        "secret".to_string(),
+        "value".to_string(),
+    )]))));
+    let mut config = compiler_config();
+    config.aliases.get_mut("public-model").unwrap().pii =
+        request_pii_profile(UnresolvedPiiBehavior::LeaveMasked);
+    config
+        .deployments
+        .get_mut("d")
+        .unwrap()
+        .pii_placeholder_preservation_percent = 99;
+    assert!(compiler.compile(&config, 1, None).is_err());
+
+    config
+        .deployments
+        .get_mut("d")
+        .unwrap()
+        .pii_placeholder_preservation_percent = 100;
+    assert!(compiler.compile(&config, 1, None).is_ok());
+}
+
+#[tokio::test]
+async fn request_scoped_pii_tokenizes_before_provider_and_recovers_buffered_response() {
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(PiiEchoProvider {
+        received: Arc::clone(&received),
+    });
+    let runtime = runtime_with_mode_and_pii(
+        vec![provider],
+        1,
+        4096,
+        Arc::new(RecordingAudit::default()),
+        AuditMode::Required,
+        request_pii_profile(UnresolvedPiiBehavior::LeaveMasked),
+    );
+
+    let execution = runtime
+        .execute(
+            LlmRequestContext::with_timeout("principal", Duration::from_secs(1)),
+            InferenceRequest::text("public-model", "contact a@example.com"),
+        )
+        .await
+        .unwrap();
+
+    let provider_request = &received.lock().unwrap()[0];
+    assert!(!provider_request.contains("a@example.com"));
+    assert!(provider_request.contains("[[PII:v1:email:"));
+    let ContentBlock::Text { text } = &execution.response.content[0] else {
+        panic!("expected text response")
+    };
+    assert_eq!(text, "contact a@example.com");
+}
+
+#[tokio::test]
+async fn request_scoped_pii_recovers_fragmented_stream_without_exposing_partial_token() {
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(PiiEchoProvider {
+        received: Arc::clone(&received),
+    });
+    let runtime = runtime_with_mode_and_pii(
+        vec![provider],
+        1,
+        4096,
+        Arc::new(RecordingAudit::default()),
+        AuditMode::Required,
+        request_pii_profile(UnresolvedPiiBehavior::LeaveMasked),
+    );
+    let root = runtime.snapshot();
+    let mut execution = runtime
+        .execute_stream_with_snapshot(
+            LlmRequestContext::with_timeout("principal", Duration::from_secs(1)),
+            root,
+            InferenceRequest::text("public-model", "a@example.com"),
+        )
+        .await
+        .unwrap();
+    let mut body = Vec::new();
+    while let Some(frame) = execution.next_frame().await {
+        body.extend_from_slice(&frame);
+    }
+    let body = String::from_utf8(body).unwrap();
+
+    assert!(!received.lock().unwrap()[0].contains("a@example.com"));
+    assert!(body.contains("echo "));
+    assert!(body.contains("a@example.com"));
+    assert!(!body.contains("[[PII:"));
+    assert!(body.contains("data: [DONE]"));
+}
+
+#[tokio::test]
+async fn reject_buffered_pii_profile_rejects_streaming_before_provider_dispatch() {
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(PiiEchoProvider {
+        received: Arc::clone(&received),
+    });
+    let runtime = runtime_with_mode_and_pii(
+        vec![provider],
+        1,
+        4096,
+        Arc::new(RecordingAudit::default()),
+        AuditMode::Required,
+        request_pii_profile(UnresolvedPiiBehavior::RejectBuffered),
+    );
+    let result = runtime
+        .execute_stream_with_snapshot(
+            LlmRequestContext::with_timeout("principal", Duration::from_secs(1)),
+            runtime.snapshot(),
+            InferenceRequest::text("public-model", "a@example.com"),
+        )
+        .await;
+
+    assert!(matches!(result, Err(LlmGatewayError::InvalidRequest(_))));
+    assert!(received.lock().unwrap().is_empty());
 }

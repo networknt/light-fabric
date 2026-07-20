@@ -17,6 +17,7 @@ use crate::audit::{
     AuditStart,
 };
 use crate::error::LlmGatewayError;
+use crate::pii::RequestPiiSession;
 use crate::routing::{request_capabilities, retryable};
 use crate::usage::{ReconciledUsage, UsageReservation, cost};
 use model_provider::inference::{
@@ -128,6 +129,7 @@ impl LlmRuntime {
         let principal_permit = root.principal_permits.permits_for(&context.principal_id);
         let _permits = fail_fast_permits(&self.global_permits, &principal_permit, &alias.permits)?;
 
+        let mut pii = RequestPiiSession::new(alias.pii.clone())?;
         let audit = self
             .audit
             .reserve(
@@ -139,9 +141,26 @@ impl LlmRuntime {
                     generation: root.generation,
                     snapshot_digest: root.digest.clone(),
                     max_attempts: alias.max_attempts,
+                    pii_profile: pii.profile_id(),
                 },
             )
             .await?;
+
+        if let Err(error) = pii.tokenize_request(&mut request) {
+            finish_audit(
+                audit,
+                AuditFinish {
+                    terminal: "rejected",
+                    attempts: 0,
+                    charged_micros: 0,
+                    usage_complete: true,
+                },
+                error.public_status(),
+                error.public_code(),
+            )
+            .await?;
+            return Err(error);
+        }
 
         let estimated_input = estimate_tokens(&request);
         let max_output = request
@@ -304,13 +323,35 @@ impl LlmRuntime {
                 .infer(provider_context, request.clone())
                 .await
             {
-                Ok(response) => {
+                Ok(mut response) => {
                     circuit_permit.success();
                     let usage = reservation.reconcile(
                         deployment.price,
                         response.usage.as_ref(),
                         AcceptanceEvidence::Accepted,
                     );
+                    if let Err(error) = pii.recover_response(&mut response) {
+                        audit
+                            .attempt_finished(AuditAttemptFinish {
+                                attempt: attempts,
+                                terminal: "failed",
+                                category: "pii_unresolved",
+                            })
+                            .await?;
+                        finish_audit(
+                            audit,
+                            AuditFinish {
+                                terminal: "pii_recovery_failed",
+                                attempts,
+                                charged_micros: usage.charged_micros,
+                                usage_complete: usage.complete,
+                            },
+                            error.public_status(),
+                            error.public_code(),
+                        )
+                        .await?;
+                        return Err(error);
+                    }
                     let attempt_audit = audit
                         .attempt_finished(AuditAttemptFinish {
                             attempt: attempts,

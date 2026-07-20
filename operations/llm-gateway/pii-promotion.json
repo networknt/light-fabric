@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "1",
+  "checkpoint": "PII-1",
+  "owner": "gateway-security",
+  "identity": {
+    "model": "must-match-evidence",
+    "detectorVersion": "local-regex-v1",
+    "tokenFormatVersion": "v1",
+    "scope": "request",
+    "vaultImplementationVersion": "none"
+  },
+  "lanes": {
+    "functional": {
+      "status": "implementation-complete-pending-live-provider-evidence",
+      "evidence": "benchmarks/llm-gateway/reports/pii1/functional.json",
+      "requires": ["typed-message-traversal", "typed-tool-argument-traversal", "exact-recovery", "fragmented-stream-recovery", "placeholder-preservation-threshold"]
+    },
+    "security": {
+      "status": "implementation-complete-pending-security-approval",
+      "evidence": "benchmarks/llm-gateway/reports/pii1/security.json",
+      "requires": ["authenticated-high-entropy-token", "no-fuzzy-lookup", "leave-masked-default", "strict-buffered-only", "zeroized-request-mappings", "metadata-only-audit"]
+    },
+    "durability": {
+      "status": "implementation-complete-pending-external-vault-drill",
+      "evidence": "benchmarks/llm-gateway/reports/pii1/durability.json",
+      "requires": ["independent-credentials", "tls", "external-key-reference", "encrypted-values", "ttl-expiry", "restart-failover", "backup-recovery", "access-audit", "deletion", "no-gateway-scan-export"]
+    },
+    "performance": {
+      "status": "pending-external-PERF-4",
+      "evidence": "benchmarks/llm-gateway/reports/perf4/summary.json",
+      "requires": ["five-runs", "fixed-500-rps", "open-loop-capacity-sweep", "no-pii-comparison", "direct-vault-comparison", "overload-recovery"]
+    }
+  },
+  "promotion": {
+    "allowed": false,
+    "requiresAllLanes": true,
+    "crossLaneSubstitutionAllowed": false,
+    "syntheticMeasurementsSubstituted": false
+  }
+}

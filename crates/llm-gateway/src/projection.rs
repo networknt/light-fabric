@@ -516,6 +516,8 @@ struct DeploymentPayload {
     tools: bool,
     #[serde(default)]
     structured_json: bool,
+    #[serde(default)]
+    pii_placeholder_preservation_percent: u8,
 }
 
 #[derive(Debug, Deserialize)]
@@ -539,6 +541,8 @@ struct RoutePayload {
     bound_principal: Option<String>,
     #[serde(default)]
     audit: AuditMode,
+    #[serde(default)]
+    pii: crate::pii::PiiProfile,
 }
 
 #[derive(Debug, Deserialize)]
@@ -621,6 +625,8 @@ fn assemble_config(
                         images: payload.images,
                         tools: payload.tools,
                         structured_json: payload.structured_json,
+                        pii_placeholder_preservation_percent: payload
+                            .pii_placeholder_preservation_percent,
                     },
                 );
             }
@@ -644,6 +650,7 @@ fn assemble_config(
                         internal: payload.internal,
                         bound_principal: payload.bound_principal,
                         audit: payload.audit,
+                        pii: payload.pii,
                     },
                 );
             }

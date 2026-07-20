@@ -94,6 +94,9 @@ deployments:
     images: true
     tools: true
     structuredJson: true
+    # Set only from the model/deployment preservation corpus. Zero makes this
+    # deployment ineligible for every reversible-PII alias.
+    piiPlaceholderPreservationPercent: 0
   anthropic-fallback:
     provider: anthropic-local
     model: claude-local
@@ -105,6 +108,7 @@ deployments:
     images: true
     tools: true
     structuredJson: false
+    piiPlaceholderPreservationPercent: 0
 
 aliases:
   light-default:
@@ -115,6 +119,21 @@ aliases:
     maxOutputTokens: 4096
     maxCostMicros: 1000000
     audit: required
+    # Post-MVP and fail-closed by default. Request scope never constructs or
+    # calls a vault. This LLM contract does not reuse pii-tokenization.yml.
+    # Session/host scopes remain rejected until their independently
+    # credentialed vault identity passes functional, security, durability, and
+    # PERF-4 promotion.
+    pii:
+      enabled: false
+      scope: request
+      unresolved: leave_masked
+      kinds: [email, us_ssn, phone]
+      maxPlaceholders: 128
+      maxValueBytes: 4096
+      detectorVersion: local-regex-v1
+      tokenFormatVersion: v1
+      minimumPlaceholderPreservationPercent: 100
   legacy-agent-internal:
     deployments: [openai-primary]
     maxAttempts: 1

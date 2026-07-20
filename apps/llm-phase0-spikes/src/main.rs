@@ -17,7 +17,7 @@ use std::time::Instant;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
     let command = args.next().ok_or(
-        "usage: llm-phase0-spikes <body|snapshot|projection-secret|wal|validate|validate-closure|validate-comparison|validate-perf1|validate-perf1-implementation|validate-release|validate-release-implementation|validate-rollout|validate-rollout-implementation> [output-or-candidate]",
+        "usage: llm-phase0-spikes <body|snapshot|projection-secret|wal|validate|validate-closure|validate-comparison|validate-perf1|validate-perf1-implementation|validate-release|validate-release-implementation|validate-rollout|validate-rollout-implementation|validate-pii-implementation|validate-pii-functional|validate-pii-security|validate-pii-durability|validate-perf4|validate-pii-promotion> [output-or-candidate]",
     )?;
     let output = args.next().map(PathBuf::from);
     match command.as_str() {
@@ -40,8 +40,330 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "validate-release-implementation" => validate_release(false)?,
         "validate-rollout" => validate_rollout(true)?,
         "validate-rollout-implementation" => validate_rollout(false)?,
+        "validate-pii-implementation" => validate_pii_implementation()?,
+        "validate-pii-functional" => validate_pii_lane("functional")?,
+        "validate-pii-security" => validate_pii_lane("security")?,
+        "validate-pii-durability" => validate_pii_lane("durability")?,
+        "validate-perf4" => validate_perf4()?,
+        "validate-pii-promotion" => validate_pii_promotion()?,
         _ => return Err(format!("unknown command `{command}`").into()),
     }
+    Ok(())
+}
+
+fn pii_contract() -> Result<Value, Box<dyn std::error::Error>> {
+    Ok(serde_json::from_slice(&fs::read(workspace_path(
+        "operations/llm-gateway/pii-promotion.json",
+    ))?)?)
+}
+
+fn validate_pii_implementation() -> Result<(), Box<dyn std::error::Error>> {
+    let root = workspace_root();
+    let contract = pii_contract()?;
+    if contract["checkpoint"] != "PII-1"
+        || contract["promotion"]["requiresAllLanes"] != true
+        || contract["promotion"]["crossLaneSubstitutionAllowed"] != false
+        || contract["promotion"]["syntheticMeasurementsSubstituted"] != false
+        || contract["promotion"]["allowed"] != false
+    {
+        return Err("PII-1 promotion must default to independent, fail-closed lanes".into());
+    }
+    for lane in ["functional", "security", "durability", "performance"] {
+        let value = &contract["lanes"][lane];
+        if value["status"].as_str().is_none_or(str::is_empty)
+            || value["evidence"].as_str().is_none_or(str::is_empty)
+            || value["requires"].as_array().is_none_or(Vec::is_empty)
+        {
+            return Err(format!("PII-1 lane `{lane}` is incomplete").into());
+        }
+    }
+    for path in [
+        "benchmarks/llm-gateway/manifests/perf4-manifest.json",
+        "benchmarks/llm-gateway/schemas/pii-promotion-evidence.schema.json",
+        "operations/llm-gateway/runbooks/pii-promotion.md",
+        "crates/llm-gateway/migrations/pii-vault-postgres/0001_pii_vault.sql",
+        "crates/llm-gateway/migrations/audit-postgres/0002_pii_profile.sql",
+    ] {
+        if !root.join(path).is_file() {
+            return Err(format!("PII-1 implementation artifact `{path}` is missing").into());
+        }
+    }
+    let vault_sql = fs::read_to_string(
+        root.join("crates/llm-gateway/migrations/pii-vault-postgres/0001_pii_vault.sql"),
+    )?;
+    for exact_function in [
+        "llm_pii_vault_insert_exact",
+        "llm_pii_vault_resolve_exact",
+        "llm_pii_vault_revoke_exact",
+        "llm_pii_vault_expire_before",
+    ] {
+        if !vault_sql.contains(exact_function) {
+            return Err(format!("PII vault exact function `{exact_function}` is missing").into());
+        }
+    }
+    if !vault_sql.contains("SECURITY DEFINER")
+        || !vault_sql.contains("REVOKE ALL ON llm_pii_vault_entry_t")
+        || vault_sql.contains("GRANT SELECT ON llm_pii_vault_entry_t")
+    {
+        return Err("PII vault gateway must not receive table scan/export privileges".into());
+    }
+    let perf: Value = serde_json::from_slice(&fs::read(
+        root.join("benchmarks/llm-gateway/manifests/perf4-manifest.json"),
+    )?)?;
+    if perf["checkpoint"] != "PERF-4"
+        || perf["runsPerProfile"] != 5
+        || perf["fixedLoadRps"] != 500
+        || perf["generator"]["openLoop"] != true
+        || perf["generator"]["separateProcess"] != true
+    {
+        return Err("PERF-4 fixed-load measurement contract is incomplete".into());
+    }
+    for profile in [
+        "request-memory-buffered",
+        "request-memory-streaming",
+        "postgres-vault-buffered",
+        "postgres-vault-failover",
+    ] {
+        if perf["profiles"][profile].is_null() {
+            return Err(format!("PERF-4 profile `{profile}` is missing").into());
+        }
+    }
+    println!(
+        "PII-1/PERF-4 implementation contracts passed; all four promotion lanes remain independent"
+    );
+    Ok(())
+}
+
+fn validate_pii_lane(lane: &str) -> Result<(), Box<dyn std::error::Error>> {
+    validate_pii_implementation()?;
+    let root = workspace_root();
+    let contract = pii_contract()?;
+    let evidence_path = contract["lanes"][lane]["evidence"]
+        .as_str()
+        .ok_or("PII evidence path missing")?;
+    let evidence_path = root.join(evidence_path);
+    if !evidence_path.is_file() {
+        return Err(format!(
+            "PII-1 `{lane}` live evidence is missing: {}",
+            evidence_path.display()
+        )
+        .into());
+    }
+    validate_instances(
+        &root.join("benchmarks/llm-gateway/schemas/pii-promotion-evidence.schema.json"),
+        std::slice::from_ref(&evidence_path),
+    )?;
+    let evidence: Value = serde_json::from_slice(&fs::read(&evidence_path)?)?;
+    if evidence["lane"] != lane || evidence["identity"] != contract["identity"] {
+        return Err(format!(
+            "PII-1 `{lane}` evidence identity does not exactly match promotion identity"
+        )
+        .into());
+    }
+    if evidence["identity"]["model"] == "must-match-evidence" {
+        return Err(format!("PII-1 `{lane}` evidence must name the exact model").into());
+    }
+    for required in contract["lanes"][lane]["requires"]
+        .as_array()
+        .ok_or("PII lane requirements missing")?
+    {
+        let name = required.as_str().ok_or("PII check name is not a string")?;
+        if evidence["checks"][name] != "pass" {
+            return Err(format!("PII-1 `{lane}` check `{name}` did not pass").into());
+        }
+    }
+    if contract["lanes"][lane]["status"] != "complete" {
+        return Err(format!("PII-1 `{lane}` lane is not marked complete").into());
+    }
+    println!("PII-1 `{lane}` evidence passed for the exact promotion identity");
+    Ok(())
+}
+
+fn validate_perf4() -> Result<(), Box<dyn std::error::Error>> {
+    validate_pii_implementation()?;
+    let root = workspace_root();
+    let contract = pii_contract()?;
+    let path = root.join(
+        contract["lanes"]["performance"]["evidence"]
+            .as_str()
+            .ok_or("PERF-4 evidence path missing")?,
+    );
+    if !path.is_file() {
+        return Err(format!("PERF-4 live evidence is missing: {}", path.display()).into());
+    }
+    let report: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    let manifest: Value = serde_json::from_slice(&fs::read(
+        root.join("benchmarks/llm-gateway/manifests/perf4-manifest.json"),
+    )?)?;
+    if report["checkpoint"] != "PERF-4"
+        || report["status"] != "pass"
+        || report["identity"] != contract["identity"]
+        || report["thresholdsPassed"] != true
+    {
+        return Err("PERF-4 report is not passing for the exact promotion identity".into());
+    }
+    for (name, profile) in manifest["profiles"]
+        .as_object()
+        .ok_or("PERF-4 profiles missing")?
+    {
+        let result = &report["profiles"][name];
+        let runs = result["fixedLoadRuns"]
+            .as_array()
+            .ok_or_else(|| format!("PERF-4 `{name}` fixed-load runs missing"))?;
+        if runs.len() != 5 {
+            return Err(format!("PERF-4 `{name}` requires exactly five fixed-load runs").into());
+        }
+        for run in runs {
+            let offered = run["offeredRps"].as_u64();
+            let saturated = run["generatorSaturated"].as_bool();
+            if offered != Some(500)
+                || saturated != Some(false)
+                || run["openLoop"] != true
+                || run["generatorSeparateProcess"] != true
+            {
+                return Err(
+                    format!("PERF-4 `{name}` run violates the load-generator contract").into(),
+                );
+            }
+            let offered = run["offered"]
+                .as_u64()
+                .ok_or("PERF-4 offered counter missing")?;
+            let admitted = run["admitted"]
+                .as_u64()
+                .ok_or("PERF-4 admitted counter missing")?;
+            let rejected = run["rejected"]
+                .as_u64()
+                .ok_or("PERF-4 rejected counter missing")?;
+            let completed = run["completed"]
+                .as_u64()
+                .ok_or("PERF-4 completed counter missing")?;
+            let cancelled = run["cancelled"]
+                .as_u64()
+                .ok_or("PERF-4 cancelled counter missing")?;
+            if offered != admitted + rejected || admitted != completed + cancelled {
+                return Err(format!("PERF-4 `{name}` run counters are inconsistent").into());
+            }
+        }
+        let sweep = result["capacitySweep"]
+            .as_array()
+            .ok_or_else(|| format!("PERF-4 `{name}` capacity sweep is missing"))?;
+        if sweep.len() < 2 {
+            return Err(format!("PERF-4 `{name}` capacity sweep is incomplete").into());
+        }
+        for run in sweep {
+            if run["offeredRps"].as_u64().is_none_or(|rps| rps == 0)
+                || run["openLoop"] != true
+                || run["generatorSeparateProcess"] != true
+                || run["generatorSaturated"] != false
+            {
+                return Err(format!("PERF-4 `{name}` capacity sweep is invalid").into());
+            }
+        }
+        for measurement in manifest["requiredMeasurements"]
+            .as_array()
+            .ok_or("PERF-4 measurements missing")?
+        {
+            let key = measurement.as_str().ok_or("measurement is not a string")?;
+            if result["measurements"][key].is_null() {
+                return Err(format!("PERF-4 `{name}` measurement `{key}` is missing").into());
+            }
+        }
+        if profile["vaultExpected"] == false
+            && [
+                "vaultClientsCreated",
+                "vaultTasksCreated",
+                "vaultNetworkCalls",
+                "vaultAllocatedBytes",
+            ]
+            .iter()
+            .any(|key| result["measurements"][key].as_u64() != Some(0))
+        {
+            return Err(
+                format!("PERF-4 request-memory profile `{name}` used the vault path").into(),
+            );
+        }
+        let measurements = &result["measurements"];
+        if measurements["memoryGrowthBounded"] != true {
+            return Err(format!("PERF-4 `{name}` has unbounded memory growth").into());
+        }
+        if profile["vaultExpected"] == false {
+            let baseline = report["comparators"]["no-pii-light-gateway"][name]
+                .as_object()
+                .ok_or_else(|| format!("PERF-4 `{name}` no-PII comparator is missing"))?;
+            let added_p99 = measurements["p99Micros"].as_f64().ok_or("P99 missing")?
+                - baseline["p99Micros"]
+                    .as_f64()
+                    .ok_or("baseline P99 missing")?;
+            let throughput_ratio = measurements["throughputRps"]
+                .as_f64()
+                .ok_or("throughput missing")?
+                / baseline["throughputRps"]
+                    .as_f64()
+                    .filter(|value| *value > 0.0)
+                    .ok_or("baseline throughput missing")?;
+            if added_p99
+                > manifest["thresholds"]["requestMemoryGatewayAddedP99MicrosMax"]
+                    .as_f64()
+                    .ok_or("request-memory P99 threshold missing")?
+                || throughput_ratio
+                    < manifest["thresholds"]["requestMemoryThroughputRatioMin"]
+                        .as_f64()
+                        .ok_or("request-memory throughput threshold missing")?
+            {
+                return Err(
+                    format!("PERF-4 request-memory profile `{name}` misses its SLO").into(),
+                );
+            }
+        } else if measurements["p99Micros"]
+            .as_f64()
+            .ok_or("vault P99 missing")?
+            > manifest["thresholds"]["durableVaultP99MicrosMax"]
+                .as_f64()
+                .ok_or("vault P99 threshold missing")?
+        {
+            return Err(format!("PERF-4 durable-vault profile `{name}` misses its P99 SLO").into());
+        }
+        if measurements["failClosedSheddingMillis"]
+            .as_f64()
+            .ok_or("fail-closed shedding measurement missing")?
+            > manifest["thresholds"]["failClosedSheddingMillisMax"]
+                .as_f64()
+                .ok_or("shedding threshold missing")?
+            || measurements["failoverRecoverySeconds"]
+                .as_f64()
+                .ok_or("failover recovery measurement missing")?
+                > manifest["thresholds"]["failoverRecoverySecondsMax"]
+                    .as_f64()
+                    .ok_or("failover threshold missing")?
+        {
+            return Err(format!("PERF-4 `{name}` overload or failover bound failed").into());
+        }
+    }
+    if report["comparators"]["direct-vault"].is_null() {
+        return Err("PERF-4 direct-vault comparator is missing".into());
+    }
+    if contract["lanes"]["performance"]["status"] != "complete" {
+        return Err("PERF-4 lane is not marked complete".into());
+    }
+    println!("PERF-4 evidence passed for request-memory and durable-vault profiles");
+    Ok(())
+}
+
+fn validate_pii_promotion() -> Result<(), Box<dyn std::error::Error>> {
+    validate_pii_lane("functional")?;
+    validate_pii_lane("security")?;
+    validate_pii_lane("durability")?;
+    validate_perf4()?;
+    let contract = pii_contract()?;
+    if contract["identity"]["model"] == "must-match-evidence"
+        || contract["promotion"]["allowed"] != true
+        || ["functional", "security", "durability", "performance"]
+            .iter()
+            .any(|lane| contract["lanes"][lane]["status"] != "complete")
+    {
+        return Err("PII-1 promotion remains fail-closed until every lane is complete and explicitly approved".into());
+    }
+    println!("PII-1/PERF-4 promotion passed for one exact identity");
     Ok(())
 }
 

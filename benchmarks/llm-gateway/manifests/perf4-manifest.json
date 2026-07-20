@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "1",
+  "checkpoint": "PERF-4",
+  "runsPerProfile": 5,
+  "fixedLoadRps": 500,
+  "generator": {"openLoop": true, "separateProcess": true},
+  "identityFields": ["model", "detectorVersion", "tokenFormatVersion", "scope", "vaultImplementationVersion"],
+  "profiles": {
+    "request-memory-buffered": {"vaultExpected": false, "streaming": false, "unresolved": "reject_buffered"},
+    "request-memory-streaming": {"vaultExpected": false, "streaming": true, "unresolved": "leave_masked"},
+    "postgres-vault-buffered": {"vaultExpected": true, "streaming": false, "unresolved": "reject_buffered"},
+    "postgres-vault-failover": {"vaultExpected": true, "streaming": false, "faults": ["timeout", "restart", "pool-saturation", "replica-failover"]}
+  },
+  "workloads": ["repeated-values", "large-tool-arguments", "maximum-placeholders", "fragmented-stream-tokens"],
+  "requiredMeasurements": ["detectionMicros", "tokenizationMicros", "vaultInsertMicros", "vaultResolveMicros", "recoveryMicros", "providerTtftMicros", "p50Micros", "p95Micros", "p99Micros", "throughputRps", "cpuNanos", "peakRssBytes", "poolWaitMicros", "timeoutRatePercent", "failureRatePercent", "failClosedSheddingMillis", "failoverRecoverySeconds", "memoryGrowthBounded", "unresolvedOutcome", "vaultClientsCreated", "vaultTasksCreated", "vaultNetworkCalls", "vaultAllocatedBytes"],
+  "thresholds": {
+    "requestMemoryGatewayAddedP99MicrosMax": 5000,
+    "requestMemoryThroughputRatioMin": 0.95,
+    "requestMemoryVaultActivityMax": 0,
+    "durableVaultP99MicrosMax": 100000,
+    "failClosedSheddingMillisMax": 100,
+    "failoverRecoverySecondsMax": 60,
+    "unboundedMemoryGrowthAllowed": false
+  },
+  "comparators": ["no-pii-light-gateway", "direct-vault"]
+}

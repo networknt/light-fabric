@@ -1,4 +1,5 @@
 use crate::config::AuditMode;
+use crate::pii::PiiProfile;
 use crate::routing::PassiveCircuit;
 use crate::usage::{Price, UsageLedger};
 use model_provider::inference::{InferenceProvider, ProviderCapabilities};
@@ -45,6 +46,7 @@ pub struct AliasPlan {
     pub internal: bool,
     pub bound_principal: Option<String>,
     pub audit: AuditMode,
+    pub pii: PiiProfile,
     pub ledger: Arc<UsageLedger>,
 }
 

@@ -7,6 +7,7 @@ pub mod config;
 pub mod credentials;
 pub mod error;
 pub mod http;
+pub mod pii;
 pub mod projection;
 pub mod provider;
 pub mod routing;

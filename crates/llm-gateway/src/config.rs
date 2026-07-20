@@ -1,3 +1,4 @@
+use crate::pii::PiiProfile;
 use model_provider::inference::ProviderFormat;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -216,6 +217,10 @@ pub struct DeploymentConfig {
     pub tools: bool,
     #[serde(default)]
     pub structured_json: bool,
+    /// Exact placeholder-preservation percentage from the versioned
+    /// deployment conformance corpus. Zero means no reversible-PII evidence.
+    #[serde(default)]
+    pub pii_placeholder_preservation_percent: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -238,6 +243,8 @@ pub struct AliasConfig {
     pub bound_principal: Option<String>,
     #[serde(default)]
     pub audit: AuditMode,
+    #[serde(default)]
+    pub pii: PiiProfile,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

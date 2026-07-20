@@ -187,6 +187,7 @@ impl LlmCompiler {
                         && old.internal == alias.internal
                         && old.bound_principal == alias.bound_principal
                         && old.audit == alias.audit
+                        && old.pii == alias.pii
                 };
                 let retained_state = previous_alias.filter(|old| same_alias_contract(old));
                 let reusable = retained_state
@@ -214,6 +215,7 @@ impl LlmCompiler {
                             internal: alias.internal,
                             bound_principal: alias.bound_principal.clone(),
                             audit: alias.audit,
+                            pii: alias.pii.clone(),
                             ledger: retained_state
                                 .map(|old| Arc::clone(&old.ledger))
                                 .unwrap_or_else(|| Arc::new(UsageLedger::default())),
@@ -315,6 +317,7 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
         }
     }
     for (name, alias) in &config.aliases {
+        alias.pii.validate()?;
         if name.is_empty()
             || name.contains(char::is_whitespace)
             || alias.deployments.is_empty()
@@ -356,6 +359,14 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
                     "alias `{name}` references missing deployment `{deployment}`"
                 )));
             }
+            if alias.pii.enabled
+                && config.deployments[deployment].pii_placeholder_preservation_percent
+                    < alias.pii.minimum_placeholder_preservation_percent
+            {
+                return Err(LlmGatewayError::Config(format!(
+                    "alias `{name}` requires PII placeholder preservation not proven by deployment `{deployment}`"
+                )));
+            }
         }
     }
     for (id, deployment) in &config.deployments {
@@ -366,6 +377,7 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
                 .conformance_digest
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit())
+            || deployment.pii_placeholder_preservation_percent > 100
         {
             return Err(LlmGatewayError::Config(format!(
                 "invalid deployment `{id}`"

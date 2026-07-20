@@ -24,6 +24,7 @@ pub struct AuditStart {
     pub generation: u64,
     pub snapshot_digest: String,
     pub max_attempts: usize,
+    pub pii_profile: String,
 }
 
 #[derive(Debug, Clone)]
@@ -384,7 +385,7 @@ fn event(
             .try_into()
             .unwrap_or(u64::MAX),
         content_mode: "metadata_only".to_string(),
-        pii_profile: "none".to_string(),
+        pii_profile: start.pii_profile.clone(),
         principal_digest: format!("{:x}", Sha256::digest(start.principal_id.as_bytes())),
         charged_micros,
         usage_complete,
@@ -422,6 +423,7 @@ mod tests {
             generation: 7,
             snapshot_digest: "a".repeat(64),
             max_attempts: 1,
+            pii_profile: "none".to_string(),
         }
     }
 
@@ -922,7 +924,8 @@ mod tests {
 
     #[test]
     fn audit_event_is_metadata_only_and_hashes_the_principal() {
-        let start = start();
+        let mut start = start();
+        start.pii_profile = "local-regex-v1:v1:request".to_string();
         let value = serde_json::to_value(event(
             &start,
             "host-a",
@@ -939,6 +942,8 @@ mod tests {
         .unwrap();
         let encoded = value.to_string();
         assert!(!encoded.contains("principal-secret"));
+        assert!(!encoded.contains("person@example.com"));
+        assert_eq!(value["piiProfile"], "local-regex-v1:v1:request");
         for forbidden in ["prompt", "completion", "toolArguments", "credential"] {
             assert!(!value.as_object().unwrap().contains_key(forbidden));
         }

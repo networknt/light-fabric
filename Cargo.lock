@@ -4017,7 +4017,10 @@ dependencies = [
  "bytes",
  "chrono",
  "futures-util",
+ "hmac",
  "model-provider",
+ "rand 0.8.5",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
@@ -4031,6 +4034,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
