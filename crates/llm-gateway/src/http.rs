@@ -244,9 +244,9 @@ impl LlmBufferedHttp {
             .parser
             .parse_request(&parse_body, ProviderFormat::OpenAi)
             .map_err(|error| LlmGatewayError::InvalidRequest(error.detail))?;
-        let formats = self
-            .runtime
-            .eligible_formats(&root, &request.principal_id, &canonical)?;
+        let formats =
+            self.runtime
+                .eligible_formats(&root, &request.principal_id, &canonical, streaming)?;
         if formats.contains(&ProviderFormat::Anthropic) {
             canonical = self
                 .parser

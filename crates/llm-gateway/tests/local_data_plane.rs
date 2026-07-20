@@ -17,6 +17,7 @@ use llm_gateway::runtime::{
 };
 use llm_gateway::usage::{Price, UsageLedger, UsageReservation};
 use llm_gateway::{LlmGatewayError, LlmRequestContext, LlmRuntime};
+use model_provider::conformance::{CapabilityRequirements, ConformanceResult, FixtureProvenance};
 use model_provider::inference::{
     AcceptanceEvidence, ContentBlock, ContentCapabilities, FinishReason, InferenceError,
     InferenceEvent, InferenceProvider, InferenceRequest, InferenceResponse, InferenceStream,
@@ -355,7 +356,7 @@ fn capabilities(images: bool, tools: bool, structured: bool) -> ProviderCapabili
             structured_json: structured,
             reasoning_usage: false,
         },
-        streaming: false,
+        streaming: true,
     }
 }
 
@@ -386,6 +387,8 @@ fn deployment(id: &str, provider: Arc<dyn InferenceProvider>) -> Arc<DeploymentR
         capabilities: provider.capabilities(),
         provider,
         provider_digest: id.to_string(),
+        conformance_result: None,
+        required_conformance_provenance: None,
         permits: Arc::new(Semaphore::new(2)),
         circuit: Arc::new(PassiveCircuit::new(1, Duration::ZERO)),
         account: Arc::new(ProviderAccountRuntime {
@@ -398,6 +401,90 @@ fn deployment(id: &str, provider: Arc<dyn InferenceProvider>) -> Arc<DeploymentR
             output_micros_per_million: 2_000_000,
         },
     })
+}
+
+fn conformance_result(provenance: FixtureProvenance, valid_until: &str) -> ConformanceResult {
+    let mut result: ConformanceResult = serde_json::from_str(include_str!(
+        "../../model-provider/conformance/results/openai.json"
+    ))
+    .expect("checked-in OpenAI conformance result");
+    result.physical_model = "governed-physical".to_string();
+    result.tested_at = "2026-07-19T00:00:00Z".parse().unwrap();
+    result.valid_until = valid_until.parse().unwrap();
+    for evidence in result.capability_evidence.values_mut() {
+        evidence.provenances = BTreeSet::from([provenance]);
+    }
+    result.refresh_digest();
+    result
+}
+
+fn governed_deployment(
+    provider: Arc<dyn InferenceProvider>,
+    conformance_result: ConformanceResult,
+) -> Arc<DeploymentRuntime> {
+    Arc::new(DeploymentRuntime {
+        id: "governed".to_string(),
+        model: conformance_result.physical_model.clone(),
+        configured_concurrency: 2,
+        capabilities: conformance_result.capabilities.clone(),
+        provider,
+        provider_digest: "governed".to_string(),
+        conformance_result: Some(conformance_result),
+        required_conformance_provenance: Some(FixtureProvenance::CapturedSanitized),
+        permits: Arc::new(Semaphore::new(2)),
+        circuit: Arc::new(PassiveCircuit::new(1, Duration::ZERO)),
+        account: Arc::new(ProviderAccountRuntime {
+            provider_account_id: "governed".to_string(),
+            quota_group_id: "governed".to_string(),
+        }),
+        price: Price {
+            version: 7,
+            input_micros_per_million: 1_000_000,
+            output_micros_per_million: 2_000_000,
+        },
+    })
+}
+
+fn runtime_with_deployment(
+    deployment: Arc<DeploymentRuntime>,
+    audit: Arc<dyn AuditAdmission>,
+) -> Arc<LlmRuntime> {
+    let alias = Arc::new(AliasPlan {
+        public_name: "public-model".to_string(),
+        deployments: vec![Arc::clone(&deployment)],
+        max_attempts: 1,
+        configured_concurrency: 2,
+        permits: Arc::new(Semaphore::new(2)),
+        max_input_tokens: Some(10_000),
+        max_output_tokens: Some(100),
+        max_cost_micros: Some(10_000),
+        internal: false,
+        bound_principal: None,
+        audit: AuditMode::Required,
+        pii: Default::default(),
+        required_capabilities: Default::default(),
+        ledger: Arc::new(UsageLedger::default()),
+    });
+    let snapshot = LlmPublishedSnapshot {
+        generation: 4,
+        digest: "governed-root".to_string(),
+        global_concurrency: 2,
+        global_stream_concurrency: 1,
+        stream_channel_capacity: 1,
+        stream_write_timeout_ms: 100,
+        stream_setup_timeout_ms: 100,
+        stream_idle_timeout_ms: 100,
+        stream_minimum_drain_bytes_per_second: 1,
+        stream_drain_grace_ms: 100,
+        max_replay_bytes: 4096,
+        aliases: BTreeMap::from([("public-model".to_string(), alias)]),
+        deployments: BTreeMap::from([(deployment.id.clone(), deployment)]),
+        principal_permits: Arc::new(PrincipalPermitStripes::new(8, 2)),
+    };
+    Arc::new(LlmRuntime::new(
+        Arc::new(LlmSnapshotStore::new(snapshot, 2)),
+        audit,
+    ))
 }
 
 fn runtime_with(
@@ -452,6 +539,7 @@ fn runtime_with_mode_and_pii(
         bound_principal: None,
         audit: audit_mode,
         pii: pii.clone(),
+        required_capabilities: Default::default(),
         ledger: Arc::new(UsageLedger::default()),
     });
     let internal_alias = Arc::new(AliasPlan {
@@ -467,6 +555,7 @@ fn runtime_with_mode_and_pii(
         bound_principal: Some("test-agent".to_string()),
         audit: audit_mode,
         pii: Default::default(),
+        required_capabilities: Default::default(),
         ledger: Arc::new(UsageLedger::default()),
     });
     let snapshot = LlmPublishedSnapshot {
@@ -495,6 +584,69 @@ fn runtime_with_mode_and_pii(
         Arc::new(LlmSnapshotStore::new(snapshot, 2)),
         audit,
     ))
+}
+
+#[test]
+fn deployment_supports_requires_current_passing_captured_conformance() {
+    let provider: Arc<dyn InferenceProvider> =
+        Arc::new(ScriptedProvider::new(ProviderFormat::OpenAi, Vec::new()));
+    let requirements = CapabilityRequirements::default();
+
+    let captured = conformance_result(FixtureProvenance::CapturedSanitized, "2999-01-01T00:00:00Z");
+    assert!(governed_deployment(Arc::clone(&provider), captured.clone()).supports(&requirements));
+
+    let expired = conformance_result(FixtureProvenance::CapturedSanitized, "2000-01-01T00:00:00Z");
+    assert!(!governed_deployment(Arc::clone(&provider), expired).supports(&requirements));
+
+    let quarantined = captured.quarantine("provider drift detected");
+    assert!(!governed_deployment(Arc::clone(&provider), quarantined).supports(&requirements));
+
+    let synthetic = conformance_result(
+        FixtureProvenance::SyntheticSpecDerived,
+        "2999-01-01T00:00:00Z",
+    );
+    assert!(!governed_deployment(provider, synthetic).supports(&requirements));
+}
+
+#[tokio::test]
+async fn expired_conformance_is_excluded_from_every_gateway_route() {
+    let provider = Arc::new(ScriptedProvider::new(
+        ProviderFormat::OpenAi,
+        vec![Ok(success_response())],
+    ));
+    let provider_runtime: Arc<dyn InferenceProvider> = provider.clone();
+    let deployment = governed_deployment(
+        provider_runtime,
+        conformance_result(FixtureProvenance::CapturedSanitized, "2000-01-01T00:00:00Z"),
+    );
+    let runtime = runtime_with_deployment(deployment, Arc::new(RecordingAudit::default()));
+    let request = InferenceRequest::text("public-model", "hello");
+
+    assert!(runtime.visible_models().is_empty());
+    assert!(matches!(
+        runtime.eligible_formats(&runtime.snapshot(), "user", &request, false),
+        Err(LlmGatewayError::ModelUnavailable)
+    ));
+    assert!(matches!(
+        runtime
+            .execute(
+                LlmRequestContext::with_timeout("user", Duration::from_secs(1)),
+                request.clone(),
+            )
+            .await,
+        Err(LlmGatewayError::ModelUnavailable)
+    ));
+    assert!(matches!(
+        runtime
+            .execute_stream_with_snapshot(
+                LlmRequestContext::with_timeout("user", Duration::from_secs(1)),
+                runtime.snapshot(),
+                request,
+            )
+            .await,
+        Err(LlmGatewayError::ModelUnavailable)
+    ));
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -672,6 +824,7 @@ fn compiler_config() -> LlmRouterConfig {
                 input_micros_per_million: Some(1),
                 output_micros_per_million: Some(2),
                 conformance_digest: "a".repeat(64),
+                conformance_result: None,
                 text: true,
                 images: false,
                 tools: false,
@@ -692,6 +845,7 @@ fn compiler_config() -> LlmRouterConfig {
                 bound_principal: None,
                 audit: AuditMode::Disabled,
                 pii: Default::default(),
+                required_capabilities: Default::default(),
             },
         )]),
         ..Default::default()

@@ -3,7 +3,7 @@
   "scope": ["PERF-3", "OBS-1", "SEC-1"],
   "status": "implementation-pass-pending-external-performance-evidence",
   "sourceTree": "worktree",
-  "baseCommit": "ee54f8d7787ad5c6b5fcb15f9785d5470c747373",
+  "baseCommit": "f7f38a7258b319d6be6ca663bcaf6e565cca2f5a",
   "generatedDate": "2026-07-19",
   "gates": {
     "implementation": "scripts/run-llm-release-qualification-gates.sh",
@@ -44,10 +44,14 @@
   },
   "artifactDigests": {
     "crates/llm-gateway/src/provider.rs": "sha256:8eb6e082a8ee4e3b792baecbe906081c090792ae55ba34eb9ca36867c6d01965",
-    "crates/llm-gateway/src/http.rs": "sha256:159af5ce8f0398bce648a99f90cc76b18f06f2fb2d21cdc0f634a2acb40d1b08",
+    "crates/llm-gateway/src/http.rs": "sha256:4777c23439098951e5b9711df7a812f6d0618ac5b1a2bc641af1282d1e5020da",
     "apps/light-gateway/src/main.rs": "sha256:5a34ca5cd7682791824ff87c93adf52aaed9b09991594e9d3af04e98c805e953",
-    "apps/llm-phase0-spikes/src/main.rs": "sha256:0582ab4dd43d9e3a37a3dd514986e890dd78acbfb37542aa74bb05772c56d907",
-    "scripts/run-llm-release-qualification-gates.sh": "sha256:823020245e0653d122f04873ab1a1c473c174d8882ff6440373ce53f6e222227",
+    "apps/llm-phase0-spikes/src/main.rs": "sha256:4e03cc67467ad29526c122baed13bc70b4dc805c73d61fc2c257161ba77efe77",
+    "scripts/run-llm-release-qualification-gates.sh": "sha256:be278f28166299180275d3aa53bc2f7f8f0a610dd3018fa94edb2457990d8acd",
+    "benchmarks/llm-gateway/manifests/sdk-smoke-manifest.json": "sha256:43c0b53bcead55b2bc814936f23a93fc5fd4951824234bea682471e8491fce88",
+    "benchmarks/llm-gateway/scripts/run-sdk-smoke.sh": "sha256:6c19a7a136860d3a55e0dbdd2f5a87a240fa357583f6d2282cc43eb6de111bd5",
+    "benchmarks/llm-gateway/sdk-smoke/python_smoke.py": "sha256:332dfdce08cffa008a4db3694fba4440176ca4996685396fd540bdc4930062c2",
+    "benchmarks/llm-gateway/sdk-smoke/typescript_smoke.mjs": "sha256:4a1ababc89a207dec39d0ddad47412b6072679bafc1cae11c88dbc39543aa68d",
     "benchmarks/llm-gateway/scripts/run-perf3-candidate.sh": "sha256:06a54376919c8016a67bb2d90af5747cfebd260a5079096a857d5c317ab0c431"
   },
   "limits": [

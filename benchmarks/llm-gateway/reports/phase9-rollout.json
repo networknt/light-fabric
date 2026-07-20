@@ -3,11 +3,16 @@
   "scope": ["REL-1"],
   "status": "implementation-pass-pending-live-canary-and-rollback-evidence",
   "sourceTree": "worktree",
-  "baseCommit": "ee54f8d7787ad5c6b5fcb15f9785d5470c747373",
+  "baseCommit": "f7f38a7258b319d6be6ca663bcaf6e565cca2f5a",
   "generatedDate": "2026-07-19",
   "gates": {
     "implementation": "scripts/run-llm-rollout-gates.sh",
     "closure": "scripts/run-llm-rollout-gates.sh --require-live-evidence"
+  },
+  "artifactDigests": {
+    "crates/llm-gateway/src/projection.rs": "sha256:a05a646e1991b3b4b11c1c3b058bdbbdba10e861d79bdf855e503672eb385251",
+    "apps/light-gateway/src/main.rs": "sha256:5a34ca5cd7682791824ff87c93adf52aaed9b09991594e9d3af04e98c805e953",
+    "scripts/run-llm-rollout-gates.sh": "sha256:a92c58b58885766fba9a84de62d845aa7f9a4737c9bf9e62f3db28bf586cb544"
   },
   "implemented": {
     "orderedFourStageCanary": true,

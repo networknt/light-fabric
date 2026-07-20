@@ -5,9 +5,12 @@ use super::snapshot::{
 use crate::config::LlmRouterConfig;
 use crate::credentials::SecretResolver;
 use crate::error::LlmGatewayError;
+use crate::pii::validate_pii_promotion;
 use crate::provider::HttpInferenceProvider;
 use crate::routing::PassiveCircuit;
 use crate::usage::{Price, UsageLedger};
+use chrono::Utc;
+use model_provider::conformance::{CapabilityRequirements, FixtureProvenance};
 use model_provider::inference::{ContentCapabilities, Operation, ProviderCapabilities};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -102,6 +105,8 @@ impl LlmCompiler {
             });
         }
         let mut deployments = BTreeMap::new();
+        let required_conformance_provenance = (!config.development_fixtures)
+            .then_some(config.production_projection.required_conformance_provenance);
         for (id, deployment) in &config.deployments {
             let provider_config = &config.providers[&deployment.provider];
             let quota = provider_config
@@ -129,6 +134,8 @@ impl LlmCompiler {
                     old.model == deployment.model
                         && old.configured_concurrency == deployment.concurrency
                         && old.capabilities == capabilities
+                        && old.conformance_result == deployment.conformance_result
+                        && old.required_conformance_provenance == required_conformance_provenance
                         && old.price == price
                         && old.provider_digest == *provider_digest
                 })
@@ -138,6 +145,8 @@ impl LlmCompiler {
                     old.model == deployment.model
                         && old.configured_concurrency == deployment.concurrency
                         && old.capabilities == capabilities
+                        && old.conformance_result == deployment.conformance_result
+                        && old.required_conformance_provenance == required_conformance_provenance
                         && old.provider_digest == *provider_digest
                         && old.account.quota_group_id == quota
                 });
@@ -148,6 +157,8 @@ impl LlmCompiler {
                     provider: Arc::clone(provider),
                     provider_digest: provider_digest.clone(),
                     capabilities,
+                    conformance_result: deployment.conformance_result.clone(),
+                    required_conformance_provenance,
                     permits: retained_state
                         .map(|old| Arc::clone(&old.permits))
                         .unwrap_or_else(|| Arc::new(Semaphore::new(deployment.concurrency))),
@@ -188,6 +199,7 @@ impl LlmCompiler {
                         && old.bound_principal == alias.bound_principal
                         && old.audit == alias.audit
                         && old.pii == alias.pii
+                        && old.required_capabilities == alias.required_capabilities
                 };
                 let retained_state = previous_alias.filter(|old| same_alias_contract(old));
                 let reusable = retained_state
@@ -216,6 +228,7 @@ impl LlmCompiler {
                             bound_principal: alias.bound_principal.clone(),
                             audit: alias.audit,
                             pii: alias.pii.clone(),
+                            required_capabilities: alias.required_capabilities.clone(),
                             ledger: retained_state
                                 .map(|old| Arc::clone(&old.ledger))
                                 .unwrap_or_else(|| Arc::new(UsageLedger::default())),
@@ -269,6 +282,9 @@ fn warn_on_mixed_format_extension_narrowing(config: &LlmRouterConfig) {
 }
 
 fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
+    let now = Utc::now();
+    let required_provenance = (!config.development_fixtures)
+        .then_some(config.production_projection.required_conformance_provenance);
     if config.path_prefix != "/v1"
         || config.global_concurrency == 0
         || config.global_stream_concurrency == 0
@@ -354,18 +370,39 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
             )));
         }
         for deployment in &alias.deployments {
-            if !config.deployments.contains_key(deployment) {
+            let Some(candidate) = config.deployments.get(deployment) else {
                 return Err(LlmGatewayError::Config(format!(
                     "alias `{name}` references missing deployment `{deployment}`"
                 )));
-            }
-            if alias.pii.enabled
-                && config.deployments[deployment].pii_placeholder_preservation_percent
-                    < alias.pii.minimum_placeholder_preservation_percent
-            {
-                return Err(LlmGatewayError::Config(format!(
-                    "alias `{name}` requires PII placeholder preservation not proven by deployment `{deployment}`"
-                )));
+            };
+            let requirements = alias_requirements(alias, required_provenance);
+            match &candidate.conformance_result {
+                Some(result) if !result.satisfies(&requirements, now) => {
+                    return Err(LlmGatewayError::Config(format!(
+                        "alias `{name}` requirements are not proven by deployment `{deployment}`"
+                    )));
+                }
+                Some(result) => validate_pii_promotion(
+                    &alias.pii,
+                    &candidate.model,
+                    result.pii_preservation.as_ref(),
+                    now,
+                )?,
+                None if config.development_fixtures => {
+                    if alias.pii.enabled
+                        && candidate.pii_placeholder_preservation_percent
+                            < alias.pii.minimum_placeholder_preservation_percent
+                    {
+                        return Err(LlmGatewayError::Config(format!(
+                            "alias `{name}` requires PII placeholder preservation not proven by development deployment `{deployment}`"
+                        )));
+                    }
+                }
+                None => {
+                    return Err(LlmGatewayError::Config(format!(
+                        "deployment `{deployment}` has no conformance result"
+                    )));
+                }
             }
         }
     }
@@ -381,6 +418,23 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
         {
             return Err(LlmGatewayError::Config(format!(
                 "invalid deployment `{id}`"
+            )));
+        }
+        if let Some(result) = &deployment.conformance_result {
+            let provider = &config.providers[&deployment.provider];
+            if !result.verify_digest()
+                || result.digest != deployment.conformance_digest
+                || result.provider != provider.format
+                || result.physical_model != deployment.model
+                || !result.is_current_and_passing(now)
+            {
+                return Err(LlmGatewayError::Config(format!(
+                    "deployment `{id}` has invalid, mismatched, or expired conformance evidence"
+                )));
+            }
+        } else if !config.development_fixtures {
+            return Err(LlmGatewayError::Config(format!(
+                "deployment `{id}` requires complete conformance evidence"
             )));
         }
     }
@@ -399,12 +453,18 @@ fn capabilities_for_provider(config: &LlmRouterConfig, provider: &str) -> Provid
         result.content.text |= current.content.text;
         result.content.images |= current.content.images;
         result.content.tools |= current.content.tools;
+        result.content.parallel_tools |= current.content.parallel_tools;
         result.content.structured_json |= current.content.structured_json;
+        result.content.reasoning_usage |= current.content.reasoning_usage;
+        result.streaming |= current.streaming;
     }
     result
 }
 
 fn capabilities_for_deployment(config: &crate::config::DeploymentConfig) -> ProviderCapabilities {
+    if let Some(result) = &config.conformance_result {
+        return result.capabilities.clone();
+    }
     ProviderCapabilities {
         operations: BTreeSet::from([Operation::ChatCompletions]),
         content: ContentCapabilities {
@@ -416,6 +476,21 @@ fn capabilities_for_deployment(config: &crate::config::DeploymentConfig) -> Prov
             reasoning_usage: false,
         },
         streaming: false,
+    }
+}
+
+fn alias_requirements(
+    alias: &crate::config::AliasConfig,
+    required_provenance: Option<FixtureProvenance>,
+) -> CapabilityRequirements {
+    CapabilityRequirements {
+        operation: Operation::ChatCompletions,
+        images: alias.required_capabilities.images,
+        tools: alias.required_capabilities.tools,
+        parallel_tools: alias.required_capabilities.parallel_tools,
+        structured_json: alias.required_capabilities.structured_json,
+        streaming: alias.required_capabilities.streaming,
+        required_provenance,
     }
 }
 

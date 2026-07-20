@@ -2,7 +2,38 @@
 
 ## Status
 
-Proposal.
+Implemented through REL-1 and the request-scoped PII profile. Production
+enablement remains fail-closed pending committed PERF-3/PERF-4 measurements,
+live Python/TypeScript SDK evidence against both provider formats, and live
+canary/rollback evidence.
+
+The checked-in implementation gates are evidence validators, not substitutes
+for those external runs. `llm-router.enabled` remains `false`, release
+`canaryAllowed` remains `false`, and PII promotion remains independently gated
+by functional, security, durability, and performance lanes.
+
+### Implementation And Qualification Status
+
+| Contract | Current implementation | Remaining promotion evidence |
+|----------|------------------------|------------------------------|
+| LF-1 through LF-6B | Deterministic baselines, canonical provider contract, OpenAI/Anthropic codecs, compiled single-attempt runtime, accounting/circuits/replay, buffered HTTP, and early SSE are implemented. | PERF-1 measurements remain an external architecture-checkpoint input. |
+| PDB-1, LP-1, GC-1/GQ-1, PV-1 | Host-scoped schema, event persistence, commands/queries, atomic publication, governed-alias UI, defensive secret redaction, and component-level control-plane tests are implemented. | Operational Portal deployment and publication approval. |
+| DIST-1, LF-7, LA-1 | Monotonic projection, two-replica convergence contracts, secret rotation, retained runtime state, and agent alias isolation are implemented. Production deployment resources require a complete current conformance result. | Captured provider evidence for the exact physical deployments. |
+| LF-8, LF-9, PERF-2 | Durable WAL/sink, ownership lock, replay/reclamation, accounting-aware streaming, deadlines, and protocol checks are implemented. | Declared external performance captures. |
+| PERF-3, OBS-1, SEC-1, REL-1 | Qualification contracts, bounded telemetry, SSRF/body-access controls, rollout stages, and monotonic rollback are implemented. Release evidence is bound to the current commit and critical-source digests. | Five-run PERF-3, live SDK/provider smoke, canary, and rollback-drill evidence. |
+| PII-1, PERF-4 | Authenticated request-scoped placeholders, exact fragmented-stream recovery, typed promotion identity, vault boundary, and four independent promotion lanes are implemented. | Functional, security, durability, and PERF-4 lane evidence; session/host scope stays unavailable until the durable-vault lane passes. |
+
+Production projection defaults `requiredConformanceProvenance` to
+`captured_sanitized`. Synthetic corpus results remain useful regression
+evidence but cannot make a production deployment eligible. A `PASS` Portal
+deployment stores the complete canonical `conformanceResult`; compact state or
+capability flags alone are quarantined or rejected.
+
+The live SDK closure harness pins the official OpenAI Python and TypeScript
+packages and exercises `/v1/models`, buffered chat, streaming with usage, and
+tool calls against both an OpenAI deployment and an Anthropic-backed governed
+alias. Its sanitized evidence is bound to the release commit, projection
+digest, and both conformance digests.
 
 ## Decision Summary
 

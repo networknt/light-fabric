@@ -1,5 +1,6 @@
 use crate::error::LlmGatewayError;
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
 use model_provider::inference::{
     ContentBlock, InferenceEvent, InferenceRequest, InferenceResponse,
@@ -87,6 +88,42 @@ pub struct PiiProfile {
     pub minimum_placeholder_preservation_percent: u8,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PiiPromotionAttestation {
+    schema_version: String,
+    physical_model: String,
+    detector_version: String,
+    token_format_version: String,
+    scope: PiiScope,
+    vault_implementation_version: String,
+    placeholder_preservation_percent: u8,
+    valid_until: DateTime<Utc>,
+    lanes: PiiPromotionLanes,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PiiPromotionLanes {
+    functional: PiiPromotionLane,
+    security: PiiPromotionLane,
+    durability: PiiPromotionLane,
+    performance: PiiPromotionLane,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PiiPromotionLane {
+    state: PiiPromotionLaneState,
+    digest: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PiiPromotionLaneState {
+    Pass,
+}
+
 impl Default for PiiProfile {
     fn default() -> Self {
         Self {
@@ -143,6 +180,68 @@ impl PiiProfile {
         }
         Ok(())
     }
+}
+
+/// Validates the independent PII promotion lanes carried inside the signed
+/// deployment conformance result. The identity tuple must match the exact
+/// deployment and alias profile; a bare percentage is never production
+/// evidence.
+pub(crate) fn validate_pii_promotion(
+    profile: &PiiProfile,
+    physical_model: &str,
+    evidence: Option<&Value>,
+    now: DateTime<Utc>,
+) -> Result<(), LlmGatewayError> {
+    if !profile.enabled {
+        return Ok(());
+    }
+    let evidence = evidence.ok_or_else(|| {
+        LlmGatewayError::Config(format!(
+            "PII profile `{}` has no promotion attestation for model `{physical_model}`",
+            profile.id()
+        ))
+    })?;
+    let attestation: PiiPromotionAttestation = serde_json::from_value(evidence.clone())
+        .map_err(|_| LlmGatewayError::Config("invalid PII promotion attestation".to_string()))?;
+    let lanes = [
+        &attestation.lanes.functional,
+        &attestation.lanes.security,
+        &attestation.lanes.durability,
+        &attestation.lanes.performance,
+    ];
+    let valid_lane = |lane: &PiiPromotionLane| {
+        lane.state == PiiPromotionLaneState::Pass
+            && lane.digest.len() == 64
+            && lane
+                .digest
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    };
+    let expected_vault = match profile.scope {
+        PiiScope::Request => "none",
+        PiiScope::Session | PiiScope::Host => {
+            return Err(LlmGatewayError::Config(
+                "session/host PII requires a separately promoted durable vault".to_string(),
+            ));
+        }
+    };
+    if attestation.schema_version != "1"
+        || attestation.physical_model != physical_model
+        || attestation.detector_version != profile.detector_version
+        || attestation.token_format_version != profile.token_format_version
+        || attestation.scope != profile.scope
+        || attestation.vault_implementation_version != expected_vault
+        || attestation.placeholder_preservation_percent
+            < profile.minimum_placeholder_preservation_percent
+        || now >= attestation.valid_until
+        || !lanes.into_iter().all(valid_lane)
+    {
+        return Err(LlmGatewayError::Config(format!(
+            "PII profile `{}` is not independently promoted for model `{physical_model}`",
+            profile.id()
+        )));
+    }
+    Ok(())
 }
 
 fn default_max_placeholders() -> usize {
@@ -792,6 +891,62 @@ mod tests {
             .find(|(_, mapping)| mapping.value.as_str() == value)
             .map(|(token, _)| token.clone())
             .unwrap()
+    }
+
+    fn promotion_evidence() -> Value {
+        let lane = serde_json::json!({"state":"pass","digest":"a".repeat(64)});
+        serde_json::json!({
+            "schemaVersion":"1",
+            "physicalModel":"gpt-qualified",
+            "detectorVersion":"local-regex-v1",
+            "tokenFormatVersion":"v1",
+            "scope":"request",
+            "vaultImplementationVersion":"none",
+            "placeholderPreservationPercent":100,
+            "validUntil":"2999-01-01T00:00:00Z",
+            "lanes":{
+                "functional":lane.clone(),
+                "security":lane.clone(),
+                "durability":lane.clone(),
+                "performance":lane
+            }
+        })
+    }
+
+    #[test]
+    fn pii_promotion_requires_every_lane_and_the_exact_identity_tuple() {
+        let profile = profile(UnresolvedPiiBehavior::LeaveMasked);
+        assert!(
+            validate_pii_promotion(
+                &profile,
+                "gpt-qualified",
+                Some(&promotion_evidence()),
+                Utc::now(),
+            )
+            .is_ok()
+        );
+
+        let mut wrong_model = promotion_evidence();
+        wrong_model["physicalModel"] = Value::String("other-model".to_string());
+        assert!(
+            validate_pii_promotion(&profile, "gpt-qualified", Some(&wrong_model), Utc::now(),)
+                .is_err()
+        );
+
+        let mut missing_performance = promotion_evidence();
+        missing_performance["lanes"]
+            .as_object_mut()
+            .unwrap()
+            .remove("performance");
+        assert!(
+            validate_pii_promotion(
+                &profile,
+                "gpt-qualified",
+                Some(&missing_performance),
+                Utc::now(),
+            )
+            .is_err()
+        );
     }
 
     #[test]

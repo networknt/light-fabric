@@ -3,7 +3,7 @@
   "scope": ["LF-8", "PERF-2", "LF-9"],
   "status": "implementation-pass-pending-external-performance-evidence",
   "sourceTree": "worktree",
-  "baseCommit": "81c8ef1c69e1ab0590af3673e3378bc562a6ad79",
+  "baseCommit": "f7f38a7258b319d6be6ca663bcaf6e565cca2f5a",
   "generatedDate": "2026-07-19",
   "gates": {
     "auditWal": "scripts/run-llm-audit-wal-gate.sh",
@@ -52,8 +52,8 @@
   },
   "artifactDigests": {
     "crates/llm-gateway/src/audit/wal.rs": "sha256:4689c67d30e19310e7bda83c95b883baed39d11628d02962734a6e6fac0ed31b",
-    "crates/llm-gateway/src/audit/sink.rs": "sha256:b4ca28a31557bf450c9bbdf000a1ab4b9332225a3135efd0c314c60b289a9a1f",
-    "crates/llm-gateway/src/runtime/streaming.rs": "sha256:6bc6bfce6991019161e298ca8f2805f72276dd0a1c7ab56736b36f5e953400ab",
+    "crates/llm-gateway/src/audit/sink.rs": "sha256:9ca4a6da30d767d5062de80129f8f7944751366dbafc0b1ea0fceb5122c143e0",
+    "crates/llm-gateway/src/runtime/streaming.rs": "sha256:b67a129eb35a4a9f31fcd7006f12491c52ef295f2464c7d84641c94de96bb46b",
     "crates/llm-gateway/migrations/audit-postgres/0001_llm_audit.sql": "sha256:2e9dfde438cddd51b7267544ebaa6cf47fe3d33b81683d2ac250029d07d350b8",
     "benchmarks/llm-gateway/manifests/perf2-manifest.json": "sha256:d3289073b289146d1b5170159d2b42ba53b488942d201b1389c1ce0834a9e656",
     "scripts/run-llm-audit-streaming-gates.sh": "sha256:98f761c419f679a891b3eed4d00dadace3059e7f8b59347892f1515a01ac67df"

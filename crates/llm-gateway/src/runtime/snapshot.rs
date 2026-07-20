@@ -1,7 +1,9 @@
-use crate::config::AuditMode;
+use crate::config::{AliasCapabilityRequirements, AuditMode};
 use crate::pii::PiiProfile;
 use crate::routing::PassiveCircuit;
 use crate::usage::{Price, UsageLedger};
+use chrono::Utc;
+use model_provider::conformance::{CapabilityRequirements, ConformanceResult, FixtureProvenance};
 use model_provider::inference::{InferenceProvider, ProviderCapabilities};
 use std::collections::{BTreeMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
@@ -20,6 +22,8 @@ pub struct DeploymentRuntime {
     pub provider: Arc<dyn InferenceProvider>,
     pub provider_digest: String,
     pub capabilities: ProviderCapabilities,
+    pub conformance_result: Option<ConformanceResult>,
+    pub required_conformance_provenance: Option<FixtureProvenance>,
     pub permits: Arc<Semaphore>,
     pub circuit: Arc<PassiveCircuit>,
     pub account: Arc<ProviderAccountRuntime>,
@@ -27,10 +31,19 @@ pub struct DeploymentRuntime {
 }
 
 impl DeploymentRuntime {
-    pub fn supports(&self, required: (bool, bool, bool)) -> bool {
-        (!required.0 || self.capabilities.content.images)
-            && (!required.1 || self.capabilities.content.tools)
-            && (!required.2 || self.capabilities.content.structured_json)
+    pub fn supports(&self, required: &CapabilityRequirements) -> bool {
+        let mut required = required.clone();
+        required.required_provenance = self.required_conformance_provenance;
+        if let Some(result) = &self.conformance_result {
+            return result.satisfies(&required, Utc::now());
+        }
+        self.required_conformance_provenance.is_none()
+            && self.capabilities.supports(required.operation)
+            && (!required.images || self.capabilities.content.images)
+            && (!required.tools || self.capabilities.content.tools)
+            && (!required.parallel_tools || self.capabilities.content.parallel_tools)
+            && (!required.structured_json || self.capabilities.content.structured_json)
+            && (!required.streaming || self.capabilities.streaming)
     }
 }
 
@@ -47,7 +60,22 @@ pub struct AliasPlan {
     pub bound_principal: Option<String>,
     pub audit: AuditMode,
     pub pii: PiiProfile,
+    pub required_capabilities: AliasCapabilityRequirements,
     pub ledger: Arc<UsageLedger>,
+}
+
+impl AliasPlan {
+    pub fn merge_requirements(
+        &self,
+        mut required: CapabilityRequirements,
+    ) -> CapabilityRequirements {
+        required.images |= self.required_capabilities.images;
+        required.tools |= self.required_capabilities.tools;
+        required.parallel_tools |= self.required_capabilities.parallel_tools;
+        required.structured_json |= self.required_capabilities.structured_json;
+        required.streaming |= self.required_capabilities.streaming;
+        required
+    }
 }
 
 pub struct PrincipalPermitStripes {

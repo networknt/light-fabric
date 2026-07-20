@@ -2,7 +2,17 @@
   "phase": 10,
   "scope": ["PII-1", "PERF-4"],
   "status": "implementation-pass-pending-independent-external-promotion-evidence",
+  "sourceTree": "worktree",
+  "baseCommit": "f7f38a7258b319d6be6ca663bcaf6e565cca2f5a",
   "generatedDate": "2026-07-19",
+  "artifactDigests": {
+    "crates/llm-gateway/src/pii.rs": "sha256:04cfe8f4803f453814258d3baea8c625b948b0615ea999d36e0c8d283a102698",
+    "crates/llm-gateway/src/config.rs": "sha256:1764f0e6c3c59fe1dcf46a358e72424c8907d1fc09da577504e7feadb5bb3d28",
+    "operations/llm-gateway/pii-promotion.json": "sha256:e3305d39bdd31e63998c0addff267a17a27f63648fce1f426c7714f494bdb7b8",
+    "benchmarks/llm-gateway/manifests/perf4-manifest.json": "sha256:1b64744c15fd1e8b0d3e1bf966b4bc562e72689fefb185aa66447ab229fa51cc",
+    "scripts/run-llm-pii-promotion-gates.sh": "sha256:b7410346b3581ef0f94f54c4708842fdb810e981212148c3d240683b93191710",
+    "benchmarks/llm-gateway/scripts/run-perf4-profile.sh": "sha256:f7fce13e87850685288dbd8bc1f8806beef3587708d5f350e501fd0298f40ec2"
+  },
   "implemented": {
     "requestScopedTypedTraversal": true,
     "authenticatedExactPlaceholders": true,

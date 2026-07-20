@@ -37,6 +37,9 @@ productionProjection:
   gatewayInstance: ${llm-router.productionProjection.gatewayInstance:gateway-local}
   pollIntervalMs: ${llm-router.productionProjection.pollIntervalMs:1000}
   maxArtifactBytes: ${llm-router.productionProjection.maxArtifactBytes:4194304}
+  # Production defaults to evidence captured from a real provider endpoint.
+  # synthetic_spec_derived is accepted only when developmentFixtures=true.
+  requiredConformanceProvenance: ${llm-router.productionProjection.requiredConformanceProvenance:captured_sanitized}
   credentialEnvironment: {}
 
 # Production projection uses the bounded single-writer WAL. `required` aliases
@@ -83,6 +86,9 @@ providers:
     quotaGroupId: anthropic-local
 
 deployments:
+  # These compact capability flags are development fixtures only. Production
+  # projection resources must carry a complete, current conformanceResult whose
+  # canonical digest equals conformanceDigest.
   openai-primary:
     provider: openai-local
     model: gpt-local

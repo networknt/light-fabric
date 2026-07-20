@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "1",
+  "clients": {
+    "python": {
+      "package": "openai",
+      "version": "2.46.0"
+    },
+    "typescript": {
+      "package": "openai",
+      "version": "6.48.0"
+    }
+  },
+  "providerFormats": [
+    "openai",
+    "anthropic"
+  ],
+  "requiredOperations": [
+    "models",
+    "bufferedChat",
+    "streamingChat",
+    "toolCall"
+  ],
+  "evidence": "benchmarks/llm-gateway/reports/sdk-smoke.json",
+  "secretsRecorded": false
+}

@@ -18,7 +18,12 @@ jq empty "$repo_root/operations/llm-gateway/alerts.json"
 jq empty "$repo_root/operations/llm-gateway/synthetic-triggers.json"
 jq empty "$repo_root/security/llm-gateway/threat-model.json"
 jq empty "$repo_root/security/llm-gateway/evidence.json"
+jq empty "$repo_root/benchmarks/llm-gateway/manifests/sdk-smoke-manifest.json"
 bash -n "$repo_root/benchmarks/llm-gateway/scripts/run-perf3-candidate.sh"
+bash -n "$repo_root/benchmarks/llm-gateway/scripts/run-sdk-smoke.sh"
+python3 -c 'import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_text())' \
+  "$repo_root/benchmarks/llm-gateway/sdk-smoke/python_smoke.py"
+node --check "$repo_root/benchmarks/llm-gateway/sdk-smoke/typescript_smoke.mjs"
 
 echo "[llm-release] SEC-1 provider boundary and request-path tests"
 (cd "$repo_root" && cargo test --locked -p llm-gateway provider::tests)

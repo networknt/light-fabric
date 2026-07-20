@@ -86,6 +86,24 @@ impl ConformanceResult {
         digest_serializable(&unsigned) == expected
     }
 
+    /// Recomputes the canonical integrity digest after an authorized producer
+    /// has populated or updated the result. This is integrity binding, not an
+    /// authenticity mechanism; authenticity remains the responsibility of the
+    /// publication channel.
+    pub fn refresh_digest(&mut self) {
+        self.digest.clear();
+        self.digest = digest_serializable(self);
+    }
+
+    /// Returns true only when this exact, digested result is current, passing,
+    /// and proves every capability required by the caller. Keeping validity
+    /// and capability checks together prevents production routing from
+    /// accidentally treating an expired or quarantined result as a capability
+    /// declaration.
+    pub fn satisfies(&self, requirements: &CapabilityRequirements, now: DateTime<Utc>) -> bool {
+        self.is_current_and_passing(now) && requirements.satisfied_by(self)
+    }
+
     pub fn capability_has_provenance(
         &self,
         capability: ConformanceCapability,
@@ -178,10 +196,7 @@ pub fn eligible_deployment_ids(
 ) -> Vec<String> {
     deployments
         .iter()
-        .filter(|deployment| {
-            deployment.result.is_current_and_passing(now)
-                && requirements.satisfied_by(&deployment.result)
-        })
+        .filter(|deployment| deployment.result.satisfies(requirements, now))
         .map(|deployment| deployment.deployment_id.clone())
         .collect()
 }

@@ -3,7 +3,7 @@
   "release": "llm-gateway-mvp",
   "generatedDate": "2026-07-19",
   "sourceTree": "worktree",
-  "baseCommit": "ee54f8d7787ad5c6b5fcb15f9785d5470c747373",
+  "baseCommit": "f7f38a7258b319d6be6ca663bcaf6e565cca2f5a",
   "owners": {
     "performance": "gateway-performance",
     "observability": "gateway-sre",
@@ -12,6 +12,12 @@
   },
   "artifacts": {
     "performance": "benchmarks/llm-gateway/manifests/perf3-manifest.json",
+    "sdkSmokeManifest": "benchmarks/llm-gateway/manifests/sdk-smoke-manifest.json",
+    "sdkSmokeEvidence": "benchmarks/llm-gateway/reports/sdk-smoke.json",
+    "localDataPlaneReport": "benchmarks/llm-gateway/reports/phase3-local-data-plane.json",
+    "bufferedHttpReport": "benchmarks/llm-gateway/reports/phase4-buffered-http.json",
+    "architectureCheckpointReport": "benchmarks/llm-gateway/reports/phase5-architecture-checkpoint.json",
+    "auditStreamingReport": "benchmarks/llm-gateway/reports/phase7-audit-streaming.json",
     "qualificationReport": "benchmarks/llm-gateway/reports/phase8-release-qualification.json",
     "metrics": "operations/llm-gateway/metrics-contract.json",
     "dashboards": "operations/llm-gateway/dashboards.json",
@@ -21,13 +27,33 @@
     "securityEvidence": "security/llm-gateway/evidence.json",
     "rolloutPlan": "operations/llm-gateway/rollout-plan.json",
     "rolloutReport": "benchmarks/llm-gateway/reports/phase9-rollout.json",
+    "piiReport": "benchmarks/llm-gateway/reports/phase10-pii.json",
     "canaryEvidenceSchema": "benchmarks/llm-gateway/schemas/rel1-canary-evidence.schema.json",
     "rollbackEvidenceSchema": "benchmarks/llm-gateway/schemas/rel1-rollback-evidence.schema.json",
     "rolloutRunbook": "operations/llm-gateway/runbooks/rollout-and-rollback.md"
   },
   "artifactDigests": {
     "benchmarks/llm-gateway/manifests/perf3-manifest.json": "97146bbaa08aac4cfc324b3e68d5a3b80a1035c318d72ec46411000d6b47f51f",
-    "benchmarks/llm-gateway/reports/phase8-release-qualification.json": "f142458bf16c8e0f25d33ba181d32b256492ff974def8e931187171ad9d3fd23",
+    "benchmarks/llm-gateway/reports/phase3-local-data-plane.json": "1bc2be688bc3470237070f4ec2f0fc23fb1f766146a888bfb7f3fd32442d2493",
+    "benchmarks/llm-gateway/reports/phase4-buffered-http.json": "4a266e64b75388798847dc147383a6149a874082df5f74c41491e4e9bda4c261",
+    "benchmarks/llm-gateway/reports/phase5-architecture-checkpoint.json": "fa37cbe772f8f3b17cadb430eb7aa7dce0ea9881da7ec9b36f2ff56564abb6fd",
+    "benchmarks/llm-gateway/reports/phase7-audit-streaming.json": "411c9d29eee37c85037f10f62653a1e291c9923a95281999bebb2c9c9d0a5e3b",
+    "benchmarks/llm-gateway/reports/phase8-release-qualification.json": "23b1222a4d9270c44c52c32e9161f0368ed708ce79bbee10019fa40c8dc7b617",
+    "benchmarks/llm-gateway/reports/phase9-rollout.json": "3e41376ec334eab9b8343ea36cd1c3b0f54769983fb7419b170242a61b6e0b5c",
+    "benchmarks/llm-gateway/reports/phase10-pii.json": "1775b203a934ddda42e4efbfecc142167ff41c520d130100288f395d2805f801",
+    "benchmarks/llm-gateway/manifests/sdk-smoke-manifest.json": "43c0b53bcead55b2bc814936f23a93fc5fd4951824234bea682471e8491fce88",
+    "benchmarks/llm-gateway/scripts/run-sdk-smoke.sh": "6c19a7a136860d3a55e0dbdd2f5a87a240fa357583f6d2282cc43eb6de111bd5",
+    "benchmarks/llm-gateway/sdk-smoke/python_smoke.py": "332dfdce08cffa008a4db3694fba4440176ca4996685396fd540bdc4930062c2",
+    "benchmarks/llm-gateway/sdk-smoke/typescript_smoke.mjs": "4a1ababc89a207dec39d0ddad47412b6072679bafc1cae11c88dbc39543aa68d",
+    "crates/model-provider/src/conformance/runner.rs": "199e5dd903c89988b91094db7fc34a97f3353d2d786a1c07286374ac86559ece",
+    "crates/llm-gateway/src/config.rs": "1764f0e6c3c59fe1dcf46a358e72424c8907d1fc09da577504e7feadb5bb3d28",
+    "crates/llm-gateway/src/pii.rs": "04cfe8f4803f453814258d3baea8c625b948b0615ea999d36e0c8d283a102698",
+    "crates/llm-gateway/src/projection.rs": "a05a646e1991b3b4b11c1c3b058bdbbdba10e861d79bdf855e503672eb385251",
+    "crates/llm-gateway/src/routing/mod.rs": "b5569e571394c4193a9f702cbead04d3e23b47363e167ddc2598680dc8d39ea9",
+    "crates/llm-gateway/src/runtime/compiler.rs": "6a17dc3c287b89a463799bb7082d112549921b0ad834d6bc22fb523176219745",
+    "crates/llm-gateway/src/runtime/snapshot.rs": "161a0a7604917f27d1e5f075b595b1d3fee344cc7c08179383cc4f6acfaa6f8a",
+    "crates/llm-gateway/src/runtime/streaming.rs": "b67a129eb35a4a9f31fcd7006f12491c52ef295f2464c7d84641c94de96bb46b",
+    "crates/llm-gateway/src/http.rs": "4777c23439098951e5b9711df7a812f6d0618ac5b1a2bc641af1282d1e5020da",
     "operations/llm-gateway/metrics-contract.json": "9dc375c35ed04e04bb09058eeefcc14253e0a90d204f616e38e5ab6fff1955a2",
     "operations/llm-gateway/dashboards.json": "d910b95cd3b0c669a71345cce232d95af8122ab52f8587e31b9812bbd03a602c",
     "operations/llm-gateway/alerts.json": "f2165c12ab8c1ee7f70bc1ff093864ebe5295e6e703e816cfd32e81205cca931",
@@ -40,13 +66,14 @@
     "benchmarks/llm-gateway/schemas/rel1-rollback-evidence.schema.json": "ea5349076da67ce8585c4a48343cbdba317f1ac55f01cca8d3b2218a87c6787e",
     "operations/llm-gateway/runbooks/rollout-and-rollback.md": "79822f9e6374cd771386b250824fbdf9ef11ee448899893348b69b27439a0f4c",
     "scripts/run-llm-rollout-gates.sh": "a92c58b58885766fba9a84de62d845aa7f9a4737c9bf9e62f3db28bf586cb544",
-    "benchmarks/llm-gateway/reports/phase9-rollout.json": "c02cf5fa14d27de35021d3b38b34765865b6176a98a4147aba2bc7ea1942abca"
+    "scripts/run-llm-release-qualification-gates.sh": "be278f28166299180275d3aa53bc2f7f8f0a610dd3018fa94edb2457990d8acd"
   },
   "status": {
     "PERF-3": "pending-external-five-run-evidence",
     "OBS-1": "implementation-complete",
     "SEC-1": "implementation-complete",
-    "REL-1": "implementation-complete-blocked-on-PERF-3-and-live-evidence"
+    "REL-1": "implementation-complete-blocked-on-PERF-3-and-live-evidence",
+    "SDK-LIVE": "pending-python-and-typescript-live-evidence"
   },
   "canaryAllowed": false,
   "syntheticMeasurementsSubstituted": false

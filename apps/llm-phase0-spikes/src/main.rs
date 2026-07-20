@@ -11,6 +11,7 @@ use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -577,6 +578,17 @@ fn validate_rollout(require_live: bool) -> Result<(), Box<dyn std::error::Error>
 }
 
 fn validate_release(require_performance: bool) -> Result<(), Box<dyn std::error::Error>> {
+    const RELEASE_SOURCE_PATHS: [&str; 9] = [
+        "crates/model-provider/src/conformance/runner.rs",
+        "crates/llm-gateway/src/config.rs",
+        "crates/llm-gateway/src/pii.rs",
+        "crates/llm-gateway/src/projection.rs",
+        "crates/llm-gateway/src/routing/mod.rs",
+        "crates/llm-gateway/src/runtime/compiler.rs",
+        "crates/llm-gateway/src/runtime/snapshot.rs",
+        "crates/llm-gateway/src/runtime/streaming.rs",
+        "crates/llm-gateway/src/http.rs",
+    ];
     let root = workspace_root();
     let read = |relative_path: &str| -> Result<Value, Box<dyn std::error::Error>> {
         Ok(serde_json::from_slice(&fs::read(
@@ -591,6 +603,9 @@ fn validate_release(require_performance: bool) -> Result<(), Box<dyn std::error:
     let security = read("security/llm-gateway/threat-model.json")?;
     let security_evidence = read("security/llm-gateway/evidence.json")?;
     let release = read("benchmarks/llm-gateway/manifests/release-manifest.json")?;
+    let sdk_smoke = read("benchmarks/llm-gateway/manifests/sdk-smoke-manifest.json")?;
+
+    validate_sdk_smoke_contract(&root, &sdk_smoke)?;
 
     let required_profiles = [
         "buffered-500",
@@ -774,6 +789,31 @@ fn validate_release(require_performance: bool) -> Result<(), Box<dyn std::error:
     if base_commit.len() != 40 || !base_commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("release base commit is invalid".into());
     }
+    let current_commit = git_stdout(&root, &["rev-parse", "HEAD"])?;
+    match release["sourceTree"].as_str() {
+        Some("worktree") if base_commit != current_commit => {
+            return Err(format!(
+                "worktree release base commit {base_commit} does not match current HEAD {current_commit}"
+            )
+            .into());
+        }
+        Some("commit")
+            if !git_success(&root, &["merge-base", "--is-ancestor", base_commit, "HEAD"])? =>
+        {
+            return Err(
+                "release candidate commit is not an ancestor of the evidence commit".into(),
+            );
+        }
+        Some("worktree" | "commit") => {}
+        _ => return Err("release sourceTree must be worktree or commit".into()),
+    }
+    for required_source in RELEASE_SOURCE_PATHS {
+        if release["artifactDigests"].get(required_source).is_none() {
+            return Err(
+                format!("release evidence does not bind source `{required_source}`").into(),
+            );
+        }
+    }
     for (path, expected) in release["artifactDigests"]
         .as_object()
         .ok_or("release artifact digests missing")?
@@ -794,7 +834,19 @@ fn validate_release(require_performance: bool) -> Result<(), Box<dyn std::error:
     }
 
     if require_performance {
+        if release["sourceTree"] != "commit" {
+            return Err("release closure requires sourceTree=commit".into());
+        }
+        let mut source_diff_args = vec!["diff", "--quiet", base_commit, "HEAD", "--"];
+        source_diff_args.extend(RELEASE_SOURCE_PATHS);
+        if !git_success(&root, &source_diff_args)? {
+            return Err("critical source changed after the named release candidate commit".into());
+        }
+        if !git_stdout(&root, &["status", "--porcelain", "--untracked-files=all"])?.is_empty() {
+            return Err("release closure requires a clean source tree".into());
+        }
         validate_perf3_results(&root, &perf)?;
+        validate_sdk_smoke_evidence(&root, &sdk_smoke, base_commit)?;
         if release["canaryAllowed"] != true {
             return Err("release qualification passed but canary approval is not recorded".into());
         }
@@ -805,6 +857,134 @@ fn validate_release(require_performance: bool) -> Result<(), Box<dyn std::error:
         );
     }
     Ok(())
+}
+
+fn validate_sdk_smoke_contract(
+    root: &Path,
+    manifest: &Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if manifest["schemaVersion"] != "1"
+        || manifest["secretsRecorded"] != false
+        || manifest["clients"]["python"]["package"] != "openai"
+        || manifest["clients"]["typescript"]["package"] != "openai"
+    {
+        return Err("live SDK smoke manifest is incomplete".into());
+    }
+    for client in ["python", "typescript"] {
+        if manifest["clients"][client]["version"]
+            .as_str()
+            .is_none_or(str::is_empty)
+        {
+            return Err(format!("live SDK smoke client `{client}` is not version-pinned").into());
+        }
+    }
+    for provider in ["openai", "anthropic"] {
+        if !manifest["providerFormats"]
+            .as_array()
+            .is_some_and(|formats| formats.iter().any(|format| format == provider))
+        {
+            return Err(format!("live SDK smoke provider `{provider}` is missing").into());
+        }
+    }
+    for operation in ["models", "bufferedChat", "streamingChat", "toolCall"] {
+        if !manifest["requiredOperations"]
+            .as_array()
+            .is_some_and(|operations| operations.iter().any(|value| value == operation))
+        {
+            return Err(format!("live SDK smoke operation `{operation}` is missing").into());
+        }
+    }
+    for path in [
+        "benchmarks/llm-gateway/sdk-smoke/python_smoke.py",
+        "benchmarks/llm-gateway/sdk-smoke/typescript_smoke.mjs",
+        "benchmarks/llm-gateway/scripts/run-sdk-smoke.sh",
+    ] {
+        if !root.join(path).is_file() {
+            return Err(format!("live SDK smoke harness `{path}` is missing").into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_sdk_smoke_evidence(
+    root: &Path,
+    manifest: &Value,
+    base_commit: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let evidence_path = manifest["evidence"]
+        .as_str()
+        .ok_or("live SDK smoke evidence path is missing")?;
+    let evidence: Value = serde_json::from_slice(&fs::read(root.join(evidence_path))?)?;
+    if evidence["schemaVersion"] != "1"
+        || evidence["revision"] != base_commit
+        || evidence["status"] != "pass"
+        || evidence["sanitized"] != true
+        || evidence["secretMaterialRecorded"] != false
+        || !is_sha256(&evidence["projectionDigest"])
+    {
+        return Err("live SDK smoke evidence identity or sanitization failed".into());
+    }
+    for provider in ["openai", "anthropic"] {
+        if !is_sha256(&evidence["conformanceDigests"][provider]) {
+            return Err(format!("live `{provider}` conformance digest is missing").into());
+        }
+    }
+    let clients = evidence["clients"]
+        .as_array()
+        .ok_or("live SDK smoke clients are missing")?;
+    for client in ["python", "typescript"] {
+        let result = clients
+            .iter()
+            .find(|result| result["client"] == client)
+            .ok_or_else(|| format!("live SDK smoke client `{client}` is missing"))?;
+        if result["status"] != "pass"
+            || result["sdkPackage"] != manifest["clients"][client]["package"]
+            || result["sdkVersion"] != manifest["clients"][client]["version"]
+        {
+            return Err(format!("live SDK smoke client `{client}` identity failed").into());
+        }
+        for provider in ["openai", "anthropic"] {
+            for operation in ["models", "bufferedChat", "streamingChat", "toolCall"] {
+                if result["providers"][provider][operation] != true {
+                    return Err(format!(
+                        "live SDK smoke `{client}`/`{provider}`/`{operation}` did not pass"
+                    )
+                    .into());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_sha256(value: &Value) -> bool {
+    value.as_str().is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    })
+}
+
+fn git_stdout(root: &Path, args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()?;
+    if !output.status.success() {
+        return Err(format!("git {} failed", args.join(" ")).into());
+    }
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
+}
+
+fn git_success(root: &Path, args: &[&str]) -> Result<bool, Box<dyn std::error::Error>> {
+    Ok(Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .status()?
+        .success())
 }
 
 fn validate_perf3_results(root: &Path, perf: &Value) -> Result<(), Box<dyn std::error::Error>> {

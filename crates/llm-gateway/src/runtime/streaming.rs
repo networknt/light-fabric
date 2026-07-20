@@ -164,10 +164,11 @@ impl LlmRuntime {
             return Err(error);
         }
 
+        let required = alias.merge_requirements(request_capabilities(&request, true));
         let candidates = alias
             .deployments
             .iter()
-            .filter(|deployment| deployment.supports(request_capabilities(&request)))
+            .filter(|deployment| deployment.supports(&required))
             .cloned()
             .collect::<Vec<_>>();
         let Some(first_price) = candidates.first().map(|candidate| candidate.price) else {

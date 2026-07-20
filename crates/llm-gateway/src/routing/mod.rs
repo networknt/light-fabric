@@ -1,5 +1,7 @@
+use model_provider::conformance::CapabilityRequirements;
 use model_provider::inference::{
-    ContentBlock, InferenceError, InferenceErrorCategory, InferenceRequest, RetryDisposition,
+    ContentBlock, InferenceError, InferenceErrorCategory, InferenceRequest, Operation,
+    RetryDisposition,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -170,15 +172,19 @@ pub fn retryable(error: &InferenceError) -> bool {
     error.retry == RetryDisposition::Safe
 }
 
-pub fn request_capabilities(request: &InferenceRequest) -> (bool, bool, bool) {
+pub fn request_capabilities(request: &InferenceRequest, streaming: bool) -> CapabilityRequirements {
     let images = request
         .messages
         .iter()
         .flat_map(|message| &message.content)
         .any(|content| matches!(content, ContentBlock::Image { .. }));
-    (
+    CapabilityRequirements {
+        operation: Operation::ChatCompletions,
         images,
-        !request.tools.is_empty(),
-        request.response_format.is_some(),
-    )
+        tools: !request.tools.is_empty(),
+        parallel_tools: false,
+        structured_json: request.response_format.is_some(),
+        streaming,
+        required_provenance: None,
+    }
 }

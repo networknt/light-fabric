@@ -213,11 +213,11 @@ impl LlmRuntime {
             return Err(error);
         }
 
-        let required = request_capabilities(&request);
+        let required = alias.merge_requirements(request_capabilities(&request, false));
         let candidates = alias
             .deployments
             .iter()
-            .filter(|deployment| deployment.supports(required))
+            .filter(|deployment| deployment.supports(&required))
             .cloned()
             .collect::<Vec<_>>();
         let Some(first_price) = candidates.first().map(|candidate| candidate.price) else {
@@ -468,6 +468,7 @@ impl LlmRuntime {
         root: &LlmPublishedSnapshot,
         principal: &str,
         request: &InferenceRequest,
+        streaming: bool,
     ) -> Result<BTreeSet<ProviderFormat>, LlmGatewayError> {
         let alias = root
             .aliases
@@ -476,11 +477,11 @@ impl LlmRuntime {
         if alias.internal && alias.bound_principal.as_deref() != Some(principal) {
             return Err(LlmGatewayError::ModelUnavailable);
         }
-        let required = request_capabilities(request);
+        let required = alias.merge_requirements(request_capabilities(request, streaming));
         let formats = alias
             .deployments
             .iter()
-            .filter(|deployment| deployment.supports(required))
+            .filter(|deployment| deployment.supports(&required))
             .map(|deployment| deployment.provider.format())
             .collect::<BTreeSet<_>>();
         if formats.is_empty() {
@@ -494,7 +495,14 @@ impl LlmRuntime {
             .load()
             .aliases
             .values()
-            .filter(|alias| !alias.internal)
+            .filter(|alias| {
+                !alias.internal
+                    && alias.deployments.iter().any(|deployment| {
+                        deployment.supports(&alias.merge_requirements(
+                            model_provider::conformance::CapabilityRequirements::default(),
+                        ))
+                    })
+            })
             .map(|alias| alias.public_name.clone())
             .collect()
     }

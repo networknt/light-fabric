@@ -5,10 +5,14 @@
 //! complete candidate, performs one root swap, and acknowledges only an
 //! applied root. It never performs control-plane or secret I/O on a request.
 
-use crate::config::{AliasConfig, AuditMode, DeploymentConfig, LlmRouterConfig, ProviderConfig};
+use crate::config::{
+    AliasCapabilityRequirements, AliasConfig, AuditMode, DeploymentConfig, LlmRouterConfig,
+    ProviderConfig,
+};
 use crate::error::LlmGatewayError;
 use crate::runtime::{LlmCompiler, LlmSnapshotStore, PublishOutcome};
 use chrono::{SecondsFormat, Utc};
+use model_provider::conformance::ConformanceResult;
 use model_provider::inference::ProviderFormat;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -508,16 +512,7 @@ struct DeploymentPayload {
     #[serde(default = "default_deployment_concurrency")]
     concurrency: usize,
     conformance_digest: String,
-    #[serde(default = "default_true")]
-    text: bool,
-    #[serde(default)]
-    images: bool,
-    #[serde(default)]
-    tools: bool,
-    #[serde(default)]
-    structured_json: bool,
-    #[serde(default)]
-    pii_placeholder_preservation_percent: u8,
+    conformance_result: ConformanceResult,
 }
 
 #[derive(Debug, Deserialize)]
@@ -543,6 +538,8 @@ struct RoutePayload {
     audit: AuditMode,
     #[serde(default)]
     pii: crate::pii::PiiProfile,
+    #[serde(default)]
+    required_capabilities: AliasCapabilityRequirements,
 }
 
 #[derive(Debug, Deserialize)]
@@ -612,6 +609,7 @@ fn assemble_config(
                         .providers
                         .insert(payload.provider_id.clone(), provider);
                 }
+                let capabilities = payload.conformance_result.capabilities.clone();
                 config.deployments.insert(
                     payload.deployment_id,
                     DeploymentConfig {
@@ -621,12 +619,12 @@ fn assemble_config(
                         input_micros_per_million: None,
                         output_micros_per_million: None,
                         conformance_digest: payload.conformance_digest,
-                        text: payload.text,
-                        images: payload.images,
-                        tools: payload.tools,
-                        structured_json: payload.structured_json,
-                        pii_placeholder_preservation_percent: payload
-                            .pii_placeholder_preservation_percent,
+                        conformance_result: Some(payload.conformance_result),
+                        text: capabilities.content.text,
+                        images: capabilities.content.images,
+                        tools: capabilities.content.tools,
+                        structured_json: capabilities.content.structured_json,
+                        pii_placeholder_preservation_percent: 0,
                     },
                 );
             }
@@ -651,6 +649,7 @@ fn assemble_config(
                         bound_principal: payload.bound_principal,
                         audit: payload.audit,
                         pii: payload.pii,
+                        required_capabilities: payload.required_capabilities,
                     },
                 );
             }
@@ -848,16 +847,29 @@ fn default_alias_concurrency() -> usize {
 fn default_attempts() -> usize {
     1
 }
-fn default_true() -> bool {
-    true
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::credentials::SecretResolver;
+    use model_provider::conformance::{ConformanceResult, FixtureProvenance};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Mutex, RwLock};
+
+    fn captured_conformance_result() -> ConformanceResult {
+        let mut result: ConformanceResult = serde_json::from_str(include_str!(
+            "../../model-provider/conformance/results/openai.json"
+        ))
+        .expect("checked-in OpenAI conformance result");
+        result.physical_model = "gpt-governed".to_string();
+        result.tested_at = "2026-07-19T00:00:00Z".parse().unwrap();
+        result.valid_until = "2999-01-01T00:00:00Z".parse().unwrap();
+        for evidence in result.capability_evidence.values_mut() {
+            evidence.provenances = BTreeSet::from([FixtureProvenance::CapturedSanitized]);
+        }
+        result.refresh_digest();
+        result
+    }
 
     #[derive(Clone)]
     struct MemorySource(Arc<Mutex<ProjectionBundle>>);
@@ -940,6 +952,8 @@ mod tests {
     }
 
     fn bundle(sequence: u64) -> ProjectionBundle {
+        let conformance = captured_conformance_result();
+        let conformance_digest = conformance.digest.clone();
         let resources = [
             resource(
                 "llm-deployment",
@@ -954,11 +968,8 @@ mod tests {
                     "quotaGroupId":"openai-capacity",
                     "model":"gpt-governed",
                     "concurrency":8,
-                    "conformanceDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    "text":true,
-                    "images":true,
-                    "tools":true,
-                    "structuredJson":true
+                    "conformanceDigest":conformance_digest,
+                    "conformanceResult":conformance
                 }),
             ),
             resource(
@@ -1041,6 +1052,15 @@ mod tests {
         bundle.manifest.root_digest = canonical_digest(&value).unwrap();
     }
 
+    fn refresh_resource(bundle: &mut ProjectionBundle, key: &str) {
+        let resource = bundle.resources.get_mut(key).unwrap();
+        resource.digest.clear();
+        let mut value = serde_json::to_value(&*resource).unwrap();
+        remove_field(&mut value, "digest").unwrap();
+        resource.digest = canonical_digest(&value).unwrap();
+        refresh_manifest(bundle);
+    }
+
     fn initial_store(
         compiler: &LlmCompiler,
         projection: &ProjectionBundle,
@@ -1118,6 +1138,47 @@ mod tests {
             &rotated.deployments["openai-primary"].account
         ));
         assert_eq!(replica_a.status().credential_generation, 1);
+    }
+
+    #[test]
+    fn production_projection_rejects_missing_or_synthetic_only_conformance_evidence() {
+        let mut missing = bundle(1);
+        missing
+            .resources
+            .get_mut("llm-deployment/openai-primary")
+            .unwrap()
+            .payload
+            .as_object_mut()
+            .unwrap()
+            .remove("conformanceResult");
+        refresh_resource(&mut missing, "llm-deployment/openai-primary");
+        assert!(assemble_config(&LlmRouterConfig::default(), &missing).is_err());
+
+        let mut synthetic = bundle(1);
+        let deployment = synthetic
+            .resources
+            .get_mut("llm-deployment/openai-primary")
+            .unwrap();
+        let mut result: ConformanceResult =
+            serde_json::from_value(deployment.payload["conformanceResult"].clone()).unwrap();
+        for evidence in result.capability_evidence.values_mut() {
+            evidence.provenances = BTreeSet::from([FixtureProvenance::SyntheticSpecDerived]);
+        }
+        result.refresh_digest();
+        deployment.payload["conformanceDigest"] = Value::String(result.digest.clone());
+        deployment.payload["conformanceResult"] = serde_json::to_value(result).unwrap();
+        refresh_resource(&mut synthetic, "llm-deployment/openai-primary");
+        let config = assemble_config(&LlmRouterConfig::default(), &synthetic).unwrap();
+        let resolver = Arc::new(RotatingResolver::default());
+        resolver.0.write().unwrap().insert(
+            "credential://host-a/openai".to_string(),
+            "secret".to_string(),
+        );
+        let error = LlmCompiler::new(resolver)
+            .compile(&config, 1, None)
+            .err()
+            .expect("synthetic-only evidence must not enable production routing");
+        assert!(error.to_string().contains("not proven"));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use crate::pii::PiiProfile;
+use model_provider::conformance::{ConformanceResult, FixtureProvenance};
 use model_provider::inference::ProviderFormat;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -163,6 +164,11 @@ pub struct ProductionProjectionConfig {
     pub poll_interval_ms: u64,
     #[serde(default = "default_projection_artifact_bytes")]
     pub max_artifact_bytes: usize,
+    /// Minimum evidence provenance accepted for production routing. Production
+    /// defaults to sanitized provider captures; synthetic fixtures remain
+    /// available only to explicitly marked development configurations.
+    #[serde(default = "default_conformance_provenance")]
+    pub required_conformance_provenance: FixtureProvenance,
     /// Maps opaque `credential://` references to application-owned environment
     /// variable names. Values are names, never secret material.
     #[serde(default)]
@@ -179,6 +185,7 @@ impl Default for ProductionProjectionConfig {
             gateway_instance: default_gateway_instance(),
             poll_interval_ms: default_projection_poll_ms(),
             max_artifact_bytes: default_projection_artifact_bytes(),
+            required_conformance_provenance: default_conformance_provenance(),
             credential_environment: BTreeMap::new(),
         }
     }
@@ -209,6 +216,11 @@ pub struct DeploymentConfig {
     pub output_micros_per_million: Option<u64>,
     #[serde(default)]
     pub conformance_digest: String,
+    /// Complete, self-digested deployment evidence. It is mandatory outside
+    /// development fixtures and is rechecked on every eligibility decision so
+    /// an expired result cannot remain active in a stale snapshot.
+    #[serde(default)]
+    pub conformance_result: Option<ConformanceResult>,
     #[serde(default = "default_true")]
     pub text: bool,
     #[serde(default)]
@@ -245,6 +257,23 @@ pub struct AliasConfig {
     pub audit: AuditMode,
     #[serde(default)]
     pub pii: PiiProfile,
+    #[serde(default)]
+    pub required_capabilities: AliasCapabilityRequirements,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AliasCapabilityRequirements {
+    #[serde(default)]
+    pub images: bool,
+    #[serde(default)]
+    pub tools: bool,
+    #[serde(default)]
+    pub parallel_tools: bool,
+    #[serde(default)]
+    pub structured_json: bool,
+    #[serde(default)]
+    pub streaming: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -375,4 +404,8 @@ fn default_projection_poll_ms() -> u64 {
 }
 fn default_projection_artifact_bytes() -> usize {
     4 * 1024 * 1024
+}
+
+fn default_conformance_provenance() -> FixtureProvenance {
+    FixtureProvenance::CapturedSanitized
 }
