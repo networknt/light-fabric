@@ -624,6 +624,7 @@ fn assemble_config(
                         images: capabilities.content.images,
                         tools: capabilities.content.tools,
                         structured_json: capabilities.content.structured_json,
+                        streaming: capabilities.streaming,
                         pii_placeholder_preservation_percent: 0,
                     },
                 );

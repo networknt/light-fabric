@@ -1,12 +1,21 @@
 # Local LLM data plane. It is inert unless both this flag and the `llm`
 # handler are enabled. The endpoints and credentials below are development
 # fixtures and must be replaced for a production deployment.
+# When productionProjection is enabled, this file must not embed providers,
+# deployments, or aliases (production topology comes only from the immutable
+# projection) and developmentFixtures must be false; the gateway rejects the
+# configuration otherwise.
 # The handler path must execute, in order:
 # correlation -> unified-security -> limit -> access-control -> llm
 enabled: ${llm-router.enabled:false}
 pathPrefix: ${llm-router.pathPrefix:/v1}
+# Admission bound for the raw HTTP request body captured by the application
+# handler. This is not an exact predictor of canonical replay size.
 maxRequestBodyBytes: ${llm-router.maxRequestBodyBytes:1048576}
 maxJsonDepth: ${llm-router.maxJsonDepth:64}
+# Bound for the serialized canonical request retained for retry replay. For a
+# multi-attempt alias it must be at least maxRequestBodyBytes as a conservative
+# reload check, and every canonical request is checked exactly before dispatch.
 maxReplayBytes: ${llm-router.maxReplayBytes:1048576}
 requestTimeoutMs: ${llm-router.requestTimeoutMs:30000}
 globalConcurrency: ${llm-router.globalConcurrency:256}

@@ -347,6 +347,15 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
                 "internal alias `{name}` must bind a principal"
             )));
         }
+        // This is a conservative reload-time cross-check between the raw HTTP
+        // body admission bound and the canonical request replay bound.
+        // Canonicalization can increase or decrease the serialized size, so
+        // the runtime still enforces the exact canonical size before dispatch.
+        if alias.max_attempts > 1 && config.max_request_body_bytes > config.max_replay_bytes {
+            return Err(LlmGatewayError::Config(format!(
+                "multi-attempt alias `{name}` requires raw-body maxRequestBodyBytes <= canonical maxReplayBytes; exact canonical size is rechecked per request"
+            )));
+        }
         if alias.audit.is_local_durable() && !config.audit_runtime.persistent_volume {
             return Err(LlmGatewayError::Config(format!(
                 "local-durable alias `{name}` requires declared persistent audit storage"
@@ -475,7 +484,7 @@ fn capabilities_for_deployment(config: &crate::config::DeploymentConfig) -> Prov
             structured_json: config.structured_json,
             reasoning_usage: false,
         },
-        streaming: false,
+        streaming: config.streaming,
     }
 }
 

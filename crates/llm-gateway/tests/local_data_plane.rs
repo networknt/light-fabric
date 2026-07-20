@@ -829,6 +829,7 @@ fn compiler_config() -> LlmRouterConfig {
                 images: false,
                 tools: false,
                 structured_json: false,
+                streaming: true,
                 pii_placeholder_preservation_percent: 0,
             },
         )]),
@@ -967,6 +968,63 @@ fn credential_rotation_rebuilds_client_but_preserves_provider_account_runtime() 
 }
 
 #[test]
+fn multi_attempt_alias_rejects_raw_body_bound_above_replay_policy_bound() {
+    let mut config = compiler_config();
+    let second = config.deployments["d"].clone();
+    config.deployments.insert("d2".to_string(), second);
+    let alias = config.aliases.get_mut("public-model").unwrap();
+    alias.deployments = vec!["d".to_string(), "d2".to_string()];
+    alias.max_attempts = 2;
+    config.max_replay_bytes = 1024;
+    config.max_request_body_bytes = 2048;
+    let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
+        "secret".to_string(),
+        "value".to_string(),
+    )]))));
+    let error = compiler
+        .compile(&config, 1, None)
+        .err()
+        .expect("body bound above replay bound must fail compile");
+    let message = error.to_string();
+    assert!(message.contains("raw-body maxRequestBodyBytes"), "{error}");
+    assert!(message.contains("canonical maxReplayBytes"), "{error}");
+
+    config.max_request_body_bytes = 1024;
+    assert!(
+        compiler.compile(&config, 1, None).is_ok(),
+        "equal configured bounds satisfy the conservative reload policy"
+    );
+}
+
+#[test]
+fn development_fixture_deployment_supports_streaming_by_default() {
+    // Regression: the dev-fixture capability fallback hard-coded
+    // `streaming: false`, so every SSE request against a fixture deployment
+    // returned `model_not_found`. A YAML deployment without a `streaming` key
+    // must keep SSE parity with production conformance-backed deployments.
+    let deserialized: llm_gateway::config::DeploymentConfig =
+        serde_json::from_value(serde_json::json!({"provider": "p", "model": "physical"})).unwrap();
+    assert!(deserialized.streaming);
+
+    let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
+        "secret".to_string(),
+        "value".to_string(),
+    )]))));
+    let snapshot = compiler.compile(&compiler_config(), 1, None).unwrap();
+    let streaming = CapabilityRequirements {
+        streaming: true,
+        ..CapabilityRequirements::default()
+    };
+    assert!(snapshot.deployments["d"].supports(&streaming));
+
+    let mut opted_out = compiler_config();
+    opted_out.deployments.get_mut("d").unwrap().streaming = false;
+    let snapshot = compiler.compile(&opted_out, 2, None).unwrap();
+    assert!(!snapshot.deployments["d"].supports(&streaming));
+    assert!(snapshot.deployments["d"].supports(&CapabilityRequirements::default()));
+}
+
+#[test]
 fn production_config_rejects_loopback_plaintext_fixture_provider() {
     let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
         "secret".to_string(),
@@ -1029,6 +1087,40 @@ fn http_request(body: &[u8]) -> BufferedHttpRequest {
         principal_id: "user".to_string(),
         trusted_request_id: "trusted".to_string(),
     }
+}
+
+#[tokio::test]
+async fn multi_attempt_http_rechecks_canonical_replay_size_before_dispatch() {
+    let provider = Arc::new(ScriptedProvider::new(
+        ProviderFormat::OpenAi,
+        vec![Ok(success_response())],
+    ));
+    let runtime = runtime_with(
+        vec![provider.clone(), provider.clone()],
+        2,
+        100,
+        Arc::new(RecordingAudit::default()),
+    );
+    let http = LlmBufferedHttp::new(runtime, Arc::new(Allow), 100, 32, Duration::from_secs(1));
+    let body = br#"{"model":"public-model","messages":[{"role":"user","content":"x"}]}"#;
+
+    assert!(body.len() <= 100, "raw HTTP body must pass admission");
+    assert!(
+        serde_json::to_vec(&InferenceRequest::text("public-model", "x"))
+            .expect("serialize canonical request")
+            .len()
+            > 100,
+        "canonical replay representation must exceed the configured bound"
+    );
+
+    let response = http.handle(http_request(body)).await;
+    assert_eq!(response.status, 400);
+    assert!(
+        String::from_utf8(response.body)
+            .expect("UTF-8 error response")
+            .contains("request exceeds replay bound required by retry policy")
+    );
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

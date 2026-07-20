@@ -228,6 +228,32 @@ fn start_llm_projection_task(
     }))
 }
 
+fn validate_llm_config_authority(config: &LlmRouterConfig) -> Result<(), RuntimeError> {
+    if !config.production_projection.enabled {
+        return Ok(());
+    }
+    // Production topology is authoritative in the immutable projection.
+    // Reject embedded YAML topology instead of silently ignoring it, so a
+    // misconfigured deployment cannot believe fixture routes are active.
+    if !config.providers.is_empty() || !config.deployments.is_empty() || !config.aliases.is_empty()
+    {
+        return Err(RuntimeError::Config(
+            "llm-router.yml must not embed providers, deployments, or aliases when \
+             productionProjection is enabled; production topology comes only from the \
+             projection"
+                .to_string(),
+        ));
+    }
+    // Development fixtures relax provenance and endpoint validation and must
+    // never combine with the production projection.
+    if config.development_fixtures {
+        return Err(RuntimeError::Config(
+            "developmentFixtures must be false when productionProjection is enabled".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn load_llm_gateway_module(
     runtime_config: &RuntimeConfig,
     active: bool,
@@ -255,6 +281,7 @@ fn load_llm_gateway_module(
         stop_llm_background_tasks(previous);
         return Ok(None);
     }
+    validate_llm_config_authority(&config)?;
     let resolver: Arc<dyn SecretResolver> = if config.production_projection.enabled {
         Arc::new(EnvironmentReferenceSecretResolver::new(
             config.production_projection.credential_environment.clone(),
@@ -264,16 +291,8 @@ fn load_llm_gateway_module(
     };
     let compiler = Arc::new(LlmCompiler::new(resolver));
     let previous_snapshot = previous.map(|module| module.runtime.snapshot());
-    let mut bootstrap_config = config.clone();
-    if config.production_projection.enabled {
-        // Production topology is authoritative in the immutable projection;
-        // never materialize the local fixture/provider maps first.
-        bootstrap_config.providers.clear();
-        bootstrap_config.deployments.clear();
-        bootstrap_config.aliases.clear();
-    }
     let snapshot = compiler
-        .compile(&bootstrap_config, generation, previous_snapshot.as_deref())
+        .compile(&config, generation, previous_snapshot.as_deref())
         .map_err(|error| RuntimeError::Config(error.to_string()))?;
     let projection_fingerprint =
         serde_json::to_string(&config).map_err(|error| RuntimeError::Config(error.to_string()))?;
@@ -4980,6 +4999,68 @@ aliases:
 
         assert!(disabled.is_none());
         assert!(task.handle.is_finished());
+    }
+
+    #[test]
+    fn production_projection_rejects_yaml_topology_and_development_fixtures() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        std::fs::write(
+            config_dir.path().join(LLM_ROUTER_FILE),
+            r#"
+enabled: true
+developmentFixtures: false
+productionProjection:
+  enabled: true
+providers:
+  mock:
+    format: openai
+    baseUrl: https://example.invalid/v1
+    secretRef: env:LIGHT_GATEWAY_PROJECTION_TEST_KEY
+"#,
+        )
+        .expect("write LLM config");
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+        let error = load_llm_gateway_module(&config, true, 1, None)
+            .err()
+            .expect("embedded YAML topology must be rejected in production mode");
+        assert!(
+            error.to_string().contains("must not embed providers"),
+            "{error}"
+        );
+
+        std::fs::write(
+            config_dir.path().join(LLM_ROUTER_FILE),
+            r#"
+enabled: true
+developmentFixtures: true
+productionProjection:
+  enabled: true
+"#,
+        )
+        .expect("write LLM config");
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+        let error = load_llm_gateway_module(&config, true, 1, None)
+            .err()
+            .expect("development fixtures must be rejected in production mode");
+        assert!(
+            error
+                .to_string()
+                .contains("developmentFixtures must be false"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn production_projection_accepts_topology_free_non_fixture_authority() {
+        let mut config = LlmRouterConfig {
+            enabled: true,
+            ..LlmRouterConfig::default()
+        };
+        config.production_projection.enabled = true;
+
+        validate_llm_config_authority(&config)
+            .expect("strict topology-free production authority must pass validation");
     }
 
     #[test]

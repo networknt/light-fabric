@@ -229,6 +229,11 @@ pub struct DeploymentConfig {
     pub tools: bool,
     #[serde(default)]
     pub structured_json: bool,
+    /// Development-fixture streaming capability. Defaults to true so local
+    /// fixtures keep SSE parity with production deployments, whose streaming
+    /// capability always comes from conformance evidence instead.
+    #[serde(default = "default_true")]
+    pub streaming: bool,
     /// Exact placeholder-preservation percentage from the versioned
     /// deployment conformance corpus. Zero means no reversible-PII evidence.
     #[serde(default)]
