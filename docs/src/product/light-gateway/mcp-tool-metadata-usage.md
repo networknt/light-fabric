@@ -145,6 +145,18 @@ Richer metadata belongs in the catalog/search layer and gateway runtime config.
 This avoids flooding the model context with operational fields while still
 making the data available for ranking, policy, routing, diagnostics, and audit.
 
+The current stateful MCP router also accepts `params.query` or `params.intent`
+on `tools/list`. This is a case-insensitive substring filter, not a scored
+semantic or vector search. It matches the tool name, description, endpoint ID,
+selected `routing` fields, `routing.semanticKeywords`, and direct values in the
+`safety` and `lifecycle` objects. The router applies tools-list access control
+after this query filter and returns every remaining match without ranking them.
+
+`routing.semanticWeight` does not affect gateway `tools/list` matching,
+ordering, or visibility. The stateless `2026-07-28` profile does not accept the
+legacy `query` or `intent` parameters. Rich semantic ranking, including the
+weight, belongs to portal catalog search and the agent's per-turn selection.
+
 ## Metadata Responsibilities
 
 Use metadata in three layers:
@@ -259,30 +271,102 @@ nested OpenAPI schemas can otherwise flood the index with low-value keywords
 and increase false-positive tool matches. `semanticKeywords` should be the
 curated override when schema text is noisy.
 
-## Ranking
+## Ranking And Semantic Weight
 
-A simple first-pass ranking can combine keyword and structured metadata:
+### Current Gateway Behavior
 
-```text
-score =
-  keyword(name, endpointName, description)
-  + 2.0 * keyword(routing.domain, routing.semanticNamespace)
-  + 2.0 * keyword(routing.semanticKeywords)
-  + 1.5 * keyword(inputSchema property names and descriptions)
-  - cost penalty
-  - latency penalty
-  + skill priority
+The gateway MCP router does not calculate a relevance score. Its stateful
+`tools/list` query is a normalized substring predicate, and
+`routing.semanticWeight` is intentionally ignored. For example, these two tools
+are equally eligible for a gateway query match even though their weights differ:
+
+```yaml
+- name: get_customer_preferences
+  description: Get customer preferences
+  toolMetadata:
+    routing:
+      semanticKeywords: [customer preferences]
+      semanticWeight: 2.0
+
+- name: search_customer_preferences
+  description: Search customer preferences
+  toolMetadata:
+    routing:
+      semanticKeywords: [customer preferences]
+      semanticWeight: 0.5
 ```
 
-Then multiply by `routing.semanticWeight`, with a lower bound such as `0.1` to
-avoid accidentally zeroing a valid tool:
+A stateful request with `params.query: customer preferences` returns both tools,
+subject to access-control visibility. It does not guarantee that the `2.0` tool
+appears first.
+
+### Current Light-Agent Behavior
+
+`light-agent` consumes the effective catalog and uses `semanticWeight` as a
+multiplier during per-turn tool selection. The effective catalog projects the
+nested metadata value as the top-level camel-case field `semanticWeight`; merely
+adding the value to gateway runtime config does not make gateway `tools/list`
+rank its response.
+
+The implemented local ranking calculation is:
 
 ```text
-final_score = score * max(routing.semanticWeight, 0.1)
+weighted_base =
+  (
+    0.75 * skill_keyword_score
+    + 1.5 * tool_keyword_score
+    + routing_score
+    + max(skill_priority, 0) / 10
+  )
+  * max(semanticWeight, 0.1)
+
+portal_score = max(
+  first_available(combinedScore, semanticScore, vectorScore),
+  0.0
+)
+
+final_score =
+  weighted_base
+  + portal_score
+  + lifecycle_adjustment
+  + informational_safety_bonus
 ```
 
-This can be implemented with plain keyword matching first. Later, the same
-metadata can feed vector search or hybrid search:
+The weight defaults to `1.0` and has a lower bound of `0.1`. A zero or negative
+configured value therefore reduces a local keyword score but cannot erase it.
+The multiplier applies only to the locally calculated keyword/routing/priority
+portion. A score supplied by portal semantic search is added afterward and is
+not multiplied again by `light-agent`. Portal vector ranking may already have
+applied the effective semantic weight when it produced `combinedScore`; avoiding
+a second multiplication preserves that server-owned score.
+
+For example, assume the following component scores:
+
+```text
+skill_keyword_score       = 1.0
+tool_keyword_score        = 2.0
+routing_score             = 2.0
+skill_priority            = 3
+semanticWeight            = 1.5
+combinedScore from portal = 0.8 (already weighted by portal, when applicable)
+lifecycle                 = active          (+0.25)
+informational prompt      = read-only/idempotent tool (+0.50)
+
+weighted_base = (0.75 + 3.0 + 2.0 + 0.3) * 1.5 = 9.075
+final_score   = 9.075 + 0.8 + 0.25 + 0.50       = 10.625
+```
+
+Weight changes relative preference; it does not bypass assignment, lifecycle,
+sensitivity, approval, or other disclosure filters. It also does not make an
+unrelated tool a local keyword match. When both the weighted base and portal
+score are zero, the tool is not a scored candidate.
+
+Candidates are ordered by descending final score. Ties prefer lower cost, then
+lower estimated latency, skill sequence, and finally tool name. The selected
+catalog names are subsequently intersected with live gateway `tools/list`, so a
+high-weight tool that is not currently executable or visible is still removed.
+
+Portal search can use the same metadata for vector or hybrid search:
 
 - Use `semanticDescription`, `semanticKeywords`, `description`, schema property
   descriptions, tags, and categories for embeddings.
@@ -728,7 +812,7 @@ Recommended field semantics:
 | `routing.semanticNamespace` | Recommended | Catalog/API namespace for filtering and grouping. |
 | `routing.semanticDescription` | Recommended | Agent-facing capability summary. |
 | `routing.semanticKeywords` | Recommended | Search keywords and aliases. |
-| `routing.semanticWeight` | Optional | Ranking multiplier. Default `1.0`. |
+| `routing.semanticWeight` | Optional | Catalog/light-agent ranking multiplier. Default `1.0`, with a `0.1` lower bound in current light-agent selection. It does not affect gateway `tools/list`. |
 | `routing.sensitivityTier` | Recommended | Disclosure and governance tier. |
 | `routing.sourceProtocol` | Recommended | Source protocol, such as `mcp`, `openapi`, `http`, or `lightapi`. |
 | `routing.parameters` | Required for non-trivial OpenAPI tools | Argument location mapping. |
