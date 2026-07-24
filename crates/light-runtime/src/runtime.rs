@@ -375,6 +375,14 @@ where
             .await
         {
             Ok(task) => task,
+            // Errors raised before a registration task is spawned leave nothing to retry.
+            Err(error) if runtime_config.server.start_on_registry_failure => {
+                warn!(
+                    error = %error,
+                    "controller registration failed; continuing without registry"
+                );
+                None
+            }
             Err(error) => {
                 let mut transport_handle = transport.handle;
                 self.transport.stop(&mut transport_handle).await?;
@@ -495,13 +503,23 @@ where
             env_tag,
             tags: HashMap::new(),
         };
-        let registry_client = self.build_registry_client_for_runtime(
+        let registry_client = match self.build_registry_client_for_runtime(
             &bootstrap,
             &server,
             &client,
             &portal_registry,
             &service_identity,
-        )?;
+        ) {
+            Ok(client) => client,
+            Err(error) if server.start_on_registry_failure => {
+                warn!(
+                    error = %error,
+                    "controller registry client initialization failed; continuing startup without a registry client"
+                );
+                None
+            }
+            Err(error) => return Err(error),
+        };
 
         Ok(RuntimeConfig {
             bootstrap,
@@ -1478,6 +1496,63 @@ mod tests {
         }
     }
 
+    struct EnvVarRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    impl EnvVarRestore {
+        fn remove(keys: &[&'static str]) -> Self {
+            let values = keys
+                .iter()
+                .map(|key| {
+                    let value = std::env::var_os(key);
+                    unsafe { std::env::remove_var(key) };
+                    (*key, value)
+                })
+                .collect();
+            Self(values)
+        }
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            for (key, value) in self.0.drain(..) {
+                unsafe {
+                    match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
+
+    fn write_server_template(config_dir: &Path) {
+        fs::write(
+            config_dir.join(SERVER_FILE),
+            r#"
+ip: ${server.ip:127.0.0.1}
+httpPort: ${server.httpPort:8080}
+enableHttp: ${server.enableHttp:true}
+httpsPort: ${server.httpsPort:8443}
+enableHttps: ${server.enableHttps:false}
+serviceId: ${server.serviceId:com.networknt.test-1.0.0}
+enableRegistry: ${server.enableRegistry:false}
+startOnRegistryFailure: ${server.startOnRegistryFailure:false}
+dynamicPort: ${server.dynamicPort:false}
+environment: ${server.environment:dev}
+shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
+"#,
+        )
+        .expect("write server template");
+    }
+
+    fn write_portal_registry_without_token(config_dir: &Path) {
+        fs::write(
+            config_dir.join(PORTAL_REGISTRY_FILE),
+            "portalUrl: https://controller.example.com\nportalToken: \"\"\n",
+        )
+        .expect("write portal registry config");
+    }
+
     #[test]
     fn absent_control_candidates_preserves_legacy_websocket_default() {
         let config: PortalRegistryConfig =
@@ -2166,6 +2241,95 @@ shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
         assert!(external_dir.path().join(VALUES_FILE).exists());
     }
 
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn runtime_start_uses_local_values_when_config_server_is_unreachable() {
+        let _lock = ENV_TEST_MUTEX.lock().expect("env test mutex");
+        let _env = EnvVarRestore::remove(&[PORTAL_AUTH_ENV, "LIGHT_PORTAL_AUTHORIZATION"]);
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind unused config server port");
+        let addr = listener.local_addr().expect("config server addr");
+        drop(listener);
+
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external config temp dir");
+        fs::write(
+            config_dir.path().join(STARTUP_FILE),
+            format!("configServerUri: http://{addr}\ntimeout: 100\nconnectTimeout: 100\n"),
+        )
+        .expect("write startup config");
+        write_server_template(config_dir.path());
+        write_portal_registry_without_token(config_dir.path());
+        fs::write(
+            config_dir.path().join(VALUES_FILE),
+            "server.httpPort: 9191\n\
+             server.serviceId: com.networknt.local-1.0.0\n\
+             server.enableRegistry: true\n\
+             server.startOnRegistryFailure: true\n",
+        )
+        .expect("write local values");
+
+        let running = LightRuntimeBuilder::new(NoopTransport)
+            .with_config_dir(config_dir.path())
+            .with_external_config_dir(external_dir.path())
+            .build()
+            .start()
+            .await
+            .expect("start runtime from local values");
+
+        assert_eq!(running.state, LifecycleState::Ready);
+        assert_eq!(running.config.server.http_port, 9191);
+        assert_eq!(
+            running.config.server.service_id,
+            "com.networknt.local-1.0.0"
+        );
+        assert!(running.config.server.enable_registry);
+        assert!(running.config.server.start_on_registry_failure);
+        assert!(running.registration_task.is_none());
+        assert_eq!(
+            running.config.resolved_values["server.httpPort"],
+            Value::Number(9191.into())
+        );
+
+        running.shutdown().await.expect("shutdown runtime");
+    }
+
+    #[tokio::test]
+    async fn start_on_registry_failure_keeps_retrying_unreachable_controller() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind unused controller port");
+        let addr = listener.local_addr().expect("controller addr");
+        drop(listener);
+
+        let config_dir = TempDir::new().expect("config temp dir");
+        write_server_template(config_dir.path());
+        fs::write(
+            config_dir.path().join(PORTAL_REGISTRY_FILE),
+            format!("portalUrl: http://{addr}\nportalToken: test-token\n"),
+        )
+        .expect("write portal registry config");
+        fs::write(
+            config_dir.path().join(VALUES_FILE),
+            "server.enableRegistry: true\nserver.startOnRegistryFailure: true\n",
+        )
+        .expect("write local values");
+
+        let running = LightRuntimeBuilder::new(NoopTransport)
+            .with_config_dir(config_dir.path())
+            .with_registration_timeout(Duration::from_millis(50))
+            .build()
+            .start()
+            .await
+            .expect("start runtime while controller is unreachable");
+
+        assert_eq!(running.state, LifecycleState::Ready);
+        assert!(running.registration_task.is_some());
+
+        running.shutdown().await.expect("shutdown runtime");
+    }
+
     #[tokio::test]
     async fn remote_bootstrap_file_download_error_keeps_downloaded_values() {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -2445,6 +2609,62 @@ tls:
 
         assert_eq!(ca_cert_path, client_ca_path);
         assert_eq!(certificate, b"client-ca");
+    }
+
+    #[test]
+    fn runtime_config_allows_missing_portal_token_when_start_on_failure_is_true() {
+        let _lock = ENV_TEST_MUTEX.lock().expect("env test mutex");
+        let _env = EnvVarRestore::remove(&[PORTAL_AUTH_ENV, "LIGHT_PORTAL_AUTHORIZATION"]);
+        let config_dir = TempDir::new().expect("config temp dir");
+        write_server_template(config_dir.path());
+        write_portal_registry_without_token(config_dir.path());
+        fs::write(
+            config_dir.path().join(VALUES_FILE),
+            "server.enableRegistry: true\nserver.startOnRegistryFailure: true\n",
+        )
+        .expect("write local values");
+
+        let runtime = LightRuntimeBuilder::new(NoopTransport)
+            .with_config_dir(config_dir.path())
+            .build();
+        let config = runtime
+            .build_runtime_config(
+                BootstrapConfig::default(),
+                None,
+                config_dir.path().join("external"),
+                RemoteBootstrapResult::default(),
+            )
+            .expect("build runtime config without controller credentials");
+
+        assert!(config.server.enable_registry);
+        assert!(config.server.start_on_registry_failure);
+        assert!(config.registry_client.is_none());
+    }
+
+    #[test]
+    fn missing_portal_token_remains_fatal_when_start_on_failure_is_false() {
+        let _lock = ENV_TEST_MUTEX.lock().expect("env test mutex");
+        let _env = EnvVarRestore::remove(&[PORTAL_AUTH_ENV, "LIGHT_PORTAL_AUTHORIZATION"]);
+        let config_dir = TempDir::new().expect("config temp dir");
+        write_server_template(config_dir.path());
+        write_portal_registry_without_token(config_dir.path());
+        fs::write(
+            config_dir.path().join(VALUES_FILE),
+            "server.enableRegistry: true\nserver.startOnRegistryFailure: false\n",
+        )
+        .expect("write local values");
+
+        let runtime = LightRuntimeBuilder::new(NoopTransport)
+            .with_config_dir(config_dir.path())
+            .build();
+        let result = runtime.build_runtime_config(
+            BootstrapConfig::default(),
+            None,
+            config_dir.path().join("external"),
+            RemoteBootstrapResult::default(),
+        );
+
+        assert!(matches!(result, Err(RuntimeError::MissingPortalToken)));
     }
 
     #[tokio::test]
