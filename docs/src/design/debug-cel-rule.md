@@ -2,10 +2,9 @@
 
 ## Status
 
-This document proposes a debugging model for CEL rules executed by
-Light-Fabric. The diagnostic configuration, structured outcomes, diagnostic
-sessions, and rule-test API described below are not implemented unless a
-section explicitly identifies current behavior.
+The short-term referenced-context trace logging described here is implemented.
+Structured decision outcomes and the rule-test API remain proposed long-term
+work.
 
 ## Problem
 
@@ -27,20 +26,25 @@ not distinguish among these cases:
 These cases must remain fail-closed, but they should not be indistinguishable to
 an authorized operator or rule author.
 
-Printing the complete CEL context on every denial is not an acceptable
-solution. The context can contain authorization headers, cookies, JWT claims,
-tool arguments, request data, and response data. An unconditional dump would
-create credential-exposure, privacy, log-volume, and denial-of-service risks.
+Printing the complete request on every denial is not an acceptable solution.
+Access control runs after security, so its CEL context should contain normalized
+identity claims and policy inputs rather than raw authentication credentials.
+Diagnostics can then project only the properties referenced by the expression
+instead of copying unrelated claims, headers, tool arguments, request data, or
+response data.
 
 ## Current Behavior
 
 The current implementation already provides a useful starting point:
 
 - `RuleEngine` catches CEL execution errors and interpreter panics.
-- CEL errors log the expression, a bounded `evaluationContext`, candidate null
-  paths, and truncation indicators.
+- Failed CEL evaluations and `false` results can emit a separate `TRACE` event
+  containing only statically referenced context properties. Metadata is logged
+  by default; `logFullCelContext: true` logs bounded values.
 - Context diagnostics bound depth, node count, collection size, string length,
   key length, and null-path traversal.
+- Access-control context construction excludes authorization, proxy
+  authorization, cookie, set-cookie, and API-key headers.
 - Successful CEL evaluation returns only a boolean.
 - The shared access-control runtime converts a missing rule or any rule-engine
   error into `false` for request authorization.
@@ -55,13 +59,14 @@ decision information between CEL execution and the final access decision.
 - Explain why an HTTP request, MCP tool call, or MCP tool-list entry was allowed,
   denied, hidden, or filtered.
 - Distinguish a valid `false` result from a malformed rule or runtime error.
-- Show the effective CEL context safely enough for production diagnostics.
+- Show the effective CEL context during local and development rule testing.
 - Use the exact runtime evaluator for pre-deployment rule testing.
 - Correlate diagnostics with the request, policy revision, endpoint, tool, and
   rule version that produced the decision.
 - Preserve current fail-closed authorization behavior.
 - Keep diagnostic overhead negligible when debugging is disabled.
 - Share the implementation between HTTP access control and MCP routing.
+- Keep raw credentials and other security-handler inputs out of the CEL context.
 
 ## Non-Goals
 
@@ -73,6 +78,8 @@ decision information between CEL execution and the final access decision.
 - Guarantee a natural-language proof for every `false` result. The first
   implementation should report facts and outcomes rather than speculate.
 - Weaken `strict` profile field exposure to make debugging easier.
+- Support CEL rules that inspect raw authorization headers, cookies, API keys,
+  tokens, or other authentication credentials.
 
 ## Design Principles
 
@@ -88,18 +95,13 @@ The best production diagnostic is a rule that was tested before publication.
 Runtime diagnostics remain necessary because live tokens, headers, endpoint
 resolution, and tool arguments can differ from test fixtures.
 
-### Make production debugging temporary and targeted
-
-Detailed tracing should be activated for a short time and selected by a trusted
-server-side filter such as correlation ID, rule ID, endpoint, or tool name. An
-untrusted client header must not enable diagnostic context capture.
-
 ### Report facts, not invented explanations
 
-For a `false` result, report the expression, referenced paths, sanitized values,
-profile, and rule-combination behavior. Do not claim that a particular clause
-caused the result unless the CEL evaluator provides an execution observer that
-can prove it.
+For a `false` result, report the expression, statically referenced paths,
+structural metadata or full values according to `logFullCelContext`, profile,
+and rule-combination behavior. Do not claim that a particular clause caused the
+result because the current CEL evaluator has no execution observer that can
+prove it.
 
 ## Outcome Model
 
@@ -164,12 +166,11 @@ execution and must not evaluate a rule a second time.
 
 ## Decision Trace
 
-A decision trace should use a stable structured shape suitable for JSON logs,
-an operator API, and Portal rendering:
+A decision trace should use a stable structured shape suitable for JSON logs and
+the future rule-test API:
 
 ```json
 {
-  "diagnosticId": "01K...",
   "timestamp": "2026-07-24T15:42:11.184Z",
   "correlationId": "request-123",
   "serviceId": "com.networknt.gateway-1.0.0",
@@ -188,6 +189,7 @@ an operator API, and Portal rendering:
       "requestedProfile": "strict",
       "effectiveProfile": "strict",
       "outcome": "condition_not_matched",
+      "contextMode": "full",
       "referencedPaths": [
         "permission.roles",
         "auditInfo.subject_claims.ClaimsMap.roles"
@@ -200,69 +202,120 @@ an operator API, and Portal rendering:
     }
   ],
   "skippedRuleIds": [],
-  "redactedPaths": [],
+  "referenceAnalysisIncomplete": false,
   "traceTruncated": false
 }
 ```
 
-The trace should include the expression text only in an authorized detail view.
-Normal logs should prefer `ruleId`, expression hash, and policy revision so that
-large expressions are not repeated and a diagnostic can be tied to the exact
-loaded policy.
+Trace logs can include the expression text because this feature is intended for
+local and development use. They should also include `ruleId`, expression hash,
+and policy revision so that a diagnostic can be tied to the exact loaded policy.
 
-## Diagnostic Detail Levels
+## Diagnostic Context Modes
 
-Three levels keep cost and exposure proportional to the debugging need:
+The runtime has two context projections:
 
-| Level | Contents | Intended Use |
+| Mode | Contents | Intended Use |
 | --- | --- | --- |
-| `summary` | decision, reason, rule IDs, outcomes, profile, correlation ID, policy revision | production metrics and routine logs |
-| `referenced` | summary plus statically referenced CEL paths and sanitized values | targeted production debugging |
-| `context` | referenced detail plus bounded sanitized exposed context | local development and tightly controlled operator sessions |
+| metadata | referenced paths plus presence, JSON type, null state, and collection or string size without property values | default trace behavior |
+| full | actual values for statically referenced CEL properties | local and development environments only |
 
-`context` must never mean an unbounded raw dump. It uses the same CEL-profile
-projection and diagnostic budgets as evaluator-error diagnostics.
+Full context must never mean an unbounded raw dump. Both modes use the same
+CEL-profile projection and diagnostic budgets as evaluator-error diagnostics.
 
-Static path extraction is best effort. Dynamic map indexing and computed keys
-may prevent an exact list. The trace should set `referenceAnalysisIncomplete`
-instead of silently implying that the list is complete.
+## CEL Reference Discovery
 
-## Safe Context Projection
+`light-rule` currently pins `cel 0.14.0`. That crate exposes two relevant APIs:
 
-Diagnostics should start from the variables actually exposed by the effective
-CEL security profile. A diagnostic must not reveal a value that CEL itself was
-not allowed to access.
+- `Program::references()` returns the root variables and functions referenced
+  by the compiled expression. For `auditInfo.subject_claims.ClaimsMap.roles`,
+  it reports the root variable `auditInfo`.
+- `Program::expression()` exposes the public parsed AST. `Expr::Select` nodes
+  contain their operand and selected field, so Light-Fabric can walk the AST and
+  recover the complete static member path
+  `auditInfo.subject_claims.ClaimsMap.roles`.
 
-The projection then applies redaction and bounds.
+The crate does not expose an evaluation observer or a list of properties
+actually read at runtime. Reference discovery is therefore static: it includes
+properties in branches that short-circuit evaluation and cannot always resolve
+computed map keys.
 
-### Always-redacted headers
+The compiled-program cache should store a reference projection alongside each
+program:
 
-At minimum, redact these case-insensitive header names:
+```rust
+struct CelProgramEntry {
+    program: Arc<CelProgram>,
+    referenced_roots: Vec<String>,
+    referenced_paths: Vec<String>,
+    reference_analysis_incomplete: bool,
+}
+```
 
-- `authorization`
-- `proxy-authorization`
-- `cookie`
-- `set-cookie`
-- `x-api-key`
+Static dot selections and indexes with literal string keys should produce exact
+paths. For dynamic indexing, the projection should fall back to the smallest
+known root or static prefix and set `referenceAnalysisIncomplete: true`. Macro
+and comprehension-local variables must not be mistaken for root context
+variables.
 
-Deployments should be able to add header names without replacing the built-in
-list.
+This fallback deliberately broadens full mode. For example,
+`ClaimsMap[claimName]` cannot identify the selected claim statically, so full
+mode emits the bounded `ClaimsMap` parent object as well as `claimName`.
+Metadata mode emits only the parent's type and size. Rule authors should prefer
+literal indexes or dot selections when they want the narrowest diagnostic
+projection.
 
-### Sensitive JSON paths
+The reference walker is coupled to the public AST and operator names in the
+pinned `cel 0.14.0` crate. A CEL dependency upgrade must revalidate the walker
+and its literal-index, dynamic-index, and comprehension tests.
 
-Support configured JSON-pointer or dotted-path masks for claims, tool arguments,
-request data, rows, and response data. Built-in key-name protection should mask
-common names such as `password`, `secret`, `token`, `apiKey`, `privateKey`, and
-`credential`, case-insensitively. Explicit path configuration takes precedence
-over heuristic masking.
+## Access-Control Context Boundary
+
+Security authenticates the request before access control runs. The security
+handler should expose normalized identity and authorization facts through
+`auditInfo.subject_claims.ClaimsMap`; it should not forward the credential used
+to establish those facts into CEL.
+
+The access-control CEL context must therefore exclude raw values such as:
+
+- `Authorization` and `Proxy-Authorization` headers
+- cookies and session tokens
+- API keys and client secrets
+- private keys or credential material owned by an earlier handler
+
+If a rule needs an identity fact derived from one of these inputs, the security
+handler should expose the normalized claim instead. For example, a rule should
+read a roles claim from `auditInfo`, not parse the bearer token.
+
+Other CEL inputs should be policy-oriented: endpoint and tool identity,
+permissions, selected non-sensitive headers, correlation metadata, referenced
+tool arguments, and the request or response properties required by the rule
+phase.
+
+## Referenced Context Projection
+
+Diagnostics start from the variables exposed by the effective CEL security
+profile and keep only the statically referenced properties. A diagnostic cannot
+include an unrelated property merely because it exists in the root context.
+
+The projection then keeps only the statically referenced properties. Most
+current request-access rules reference JWT claims below
+`auditInfo.subject_claims.ClaimsMap`, so a rule that reads only the caller's
+roles should not cause unrelated headers, claims, or tool arguments to be
+logged.
+
+The diagnostic path does not add header or JSON-path masking. Sensitive
+credentials are excluded when the access-control context is constructed, and
+reference projection removes unrelated properties. `logFullCelContext: true`
+can therefore emit the actual values of referenced policy properties. It is
+intentionally a local and development-only setting and must emit a startup
+warning.
 
 ### Values that require special handling
 
-- JWT claims are visible only to an authorized operator and remain subject to
-  configured masks.
-- `toolArguments` defaults to referenced fields only.
-- `responseBody` and `responseBodyJson` are excluded from production traces by
-  default, even at `context` level.
+- JWT claims and `toolArguments` include only statically referenced properties.
+- `responseBody` and `responseBodyJson` include only statically referenced
+  properties.
 - A row-level CEL filter captures at most the current bounded row and should not
   repeat the shared context for every rejected row.
 - Binary data is represented by type and length, not encoded into the trace.
@@ -276,75 +329,49 @@ truncation field so an operator can distinguish absent data from omitted data.
 
 ## Runtime Configuration
 
-The shared policy is loaded from `access-control.yml`, so the initial static
-configuration should live there:
+The short-term configuration should be one root-level property in
+`access-control.yml`:
 
 ```yaml
-ruleDiagnostics:
-  enabled: false
-  outcomeMode: errors       # errors | denied | all
-  detailLevel: summary      # summary | referenced | context
-  sampleRate: 1.0
-  maxTraceBytes: 16384
-  includeExpression: false
-  includeResponseBody: false
-  redactHeaders:
-    - x-tenant-secret
-  redactPaths:
-    - toolArguments.password
-    - auditInfo.subject_claims.ClaimsMap.email
+logFullCelContext: false
 ```
 
-Defaults must be safe:
+This property does not enable trace logging. The logging filter still controls
+whether CEL trace events are emitted, for example:
 
-- diagnostics disabled
-- error summaries continue using the existing bounded evaluator diagnostics
-- no response body
-- no expression text in routine structured logs
-- built-in redaction cannot be removed
-
-Static `outcomeMode: denied` or `all` is useful in local development but is too
-broad for normal production use.
-
-## Diagnostic Sessions
-
-Production detail should be enabled through a short-lived diagnostic session
-managed by an authenticated operator surface. A session can select:
-
-- service instance or service ID
-- correlation ID
-- endpoint
-- MCP tool name
-- rule ID
-- outcome class
-- detail level
-- maximum captured decisions
-- expiration time
-
-Example request:
-
-```json
-{
-  "filters": {
-    "ruleId": "allow-config-read",
-    "outcomes": ["condition_not_matched", "evaluation_error"]
-  },
-  "detailLevel": "referenced",
-  "maxDecisions": 20,
-  "expiresInSeconds": 300
-}
+```text
+RUST_LOG=light_rule::cel=trace,info
 ```
 
-The runtime should reject sessions without an expiration and enforce hard
-maximums for duration and event count. Session creation, access, expiration,
-and deletion must be audited. A client-supplied request header can be used as a
-correlation value, but it must not create or broaden a diagnostic session.
+The property controls only the context projection used by those events:
 
-Captured traces may be emitted directly as structured tracing events or kept in
-a small bounded in-memory ring buffer exposed through the module-registry
-management surface. A ring buffer makes retrieval reliable when normal logging
-filters exclude debug events, but it must have strict memory, TTL, and access
-controls.
+- `false` or absent: emit referenced paths and structural metadata without
+  property values at `TRACE`
+- `true`: emit actual values for the referenced CEL properties at `TRACE` for
+  local or development use
+
+No mode performs diagnostic masking. The serialized trace remains size-limited
+and reports truncation, but full-mode values are otherwise emitted as they
+appear in the credential-free access-control context.
+
+The runtime should emit a prominent startup warning when
+`logFullCelContext: true` is loaded:
+
+```text
+Full CEL context logging is enabled. This setting is intended only for local or development environments.
+```
+
+Trace events should cover CEL evaluation errors and successful evaluations that
+return `false`. A per-rule `false` event must be labeled as a rule outcome, not
+as a final access denial, because `accessRuleLogic: any` can allow the request
+through a later rule.
+
+This changes earlier evaluator-error logging behavior: bounded context and
+candidate-null-path diagnostics previously appeared with the `WARN` or `ERROR`
+event. They now appear only in the separate `light_rule::cel` `TRACE` event;
+the warning or error retains the expression and failure details without request
+context. Operators who relied on warning-level context must enable the trace
+target while diagnosing CEL failures.
 
 ## Rule-Test API
 
@@ -421,16 +448,15 @@ The CEL editor should present:
 - the documented context schema for the selected rule phase
 - requested and effective security profiles
 - syntax and profile validation before publication
-- an editable test context or a sanitized captured-context import
+- an editable constructed test context
 - matched, not-matched, or error as distinct states
 - per-rule endpoint-policy results and short-circuiting
-- referenced paths beside their sanitized values
+- referenced paths beside their constructed test values
 - missing-field, null-receiver, type, and non-boolean errors
-- a copyable `diagnosticId` and correlation ID for production incidents
 
-A production denial shown to an ordinary caller remains generic. An authorized
-Portal user can look up the diagnostic separately, preventing accidental policy
-disclosure through the application protocol.
+A production denial shown to an ordinary caller remains generic. Rule testing
+uses a constructed context in the Portal rather than retrieving a live request
+context from the gateway.
 
 ## MCP-Specific Behavior
 
@@ -441,11 +467,11 @@ The same trace model applies to MCP with a `surface` field that identifies:
 - `mcp-response-filter`
 
 For `tools/call`, include the resolved configured tool name and endpoint, but
-mask arguments according to tool metadata and diagnostic policy.
+include only tool-argument properties referenced by the CEL expression.
 
 For CEL-based `tools/list`, one request can evaluate many tools. Do not emit one
 large context event per hidden tool by default. Emit a bounded aggregate summary
-with counts and allow per-tool detail only in a targeted session. Distinguish:
+with counts and keep any per-tool trace detail bounded. Distinguish:
 
 - hidden by a CEL `false` result
 - hidden by CEL error
@@ -494,28 +520,26 @@ Recommended counters:
 Do not use rule IDs, endpoints, tool names, correlation IDs, or user identities
 as unbounded metric labels. Those belong in logs or traces.
 
-Diagnostic session administration is security-relevant and must produce audit
-events. Individual rule evaluations normally remain operational tracing events,
-not durable security audit records, unless deployment policy requires otherwise.
+Individual rule evaluations normally remain operational tracing events, not
+durable security audit records, unless deployment policy requires otherwise.
 
 ## Performance and Abuse Controls
 
-- When diagnostics are disabled, avoid cloning or serializing context solely for
-  tracing.
-- Build a decision trace only after a configured outcome and session filter
-  match.
+- When `TRACE` is disabled for the CEL tracing target, avoid cloning or
+  serializing context solely for diagnostics.
+- Build a context projection only after confirming that the trace event is
+  enabled.
 - Reuse the compiled CEL program and any compile-time reference analysis.
 - Never reevaluate a CEL expression to explain its first result.
-- Bound diagnostic session count, trace count, trace size, ring-buffer memory,
-  row samples, and tools-list samples.
-- Rate-limit operator retrieval and rule-test execution.
+- Bound trace size, row samples, and tools-list samples.
+- Rate-limit rule-test execution.
 - Apply existing CEL profile and expression-complexity limits to test requests.
 - Record when sampling or limits omitted diagnostic data.
 
 ## Failure Behavior
 
-Diagnostics must never change the access decision. If redaction, reference
-analysis, serialization, storage, or log emission fails:
+Diagnostics must never change the access decision. If reference analysis,
+serialization, or log emission fails:
 
 1. preserve the original allow or deny result
 2. emit a bounded diagnostic-system error without request context
@@ -536,28 +560,26 @@ untrusted context values.
 - Add aggregate outcomes for `all`, `any`, missing rules, and default deny.
 - Emit safe summary tracing events for errors and denials.
 
-### Phase 2: Safe diagnostic projection
+### Phase 2: Referenced diagnostic projection
 
-- Centralize context projection, redaction, and bounds.
+Implemented for the short-term runtime diagnostic path:
+
+- Exclude raw credentials when constructing the access-control CEL context.
+- Centralize context reference analysis, projection, and bounds.
 - Apply the same safe projection to existing CEL error and panic logs.
-- Add expression hashes, policy revisions, stable reason codes, and diagnostic
-  IDs.
-- Add best-effort CEL reference extraction.
+- Use `Program::references()` and the public AST to extract referenced roots and
+  static member paths.
+- Add the root-level `logFullCelContext` configuration to `access-control.yml`.
 
-### Phase 3: Targeted runtime sessions
+Remaining enhancements:
 
-- Add static `ruleDiagnostics` configuration.
-- Add authenticated, expiring diagnostic sessions through the runtime
-  management surface.
-- Add the bounded trace buffer and retrieval contract if logs alone are
-  insufficient.
+- Add expression hashes, policy revisions, and stable reason codes.
 - Add MCP tools-list aggregation and response-row sampling.
 
-### Phase 4: Authoring workflow
+### Phase 3: Authoring workflow
 
 - Add isolated-rule and endpoint-policy test APIs.
 - Integrate the APIs into the Portal CEL editor.
-- Support sanitized captured-context import by diagnostic ID.
 - Validate rules with the target runtime evaluator before publication.
 
 ## Testing Strategy
@@ -574,12 +596,13 @@ untrusted context values.
 
 ### Security tests
 
-- built-in sensitive headers are always redacted
-- configured header and JSON-path masks are applied
+- raw authorization headers, cookies, API keys, and credentials never enter the
+  access-control CEL context
 - strict diagnostics never expose roots unavailable to strict CEL
-- response bodies remain absent by default
-- ordinary callers cannot enable or retrieve diagnostics
-- diagnostic sessions expire and enforce event and byte limits
+- unrelated headers, claims, tool arguments, and response fields are absent
+- metadata mode reports structure without property values
+- full mode reports values only for referenced properties
+- request input cannot enable full context logging
 - truncation flags are correct
 
 ### Parity tests
@@ -592,31 +615,28 @@ untrusted context values.
 
 ### Performance tests
 
-- disabled diagnostics have no material request-path allocation regression
-- denied-only and targeted sessions remain within defined latency budgets
+- disabled trace logging has no material request-path allocation regression
+- metadata and full trace logging remain within defined latency budgets
 - large contexts, large rows, and tools-list fan-out remain bounded
 
-## Open Questions
+## Resolved Decisions
 
-1. Should the initial operator surface be a module-registry management tool, an
-   HTTP management endpoint, or both?
-2. Should detailed traces live only in structured logs, or also in a bounded
-   in-memory buffer addressable by `diagnosticId`?
-3. Does the selected CEL crate expose stable AST or observer APIs for reference
-   extraction and per-node evaluation, or should Light-Fabric initially provide
-   only best-effort static paths?
-4. Which claims and tool-argument paths need installation-specific masks beyond
-   the built-in secret-key rules?
-5. Should production captured-context import into the Portal require a second
-   approval beyond ordinary diagnostic access?
-6. What retention and audit requirements apply when a diagnostic contains
-   personal claims or business input after masking?
+1. The pinned `cel 0.14.0` crate exposes referenced root variables and a public
+   AST, so Light-Fabric will statically extract related context paths and log
+   only those properties. It does not expose actual runtime property reads.
+2. The diagnostic path will not add masking. Access-control context construction
+   excludes raw credentials, and full mode logs the actual bounded values of
+   referenced policy properties.
+3. The design does not add log retention or audit requirements. Local logging
+   and its existing rotation policy own trace retention.
 
 ## Recommended Default
 
-Implement structured outcomes first, then add an opt-in `referenced` diagnostic
-session and a rule-test API. Do not begin with full-context denial logging.
+The referenced-context trace logging and root-level `logFullCelContext` switch
+are the short-term implementation. Next, add structured outcomes, then the
+rule-test API and Portal editor support.
 
 This sequence fixes the information-loss problem, gives authors a safe way to
-test rules before deployment, and leaves room for richer CEL expression tracing
-if the evaluator later exposes a trustworthy observer API.
+inspect rule context during local development and test rules before deployment,
+and can adopt runtime property-read tracing later if the CEL evaluator adds a
+trustworthy observer API.

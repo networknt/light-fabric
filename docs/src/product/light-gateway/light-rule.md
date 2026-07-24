@@ -129,6 +129,7 @@ accessRuleLogic: any
 defaultDeny: true
 defaultInclude: false
 skipPathPrefixes: []
+logFullCelContext: false
 ```
 
 Fields:
@@ -141,6 +142,12 @@ Fields:
   role, group, position, attribute, or user entry returns no rows. Set `true`
   only to preserve the legacy include-all row-filter behavior.
 - `skipPathPrefixes`: endpoint prefixes that bypass access control entirely.
+- `logFullCelContext`: controls CEL context values in `light_rule::cel` trace
+  events. The default `false` reports only statically referenced paths and
+  structural metadata. Set it to `true` only for local or development debugging
+  to include the bounded values of statically referenced properties. This
+  property does not enable trace logging; use a filter such as
+  `RUST_LOG=light_rule::cel=trace,info`.
 
 The file name is `access-control.yml`. The loader also accepts
 `access-control.yaml`.

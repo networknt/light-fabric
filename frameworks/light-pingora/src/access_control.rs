@@ -34,6 +34,13 @@ const RESPONSE_COLUMN_FILTER_ACTION: &str = "ResponseColumnFilterAction";
 const RESPONSE_ROW_FILTER_ACTION: &str = "ResponseRowFilterAction";
 const RESPONSE_CEL_ROW_FILTER_ACTION: &str = "ResponseCelRowFilterAction";
 const ROLE_BASED_ACCESS_CONTROL_ACTION: &str = "RoleBasedAccessControlAction";
+const CREDENTIAL_HEADERS: &[&str] = &[
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    "x-api-key",
+];
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,6 +55,8 @@ pub struct AccessControlConfig {
     pub default_include: bool,
     #[serde(default, deserialize_with = "deserialize_string_list")]
     pub skip_path_prefixes: Vec<String>,
+    #[serde(default)]
+    pub log_full_cel_context: bool,
     #[serde(default, alias = "claimMappings")]
     pub claim_mappings: BTreeMap<String, Vec<String>>,
     #[serde(default, alias = "toolsListAccessControl")]
@@ -62,6 +71,7 @@ impl Default for AccessControlConfig {
             default_deny: true,
             default_include: false,
             skip_path_prefixes: Vec::new(),
+            log_full_cel_context: false,
             claim_mappings: BTreeMap::new(),
             tools_list_access_control: ToolsListAccessControlConfig::default(),
         }
@@ -202,12 +212,24 @@ pub enum ToolVisibility {
 impl AccessControlRuntime {
     pub fn new(access: Option<AccessControlConfig>, rules: RuleFileConfig) -> Self {
         let claim_mappings = Arc::new(effective_claim_mappings(access.as_ref()));
+        let log_full_cel_context = access
+            .as_ref()
+            .is_some_and(|config| config.log_full_cel_context);
+        if log_full_cel_context {
+            warn!(
+                "Full CEL context logging is enabled. This setting is intended only for local or development environments."
+            );
+        }
         Self {
             access,
             rules,
-            engine: Arc::new(RuleEngine::new(Arc::new(default_action_registry(
-                claim_mappings.clone(),
-            )))),
+            engine: Arc::new(
+                RuleEngine::new(Arc::new(default_action_registry(
+                    claim_mappings.clone(),
+                    log_full_cel_context,
+                )))
+                .with_log_full_cel_context(log_full_cel_context),
+            ),
             claim_mappings,
         }
     }
@@ -1026,7 +1048,10 @@ where
     Ok(None)
 }
 
-fn default_action_registry(claim_mappings: Arc<BTreeMap<String, Vec<String>>>) -> ActionRegistry {
+fn default_action_registry(
+    claim_mappings: Arc<BTreeMap<String, Vec<String>>>,
+    log_full_cel_context: bool,
+) -> ActionRegistry {
     let mut registry = ActionRegistry::new();
     let rbac = Arc::new(RoleBasedAccessControlAction {
         claim_mappings: claim_mappings.clone(),
@@ -1050,7 +1075,7 @@ fn default_action_registry(claim_mappings: Arc<BTreeMap<String, Vec<String>>>) -
     registry.register("com.networknt.rule.ResponseRowFilterAction", row.clone());
     registry.register("ResponseRowFilterAction", row);
 
-    let cel_row = Arc::new(ResponseCelRowFilterAction::default());
+    let cel_row = Arc::new(ResponseCelRowFilterAction::new(log_full_cel_context));
     registry.register(
         "com.networknt.rule.ResponseCelRowFilterAction",
         cel_row.clone(),
@@ -1155,7 +1180,11 @@ fn normalized_claims(auth: Option<&AuthPrincipal>) -> JsonValue {
 fn headers_to_json(headers: &[(String, String)]) -> JsonValue {
     let mut values = JsonMap::new();
     for (name, value) in headers {
-        values.insert(name.to_ascii_lowercase(), JsonValue::String(value.clone()));
+        let name = name.to_ascii_lowercase();
+        if CREDENTIAL_HEADERS.contains(&name.as_str()) {
+            continue;
+        }
+        values.insert(name, JsonValue::String(value.clone()));
     }
     JsonValue::Object(values)
 }
@@ -1628,11 +1657,18 @@ struct ResponseCelRowFilterAction {
     engine: RuleEngine,
 }
 
+impl ResponseCelRowFilterAction {
+    fn new(log_full_cel_context: bool) -> Self {
+        Self {
+            engine: RuleEngine::new(Arc::new(ActionRegistry::new()))
+                .with_log_full_cel_context(log_full_cel_context),
+        }
+    }
+}
+
 impl Default for ResponseCelRowFilterAction {
     fn default() -> Self {
-        Self {
-            engine: RuleEngine::new(Arc::new(ActionRegistry::new())),
-        }
+        Self::new(false)
     }
 }
 
@@ -2267,6 +2303,35 @@ ruleBodies:
         assert_eq!(context["roles"], json!(["admin"]));
         assert_eq!(context["row"], permission["row"]);
         assert_eq!(context["col"], permission["col"]);
+    }
+
+    #[test]
+    fn access_control_context_excludes_credential_headers() {
+        let context = build_rule_context(
+            "test-tool",
+            "/test@get",
+            &[
+                ("Authorization".to_string(), "Bearer secret".to_string()),
+                (
+                    "Proxy-Authorization".to_string(),
+                    "Basic secret".to_string(),
+                ),
+                ("Cookie".to_string(), "session=secret".to_string()),
+                ("Set-Cookie".to_string(), "session=secret".to_string()),
+                ("X-Api-Key".to_string(), "secret".to_string()),
+                ("X-Tenant-Id".to_string(), "tenant-1".to_string()),
+            ],
+            None,
+            &json!({}),
+            None,
+            None,
+        );
+        let headers = context["headers"].as_object().expect("headers object");
+
+        for credential_header in CREDENTIAL_HEADERS {
+            assert!(!headers.contains_key(*credential_header));
+        }
+        assert_eq!(headers["x-tenant-id"], "tenant-1");
     }
 
     fn policy_for_filter(rule_type: &str, permission: JsonValue) -> AccessControlRuntime {
@@ -3076,6 +3141,21 @@ toolsListAccessControl:
     }
 
     #[test]
+    fn access_control_config_defaults_and_reads_full_cel_context_logging() {
+        assert!(!AccessControlConfig::default().log_full_cel_context);
+
+        let config = serde_yaml::from_str::<AccessControlConfig>(
+            r#"
+enabled: true
+logFullCelContext: true
+"#,
+        )
+        .expect("config");
+
+        assert!(config.log_full_cel_context);
+    }
+
+    #[test]
     fn global_claim_mappings_override_legacy_tools_list_mappings() {
         let config = serde_yaml::from_str::<AccessControlConfig>(
             r#"
@@ -3132,6 +3212,10 @@ toolsListAccessControl:
         let mut values = HashMap::new();
         values.insert("access-control.enabled".to_string(), YamlValue::Bool(true));
         values.insert(
+            "access-control.logFullCelContext".to_string(),
+            YamlValue::Bool(true),
+        );
+        values.insert(
             "access-control.claimMappings.roles".to_string(),
             serde_yaml::from_str("[custom_roles]").expect("roles mapping"),
         );
@@ -3144,6 +3228,13 @@ toolsListAccessControl:
         assert_eq!(
             policy.tools_list_access_control().claim_mappings["roles"],
             vec!["custom_roles".to_string()]
+        );
+        assert!(
+            policy
+                .access
+                .as_ref()
+                .expect("access-control config")
+                .log_full_cel_context
         );
     }
 

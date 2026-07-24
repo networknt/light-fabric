@@ -1,21 +1,26 @@
 use crate::action::ActionRegistry;
 use crate::models::Rule;
+// Reference projection is coupled to the public `cel 0.14` AST and operator
+// names. Revalidate this walker whenever the pinned CEL crate is upgraded.
+use cel::common::ast::operators::{INDEX, OPT_INDEX, OPT_SELECT};
+use cel::common::ast::{EntryExpr, Expr, IdedExpr, LiteralValue};
 use cel::extractors::This;
 use cel::{Context as CelContext, ExecutionError as CelExecutionError};
 use cel::{Program as CelProgram, Value as CelValue};
 use serde_json::Value as JsonValue;
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::error::Error as StdError;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 
 /// The core Rule Engine for evaluating conditions and executing actions.
 pub struct RuleEngine {
     action_registry: Arc<ActionRegistry>,
     cel_cache: Mutex<HashMap<String, Arc<CelProgram>>>,
+    log_full_cel_context: bool,
 }
 
 const CONDITION_SECURITY_PROFILE_STRICT: &str = "strict";
@@ -102,7 +107,17 @@ impl RuleEngine {
         Self {
             action_registry,
             cel_cache: Mutex::new(HashMap::new()),
+            log_full_cel_context: false,
         }
+    }
+
+    /// Enables full-value CEL context fields in trace diagnostics.
+    ///
+    /// The default emits only structural metadata for statically referenced
+    /// context properties. Full values are intended for local development.
+    pub fn with_log_full_cel_context(mut self, enabled: bool) -> Self {
+        self.log_full_cel_context = enabled;
+        self
     }
 
     /// Execute a single rule against a context Object (map).
@@ -230,6 +245,9 @@ impl RuleEngine {
         let cel_context = build_cel_context(effective_profile, base_context)?;
         let mut logged_evaluation_failure = false;
         let mut evaluation_failure_count = 0usize;
+        let mut logged_condition_non_match = false;
+        let mut condition_non_match_count = 0usize;
+        let trace_context = tracing::enabled!(target: "light_rule::cel", tracing::Level::TRACE);
 
         items.retain(|item| {
             let mut row_context = cel_context.new_inner_scope();
@@ -241,10 +259,58 @@ impl RuleEngine {
                 expression,
                 !logged_evaluation_failure,
                 || program.execute(&row_context),
-                || collect_exposed_null_paths(effective_profile, base_context, Some(item)),
+                || {
+                    collect_referenced_diagnostics(
+                        &program,
+                        effective_profile,
+                        base_context,
+                        Some(item),
+                        self.log_full_cel_context,
+                    )
+                },
             ) {
-                Ok(CelValue::Bool(result)) => result,
-                Ok(_) => false,
+                Ok(CelValue::Bool(result)) => {
+                    if !result {
+                        condition_non_match_count += 1;
+                        if trace_context && !logged_condition_non_match {
+                            let diagnostics = collect_referenced_diagnostics(
+                                &program,
+                                effective_profile,
+                                base_context,
+                                Some(item),
+                                self.log_full_cel_context,
+                            );
+                            trace_cel_context(
+                                expression_id,
+                                expression,
+                                "condition_not_matched",
+                                &diagnostics,
+                            );
+                            logged_condition_non_match = true;
+                        }
+                    }
+                    result
+                }
+                Ok(_) => {
+                    condition_non_match_count += 1;
+                    if trace_context && !logged_condition_non_match {
+                        let diagnostics = collect_referenced_diagnostics(
+                            &program,
+                            effective_profile,
+                            base_context,
+                            Some(item),
+                            self.log_full_cel_context,
+                        );
+                        trace_cel_context(
+                            expression_id,
+                            expression,
+                            "non_boolean_result",
+                            &diagnostics,
+                        );
+                        logged_condition_non_match = true;
+                    }
+                    false
+                }
                 Err(_) => {
                     logged_evaluation_failure = true;
                     evaluation_failure_count += 1;
@@ -258,6 +324,14 @@ impl RuleEngine {
                 expressionId = expression_id,
                 suppressedEvaluationFailures = evaluation_failure_count - 1,
                 "Additional CEL row evaluation failures suppressed"
+            );
+        }
+        if trace_context && condition_non_match_count > 1 {
+            trace!(
+                target: "light_rule::cel",
+                expressionId = expression_id,
+                suppressedConditionNonMatches = condition_non_match_count - 1,
+                "Additional CEL row condition non-matches suppressed"
             );
         }
         Ok(())
@@ -289,12 +363,54 @@ impl RuleEngine {
             expression,
             true,
             || program.execute(&cel_context),
-            || collect_exposed_null_paths(effective_profile, context, None),
+            || {
+                collect_referenced_diagnostics(
+                    &program,
+                    effective_profile,
+                    context,
+                    None,
+                    self.log_full_cel_context,
+                )
+            },
         )? {
-            CelValue::Bool(result) => Ok(result),
-            other => Err(Box::new(RuleEngineError::CelNonBoolean(format!(
-                "{other:?}"
-            )))),
+            CelValue::Bool(result) => {
+                if !result && tracing::enabled!(target: "light_rule::cel", tracing::Level::TRACE) {
+                    let diagnostics = collect_referenced_diagnostics(
+                        &program,
+                        effective_profile,
+                        context,
+                        None,
+                        self.log_full_cel_context,
+                    );
+                    trace_cel_context(
+                        expression_id,
+                        expression,
+                        "condition_not_matched",
+                        &diagnostics,
+                    );
+                }
+                Ok(result)
+            }
+            other => {
+                if tracing::enabled!(target: "light_rule::cel", tracing::Level::TRACE) {
+                    let diagnostics = collect_referenced_diagnostics(
+                        &program,
+                        effective_profile,
+                        context,
+                        None,
+                        self.log_full_cel_context,
+                    );
+                    trace_cel_context(
+                        expression_id,
+                        expression,
+                        "non_boolean_result",
+                        &diagnostics,
+                    );
+                }
+                Err(Box::new(RuleEngineError::CelNonBoolean(format!(
+                    "{other:?}"
+                ))))
+            }
         }
     }
 
@@ -415,6 +531,137 @@ struct NullPathDiagnostics {
     visited_nodes: usize,
     evaluation_context: JsonValue,
     evaluation_context_truncated: bool,
+    referenced_paths: Vec<String>,
+    reference_analysis_incomplete: bool,
+    context_mode: &'static str,
+}
+
+#[derive(Debug, Default)]
+struct CelReferenceAnalysis {
+    paths: BTreeSet<Vec<String>>,
+    incomplete: bool,
+}
+
+fn analyze_cel_references(expression: &IdedExpr) -> CelReferenceAnalysis {
+    let mut analysis = CelReferenceAnalysis::default();
+    collect_cel_references(expression, &HashSet::new(), &mut analysis);
+    analysis
+}
+
+fn collect_cel_references(
+    expression: &IdedExpr,
+    locals: &HashSet<String>,
+    analysis: &mut CelReferenceAnalysis,
+) {
+    if let Some(path) = static_cel_reference_path(expression, locals) {
+        analysis.paths.insert(path);
+        return;
+    }
+
+    match &expression.expr {
+        Expr::Unspecified | Expr::Literal(_) => {}
+        Expr::Ident(name) => {
+            if !name.starts_with('@') && !locals.contains(name) {
+                analysis.paths.insert(vec![name.clone()]);
+            }
+        }
+        Expr::Select(select) => {
+            analysis.incomplete = true;
+            collect_cel_references(&select.operand, locals, analysis);
+        }
+        Expr::Call(call) => {
+            if matches!(call.func_name.as_str(), INDEX | OPT_INDEX)
+                && let Some(target) = call.args.first()
+            {
+                if let Some(prefix) = static_cel_reference_path(target, locals) {
+                    analysis.paths.insert(prefix);
+                } else {
+                    collect_cel_references(target, locals, analysis);
+                }
+                for index in call.args.iter().skip(1) {
+                    collect_cel_references(index, locals, analysis);
+                }
+                analysis.incomplete = true;
+                return;
+            }
+            if let Some(target) = call.target.as_deref() {
+                collect_cel_references(target, locals, analysis);
+            }
+            for argument in &call.args {
+                collect_cel_references(argument, locals, analysis);
+            }
+        }
+        Expr::Comprehension(comprehension) => {
+            collect_cel_references(&comprehension.iter_range, locals, analysis);
+            collect_cel_references(&comprehension.accu_init, locals, analysis);
+            let mut inner_locals = locals.clone();
+            inner_locals.insert(comprehension.iter_var.clone());
+            if let Some(iter_var2) = comprehension.iter_var2.as_ref() {
+                inner_locals.insert(iter_var2.clone());
+            }
+            inner_locals.insert(comprehension.accu_var.clone());
+            collect_cel_references(&comprehension.loop_cond, &inner_locals, analysis);
+            collect_cel_references(&comprehension.loop_step, &inner_locals, analysis);
+            collect_cel_references(&comprehension.result, &inner_locals, analysis);
+        }
+        Expr::List(list) => {
+            for element in &list.elements {
+                collect_cel_references(element, locals, analysis);
+            }
+        }
+        Expr::Map(map) => {
+            for entry in &map.entries {
+                collect_entry_references(&entry.expr, locals, analysis);
+            }
+        }
+        Expr::Struct(structure) => {
+            for entry in &structure.entries {
+                collect_entry_references(&entry.expr, locals, analysis);
+            }
+        }
+    }
+}
+
+fn collect_entry_references(
+    entry: &EntryExpr,
+    locals: &HashSet<String>,
+    analysis: &mut CelReferenceAnalysis,
+) {
+    match entry {
+        EntryExpr::StructField(field) => collect_cel_references(&field.value, locals, analysis),
+        EntryExpr::MapEntry(entry) => {
+            collect_cel_references(&entry.key, locals, analysis);
+            collect_cel_references(&entry.value, locals, analysis);
+        }
+    }
+}
+
+fn static_cel_reference_path(
+    expression: &IdedExpr,
+    locals: &HashSet<String>,
+) -> Option<Vec<String>> {
+    match &expression.expr {
+        Expr::Ident(name) if !name.starts_with('@') && !locals.contains(name) => {
+            Some(vec![name.clone()])
+        }
+        Expr::Select(select) => {
+            let mut path = static_cel_reference_path(&select.operand, locals)?;
+            path.push(select.field.clone());
+            Some(path)
+        }
+        Expr::Call(call)
+            if matches!(call.func_name.as_str(), INDEX | OPT_INDEX | OPT_SELECT)
+                && call.args.len() == 2 =>
+        {
+            let mut path = static_cel_reference_path(&call.args[0], locals)?;
+            let Expr::Literal(LiteralValue::String(field)) = &call.args[1].expr else {
+                return None;
+            };
+            path.push(field.inner().to_string());
+            Some(path)
+        }
+        _ => None,
+    }
 }
 
 fn execute_cel_safely<F, D>(
@@ -432,36 +679,34 @@ where
         Ok(Ok(value)) => Ok(value),
         Ok(Err(execution_error)) => {
             if log_failure {
-                let diagnostics = collect_diagnostics_safely(diagnostics);
                 warn!(
                     target: "light_rule::cel",
                     expressionId = expression_id,
                     expression,
                     error = %execution_error,
-                    evaluationContext = %diagnostics.evaluation_context,
-                    evaluationContextTruncated = diagnostics.evaluation_context_truncated,
-                    candidateNullPaths = ?diagnostics.paths,
-                    candidateNullPathsTruncated = diagnostics.truncated,
                     "CEL expression evaluation failed"
                 );
+                if tracing::enabled!(target: "light_rule::cel", tracing::Level::TRACE) {
+                    let diagnostics = collect_diagnostics_safely(diagnostics);
+                    trace_cel_context(expression_id, expression, "evaluation_error", &diagnostics);
+                }
             }
             Err(RuleEngineError::CelEvaluate(execution_error.to_string()))
         }
         Err(panic_payload) => {
             let panic_message = panic_payload_message(panic_payload.as_ref());
             if log_failure {
-                let diagnostics = collect_diagnostics_safely(diagnostics);
                 error!(
                     target: "light_rule::cel",
                     expressionId = expression_id,
                     expression,
                     panic = %panic_message,
-                    evaluationContext = %diagnostics.evaluation_context,
-                    evaluationContextTruncated = diagnostics.evaluation_context_truncated,
-                    candidateNullPaths = ?diagnostics.paths,
-                    candidateNullPathsTruncated = diagnostics.truncated,
                     "CEL interpreter panic contained"
                 );
+                if tracing::enabled!(target: "light_rule::cel", tracing::Level::TRACE) {
+                    let diagnostics = collect_diagnostics_safely(diagnostics);
+                    trace_cel_context(expression_id, expression, "interpreter_panic", &diagnostics);
+                }
             }
             Err(RuleEngineError::CelEvaluate(format!(
                 "CEL interpreter panicked: {panic_message}"
@@ -477,6 +722,134 @@ where
     catch_unwind(AssertUnwindSafe(diagnostics)).unwrap_or_default()
 }
 
+fn collect_referenced_diagnostics(
+    program: &CelProgram,
+    profile: CelSecurityProfile,
+    context: &JsonValue,
+    row: Option<&JsonValue>,
+    include_values: bool,
+) -> NullPathDiagnostics {
+    let analysis = analyze_cel_references(program.expression());
+    let mut budget = DiagnosticContextBudget::new();
+    let mut projected = serde_json::Map::new();
+    let mut diagnostics = NullPathDiagnostics {
+        reference_analysis_incomplete: analysis.incomplete,
+        context_mode: if include_values { "full" } else { "metadata" },
+        ..NullPathDiagnostics::default()
+    };
+
+    for path in analysis.paths {
+        if profile == CelSecurityProfile::Strict
+            && !path
+                .first()
+                .is_some_and(|root| STRICT_CEL_ROOTS.contains(&root.as_str()))
+        {
+            continue;
+        }
+        if budget.exhausted() {
+            budget.truncated = true;
+            break;
+        }
+        let display_path = display_reference_path(&path);
+        let value = resolve_reference_value(context, row, &path);
+        diagnostics.referenced_paths.push(display_path.clone());
+        let projected_value = if include_values {
+            value.cloned().unwrap_or(JsonValue::Null)
+        } else {
+            reference_value_metadata(value)
+        };
+        insert_diagnostic_context_value(
+            &mut projected,
+            display_path.as_str(),
+            &projected_value,
+            &mut budget,
+        );
+
+        if let Some(value) = value {
+            collect_null_paths(value, format!("$.{display_path}"), 0, &mut diagnostics);
+        }
+    }
+
+    diagnostics.evaluation_context = JsonValue::Object(projected);
+    diagnostics.evaluation_context_truncated = budget.truncated;
+    diagnostics
+}
+
+fn resolve_reference_value<'a>(
+    context: &'a JsonValue,
+    row: Option<&'a JsonValue>,
+    path: &[String],
+) -> Option<&'a JsonValue> {
+    let (mut value, remaining) = match path.first().map(String::as_str) {
+        Some("context") => (context, &path[1..]),
+        Some("row") => (row?, &path[1..]),
+        Some(root) => (context.get(root)?, &path[1..]),
+        None => return None,
+    };
+    for segment in remaining {
+        value = value.get(segment)?;
+    }
+    Some(value)
+}
+
+fn display_reference_path(path: &[String]) -> String {
+    let mut display = "$".to_string();
+    for segment in path {
+        display = json_object_path(display.as_str(), segment);
+    }
+    display
+        .strip_prefix("$.")
+        .or_else(|| display.strip_prefix('$'))
+        .unwrap_or(display.as_str())
+        .to_string()
+}
+
+fn reference_value_metadata(value: Option<&JsonValue>) -> JsonValue {
+    let Some(value) = value else {
+        return serde_json::json!({"present": false});
+    };
+    let (value_type, size) = match value {
+        JsonValue::Null => ("null", None),
+        JsonValue::Bool(_) => ("boolean", None),
+        JsonValue::Number(_) => ("number", None),
+        JsonValue::String(value) => ("string", Some(value.chars().count())),
+        JsonValue::Array(value) => ("array", Some(value.len())),
+        JsonValue::Object(value) => ("object", Some(value.len())),
+    };
+    let mut metadata = serde_json::Map::new();
+    metadata.insert("present".to_string(), JsonValue::Bool(true));
+    metadata.insert(
+        "type".to_string(),
+        JsonValue::String(value_type.to_string()),
+    );
+    if let Some(size) = size {
+        metadata.insert("size".to_string(), JsonValue::Number(size.into()));
+    }
+    JsonValue::Object(metadata)
+}
+
+fn trace_cel_context(
+    expression_id: &str,
+    expression: &str,
+    outcome: &str,
+    diagnostics: &NullPathDiagnostics,
+) {
+    trace!(
+        target: "light_rule::cel",
+        expressionId = expression_id,
+        expression,
+        outcome,
+        contextMode = diagnostics.context_mode,
+        referencedPaths = ?diagnostics.referenced_paths,
+        referenceAnalysisIncomplete = diagnostics.reference_analysis_incomplete,
+        referencedContext = %diagnostics.evaluation_context,
+        contextTruncated = diagnostics.evaluation_context_truncated,
+        candidateNullPaths = ?diagnostics.paths,
+        candidateNullPathsTruncated = diagnostics.truncated,
+        "CEL expression context"
+    );
+}
+
 fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
         (*message).to_string()
@@ -485,109 +858,6 @@ fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
     } else {
         "non-string panic payload".to_string()
     }
-}
-
-fn collect_exposed_null_paths(
-    profile: CelSecurityProfile,
-    context: &JsonValue,
-    row: Option<&JsonValue>,
-) -> NullPathDiagnostics {
-    let (evaluation_context, evaluation_context_truncated) =
-        diagnostic_evaluation_context(profile, context, row);
-    let mut diagnostics = NullPathDiagnostics {
-        evaluation_context,
-        evaluation_context_truncated,
-        ..NullPathDiagnostics::default()
-    };
-
-    if let Some(row) = row {
-        collect_null_paths(row, "$.row".to_string(), 0, &mut diagnostics);
-    }
-
-    if diagnostics.truncated {
-        return diagnostics;
-    }
-
-    if profile != CelSecurityProfile::Strict {
-        collect_null_paths(context, "$".to_string(), 0, &mut diagnostics);
-    } else if let JsonValue::Object(map) = context {
-        for (key, value) in map {
-            if !is_cel_identifier(key) || key == "context" {
-                continue;
-            }
-            if !STRICT_CEL_ROOTS.contains(&key.as_str()) {
-                continue;
-            }
-            let path = json_object_path("$", key);
-            collect_null_paths(value, path, 0, &mut diagnostics);
-            if diagnostics.truncated {
-                break;
-            }
-        }
-    }
-
-    diagnostics
-}
-
-fn diagnostic_evaluation_context(
-    profile: CelSecurityProfile,
-    context: &JsonValue,
-    row: Option<&JsonValue>,
-) -> (JsonValue, bool) {
-    let mut budget = DiagnosticContextBudget::new();
-    let mut evaluation_context = serde_json::Map::new();
-
-    // A row predicate most often fails because of the current row, so preserve
-    // it before the shared context consumes the diagnostic budget.
-    if let Some(row) = row {
-        insert_diagnostic_context_value(&mut evaluation_context, "row", row, &mut budget);
-    }
-
-    // After a row snapshot, preserve permission before the remaining shared
-    // context roots because it is the most common access-rule failure surface.
-    if profile == CelSecurityProfile::Strict {
-        if let Some(permission) = context.get("permission") {
-            insert_diagnostic_context_value(
-                &mut evaluation_context,
-                "permission",
-                permission,
-                &mut budget,
-            );
-        } else {
-            insert_diagnostic_context_value(
-                &mut evaluation_context,
-                "permission",
-                &JsonValue::Object(serde_json::Map::new()),
-                &mut budget,
-            );
-        }
-    }
-
-    if let JsonValue::Object(map) = context {
-        for (key, value) in map {
-            if (row.is_some() && key == "row")
-                || (profile == CelSecurityProfile::Strict && key == "permission")
-            {
-                continue;
-            }
-            if profile == CelSecurityProfile::Strict
-                && (!is_cel_identifier(key)
-                    || key == "context"
-                    || !STRICT_CEL_ROOTS.contains(&key.as_str()))
-            {
-                continue;
-            }
-            if budget.exhausted() {
-                budget.truncated = true;
-                break;
-            }
-            insert_diagnostic_context_value(&mut evaluation_context, key, value, &mut budget);
-        }
-    } else if profile != CelSecurityProfile::Strict {
-        insert_diagnostic_context_value(&mut evaluation_context, "context", context, &mut budget);
-    }
-
-    (JsonValue::Object(evaluation_context), budget.truncated)
 }
 
 struct DiagnosticContextBudget {
@@ -782,9 +1052,183 @@ fn cel_contains_ignore_case(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::cell::Cell;
+
+    #[test]
+    fn extracts_static_context_paths_and_ignores_comprehension_locals() {
+        let program = CelProgram::compile(
+            "permission.roles.exists(r, r in auditInfo.subject_claims.ClaimsMap.roles)",
+        )
+        .expect("compile CEL expression");
+
+        let analysis = analyze_cel_references(program.expression());
+
+        assert_eq!(
+            analysis.paths,
+            BTreeSet::from([
+                vec![
+                    "auditInfo".to_string(),
+                    "subject_claims".to_string(),
+                    "ClaimsMap".to_string(),
+                    "roles".to_string(),
+                ],
+                vec!["permission".to_string(), "roles".to_string()],
+            ])
+        );
+        assert!(!analysis.incomplete);
+    }
+
+    #[test]
+    fn literal_indexes_are_exact_and_dynamic_indexes_fall_back_to_prefix() {
+        let literal =
+            CelProgram::compile("auditInfo.subject_claims.ClaimsMap['roles'] == ['admin']")
+                .expect("compile literal-index expression");
+        let literal_analysis = analyze_cel_references(literal.expression());
+        assert!(literal_analysis.paths.contains(&vec![
+            "auditInfo".to_string(),
+            "subject_claims".to_string(),
+            "ClaimsMap".to_string(),
+            "roles".to_string(),
+        ]));
+        assert!(!literal_analysis.incomplete);
+
+        let dynamic = CelProgram::compile("auditInfo.subject_claims.ClaimsMap[claimName]")
+            .expect("compile dynamic-index expression");
+        let dynamic_analysis = analyze_cel_references(dynamic.expression());
+        assert!(dynamic_analysis.paths.contains(&vec![
+            "auditInfo".to_string(),
+            "subject_claims".to_string(),
+            "ClaimsMap".to_string(),
+        ]));
+        assert!(
+            dynamic_analysis
+                .paths
+                .contains(&vec!["claimName".to_string()])
+        );
+        assert!(dynamic_analysis.incomplete);
+    }
+
+    #[test]
+    fn dynamic_index_full_projection_intentionally_includes_the_static_parent() {
+        let program = CelProgram::compile(
+            "auditInfo.subject_claims.ClaimsMap[permission.claimName] == 'admin'",
+        )
+        .expect("compile dynamic-index expression");
+        let context = json!({
+            "permission": {"claimName": "role"},
+            "auditInfo": {
+                "subject_claims": {
+                    "ClaimsMap": {
+                        "role": "admin",
+                        "department": "engineering"
+                    }
+                }
+            }
+        });
+
+        let diagnostics = collect_referenced_diagnostics(
+            &program,
+            CelSecurityProfile::Strict,
+            &context,
+            None,
+            true,
+        );
+
+        assert!(diagnostics.reference_analysis_incomplete);
+        assert_eq!(
+            diagnostics.evaluation_context["auditInfo.subject_claims.ClaimsMap"],
+            json!({"role": "admin", "department": "engineering"})
+        );
+        assert_eq!(
+            diagnostics.evaluation_context["permission.claimName"],
+            "role"
+        );
+    }
+
+    #[test]
+    fn projects_only_referenced_context_with_metadata_or_full_values() {
+        let program =
+            CelProgram::compile("permission.roles == auditInfo.subject_claims.ClaimsMap.roles")
+                .expect("compile CEL expression");
+        let context = json!({
+            "permission": {"roles": ["admin"], "groups": ["hidden"]},
+            "auditInfo": {
+                "subject_claims": {
+                    "ClaimsMap": {
+                        "roles": ["developer"],
+                        "email": "hidden@example.com"
+                    }
+                }
+            },
+            "headers": {"x-unrelated": "hidden"}
+        });
+
+        let metadata = collect_referenced_diagnostics(
+            &program,
+            CelSecurityProfile::Strict,
+            &context,
+            None,
+            false,
+        );
+        assert_eq!(
+            metadata.evaluation_context["permission.roles"],
+            json!({"present": true, "type": "array", "size": 1})
+        );
+        assert!(
+            metadata
+                .evaluation_context
+                .get("auditInfo.subject_claims.ClaimsMap.email")
+                .is_none()
+        );
+        assert!(metadata.evaluation_context.get("headers").is_none());
+
+        let full = collect_referenced_diagnostics(
+            &program,
+            CelSecurityProfile::Strict,
+            &context,
+            None,
+            true,
+        );
+        assert_eq!(
+            full.evaluation_context["permission.roles"],
+            json!(["admin"])
+        );
+        assert_eq!(
+            full.evaluation_context["auditInfo.subject_claims.ClaimsMap.roles"],
+            json!(["developer"])
+        );
+        assert!(
+            !full
+                .evaluation_context
+                .to_string()
+                .contains("hidden@example.com")
+        );
+    }
+
+    #[test]
+    fn strict_projection_excludes_roots_unavailable_to_the_evaluator() {
+        let program =
+            CelProgram::compile("internalState.secret == 'value'").expect("compile CEL expression");
+        let context = json!({
+            "internalState": {"secret": "value"},
+        });
+
+        let diagnostics = collect_referenced_diagnostics(
+            &program,
+            CelSecurityProfile::Strict,
+            &context,
+            None,
+            true,
+        );
+
+        assert!(diagnostics.referenced_paths.is_empty());
+        assert_eq!(diagnostics.evaluation_context, json!({}));
+    }
 
     #[test]
     fn contains_interpreter_panics_and_reports_candidate_null_paths() {
+        let program = CelProgram::compile("permission.roles.exists(r, true)")
+            .expect("compile CEL expression");
         let context = json!({
             "permission": {
                 "roles": null
@@ -796,7 +1240,15 @@ mod tests {
             "permission.roles.exists(r, true)",
             true,
             || -> Result<CelValue, CelExecutionError> { panic!("synthetic CEL panic") },
-            || collect_exposed_null_paths(CelSecurityProfile::Strict, &context, None),
+            || {
+                collect_referenced_diagnostics(
+                    &program,
+                    CelSecurityProfile::Strict,
+                    &context,
+                    None,
+                    true,
+                )
+            },
         )
         .unwrap_err();
 
@@ -808,57 +1260,33 @@ mod tests {
     }
 
     #[test]
-    fn collects_exposed_evaluation_context_and_null_paths() {
-        let context = json!({
-            "permission": {
-                "roles": null
-            },
-            "headers": {
-                "x-owner-id": null
-            },
-            "internalState": {
-                "secret": null
-            }
-        });
+    fn trace_disabled_skips_error_context_collection() {
+        let diagnostics_collected = Cell::new(false);
 
-        let diagnostics = collect_exposed_null_paths(CelSecurityProfile::Strict, &context, None);
+        let result = execute_cel_safely(
+            "trace-disabled-test",
+            "permission.missing",
+            true,
+            || {
+                Err(CelExecutionError::UndeclaredReference(Arc::new(
+                    "missing".to_string(),
+                )))
+            },
+            || {
+                diagnostics_collected.set(true);
+                NullPathDiagnostics::default()
+            },
+        );
 
-        assert!(
-            diagnostics
-                .paths
-                .contains(&"$.permission.roles".to_string())
-        );
-        assert!(
-            diagnostics
-                .paths
-                .contains(&"$.headers['x-owner-id']".to_string())
-        );
-        assert!(
-            diagnostics
-                .paths
-                .iter()
-                .all(|path| !path.contains("internalState") && !path.contains("secret"))
-        );
-        assert_eq!(
-            diagnostics.evaluation_context["permission"]["roles"],
-            JsonValue::Null
-        );
-        assert_eq!(
-            diagnostics.evaluation_context["headers"]["x-owner-id"],
-            JsonValue::Null
-        );
-        assert!(
-            diagnostics
-                .evaluation_context
-                .get("internalState")
-                .is_none()
-        );
-        assert!(!diagnostics.truncated);
-        assert!(!diagnostics.evaluation_context_truncated);
+        assert!(result.is_err());
+        assert!(!diagnostics_collected.get());
     }
 
     #[test]
     fn bounds_diagnostic_evaluation_context() {
+        let program =
+            CelProgram::compile("toolArguments.description == '' || size(toolArguments.items) > 0")
+                .expect("compile CEL expression");
         let context = json!({
             "toolArguments": {
                 "description": "x".repeat(MAX_DIAGNOSTIC_CONTEXT_STRING_CHARS + 100),
@@ -866,10 +1294,19 @@ mod tests {
             }
         });
 
-        let diagnostics = collect_exposed_null_paths(CelSecurityProfile::Standard, &context, None);
-        let tool_arguments = &diagnostics.evaluation_context["toolArguments"];
-        let description = tool_arguments["description"].as_str().unwrap();
-        let items = tool_arguments["items"].as_array().unwrap();
+        let diagnostics = collect_referenced_diagnostics(
+            &program,
+            CelSecurityProfile::Standard,
+            &context,
+            None,
+            true,
+        );
+        let description = diagnostics.evaluation_context["toolArguments.description"]
+            .as_str()
+            .unwrap();
+        let items = diagnostics.evaluation_context["toolArguments.items"]
+            .as_array()
+            .unwrap();
 
         assert_eq!(
             description.chars().count(),
@@ -882,11 +1319,18 @@ mod tests {
 
     #[test]
     fn bounds_null_path_diagnostic_traversal() {
+        let program = CelProgram::compile("toolArguments").expect("compile CEL expression");
         let context = json!({
             "toolArguments": (0..MAX_DIAGNOSTIC_JSON_NODES + 100).collect::<Vec<_>>()
         });
 
-        let diagnostics = collect_exposed_null_paths(CelSecurityProfile::Strict, &context, None);
+        let diagnostics = collect_referenced_diagnostics(
+            &program,
+            CelSecurityProfile::Strict,
+            &context,
+            None,
+            true,
+        );
 
         assert_eq!(diagnostics.visited_nodes, MAX_DIAGNOSTIC_JSON_NODES);
         assert!(diagnostics.truncated);

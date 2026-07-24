@@ -467,6 +467,18 @@ projection:
 - `access-control.*` values in `values.yml`
 - `rule.ruleBodies` and `rule.endpointRules` values in `values.yml`
 
+The root-level access-control setting below controls CEL context trace detail:
+
+```yaml
+logFullCelContext: false
+```
+
+At the default `false`, failed or rejected CEL expressions log referenced paths
+and structural metadata at `TRACE`. When set to `true`, the same event includes
+bounded values for only the referenced properties. Full mode is intended only
+for local or development environments. Access-control context construction
+excludes credential headers in both modes.
+
 The module registry should report:
 
 - whether access control is enabled

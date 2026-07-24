@@ -3,4 +3,5 @@ accessRuleLogic: ${access-control.accessRuleLogic:any}
 defaultDeny: ${access-control.defaultDeny:true}
 defaultInclude: ${access-control.defaultInclude:false}
 skipPathPrefixes: ${access-control.skipPathPrefixes:[]}
+logFullCelContext: ${access-control.logFullCelContext:false}
 claimMappings: ${access-control.claimMappings:{}}
