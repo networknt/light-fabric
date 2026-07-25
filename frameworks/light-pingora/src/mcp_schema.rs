@@ -2251,55 +2251,6 @@ mod tests {
     }
 
     #[test]
-    fn tmp_probe_round3_schema() {
-        // (a) `if` property now in routing set?
-        let if_only = json!({
-            "type":"object",
-            "if":{"properties":{"kind":{"type":"string"}},"required":["kind"]},
-            "then":{"properties":{"detail":{"type":"string"}}},
-            "unevaluatedProperties": false
-        });
-        // (b) nested patternProperties must NOT be open-ended
-        let nested_pattern = json!({
-            "type":"object",
-            "properties":{"config":{"type":"object","patternProperties":{"^x-":{"type":"string"}}}},
-            "unevaluatedProperties": false
-        });
-        // (c) ROOT patternProperties must STILL be open-ended
-        let root_pattern = json!({
-            "type":"object",
-            "patternProperties":{"^x-":{"type":"string"}},
-            "unevaluatedProperties": false
-        });
-        for (label, schema) in [("if_only", if_only), ("nested_pattern", nested_pattern), ("root_pattern", root_pattern)] {
-            let p = prepare_tools(&[tool(schema, None)], &McpSchemaConfig::default(), false)
-                .expect("prepare");
-            let t = &p["test.tool"];
-            println!("PROBE {label}: routing={:?} open_ended={}", t.routing_properties, t.routing_properties_open_ended);
-        }
-        // (d) PHASE 3 REGRESSION GUARD: `if` must stay assertion-only for headers
-        let if_header = json!({
-            "type":"object",
-            "if":{"properties":{"kind":{"type":"string","x-mcp-header":"Mcp-Param-Kind"}},"required":["kind"]},
-            "then":{"properties":{"detail":{"type":"string"}}}
-        });
-        match prepare_tools(&[tool(if_header, None)], &McpSchemaConfig::default(), false) {
-            Err(e) => println!("PROBE if_header: REJECTED -> {}", e.reason),
-            Ok(p) => println!("PROBE if_header: ACCEPTED headers={:?}", p["test.tool"].header_extractions),
-        }
-        // (e) PHASE 3 REGRESSION GUARD: ancestor mask still blocks descendant header
-        let anc = json!({
-            "type":"object",
-            "properties":{"credentials":{"type":"object","x-sensitive":true,
-                "properties":{"token":{"type":"string","x-mcp-header":"Mcp-Param-Token"}}}}
-        });
-        match prepare_tools(&[tool(anc, None)], &McpSchemaConfig::default(), false) {
-            Err(e) => println!("PROBE ancestor_mask: REJECTED -> {}", e.reason),
-            Ok(_) => println!("PROBE ancestor_mask: ACCEPTED <-- PHASE 3 REGRESSION"),
-        }
-    }
-
-    #[test]
     fn full_mask_takes_precedence_over_partial_branch_patterns() {
         let prepared = prepare_tools(
             &[tool(

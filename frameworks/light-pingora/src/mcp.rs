@@ -11678,6 +11678,44 @@ endpointRules:
         (format!("http://{address}"), rx)
     }
 
+    async fn phase5_call(runtime: &McpRouterRuntime, method: &str, params: JsonValue) -> JsonValue {
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(runtime),
+                body: serde_json::to_vec(&json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": method,
+                    "params": params
+                }))
+                .expect("Phase 5 request"),
+            })
+            .await
+            .expect("handle Phase 5 request")
+            .expect("Phase 5 response");
+        serde_json::from_slice(response.body.buffered().expect("buffered Phase 5 response"))
+            .expect("Phase 5 JSON response")
+    }
+
+    async fn spawn_phase5_backend_probe() -> (String, Arc<AtomicU64>, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind Phase 5 probe");
+        let address = listener.local_addr().expect("Phase 5 probe address");
+        let hits = Arc::new(AtomicU64::new(0));
+        let task_hits = hits.clone();
+        let task = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                task_hits.fetch_add(1, Ordering::SeqCst);
+                let response = http_json_response(json!({"unexpected": true}));
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        (format!("http://{address}"), hits, task)
+    }
+
     async fn spawn_http_sequence_server(
         responses: Vec<String>,
     ) -> (String, oneshot::Receiver<Vec<String>>) {
@@ -12240,6 +12278,190 @@ endpointRules:
             tool.routing_properties.as_ref(),
             ["eventType", "model", "personId"]
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PHASE5_PORTAL_MCP_CONFIG from the cross-repository Phase 5 gate"]
+    async fn phase5_cross_repository_qualification() {
+        let path = std::env::var_os("PHASE5_PORTAL_MCP_CONFIG")
+            .expect("PHASE5_PORTAL_MCP_CONFIG must point to the Portal artifact");
+        let source = std::fs::read_to_string(path).expect("Phase 5 Portal MCP config");
+        let config = serde_yaml::from_str::<McpRouterConfig>(&source).expect("MCP router config");
+        assert_eq!(config.tools.len(), 8);
+
+        let list_runtime = McpRouterRuntime::new(config.clone()).expect("Portal-published runtime");
+        let listed = phase5_call(&list_runtime, "tools/list", json!({})).await;
+        let listed_tools = listed["result"]["tools"].as_array().expect("listed tools");
+        assert_eq!(listed_tools.len(), 8);
+        for tool in &config.tools {
+            let advertised = listed_tools
+                .iter()
+                .find(|candidate| candidate["name"] == tool.name)
+                .expect("generated tool is advertised");
+            assert_eq!(advertised["inputSchema"], tool.input_schema);
+            if let Some(output_schema) = tool.output_schema.as_ref() {
+                assert_eq!(advertised["outputSchema"], *output_schema);
+            }
+        }
+
+        let cases = [
+            (
+                "noArgumentGet",
+                json!({}),
+                json!({"unexpected":"phase5-sensitive"}),
+            ),
+            (
+                "parameterizedGet",
+                json!({"petId":"pet/1","verbose":true}),
+                json!({"petId":5,"verbose":true}),
+            ),
+            (
+                "allOfInput",
+                json!({"name":"widget","count":2}),
+                json!({"name":"phase5-sensitive","count":0}),
+            ),
+            (
+                "discriminatedOneOf",
+                json!({"model":"event","eventId":"event-1"}),
+                json!({"model":"event"}),
+            ),
+            (
+                "conditionalInput",
+                json!({"kind":"detailed","detail":"full"}),
+                json!({"kind":"detailed","summary":"phase5-sensitive"}),
+            ),
+            (
+                "referencedComposition",
+                json!({"personId":"person-1"}),
+                json!({}),
+            ),
+            (
+                "composedObjectOutput",
+                json!({}),
+                json!({"unexpected":"phase5-sensitive"}),
+            ),
+            (
+                "referencedArrayOutput",
+                json!({}),
+                json!({"unexpected":"phase5-sensitive"}),
+            ),
+        ];
+
+        for (name, valid_arguments, invalid_arguments) in cases {
+            let source_tool = config
+                .tools
+                .iter()
+                .find(|tool| tool.name == name)
+                .expect("generated tool");
+            let backend_value = match name {
+                "composedObjectOutput" => json!({"ok":true,"id":"object-1"}),
+                "referencedArrayOutput" => json!([1, 2]),
+                _ => json!({"ok":true}),
+            };
+            let (base, received) = spawn_http_server(http_json_response(backend_value)).await;
+            let mut tool = source_tool.clone();
+            tool.target_host = Some(base);
+            let runtime = McpRouterRuntime::new(McpRouterConfig {
+                tools: vec![tool],
+                ..config.clone()
+            })
+            .expect("qualified runtime");
+
+            let result = phase5_call(
+                &runtime,
+                "tools/call",
+                json!({"name":name,"arguments":valid_arguments}),
+            )
+            .await;
+            assert_ne!(result["result"]["isError"], true, "{name}: {result}");
+            let backend_request = received.await.expect("successful backend request");
+            match name {
+                "noArgumentGet" => assert!(backend_request.starts_with("GET /health ")),
+                "parameterizedGet" => {
+                    assert!(backend_request.starts_with("GET /pets/pet%2F1?verbose=true "));
+                    assert_eq!(backend_request.split("\r\n\r\n").nth(1), Some(""));
+                }
+                "allOfInput" => assert_eq!(
+                    request_json_body(&backend_request),
+                    json!({"name":"widget","count":2})
+                ),
+                "discriminatedOneOf" => assert_eq!(
+                    request_json_body(&backend_request),
+                    json!({"model":"event","eventId":"event-1"})
+                ),
+                "conditionalInput" => assert_eq!(
+                    request_json_body(&backend_request),
+                    json!({"kind":"detailed","detail":"full"})
+                ),
+                "referencedComposition" => assert_eq!(
+                    request_json_body(&backend_request),
+                    json!({"personId":"person-1"})
+                ),
+                "composedObjectOutput" => {
+                    assert!(backend_request.starts_with("GET /object-output "));
+                    assert_eq!(
+                        result["result"]["structuredContent"],
+                        json!({"ok":true,"id":"object-1"})
+                    );
+                }
+                "referencedArrayOutput" => {
+                    assert!(backend_request.starts_with("GET /array-output "));
+                    assert_eq!(result["result"]["structuredContent"], json!([1, 2]));
+                }
+                _ => {}
+            }
+
+            if matches!(name, "composedObjectOutput" | "referencedArrayOutput") {
+                let invalid_output = if name == "composedObjectOutput" {
+                    json!({"ok":true})
+                } else {
+                    json!([1, "invalid"])
+                };
+                let (invalid_base, invalid_received) =
+                    spawn_http_server(http_json_response(invalid_output)).await;
+                let mut invalid_output_tool = source_tool.clone();
+                invalid_output_tool.target_host = Some(invalid_base);
+                let invalid_output_runtime = McpRouterRuntime::new(McpRouterConfig {
+                    tools: vec![invalid_output_tool],
+                    ..config.clone()
+                })
+                .expect("invalid-output runtime");
+                let invalid_result = phase5_call(
+                    &invalid_output_runtime,
+                    "tools/call",
+                    json!({"name":name,"arguments":{}}),
+                )
+                .await;
+                invalid_received
+                    .await
+                    .expect("invalid output reached backend");
+                assert_eq!(invalid_result["result"]["isError"], true);
+                assert!(invalid_result["result"].get("structuredContent").is_none());
+                assert!(invalid_result["result"].to_string().len() <= MAX_MCP_ERROR_RESPONSE_BYTES);
+            }
+
+            let (blocked_base, backend_hits, backend_task) = spawn_phase5_backend_probe().await;
+            let mut blocked_tool = source_tool.clone();
+            blocked_tool.target_host = Some(blocked_base);
+            let blocked_runtime = McpRouterRuntime::new(McpRouterConfig {
+                tools: vec![blocked_tool],
+                ..config.clone()
+            })
+            .expect("rejection runtime");
+            let rejection = phase5_call(
+                &blocked_runtime,
+                "tools/call",
+                json!({"name":name,"arguments":invalid_arguments}),
+            )
+            .await;
+            tokio::task::yield_now().await;
+            assert_eq!(rejection["result"]["isError"], true, "{name}: {rejection}");
+            let diagnostic = rejection["result"].to_string();
+            assert!(diagnostic.len() <= MAX_MCP_ERROR_RESPONSE_BYTES);
+            assert!(!diagnostic.contains("phase5-sensitive"));
+            assert_eq!(backend_hits.load(Ordering::SeqCst), 0, "{name}");
+            backend_task.abort();
+        }
     }
 
     #[tokio::test]
