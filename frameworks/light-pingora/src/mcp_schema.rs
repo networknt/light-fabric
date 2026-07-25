@@ -201,6 +201,12 @@ pub(crate) struct PreparedMcpTool {
     pub advertised_output_schema: Option<JsonValue>,
     pub header_extractions: Arc<[HeaderExtraction]>,
     pub mask_plan: Arc<[MaskRule]>,
+    /// Finite top-level argument names reachable through composition and local refs.
+    pub routing_properties: Arc<[String]>,
+    /// True when a schema-valued wildcard can admit names that cannot be enumerated.
+    pub routing_properties_open_ended: bool,
+    /// True when schema validation rejects undeclared root arguments.
+    pub rejects_unmapped_arguments: bool,
 }
 
 impl std::fmt::Debug for PreparedMcpTool {
@@ -210,6 +216,15 @@ impl std::fmt::Debug for PreparedMcpTool {
             .field("has_output_validator", &self.output_validator.is_some())
             .field("header_extractions", &self.header_extractions)
             .field("mask_rules", &self.mask_plan.len())
+            .field("routing_properties", &self.routing_properties)
+            .field(
+                "routing_properties_open_ended",
+                &self.routing_properties_open_ended,
+            )
+            .field(
+                "rejects_unmapped_arguments",
+                &self.rejects_unmapped_arguments,
+            )
             .finish()
     }
 }
@@ -534,6 +549,16 @@ pub(crate) fn prepare_tools(
                     )
                 },
             )?;
+        let (routing_properties, routing_properties_open_ended) =
+            prepare_routing_properties(&tool.input_schema, schema_config).map_err(|reason| {
+                SchemaPreparationError::new(
+                    &tool.name,
+                    SchemaKind::Input,
+                    "/",
+                    "SCHEMA_ROUTING_ANALYSIS_FAILED",
+                    reason,
+                )
+            })?;
         let value = PreparedMcpTool {
             input_schema_for_validation: Arc::new(tool.input_schema.clone()),
             output_schema_for_validation: tool.output_schema.clone().map(Arc::new),
@@ -544,6 +569,9 @@ pub(crate) fn prepare_tools(
             output_validator,
             header_extractions: header_extractions.into(),
             mask_plan: mask_plan.into(),
+            routing_properties: routing_properties.into(),
+            routing_properties_open_ended,
+            rejects_unmapped_arguments: schema_rejects_unmapped_root_arguments(&tool.input_schema),
         };
         if prepared.insert(tool.name.clone(), value).is_some() {
             return Err(SchemaPreparationError::new(
@@ -556,6 +584,44 @@ pub(crate) fn prepare_tools(
         }
     }
     Ok(prepared)
+}
+
+fn prepare_routing_properties(
+    schema: &JsonValue,
+    config: &McpSchemaConfig,
+) -> Result<(Vec<String>, bool), String> {
+    let mut properties = BTreeSet::new();
+    let mut open_ended = false;
+    walk_reachable_schema_graph(
+        schema,
+        config.max_schema_graph_visits,
+        false,
+        WalkLocationPolicy::RoutingProperties,
+        |node, _, location| {
+            let InstanceLocation::Mappable(path) = location else {
+                return Ok(());
+            };
+            match path.first() {
+                Some(LogicalPathSegment::Property(name)) => {
+                    properties.insert(name.clone());
+                }
+                Some(LogicalPathSegment::PropertyPattern(_)) if node != &JsonValue::Bool(false) => {
+                    open_ended = true;
+                }
+                _ => {}
+            }
+            Ok(())
+        },
+    )?;
+    Ok((properties.into_iter().collect(), open_ended))
+}
+
+fn schema_rejects_unmapped_root_arguments(schema: &JsonValue) -> bool {
+    let Some(object) = schema.as_object() else {
+        return false;
+    };
+    object.get("unevaluatedProperties") == Some(&JsonValue::Bool(false))
+        || object.get("additionalProperties") == Some(&JsonValue::Bool(false))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -747,8 +813,15 @@ enum InstanceLocation {
     Definition,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WalkLocationPolicy {
+    GatewayAnnotations,
+    RoutingProperties,
+}
+
 struct SchemaChild<'a> {
     schema: &'a JsonValue,
+    keyword: &'a str,
     pointer_suffix: String,
     shape: SchemaKeywordShape,
     name: Option<String>,
@@ -775,6 +848,7 @@ fn schema_children(
                 if let Some(values) = value.as_object() {
                     children.extend(values.iter().map(|(name, schema)| SchemaChild {
                         schema,
+                        keyword,
                         pointer_suffix: format!(
                             "/{}/{}",
                             escape_json_pointer(keyword),
@@ -794,6 +868,7 @@ fn schema_children(
                             .enumerate()
                             .map(|(index, schema)| SchemaChild {
                                 schema,
+                                keyword,
                                 pointer_suffix: format!(
                                     "/{}/{index}",
                                     escape_json_pointer(keyword)
@@ -810,6 +885,7 @@ fn schema_children(
             | SchemaKeywordShape::SameLocation
             | SchemaKeywordShape::AssertionOnly => children.push(SchemaChild {
                 schema: value,
+                keyword,
                 pointer_suffix: format!("/{}", escape_json_pointer(keyword)),
                 shape,
                 name: None,
@@ -820,7 +896,11 @@ fn schema_children(
     children
 }
 
-fn child_instance_location(parent: &InstanceLocation, child: &SchemaChild<'_>) -> InstanceLocation {
+fn child_instance_location(
+    parent: &InstanceLocation,
+    child: &SchemaChild<'_>,
+    policy: WalkLocationPolicy,
+) -> InstanceLocation {
     if matches!(parent, InstanceLocation::AssertionOnly) {
         return InstanceLocation::AssertionOnly;
     }
@@ -853,6 +933,8 @@ fn child_instance_location(parent: &InstanceLocation, child: &SchemaChild<'_>) -
         SchemaKeywordShape::AnyProperty => {
             path.push(LogicalPathSegment::PropertyPattern(".*".to_string()));
         }
+        SchemaKeywordShape::AssertionOnly
+            if policy == WalkLocationPolicy::RoutingProperties && child.keyword == "if" => {}
         SchemaKeywordShape::AssertionOnly => return InstanceLocation::AssertionOnly,
         SchemaKeywordShape::DefinitionMap => return InstanceLocation::Definition,
         SchemaKeywordShape::SameLocationMap
@@ -866,6 +948,7 @@ fn walk_reachable_schema_graph<F>(
     root: &JsonValue,
     visit_budget: usize,
     reject_annotated_cycles: bool,
+    location_policy: WalkLocationPolicy,
     visitor: F,
 ) -> Result<(), String>
 where
@@ -882,6 +965,7 @@ where
         visit_budget: usize,
         visits: usize,
         reject_annotated_cycles: bool,
+        location_policy: WalkLocationPolicy,
         active_refs: Vec<ActiveReference>,
         visitor: F,
     }
@@ -949,7 +1033,7 @@ where
             }
         }
         for child in schema_children(object, false) {
-            let child_location = child_instance_location(location, &child);
+            let child_location = child_instance_location(location, &child, state.location_policy);
             visit(
                 state,
                 child.schema,
@@ -964,6 +1048,7 @@ where
         root,
         visit_budget,
         reject_annotated_cycles,
+        location_policy,
         visits: 0,
         active_refs: Vec::new(),
         visitor,
@@ -1118,6 +1203,7 @@ fn preflight_schema(
         schema,
         config.max_schema_graph_visits,
         false,
+        WalkLocationPolicy::GatewayAnnotations,
         |node, _, _| {
             if let Some(object) = node.as_object() {
                 for keyword in ["allOf", "anyOf", "oneOf"] {
@@ -1185,6 +1271,7 @@ fn prepare_gateway_annotations(
         schema,
         config.max_schema_graph_visits,
         true,
+        WalkLocationPolicy::GatewayAnnotations,
         |node, pointer, location| {
             let Some(object) = node.as_object() else {
                 return Ok(());
@@ -2160,6 +2247,55 @@ mod tests {
                 .expect_err("a matching mask path must block fixed header export");
             assert_eq!(error.reason_code, "SCHEMA_ANNOTATION_INVALID");
             assert!(error.reason.contains("cannot expose sensitive property"));
+        }
+    }
+
+    #[test]
+    fn tmp_probe_round3_schema() {
+        // (a) `if` property now in routing set?
+        let if_only = json!({
+            "type":"object",
+            "if":{"properties":{"kind":{"type":"string"}},"required":["kind"]},
+            "then":{"properties":{"detail":{"type":"string"}}},
+            "unevaluatedProperties": false
+        });
+        // (b) nested patternProperties must NOT be open-ended
+        let nested_pattern = json!({
+            "type":"object",
+            "properties":{"config":{"type":"object","patternProperties":{"^x-":{"type":"string"}}}},
+            "unevaluatedProperties": false
+        });
+        // (c) ROOT patternProperties must STILL be open-ended
+        let root_pattern = json!({
+            "type":"object",
+            "patternProperties":{"^x-":{"type":"string"}},
+            "unevaluatedProperties": false
+        });
+        for (label, schema) in [("if_only", if_only), ("nested_pattern", nested_pattern), ("root_pattern", root_pattern)] {
+            let p = prepare_tools(&[tool(schema, None)], &McpSchemaConfig::default(), false)
+                .expect("prepare");
+            let t = &p["test.tool"];
+            println!("PROBE {label}: routing={:?} open_ended={}", t.routing_properties, t.routing_properties_open_ended);
+        }
+        // (d) PHASE 3 REGRESSION GUARD: `if` must stay assertion-only for headers
+        let if_header = json!({
+            "type":"object",
+            "if":{"properties":{"kind":{"type":"string","x-mcp-header":"Mcp-Param-Kind"}},"required":["kind"]},
+            "then":{"properties":{"detail":{"type":"string"}}}
+        });
+        match prepare_tools(&[tool(if_header, None)], &McpSchemaConfig::default(), false) {
+            Err(e) => println!("PROBE if_header: REJECTED -> {}", e.reason),
+            Ok(p) => println!("PROBE if_header: ACCEPTED headers={:?}", p["test.tool"].header_extractions),
+        }
+        // (e) PHASE 3 REGRESSION GUARD: ancestor mask still blocks descendant header
+        let anc = json!({
+            "type":"object",
+            "properties":{"credentials":{"type":"object","x-sensitive":true,
+                "properties":{"token":{"type":"string","x-mcp-header":"Mcp-Param-Token"}}}}
+        });
+        match prepare_tools(&[tool(anc, None)], &McpSchemaConfig::default(), false) {
+            Err(e) => println!("PROBE ancestor_mask: REJECTED -> {}", e.reason),
+            Ok(_) => println!("PROBE ancestor_mask: ACCEPTED <-- PHASE 3 REGRESSION"),
         }
     }
 

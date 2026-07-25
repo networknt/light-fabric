@@ -1496,6 +1496,9 @@ impl McpRouterRuntime {
             );
             RuntimeError::Unsupported(format!("invalid MCP schema: {message}"))
         })?;
+        validate_prepared_routing_contracts(&tools).map_err(|message| {
+            RuntimeError::Unsupported(format!("invalid MCP routing contract: {message}"))
+        })?;
         MCP_SCHEMA_PREPARATION_ACCEPTED.fetch_add(1, Ordering::Relaxed);
         tracing::debug!(
             target: "light_pingora::mcp_schema",
@@ -3625,6 +3628,7 @@ impl McpRouterRuntime {
         let mut header_params = BTreeMap::new();
         let mut cookie_params = BTreeMap::new();
         let mut body_val: Option<&JsonValue> = None;
+        let mut body_params = serde_json::Map::new();
         let path_placeholders =
             openapi_path_placeholders(tool.path.as_str()).map_err(|message| {
                 McpExecutionError::execution_failed(format!(
@@ -3635,13 +3639,20 @@ impl McpRouterRuntime {
 
         let mapping = tool_parameter_mapping(tool);
         let has_mapping = mapping.is_some();
+        let unmapped_policy =
+            tool_unmapped_argument_policy(tool).map_err(McpExecutionError::execution_failed)?;
+        let body_mapping_mode =
+            tool_body_mapping_mode(tool).map_err(McpExecutionError::execution_failed)?;
+        let uses_routing = has_mapping || unmapped_policy != UnmappedArgumentPolicy::MethodDefault;
         validate_path_placeholder_mapping(tool, mapping, &path_placeholders)?;
 
-        if let Some(mapping) = mapping
-            && let Some(args_obj) = arguments.as_object()
-        {
+        if uses_routing && let Some(args_obj) = arguments.as_object() {
             for (key, val) in args_obj {
-                match parameter_mapping_location(mapping, key, tool.name.as_str())? {
+                let location = mapping
+                    .map(|mapping| parameter_mapping_location(mapping, key, tool.name.as_str()))
+                    .transpose()?
+                    .flatten();
+                match location {
                     Some(ParameterLocation::Path) => {
                         path_params.insert(key.clone(), val);
                     }
@@ -3655,15 +3666,35 @@ impl McpRouterRuntime {
                         cookie_params.insert(key.clone(), val);
                     }
                     Some(ParameterLocation::Body) => {
-                        body_val = Some(val);
-                    }
-                    None => {
-                        if key == "body" {
+                        if key == "body" || body_mapping_mode == BodyMappingMode::LegacyWhole {
                             body_val = Some(val);
-                        } else if matches!(method, McpHttpMethod::Get | McpHttpMethod::Head) {
-                            query_params.insert(key.clone(), val);
+                        } else {
+                            body_params.insert(key.clone(), val.clone());
                         }
                     }
+                    None => match unmapped_policy {
+                        UnmappedArgumentPolicy::MethodDefault => {
+                            if key == "body" {
+                                body_val = Some(val);
+                            } else if matches!(method, McpHttpMethod::Get | McpHttpMethod::Head) {
+                                query_params.insert(key.clone(), val);
+                            } else if method.sends_json_body() {
+                                body_params.insert(key.clone(), val.clone());
+                            }
+                        }
+                        UnmappedArgumentPolicy::Query => {
+                            query_params.insert(key.clone(), val);
+                        }
+                        UnmappedArgumentPolicy::Body => {
+                            body_params.insert(key.clone(), val.clone());
+                        }
+                        UnmappedArgumentPolicy::Reject => {
+                            return Err(McpExecutionError::invalid_params(format!(
+                                "tool `{}` argument `{key}` has no routing parameter mapping",
+                                tool.name
+                            )));
+                        }
+                    },
                 }
             }
         }
@@ -3716,7 +3747,7 @@ impl McpRouterRuntime {
             )));
         }
 
-        if has_mapping {
+        if uses_routing {
             if !query_params.is_empty() {
                 let mut query_pairs = url.query_pairs_mut();
                 for (key, val) in query_params {
@@ -3775,34 +3806,11 @@ impl McpRouterRuntime {
         }
 
         let final_body = if method.sends_json_body() {
-            if has_mapping {
+            if uses_routing {
                 if let Some(body) = body_val {
                     Some(body.clone())
-                } else if let Some(mapping) = mapping {
-                    let mut body_obj = serde_json::Map::new();
-                    if let Some(args_obj) = arguments.as_object() {
-                        for (key, val) in args_obj {
-                            let mapped_loc =
-                                parameter_mapping_location(mapping, key, tool.name.as_str())?;
-                            if !matches!(
-                                mapped_loc,
-                                Some(
-                                    ParameterLocation::Path
-                                        | ParameterLocation::Query
-                                        | ParameterLocation::Header
-                                        | ParameterLocation::Cookie
-                                        | ParameterLocation::Body
-                                )
-                            ) {
-                                body_obj.insert(key.clone(), val.clone());
-                            }
-                        }
-                    }
-                    if !body_obj.is_empty() {
-                        Some(JsonValue::Object(body_obj))
-                    } else {
-                        None
-                    }
+                } else if !body_params.is_empty() {
+                    Some(JsonValue::Object(body_params))
                 } else {
                     None
                 }
@@ -5242,15 +5250,28 @@ pub fn validate_mcp_router_config_for_deployment(
         });
     } else {
         for tool in &config.tools {
-            if let Err(error) = prepare_tools(
+            match prepare_tools(
                 std::slice::from_ref(tool),
                 &config.schema,
                 config.protocols.stateless.enabled,
             ) {
-                let configuration_wide = error.tool_name == "<configuration>";
-                errors.push(schema_preparation_validation_error(error));
-                if configuration_wide {
-                    break;
+                Err(error) => {
+                    let configuration_wide = error.tool_name == "<configuration>";
+                    errors.push(schema_preparation_validation_error(error));
+                    if configuration_wide {
+                        break;
+                    }
+                }
+                Ok(prepared) => {
+                    if let Err(reason) = validate_prepared_routing_contracts(&prepared) {
+                        errors.push(McpConfigValidationError {
+                            tool_name: tool.name.clone(),
+                            schema_kind: "configuration".to_string(),
+                            json_pointer: "/toolMetadata/routing".to_string(),
+                            reason_code: "MCP_ROUTING_CONTRACT_INVALID".to_string(),
+                            reason,
+                        });
+                    }
                 }
             }
         }
@@ -5744,6 +5765,44 @@ enum ParameterLocation {
     Body,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum UnmappedArgumentPolicy {
+    #[default]
+    MethodDefault,
+    Query,
+    Body,
+    Reject,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum BodyMappingMode {
+    #[default]
+    LegacyWhole,
+    Fields,
+}
+
+impl BodyMappingMode {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "legacywhole" | "legacy_whole" | "legacy-whole" | "whole" => Some(Self::LegacyWhole),
+            "fields" => Some(Self::Fields),
+            _ => None,
+        }
+    }
+}
+
+impl UnmappedArgumentPolicy {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "methoddefault" | "method_default" | "method-default" => Some(Self::MethodDefault),
+            "query" => Some(Self::Query),
+            "body" => Some(Self::Body),
+            "reject" => Some(Self::Reject),
+            _ => None,
+        }
+    }
+}
+
 impl ParameterLocation {
     fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
@@ -6023,6 +6082,103 @@ fn tool_parameter_mapping(tool: &McpToolConfig) -> Option<&JsonMap<String, JsonV
             )
         })
         .and_then(JsonValue::as_object)
+}
+
+fn tool_unmapped_argument_policy(tool: &McpToolConfig) -> Result<UnmappedArgumentPolicy, String> {
+    let Some(routing) = tool_routing_metadata(tool) else {
+        return Ok(UnmappedArgumentPolicy::MethodDefault);
+    };
+    let Some(value) = metadata_field(routing, &["unmappedArguments", "unmapped_arguments"]) else {
+        return Ok(UnmappedArgumentPolicy::MethodDefault);
+    };
+    let Some(value) = value.as_str() else {
+        return Err(format!(
+            "tool `{}` toolMetadata.routing.unmappedArguments must be a string",
+            tool.name
+        ));
+    };
+    UnmappedArgumentPolicy::parse(value).ok_or_else(|| {
+        format!(
+            "tool `{}` toolMetadata.routing.unmappedArguments `{value}` must be one of methodDefault, query, body, or reject",
+            tool.name
+        )
+    })
+}
+
+fn tool_body_mapping_mode(tool: &McpToolConfig) -> Result<BodyMappingMode, String> {
+    let Some(routing) = tool_routing_metadata(tool) else {
+        return Ok(BodyMappingMode::LegacyWhole);
+    };
+    let Some(value) = metadata_field(routing, &["bodyMappingMode", "body_mapping_mode"]) else {
+        return Ok(BodyMappingMode::LegacyWhole);
+    };
+    let Some(value) = value.as_str() else {
+        return Err(format!(
+            "tool `{}` toolMetadata.routing.bodyMappingMode must be a string",
+            tool.name
+        ));
+    };
+    BodyMappingMode::parse(value).ok_or_else(|| {
+        format!(
+            "tool `{}` toolMetadata.routing.bodyMappingMode `{value}` must be one of legacyWhole or fields",
+            tool.name
+        )
+    })
+}
+
+fn validate_prepared_routing_contracts(
+    tools: &BTreeMap<String, PreparedMcpTool>,
+) -> Result<(), String> {
+    for tool in tools.values() {
+        let routing = tool_routing_metadata(tool);
+        let require_complete = metadata_bool(
+            routing,
+            &[
+                "requireCompleteParameterMappings",
+                "require_complete_parameter_mappings",
+            ],
+        )
+        .unwrap_or(false);
+        let policy = tool_unmapped_argument_policy(tool)?;
+        tool_body_mapping_mode(tool)?;
+        if policy == UnmappedArgumentPolicy::Body && !effective_http_method(tool).sends_json_body()
+        {
+            return Err(format!(
+                "tool `{}` cannot use unmappedArguments=body with {}",
+                tool.name,
+                effective_http_method(tool).as_str()
+            ));
+        }
+        if require_complete {
+            if tool.routing_properties_open_ended {
+                return Err(format!(
+                    "tool `{}` cannot require complete parameter mappings because inputSchema has open-ended root properties",
+                    tool.name
+                ));
+            }
+            let mapping = tool_parameter_mapping(tool);
+            let missing = tool
+                .routing_properties
+                .iter()
+                .filter(|name| !mapping.is_some_and(|mapping| mapping.contains_key(name.as_str())))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                return Err(format!(
+                    "tool `{}` requires mappings for reachable input properties: {}",
+                    tool.name,
+                    missing.join(", ")
+                ));
+            }
+        }
+        if policy == UnmappedArgumentPolicy::Reject && !tool.rejects_unmapped_arguments {
+            return Err(format!(
+                "tool `{}` cannot use unmappedArguments=reject unless inputSchema closes root properties with unevaluatedProperties=false or additionalProperties=false",
+                tool.name
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn tool_endpoint_id(tool: &McpToolConfig) -> Option<&str> {
@@ -11916,6 +12072,176 @@ endpointRules:
         );
     }
 
+    #[test]
+    fn runtime_enforces_complete_composed_parameter_mappings_and_closed_reject_policy() {
+        let mut tool = test_tool(
+            "composed",
+            "Composed input",
+            "https://example.com",
+            McpHttpMethod::Post,
+            None,
+            json!({
+                "type": "object",
+                "oneOf": [
+                    {"properties": {"eventType": {"type": "string"}}, "required": ["eventType"]},
+                    {"$ref": "#/$defs/person"}
+                ],
+                "$defs": {
+                    "person": {"properties": {"personId": {"type": "string"}}, "required": ["personId"]}
+                },
+                "unevaluatedProperties": false
+            }),
+        );
+        tool.tool_metadata = json!({
+            "routing": {
+                "parameters": {"eventType": "body"},
+                "requireCompleteParameterMappings": true,
+                "unmappedArguments": "reject"
+            }
+        });
+        let error = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![tool.clone()],
+            ..McpRouterConfig::default()
+        })
+        .expect_err("variant-only property must be mapped");
+        assert!(error.to_string().contains("personId"));
+
+        tool.tool_metadata["routing"]["parameters"]["personId"] = json!("body");
+        McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![tool],
+            ..McpRouterConfig::default()
+        })
+        .expect("complete composed mapping");
+    }
+
+    #[test]
+    fn complete_mapping_includes_properties_declared_by_if() {
+        let mut tool = test_tool(
+            "conditional",
+            "Conditional input",
+            "https://example.com",
+            McpHttpMethod::Post,
+            None,
+            json!({
+                "type": "object",
+                "if": {
+                    "properties": {"kind": {"type": "string"}},
+                    "required": ["kind"]
+                },
+                "then": {"properties": {"detail": {"type": "string"}}},
+                "unevaluatedProperties": false
+            }),
+        );
+        tool.tool_metadata = json!({
+            "routing": {
+                "parameters": {"detail": "body"},
+                "requireCompleteParameterMappings": true,
+                "unmappedArguments": "reject",
+                "bodyMappingMode": "fields"
+            }
+        });
+        let error = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![tool.clone()],
+            ..McpRouterConfig::default()
+        })
+        .expect_err("if-declared property must be mapped");
+        assert!(error.to_string().contains("kind"));
+
+        tool.tool_metadata["routing"]["parameters"]["kind"] = json!("body");
+        McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![tool],
+            ..McpRouterConfig::default()
+        })
+        .expect("complete conditional mapping");
+    }
+
+    #[test]
+    fn deployment_report_surfaces_routing_contract_failures() {
+        let mut tool = test_tool(
+            "incomplete",
+            "Incomplete mapping",
+            "https://example.com",
+            McpHttpMethod::Get,
+            None,
+            json!({
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+                "additionalProperties": false
+            }),
+        );
+        tool.tool_metadata = json!({
+            "routing": {"requireCompleteParameterMappings": true, "parameters": {}}
+        });
+        let report = validate_mcp_router_config_for_deployment(&McpRouterConfig {
+            tools: vec![tool],
+            ..McpRouterConfig::default()
+        });
+        assert!(!report.valid);
+        assert_eq!(report.errors[0].reason_code, "MCP_ROUTING_CONTRACT_INVALID");
+        assert_eq!(report.errors[0].json_pointer, "/toolMetadata/routing");
+        assert!(report.errors[0].reason.contains("q"));
+    }
+
+    #[test]
+    fn runtime_keeps_legacy_mapping_defaults_and_rejects_unsafe_strict_controls() {
+        let mut open = test_tool(
+            "open",
+            "Open input",
+            "https://example.com",
+            McpHttpMethod::Get,
+            None,
+            json!({"type": "object", "properties": {"q": {"type": "string"}}}),
+        );
+        McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![open.clone()],
+            ..McpRouterConfig::default()
+        })
+        .expect("legacy methodDefault remains valid");
+
+        open.tool_metadata = json!({"routing": {"unmappedArguments": "reject"}});
+        assert!(
+            McpRouterRuntime::new(McpRouterConfig {
+                tools: vec![open.clone()],
+                ..McpRouterConfig::default()
+            })
+            .expect_err("reject needs closed schema")
+            .to_string()
+            .contains("closes root properties")
+        );
+
+        open.input_schema = json!({
+            "type": "object",
+            "patternProperties": {"^x-": {"type": "string"}},
+            "unevaluatedProperties": false
+        });
+        open.tool_metadata = json!({"routing": {"requireCompleteParameterMappings": true}});
+        assert!(
+            McpRouterRuntime::new(McpRouterConfig {
+                tools: vec![open],
+                ..McpRouterConfig::default()
+            })
+            .expect_err("wildcard properties cannot be completely mapped")
+            .to_string()
+            .contains("open-ended root properties")
+        );
+    }
+
+    #[test]
+    #[ignore = "requires PHASE4_PORTAL_MCP_CONFIG from the cross-repository Phase 4 gate"]
+    fn phase4_portal_published_config_constructs_runtime() {
+        let path = std::env::var_os("PHASE4_PORTAL_MCP_CONFIG")
+            .expect("PHASE4_PORTAL_MCP_CONFIG must point to the Portal artifact");
+        let source = std::fs::read_to_string(path).expect("Phase 4 Portal MCP config");
+        let config = serde_yaml::from_str::<McpRouterConfig>(&source).expect("MCP router config");
+        let runtime = McpRouterRuntime::new(config).expect("Portal-published runtime");
+        assert_eq!(runtime.tools.len(), 1);
+        let tool = runtime.tools.values().next().expect("published tool");
+        assert_eq!(
+            tool.routing_properties.as_ref(),
+            ["eventType", "model", "personId"]
+        );
+    }
+
     #[tokio::test]
     async fn tool_call_rejects_protected_mapped_header() {
         let mut tool = test_tool(
@@ -12040,6 +12366,179 @@ endpointRules:
         );
         assert!(request.contains("cookie: session_cookie=session_val_xyz"));
         assert!(request.contains("{\"name\":\"Avery\"}"));
+    }
+
+    #[tokio::test]
+    async fn body_mapping_mode_preserves_legacy_whole_body_and_enables_named_fields() {
+        let (legacy_base, legacy_received) =
+            spawn_http_server(http_json_response(json!({"success": true}))).await;
+        let mut legacy = test_tool(
+            "legacyBody",
+            "Legacy whole body",
+            legacy_base.as_str(),
+            McpHttpMethod::Post,
+            None,
+            default_input_schema(),
+        );
+        legacy.tool_metadata = json!({
+            "runtime": {"allowPrivateTargetHost": true},
+            "routing": {"parameters": {"payload": "body"}}
+        });
+        let legacy_runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![legacy],
+            ..McpRouterConfig::default()
+        })
+        .expect("legacy runtime");
+        legacy_runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&legacy_runtime),
+                body: serde_json::to_vec(&json!({
+                    "jsonrpc":"2.0","id":1,"method":"tools/call",
+                    "params":{"name":"legacyBody","arguments":{"payload":{"name":"Avery"}}}
+                }))
+                .unwrap(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(
+            request_json_body(&legacy_received.await.expect("legacy request")),
+            json!({"name": "Avery"})
+        );
+
+        let (fields_base, fields_received) =
+            spawn_http_server(http_json_response(json!({"success": true}))).await;
+        let mut fields = test_tool(
+            "fieldBody",
+            "Named body fields",
+            fields_base.as_str(),
+            McpHttpMethod::Post,
+            None,
+            default_input_schema(),
+        );
+        fields.tool_metadata = json!({
+            "runtime": {"allowPrivateTargetHost": true},
+            "routing": {
+                "parameters": {"eventType": "body", "personId": "body"},
+                "bodyMappingMode": "fields"
+            }
+        });
+        let fields_runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![fields],
+            ..McpRouterConfig::default()
+        })
+        .expect("fields runtime");
+        fields_runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&fields_runtime),
+                body: serde_json::to_vec(&json!({
+                    "jsonrpc":"2.0","id":2,"method":"tools/call",
+                    "params":{"name":"fieldBody","arguments":{"eventType":"created","personId":"p-1","note":"n"}}
+                }))
+                .unwrap(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(
+            request_json_body(&fields_received.await.expect("fields request")),
+            json!({"eventType": "created", "personId": "p-1", "note": "n"})
+        );
+    }
+
+    #[tokio::test]
+    async fn unmapped_argument_policies_route_query_body_and_reject() {
+        let (query_base, query_received) =
+            spawn_http_server(http_json_response(json!({"success": true}))).await;
+        let mut query = test_tool(
+            "queryPolicy",
+            "Query policy",
+            query_base.as_str(),
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        );
+        query.tool_metadata = json!({
+            "runtime": {"allowPrivateTargetHost": true},
+            "routing": {"unmappedArguments": "query"}
+        });
+        let query_runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![query],
+            ..McpRouterConfig::default()
+        })
+        .expect("query runtime");
+        query_runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(), path: "/mcp".to_string(),
+                headers: accept_json_with_session(&query_runtime),
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"queryPolicy","arguments":{"q":"rust"}}}"#.to_vec(),
+            })
+            .await.expect("handle").expect("response");
+        let query_request = query_received.await.expect("query request");
+        assert!(query_request.starts_with("GET "));
+        assert!(query_request.contains("q=rust"));
+
+        let (body_base, body_received) =
+            spawn_http_server(http_json_response(json!({"success": true}))).await;
+        let mut body = test_tool(
+            "bodyPolicy",
+            "Body policy",
+            body_base.as_str(),
+            McpHttpMethod::Post,
+            None,
+            default_input_schema(),
+        );
+        body.tool_metadata = json!({
+            "runtime": {"allowPrivateTargetHost": true},
+            "routing": {"unmappedArguments": "body"}
+        });
+        let body_runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![body],
+            ..McpRouterConfig::default()
+        })
+        .expect("body runtime");
+        body_runtime.handle_request(McpHttpRequest {
+            method: "POST".to_string(), path: "/mcp".to_string(),
+            headers: accept_json_with_session(&body_runtime),
+            body: br#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"bodyPolicy","arguments":{"q":"rust"}}}"#.to_vec(),
+        }).await.expect("handle").expect("response");
+        assert_eq!(
+            request_json_body(&body_received.await.expect("body request")),
+            json!({"q":"rust"})
+        );
+
+        let mut reject = test_tool(
+            "rejectPolicy",
+            "Reject policy",
+            "https://example.com",
+            McpHttpMethod::Post,
+            None,
+            json!({"type":"object","properties":{"known":{"type":"string"}},"additionalProperties":false}),
+        );
+        reject.tool_metadata = json!({"routing": {"unmappedArguments": "reject"}});
+        let reject_runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![reject],
+            ..McpRouterConfig::default()
+        })
+        .expect("reject runtime");
+        let response = reject_runtime.handle_request(McpHttpRequest {
+            method: "POST".to_string(), path: "/mcp".to_string(),
+            headers: accept_json_with_session(&reject_runtime),
+            body: br#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"rejectPolicy","arguments":{"known":"value"}}}"#.to_vec(),
+        }).await.expect("handle").expect("response");
+        let value: JsonValue =
+            serde_json::from_slice(response.body.buffered().expect("body")).expect("json");
+        assert_eq!(value["error"]["code"], -32602);
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("has no routing parameter mapping")
+        );
     }
 
     #[tokio::test]
