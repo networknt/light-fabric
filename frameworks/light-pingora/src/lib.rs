@@ -90,8 +90,8 @@ pub use mcp::{
     McpDiscoveryResolver, McpHttpMethod, McpHttpRequest, McpHttpResponse, McpLegacyProtocolConfig,
     McpProtocolsConfig, McpRequestContext, McpResponseBody, McpResponseStream, McpRouterConfig,
     McpRouterRuntime, McpSchemaMetricsSnapshot, McpStatelessProtocolConfig, McpToolConfig,
-    McpToolType, load_mcp_router_runtime, validate_mcp_router_config_for_deployment,
-    validate_mcp_router_runtime_config,
+    McpToolType, load_mcp_router_runtime, record_mcp_router_reload_rejection,
+    validate_mcp_router_config_for_deployment, validate_mcp_router_runtime_config,
 };
 pub use metrics::{
     METRICS_CONFIG_NAME, METRICS_FILE, METRICS_MODULE_ID, MetricCounts, MetricsConfig,

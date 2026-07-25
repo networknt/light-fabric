@@ -78,6 +78,21 @@ const MAX_MCP_ERROR_RESPONSE_BYTES: usize = 2 * 1024;
 const MAX_MCP_ERROR_MESSAGE_BYTES: usize = 1024;
 static MCP_SCHEMA_PREPARATION_ACCEPTED: AtomicU64 = AtomicU64::new(0);
 static MCP_SCHEMA_PREPARATION_REJECTED: AtomicU64 = AtomicU64::new(0);
+static MCP_ROUTER_RELOAD_REJECTED: AtomicU64 = AtomicU64::new(0);
+static MCP_ROUTER_LAST_KNOWN_GOOD_RETAINED: AtomicU64 = AtomicU64::new(0);
+
+pub fn record_mcp_router_reload_rejection(last_known_good_retained: bool) {
+    MCP_ROUTER_RELOAD_REJECTED.fetch_add(1, Ordering::Relaxed);
+    if last_known_good_retained {
+        MCP_ROUTER_LAST_KNOWN_GOOD_RETAINED.fetch_add(1, Ordering::Relaxed);
+    }
+    tracing::warn!(
+        target: "light_pingora::mcp_schema",
+        outcome = "reload_rejected",
+        lastKnownGoodRetained = last_known_good_retained,
+        "MCP router configuration reload rejected"
+    );
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1311,9 +1326,11 @@ pub struct McpRouterRuntime {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-/// Snapshot with two explicit lifetimes: preparation and watchdog counters are
-/// process-global, while validation and output-fallback counters belong to the
-/// current MCP runtime revision and reset after a successful replacement.
+/// Snapshot with two explicit lifetimes: preparation, watchdog, and router
+/// reload counters are process-global, while validation latency/outcomes and
+/// output-fallback counters belong to the current MCP runtime revision and
+/// reset after a successful replacement. Validation duration includes
+/// admission and worker-queue time, not only JSON Schema evaluation time.
 pub struct McpSchemaMetricsSnapshot {
     /// Process-global accepted preparation attempts, including reload candidates.
     pub preparation_accepted: u64,
@@ -1324,11 +1341,20 @@ pub struct McpSchemaMetricsSnapshot {
     pub validations_invalid: u64,
     pub validations_overloaded: u64,
     pub validations_worker_failed: u64,
+    pub validation_duration_count: u64,
+    pub validation_duration_total_micros: u64,
+    pub validation_duration_max_micros: u64,
     pub output_fallback_attempted: u64,
     pub output_fallback_succeeded: u64,
     pub output_fallback_failed: u64,
     /// Process-global observational watchdog exceedances.
     pub validation_watchdog_exceeded: u64,
+    /// Process-global MCP router candidate load failures, including IO, parse,
+    /// schema, and routing errors.
+    pub router_reload_rejected: u64,
+    /// Process-global rejected router candidates for which the active MCP
+    /// runtime remained available.
+    pub router_last_known_good_retained: u64,
 }
 
 #[derive(Default)]
@@ -1337,13 +1363,16 @@ struct McpSchemaRuntimeMetrics {
     validations_invalid: AtomicU64,
     validations_overloaded: AtomicU64,
     validations_worker_failed: AtomicU64,
+    validation_duration_count: AtomicU64,
+    validation_duration_total_micros: AtomicU64,
+    validation_duration_max_micros: AtomicU64,
     output_fallback_attempted: AtomicU64,
     output_fallback_succeeded: AtomicU64,
     output_fallback_failed: AtomicU64,
 }
 
 impl McpSchemaRuntimeMetrics {
-    fn record_validation(&self, outcome: &ValidationOutcome) {
+    fn record_validation(&self, outcome: &ValidationOutcome, elapsed: Duration) {
         let counter = match outcome {
             ValidationOutcome::Valid => &self.validations_valid,
             ValidationOutcome::Invalid(_) => &self.validations_invalid,
@@ -1351,6 +1380,13 @@ impl McpSchemaRuntimeMetrics {
             ValidationOutcome::WorkerFailed => &self.validations_worker_failed,
         };
         counter.fetch_add(1, Ordering::Relaxed);
+        let elapsed_micros = u64::try_from(elapsed.as_micros().max(1)).unwrap_or(u64::MAX);
+        self.validation_duration_count
+            .fetch_add(1, Ordering::Relaxed);
+        self.validation_duration_total_micros
+            .fetch_add(elapsed_micros, Ordering::Relaxed);
+        self.validation_duration_max_micros
+            .fetch_max(elapsed_micros, Ordering::Relaxed);
     }
 
     fn snapshot(&self) -> McpSchemaMetricsSnapshot {
@@ -1361,10 +1397,20 @@ impl McpSchemaRuntimeMetrics {
             validations_invalid: self.validations_invalid.load(Ordering::Relaxed),
             validations_overloaded: self.validations_overloaded.load(Ordering::Relaxed),
             validations_worker_failed: self.validations_worker_failed.load(Ordering::Relaxed),
+            validation_duration_count: self.validation_duration_count.load(Ordering::Relaxed),
+            validation_duration_total_micros: self
+                .validation_duration_total_micros
+                .load(Ordering::Relaxed),
+            validation_duration_max_micros: self
+                .validation_duration_max_micros
+                .load(Ordering::Relaxed),
             output_fallback_attempted: self.output_fallback_attempted.load(Ordering::Relaxed),
             output_fallback_succeeded: self.output_fallback_succeeded.load(Ordering::Relaxed),
             output_fallback_failed: self.output_fallback_failed.load(Ordering::Relaxed),
             validation_watchdog_exceeded: validation_watchdog_exceeded_count(),
+            router_reload_rejected: MCP_ROUTER_RELOAD_REJECTED.load(Ordering::Relaxed),
+            router_last_known_good_retained: MCP_ROUTER_LAST_KNOWN_GOOD_RETAINED
+                .load(Ordering::Relaxed),
         }
     }
 }
@@ -1601,8 +1647,9 @@ impl McpRouterRuntime {
         tool_name: &str,
         schema_kind: &'static str,
         outcome: &ValidationOutcome,
+        elapsed: Duration,
     ) {
-        self.schema_metrics.record_validation(outcome);
+        self.schema_metrics.record_validation(outcome, elapsed);
         let (outcome_name, failing_keyword) = match outcome {
             ValidationOutcome::Valid => ("valid", "none"),
             ValidationOutcome::Invalid(diagnostics) => (
@@ -1626,6 +1673,7 @@ impl McpRouterRuntime {
             schemaKind = schema_kind,
             outcome = outcome_name,
             failingKeyword = failing_keyword,
+            durationMicros = u64::try_from(elapsed.as_micros().max(1)).unwrap_or(u64::MAX),
             "MCP schema validation outcome"
         );
     }
@@ -3308,6 +3356,7 @@ impl McpRouterRuntime {
             });
         }
 
+        let input_validation_started = Instant::now();
         let input_validation = self
             .schema_validation
             .validate_with_schema(
@@ -3316,7 +3365,12 @@ impl McpRouterRuntime {
                 arguments.clone(),
             )
             .await;
-        self.record_schema_validation(&tool.name, "input", &input_validation);
+        self.record_schema_validation(
+            &tool.name,
+            "input",
+            &input_validation,
+            input_validation_started.elapsed(),
+        );
         match input_validation {
             ValidationOutcome::Valid => {}
             ValidationOutcome::Invalid(diagnostics) => {
@@ -3504,6 +3558,7 @@ impl McpRouterRuntime {
                     return Ok(result);
                 };
                 let output_schema = tool.output_schema_for_validation.as_ref().map(Arc::clone);
+                let wrapper_validation_started = Instant::now();
                 let wrapper_validation = self
                     .schema_validation
                     .validate_with_schema(
@@ -3512,7 +3567,12 @@ impl McpRouterRuntime {
                         structured_content.clone(),
                     )
                     .await;
-                self.record_schema_validation(&tool.name, "output", &wrapper_validation);
+                self.record_schema_validation(
+                    &tool.name,
+                    "output",
+                    &wrapper_validation,
+                    wrapper_validation_started.elapsed(),
+                );
                 let validation = if matches!(wrapper_validation, ValidationOutcome::Invalid(_))
                     && let Some(items) = structured_content
                         .as_object()
@@ -3524,11 +3584,17 @@ impl McpRouterRuntime {
                     self.schema_metrics
                         .output_fallback_attempted
                         .fetch_add(1, Ordering::Relaxed);
+                    let fallback_started = Instant::now();
                     let fallback = self
                         .schema_validation
                         .validate_with_schema(Arc::clone(validator), output_schema, items.clone())
                         .await;
-                    self.record_schema_validation(&tool.name, "output_fallback", &fallback);
+                    self.record_schema_validation(
+                        &tool.name,
+                        "output_fallback",
+                        &fallback,
+                        fallback_started.elapsed(),
+                    );
                     match fallback {
                         ValidationOutcome::Valid => {
                             self.schema_metrics
@@ -10831,7 +10897,20 @@ endpointRules:
         assert_eq!(metrics.output_fallback_attempted, 1);
         assert_eq!(metrics.output_fallback_succeeded, 1);
         assert_eq!(metrics.output_fallback_failed, 0);
+        assert_eq!(metrics.validation_duration_count, 3);
+        assert!(metrics.validation_duration_total_micros >= 3);
+        assert!(metrics.validation_duration_max_micros >= 1);
         received.await.expect("backend request");
+    }
+
+    #[test]
+    fn schema_metrics_record_rejected_reload_and_last_known_good_retention() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        let before = runtime.schema_metrics();
+        record_mcp_router_reload_rejection(true);
+        let after = runtime.schema_metrics();
+        assert!(after.router_reload_rejected > before.router_reload_rejected);
+        assert!(after.router_last_known_good_retained > before.router_last_known_good_retained);
     }
 
     #[tokio::test]

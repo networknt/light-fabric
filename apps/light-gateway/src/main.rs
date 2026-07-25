@@ -28,8 +28,9 @@ use light_pingora::{
     load_pii_tokenization_runtime, load_proxy_route, load_rate_limit_runtime, load_router_route,
     load_security_runtime, load_stateless_auth_runtime, load_static_resources, load_token_runtime,
     load_unified_security_config, load_websocket_router_runtime_with_policy,
-    merge_extra_response_headers, select_router_target, validate_mcp_router_runtime_config,
-    verify_api_key, verify_basic_auth, verify_jwt_request, verify_unified_security,
+    merge_extra_response_headers, record_mcp_router_reload_rejection, select_router_target,
+    validate_mcp_router_runtime_config, verify_api_key, verify_basic_auth, verify_jwt_request,
+    verify_unified_security,
 };
 use light_runtime::{
     CacheRegistry, ConfigManager, LightRuntimeBuilder, ModuleKind, ReloadContext, ReloadOutcome,
@@ -1526,6 +1527,13 @@ impl GatewayProxy {
             ctx.correlation.correlation_id.clone(),
         );
         let counts = self.metrics_recorder.record(status);
+        let mcp_schema = self
+            .mcp_router
+            .load()
+            .as_ref()
+            .as_ref()
+            .map(McpRouterRuntime::schema_metrics)
+            .unwrap_or_default();
         ctx.metrics_recorded = true;
 
         info!(
@@ -1542,6 +1550,21 @@ impl GatewayProxy {
             authErrorCount = counts.auth_error,
             requestErrorCount = counts.request_error,
             serverErrorCount = counts.server_error,
+            mcpSchemaPreparationAccepted = mcp_schema.preparation_accepted,
+            mcpSchemaPreparationRejected = mcp_schema.preparation_rejected,
+            mcpSchemaValidationsValid = mcp_schema.validations_valid,
+            mcpSchemaValidationsInvalid = mcp_schema.validations_invalid,
+            mcpSchemaValidationsOverloaded = mcp_schema.validations_overloaded,
+            mcpSchemaValidationsWorkerFailed = mcp_schema.validations_worker_failed,
+            mcpSchemaValidationDurationCount = mcp_schema.validation_duration_count,
+            mcpSchemaValidationDurationTotalMicros = mcp_schema.validation_duration_total_micros,
+            mcpSchemaValidationDurationMaxMicros = mcp_schema.validation_duration_max_micros,
+            mcpSchemaOutputFallbackAttempted = mcp_schema.output_fallback_attempted,
+            mcpSchemaOutputFallbackSucceeded = mcp_schema.output_fallback_succeeded,
+            mcpSchemaOutputFallbackFailed = mcp_schema.output_fallback_failed,
+            mcpSchemaWatchdogExceeded = mcp_schema.validation_watchdog_exceeded,
+            mcpRouterReloadRejected = mcp_schema.router_reload_rejected,
+            mcpRouterLastKnownGoodRetained = mcp_schema.router_last_known_good_retained,
             "request metrics"
         );
     }
@@ -4767,7 +4790,13 @@ fn load_mcp_router_runtime_preserving_state(
     current: &ConfigManager<Option<McpRouterRuntime>>,
 ) -> Result<Option<McpRouterRuntime>, RuntimeError> {
     let previous = current.load();
-    let mut runtime = load_mcp_router_runtime(runtime_config, active)?;
+    let mut runtime = match load_mcp_router_runtime(runtime_config, active) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            record_mcp_router_reload_rejection(previous.as_ref().is_some());
+            return Err(error);
+        }
+    };
     if let Some(runtime) = runtime.as_mut()
         && let Some(previous) = previous.as_ref().as_ref()
     {
@@ -4957,6 +4986,69 @@ mod tests {
         );
         assert!(parse_gateway_command(["validate-cfg"]).is_err());
         assert!(parse_gateway_command(["validate-config", "--unknown"]).is_err());
+    }
+
+    #[test]
+    fn rejected_mcp_candidate_records_whether_last_known_good_was_retained() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        std::fs::write(
+            config_dir.path().join("mcp-router.yml"),
+            r#"
+enabled: true
+tools:
+  - name: broken
+    targetHost: https://example.com
+    inputSchema:
+      type: object
+      $ref: '#/$defs/missing'
+"#,
+        )
+        .expect("invalid MCP config fixture");
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+
+        let current = ConfigManager::new(Some(
+            McpRouterRuntime::new(Default::default()).expect("last-known-good MCP runtime"),
+        ));
+        let before = current
+            .load()
+            .as_ref()
+            .as_ref()
+            .expect("active runtime")
+            .schema_metrics();
+        assert!(load_mcp_router_runtime_preserving_state(&config, true, &current).is_err());
+        let retained = current
+            .load()
+            .as_ref()
+            .as_ref()
+            .expect("failed candidate must not replace the active runtime")
+            .schema_metrics();
+        assert!(retained.router_reload_rejected > before.router_reload_rejected);
+        assert!(retained.router_last_known_good_retained > before.router_last_known_good_retained);
+
+        let empty = ConfigManager::new(None);
+        let before_without_previous = current
+            .load()
+            .as_ref()
+            .as_ref()
+            .expect("active runtime")
+            .schema_metrics();
+        assert!(load_mcp_router_runtime_preserving_state(&config, true, &empty).is_err());
+        assert!(empty.load().as_ref().is_none());
+        let without_previous = current
+            .load()
+            .as_ref()
+            .as_ref()
+            .expect("active runtime")
+            .schema_metrics();
+        assert!(without_previous.router_reload_rejected > retained.router_reload_rejected);
+        assert_eq!(
+            without_previous
+                .router_last_known_good_retained
+                .saturating_sub(before_without_previous.router_last_known_good_retained),
+            0,
+            "a rejected candidate cannot retain a runtime that did not exist"
+        );
     }
 
     #[test]
