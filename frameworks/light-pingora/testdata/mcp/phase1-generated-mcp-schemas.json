@@ -1,0 +1,59 @@
+{
+  "contractVersion" : "1.2.0",
+  "tools" : [ {
+    "name" : "getHealth",
+    "method" : "get",
+    "inputSchema" : {
+      "$schema" : "https://json-schema.org/draft/2020-12/schema",
+      "type" : "object",
+      "properties" : { },
+      "additionalProperties" : false
+    }
+  }, {
+    "name" : "getPet",
+    "method" : "get",
+    "inputSchema" : {
+      "$schema" : "https://json-schema.org/draft/2020-12/schema",
+      "type" : "object",
+      "properties" : {
+        "petId" : {
+          "type" : "string"
+        },
+        "limit" : {
+          "type" : "integer"
+        },
+        "X-Trace-Id" : {
+          "type" : "string"
+        },
+        "session" : {
+          "type" : "string"
+        }
+      },
+      "required" : [ "petId" ],
+      "additionalProperties" : false
+    }
+  }, {
+    "name" : "createPet",
+    "method" : "post",
+    "inputSchema" : {
+      "$schema" : "https://json-schema.org/draft/2020-12/schema",
+      "type" : "object",
+      "allOf" : [ {
+        "type" : "object",
+        "properties" : {
+          "name" : {
+            "type" : "string"
+          }
+        },
+        "required" : [ "name" ]
+      }, {
+        "type" : "object",
+        "properties" : {
+          "tag" : {
+            "type" : "string"
+          }
+        }
+      } ]
+    }
+  } ]
+}

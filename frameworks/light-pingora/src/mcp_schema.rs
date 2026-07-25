@@ -278,12 +278,26 @@ fn compile_schema(
     tool_name: &str,
 ) -> Result<Validator, String> {
     preflight_schema(schema, config, tool_name)?;
-    if matches!(root, SchemaRoot::InputObject)
-        && !has_object_root(schema, schema, &mut BTreeSet::new())
-    {
-        return Err(format!(
-            "mcp-router tool `{tool_name}` inputSchema must have object root type"
-        ));
+    if matches!(root, SchemaRoot::InputObject) {
+        match schema {
+            JsonValue::Object(_) => {}
+            JsonValue::Bool(_) => {
+                return Err(format!(
+                    "mcp-router tool `{tool_name}` inputSchema boolean schemas are not supported; declare root `type: object`"
+                ));
+            }
+            value => {
+                return Err(format!(
+                    "mcp-router tool `{tool_name}` inputSchema must be a JSON object schema document; found {}",
+                    json_value_kind(value)
+                ));
+            }
+        }
+        if !has_object_root(schema, schema, &mut BTreeSet::new()) {
+            return Err(format!(
+                "mcp-router tool `{tool_name}` inputSchema must declare root `type: object`; allOf, anyOf, oneOf, conditionals, and local references may be used alongside it"
+            ));
+        }
     }
     jsonschema::draft202012::options()
         .with_pattern_options(
@@ -295,6 +309,17 @@ fn compile_schema(
         .map_err(|error| {
             format!("mcp-router tool `{tool_name}` schema compilation failed: {error}")
         })
+}
+
+fn json_value_kind(value: &JsonValue) -> &'static str {
+    match value {
+        JsonValue::Null => "null",
+        JsonValue::Bool(_) => "boolean",
+        JsonValue::Number(_) => "number",
+        JsonValue::String(_) => "string",
+        JsonValue::Array(_) => "array",
+        JsonValue::Object(_) => "object",
+    }
 }
 
 fn has_object_root(
@@ -722,6 +747,95 @@ mod tests {
             assert!(
                 prepare_tools(&[tool(input, None)], &McpSchemaConfig::default(), false).is_err()
             );
+        }
+    }
+
+    #[test]
+    fn input_schema_startup_errors_distinguish_document_shape_and_root_contract() {
+        for (input, kind) in [
+            (json!(""), "string"),
+            (json!(1), "number"),
+            (json!([]), "array"),
+            (JsonValue::Null, "null"),
+        ] {
+            let error = prepare_tools(&[tool(input, None)], &McpSchemaConfig::default(), false)
+                .expect_err("non-object schema document must fail");
+            assert!(
+                error.contains(&format!(
+                    "inputSchema must be a JSON object schema document; found {kind}"
+                )),
+                "unexpected error: {error}"
+            );
+        }
+
+        for input in [json!(true), json!(false)] {
+            let error = prepare_tools(&[tool(input, None)], &McpSchemaConfig::default(), false)
+                .expect_err("boolean input schema must fail");
+            assert!(
+                error.contains("inputSchema boolean schemas are not supported"),
+                "unexpected error: {error}"
+            );
+        }
+
+        let error = prepare_tools(
+            &[tool(
+                json!({
+                    "$schema":"https://json-schema.org/draft/2020-12/schema",
+                    "allOf":[{"type":"object"}]
+                }),
+                None,
+            )],
+            &McpSchemaConfig::default(),
+            false,
+        )
+        .expect_err("composition-only root must fail");
+        assert!(error.contains("must declare root `type: object`"));
+        assert!(error.contains("allOf, anyOf, oneOf, conditionals, and local references"));
+    }
+
+    #[test]
+    fn object_root_accepts_composition_siblings() {
+        let prepared = prepare_tools(
+            &[tool(
+                json!({
+                    "$schema":"https://json-schema.org/draft/2020-12/schema",
+                    "type":"object",
+                    "allOf":[
+                        {"properties":{"name":{"type":"string"}},"required":["name"]},
+                        {"properties":{"tag":{"type":"string"}}}
+                    ]
+                }),
+                None,
+            )],
+            &McpSchemaConfig::default(),
+            false,
+        )
+        .expect("object root with composition must compile");
+        let validator = &prepared["test.tool"].input_validator;
+        assert!(validator.is_valid(&json!({"name":"Ada"})));
+        assert!(!validator.is_valid(&json!({"tag":"friend"})));
+    }
+
+    #[test]
+    fn portal_phase1_generated_schemas_compile() {
+        let fixture = std::env::var_os("PORTAL_PHASE1_SCHEMA_ARTIFACT").map_or_else(
+            || include_str!("../testdata/mcp/phase1-generated-mcp-schemas.json").to_string(),
+            |path| std::fs::read_to_string(path).expect("read Portal Phase 1 schema artifact"),
+        );
+        let artifact: JsonValue = serde_json::from_str(&fixture).expect("parse Portal artifact");
+        assert_eq!(artifact["contractVersion"], "1.2.0");
+        let tools = artifact["tools"].as_array().expect("tools array");
+        assert_eq!(tools.len(), 3);
+        for generated in tools {
+            let name = generated["name"].as_str().expect("tool name");
+            let schema = &generated["inputSchema"];
+            compile_schema(
+                schema,
+                &McpSchemaConfig::default(),
+                SchemaRoot::InputObject,
+                name,
+            )
+            .unwrap_or_else(|error| panic!("Portal schema for {name} must compile: {error}"));
         }
     }
 

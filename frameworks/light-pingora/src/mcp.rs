@@ -7697,6 +7697,110 @@ tools:
     }
 
     #[test]
+    fn configured_schema_preserves_explicit_get_and_legacy_call_inference() {
+        let explicit_get = test_tool(
+            "explicit-get",
+            "Explicit GET",
+            "https://example.com",
+            McpHttpMethod::Get,
+            None,
+            json!({"type":"object","properties":{},"additionalProperties":false}),
+        );
+        assert_eq!(effective_http_method(&explicit_get), McpHttpMethod::Get);
+
+        let configured_call = test_tool(
+            "configured-call",
+            "Configured CALL",
+            "https://example.com",
+            McpHttpMethod::Call,
+            None,
+            json!({"type":"object","properties":{},"additionalProperties":false}),
+        );
+        assert_eq!(effective_http_method(&configured_call), McpHttpMethod::Post);
+
+        let mut omitted_call = configured_call;
+        omitted_call.input_schema_configured = false;
+        assert_eq!(effective_http_method(&omitted_call), McpHttpMethod::Get);
+    }
+
+    #[tokio::test]
+    async fn no_argument_get_accepts_omitted_arguments_and_rejects_null() {
+        let response = http_json_response(json!({"ok": true}));
+        let (base, received) = spawn_http_sequence_server(vec![response.clone(), response]).await;
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![test_tool(
+                "noArgs",
+                "No arguments",
+                base.as_str(),
+                McpHttpMethod::Get,
+                None,
+                json!({
+                    "$schema":"https://json-schema.org/draft/2020-12/schema",
+                    "type":"object",
+                    "properties":{},
+                    "additionalProperties":false
+                }),
+            )],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let omitted = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body:
+                    br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"noArgs"}}"#
+                        .to_vec(),
+            })
+            .await
+            .expect("handle omitted arguments")
+            .expect("omitted response");
+        assert_eq!(omitted.status, 200);
+
+        let empty = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"noArgs","arguments":{}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle empty arguments")
+            .expect("empty response");
+        assert_eq!(empty.status, 200);
+        let requests = received.await.expect("backend requests");
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.starts_with("GET /weather HTTP/1.1"))
+        );
+
+        let null = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"noArgs","arguments":null}}"#.to_vec(),
+            })
+            .await
+            .expect("handle null arguments")
+            .expect("null response");
+        let body = serde_json::from_slice::<JsonValue>(
+            null.body.buffered().expect("buffered null response"),
+        )
+        .expect("null response body");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .expect("error message")
+                .contains("tools/call params.arguments must be an object")
+        );
+    }
+
+    #[test]
     fn runtime_rejects_duplicate_tool_names() {
         let config = serde_yaml::from_str::<McpRouterConfig>(
             r#"
