@@ -5,6 +5,7 @@ use serde_json::Value as JsonValue;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Deref;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 use tokio::sync::{Semaphore, oneshot};
@@ -13,11 +14,14 @@ pub(crate) const DIALECT_2020_12: &str = "https://json-schema.org/draft/2020-12/
 const DEFAULT_MAX_SCHEMA_BYTES: usize = 1_048_576;
 const DEFAULT_MAX_SCHEMA_DEPTH: usize = 64;
 const DEFAULT_MAX_SUBSCHEMAS: usize = 4_096;
+const DEFAULT_MAX_COMPOSITION_BRANCHES: usize = 256;
+const DEFAULT_MAX_SCHEMA_GRAPH_VISITS: usize = 4_096;
 const DEFAULT_MAX_CONCURRENT_VALIDATIONS: usize = 32;
 const DEFAULT_VALIDATION_WATCHDOG_MS: u64 = 50;
 const REGEX_SIZE_LIMIT_BYTES: usize = 1_048_576;
 const REGEX_DFA_SIZE_LIMIT_BYTES: usize = 1_048_576;
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+static VALIDATION_WATCHDOG_EXCEEDED: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,6 +36,10 @@ pub struct McpSchemaConfig {
     pub max_depth: usize,
     #[serde(default = "default_max_subschemas")]
     pub max_subschemas: usize,
+    #[serde(default = "default_max_composition_branches")]
+    pub max_composition_branches: usize,
+    #[serde(default = "default_max_schema_graph_visits")]
+    pub max_schema_graph_visits: usize,
     #[serde(default = "default_max_concurrent_validations")]
     pub max_concurrent_validations: usize,
     #[serde(
@@ -49,11 +57,88 @@ impl Default for McpSchemaConfig {
             max_schema_bytes: default_max_schema_bytes(),
             max_depth: default_max_schema_depth(),
             max_subschemas: default_max_subschemas(),
+            max_composition_branches: default_max_composition_branches(),
+            max_schema_graph_visits: default_max_schema_graph_visits(),
             max_concurrent_validations: default_max_concurrent_validations(),
             validation_watchdog_ms: default_validation_watchdog_ms(),
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SchemaKind {
+    Input,
+    Output,
+    Configuration,
+}
+
+impl SchemaKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Input => "inputSchema",
+            Self::Output => "outputSchema",
+            Self::Configuration => "configuration",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SchemaPreparationError {
+    pub tool_name: String,
+    pub schema_kind: SchemaKind,
+    pub json_pointer: String,
+    pub reason_code: &'static str,
+    pub reason: String,
+}
+
+impl SchemaPreparationError {
+    fn new(
+        tool_name: impl Into<String>,
+        schema_kind: SchemaKind,
+        json_pointer: impl Into<String>,
+        reason_code: &'static str,
+        reason: impl Into<String>,
+    ) -> Self {
+        let json_pointer = json_pointer.into();
+        Self {
+            tool_name: tool_name.into(),
+            schema_kind,
+            json_pointer: if json_pointer.is_empty() {
+                "/".to_string()
+            } else {
+                json_pointer
+            },
+            reason_code,
+            reason: reason.into(),
+        }
+    }
+
+    fn configuration(reason_code: &'static str, reason: impl Into<String>) -> Self {
+        Self::new(
+            "<configuration>",
+            SchemaKind::Configuration,
+            "/",
+            reason_code,
+            reason,
+        )
+    }
+}
+
+impl std::fmt::Display for SchemaPreparationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "mcp-router tool `{}` {} at `{}` [{}]: {}",
+            self.tool_name,
+            self.schema_kind.as_str(),
+            self.json_pointer,
+            self.reason_code,
+            self.reason
+        )
+    }
+}
+
+impl std::error::Error for SchemaPreparationError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HeaderValueKind {
@@ -73,7 +158,11 @@ pub(crate) struct HeaderExtraction {
 pub(crate) struct PreparedMcpTool {
     pub config: McpToolConfig,
     pub input_validator: Arc<Validator>,
+    pub input_schema_for_validation: Arc<JsonValue>,
+    pub advertised_input_schema: JsonValue,
     pub output_validator: Option<Arc<Validator>>,
+    pub output_schema_for_validation: Option<Arc<JsonValue>>,
+    pub advertised_output_schema: Option<JsonValue>,
     pub header_extractions: Arc<[HeaderExtraction]>,
 }
 
@@ -111,6 +200,7 @@ pub(crate) enum ValidationOutcome {
 
 struct ValidationJob {
     validator: Arc<Validator>,
+    schema: Option<Arc<JsonValue>>,
     instance: JsonValue,
     response: oneshot::Sender<ValidationOutcome>,
     _permit: tokio::sync::OwnedSemaphorePermit,
@@ -149,9 +239,10 @@ impl SchemaValidationPool {
         })
     }
 
-    pub async fn validate(
+    pub async fn validate_with_schema(
         &self,
         validator: Arc<Validator>,
+        schema: Option<Arc<JsonValue>>,
         instance: JsonValue,
     ) -> ValidationOutcome {
         let Ok(permit) = Arc::clone(&self.admission).try_acquire_owned() else {
@@ -160,6 +251,7 @@ impl SchemaValidationPool {
         let (response, result) = oneshot::channel();
         let job = ValidationJob {
             validator,
+            schema,
             instance,
             response,
             _permit: permit,
@@ -184,30 +276,43 @@ fn validation_worker(receiver: Arc<Mutex<mpsc::Receiver<ValidationJob>>>, watchd
         };
         let ValidationJob {
             validator,
+            schema,
             instance,
             response,
             _permit,
         } = job;
         let started = Instant::now();
         let outcome = catch_unwind(AssertUnwindSafe(|| {
-            let diagnostics = validator
-                .iter_errors(&instance)
-                .take(3)
-                .map(|error| SchemaDiagnostic {
-                    path: bounded(error.instance_path().to_string(), 256),
-                    constraint: bounded(
-                        error
-                            .schema_path()
-                            .to_string()
-                            .rsplit('/')
-                            .next()
-                            .filter(|value| !value.is_empty())
-                            .unwrap_or("schema")
-                            .to_string(),
-                        64,
-                    ),
-                })
-                .collect::<Vec<_>>();
+            let mut diagnostics = Vec::new();
+            let mut error_schema_paths = Vec::new();
+            for error in validator.iter_errors(&instance).take(16) {
+                error_schema_paths.push(error.schema_path().to_string());
+                if diagnostics.len() < 3 {
+                    diagnostics.push(SchemaDiagnostic {
+                        path: bounded(error.instance_path().to_string(), 256),
+                        constraint: bounded(
+                            error
+                                .schema_path()
+                                .to_string()
+                                .rsplit('/')
+                                .next()
+                                .filter(|value| !value.is_empty())
+                                .unwrap_or("schema")
+                                .to_string(),
+                            64,
+                        ),
+                    });
+                }
+            }
+            if let Some(schema) = schema.as_deref() {
+                prepend_composition_diagnostic(
+                    schema,
+                    &instance,
+                    &error_schema_paths,
+                    &mut diagnostics,
+                );
+                diagnostics.truncate(3);
+            }
             if diagnostics.is_empty() {
                 ValidationOutcome::Valid
             } else {
@@ -217,6 +322,7 @@ fn validation_worker(receiver: Arc<Mutex<mpsc::Receiver<ValidationJob>>>, watchd
         .unwrap_or(ValidationOutcome::WorkerFailed);
         drop(_permit);
         if started.elapsed() > watchdog {
+            VALIDATION_WATCHDOG_EXCEEDED.fetch_add(1, Ordering::Relaxed);
             tracing::warn!(
                 target: "light_pingora::mcp",
                 elapsed_ms = started.elapsed().as_millis(),
@@ -228,42 +334,231 @@ fn validation_worker(receiver: Arc<Mutex<mpsc::Receiver<ValidationJob>>>, watchd
     }
 }
 
+pub(crate) fn validation_watchdog_exceeded_count() -> u64 {
+    VALIDATION_WATCHDOG_EXCEEDED.load(Ordering::Relaxed)
+}
+
+fn prepend_composition_diagnostic(
+    schema: &JsonValue,
+    instance: &JsonValue,
+    error_schema_paths: &[String],
+    diagnostics: &mut Vec<SchemaDiagnostic>,
+) {
+    let Some((keyword, branches, node)) = first_failing_composition(schema, error_schema_paths)
+    else {
+        return;
+    };
+    let mut composition = SchemaDiagnostic {
+        path: String::new(),
+        constraint: bounded(format!("{keyword} ({branches} branches)"), 64),
+    };
+    if let Some((path, constraint)) = matching_discriminator_requirement(node, instance) {
+        composition.path = path;
+        diagnostics.insert(
+            0,
+            SchemaDiagnostic {
+                path: composition.path.clone(),
+                constraint,
+            },
+        );
+    }
+    diagnostics.insert(0, composition);
+}
+
+fn first_failing_composition<'a>(
+    schema: &'a JsonValue,
+    error_schema_paths: &[String],
+) -> Option<(&'static str, usize, &'a JsonValue)> {
+    for path in error_schema_paths {
+        for keyword in ["oneOf", "anyOf", "allOf"] {
+            let marker = format!("/{keyword}");
+            let mut search_from = 0;
+            while let Some(relative) = path[search_from..].find(&marker) {
+                let position = search_from + relative;
+                let after = position + marker.len();
+                if after < path.len() && path.as_bytes().get(after) != Some(&b'/') {
+                    search_from = after;
+                    continue;
+                }
+                let node_pointer = path[..position].trim_start_matches('#');
+                let node = if node_pointer.is_empty() {
+                    schema
+                } else if let Some(node) = schema.pointer(node_pointer) {
+                    node
+                } else {
+                    search_from = after;
+                    continue;
+                };
+                if let Some(branches) = node.get(keyword).and_then(JsonValue::as_array) {
+                    return Some((keyword, branches.len(), node));
+                }
+                search_from = after;
+            }
+        }
+    }
+    None
+}
+
+fn matching_discriminator_requirement(
+    composition: &JsonValue,
+    instance: &JsonValue,
+) -> Option<(String, String)> {
+    let instance = instance.as_object()?;
+    for keyword in ["oneOf", "anyOf"] {
+        let Some(branches) = composition.get(keyword).and_then(JsonValue::as_array) else {
+            continue;
+        };
+        for branch in branches {
+            let Some(properties) = branch.get("properties").and_then(JsonValue::as_object) else {
+                continue;
+            };
+            let matches = properties.iter().any(|(name, property)| {
+                let Some(value) = instance.get(name) else {
+                    return false;
+                };
+                property.get("const") == Some(value)
+                    || property
+                        .get("enum")
+                        .and_then(JsonValue::as_array)
+                        .is_some_and(|values| values.len() == 1 && values.first() == Some(value))
+            });
+            if !matches {
+                continue;
+            }
+            if let Some(missing) = branch
+                .get("required")
+                .and_then(JsonValue::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(JsonValue::as_str)
+                .find(|name| !instance.contains_key(*name))
+            {
+                return Some((
+                    format!("/{}", escape_json_pointer(missing)),
+                    "required".into(),
+                ));
+            }
+        }
+    }
+    None
+}
+
 pub(crate) fn prepare_tools(
     tools: &[McpToolConfig],
     schema_config: &McpSchemaConfig,
     enforce_stateless_names: bool,
-) -> Result<BTreeMap<String, PreparedMcpTool>, String> {
-    validate_schema_config(schema_config)?;
+) -> Result<BTreeMap<String, PreparedMcpTool>, SchemaPreparationError> {
+    validate_schema_config(schema_config)
+        .map_err(|reason| SchemaPreparationError::configuration("SCHEMA_CONFIG_INVALID", reason))?;
     let mut prepared = BTreeMap::new();
     for tool in tools {
         if enforce_stateless_names {
-            validate_stateless_tool_name(&tool.name)?;
+            validate_stateless_tool_name(&tool.name).map_err(|reason| {
+                SchemaPreparationError::new(
+                    &tool.name,
+                    SchemaKind::Configuration,
+                    "/name",
+                    "TOOL_NAME_INVALID",
+                    reason,
+                )
+            })?;
         }
         let input_validator = compile_schema(
             &tool.input_schema,
             schema_config,
             SchemaRoot::InputObject,
             &tool.name,
+            SchemaKind::Input,
         )?;
         let output_validator = tool
             .output_schema
             .as_ref()
             .map(|schema| {
-                compile_schema(schema, schema_config, SchemaRoot::Any, &tool.name).map(Arc::new)
+                compile_schema(
+                    schema,
+                    schema_config,
+                    SchemaRoot::Any,
+                    &tool.name,
+                    SchemaKind::Output,
+                )
+                .map(Arc::new)
             })
             .transpose()?;
-        let header_extractions = prepare_header_extractions(&tool.input_schema, &tool.name)?;
+        let header_extractions = prepare_header_extractions(&tool.input_schema, &tool.name)
+            .map_err(|reason| {
+                SchemaPreparationError::new(
+                    &tool.name,
+                    SchemaKind::Input,
+                    "/",
+                    "SCHEMA_ANNOTATION_INVALID",
+                    reason,
+                )
+            })?;
         let value = PreparedMcpTool {
+            input_schema_for_validation: Arc::new(tool.input_schema.clone()),
+            output_schema_for_validation: tool.output_schema.clone().map(Arc::new),
+            advertised_input_schema: advertised_schema(&tool.input_schema),
+            advertised_output_schema: tool.output_schema.as_ref().map(advertised_schema),
             config: tool.clone(),
             input_validator: Arc::new(input_validator),
             output_validator,
             header_extractions: header_extractions.into(),
         };
         if prepared.insert(tool.name.clone(), value).is_some() {
-            return Err(format!("duplicate mcp-router tool `{}`", tool.name));
+            return Err(SchemaPreparationError::new(
+                &tool.name,
+                SchemaKind::Configuration,
+                "/tools",
+                "DUPLICATE_TOOL_NAME",
+                format!("duplicate mcp-router tool `{}`", tool.name),
+            ));
         }
     }
     Ok(prepared)
+}
+
+fn advertised_schema(schema: &JsonValue) -> JsonValue {
+    let JsonValue::Object(object) = schema else {
+        return schema.clone();
+    };
+    let mut advertised = serde_json::Map::with_capacity(object.len());
+    for (key, value) in object {
+        if matches!(key.as_str(), "x-mask" | "x-mask-pattern" | "x-sensitive") {
+            continue;
+        }
+        let value = match key.as_str() {
+            "properties" | "patternProperties" | "$defs" | "definitions" | "dependentSchemas" => {
+                value.as_object().map_or_else(
+                    || value.clone(),
+                    |children| {
+                        JsonValue::Object(
+                            children
+                                .iter()
+                                .map(|(name, child)| (name.clone(), advertised_schema(child)))
+                                .collect(),
+                        )
+                    },
+                )
+            }
+            "allOf" | "anyOf" | "oneOf" | "prefixItems" => value.as_array().map_or_else(
+                || value.clone(),
+                |children| JsonValue::Array(children.iter().map(advertised_schema).collect()),
+            ),
+            "items"
+            | "unevaluatedItems"
+            | "additionalProperties"
+            | "unevaluatedProperties"
+            | "contains"
+            | "propertyNames"
+            | "not"
+            | "if"
+            | "then"
+            | "else" => advertised_schema(value),
+            _ => value.clone(),
+        };
+        advertised.insert(key.clone(), value);
+    }
+    JsonValue::Object(advertised)
 }
 
 enum SchemaRoot {
@@ -276,26 +571,41 @@ fn compile_schema(
     config: &McpSchemaConfig,
     root: SchemaRoot,
     tool_name: &str,
-) -> Result<Validator, String> {
-    preflight_schema(schema, config, tool_name)?;
+    schema_kind: SchemaKind,
+) -> Result<Validator, SchemaPreparationError> {
+    preflight_schema(schema, config, tool_name, schema_kind)?;
     if matches!(root, SchemaRoot::InputObject) {
         match schema {
             JsonValue::Object(_) => {}
             JsonValue::Bool(_) => {
-                return Err(format!(
-                    "mcp-router tool `{tool_name}` inputSchema boolean schemas are not supported; declare root `type: object`"
+                return Err(SchemaPreparationError::new(
+                    tool_name,
+                    schema_kind,
+                    "/",
+                    "INPUT_SCHEMA_BOOLEAN_ROOT",
+                    "boolean schemas are not supported; declare root `type: object`",
                 ));
             }
             value => {
-                return Err(format!(
-                    "mcp-router tool `{tool_name}` inputSchema must be a JSON object schema document; found {}",
-                    json_value_kind(value)
+                return Err(SchemaPreparationError::new(
+                    tool_name,
+                    schema_kind,
+                    "/",
+                    "INPUT_SCHEMA_NOT_OBJECT_DOCUMENT",
+                    format!(
+                        "must be a JSON object schema document; found {}",
+                        json_value_kind(value)
+                    ),
                 ));
             }
         }
         if !has_object_root(schema, schema, &mut BTreeSet::new()) {
-            return Err(format!(
-                "mcp-router tool `{tool_name}` inputSchema must declare root `type: object`; allOf, anyOf, oneOf, conditionals, and local references may be used alongside it"
+            return Err(SchemaPreparationError::new(
+                tool_name,
+                schema_kind,
+                "/",
+                "INPUT_SCHEMA_MISSING_OBJECT_ROOT",
+                "must declare root `type: object`; allOf, anyOf, oneOf, conditionals, and local references may be used alongside it",
             ));
         }
     }
@@ -307,7 +617,13 @@ fn compile_schema(
         )
         .build(schema)
         .map_err(|error| {
-            format!("mcp-router tool `{tool_name}` schema compilation failed: {error}")
+            SchemaPreparationError::new(
+                tool_name,
+                schema_kind,
+                "/",
+                "SCHEMA_COMPILATION_FAILED",
+                format!("schema compilation failed: {error}"),
+            )
         })
 }
 
@@ -346,56 +662,322 @@ fn preflight_schema(
     schema: &JsonValue,
     config: &McpSchemaConfig,
     tool_name: &str,
-) -> Result<(), String> {
+    schema_kind: SchemaKind,
+) -> Result<(), SchemaPreparationError> {
     let bytes = serde_json::to_vec(schema)
-        .map_err(|error| format!("schema serialization failed: {error}"))?
+        .map_err(|error| {
+            SchemaPreparationError::new(
+                tool_name,
+                schema_kind,
+                "/",
+                "SCHEMA_SERIALIZATION_FAILED",
+                format!("schema serialization failed: {error}"),
+            )
+        })?
         .len();
     if bytes > config.max_schema_bytes {
-        return Err(format!(
-            "mcp-router tool `{tool_name}` schema exceeds maxSchemaBytes"
+        return Err(schema_policy_error(
+            tool_name,
+            schema_kind,
+            "/",
+            "SCHEMA_BUDGET_EXCEEDED",
+            "schema exceeds maxSchemaBytes",
         ));
     }
     if let Some(dialect) = schema.get("$schema").and_then(JsonValue::as_str)
         && dialect != config.default_dialect
     {
-        return Err(format!(
-            "mcp-router tool `{tool_name}` uses unsupported JSON Schema dialect `{dialect}`"
+        return Err(schema_policy_error(
+            tool_name,
+            schema_kind,
+            "/$schema",
+            "UNSUPPORTED_DIALECT",
+            &format!("uses unsupported JSON Schema dialect `{dialect}`"),
         ));
     }
     let mut count = 0_usize;
-    let mut pending = vec![(schema, 0_usize)];
-    while let Some((value, depth)) = pending.pop() {
+    let mut pending = vec![(schema, 0_usize, String::new())];
+    while let Some((value, depth, pointer)) = pending.pop() {
         if depth > config.max_depth {
-            return Err(format!(
-                "mcp-router tool `{tool_name}` schema exceeds maxDepth"
+            return Err(schema_policy_error(
+                tool_name,
+                schema_kind,
+                &pointer,
+                "SCHEMA_BUDGET_EXCEEDED",
+                "schema exceeds maxDepth",
             ));
         }
-        match value {
-            JsonValue::Object(object) => {
-                count += 1;
-                if count > config.max_subschemas {
-                    return Err(format!(
-                        "mcp-router tool `{tool_name}` schema exceeds maxSubschemas"
+        if let JsonValue::Object(object) = value {
+            count += 1;
+            if count > config.max_subschemas {
+                return Err(schema_policy_error(
+                    tool_name,
+                    schema_kind,
+                    &pointer,
+                    "SCHEMA_BUDGET_EXCEEDED",
+                    "schema exceeds maxSubschemas",
+                ));
+            }
+            if object.contains_key("$anchor") || object.contains_key("$dynamicAnchor") {
+                return Err(schema_policy_error(
+                    tool_name,
+                    schema_kind,
+                    &pointer,
+                    "ANCHOR_REFERENCE_UNSUPPORTED",
+                    "JSON Schema anchors are unsupported",
+                ));
+            }
+            if object.contains_key("$dynamicRef") {
+                return Err(schema_policy_error(
+                    tool_name,
+                    schema_kind,
+                    &pointer,
+                    "DYNAMIC_REFERENCE_UNSUPPORTED",
+                    "dynamic JSON Schema references are unsupported",
+                ));
+            }
+            if !pointer.is_empty() && object.contains_key("$id") {
+                return Err(schema_policy_error(
+                    tool_name,
+                    schema_kind,
+                    &pointer,
+                    "NESTED_ID_UNSUPPORTED",
+                    "nested JSON Schema $id is unsupported",
+                ));
+            }
+            if !pointer.is_empty() && object.contains_key("$schema") {
+                return Err(schema_policy_error(
+                    tool_name,
+                    schema_kind,
+                    &pointer,
+                    "NESTED_DIALECT_UNSUPPORTED",
+                    "nested JSON Schema dialect declarations are unsupported",
+                ));
+            }
+            if let Some(reference) = object.get("$ref").and_then(JsonValue::as_str) {
+                if !reference.starts_with('#') {
+                    return Err(schema_policy_error(
+                        tool_name,
+                        schema_kind,
+                        &format!("{pointer}/$ref"),
+                        "EXTERNAL_REFERENCE_DISABLED",
+                        "external JSON Schema reference is disabled",
                     ));
                 }
-                for keyword in ["$ref", "$dynamicRef"] {
-                    if let Some(reference) = object.get(keyword).and_then(JsonValue::as_str)
-                        && !reference.starts_with('#')
-                    {
-                        return Err(format!(
-                            "mcp-router tool `{tool_name}` external JSON Schema reference is disabled"
-                        ));
-                    }
+                if reference != "#" && !reference.starts_with("#/") {
+                    return Err(schema_policy_error(
+                        tool_name,
+                        schema_kind,
+                        &format!("{pointer}/$ref"),
+                        "ANCHOR_REFERENCE_UNSUPPORTED",
+                        "fragment-name JSON Schema references are unsupported",
+                    ));
                 }
-                pending.extend(object.values().map(|child| (child, depth + 1)));
+                if resolve_local_reference(schema, reference).is_none() {
+                    return Err(schema_policy_error(
+                        tool_name,
+                        schema_kind,
+                        &format!("{pointer}/$ref"),
+                        "UNRESOLVED_LOCAL_REFERENCE",
+                        &format!("unresolved local JSON Schema reference `{reference}`"),
+                    ));
+                }
             }
-            JsonValue::Array(values) => {
-                pending.extend(values.iter().map(|child| (child, depth + 1)));
+            // Descend only through JSON Schema-valued keyword positions. Values
+            // under default, const, examples, and extension payloads are instance
+            // data, so schema keywords inside them must not affect preflight.
+            for keyword in [
+                "properties",
+                "patternProperties",
+                "$defs",
+                "definitions",
+                "dependentSchemas",
+            ] {
+                if let Some(children) = object.get(keyword).and_then(JsonValue::as_object) {
+                    pending.extend(children.iter().map(|(name, child)| {
+                        (
+                            child,
+                            depth + 1,
+                            format!(
+                                "{pointer}/{}/{}",
+                                escape_json_pointer(keyword),
+                                escape_json_pointer(name)
+                            ),
+                        )
+                    }));
+                }
             }
-            _ => {}
+            for keyword in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+                if let Some(children) = object.get(keyword).and_then(JsonValue::as_array) {
+                    pending.extend(children.iter().enumerate().map(|(index, child)| {
+                        (
+                            child,
+                            depth + 1,
+                            format!("{pointer}/{}/{index}", escape_json_pointer(keyword)),
+                        )
+                    }));
+                }
+            }
+            for keyword in [
+                "items",
+                "additionalItems",
+                "unevaluatedItems",
+                "additionalProperties",
+                "unevaluatedProperties",
+                "contains",
+                "contentSchema",
+                "propertyNames",
+                "not",
+                "if",
+                "then",
+                "else",
+            ] {
+                if let Some(child) = object.get(keyword) {
+                    pending.push((
+                        child,
+                        depth + 1,
+                        format!("{pointer}/{}", escape_json_pointer(keyword)),
+                    ));
+                }
+            }
         }
     }
+    let composition_branches = count_reachable_composition_branches(
+        schema,
+        schema,
+        config.max_schema_graph_visits,
+        &mut BTreeSet::new(),
+        &mut 0,
+    )
+    .map_err(|reason| {
+        schema_policy_error(
+            tool_name,
+            schema_kind,
+            "/",
+            "SCHEMA_GRAPH_VISIT_LIMIT_EXCEEDED",
+            &reason,
+        )
+    })?;
+    if composition_branches > config.max_composition_branches {
+        return Err(schema_policy_error(
+            tool_name,
+            schema_kind,
+            "/",
+            "COMPOSITION_BRANCH_LIMIT_EXCEEDED",
+            &format!(
+                "schema exceeds maxCompositionBranches ({composition_branches} > {})",
+                config.max_composition_branches
+            ),
+        ));
+    }
     Ok(())
+}
+
+fn count_reachable_composition_branches(
+    root: &JsonValue,
+    schema: &JsonValue,
+    visit_budget: usize,
+    active_refs: &mut BTreeSet<String>,
+    visits: &mut usize,
+) -> Result<usize, String> {
+    *visits += 1;
+    if *visits > visit_budget {
+        return Err("schema graph traversal exceeds maxSchemaGraphVisits".to_string());
+    }
+    let JsonValue::Object(object) = schema else {
+        return Ok(0);
+    };
+    let mut total = 0_usize;
+    if let Some(reference) = object.get("$ref").and_then(JsonValue::as_str)
+        && reference != "#"
+        && active_refs.insert(reference.to_string())
+    {
+        if let Some(target) = resolve_local_reference(root, reference) {
+            total += count_reachable_composition_branches(
+                root,
+                target,
+                visit_budget,
+                active_refs,
+                visits,
+            )?;
+        }
+        active_refs.remove(reference);
+    }
+    for keyword in ["allOf", "anyOf", "oneOf"] {
+        if let Some(branches) = object.get(keyword).and_then(JsonValue::as_array) {
+            total = total.saturating_add(branches.len());
+            for branch in branches {
+                total = total.saturating_add(count_reachable_composition_branches(
+                    root,
+                    branch,
+                    visit_budget,
+                    active_refs,
+                    visits,
+                )?);
+            }
+        }
+    }
+    for keyword in [
+        "items",
+        "unevaluatedItems",
+        "additionalProperties",
+        "unevaluatedProperties",
+        "contains",
+        "propertyNames",
+        "not",
+        "if",
+        "then",
+        "else",
+    ] {
+        if let Some(child) = object.get(keyword) {
+            total = total.saturating_add(count_reachable_composition_branches(
+                root,
+                child,
+                visit_budget,
+                active_refs,
+                visits,
+            )?);
+        }
+    }
+    for keyword in ["properties", "patternProperties", "dependentSchemas"] {
+        if let Some(children) = object.get(keyword).and_then(JsonValue::as_object) {
+            for child in children.values() {
+                total = total.saturating_add(count_reachable_composition_branches(
+                    root,
+                    child,
+                    visit_budget,
+                    active_refs,
+                    visits,
+                )?);
+            }
+        }
+    }
+    if let Some(children) = object.get("prefixItems").and_then(JsonValue::as_array) {
+        for child in children {
+            total = total.saturating_add(count_reachable_composition_branches(
+                root,
+                child,
+                visit_budget,
+                active_refs,
+                visits,
+            )?);
+        }
+    }
+    Ok(total)
+}
+
+fn schema_policy_error(
+    tool_name: &str,
+    schema_kind: SchemaKind,
+    pointer: &str,
+    code: &'static str,
+    reason: &str,
+) -> SchemaPreparationError {
+    SchemaPreparationError::new(tool_name, schema_kind, pointer, code, reason)
+}
+
+fn escape_json_pointer(value: &str) -> String {
+    value.replace('~', "~0").replace('/', "~1")
 }
 
 fn prepare_header_extractions(
@@ -630,6 +1212,8 @@ fn validate_schema_config(config: &McpSchemaConfig) -> Result<(), String> {
         ("maxSchemaBytes", config.max_schema_bytes),
         ("maxDepth", config.max_depth),
         ("maxSubschemas", config.max_subschemas),
+        ("maxCompositionBranches", config.max_composition_branches),
+        ("maxSchemaGraphVisits", config.max_schema_graph_visits),
         (
             "maxConcurrentValidations",
             config.max_concurrent_validations,
@@ -665,6 +1249,12 @@ fn default_max_schema_depth() -> usize {
 }
 fn default_max_subschemas() -> usize {
     DEFAULT_MAX_SUBSCHEMAS
+}
+fn default_max_composition_branches() -> usize {
+    DEFAULT_MAX_COMPOSITION_BRANCHES
+}
+fn default_max_schema_graph_visits() -> usize {
+    DEFAULT_MAX_SCHEMA_GRAPH_VISITS
 }
 fn default_max_concurrent_validations() -> usize {
     DEFAULT_MAX_CONCURRENT_VALIDATIONS
@@ -760,9 +1350,10 @@ mod tests {
         ] {
             let error = prepare_tools(&[tool(input, None)], &McpSchemaConfig::default(), false)
                 .expect_err("non-object schema document must fail");
+            assert_eq!(error.reason_code, "INPUT_SCHEMA_NOT_OBJECT_DOCUMENT");
             assert!(
-                error.contains(&format!(
-                    "inputSchema must be a JSON object schema document; found {kind}"
+                error.reason.contains(&format!(
+                    "must be a JSON object schema document; found {kind}"
                 )),
                 "unexpected error: {error}"
             );
@@ -771,10 +1362,8 @@ mod tests {
         for input in [json!(true), json!(false)] {
             let error = prepare_tools(&[tool(input, None)], &McpSchemaConfig::default(), false)
                 .expect_err("boolean input schema must fail");
-            assert!(
-                error.contains("inputSchema boolean schemas are not supported"),
-                "unexpected error: {error}"
-            );
+            assert_eq!(error.reason_code, "INPUT_SCHEMA_BOOLEAN_ROOT");
+            assert!(error.reason.contains("boolean schemas are not supported"));
         }
 
         let error = prepare_tools(
@@ -789,8 +1378,13 @@ mod tests {
             false,
         )
         .expect_err("composition-only root must fail");
-        assert!(error.contains("must declare root `type: object`"));
-        assert!(error.contains("allOf, anyOf, oneOf, conditionals, and local references"));
+        assert_eq!(error.reason_code, "INPUT_SCHEMA_MISSING_OBJECT_ROOT");
+        assert!(error.reason.contains("must declare root `type: object`"));
+        assert!(
+            error
+                .reason
+                .contains("allOf, anyOf, oneOf, conditionals, and local references")
+        );
     }
 
     #[test]
@@ -834,9 +1428,288 @@ mod tests {
                 &McpSchemaConfig::default(),
                 SchemaRoot::InputObject,
                 name,
+                SchemaKind::Input,
             )
             .unwrap_or_else(|error| panic!("Portal schema for {name} must compile: {error}"));
         }
+    }
+
+    #[test]
+    fn phase0_contract_matches_gateway_compiler_and_validator() {
+        let contract: JsonValue =
+            serde_json::from_str(include_str!("../testdata/mcp/mcp-schema-contract-v1.json"))
+                .expect("Phase 0 contract");
+        assert_eq!(contract["contractVersion"], "1.2.0");
+        for case in contract["schemaCases"].as_array().expect("schema cases") {
+            let id = case["id"].as_str().expect("case id");
+            let schema = &case["schema"];
+            let schema_kind = case["schemaKind"].as_str().expect("schema kind");
+            let gateway_expected = case["expected"]["gatewayPrepare"]
+                .as_str()
+                .expect("gateway expectation");
+            let root = if schema_kind == "input" {
+                SchemaRoot::InputObject
+            } else {
+                SchemaRoot::Any
+            };
+            let kind = if schema_kind == "input" {
+                SchemaKind::Input
+            } else {
+                SchemaKind::Output
+            };
+            let compiled = compile_schema(schema, &McpSchemaConfig::default(), root, id, kind);
+            if gateway_expected == "reject" {
+                assert!(compiled.is_err(), "{id} must fail Gateway preparation");
+            } else {
+                assert!(
+                    compiled.is_ok(),
+                    "{id} must compile for Gateway: {:?}",
+                    compiled.err()
+                );
+            }
+
+            let crate_expected = case["expected"]["jsonschema"]
+                .as_str()
+                .expect("jsonschema expectation");
+            let crate_validator = jsonschema::draft202012::new(schema);
+            if crate_expected == "reject" {
+                assert!(
+                    crate_validator.is_err(),
+                    "{id} must fail jsonschema compile"
+                );
+                continue;
+            }
+            let crate_validator = crate_validator
+                .unwrap_or_else(|error| panic!("{id} must compile in jsonschema: {error}"));
+            for instance in case["instances"].as_array().expect("instances") {
+                assert_eq!(
+                    crate_validator.is_valid(&instance["value"]),
+                    instance["valid"].as_bool().expect("valid outcome"),
+                    "recorded outcome drifted for {id}/{}",
+                    instance["id"].as_str().expect("instance id")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn advertised_schema_strips_only_private_schema_annotations() {
+        let schema = json!({
+            "type":"object",
+            "required":["x-mask"],
+            "properties":{
+                "x-mask":{"type":"string"},
+                "secret":{"type":"string","x-mask":true,"x-mask-pattern":".*","x-sensitive":true,"x-mcp-header":"Mcp-Param-Secret"},
+                "payload":{"type":"object","default":{"x-sensitive":"data"}}
+            },
+            "$defs":{"x-sensitive":{"type":"string","const":"x-mask"}},
+            "examples":[{"x-mask":"ordinary","x-sensitive":"data"}]
+        });
+        let advertised = advertised_schema(&schema);
+        assert_eq!(advertised["properties"]["x-mask"]["type"], "string");
+        assert_eq!(advertised["$defs"]["x-sensitive"]["const"], "x-mask");
+        assert_eq!(
+            advertised["properties"]["payload"]["default"]["x-sensitive"],
+            "data"
+        );
+        assert_eq!(advertised["examples"][0]["x-sensitive"], "data");
+        assert_eq!(
+            advertised["properties"]["secret"]["x-mcp-header"],
+            "Mcp-Param-Secret"
+        );
+        assert!(advertised["properties"]["secret"].get("x-mask").is_none());
+        assert!(
+            advertised["properties"]["secret"]
+                .get("x-mask-pattern")
+                .is_none()
+        );
+        assert!(
+            advertised["properties"]["secret"]
+                .get("x-sensitive")
+                .is_none()
+        );
+        let original = jsonschema::draft202012::new(&schema).expect("original validator");
+        let public = jsonschema::draft202012::new(&advertised).expect("advertised validator");
+        for instance in [json!({"x-mask":"ok"}), json!({}), json!({"x-mask":1})] {
+            assert_eq!(original.is_valid(&instance), public.is_valid(&instance));
+        }
+    }
+
+    #[test]
+    fn preflight_rejects_unsupported_resource_and_reference_forms_with_codes() {
+        for (schema, code) in [
+            (
+                json!({"type":"object","$defs":{"x":{"$anchor":"x","type":"object"}}}),
+                "ANCHOR_REFERENCE_UNSUPPORTED",
+            ),
+            (
+                json!({"type":"object","$dynamicRef":"#/$defs/x","$defs":{"x":{"type":"object"}}}),
+                "DYNAMIC_REFERENCE_UNSUPPORTED",
+            ),
+            (
+                json!({"type":"object","properties":{"x":{"$id":"nested.json","type":"object"}}}),
+                "NESTED_ID_UNSUPPORTED",
+            ),
+            (
+                json!({"type":"object","properties":{"x":{"$schema":DIALECT_2020_12,"type":"object"}}}),
+                "NESTED_DIALECT_UNSUPPORTED",
+            ),
+            (
+                json!({"type":"object","$ref":"#named","$defs":{"x":{"$anchor":"named","type":"object"}}}),
+                "ANCHOR_REFERENCE_UNSUPPORTED",
+            ),
+            (
+                json!({"type":"object","$ref":"#/$defs/missing"}),
+                "UNRESOLVED_LOCAL_REFERENCE",
+            ),
+            (
+                json!({"type":"object","$ref":"https://example.com/schema"}),
+                "EXTERNAL_REFERENCE_DISABLED",
+            ),
+        ] {
+            let error = compile_schema(
+                &schema,
+                &McpSchemaConfig::default(),
+                SchemaRoot::InputObject,
+                "policy",
+                SchemaKind::Input,
+            )
+            .expect_err("policy rejection");
+            assert_eq!(error.reason_code, code, "unexpected error: {error}");
+        }
+    }
+
+    #[test]
+    fn preflight_ignores_schema_keywords_inside_instance_data_positions() {
+        let schema = json!({
+            "type":"object",
+            "properties":{
+                "cfg":{
+                    "type":"object",
+                    "default":{"$id":"ordinary-data"},
+                    "examples":[{"$schema":"ordinary-data"}],
+                    "const":{"$ref":"#/not-a-schema-reference"}
+                }
+            }
+        });
+        let prepared = prepare_tools(&[tool(schema, None)], &McpSchemaConfig::default(), false)
+            .expect("keywords in default, examples, and const are instance data");
+        assert!(
+            prepared["test.tool"]
+                .input_validator
+                .is_valid(&json!({"cfg":{"$ref":"#/not-a-schema-reference"}}))
+        );
+    }
+
+    #[test]
+    fn composition_branch_budget_is_transitive_and_bounded() {
+        let schema = json!({
+            "type":"object",
+            "allOf":[
+                {"oneOf":[{"type":"object"},{"type":"object"}]},
+                {"anyOf":[{"type":"object"},{"type":"object"}]}
+            ]
+        });
+        let config = McpSchemaConfig {
+            max_composition_branches: 5,
+            ..McpSchemaConfig::default()
+        };
+        let error = compile_schema(
+            &schema,
+            &config,
+            SchemaRoot::InputObject,
+            "bounded",
+            SchemaKind::Input,
+        )
+        .expect_err("six reachable branches exceed limit five");
+        assert_eq!(error.reason_code, "COMPOSITION_BRANCH_LIMIT_EXCEEDED");
+        assert!(error.reason.contains("maxCompositionBranches (6 > 5)"));
+    }
+
+    #[test]
+    fn schema_graph_visit_budget_is_independent_from_subschema_count() {
+        let schema = json!({
+            "type":"object",
+            "allOf":[
+                {"$ref":"#/$defs/shared"},
+                {"$ref":"#/$defs/shared"}
+            ],
+            "$defs":{"shared":{"type":"object"}}
+        });
+        let config = McpSchemaConfig {
+            max_schema_graph_visits: 2,
+            ..McpSchemaConfig::default()
+        };
+        let error = compile_schema(
+            &schema,
+            &config,
+            SchemaRoot::InputObject,
+            "bounded-graph",
+            SchemaKind::Input,
+        )
+        .expect_err("reference expansion must use its own visit budget");
+        assert_eq!(error.reason_code, "SCHEMA_GRAPH_VISIT_LIMIT_EXCEEDED");
+        assert!(error.reason.contains("maxSchemaGraphVisits"));
+    }
+
+    #[tokio::test]
+    async fn composed_diagnostics_are_bounded_and_prefer_matching_discriminator() {
+        let schema = Arc::new(json!({
+            "type":"object",
+            "oneOf":[
+                {"properties":{"model":{"const":"events"},"eventType":{"type":"string"}},"required":["model","eventType"]},
+                {"properties":{"model":{"const":"persons"},"personType":{"type":"string"}},"required":["model","personType"]}
+            ]
+        }));
+        let validator = Arc::new(jsonschema::draft202012::new(&schema).expect("validator"));
+        let pool = SchemaValidationPool::new(&McpSchemaConfig::default()).expect("pool");
+        let outcome = pool
+            .validate_with_schema(validator, Some(schema), json!({"model":"persons"}))
+            .await;
+        let ValidationOutcome::Invalid(diagnostics) = outcome else {
+            panic!("expected invalid outcome")
+        };
+        assert!(diagnostics.len() <= 3);
+        assert_eq!(diagnostics[0].constraint, "oneOf (2 branches)");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|item| item.path == "/personType" && item.constraint == "required")
+        );
+        assert!(!format!("{diagnostics:?}").contains("persons"));
+
+        let all_of_schema = Arc::new(json!({
+            "type":"object",
+            "allOf":[
+                {"required":["id"]},
+                {"required":["name"]}
+            ]
+        }));
+        let all_of_validator =
+            Arc::new(jsonschema::draft202012::new(&all_of_schema).expect("allOf validator"));
+        let ValidationOutcome::Invalid(all_of_diagnostics) = pool
+            .validate_with_schema(all_of_validator, Some(all_of_schema), json!({}))
+            .await
+        else {
+            panic!("expected invalid allOf outcome")
+        };
+        assert_eq!(all_of_diagnostics[0].constraint, "allOf (2 branches)");
+    }
+
+    #[test]
+    fn composition_diagnostic_skips_unresolvable_candidate_paths() {
+        let schema = json!({
+            "oneOf":[{"type":"string"},{"type":"integer"}]
+        });
+        let paths = vec![
+            "/missing/oneOf/0/type".to_string(),
+            "/oneOf/1/type".to_string(),
+        ];
+        let (keyword, branches, node) =
+            first_failing_composition(&schema, &paths).expect("later resolvable composition path");
+        assert_eq!(keyword, "oneOf");
+        assert_eq!(branches, 2);
+        assert_eq!(node, &schema);
     }
 
     #[test]
@@ -927,7 +1800,9 @@ mod tests {
             .expect("validator"),
         );
         for _ in 0..2 {
-            let outcome = pool.validate(Arc::clone(&validator), json!({})).await;
+            let outcome = pool
+                .validate_with_schema(Arc::clone(&validator), None, json!({}))
+                .await;
             let ValidationOutcome::Invalid(diagnostics) = &outcome else {
                 panic!("expected invalid outcome, got {outcome:?}")
             };
@@ -935,5 +1810,37 @@ mod tests {
             assert!(diagnostics.len() <= 3);
             assert!(diagnostics.iter().all(|item| item.path.len() <= 256));
         }
+    }
+
+    #[test]
+    #[ignore = "Phase 2 qualification benchmark; run explicitly from the deployment gate"]
+    fn phase2_composed_validation_benchmark() {
+        let branches = (0..64)
+            .map(|index| {
+                json!({
+                    "properties":{"kind":{"const":format!("kind-{index}")}},
+                    "required":["kind"]
+                })
+            })
+            .collect::<Vec<_>>();
+        let schema = json!({
+            "type":"object",
+            "oneOf":branches,
+            "unevaluatedProperties":false
+        });
+        let validator = jsonschema::draft202012::new(&schema).expect("benchmark validator");
+        let instance = json!({"kind":"kind-63"});
+        let iterations = 10_000_u128;
+        let started = Instant::now();
+        for _ in 0..iterations {
+            assert!(validator.is_valid(&instance));
+        }
+        let elapsed = started.elapsed();
+        let per_second = iterations * 1_000_000_000 / elapsed.as_nanos().max(1);
+        eprintln!(
+            "phase2 composed validation: branches=64 iterations={iterations} elapsed_ms={} validations_per_second={per_second}",
+            elapsed.as_millis()
+        );
+        assert!(per_second > 0);
     }
 }

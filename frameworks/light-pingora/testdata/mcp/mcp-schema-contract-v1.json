@@ -1,0 +1,1430 @@
+{
+  "contractVersion": "1.2.0",
+  "status": "frozen",
+  "plan": "../../../2026-07-24-mcp-json-schema-composition-implementation-plan.md",
+  "dialect": "https://json-schema.org/draft/2020-12/schema",
+  "gatewayPolicy": {
+    "inputRoot": "explicit_object",
+    "legacyRootRefCompatibility": true,
+    "externalReferences": "reject",
+    "supportedLocalReferenceForms": ["#", "#/json/pointer"],
+    "rejectedReferenceKeywords": ["$anchor", "$dynamicAnchor", "$dynamicRef"],
+    "rejectedEmbeddedResourceKeywords": ["non-root $id", "non-root $schema"],
+    "generatedSchemasDeclareDialect": true,
+    "invalidToolPolicy": "reject_candidate_runtime",
+    "advertisedTransportAnnotations": ["x-mcp-header"],
+    "strippedPrivateAnnotations": ["x-mask", "x-mask-pattern", "x-sensitive"]
+  },
+  "schemaCases": [
+    {
+      "id": "input-no-arguments-closed",
+      "area": "get-generation",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept",
+        "portalPublish": "accept"
+      },
+      "instances": [
+        { "id": "empty", "value": {}, "valid": true },
+        { "id": "unexpected", "value": { "extra": 1 }, "valid": false },
+        { "id": "null", "value": null, "valid": false }
+      ]
+    },
+    {
+      "id": "input-parameterized-get",
+      "area": "get-generation",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "accountId": { "type": "string" },
+          "limit": { "type": "integer", "minimum": 1 },
+          "X-Trace-Id": { "type": "string" },
+          "session": { "type": "string" }
+        },
+        "required": ["accountId"],
+        "additionalProperties": false
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept",
+        "portalPublish": "accept"
+      },
+      "instances": [
+        {
+          "id": "required-only",
+          "value": { "accountId": "a-1" },
+          "valid": true
+        },
+        {
+          "id": "all-parameters",
+          "value": {
+            "accountId": "a-1",
+            "limit": 10,
+            "X-Trace-Id": "trace-1",
+            "session": "session-1"
+          },
+          "valid": true
+        },
+        { "id": "missing-required", "value": { "limit": 10 }, "valid": false },
+        { "id": "unknown", "value": { "accountId": "a-1", "other": true }, "valid": false }
+      ]
+    },
+    {
+      "id": "input-all-of",
+      "area": "composition",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "allOf": [
+          {
+            "properties": { "model": { "const": "events" } },
+            "required": ["model"]
+          },
+          {
+            "properties": { "file": { "type": "string", "minLength": 1 } },
+            "required": ["file"]
+          }
+        ],
+        "unevaluatedProperties": false
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept",
+        "portalPublish": "accept"
+      },
+      "instances": [
+        { "id": "valid", "value": { "model": "events", "file": "events.json" }, "valid": true },
+        { "id": "wrong-model", "value": { "model": "persons", "file": "events.json" }, "valid": false },
+        { "id": "missing-file", "value": { "model": "events" }, "valid": false }
+      ]
+    },
+    {
+      "id": "input-any-of-overlap",
+      "area": "composition",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "anyOf": [
+          { "properties": { "email": { "type": "string" } }, "required": ["email"] },
+          { "properties": { "phone": { "type": "string" } }, "required": ["phone"] }
+        ],
+        "unevaluatedProperties": false
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept",
+        "portalPublish": "accept"
+      },
+      "instances": [
+        { "id": "email", "value": { "email": "a@example.com" }, "valid": true },
+        { "id": "phone", "value": { "phone": "+14165550100" }, "valid": true },
+        {
+          "id": "both",
+          "value": { "email": "a@example.com", "phone": "+14165550100" },
+          "valid": true
+        },
+        { "id": "neither", "value": {}, "valid": false }
+      ]
+    },
+    {
+      "id": "input-one-of-discriminated",
+      "area": "composition",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "oneOf": [
+          {
+            "properties": {
+              "model": { "const": "events" },
+              "eventType": { "type": "string" }
+            },
+            "required": ["model", "eventType"]
+          },
+          {
+            "properties": {
+              "model": { "const": "persons" },
+              "personType": { "type": "string" }
+            },
+            "required": ["model", "personType"]
+          }
+        ],
+        "unevaluatedProperties": false
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept",
+        "portalPublish": "accept"
+      },
+      "instances": [
+        {
+          "id": "events",
+          "value": { "model": "events", "eventType": "created" },
+          "valid": true
+        },
+        {
+          "id": "persons",
+          "value": { "model": "persons", "personType": "customer" },
+          "valid": true
+        },
+        { "id": "missing-variant-field", "value": { "model": "events" }, "valid": false },
+        { "id": "unknown-model", "value": { "model": "sessions" }, "valid": false }
+      ]
+    },
+    {
+      "id": "input-one-of-missing-required",
+      "area": "composition-gotcha",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "oneOf": [
+          { "properties": { "model": { "const": "events" } } },
+          { "properties": { "model": { "const": "persons" } } }
+        ]
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept",
+        "portalPublish": "warn"
+      },
+      "instances": [
+        { "id": "empty-matches-both", "value": {}, "valid": false },
+        { "id": "events-matches-one", "value": { "model": "events" }, "valid": true }
+      ]
+    },
+    {
+      "id": "input-if-then-else",
+      "area": "conditional",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": { "model": { "enum": ["events", "persons"] } },
+        "required": ["model"],
+        "if": {
+          "properties": { "model": { "const": "events" } },
+          "required": ["model"]
+        },
+        "then": {
+          "properties": { "eventType": { "type": "string" } },
+          "required": ["eventType"]
+        },
+        "else": {
+          "properties": { "personType": { "type": "string" } },
+          "required": ["personType"]
+        },
+        "unevaluatedProperties": false
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept",
+        "portalPublish": "accept"
+      },
+      "instances": [
+        {
+          "id": "then-valid",
+          "value": { "model": "events", "eventType": "updated" },
+          "valid": true
+        },
+        { "id": "then-invalid", "value": { "model": "events" }, "valid": false },
+        {
+          "id": "else-valid",
+          "value": { "model": "persons", "personType": "employee" },
+          "valid": true
+        },
+        { "id": "else-invalid", "value": { "model": "persons" }, "valid": false }
+      ]
+    },
+    {
+      "id": "input-ref-explicit-object-root",
+      "area": "references",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "$defs": {
+          "request": {
+            "properties": { "id": { "type": "string" } },
+            "required": ["id"]
+          }
+        },
+        "$ref": "#/$defs/request",
+        "unevaluatedProperties": false
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept",
+        "portalPublish": "accept"
+      },
+      "instances": [
+        { "id": "valid", "value": { "id": "1" }, "valid": true },
+        { "id": "wrong-type", "value": { "id": 1 }, "valid": false }
+      ]
+    },
+    {
+      "id": "input-ref-inside-all-of",
+      "area": "references-composition",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "$defs": {
+          "id": { "properties": { "id": { "type": "string" } }, "required": ["id"] },
+          "name": { "properties": { "name": { "type": "string" } }, "required": ["name"] }
+        },
+        "allOf": [
+          { "$ref": "#/$defs/id" },
+          { "$ref": "#/$defs/name" }
+        ],
+        "unevaluatedProperties": false
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept",
+        "portalPublish": "accept"
+      },
+      "instances": [
+        { "id": "valid", "value": { "id": "1", "name": "Ada" }, "valid": true },
+        { "id": "missing-name", "value": { "id": "1" }, "valid": false }
+      ]
+    },
+    {
+      "id": "input-ref-inside-any-of",
+      "area": "references-composition",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "$defs": {
+          "email": { "properties": { "email": { "type": "string" } }, "required": ["email"] },
+          "phone": { "properties": { "phone": { "type": "string" } }, "required": ["phone"] }
+        },
+        "anyOf": [
+          { "$ref": "#/$defs/email" },
+          { "$ref": "#/$defs/phone" }
+        ],
+        "unevaluatedProperties": false
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept",
+        "portalPublish": "accept"
+      },
+      "instances": [
+        { "id": "valid-email", "value": { "email": "a@example.com" }, "valid": true },
+        { "id": "invalid-empty", "value": {}, "valid": false }
+      ]
+    },
+    {
+      "id": "input-ref-inside-one-of",
+      "area": "references-composition",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "$defs": {
+          "events": {
+            "properties": { "model": { "const": "events" } },
+            "required": ["model"]
+          },
+          "persons": {
+            "properties": { "model": { "const": "persons" } },
+            "required": ["model"]
+          }
+        },
+        "oneOf": [
+          { "$ref": "#/$defs/events" },
+          { "$ref": "#/$defs/persons" }
+        ],
+        "unevaluatedProperties": false
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept",
+        "portalPublish": "accept"
+      },
+      "instances": [
+        { "id": "events", "value": { "model": "events" }, "valid": true },
+        { "id": "empty", "value": {}, "valid": false }
+      ]
+    },
+    {
+      "id": "input-nested-ref-chain",
+      "area": "references",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "$defs": {
+          "request": { "$ref": "#/$defs/middle" },
+          "middle": { "$ref": "#/$defs/leaf" },
+          "leaf": {
+            "properties": { "value": { "type": "integer" } },
+            "required": ["value"]
+          }
+        },
+        "$ref": "#/$defs/request",
+        "unevaluatedProperties": false
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept",
+        "portalPublish": "accept"
+      },
+      "instances": [
+        { "id": "valid", "value": { "value": 1 }, "valid": true },
+        { "id": "wrong-type", "value": { "value": "1" }, "valid": false }
+      ]
+    },
+    {
+      "id": "input-boolean-subschemas",
+      "area": "boolean-subschema",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "anything": true,
+          "never": false
+        },
+        "additionalProperties": false
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept",
+        "portalPublish": "accept"
+      },
+      "instances": [
+        { "id": "anything", "value": { "anything": [1, "two"] }, "valid": true },
+        { "id": "never", "value": { "never": 1 }, "valid": false }
+      ]
+    },
+    {
+      "id": "input-unevaluated-properties-branches",
+      "area": "composition-closing",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "a" },
+              "aValue": { "type": "string" }
+            },
+            "required": ["kind", "aValue"]
+          },
+          {
+            "properties": {
+              "kind": { "const": "b" },
+              "bValue": { "type": "integer" }
+            },
+            "required": ["kind", "bValue"]
+          }
+        ],
+        "unevaluatedProperties": false
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept",
+        "portalPublish": "accept"
+      },
+      "instances": [
+        { "id": "branch-a", "value": { "kind": "a", "aValue": "x" }, "valid": true },
+        { "id": "branch-b", "value": { "kind": "b", "bValue": 2 }, "valid": true },
+        { "id": "unknown", "value": { "kind": "a", "aValue": "x", "other": 1 }, "valid": false }
+      ]
+    },
+    {
+      "id": "input-additional-properties-composition-trap",
+      "area": "composition-closing",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": { "kind": { "enum": ["a", "b"] } },
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "a" },
+              "aValue": { "type": "string" }
+            },
+            "required": ["kind", "aValue"]
+          },
+          {
+            "properties": {
+              "kind": { "const": "b" },
+              "bValue": { "type": "integer" }
+            },
+            "required": ["kind", "bValue"]
+          }
+        ],
+        "additionalProperties": false
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept_but_branch_properties_are_closed_out",
+        "portalPublish": "warn_use_unevaluated_properties",
+        "reasonCode": "ADDITIONAL_PROPERTIES_COMPOSITION_TRAP"
+      },
+      "instances": [
+        {
+          "id": "branch-property-rejected-at-root",
+          "value": { "kind": "a", "aValue": "x" },
+          "valid": false
+        }
+      ]
+    },
+    {
+      "id": "input-recursive-local-ref",
+      "area": "references-recursive",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "$defs": {
+          "node": {
+            "type": "object",
+            "properties": {
+              "value": { "type": "string" },
+              "child": { "$ref": "#/$defs/node" }
+            },
+            "required": ["value"],
+            "additionalProperties": false
+          }
+        },
+        "$ref": "#/$defs/node"
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept",
+        "portalPublish": "accept"
+      },
+      "instances": [
+        {
+          "id": "valid",
+          "value": { "value": "root", "child": { "value": "leaf" } },
+          "valid": true
+        },
+        {
+          "id": "invalid-child",
+          "value": { "value": "root", "child": { "value": 1 } },
+          "valid": false
+        }
+      ]
+    },
+    {
+      "id": "input-root-ref-compatibility",
+      "area": "references-compatibility",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$defs": {
+          "request": {
+            "type": "object",
+            "properties": { "id": { "type": "string" } },
+            "required": ["id"],
+            "additionalProperties": false
+          }
+        },
+        "$ref": "#/$defs/request"
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept_compatibility",
+        "portalPublish": "normalize"
+      },
+      "instances": [
+        { "id": "valid", "value": { "id": "1" }, "valid": true },
+        { "id": "missing", "value": {}, "valid": false }
+      ]
+    },
+    {
+      "id": "input-composition-only-root",
+      "area": "root-contract",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "allOf": [
+          {
+            "type": "object",
+            "properties": { "id": { "type": "string" } }
+          }
+        ]
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "reject",
+        "portalPublish": "reject",
+        "reasonCode": "INPUT_SCHEMA_MISSING_OBJECT_ROOT"
+      },
+      "instances": [
+        { "id": "standards-valid", "value": { "id": "1" }, "valid": true }
+      ]
+    },
+    {
+      "id": "input-diamond-ref-graph",
+      "area": "walker-budget",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "$defs": {
+          "base": {
+            "properties": { "id": { "type": "string" } },
+            "required": ["id"]
+          },
+          "left": {
+            "allOf": [
+              { "$ref": "#/$defs/base" },
+              { "properties": { "left": { "type": "boolean" } }, "required": ["left"] }
+            ]
+          },
+          "right": {
+            "allOf": [
+              { "$ref": "#/$defs/base" },
+              { "properties": { "right": { "type": "boolean" } }, "required": ["right"] }
+            ]
+          }
+        },
+        "allOf": [
+          { "$ref": "#/$defs/left" },
+          { "$ref": "#/$defs/right" }
+        ],
+        "unevaluatedProperties": false
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept_functional_graph",
+        "portalPublish": "accept"
+      },
+      "instances": [
+        { "id": "valid", "value": { "id": "1", "left": true, "right": false }, "valid": true },
+        { "id": "missing-right", "value": { "id": "1", "left": true }, "valid": false }
+      ]
+    },
+    {
+      "id": "input-pattern-properties-mask",
+      "area": "annotations-pattern",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "patternProperties": {
+          "^secret_[A-Za-z0-9_]+$": {
+            "type": "string",
+            "x-mask": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept_after_walker",
+        "portalPublish": "accept",
+        "maskPlan": "bounded_pattern",
+        "fixedHeaderMapping": false
+      },
+      "instances": [
+        { "id": "matching-property", "value": { "secret_token": "hidden" }, "valid": true },
+        { "id": "unmatched-property", "value": { "public": "visible" }, "valid": false }
+      ]
+    },
+    {
+      "id": "input-composed-annotations",
+      "area": "annotations",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "region" },
+              "region": { "type": "string", "x-mcp-header": "Mcp-Param-Region" }
+            },
+            "required": ["kind", "region"]
+          },
+          {
+            "properties": {
+              "kind": { "const": "account" },
+              "account": { "type": "string", "x-mask": true, "x-sensitive": true }
+            },
+            "required": ["kind", "account"]
+          }
+        ],
+        "unevaluatedProperties": false
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept_after_walker",
+        "portalPublish": "accept"
+      },
+      "instances": [
+        { "id": "region", "value": { "kind": "region", "region": "ca-central" }, "valid": true },
+        { "id": "account", "value": { "kind": "account", "account": "secret" }, "valid": true }
+      ]
+    },
+    {
+      "id": "input-private-annotation-name-collisions",
+      "area": "advertised-schema",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "$defs": {
+          "x-sensitive": {
+            "type": "object",
+            "properties": { "value": { "type": "string" } },
+            "required": ["value"],
+            "additionalProperties": false
+          }
+        },
+        "properties": {
+          "x-mask": { "type": "string" },
+          "details": { "$ref": "#/$defs/x-sensitive" },
+          "metadata": {
+            "type": "object",
+            "default": { "x-sensitive": "preserve-default" },
+            "examples": [{ "x-mask": "preserve-example" }]
+          },
+          "secret": { "type": "string", "x-mask": true, "x-mask-pattern": "^(.*)$" }
+        },
+        "required": ["x-mask", "details"],
+        "additionalProperties": false
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept_after_walker",
+        "portalPublish": "accept"
+      },
+      "instances": [
+        {
+          "id": "valid",
+          "value": { "x-mask": "ordinary", "details": { "value": "visible" } },
+          "valid": true
+        }
+      ]
+    },
+    {
+      "id": "output-composed-object",
+      "area": "output",
+      "schemaKind": "output",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "allOf": [
+          { "properties": { "id": { "type": "string" } }, "required": ["id"] },
+          { "properties": { "status": { "enum": ["active", "inactive"] } }, "required": ["status"] }
+        ],
+        "unevaluatedProperties": false
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept",
+        "portalPublish": "accept"
+      },
+      "instances": [
+        { "id": "valid", "value": { "id": "1", "status": "active" }, "valid": true },
+        { "id": "invalid-status", "value": { "id": "1", "status": "unknown" }, "valid": false }
+      ]
+    },
+    {
+      "id": "output-referenced-array",
+      "area": "output",
+      "schemaKind": "output",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$defs": {
+          "result": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": { "id": { "type": "string" } },
+              "required": ["id"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "$ref": "#/$defs/result"
+      },
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "accept",
+        "portalPublish": "accept"
+      },
+      "instances": [
+        { "id": "valid", "value": [{ "id": "1" }], "valid": true },
+        { "id": "invalid-item", "value": [{ "id": 1 }], "valid": false },
+        { "id": "wrapper-not-array", "value": { "items": [{ "id": "1" }] }, "valid": false }
+      ]
+    },
+    {
+      "id": "input-unresolved-local-ref",
+      "area": "reference-rejection",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "$ref": "#/$defs/missing"
+      },
+      "expected": {
+        "jsonschema": "reject",
+        "gatewayPrepare": "reject",
+        "portalPublish": "reject",
+        "reasonCode": "UNRESOLVED_LOCAL_REFERENCE"
+      },
+      "instances": []
+    },
+    {
+      "id": "input-external-ref",
+      "area": "reference-rejection",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "$ref": "https://example.com/request-schema"
+      },
+      "expected": {
+        "jsonschema": "reject",
+        "gatewayPrepare": "reject",
+        "portalPublish": "reject",
+        "reasonCode": "EXTERNAL_REFERENCE_DISABLED"
+      },
+      "instances": []
+    },
+    {
+      "id": "input-anchor-ref",
+      "area": "reference-rejection",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "$defs": {
+          "request": {
+            "$anchor": "request",
+            "type": "object"
+          }
+        },
+        "$ref": "#request"
+      },
+      "expected": {
+        "jsonschema": "accept_gateway_policy_rejects",
+        "gatewayPrepare": "reject",
+        "portalPublish": "reject",
+        "reasonCode": "ANCHOR_REFERENCE_UNSUPPORTED"
+      },
+      "instances": [
+        { "id": "crate-resolves-anchor", "value": {}, "valid": true }
+      ]
+    },
+    {
+      "id": "input-dynamic-ref",
+      "area": "reference-rejection",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "$dynamicAnchor": "node",
+        "$dynamicRef": "#node"
+      },
+      "expected": {
+        "jsonschema": "accept_gateway_policy_rejects",
+        "gatewayPrepare": "reject",
+        "portalPublish": "reject",
+        "reasonCode": "DYNAMIC_REFERENCE_UNSUPPORTED"
+      },
+      "instances": [
+        { "id": "crate-resolves-dynamic-reference", "value": {}, "valid": true }
+      ]
+    },
+    {
+      "id": "input-nested-id",
+      "area": "reference-rejection",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "$defs": {
+          "target": {
+            "type": "string",
+            "x-mask": true
+          }
+        },
+        "properties": {
+          "nested": {
+            "$id": "nested.json",
+            "type": "object",
+            "$defs": {
+              "target": {
+                "type": "integer",
+                "x-sensitive": true
+              }
+            },
+            "properties": {
+              "v": { "$ref": "#/$defs/target" }
+            },
+            "required": ["v"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["nested"],
+        "additionalProperties": false
+      },
+      "expected": {
+        "jsonschema": "accept_gateway_policy_rejects",
+        "gatewayPrepare": "reject",
+        "portalPublish": "reject",
+        "reasonCode": "NESTED_ID_UNSUPPORTED",
+        "validatorResolution": "embedded_resource_defs_target_integer",
+        "documentRootPointerResolution": "root_defs_target_string"
+      },
+      "instances": [
+        { "id": "embedded-integer-target", "value": { "nested": { "v": 5 } }, "valid": true },
+        { "id": "root-string-target-not-used", "value": { "nested": { "v": "s" } }, "valid": false }
+      ]
+    },
+    {
+      "id": "input-nested-schema",
+      "area": "reference-rejection",
+      "schemaKind": "input",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "nested": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object"
+          }
+        }
+      },
+      "expected": {
+        "jsonschema": "accept_gateway_policy_rejects",
+        "gatewayPrepare": "reject",
+        "portalPublish": "reject",
+        "reasonCode": "NESTED_DIALECT_UNSUPPORTED"
+      },
+      "instances": [
+        { "id": "crate-accepts-nested-dialect", "value": { "nested": {} }, "valid": true }
+      ]
+    },
+    {
+      "id": "input-empty-object-override",
+      "area": "root-rejection",
+      "schemaKind": "input",
+      "schema": {},
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "reject",
+        "portalPublish": "reject",
+        "reasonCode": "INPUT_SCHEMA_MISSING_OBJECT_ROOT"
+      },
+      "instances": [
+        { "id": "standards-valid-anything", "value": 1, "valid": true }
+      ]
+    },
+    {
+      "id": "input-empty-string",
+      "area": "document-rejection",
+      "schemaKind": "input",
+      "schema": "",
+      "expected": {
+        "jsonschema": "reject",
+        "gatewayPrepare": "reject",
+        "portalPublish": "reject",
+        "reasonCode": "INPUT_SCHEMA_NOT_OBJECT_DOCUMENT"
+      },
+      "instances": []
+    },
+    {
+      "id": "input-number-document",
+      "area": "document-rejection",
+      "schemaKind": "input",
+      "schema": 1,
+      "expected": {
+        "jsonschema": "reject",
+        "gatewayPrepare": "reject",
+        "portalPublish": "reject",
+        "reasonCode": "INPUT_SCHEMA_NOT_OBJECT_DOCUMENT"
+      },
+      "instances": []
+    },
+    {
+      "id": "input-array-document",
+      "area": "document-rejection",
+      "schemaKind": "input",
+      "schema": [],
+      "expected": {
+        "jsonschema": "reject",
+        "gatewayPrepare": "reject",
+        "portalPublish": "reject",
+        "reasonCode": "INPUT_SCHEMA_NOT_OBJECT_DOCUMENT"
+      },
+      "instances": []
+    },
+    {
+      "id": "input-null-document",
+      "area": "document-rejection",
+      "schemaKind": "input",
+      "schema": null,
+      "expected": {
+        "jsonschema": "reject",
+        "gatewayPrepare": "reject",
+        "portalPublish": "reject",
+        "reasonCode": "INPUT_SCHEMA_NOT_OBJECT_DOCUMENT"
+      },
+      "instances": []
+    },
+    {
+      "id": "input-boolean-true-root",
+      "area": "document-rejection",
+      "schemaKind": "input",
+      "schema": true,
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "reject",
+        "portalPublish": "reject",
+        "reasonCode": "INPUT_SCHEMA_BOOLEAN_ROOT"
+      },
+      "instances": [
+        { "id": "standards-valid-anything", "value": 1, "valid": true }
+      ]
+    },
+    {
+      "id": "input-boolean-false-root",
+      "area": "document-rejection",
+      "schemaKind": "input",
+      "schema": false,
+      "expected": {
+        "jsonschema": "accept",
+        "gatewayPrepare": "reject",
+        "portalPublish": "reject",
+        "reasonCode": "INPUT_SCHEMA_BOOLEAN_ROOT"
+      },
+      "instances": [
+        { "id": "standards-invalid-anything", "value": {}, "valid": false }
+      ]
+    }
+  ],
+  "behaviorCases": [
+    {
+      "id": "portal-no-argument-get-missing-schema",
+      "area": "portal-generation",
+      "input": { "method": "GET", "schemaState": "missing", "parameters": [] },
+      "expected": {
+        "publish": "accept",
+        "method": "GET",
+        "schemaCase": "input-no-arguments-closed"
+      }
+    },
+    {
+      "id": "portal-no-argument-get-blank-schema",
+      "area": "portal-generation",
+      "input": { "method": "GET", "schemaState": "blank", "parameters": [] },
+      "expected": {
+        "publish": "accept",
+        "method": "GET",
+        "schemaCase": "input-no-arguments-closed"
+      }
+    },
+    {
+      "id": "portal-parameterized-get",
+      "area": "portal-generation",
+      "input": {
+        "method": "GET",
+        "schemaState": "missing",
+        "parameters": [
+          { "name": "accountId", "location": "path", "required": true },
+          { "name": "limit", "location": "query", "required": false },
+          { "name": "X-Trace-Id", "location": "header", "required": false },
+          { "name": "session", "location": "cookie", "required": false }
+        ]
+      },
+      "expected": {
+        "publish": "accept",
+        "method": "GET",
+        "schemaCase": "input-parameterized-get",
+        "mappings": {
+          "accountId": "path",
+          "limit": "query",
+          "X-Trace-Id": "header",
+          "session": "cookie"
+        }
+      }
+    },
+    {
+      "id": "portal-body-only-all-of",
+      "area": "portal-generation",
+      "input": { "method": "POST", "schemaCase": "input-all-of", "parameters": [] },
+      "expected": {
+        "publish": "accept",
+        "rootType": "object",
+        "preserveKeywords": ["allOf", "unevaluatedProperties"]
+      }
+    },
+    {
+      "id": "portal-malformed-explicit-schema",
+      "area": "portal-generation",
+      "input": { "method": "GET", "schemaCase": "input-empty-string", "explicit": true },
+      "expected": { "publish": "reject", "reasonCode": "INPUT_SCHEMA_NOT_OBJECT_DOCUMENT" }
+    },
+    {
+      "id": "portal-empty-object-explicit-schema",
+      "area": "portal-generation",
+      "input": { "method": "GET", "schemaCase": "input-empty-object-override", "explicit": true },
+      "expected": { "publish": "reject", "reasonCode": "INPUT_SCHEMA_MISSING_OBJECT_ROOT" }
+    },
+    {
+      "id": "arguments-omitted",
+      "area": "call-arguments",
+      "input": { "argumentsState": "omitted", "schemaCase": "input-no-arguments-closed" },
+      "expected": { "normalizedArguments": {}, "outcome": "accept" }
+    },
+    {
+      "id": "arguments-empty-object",
+      "area": "call-arguments",
+      "input": { "argumentsState": "present", "arguments": {}, "schemaCase": "input-no-arguments-closed" },
+      "expected": { "normalizedArguments": {}, "outcome": "accept" }
+    },
+    {
+      "id": "arguments-null",
+      "area": "call-arguments",
+      "input": { "argumentsState": "present", "arguments": null, "schemaCase": "input-no-arguments-closed" },
+      "expected": {
+        "outcome": "reject_before_schema",
+        "message": "tools/call params.arguments must be an object"
+      }
+    },
+    {
+      "id": "method-explicit-get-configured-schema",
+      "area": "method-inference",
+      "input": { "method": "GET", "inputSchemaConfigured": true },
+      "expected": { "effectiveMethod": "GET", "sendsJsonBody": false }
+    },
+    {
+      "id": "method-call-configured-schema",
+      "area": "method-inference",
+      "input": { "method": "CALL", "inputSchemaConfigured": true },
+      "expected": { "effectiveMethod": "POST", "sendsJsonBody": true }
+    },
+    {
+      "id": "method-call-omitted-schema",
+      "area": "method-inference",
+      "input": { "method": "CALL", "inputSchemaConfigured": false },
+      "expected": { "effectiveMethod": "GET", "sendsJsonBody": false }
+    },
+    {
+      "id": "header-selected-branch-present",
+      "area": "conditional-header",
+      "input": {
+        "schemaCase": "input-composed-annotations",
+        "arguments": { "kind": "region", "region": "ca-central" },
+        "headers": { "Mcp-Param-Region": "ca-central" }
+      },
+      "expected": { "outcome": "accept", "mappingKind": "conditional" }
+    },
+    {
+      "id": "header-branch-not-taken-absent",
+      "area": "conditional-header",
+      "input": {
+        "schemaCase": "input-composed-annotations",
+        "arguments": { "kind": "account", "account": "secret" },
+        "headers": {}
+      },
+      "expected": { "outcome": "accept", "mappingKind": "conditional" }
+    },
+    {
+      "id": "header-branch-not-taken-sent",
+      "area": "conditional-header",
+      "input": {
+        "schemaCase": "input-composed-annotations",
+        "arguments": { "kind": "account", "account": "secret" },
+        "headers": { "Mcp-Param-Region": "ca-central" }
+      },
+      "expected": {
+        "outcome": "reject",
+        "message": "Mcp-Param-Region header is not applicable when its argument is absent or null"
+      }
+    },
+    {
+      "id": "advertised-private-annotation-stripping",
+      "area": "advertised-schema",
+      "input": { "schemaCase": "input-private-annotation-name-collisions" },
+      "expected": {
+        "stripAnnotationMembers": ["/properties/secret/x-mask", "/properties/secret/x-mask-pattern"],
+        "preservePointers": [
+          "/properties/x-mask",
+          "/$defs/x-sensitive",
+          "/properties/metadata/default/x-sensitive",
+          "/properties/metadata/examples/0/x-mask",
+          "/required/0"
+        ]
+      }
+    },
+    {
+      "id": "mapping-complete-closed",
+      "area": "parameter-mapping",
+      "input": {
+        "schemaCase": "input-one-of-discriminated",
+        "requireCompleteParameterMappings": true,
+        "unmappedArguments": "reject",
+        "schemaClosed": true,
+        "mappings": { "model": "query", "eventType": "query", "personType": "query" }
+      },
+      "expected": { "startup": "accept", "unknownArgument": "schema_rejects_first" }
+    },
+    {
+      "id": "mapping-missing-closed",
+      "area": "parameter-mapping",
+      "input": {
+        "schemaCase": "input-one-of-discriminated",
+        "requireCompleteParameterMappings": true,
+        "unmappedArguments": "reject",
+        "schemaClosed": true,
+        "mappings": { "model": "query", "eventType": "query" }
+      },
+      "expected": { "startup": "reject", "reasonCode": "INCOMPLETE_PARAMETER_MAPPING" }
+    },
+    {
+      "id": "mapping-conflicting-branches",
+      "area": "parameter-mapping",
+      "input": {
+        "schemaCase": "input-one-of-discriminated",
+        "property": "model",
+        "branchLocations": ["query", "body"]
+      },
+      "expected": { "portalPublish": "reject", "reasonCode": "CONFLICTING_PARAMETER_MAPPING" }
+    },
+    {
+      "id": "mapping-open-schema-reject-policy",
+      "area": "parameter-mapping",
+      "input": {
+        "schemaClosed": false,
+        "requireCompleteParameterMappings": true,
+        "unmappedArguments": "reject"
+      },
+      "expected": { "portalPublish": "reject", "reasonCode": "REJECT_POLICY_REQUIRES_CLOSED_SCHEMA" }
+    },
+    {
+      "id": "mapping-open-pattern-properties",
+      "area": "parameter-mapping",
+      "input": {
+        "schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "patternProperties": { "^x-": { "type": "string" } }
+        },
+        "requireCompleteParameterMappings": true
+      },
+      "expected": { "startup": "reject", "reasonCode": "OPEN_ENDED_MAPPING_UNSUPPORTED" }
+    },
+    {
+      "id": "output-wrapper-valid-first",
+      "area": "output-normalization",
+      "input": {
+        "schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": { "items": { "type": "array", "items": { "type": "string" } } },
+          "required": ["items"],
+          "additionalProperties": false
+        },
+        "structuredContent": { "items": ["a"] }
+      },
+      "expected": { "wrapperValidation": "accept", "innerValidation": "not_attempted", "fallbackMetric": 0 }
+    },
+    {
+      "id": "output-inner-array-fallback",
+      "area": "output-normalization",
+      "input": {
+        "schemaCase": "output-referenced-array",
+        "structuredContent": { "items": [{ "id": "1" }] }
+      },
+      "expected": { "wrapperValidation": "reject", "innerValidation": "accept", "fallbackMetric": 1 }
+    },
+    {
+      "id": "output-wrapper-and-inner-invalid",
+      "area": "output-normalization",
+      "input": {
+        "schemaCase": "output-referenced-array",
+        "structuredContent": { "items": [{ "id": 1 }] }
+      },
+      "expected": { "wrapperValidation": "reject", "innerValidation": "reject", "outcome": "schema_error" }
+    },
+    {
+      "id": "reload-invalid-candidate",
+      "area": "reload",
+      "input": { "candidateSchemaCase": "input-empty-string", "previousRuntime": "ready" },
+      "expected": {
+        "candidateConstructed": false,
+        "preserveStateFromCalled": false,
+        "activateReloadCalled": false,
+        "previousRuntime": "continues_serving",
+        "toolsListChangedNotification": false,
+        "health": "degraded_configuration"
+      }
+    },
+    {
+      "id": "walker-transitive-composition-budget",
+      "area": "walker-budget",
+      "input": {
+        "countingRule": "sum every reachable allOf/anyOf/oneOf branch entry across nested and referenced schemas",
+        "cacheRole": "performance_only",
+        "safetyBoundary": "monotonic_global_visit_counter"
+      },
+      "expected": { "nestedBranchesChargedTransitively": true, "perKeywordCapOnly": false }
+    },
+    {
+      "id": "diagnostics-discriminated-one-of",
+      "area": "diagnostics",
+      "input": {
+        "schemaCase": "input-one-of-discriminated",
+        "arguments": { "model": "persons" }
+      },
+      "expected": {
+        "compositionKeyword": "oneOf",
+        "branchCount": 2,
+        "preferredDiscriminator": { "property": "model", "value": "persons" },
+        "valuesLogged": false
+      }
+    },
+    {
+      "id": "diagnostics-nondiscriminated-any-of",
+      "area": "diagnostics",
+      "input": { "schemaCase": "input-any-of-overlap", "arguments": {} },
+      "expected": {
+        "compositionKeyword": "anyOf",
+        "branchCount": 2,
+        "fallback": "bounded_path_constraint_list",
+        "closestBranch": "spike_only",
+        "valuesLogged": false
+      }
+    }
+  ],
+  "coverage": [
+    {
+      "obligation": "no-argument and parameterized GET generation",
+      "caseIds": [
+        "input-no-arguments-closed",
+        "input-parameterized-get",
+      "portal-no-argument-get-missing-schema",
+      "portal-no-argument-get-blank-schema",
+      "portal-parameterized-get",
+      "portal-body-only-all-of",
+      "portal-malformed-explicit-schema",
+      "portal-empty-object-explicit-schema"
+      ]
+    },
+    {
+      "obligation": "argument shape and CALL inference",
+      "caseIds": [
+        "arguments-omitted",
+        "arguments-empty-object",
+        "arguments-null",
+        "method-explicit-get-configured-schema",
+        "method-call-configured-schema",
+        "method-call-omitted-schema"
+      ]
+    },
+    {
+      "obligation": "composition and conditionals",
+      "caseIds": [
+        "input-all-of",
+        "input-any-of-overlap",
+        "input-one-of-discriminated",
+        "input-one-of-missing-required",
+        "input-if-then-else",
+        "input-boolean-subschemas",
+        "input-unevaluated-properties-branches",
+        "input-additional-properties-composition-trap"
+      ]
+    },
+    {
+      "obligation": "local references and recursive schemas",
+      "caseIds": [
+        "input-ref-explicit-object-root",
+        "input-ref-inside-all-of",
+        "input-ref-inside-any-of",
+        "input-ref-inside-one-of",
+        "input-nested-ref-chain",
+        "input-recursive-local-ref",
+        "input-root-ref-compatibility"
+      ]
+    },
+    {
+      "obligation": "reference and document rejection",
+      "caseIds": [
+        "input-unresolved-local-ref",
+        "input-external-ref",
+        "input-anchor-ref",
+        "input-dynamic-ref",
+        "input-nested-id",
+        "input-nested-schema",
+        "input-composition-only-root",
+        "input-empty-object-override",
+        "input-empty-string",
+        "input-number-document",
+        "input-array-document",
+        "input-null-document",
+        "input-boolean-true-root",
+        "input-boolean-false-root"
+      ]
+    },
+    {
+      "obligation": "bounded traversal",
+      "caseIds": ["input-diamond-ref-graph", "walker-transitive-composition-budget"]
+    },
+    {
+      "obligation": "annotations and advertised schema",
+      "caseIds": [
+        "input-composed-annotations",
+        "input-pattern-properties-mask",
+        "header-selected-branch-present",
+        "header-branch-not-taken-absent",
+        "header-branch-not-taken-sent",
+        "input-private-annotation-name-collisions",
+        "advertised-private-annotation-stripping"
+      ]
+    },
+    {
+      "obligation": "parameter mapping",
+      "caseIds": [
+        "mapping-complete-closed",
+        "mapping-missing-closed",
+        "mapping-conflicting-branches",
+        "mapping-open-schema-reject-policy",
+        "mapping-open-pattern-properties"
+      ]
+    },
+    {
+      "obligation": "output schema normalization",
+      "caseIds": [
+        "output-composed-object",
+        "output-referenced-array",
+        "output-wrapper-valid-first",
+        "output-inner-array-fallback",
+        "output-wrapper-and-inner-invalid"
+      ]
+    },
+    {
+      "obligation": "reload and diagnostics",
+      "caseIds": [
+        "reload-invalid-candidate",
+        "diagnostics-discriminated-one-of",
+        "diagnostics-nondiscriminated-any-of"
+      ]
+    }
+  ]
+}

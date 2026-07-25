@@ -12,6 +12,8 @@ schema:
   maxSchemaBytes: ${mcp-router.schema.maxSchemaBytes:1048576}
   maxDepth: ${mcp-router.schema.maxDepth:64}
   maxSubschemas: ${mcp-router.schema.maxSubschemas:4096}
+  maxCompositionBranches: ${mcp-router.schema.maxCompositionBranches:256}
+  maxSchemaGraphVisits: ${mcp-router.schema.maxSchemaGraphVisits:4096}
   maxConcurrentValidations: ${mcp-router.schema.maxConcurrentValidations:32}
   validationWatchdogMs: ${mcp-router.schema.validationWatchdogMs:50}
 protocols:

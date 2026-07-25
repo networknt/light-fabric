@@ -28,8 +28,8 @@ use light_pingora::{
     load_pii_tokenization_runtime, load_proxy_route, load_rate_limit_runtime, load_router_route,
     load_security_runtime, load_stateless_auth_runtime, load_static_resources, load_token_runtime,
     load_unified_security_config, load_websocket_router_runtime_with_policy,
-    merge_extra_response_headers, select_router_target, verify_api_key, verify_basic_auth,
-    verify_jwt_request, verify_unified_security,
+    merge_extra_response_headers, select_router_target, validate_mcp_router_runtime_config,
+    verify_api_key, verify_basic_auth, verify_jwt_request, verify_unified_security,
 };
 use light_runtime::{
     CacheRegistry, ConfigManager, LightRuntimeBuilder, ModuleKind, ReloadContext, ReloadOutcome,
@@ -3866,6 +3866,38 @@ struct AccessControlExchange {
     request_data: JsonValue,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GatewayCommand {
+    Start,
+    ValidateConfig { local_only: bool },
+}
+
+fn parse_gateway_command<I, S>(args: I) -> Result<GatewayCommand>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let args = args
+        .into_iter()
+        .map(|value| value.as_ref().to_string())
+        .collect::<Vec<_>>();
+    match args.as_slice() {
+        [] => Ok(GatewayCommand::Start),
+        [command] if command == "validate-config" => {
+            Ok(GatewayCommand::ValidateConfig { local_only: true })
+        }
+        [command, option] if command == "validate-config" && option == "--local-only" => {
+            Ok(GatewayCommand::ValidateConfig { local_only: true })
+        }
+        [command, option] if command == "validate-config" && option == "--with-remote" => {
+            Ok(GatewayCommand::ValidateConfig { local_only: false })
+        }
+        _ => anyhow::bail!(
+            "unknown light-gateway arguments; expected no arguments or `validate-config [--local-only|--with-remote]`"
+        ),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let tracing_guard = init_tracing(
@@ -3875,6 +3907,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    let command = parse_gateway_command(std::env::args().skip(1))?;
     let cache_registry = Arc::new(CacheRegistry::new());
     let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp))
         .with_embedded_config(embedded_config::FILES)
@@ -3886,6 +3919,22 @@ async fn main() -> Result<()> {
         .with_log_stream(tracing_guard.log_stream())
         .with_optional_log_file_access(tracing_guard.log_file_access())
         .build();
+
+    if let GatewayCommand::ValidateConfig { local_only } = command {
+        let runtime_config = if local_only {
+            runtime.prepare_local_config().await
+        } else {
+            runtime.prepare_config().await
+        }
+        .context("failed to load effective light-gateway configuration")?;
+        let report = validate_mcp_router_runtime_config(&runtime_config)
+            .context("failed to validate effective MCP configuration")?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        if !report.valid {
+            anyhow::bail!("MCP configuration validation failed");
+        }
+        return Ok(());
+    }
 
     let running = runtime
         .start()
@@ -4883,12 +4932,32 @@ mod tests {
     use tokio::sync::oneshot;
     use tokio::time::{Duration as TokioDuration, sleep, timeout};
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
     use tokio_tungstenite::tungstenite::handshake::server::{
         Request as WsServerRequest, Response as WsServerResponse,
     };
     use tokio_tungstenite::tungstenite::http::HeaderValue;
     use tokio_tungstenite::tungstenite::protocol::Message;
     use tokio_tungstenite::{accept_async, accept_hdr_async, connect_async};
+
+    #[test]
+    fn gateway_command_rejects_unknown_positional_arguments() {
+        assert_eq!(
+            parse_gateway_command(std::iter::empty::<&str>()).expect("server command"),
+            GatewayCommand::Start
+        );
+        assert_eq!(
+            parse_gateway_command(["validate-config"]).expect("local validation command"),
+            GatewayCommand::ValidateConfig { local_only: true }
+        );
+        assert_eq!(
+            parse_gateway_command(["validate-config", "--with-remote"])
+                .expect("remote validation command"),
+            GatewayCommand::ValidateConfig { local_only: false }
+        );
+        assert!(parse_gateway_command(["validate-cfg"]).is_err());
+        assert!(parse_gateway_command(["validate-config", "--unknown"]).is_err());
+    }
 
     #[test]
     fn llm_handler_requires_body_aware_access_control_proof() {

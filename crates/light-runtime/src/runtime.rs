@@ -330,24 +330,25 @@ impl<T> LightRuntime<T>
 where
     T: TransportRuntime,
 {
+    /// Loads the same effective configuration used by startup without binding
+    /// listeners or registering with the controller.
+    pub async fn prepare_config(mut self) -> Result<RuntimeConfig, RuntimeError> {
+        init_rustls_provider();
+        self.prepare_runtime_config(true).await
+    }
+
+    /// Loads configuration only from local, default, embedded, and locally
+    /// cached sources.
+    /// This deterministic path is intended for validating a deployment artifact
+    /// and never contacts a configured remote config server.
+    pub async fn prepare_local_config(mut self) -> Result<RuntimeConfig, RuntimeError> {
+        init_rustls_provider();
+        self.prepare_runtime_config(false).await
+    }
+
     pub async fn start(mut self) -> Result<RunningRuntime<T>, RuntimeError> {
         init_rustls_provider();
-        self.state = LifecycleState::BootstrapLocal;
-        let (bootstrap, bootstrap_client) = self.load_bootstrap_config()?;
-        let external_config_dir = self.resolve_external_config_dir(&bootstrap);
-
-        self.state = LifecycleState::BootstrapRemoteOrFallback;
-        let remote_result = self
-            .bootstrap_remote_if_needed(&bootstrap, bootstrap_client.as_ref(), &external_config_dir)
-            .await?;
-
-        self.state = LifecycleState::BuildRuntime;
-        let runtime_config = self.build_runtime_config(
-            bootstrap,
-            bootstrap_client,
-            external_config_dir,
-            remote_result,
-        )?;
+        let runtime_config = self.prepare_runtime_config(true).await?;
         self.module_registry
             .register_runtime_configs(&runtime_config)?;
         if let Some(logging_control) = self.logging_control.as_ref() {
@@ -408,6 +409,35 @@ where
             module_registry: self.module_registry,
             cache_registry: self.cache_registry,
         })
+    }
+
+    async fn prepare_runtime_config(
+        &mut self,
+        include_remote: bool,
+    ) -> Result<RuntimeConfig, RuntimeError> {
+        self.state = LifecycleState::BootstrapLocal;
+        let (bootstrap, bootstrap_client) = self.load_bootstrap_config()?;
+        let external_config_dir = self.resolve_external_config_dir(&bootstrap);
+
+        self.state = LifecycleState::BootstrapRemoteOrFallback;
+        let remote_result = if include_remote {
+            self.bootstrap_remote_if_needed(
+                &bootstrap,
+                bootstrap_client.as_ref(),
+                &external_config_dir,
+            )
+            .await?
+        } else {
+            RemoteBootstrapResult::default()
+        };
+
+        self.state = LifecycleState::BuildRuntime;
+        self.build_runtime_config(
+            bootstrap,
+            bootstrap_client,
+            external_config_dir,
+            remote_result,
+        )
     }
 
     fn load_bootstrap_config(

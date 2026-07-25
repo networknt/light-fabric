@@ -10,8 +10,8 @@ use crate::mcp_protocol::{
 };
 use crate::mcp_resources::StatelessResourceBudgets;
 use crate::mcp_schema::{
-    HeaderValueKind, McpSchemaConfig, PreparedMcpTool, SchemaDiagnostic, SchemaValidationPool,
-    ValidationOutcome, prepare_tools,
+    HeaderValueKind, McpSchemaConfig, PreparedMcpTool, SchemaDiagnostic, SchemaPreparationError,
+    SchemaValidationPool, ValidationOutcome, prepare_tools, validation_watchdog_exceeded_count,
 };
 use crate::mcp_stateless::{
     CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, ExpectedParameterHeader,
@@ -75,6 +75,8 @@ const SUBSCRIPTION_CHANNEL_CAPACITY: usize = 2;
 const SUBSCRIPTION_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const MAX_MCP_ERROR_RESPONSE_BYTES: usize = 2 * 1024;
 const MAX_MCP_ERROR_MESSAGE_BYTES: usize = 1024;
+static MCP_SCHEMA_PREPARATION_ACCEPTED: AtomicU64 = AtomicU64::new(0);
+static MCP_SCHEMA_PREPARATION_REJECTED: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1297,12 +1299,73 @@ pub struct McpRouterRuntime {
     tool_catalog_revision: String,
     policy_revision: Option<String>,
     reload_session_evictions: Arc<AtomicU64>,
+    schema_metrics: Arc<McpSchemaRuntimeMetrics>,
     subscriptions: Arc<McpSubscriptionHub>,
     superseded_subscriptions: Option<Arc<McpSubscriptionHub>>,
     reload_publishes_tools_changed: bool,
     /// Shared security/light-client credential boundary. MCP never inspects or
     /// persists its token cache.
     backend_credentials: Option<Arc<TokenRuntime>>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+/// Snapshot with two explicit lifetimes: preparation and watchdog counters are
+/// process-global, while validation and output-fallback counters belong to the
+/// current MCP runtime revision and reset after a successful replacement.
+pub struct McpSchemaMetricsSnapshot {
+    /// Process-global accepted preparation attempts, including reload candidates.
+    pub preparation_accepted: u64,
+    /// Process-global rejected preparation attempts, including reload candidates.
+    pub preparation_rejected: u64,
+    /// Current-runtime-revision request validation counters.
+    pub validations_valid: u64,
+    pub validations_invalid: u64,
+    pub validations_overloaded: u64,
+    pub validations_worker_failed: u64,
+    pub output_fallback_attempted: u64,
+    pub output_fallback_succeeded: u64,
+    pub output_fallback_failed: u64,
+    /// Process-global observational watchdog exceedances.
+    pub validation_watchdog_exceeded: u64,
+}
+
+#[derive(Default)]
+struct McpSchemaRuntimeMetrics {
+    validations_valid: AtomicU64,
+    validations_invalid: AtomicU64,
+    validations_overloaded: AtomicU64,
+    validations_worker_failed: AtomicU64,
+    output_fallback_attempted: AtomicU64,
+    output_fallback_succeeded: AtomicU64,
+    output_fallback_failed: AtomicU64,
+}
+
+impl McpSchemaRuntimeMetrics {
+    fn record_validation(&self, outcome: &ValidationOutcome) {
+        let counter = match outcome {
+            ValidationOutcome::Valid => &self.validations_valid,
+            ValidationOutcome::Invalid(_) => &self.validations_invalid,
+            ValidationOutcome::Overloaded => &self.validations_overloaded,
+            ValidationOutcome::WorkerFailed => &self.validations_worker_failed,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn snapshot(&self) -> McpSchemaMetricsSnapshot {
+        McpSchemaMetricsSnapshot {
+            preparation_accepted: MCP_SCHEMA_PREPARATION_ACCEPTED.load(Ordering::Relaxed),
+            preparation_rejected: MCP_SCHEMA_PREPARATION_REJECTED.load(Ordering::Relaxed),
+            validations_valid: self.validations_valid.load(Ordering::Relaxed),
+            validations_invalid: self.validations_invalid.load(Ordering::Relaxed),
+            validations_overloaded: self.validations_overloaded.load(Ordering::Relaxed),
+            validations_worker_failed: self.validations_worker_failed.load(Ordering::Relaxed),
+            output_fallback_attempted: self.output_fallback_attempted.load(Ordering::Relaxed),
+            output_fallback_succeeded: self.output_fallback_succeeded.load(Ordering::Relaxed),
+            output_fallback_failed: self.output_fallback_failed.load(Ordering::Relaxed),
+            validation_watchdog_exceeded: validation_watchdog_exceeded_count(),
+        }
+    }
 }
 
 impl fmt::Debug for McpRouterRuntime {
@@ -1420,7 +1483,25 @@ impl McpRouterRuntime {
             &config.schema,
             config.protocols.stateless.enabled,
         )
-        .map_err(|message| RuntimeError::Unsupported(format!("invalid MCP schema: {message}")))?;
+        .map_err(|error| {
+            MCP_SCHEMA_PREPARATION_REJECTED.fetch_add(1, Ordering::Relaxed);
+            let message = error.to_string();
+            tracing::warn!(
+                target: "light_pingora::mcp_schema",
+                outcome = "rejected",
+                reasonCode = error.reason_code,
+                reason = %bounded_schema_metric_reason(&message),
+                "MCP schema preparation rejected configuration"
+            );
+            RuntimeError::Unsupported(format!("invalid MCP schema: {message}"))
+        })?;
+        MCP_SCHEMA_PREPARATION_ACCEPTED.fetch_add(1, Ordering::Relaxed);
+        tracing::debug!(
+            target: "light_pingora::mcp_schema",
+            outcome = "accepted",
+            tool_count = tools.len(),
+            "MCP schema preparation accepted configuration"
+        );
         let schema_validation = SchemaValidationPool::new(&config.schema).map_err(|message| {
             RuntimeError::Unsupported(format!("invalid MCP schema validation pool: {message}"))
         })?;
@@ -1490,6 +1571,7 @@ impl McpRouterRuntime {
             tool_catalog_revision,
             policy_revision,
             reload_session_evictions: Arc::new(AtomicU64::new(0)),
+            schema_metrics: Arc::new(McpSchemaRuntimeMetrics::default()),
             subscriptions,
             superseded_subscriptions: None,
             reload_publishes_tools_changed: false,
@@ -1504,6 +1586,44 @@ impl McpRouterRuntime {
 
     pub fn config(&self) -> &McpRouterConfig {
         &self.config
+    }
+
+    pub fn schema_metrics(&self) -> McpSchemaMetricsSnapshot {
+        self.schema_metrics.snapshot()
+    }
+
+    fn record_schema_validation(
+        &self,
+        tool_name: &str,
+        schema_kind: &'static str,
+        outcome: &ValidationOutcome,
+    ) {
+        self.schema_metrics.record_validation(outcome);
+        let (outcome_name, failing_keyword) = match outcome {
+            ValidationOutcome::Valid => ("valid", "none"),
+            ValidationOutcome::Invalid(diagnostics) => (
+                "invalid",
+                diagnostics
+                    .first()
+                    .map(|item| {
+                        item.constraint
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or("schema")
+                    })
+                    .unwrap_or("schema"),
+            ),
+            ValidationOutcome::Overloaded => ("overloaded", "capacity"),
+            ValidationOutcome::WorkerFailed => ("worker_failed", "worker"),
+        };
+        tracing::debug!(
+            target: "light_pingora::mcp_schema",
+            toolName = tool_name,
+            schemaKind = schema_kind,
+            outcome = outcome_name,
+            failingKeyword = failing_keyword,
+            "MCP schema validation outcome"
+        );
     }
 
     pub fn max_request_body_bytes(&self) -> usize {
@@ -3015,9 +3135,9 @@ impl McpRouterRuntime {
                 let mut descriptor = json!({
                     "name": tool.name,
                     "description": tool.description,
-                    "inputSchema": tool.input_schema
+                    "inputSchema": tool.advertised_input_schema
                 });
-                if let Some(output_schema) = tool.output_schema.as_ref() {
+                if let Some(output_schema) = tool.advertised_output_schema.as_ref() {
                     descriptor
                         .as_object_mut()
                         .expect("tool descriptor is an object")
@@ -3184,11 +3304,16 @@ impl McpRouterRuntime {
             });
         }
 
-        match self
+        let input_validation = self
             .schema_validation
-            .validate(Arc::clone(&tool.input_validator), arguments.clone())
-            .await
-        {
+            .validate_with_schema(
+                Arc::clone(&tool.input_validator),
+                Some(Arc::clone(&tool.input_schema_for_validation)),
+                arguments.clone(),
+            )
+            .await;
+        self.record_schema_validation(&tool.name, "input", &input_validation);
+        match input_validation {
             ValidationOutcome::Valid => {}
             ValidationOutcome::Invalid(diagnostics) => {
                 return Ok(mcp_schema_error_result(
@@ -3359,7 +3484,7 @@ impl McpRouterRuntime {
         };
         let (result, status) = if !is_mcp_error_result(&result) {
             if let Some(validator) = tool.output_validator.as_ref() {
-                let Some(mut structured_content) = result.get("structuredContent").cloned() else {
+                let Some(structured_content) = result.get("structuredContent").cloned() else {
                     let result = mcp_tool_error_result(
                         "Tool output did not provide required structuredContent",
                     );
@@ -3374,10 +3499,17 @@ impl McpRouterRuntime {
                     );
                     return Ok(result);
                 };
-                if tool
-                    .output_schema
-                    .as_ref()
-                    .is_some_and(schema_declares_array_root)
+                let output_schema = tool.output_schema_for_validation.as_ref().map(Arc::clone);
+                let wrapper_validation = self
+                    .schema_validation
+                    .validate_with_schema(
+                        Arc::clone(validator),
+                        output_schema.clone(),
+                        structured_content.clone(),
+                    )
+                    .await;
+                self.record_schema_validation(&tool.name, "output", &wrapper_validation);
+                let validation = if matches!(wrapper_validation, ValidationOutcome::Invalid(_))
                     && let Some(items) = structured_content
                         .as_object()
                         .filter(|object| object.len() == 1)
@@ -3385,14 +3517,39 @@ impl McpRouterRuntime {
                         .filter(|items| items.is_array())
                         .cloned()
                 {
-                    structured_content = items;
-                    replace_structured_content(&mut result, structured_content.clone());
-                }
-                match self
-                    .schema_validation
-                    .validate(Arc::clone(validator), structured_content)
-                    .await
-                {
+                    self.schema_metrics
+                        .output_fallback_attempted
+                        .fetch_add(1, Ordering::Relaxed);
+                    let fallback = self
+                        .schema_validation
+                        .validate_with_schema(Arc::clone(validator), output_schema, items.clone())
+                        .await;
+                    self.record_schema_validation(&tool.name, "output_fallback", &fallback);
+                    match fallback {
+                        ValidationOutcome::Valid => {
+                            self.schema_metrics
+                                .output_fallback_succeeded
+                                .fetch_add(1, Ordering::Relaxed);
+                            replace_structured_content(&mut result, items);
+                            ValidationOutcome::Valid
+                        }
+                        ValidationOutcome::Invalid(_) => {
+                            self.schema_metrics
+                                .output_fallback_failed
+                                .fetch_add(1, Ordering::Relaxed);
+                            wrapper_validation
+                        }
+                        capacity_or_worker_failure => {
+                            self.schema_metrics
+                                .output_fallback_failed
+                                .fetch_add(1, Ordering::Relaxed);
+                            capacity_or_worker_failure
+                        }
+                    }
+                } else {
+                    wrapper_validation
+                };
+                match validation {
                     ValidationOutcome::Valid => (result, status),
                     ValidationOutcome::Invalid(diagnostics) => (
                         mcp_schema_error_result(
@@ -4837,14 +4994,6 @@ fn replace_structured_content(result: &mut JsonValue, value: JsonValue) {
     }
 }
 
-fn schema_declares_array_root(schema: &JsonValue) -> bool {
-    match schema.get("type") {
-        Some(JsonValue::String(kind)) => kind == "array",
-        Some(JsonValue::Array(kinds)) => kinds.iter().any(|kind| kind.as_str() == Some("array")),
-        _ => false,
-    }
-}
-
 #[derive(Debug, Clone)]
 struct McpExecutionError {
     code: i64,
@@ -5051,6 +5200,100 @@ pub fn load_mcp_router_runtime(
         )?
         .with_backend_credentials(backend_credentials),
     ))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpConfigValidationReport {
+    pub valid: bool,
+    pub tools_checked: usize,
+    pub errors: Vec<McpConfigValidationError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpConfigValidationError {
+    pub tool_name: String,
+    pub schema_kind: String,
+    pub json_pointer: String,
+    pub reason_code: String,
+    pub reason: String,
+}
+
+pub fn validate_mcp_router_runtime_config(
+    runtime_config: &RuntimeConfig,
+) -> Result<McpConfigValidationReport, RuntimeError> {
+    let config = load_mcp_router_config(runtime_config)?.unwrap_or_default();
+    Ok(validate_mcp_router_config_for_deployment(&config))
+}
+
+pub fn validate_mcp_router_config_for_deployment(
+    config: &McpRouterConfig,
+) -> McpConfigValidationReport {
+    let mut errors = Vec::new();
+    if let Err(error) = validate_config(config) {
+        errors.push(McpConfigValidationError {
+            tool_name: "<configuration>".to_string(),
+            schema_kind: "configuration".to_string(),
+            json_pointer: "/".to_string(),
+            reason_code: "MCP_CONFIG_INVALID".to_string(),
+            reason: error.to_string(),
+        });
+    } else {
+        for tool in &config.tools {
+            if let Err(error) = prepare_tools(
+                std::slice::from_ref(tool),
+                &config.schema,
+                config.protocols.stateless.enabled,
+            ) {
+                let configuration_wide = error.tool_name == "<configuration>";
+                errors.push(schema_preparation_validation_error(error));
+                if configuration_wide {
+                    break;
+                }
+            }
+        }
+        // Preserve whole-catalog preparation invariants beyond validate_config.
+        // Run this only after every individual tool is valid so invalid generated
+        // catalogs still report every independently bad tool.
+        if errors.is_empty()
+            && let Err(error) = prepare_tools(
+                &config.tools,
+                &config.schema,
+                config.protocols.stateless.enabled,
+            )
+        {
+            errors.push(schema_preparation_validation_error(error));
+        }
+    }
+    McpConfigValidationReport {
+        valid: errors.is_empty(),
+        tools_checked: config.tools.len(),
+        errors,
+    }
+}
+
+fn schema_preparation_validation_error(error: SchemaPreparationError) -> McpConfigValidationError {
+    let reason = error.to_string();
+    McpConfigValidationError {
+        tool_name: error.tool_name,
+        schema_kind: error.schema_kind.as_str().to_string(),
+        json_pointer: error.json_pointer,
+        reason_code: error.reason_code.to_string(),
+        reason,
+    }
+}
+
+fn bounded_schema_metric_reason(message: &str) -> String {
+    const MAX_REASON_BYTES: usize = 192;
+    if message.len() <= MAX_REASON_BYTES {
+        return message.to_string();
+    }
+    let mut end = MAX_REASON_BYTES;
+    while end > 0 && !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &message[..end])
 }
 
 fn load_mcp_router_config(
@@ -10336,6 +10579,139 @@ endpointRules:
         received.await.expect("backend request");
     }
 
+    #[tokio::test]
+    async fn referenced_array_output_uses_validator_driven_fallback_and_updates_text() {
+        let (base, received) = spawn_http_server(http_json_response(json!([{"id":"1"}]))).await;
+        let mut tool = test_tool(
+            "referenced-array",
+            "Referenced array",
+            base.as_str(),
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        );
+        tool.output_schema = Some(json!({
+            "$ref":"#/$defs/Rows",
+            "$defs":{"Rows":{"type":"array","items":{"type":"object","required":["id"],"properties":{"id":{"type":"string"}}}}}
+        }));
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![tool],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"referenced-array","arguments":{}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        let body: JsonValue =
+            serde_json::from_slice(response.body.buffered().expect("body")).expect("JSON response");
+        assert_eq!(body["result"]["structuredContent"], json!([{"id":"1"}]));
+        assert_eq!(
+            serde_json::from_str::<JsonValue>(
+                body["result"]["content"][0]["text"].as_str().expect("text")
+            )
+            .expect("text JSON"),
+            json!([{"id":"1"}])
+        );
+        let metrics = runtime.schema_metrics();
+        assert_eq!(metrics.output_fallback_attempted, 1);
+        assert_eq!(metrics.output_fallback_succeeded, 1);
+        assert_eq!(metrics.output_fallback_failed, 0);
+        received.await.expect("backend request");
+    }
+
+    #[tokio::test]
+    async fn wrapper_output_that_validates_does_not_attempt_array_fallback() {
+        let (base, received) = spawn_http_server(http_json_response(json!([1, 2]))).await;
+        let mut tool = test_tool(
+            "wrapper",
+            "Wrapper",
+            base.as_str(),
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        );
+        tool.output_schema = Some(json!({
+            "type":"object",
+            "required":["items"],
+            "properties":{"items":{"type":"array","items":{"type":"integer"}}},
+            "additionalProperties":false
+        }));
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![tool],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"wrapper","arguments":{}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        let body: JsonValue =
+            serde_json::from_slice(response.body.buffered().expect("body")).expect("JSON response");
+        assert_eq!(body["result"]["structuredContent"], json!({"items":[1,2]}));
+        assert_eq!(runtime.schema_metrics().output_fallback_attempted, 0);
+        received.await.expect("backend request");
+    }
+
+    #[tokio::test]
+    async fn composed_object_output_validates_structured_content() {
+        let (base, received) = spawn_http_server(http_json_response(json!({
+            "id":"1","status":"active"
+        })))
+        .await;
+        let mut tool = test_tool(
+            "composed-output",
+            "Composed output",
+            base.as_str(),
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        );
+        tool.output_schema = Some(json!({
+            "type":"object",
+            "allOf":[
+                {"properties":{"id":{"type":"string"}},"required":["id"]},
+                {"properties":{"status":{"enum":["active","inactive"]}},"required":["status"]}
+            ]
+        }));
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![tool],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+        let response = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"composed-output","arguments":{}}}"#.to_vec(),
+            })
+            .await
+            .expect("handle")
+            .expect("response");
+        let body: JsonValue =
+            serde_json::from_slice(response.body.buffered().expect("body")).expect("JSON response");
+        assert_eq!(
+            body["result"]["structuredContent"],
+            json!({"id":"1","status":"active"})
+        );
+        assert_eq!(runtime.schema_metrics().output_fallback_attempted, 0);
+        received.await.expect("backend request");
+    }
+
     #[test]
     fn candidate_runtime_rejects_invalid_output_schema_atomically() {
         let mut tool = test_tool(
@@ -10354,6 +10730,268 @@ endpointRules:
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn deployment_validation_report_is_machine_readable_and_tool_scoped() {
+        let tool = test_tool(
+            "broken[v2]",
+            "Broken",
+            "https://example.com",
+            McpHttpMethod::Get,
+            None,
+            json!({"type":"object","$ref":"#/$defs/missing"}),
+        );
+        let report = validate_mcp_router_config_for_deployment(&McpRouterConfig {
+            tools: vec![tool],
+            ..McpRouterConfig::default()
+        });
+        assert!(!report.valid);
+        assert_eq!(report.tools_checked, 1);
+        assert_eq!(report.errors.len(), 1);
+        assert_eq!(report.errors[0].tool_name, "broken[v2]");
+        assert_eq!(report.errors[0].schema_kind, "inputSchema");
+        assert_eq!(report.errors[0].json_pointer, "/$ref");
+        assert_eq!(report.errors[0].reason_code, "UNRESOLVED_LOCAL_REFERENCE");
+        let value = serde_json::to_value(report).expect("serialized report");
+        assert_eq!(value["errors"][0]["jsonPointer"], "/$ref");
+    }
+
+    #[test]
+    fn deployment_validation_reports_output_schema_without_recompiling_input() {
+        let mut tool = test_tool(
+            "broken-output",
+            "Broken output",
+            "https://example.com",
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        );
+        tool.output_schema = Some(json!({"$ref":"#/$defs/missing"}));
+        let report = validate_mcp_router_config_for_deployment(&McpRouterConfig {
+            tools: vec![tool],
+            ..McpRouterConfig::default()
+        });
+        assert!(!report.valid);
+        assert_eq!(report.errors[0].tool_name, "broken-output");
+        assert_eq!(report.errors[0].schema_kind, "outputSchema");
+        assert_eq!(report.errors[0].json_pointer, "/$ref");
+        assert_eq!(report.errors[0].reason_code, "UNRESOLVED_LOCAL_REFERENCE");
+    }
+
+    #[test]
+    fn deployment_validation_reports_every_independently_invalid_tool() {
+        let broken_reference = test_tool(
+            "broken-one",
+            "Broken reference",
+            "https://example.com",
+            McpHttpMethod::Get,
+            None,
+            json!({"type":"object","$ref":"#/$defs/missing"}),
+        );
+        let rootless_composition = test_tool(
+            "broken-two",
+            "Rootless composition",
+            "https://example.com",
+            McpHttpMethod::Get,
+            None,
+            json!({"allOf":[{"type":"object"}]}),
+        );
+        let report = validate_mcp_router_config_for_deployment(&McpRouterConfig {
+            tools: vec![broken_reference, rootless_composition],
+            ..McpRouterConfig::default()
+        });
+        assert!(!report.valid);
+        assert_eq!(report.tools_checked, 2);
+        assert_eq!(report.errors.len(), 2);
+        assert_eq!(report.errors[0].tool_name, "broken-one");
+        assert_eq!(report.errors[0].reason_code, "UNRESOLVED_LOCAL_REFERENCE");
+        assert_eq!(report.errors[1].tool_name, "broken-two");
+        assert_eq!(
+            report.errors[1].reason_code,
+            "INPUT_SCHEMA_MISSING_OBJECT_ROOT"
+        );
+    }
+
+    #[test]
+    fn deployment_validation_reports_cross_tool_config_errors() {
+        let first = test_tool(
+            "duplicate",
+            "First",
+            "https://example.com",
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        );
+        let mut second = first.clone();
+        second.description = "Second".to_string();
+        let report = validate_mcp_router_config_for_deployment(&McpRouterConfig {
+            tools: vec![first, second],
+            ..McpRouterConfig::default()
+        });
+        assert!(!report.valid);
+        assert_eq!(report.errors.len(), 1);
+        assert_eq!(report.errors[0].tool_name, "<configuration>");
+        assert_eq!(report.errors[0].schema_kind, "configuration");
+        assert_eq!(report.errors[0].reason_code, "MCP_CONFIG_INVALID");
+        assert!(report.errors[0].reason.contains("duplicate"));
+    }
+
+    #[tokio::test]
+    async fn legacy_and_2026_profiles_return_the_same_composed_schema_diagnostic() {
+        let tool = test_tool(
+            "profile-schema",
+            "Profile schema",
+            "http://127.0.0.1:1",
+            McpHttpMethod::Post,
+            None,
+            json!({
+                "type":"object",
+                "oneOf":[
+                    {"properties":{"model":{"const":"events"},"eventType":{"type":"string"}},"required":["model","eventType"]},
+                    {"properties":{"model":{"const":"persons"},"personType":{"type":"string"}},"required":["model","personType"]}
+                ]
+            }),
+        );
+        let mut config = stateless_test_config(vec![tool]);
+        config.protocols.stateless.enabled = true;
+        let runtime = McpRouterRuntime::new(config).expect("runtime");
+        let arguments = json!({"model":"persons"});
+
+        let legacy = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: serde_json::to_vec(&json!({
+                    "jsonrpc":"2.0","id":1,"method":"tools/call",
+                    "params":{"name":"profile-schema","arguments":arguments}
+                }))
+                .expect("legacy body"),
+            })
+            .await
+            .expect("legacy handle")
+            .expect("legacy response");
+        let stateless = runtime
+            .handle_request(stateless_request(
+                "tools/call",
+                json!({"name":"profile-schema","arguments":{"model":"persons"}}),
+                None,
+            ))
+            .await
+            .expect("stateless handle")
+            .expect("stateless response");
+        let legacy: JsonValue =
+            serde_json::from_slice(legacy.body.buffered().expect("legacy body"))
+                .expect("legacy JSON");
+        let stateless: JsonValue =
+            serde_json::from_slice(stateless.body.buffered().expect("stateless body"))
+                .expect("stateless JSON");
+        assert_eq!(legacy["result"]["content"], stateless["result"]["content"]);
+        let text = legacy["result"]["content"][0]["text"]
+            .as_str()
+            .expect("diagnostic text");
+        assert!(text.contains("oneOf (2 branches)"));
+        assert!(text.contains("/personType: required"));
+        assert!(!text.contains("persons"));
+    }
+
+    #[test]
+    fn tools_list_advertises_composition_without_gateway_private_annotations() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![test_tool(
+                "advertised",
+                "Advertised",
+                "https://example.com",
+                McpHttpMethod::Post,
+                None,
+                json!({
+                    "type":"object",
+                    "properties":{"requestId":{"type":"string","x-mcp-header":"Mcp-Param-Request-Id"}},
+                    "oneOf":[
+                        {"properties":{"kind":{"const":"public"},"value":{"type":"string"}},"required":["kind","value"]},
+                        {"properties":{"kind":{"const":"private"},"secret":{"type":"string","x-mask":true,"x-sensitive":true}},"required":["kind","secret"]}
+                    ]
+                }),
+            )],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+        let response = runtime.tools_list_response_from_names(vec!["advertised".to_string()]);
+        let schema = &response["tools"][0]["inputSchema"];
+        assert!(schema.get("oneOf").is_some());
+        assert_eq!(
+            schema["properties"]["requestId"]["x-mcp-header"],
+            "Mcp-Param-Request-Id"
+        );
+        assert!(
+            schema["oneOf"][1]["properties"]["secret"]
+                .get("x-mask")
+                .is_none()
+        );
+        assert!(
+            schema["oneOf"][1]["properties"]["secret"]
+                .get("x-sensitive")
+                .is_none()
+        );
+        assert!(
+            runtime.tools["advertised"].input_schema["oneOf"][1]["properties"]["secret"]["x-mask"]
+                .as_bool()
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn composed_input_rejects_invalid_before_backend_and_allows_valid_call() {
+        let (base, received) = spawn_http_server(http_json_response(json!({"ok":true}))).await;
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![test_tool(
+                "composed-call",
+                "Composed call",
+                base.as_str(),
+                McpHttpMethod::Post,
+                None,
+                json!({
+                    "type":"object",
+                    "allOf":[
+                        {"properties":{"model":{"const":"events"}},"required":["model"]},
+                        {"properties":{"file":{"type":"string"}},"required":["file"]}
+                    ]
+                }),
+            )],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+        let invalid = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"composed-call","arguments":{"model":"events"}}}"#.to_vec(),
+            })
+            .await
+            .expect("invalid handle")
+            .expect("invalid response");
+        let invalid: JsonValue =
+            serde_json::from_slice(invalid.body.buffered().expect("invalid body"))
+                .expect("invalid JSON");
+        assert_eq!(invalid["result"]["isError"], true);
+
+        let valid = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".to_string(),
+                path: "/mcp".to_string(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"composed-call","arguments":{"model":"events","file":"events.json"}}}"#.to_vec(),
+            })
+            .await
+            .expect("valid handle")
+            .expect("valid response");
+        let valid: JsonValue =
+            serde_json::from_slice(valid.body.buffered().expect("valid body")).expect("valid JSON");
+        assert_eq!(valid["result"]["structuredContent"]["ok"], true);
+        let request = received.await.expect("one backend request");
+        assert!(request.contains("events.json"));
     }
 
     #[test]
@@ -11944,6 +12582,58 @@ endpointRules:
         assert_eq!(terminal["result"]["resultType"], "complete");
         assert!(stream.next_frame().await.is_none());
         assert_eq!(runtime.subscriptions.active_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn invalid_reload_keeps_last_known_good_and_publishes_no_tools_change() {
+        let mut runtime = stateless_test_runtime(vec![test_tool(
+            "stable",
+            "Stable",
+            "http://127.0.0.1:1",
+            McpHttpMethod::Get,
+            None,
+            default_input_schema(),
+        )]);
+        runtime.config.protocols.stateless.enabled = true;
+        let response = runtime
+            .handle_request(stateless_request(
+                "subscriptions/listen",
+                json!({"notifications":{"toolsListChanged":true}}),
+                None,
+            ))
+            .await
+            .expect("handle")
+            .expect("response");
+        let mut stream = match response.body {
+            McpResponseBody::Stream(stream) => stream,
+            body => panic!("expected stream, got {body:?}"),
+        };
+        let _acknowledgment = stream.next_frame().await.expect("acknowledgment");
+
+        let mut invalid = runtime.config.clone();
+        invalid.tools[0].input_schema = json!({"allOf":[{"type":"object"}]});
+        let error = McpRouterRuntime::new(invalid).expect_err("invalid candidate");
+        assert!(
+            error
+                .to_string()
+                .contains("INPUT_SCHEMA_MISSING_OBJECT_ROOT")
+                || error.to_string().contains("must declare root")
+        );
+
+        let tools = runtime
+            .handle_request(stateless_request("tools/list", json!({}), None))
+            .await
+            .expect("tools/list handle")
+            .expect("tools/list response");
+        let tools: JsonValue =
+            serde_json::from_slice(tools.body.buffered().expect("tools body")).expect("tools JSON");
+        assert_eq!(tools["result"]["tools"][0]["name"], "stable");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), stream.next_frame())
+                .await
+                .is_err(),
+            "rejected candidate must not publish tools/list_changed"
+        );
     }
 
     #[tokio::test]
