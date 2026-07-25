@@ -10,8 +10,9 @@ use crate::mcp_protocol::{
 };
 use crate::mcp_resources::StatelessResourceBudgets;
 use crate::mcp_schema::{
-    HeaderValueKind, McpSchemaConfig, PreparedMcpTool, SchemaDiagnostic, SchemaPreparationError,
-    SchemaValidationPool, ValidationOutcome, prepare_tools, validation_watchdog_exceeded_count,
+    HeaderValueKind, MaskPathSegment, McpSchemaConfig, PreparedMcpTool, SchemaDiagnostic,
+    SchemaPreparationError, SchemaValidationPool, ValidationOutcome, prepare_tools,
+    validation_watchdog_exceeded_count,
 };
 use crate::mcp_stateless::{
     CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, ExpectedParameterHeader,
@@ -5645,43 +5646,51 @@ fn reqwest_error_class(error: &reqwest::Error) -> &'static str {
     }
 }
 
-fn mask_tool_arguments(tool: &McpToolConfig, arguments: &JsonValue) -> JsonValue {
+fn mask_tool_arguments(tool: &PreparedMcpTool, arguments: &JsonValue) -> JsonValue {
     let mut masked = arguments.clone();
-    apply_schema_mask(&tool.input_schema, &mut masked);
+    for rule in tool.mask_plan.iter() {
+        apply_mask_rule(&mut masked, &rule.path, rule.pattern.as_deref());
+    }
     masked
 }
 
-fn apply_schema_mask(schema: &JsonValue, value: &mut JsonValue) {
-    let Some(schema) = schema.as_object() else {
+fn apply_mask_rule(value: &mut JsonValue, path: &[MaskPathSegment], pattern: Option<&str>) {
+    let Some((segment, remaining)) = path.split_first() else {
+        mask_json_value(value, pattern);
         return;
     };
-    if schema
-        .get("x-mask")
-        .and_then(JsonValue::as_bool)
-        .unwrap_or(false)
-    {
-        mask_json_value(
-            value,
-            schema.get("x-mask-pattern").and_then(JsonValue::as_str),
-        );
-        return;
-    }
-
-    if let Some(properties) = schema.get("properties").and_then(JsonValue::as_object)
-        && let Some(values) = value.as_object_mut()
-    {
-        for (name, property_schema) in properties {
-            if let Some(property_value) = values.get_mut(name) {
-                apply_schema_mask(property_schema, property_value);
+    match segment {
+        MaskPathSegment::Property(name) => {
+            if let Some(child) = value
+                .as_object_mut()
+                .and_then(|values| values.get_mut(name))
+            {
+                apply_mask_rule(child, remaining, pattern);
             }
         }
-    }
-
-    if let Some(items_schema) = schema.get("items")
-        && let Some(values) = value.as_array_mut()
-    {
-        for item in values {
-            apply_schema_mask(items_schema, item);
+        segment @ MaskPathSegment::PropertyPattern(_) => {
+            if let Some(values) = value.as_object_mut() {
+                for (name, child) in values {
+                    if segment.matches_property_name(name) {
+                        apply_mask_rule(child, remaining, pattern);
+                    }
+                }
+            }
+        }
+        MaskPathSegment::AnyIndex => {
+            if let Some(values) = value.as_array_mut() {
+                for child in values {
+                    apply_mask_rule(child, remaining, pattern);
+                }
+            }
+        }
+        MaskPathSegment::Index(index) => {
+            if let Some(child) = value
+                .as_array_mut()
+                .and_then(|values| values.get_mut(*index))
+            {
+                apply_mask_rule(child, remaining, pattern);
+            }
         }
     }
 }
@@ -7470,6 +7479,48 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
+
+    #[test]
+    fn compiled_mask_plan_handles_composition_refs_arrays_and_pattern_properties() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![test_tool(
+                "compiled-mask",
+                "Compiled mask",
+                "https://example.com",
+                McpHttpMethod::Post,
+                None,
+                json!({
+                    "type":"object",
+                    "$defs":{"secret":{"type":"string","x-mask":true}},
+                    "properties":{
+                        "items":{"type":"array","items":{"type":"object","properties":{"token":{"$ref":"#/$defs/secret"}}}}
+                    },
+                    "patternProperties":{"^secret_":{"type":"string","x-mask":true}},
+                    "oneOf":[
+                        {"properties":{"kind":{"const":"public"}}},
+                        {"properties":{"kind":{"const":"private"},"account":{"type":"string","x-sensitive":true}}}
+                    ]
+                }),
+            )],
+            ..McpRouterConfig::default()
+        })
+        .expect("runtime");
+        let arguments = json!({
+            "kind":"private",
+            "account":"account-value",
+            "secret_api":"api-value",
+            "visible":"keep",
+            "items":[{"token":"one","name":"first"},{"token":"two"}]
+        });
+        let masked = mask_tool_arguments(&runtime.tools["compiled-mask"], &arguments);
+        assert_eq!(masked["account"], "******");
+        assert_eq!(masked["secret_api"], "******");
+        assert_eq!(masked["items"][0]["token"], "******");
+        assert_eq!(masked["items"][1]["token"], "******");
+        assert_eq!(masked["items"][0]["name"], "first");
+        assert_eq!(masked["visible"], "keep");
+        assert_eq!(arguments["account"], "account-value");
+    }
 
     #[tokio::test]
     async fn invalid_json_rpc_returns_invalid_request() {
@@ -12389,6 +12440,59 @@ endpointRules:
         .expect("json");
         assert_eq!(body["error"]["code"], -32020);
         assert_eq!(runtime.sessions.lock().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn stateless_composed_header_rejects_branch_not_taken_header() {
+        let tool = test_tool(
+            "conditional-header",
+            "Conditional header",
+            "http://127.0.0.1:1",
+            McpHttpMethod::Get,
+            None,
+            json!({
+                "type":"object",
+                "oneOf":[
+                    {
+                        "properties":{"kind":{"const":"region"},"region":{"type":"string","x-mcp-header":"Mcp-Param-Region"}},
+                        "required":["kind","region"]
+                    },
+                    {
+                        "properties":{"kind":{"const":"account"},"account":{"type":"string","x-sensitive":true}},
+                        "required":["kind","account"]
+                    }
+                ],
+                "unevaluatedProperties":false
+            }),
+        );
+        let mut config = stateless_test_config(vec![tool]);
+        config.protocols.stateless.enabled = true;
+        let runtime = McpRouterRuntime::new(config).expect("runtime");
+        let mut request = stateless_request(
+            "tools/call",
+            json!({"name":"conditional-header","arguments":{"kind":"account","account":"secret"}}),
+            None,
+        );
+        request
+            .headers
+            .push(("Mcp-Param-Region".into(), "ca-central".into()));
+        let response = runtime
+            .handle_request(request)
+            .await
+            .expect("handle")
+            .expect("response");
+        assert_eq!(response.status, 400);
+        let body = serde_json::from_slice::<JsonValue>(
+            response.body.buffered().expect("buffered response"),
+        )
+        .expect("json");
+        assert_eq!(body["error"]["code"], -32020);
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("not applicable when its argument is absent or null")
+        );
     }
 
     #[tokio::test]

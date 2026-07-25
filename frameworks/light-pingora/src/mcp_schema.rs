@@ -1,5 +1,6 @@
 use crate::mcp::McpToolConfig;
 use jsonschema::{PatternOptions, Validator};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::{BTreeMap, BTreeSet};
@@ -140,7 +141,7 @@ impl std::fmt::Display for SchemaPreparationError {
 
 impl std::error::Error for SchemaPreparationError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum HeaderValueKind {
     String,
     Integer,
@@ -154,6 +155,41 @@ pub(crate) struct HeaderExtraction {
     pub value_kind: HeaderValueKind,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum MaskPathSegment {
+    Property(String),
+    PropertyPattern(Regex),
+    AnyIndex,
+    Index(usize),
+}
+
+impl MaskPathSegment {
+    pub(crate) fn matches_property_name(&self, name: &str) -> bool {
+        match self {
+            Self::Property(expected) => expected == name,
+            Self::PropertyPattern(regex) => regex.is_match(name),
+            Self::AnyIndex | Self::Index(_) => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MaskRule {
+    pub path: Vec<MaskPathSegment>,
+    pub pattern: Option<String>,
+}
+
+impl MaskRule {
+    fn covers_fixed_property_path(&self, path: &[String]) -> bool {
+        self.path.len() <= path.len()
+            && self
+                .path
+                .iter()
+                .zip(path)
+                .all(|(segment, name)| segment.matches_property_name(name))
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct PreparedMcpTool {
     pub config: McpToolConfig,
@@ -164,6 +200,7 @@ pub(crate) struct PreparedMcpTool {
     pub output_schema_for_validation: Option<Arc<JsonValue>>,
     pub advertised_output_schema: Option<JsonValue>,
     pub header_extractions: Arc<[HeaderExtraction]>,
+    pub mask_plan: Arc<[MaskRule]>,
 }
 
 impl std::fmt::Debug for PreparedMcpTool {
@@ -172,6 +209,7 @@ impl std::fmt::Debug for PreparedMcpTool {
             .field("name", &self.config.name)
             .field("has_output_validator", &self.output_validator.is_some())
             .field("header_extractions", &self.header_extractions)
+            .field("mask_rules", &self.mask_plan.len())
             .finish()
     }
 }
@@ -484,16 +522,18 @@ pub(crate) fn prepare_tools(
                 .map(Arc::new)
             })
             .transpose()?;
-        let header_extractions = prepare_header_extractions(&tool.input_schema, &tool.name)
-            .map_err(|reason| {
-                SchemaPreparationError::new(
-                    &tool.name,
-                    SchemaKind::Input,
-                    "/",
-                    "SCHEMA_ANNOTATION_INVALID",
-                    reason,
-                )
-            })?;
+        let (header_extractions, mask_plan) =
+            prepare_gateway_annotations(&tool.input_schema, schema_config, &tool.name).map_err(
+                |reason| {
+                    SchemaPreparationError::new(
+                        &tool.name,
+                        SchemaKind::Input,
+                        "/",
+                        "SCHEMA_ANNOTATION_INVALID",
+                        reason,
+                    )
+                },
+            )?;
         let value = PreparedMcpTool {
             input_schema_for_validation: Arc::new(tool.input_schema.clone()),
             output_schema_for_validation: tool.output_schema.clone().map(Arc::new),
@@ -503,6 +543,7 @@ pub(crate) fn prepare_tools(
             input_validator: Arc::new(input_validator),
             output_validator,
             header_extractions: header_extractions.into(),
+            mask_plan: mask_plan.into(),
         };
         if prepared.insert(tool.name.clone(), value).is_some() {
             return Err(SchemaPreparationError::new(
@@ -517,6 +558,38 @@ pub(crate) fn prepare_tools(
     Ok(prepared)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SchemaKeywordShape {
+    PropertyMap,
+    PatternPropertyMap,
+    DefinitionMap,
+    SameLocationMap,
+    SameLocationArray,
+    TupleArray,
+    ArrayItems,
+    AnyProperty,
+    SameLocation,
+    AssertionOnly,
+}
+
+fn schema_keyword_shape(keyword: &str) -> Option<SchemaKeywordShape> {
+    match keyword {
+        "properties" => Some(SchemaKeywordShape::PropertyMap),
+        "patternProperties" => Some(SchemaKeywordShape::PatternPropertyMap),
+        "$defs" | "definitions" => Some(SchemaKeywordShape::DefinitionMap),
+        "dependentSchemas" => Some(SchemaKeywordShape::SameLocationMap),
+        "allOf" | "anyOf" | "oneOf" => Some(SchemaKeywordShape::SameLocationArray),
+        "prefixItems" => Some(SchemaKeywordShape::TupleArray),
+        "items" | "additionalItems" | "unevaluatedItems" | "contains" => {
+            Some(SchemaKeywordShape::ArrayItems)
+        }
+        "additionalProperties" | "unevaluatedProperties" => Some(SchemaKeywordShape::AnyProperty),
+        "then" | "else" => Some(SchemaKeywordShape::SameLocation),
+        "contentSchema" | "propertyNames" | "not" | "if" => Some(SchemaKeywordShape::AssertionOnly),
+        _ => None,
+    }
+}
+
 fn advertised_schema(schema: &JsonValue) -> JsonValue {
     let JsonValue::Object(object) = schema else {
         return schema.clone();
@@ -526,34 +599,35 @@ fn advertised_schema(schema: &JsonValue) -> JsonValue {
         if matches!(key.as_str(), "x-mask" | "x-mask-pattern" | "x-sensitive") {
             continue;
         }
-        let value = match key.as_str() {
-            "properties" | "patternProperties" | "$defs" | "definitions" | "dependentSchemas" => {
-                value.as_object().map_or_else(
+        let value = match schema_keyword_shape(key) {
+            Some(
+                SchemaKeywordShape::PropertyMap
+                | SchemaKeywordShape::PatternPropertyMap
+                | SchemaKeywordShape::DefinitionMap
+                | SchemaKeywordShape::SameLocationMap,
+            ) => value.as_object().map_or_else(
+                || value.clone(),
+                |children| {
+                    JsonValue::Object(
+                        children
+                            .iter()
+                            .map(|(name, child)| (name.clone(), advertised_schema(child)))
+                            .collect(),
+                    )
+                },
+            ),
+            Some(SchemaKeywordShape::SameLocationArray | SchemaKeywordShape::TupleArray) => {
+                value.as_array().map_or_else(
                     || value.clone(),
-                    |children| {
-                        JsonValue::Object(
-                            children
-                                .iter()
-                                .map(|(name, child)| (name.clone(), advertised_schema(child)))
-                                .collect(),
-                        )
-                    },
+                    |children| JsonValue::Array(children.iter().map(advertised_schema).collect()),
                 )
             }
-            "allOf" | "anyOf" | "oneOf" | "prefixItems" => value.as_array().map_or_else(
-                || value.clone(),
-                |children| JsonValue::Array(children.iter().map(advertised_schema).collect()),
-            ),
-            "items"
-            | "unevaluatedItems"
-            | "additionalProperties"
-            | "unevaluatedProperties"
-            | "contains"
-            | "propertyNames"
-            | "not"
-            | "if"
-            | "then"
-            | "else" => advertised_schema(value),
+            Some(
+                SchemaKeywordShape::ArrayItems
+                | SchemaKeywordShape::AnyProperty
+                | SchemaKeywordShape::SameLocation
+                | SchemaKeywordShape::AssertionOnly,
+            ) => advertised_schema(value),
             _ => value.clone(),
         };
         advertised.insert(key.clone(), value);
@@ -656,6 +730,250 @@ fn has_object_root(
         .is_some_and(|target| has_object_root(root, target, active_refs));
     active_refs.remove(reference);
     result
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum LogicalPathSegment {
+    Property(String),
+    PropertyPattern(String),
+    AnyIndex,
+    Index(usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InstanceLocation {
+    Mappable(Vec<LogicalPathSegment>),
+    AssertionOnly,
+    Definition,
+}
+
+struct SchemaChild<'a> {
+    schema: &'a JsonValue,
+    pointer_suffix: String,
+    shape: SchemaKeywordShape,
+    name: Option<String>,
+    index: Option<usize>,
+}
+
+fn schema_children(
+    object: &serde_json::Map<String, JsonValue>,
+    include_definitions: bool,
+) -> Vec<SchemaChild<'_>> {
+    let mut children = Vec::new();
+    for (keyword, value) in object {
+        let Some(shape) = schema_keyword_shape(keyword) else {
+            continue;
+        };
+        if shape == SchemaKeywordShape::DefinitionMap && !include_definitions {
+            continue;
+        }
+        match shape {
+            SchemaKeywordShape::PropertyMap
+            | SchemaKeywordShape::PatternPropertyMap
+            | SchemaKeywordShape::DefinitionMap
+            | SchemaKeywordShape::SameLocationMap => {
+                if let Some(values) = value.as_object() {
+                    children.extend(values.iter().map(|(name, schema)| SchemaChild {
+                        schema,
+                        pointer_suffix: format!(
+                            "/{}/{}",
+                            escape_json_pointer(keyword),
+                            escape_json_pointer(name)
+                        ),
+                        shape,
+                        name: Some(name.clone()),
+                        index: None,
+                    }));
+                }
+            }
+            SchemaKeywordShape::SameLocationArray | SchemaKeywordShape::TupleArray => {
+                if let Some(values) = value.as_array() {
+                    children.extend(
+                        values
+                            .iter()
+                            .enumerate()
+                            .map(|(index, schema)| SchemaChild {
+                                schema,
+                                pointer_suffix: format!(
+                                    "/{}/{index}",
+                                    escape_json_pointer(keyword)
+                                ),
+                                shape,
+                                name: None,
+                                index: Some(index),
+                            }),
+                    );
+                }
+            }
+            SchemaKeywordShape::ArrayItems
+            | SchemaKeywordShape::AnyProperty
+            | SchemaKeywordShape::SameLocation
+            | SchemaKeywordShape::AssertionOnly => children.push(SchemaChild {
+                schema: value,
+                pointer_suffix: format!("/{}", escape_json_pointer(keyword)),
+                shape,
+                name: None,
+                index: None,
+            }),
+        }
+    }
+    children
+}
+
+fn child_instance_location(parent: &InstanceLocation, child: &SchemaChild<'_>) -> InstanceLocation {
+    if matches!(parent, InstanceLocation::AssertionOnly) {
+        return InstanceLocation::AssertionOnly;
+    }
+    if matches!(parent, InstanceLocation::Definition)
+        || child.shape == SchemaKeywordShape::DefinitionMap
+    {
+        return InstanceLocation::Definition;
+    }
+    let InstanceLocation::Mappable(path) = parent else {
+        return InstanceLocation::AssertionOnly;
+    };
+    let mut path = path.clone();
+    match child.shape {
+        SchemaKeywordShape::PropertyMap => {
+            path.push(LogicalPathSegment::Property(
+                child.name.clone().expect("property child name"),
+            ));
+        }
+        SchemaKeywordShape::PatternPropertyMap => {
+            path.push(LogicalPathSegment::PropertyPattern(
+                child.name.clone().expect("pattern property child name"),
+            ));
+        }
+        SchemaKeywordShape::TupleArray => {
+            path.push(LogicalPathSegment::Index(
+                child.index.expect("tuple child index"),
+            ));
+        }
+        SchemaKeywordShape::ArrayItems => path.push(LogicalPathSegment::AnyIndex),
+        SchemaKeywordShape::AnyProperty => {
+            path.push(LogicalPathSegment::PropertyPattern(".*".to_string()));
+        }
+        SchemaKeywordShape::AssertionOnly => return InstanceLocation::AssertionOnly,
+        SchemaKeywordShape::DefinitionMap => return InstanceLocation::Definition,
+        SchemaKeywordShape::SameLocationMap
+        | SchemaKeywordShape::SameLocationArray
+        | SchemaKeywordShape::SameLocation => {}
+    }
+    InstanceLocation::Mappable(path)
+}
+
+fn walk_reachable_schema_graph<F>(
+    root: &JsonValue,
+    visit_budget: usize,
+    reject_annotated_cycles: bool,
+    visitor: F,
+) -> Result<(), String>
+where
+    F: FnMut(&JsonValue, &str, &InstanceLocation) -> Result<(), String>,
+{
+    struct ActiveReference {
+        reference: String,
+        saw_annotation: bool,
+        saw_cycle: bool,
+    }
+
+    struct WalkState<'a, F> {
+        root: &'a JsonValue,
+        visit_budget: usize,
+        visits: usize,
+        reject_annotated_cycles: bool,
+        active_refs: Vec<ActiveReference>,
+        visitor: F,
+    }
+
+    fn visit<F>(
+        state: &mut WalkState<'_, F>,
+        schema: &JsonValue,
+        pointer: &str,
+        location: &InstanceLocation,
+    ) -> Result<(), String>
+    where
+        F: FnMut(&JsonValue, &str, &InstanceLocation) -> Result<(), String>,
+    {
+        state.visits += 1;
+        if state.visits > state.visit_budget {
+            return Err("schema graph traversal exceeds maxSchemaGraphVisits".to_string());
+        }
+        let has_gateway_annotation = schema.as_object().is_some_and(|object| {
+            object.contains_key("x-mcp-header")
+                || object
+                    .get("x-mask")
+                    .and_then(JsonValue::as_bool)
+                    .unwrap_or(false)
+                || object
+                    .get("x-sensitive")
+                    .and_then(JsonValue::as_bool)
+                    .unwrap_or(false)
+        });
+        if has_gateway_annotation {
+            for active in &mut state.active_refs {
+                active.saw_annotation = true;
+            }
+        }
+        (state.visitor)(schema, pointer, location)?;
+        let JsonValue::Object(object) = schema else {
+            return Ok(());
+        };
+        if let Some(reference) = object.get("$ref").and_then(JsonValue::as_str)
+            && !(reference == "#" && pointer.is_empty())
+        {
+            if let Some(active) = state
+                .active_refs
+                .iter_mut()
+                .rev()
+                .find(|active| active.reference == reference)
+            {
+                active.saw_cycle = true;
+            } else {
+                let target = resolve_local_reference(state.root, reference).ok_or_else(|| {
+                    format!("unresolved local JSON Schema reference `{reference}`")
+                })?;
+                state.active_refs.push(ActiveReference {
+                    reference: reference.to_string(),
+                    saw_annotation: false,
+                    saw_cycle: false,
+                });
+                visit(state, target, &format!("{pointer}/$ref"), location)?;
+                let completed = state.active_refs.pop().expect("active reference frame");
+                if state.reject_annotated_cycles && completed.saw_cycle && completed.saw_annotation
+                {
+                    return Err(format!(
+                        "recursive reference `{reference}` produces a non-finite gateway annotation plan"
+                    ));
+                }
+            }
+        }
+        for child in schema_children(object, false) {
+            let child_location = child_instance_location(location, &child);
+            visit(
+                state,
+                child.schema,
+                &format!("{pointer}{}", child.pointer_suffix),
+                &child_location,
+            )?;
+        }
+        Ok(())
+    }
+
+    let mut state = WalkState {
+        root,
+        visit_budget,
+        reject_annotated_cycles,
+        visits: 0,
+        active_refs: Vec::new(),
+        visitor,
+    };
+    visit(
+        &mut state,
+        root,
+        "",
+        &InstanceLocation::Mappable(Vec::new()),
+    )
 }
 
 fn preflight_schema(
@@ -783,71 +1101,33 @@ fn preflight_schema(
                     ));
                 }
             }
-            // Descend only through JSON Schema-valued keyword positions. Values
+            // Descend only through the shared JSON Schema position model. Values
             // under default, const, examples, and extension payloads are instance
             // data, so schema keywords inside them must not affect preflight.
-            for keyword in [
-                "properties",
-                "patternProperties",
-                "$defs",
-                "definitions",
-                "dependentSchemas",
-            ] {
-                if let Some(children) = object.get(keyword).and_then(JsonValue::as_object) {
-                    pending.extend(children.iter().map(|(name, child)| {
-                        (
-                            child,
-                            depth + 1,
-                            format!(
-                                "{pointer}/{}/{}",
-                                escape_json_pointer(keyword),
-                                escape_json_pointer(name)
-                            ),
-                        )
-                    }));
-                }
-            }
-            for keyword in ["allOf", "anyOf", "oneOf", "prefixItems"] {
-                if let Some(children) = object.get(keyword).and_then(JsonValue::as_array) {
-                    pending.extend(children.iter().enumerate().map(|(index, child)| {
-                        (
-                            child,
-                            depth + 1,
-                            format!("{pointer}/{}/{index}", escape_json_pointer(keyword)),
-                        )
-                    }));
-                }
-            }
-            for keyword in [
-                "items",
-                "additionalItems",
-                "unevaluatedItems",
-                "additionalProperties",
-                "unevaluatedProperties",
-                "contains",
-                "contentSchema",
-                "propertyNames",
-                "not",
-                "if",
-                "then",
-                "else",
-            ] {
-                if let Some(child) = object.get(keyword) {
-                    pending.push((
-                        child,
-                        depth + 1,
-                        format!("{pointer}/{}", escape_json_pointer(keyword)),
-                    ));
-                }
-            }
+            pending.extend(schema_children(object, true).into_iter().map(|child| {
+                (
+                    child.schema,
+                    depth + 1,
+                    format!("{pointer}{}", child.pointer_suffix),
+                )
+            }));
         }
     }
-    let composition_branches = count_reachable_composition_branches(
-        schema,
+    let mut composition_branches = 0_usize;
+    walk_reachable_schema_graph(
         schema,
         config.max_schema_graph_visits,
-        &mut BTreeSet::new(),
-        &mut 0,
+        false,
+        |node, _, _| {
+            if let Some(object) = node.as_object() {
+                for keyword in ["allOf", "anyOf", "oneOf"] {
+                    if let Some(branches) = object.get(keyword).and_then(JsonValue::as_array) {
+                        composition_branches = composition_branches.saturating_add(branches.len());
+                    }
+                }
+            }
+            Ok(())
+        },
     )
     .map_err(|reason| {
         schema_policy_error(
@@ -873,99 +1153,6 @@ fn preflight_schema(
     Ok(())
 }
 
-fn count_reachable_composition_branches(
-    root: &JsonValue,
-    schema: &JsonValue,
-    visit_budget: usize,
-    active_refs: &mut BTreeSet<String>,
-    visits: &mut usize,
-) -> Result<usize, String> {
-    *visits += 1;
-    if *visits > visit_budget {
-        return Err("schema graph traversal exceeds maxSchemaGraphVisits".to_string());
-    }
-    let JsonValue::Object(object) = schema else {
-        return Ok(0);
-    };
-    let mut total = 0_usize;
-    if let Some(reference) = object.get("$ref").and_then(JsonValue::as_str)
-        && reference != "#"
-        && active_refs.insert(reference.to_string())
-    {
-        if let Some(target) = resolve_local_reference(root, reference) {
-            total += count_reachable_composition_branches(
-                root,
-                target,
-                visit_budget,
-                active_refs,
-                visits,
-            )?;
-        }
-        active_refs.remove(reference);
-    }
-    for keyword in ["allOf", "anyOf", "oneOf"] {
-        if let Some(branches) = object.get(keyword).and_then(JsonValue::as_array) {
-            total = total.saturating_add(branches.len());
-            for branch in branches {
-                total = total.saturating_add(count_reachable_composition_branches(
-                    root,
-                    branch,
-                    visit_budget,
-                    active_refs,
-                    visits,
-                )?);
-            }
-        }
-    }
-    for keyword in [
-        "items",
-        "unevaluatedItems",
-        "additionalProperties",
-        "unevaluatedProperties",
-        "contains",
-        "propertyNames",
-        "not",
-        "if",
-        "then",
-        "else",
-    ] {
-        if let Some(child) = object.get(keyword) {
-            total = total.saturating_add(count_reachable_composition_branches(
-                root,
-                child,
-                visit_budget,
-                active_refs,
-                visits,
-            )?);
-        }
-    }
-    for keyword in ["properties", "patternProperties", "dependentSchemas"] {
-        if let Some(children) = object.get(keyword).and_then(JsonValue::as_object) {
-            for child in children.values() {
-                total = total.saturating_add(count_reachable_composition_branches(
-                    root,
-                    child,
-                    visit_budget,
-                    active_refs,
-                    visits,
-                )?);
-            }
-        }
-    }
-    if let Some(children) = object.get("prefixItems").and_then(JsonValue::as_array) {
-        for child in children {
-            total = total.saturating_add(count_reachable_composition_branches(
-                root,
-                child,
-                visit_budget,
-                active_refs,
-                visits,
-            )?);
-        }
-    }
-    Ok(total)
-}
-
 fn schema_policy_error(
     tool_name: &str,
     schema_kind: SchemaKind,
@@ -980,132 +1167,228 @@ fn escape_json_pointer(value: &str) -> String {
     value.replace('~', "~0").replace('/', "~1")
 }
 
-fn prepare_header_extractions(
-    schema: &JsonValue,
-    tool_name: &str,
-) -> Result<Vec<HeaderExtraction>, String> {
-    let total_annotations = count_key(schema, "x-mcp-header");
-    let mut plan = Vec::new();
-    let mut names = BTreeSet::new();
-    collect_property_headers(
-        schema,
-        schema,
-        &mut Vec::new(),
-        &mut BTreeSet::new(),
-        &mut names,
-        &mut plan,
-        tool_name,
-    )?;
-    if plan.len() != total_annotations {
-        return Err(format!(
-            "mcp-router tool `{tool_name}` x-mcp-header must annotate a statically reachable property"
-        ));
-    }
-    Ok(plan)
+#[derive(Debug, Clone)]
+struct HeaderCandidate {
+    header_name: String,
+    value_kind: HeaderValueKind,
 }
 
-fn collect_property_headers(
-    root: &JsonValue,
+fn prepare_gateway_annotations(
     schema: &JsonValue,
-    path: &mut Vec<String>,
-    active_refs: &mut BTreeSet<String>,
-    names: &mut BTreeSet<String>,
-    plan: &mut Vec<HeaderExtraction>,
+    config: &McpSchemaConfig,
     tool_name: &str,
-) -> Result<(), String> {
-    if let Some(reference) = schema.get("$ref").and_then(JsonValue::as_str)
-        && active_refs.insert(reference.to_string())
-    {
-        let target = resolve_local_reference(root, reference).ok_or_else(|| {
-            format!("mcp-router tool `{tool_name}` has unresolved local header schema reference")
-        })?;
-        collect_property_headers(root, target, path, active_refs, names, plan, tool_name)?;
-        active_refs.remove(reference);
-    }
-    let Some(properties) = schema.get("properties").and_then(JsonValue::as_object) else {
-        return Ok(());
-    };
-    for (property, property_schema) in properties {
-        path.push(property.clone());
-        if let Some(header) = property_schema.get("x-mcp-header") {
-            let header = header
-                .as_str()
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| {
-                    format!("mcp-router tool `{tool_name}` x-mcp-header must be a non-empty string")
-                })?;
-            if !is_http_field_name_token(header) {
-                return Err(format!(
-                    "mcp-router tool `{tool_name}` x-mcp-header `{header}` is not an HTTP token"
-                ));
-            }
-            if is_protected_generated_header(header) {
-                return Err(format!(
-                    "mcp-router tool `{tool_name}` x-mcp-header `{header}` is gateway-owned or unsafe"
-                ));
-            }
-            if !names.insert(header.to_ascii_lowercase()) {
-                return Err(format!(
-                    "mcp-router tool `{tool_name}` has duplicate x-mcp-header `{header}`"
-                ));
-            }
-            if property_schema
-                .get("x-mask")
-                .and_then(JsonValue::as_bool)
-                .unwrap_or(false)
-                || property_schema
-                    .get("x-sensitive")
-                    .and_then(JsonValue::as_bool)
-                    .unwrap_or(false)
-            {
-                return Err(format!(
-                    "mcp-router tool `{tool_name}` x-mcp-header cannot expose a sensitive property"
-                ));
-            }
-            let value_kind = match property_schema.get("type").and_then(JsonValue::as_str) {
-                Some("string") => HeaderValueKind::String,
-                Some("integer") => HeaderValueKind::Integer,
-                Some("boolean") => HeaderValueKind::Boolean,
-                Some("number") => {
-                    return Err(format!(
-                        "mcp-router tool `{tool_name}` x-mcp-header cannot annotate number"
-                    ));
-                }
-                _ => {
-                    return Err(format!(
-                        "mcp-router tool `{tool_name}` x-mcp-header requires string, integer, or boolean"
-                    ));
-                }
+) -> Result<(Vec<HeaderExtraction>, Vec<MaskRule>), String> {
+    let mut headers = BTreeMap::<Vec<LogicalPathSegment>, Vec<HeaderCandidate>>::new();
+    let mut masks = BTreeMap::<Vec<LogicalPathSegment>, BTreeSet<Option<String>>>::new();
+
+    walk_reachable_schema_graph(
+        schema,
+        config.max_schema_graph_visits,
+        true,
+        |node, pointer, location| {
+            let Some(object) = node.as_object() else {
+                return Ok(());
             };
-            if value_kind == HeaderValueKind::Integer {
-                let minimum = property_schema.get("minimum").and_then(JsonValue::as_i64);
-                let maximum = property_schema.get("maximum").and_then(JsonValue::as_i64);
-                if minimum.is_none_or(|value| value < -MAX_SAFE_INTEGER)
-                    || maximum.is_none_or(|value| value > MAX_SAFE_INTEGER)
-                {
+            let is_sensitive = object
+                .get("x-sensitive")
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(false);
+            let is_masked = is_sensitive
+                || object
+                    .get("x-mask")
+                    .and_then(JsonValue::as_bool)
+                    .unwrap_or(false);
+            let mappable_path = match location {
+                InstanceLocation::Mappable(path) => Some(path.clone()),
+                InstanceLocation::AssertionOnly | InstanceLocation::Definition => None,
+            };
+            if is_masked {
+                let path = mappable_path.clone().ok_or_else(|| {
+                    format!(
+                        "mcp-router tool `{tool_name}` masking annotation at `{}` cannot map to an instance value",
+                        display_schema_pointer(pointer)
+                    )
+                })?;
+                masks.entry(path).or_default().insert(if is_sensitive {
+                    None
+                } else {
+                    object
+                        .get("x-mask-pattern")
+                        .and_then(JsonValue::as_str)
+                        .map(ToString::to_string)
+                });
+            }
+            if let Some(header) = object.get("x-mcp-header") {
+                let path = mappable_path
+                    .as_ref()
+                    .and_then(|path| fixed_property_path(path))
+                    .filter(|path| !path.is_empty())
+                    .ok_or_else(|| {
+                        format!(
+                            "mcp-router tool `{tool_name}` x-mcp-header at `{}` must annotate a statically reachable fixed property",
+                            display_schema_pointer(pointer)
+                        )
+                    })?;
+                let header = header
+                    .as_str()
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        format!(
+                            "mcp-router tool `{tool_name}` x-mcp-header must be a non-empty string"
+                        )
+                    })?;
+                if !is_http_field_name_token(header) {
                     return Err(format!(
-                        "mcp-router tool `{tool_name}` x-mcp-header integer requires a safe minimum and maximum"
+                        "mcp-router tool `{tool_name}` x-mcp-header `{header}` is not an HTTP token"
                     ));
                 }
+                if is_protected_generated_header(header) {
+                    return Err(format!(
+                        "mcp-router tool `{tool_name}` x-mcp-header `{header}` is gateway-owned or unsafe"
+                    ));
+                }
+                let value_kind = match object.get("type").and_then(JsonValue::as_str) {
+                    Some("string") => HeaderValueKind::String,
+                    Some("integer") => HeaderValueKind::Integer,
+                    Some("boolean") => HeaderValueKind::Boolean,
+                    Some("number") => {
+                        return Err(format!(
+                            "mcp-router tool `{tool_name}` x-mcp-header cannot annotate number"
+                        ));
+                    }
+                    _ => {
+                        return Err(format!(
+                            "mcp-router tool `{tool_name}` x-mcp-header requires string, integer, or boolean"
+                        ));
+                    }
+                };
+                if value_kind == HeaderValueKind::Integer {
+                    let minimum = object.get("minimum").and_then(JsonValue::as_i64);
+                    let maximum = object.get("maximum").and_then(JsonValue::as_i64);
+                    if minimum.is_none_or(|value| value < -MAX_SAFE_INTEGER)
+                        || maximum.is_none_or(|value| value > MAX_SAFE_INTEGER)
+                    {
+                        return Err(format!(
+                            "mcp-router tool `{tool_name}` x-mcp-header integer requires a safe minimum and maximum"
+                        ));
+                    }
+                }
+                headers
+                    .entry(path.into_iter().map(LogicalPathSegment::Property).collect())
+                    .or_default()
+                    .push(HeaderCandidate {
+                        header_name: header.to_string(),
+                        value_kind,
+                    });
             }
-            plan.push(HeaderExtraction {
-                header_name: header.to_string(),
-                property_path: path.clone(),
-                value_kind,
-            });
+            Ok(())
+        },
+    )?;
+
+    let mut mask_plan = Vec::new();
+    for (logical_path, patterns) in masks {
+        let full_mask = patterns.contains(&None);
+        if !full_mask && patterns.len() > 1 {
+            return Err(format!(
+                "mcp-router tool `{tool_name}` has conflicting mask patterns for `{}`",
+                display_instance_path(&logical_path)
+            ));
         }
-        collect_property_headers(
-            root,
-            property_schema,
+        let path = logical_path
+            .into_iter()
+            .map(|segment| match segment {
+                LogicalPathSegment::Property(name) => Ok(MaskPathSegment::Property(name)),
+                LogicalPathSegment::PropertyPattern(source) => Regex::new(&source)
+                    .map(MaskPathSegment::PropertyPattern)
+                    .map_err(|error| {
+                        format!(
+                            "mcp-router tool `{tool_name}` invalid patternProperties mask path: {error}"
+                        )
+                    }),
+                LogicalPathSegment::AnyIndex => Ok(MaskPathSegment::AnyIndex),
+                LogicalPathSegment::Index(index) => Ok(MaskPathSegment::Index(index)),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        mask_plan.push(MaskRule {
             path,
-            active_refs,
-            names,
-            plan,
-            tool_name,
-        )?;
-        path.pop();
+            pattern: if full_mask {
+                None
+            } else {
+                patterns.into_iter().next().flatten()
+            },
+        });
     }
-    Ok(())
+
+    let mut header_names = BTreeMap::<String, Vec<LogicalPathSegment>>::new();
+    let mut header_plan = Vec::new();
+    for (logical_path, candidates) in headers {
+        let first = candidates.first().expect("header candidate");
+        if candidates.iter().any(|candidate| {
+            !candidate
+                .header_name
+                .eq_ignore_ascii_case(&first.header_name)
+                || candidate.value_kind != first.value_kind
+        }) {
+            return Err(format!(
+                "mcp-router tool `{tool_name}` has conflicting x-mcp-header declarations for `{}`",
+                display_instance_path(&logical_path)
+            ));
+        }
+        let property_path = fixed_property_path(&logical_path).expect("fixed header path");
+        if mask_plan
+            .iter()
+            .any(|rule| rule.covers_fixed_property_path(&property_path))
+        {
+            return Err(format!(
+                "mcp-router tool `{tool_name}` x-mcp-header cannot expose sensitive property `{}`",
+                display_instance_path(&logical_path)
+            ));
+        }
+        let normalized_name = first.header_name.to_ascii_lowercase();
+        if let Some(existing_path) = header_names.insert(normalized_name, logical_path.clone())
+            && existing_path != logical_path
+        {
+            return Err(format!(
+                "mcp-router tool `{tool_name}` has duplicate x-mcp-header `{}`",
+                first.header_name
+            ));
+        }
+        header_plan.push(HeaderExtraction {
+            header_name: first.header_name.clone(),
+            property_path,
+            value_kind: first.value_kind,
+        });
+    }
+    Ok((header_plan, mask_plan))
+}
+
+fn fixed_property_path(path: &[LogicalPathSegment]) -> Option<Vec<String>> {
+    path.iter()
+        .map(|segment| match segment {
+            LogicalPathSegment::Property(name) => Some(name.clone()),
+            LogicalPathSegment::PropertyPattern(_)
+            | LogicalPathSegment::AnyIndex
+            | LogicalPathSegment::Index(_) => None,
+        })
+        .collect()
+}
+
+fn display_schema_pointer(pointer: &str) -> &str {
+    if pointer.is_empty() { "/" } else { pointer }
+}
+
+fn display_instance_path(path: &[LogicalPathSegment]) -> String {
+    if path.is_empty() {
+        return "/".to_string();
+    }
+    path.iter()
+        .map(|segment| match segment {
+            LogicalPathSegment::Property(name) => format!("/{}", escape_json_pointer(name)),
+            LogicalPathSegment::PropertyPattern(pattern) => format!("/<{pattern}>"),
+            LogicalPathSegment::AnyIndex => "/*".to_string(),
+            LogicalPathSegment::Index(index) => format!("/{index}"),
+        })
+        .collect()
 }
 
 fn resolve_local_reference<'a>(root: &'a JsonValue, reference: &str) -> Option<&'a JsonValue> {
@@ -1116,20 +1399,6 @@ fn resolve_local_reference<'a>(root: &'a JsonValue, reference: &str) -> Option<&
         root.pointer(pointer)
     } else {
         None
-    }
-}
-
-fn count_key(value: &JsonValue, key: &str) -> usize {
-    match value {
-        JsonValue::Object(object) => {
-            usize::from(object.contains_key(key))
-                + object
-                    .values()
-                    .map(|value| count_key(value, key))
-                    .sum::<usize>()
-        }
-        JsonValue::Array(values) => values.iter().map(|value| count_key(value, key)).sum(),
-        _ => 0,
     }
 }
 
@@ -1760,6 +2029,218 @@ mod tests {
                 prepare_tools(&[tool(invalid, None)], &McpSchemaConfig::default(), false).is_err()
             );
         }
+    }
+
+    #[test]
+    fn composed_header_annotations_deduplicate_and_conflicts_fail_closed() {
+        let prepared = prepare_tools(
+            &[tool(
+                json!({
+                    "type":"object",
+                    "oneOf":[
+                        {"properties":{"kind":{"const":"a"},"requestId":{"type":"string","x-mcp-header":"Mcp-Param-Request-Id"}},"required":["kind","requestId"]},
+                        {"properties":{"kind":{"const":"b"},"requestId":{"type":"string","x-mcp-header":"mcp-param-request-id"}},"required":["kind","requestId"]}
+                    ]
+                }),
+                None,
+            )],
+            &McpSchemaConfig::default(),
+            false,
+        )
+        .expect("equivalent branch annotations deduplicate");
+        let headers = &prepared["test.tool"].header_extractions;
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].property_path, ["requestId"]);
+
+        for schema in [
+            json!({
+                "type":"object",
+                "oneOf":[
+                    {"properties":{"requestId":{"type":"string","x-mcp-header":"Mcp-Param-A"}}},
+                    {"properties":{"requestId":{"type":"string","x-mcp-header":"Mcp-Param-B"}}}
+                ]
+            }),
+            json!({
+                "type":"object",
+                "oneOf":[
+                    {"properties":{"requestId":{"type":"string","x-mcp-header":"Mcp-Param-Request-Id"}}},
+                    {"properties":{"requestId":{"type":"integer","minimum":0,"maximum":10,"x-mcp-header":"Mcp-Param-Request-Id"}}}
+                ]
+            }),
+        ] {
+            let error = prepare_tools(&[tool(schema, None)], &McpSchemaConfig::default(), false)
+                .expect_err("conflicting branch annotations must fail");
+            assert_eq!(error.reason_code, "SCHEMA_ANNOTATION_INVALID");
+            assert!(error.reason.contains("conflicting x-mcp-header"));
+        }
+    }
+
+    #[test]
+    fn reachable_annotation_walk_handles_refs_conditionals_and_unreachable_definitions() {
+        let prepared = prepare_tools(
+            &[tool(
+                json!({
+                    "type":"object",
+                    "$defs":{
+                        "shared":{"type":"string","x-mask":true},
+                        "unused":{"type":"number","x-mcp-header":"not a header"}
+                    },
+                    "properties":{
+                        "left":{"$ref":"#/$defs/shared"},
+                        "right":{"$ref":"#/$defs/shared"},
+                        "metadata":{
+                            "type":"object",
+                            "default":{"x-mcp-header":"not a header","x-mask":true},
+                            "examples":[{"x-sensitive":true}]
+                        }
+                    },
+                    "if":{"properties":{"kind":{"const":"region"}}},
+                    "then":{"properties":{"region":{"type":"string","x-mcp-header":"Mcp-Param-Region"}}},
+                    "else":{"properties":{"account":{"type":"string","x-sensitive":true}}}
+                }),
+                None,
+            )],
+            &McpSchemaConfig::default(),
+            false,
+        )
+        .expect("reachable annotations compile");
+        let prepared = &prepared["test.tool"];
+        assert_eq!(prepared.header_extractions.len(), 1);
+        assert_eq!(prepared.header_extractions[0].property_path, ["region"]);
+        assert_eq!(prepared.mask_plan.len(), 3);
+    }
+
+    #[test]
+    fn non_mappable_headers_and_conflicting_masks_fail_closed() {
+        for schema in [
+            json!({"type":"object","patternProperties":{"^x-":{"type":"string","x-mcp-header":"Mcp-Param-X"}}}),
+            json!({"type":"object","not":{"properties":{"secret":{"type":"string","x-mcp-header":"Mcp-Param-Secret"}}}}),
+            json!({"type":"object","if":{"properties":{"secret":{"type":"string","x-mcp-header":"Mcp-Param-Secret"}}}}),
+            json!({
+                "type":"object",
+                "oneOf":[
+                    {"properties":{"secret":{"type":"string","x-mask":true,"x-mask-pattern":"^(.).*$"}}},
+                    {"properties":{"secret":{"type":"string","x-mask":true,"x-mask-pattern":"^(..).*$"}}}
+                ]
+            }),
+        ] {
+            let error = prepare_tools(&[tool(schema, None)], &McpSchemaConfig::default(), false)
+                .expect_err("ambiguous annotation must fail");
+            assert_eq!(error.reason_code, "SCHEMA_ANNOTATION_INVALID");
+        }
+    }
+
+    #[test]
+    fn pattern_wildcard_and_ancestor_masks_block_fixed_headers() {
+        for schema in [
+            json!({
+                "type":"object",
+                "properties":{"secret_key":{"type":"string","x-mcp-header":"X-Secret-Key"}},
+                "patternProperties":{"^secret_":{"x-sensitive":true}}
+            }),
+            json!({
+                "type":"object",
+                "properties":{"requestId":{"type":"string","x-mcp-header":"Mcp-Param-Request-Id"}},
+                "additionalProperties":{"x-sensitive":true}
+            }),
+            json!({
+                "type":"object",
+                "properties":{
+                    "credentials":{
+                        "type":"object",
+                        "x-sensitive":true,
+                        "properties":{
+                            "token":{"type":"string","x-mcp-header":"Mcp-Param-Token"}
+                        }
+                    }
+                }
+            }),
+        ] {
+            let error = prepare_tools(&[tool(schema, None)], &McpSchemaConfig::default(), false)
+                .expect_err("a matching mask path must block fixed header export");
+            assert_eq!(error.reason_code, "SCHEMA_ANNOTATION_INVALID");
+            assert!(error.reason.contains("cannot expose sensitive property"));
+        }
+    }
+
+    #[test]
+    fn full_mask_takes_precedence_over_partial_branch_patterns() {
+        let prepared = prepare_tools(
+            &[tool(
+                json!({
+                    "type":"object",
+                    "oneOf":[
+                        {"properties":{"secret":{"type":"string","x-mask":true,"x-mask-pattern":"^(.{2}).*$"}}},
+                        {"properties":{"secret":{"type":"string","x-sensitive":true}}}
+                    ]
+                }),
+                None,
+            )],
+            &McpSchemaConfig::default(),
+            false,
+        )
+        .expect("full masking safely dominates a partial pattern");
+        let plan = &prepared["test.tool"].mask_plan;
+        assert_eq!(plan.len(), 1);
+        assert!(plan[0].pattern.is_none());
+    }
+
+    #[test]
+    fn shared_walker_terminates_cycles_and_bounds_adversarial_diamonds() {
+        let cyclic = json!({
+            "type":"object",
+            "$defs":{"node":{"type":"object","properties":{"next":{"$ref":"#/$defs/node"}}}},
+            "properties":{"root":{"$ref":"#/$defs/node"}}
+        });
+        prepare_tools(&[tool(cyclic, None)], &McpSchemaConfig::default(), false)
+            .expect("unannotated recursive schema remains valid");
+
+        let annotated_cycle = json!({
+            "type":"object",
+            "$defs":{
+                "node":{
+                    "type":"object",
+                    "x-sensitive":true,
+                    "properties":{"next":{"$ref":"#/$defs/node"}}
+                }
+            },
+            "properties":{"root":{"$ref":"#/$defs/node"}}
+        });
+        let error = prepare_tools(
+            &[tool(annotated_cycle, None)],
+            &McpSchemaConfig::default(),
+            false,
+        )
+        .expect_err("recursive annotations cannot produce a finite mask plan");
+        assert_eq!(error.reason_code, "SCHEMA_ANNOTATION_INVALID");
+        assert!(error.reason.contains("non-finite gateway annotation plan"));
+
+        let mut definitions = serde_json::Map::new();
+        definitions.insert("leaf".to_string(), json!({"type":"object"}));
+        for level in 0..8 {
+            let target = if level == 0 {
+                "leaf".to_string()
+            } else {
+                format!("level-{}", level - 1)
+            };
+            definitions.insert(
+                format!("level-{level}"),
+                json!({"allOf":[{"$ref":format!("#/$defs/{target}")},{"$ref":format!("#/$defs/{target}")}]}),
+            );
+        }
+        let diamond = json!({
+            "type":"object",
+            "$defs":definitions,
+            "allOf":[{"$ref":"#/$defs/level-7"}]
+        });
+        let config = McpSchemaConfig {
+            max_schema_graph_visits: 64,
+            max_composition_branches: 1_024,
+            ..McpSchemaConfig::default()
+        };
+        let error = prepare_tools(&[tool(diamond, None)], &config, false)
+            .expect_err("diamond expansion must hit the monotonic visit budget");
+        assert_eq!(error.reason_code, "SCHEMA_GRAPH_VISIT_LIMIT_EXCEEDED");
     }
 
     #[test]
