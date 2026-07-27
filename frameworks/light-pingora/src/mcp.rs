@@ -1074,6 +1074,11 @@ struct McpBackendSession {
     allow_private_target_host: bool,
 }
 
+struct ResolvedMcpTarget {
+    url: Url,
+    allow_private_target_host: bool,
+}
+
 #[derive(Debug, Clone)]
 struct ToolRetryPolicy {
     max_attempts: usize,
@@ -3676,10 +3681,6 @@ impl McpRouterRuntime {
         }
     }
 
-    fn backend_client_for_tool(&self, tool: &McpToolConfig) -> &reqwest::Client {
-        self.backend_client(tool_allows_private_target_host(tool))
-    }
-
     async fn execute_http_tool_with_method(
         &self,
         tool: &McpToolConfig,
@@ -3687,7 +3688,10 @@ impl McpRouterRuntime {
         agent_headers: &[(String, String)],
         method: McpHttpMethod,
     ) -> Result<JsonValue, McpExecutionError> {
-        let mut url = self.tool_target_url(tool).await?;
+        let ResolvedMcpTarget {
+            mut url,
+            allow_private_target_host,
+        } = self.tool_target_url(tool).await?;
 
         let mut path_params = BTreeMap::new();
         let mut query_params = BTreeMap::new();
@@ -3893,7 +3897,7 @@ impl McpRouterRuntime {
 
         loop {
             let mut request = self
-                .backend_client_for_tool(tool)
+                .backend_client(allow_private_target_host)
                 .request(request_method.clone(), url.clone())
                 .headers(request_headers.clone());
 
@@ -4043,7 +4047,10 @@ impl McpRouterRuntime {
             ));
         }
         let authorization = self.resolve_backend_authorization(tool, effective).await?;
-        let url = self.tool_target_url(tool).await?;
+        let ResolvedMcpTarget {
+            url,
+            allow_private_target_host,
+        } = self.tool_target_url(tool).await?;
         validate_target_host_resolution(tool, &url).await?;
         let backend_tool_name = tool
             .endpoint_name
@@ -4073,7 +4080,7 @@ impl McpRouterRuntime {
         // Content length and host remain transport-owned.
         headers.remove(reqwest::header::CONTENT_LENGTH);
         let response = self
-            .backend_client_for_tool(tool)
+            .backend_client(allow_private_target_host)
             .post(url.clone())
             .headers(headers)
             .json(&request)
@@ -4344,9 +4351,11 @@ impl McpRouterRuntime {
 
         let authorization = self.resolve_backend_authorization(tool, effective).await?;
         let credential_identity = backend_credential_identity(tool, effective.request);
-        let url = self.tool_target_url(tool).await?;
+        let ResolvedMcpTarget {
+            url,
+            allow_private_target_host,
+        } = self.tool_target_url(tool).await?;
         validate_target_host_resolution(tool, &url).await?;
-        let allow_private_target_host = tool_allows_private_target_host(tool);
         let backend_session = self
             .ensure_backend_session(
                 frontend_session_id,
@@ -4379,7 +4388,7 @@ impl McpRouterRuntime {
         let mut attempt = 1;
         let (content_type, body) = loop {
             let response = match self
-                .backend_client_for_tool(tool)
+                .backend_client(allow_private_target_host)
                 .post(url.clone())
                 .headers(legacy_backend_headers(
                     agent_headers,
@@ -4746,22 +4755,30 @@ impl McpRouterRuntime {
         });
     }
 
-    async fn tool_target_url(&self, tool: &McpToolConfig) -> Result<Url, McpExecutionError> {
-        let base = self.tool_base_url(tool).await?;
-        Ok(apply_tool_path(base, tool))
+    async fn tool_target_url(
+        &self,
+        tool: &McpToolConfig,
+    ) -> Result<ResolvedMcpTarget, McpExecutionError> {
+        let mut target = self.tool_base_url(tool).await?;
+        target.url = apply_tool_path(target.url, tool);
+        Ok(target)
     }
 
-    async fn tool_base_url(&self, tool: &McpToolConfig) -> Result<Url, McpExecutionError> {
+    async fn tool_base_url(
+        &self,
+        tool: &McpToolConfig,
+    ) -> Result<ResolvedMcpTarget, McpExecutionError> {
         if let Some(target_host) = tool
             .target_host
             .as_deref()
             .filter(|value| !value.trim().is_empty())
         {
-            return parse_base_url(
-                target_host,
-                &tool.name,
-                tool_allows_private_target_host(tool),
-            );
+            let allow_private_target_host = tool_allows_private_target_host(tool);
+            let url = parse_base_url(target_host, &tool.name, allow_private_target_host)?;
+            return Ok(ResolvedMcpTarget {
+                url,
+                allow_private_target_host,
+            });
         }
 
         let service_id = tool
@@ -4779,7 +4796,11 @@ impl McpRouterRuntime {
         {
             validate_direct_registry_protocol(matched, tool.protocol.as_deref())
                 .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
-            return parse_base_url(matched.url.trim(), &tool.name, true);
+            let url = parse_base_url(matched.url.trim(), &tool.name, true)?;
+            return Ok(ResolvedMcpTarget {
+                url,
+                allow_private_target_host: true,
+            });
         }
         let discovery = self.discovery.as_ref().ok_or_else(|| {
             McpExecutionError::execution_failed(format!(
@@ -4805,7 +4826,11 @@ impl McpRouterRuntime {
                     "MCP tool service `{service_id}` has no usable discovery nodes"
                 ))
             })?;
-        parse_base_url(discovery_node_base_url(node).as_str(), &tool.name, true)
+        let url = parse_base_url(discovery_node_base_url(node).as_str(), &tool.name, true)?;
+        Ok(ResolvedMcpTarget {
+            url,
+            allow_private_target_host: true,
+        })
     }
 
     fn get_tool(&self, requested_name: &str) -> Option<&PreparedMcpTool> {
@@ -9246,8 +9271,9 @@ endpointRules:
     async fn tool_call_uses_discovered_service_target() {
         let (base, received) =
             spawn_http_server(http_json_response(json!({"forecast": "rain"}))).await;
+        let discovery_base = base.replace("127.0.0.1", "localhost");
         let resolver = Arc::new(FakeDiscovery::new(discovery_snapshot(
-            base.as_str(),
+            discovery_base.as_str(),
             "com.networknt.weather-1.0.0",
             Some("dev"),
             Some("http"),
@@ -9274,7 +9300,7 @@ endpointRules:
                     input_schema: default_input_schema(),
                     output_schema: None,
                     input_schema_configured: true,
-                    tool_metadata: allow_private_target_metadata(),
+                    tool_metadata: JsonValue::Null,
                 }],
                 ..McpRouterConfig::default()
             },
@@ -9308,7 +9334,7 @@ endpointRules:
     }
 
     #[tokio::test]
-    async fn tool_call_uses_direct_registry_before_discovery() {
+    async fn tool_call_uses_localhost_direct_registry_without_private_metadata_before_discovery() {
         let (base, received) =
             spawn_http_server(http_json_response(json!({"forecast": "clear"}))).await;
         let resolver = Arc::new(FakeDiscovery::new(discovery_snapshot(
@@ -9339,7 +9365,7 @@ endpointRules:
                     input_schema: default_input_schema(),
                     output_schema: None,
                     input_schema_configured: true,
-                    tool_metadata: allow_private_target_metadata(),
+                    tool_metadata: JsonValue::Null,
                 }],
                 ..McpRouterConfig::default()
             },
@@ -9348,7 +9374,7 @@ endpointRules:
             DirectRegistryConfig {
                 direct_urls: BTreeMap::from([(
                     "com.networknt.weather-1.0.0|dev".to_string(),
-                    base.clone(),
+                    base.replace("127.0.0.1", "localhost"),
                 )]),
             },
         )
