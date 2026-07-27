@@ -57,21 +57,6 @@ pub struct AccessControlConfig {
     pub skip_path_prefixes: Vec<String>,
     #[serde(default)]
     pub log_full_cel_context: bool,
-    /// Config-server publication revision for the Portal command policy.
-    ///
-    /// This value is operational metadata, not a locally-computed policy hash.
-    /// Deployment automation compares the value acknowledged by each gateway
-    /// with the revision published by Portal before routing command traffic.
-    #[serde(default, alias = "portalCommandPolicyRevision")]
-    pub portal_command_policy_revision: Option<String>,
-    /// Logical Portal command endpoints that must have an exact, active
-    /// request-access policy in the same config-server publication.
-    #[serde(
-        default,
-        alias = "requiredPortalCommandEndpoints",
-        deserialize_with = "deserialize_string_list"
-    )]
-    pub required_portal_command_endpoints: Vec<String>,
     #[serde(default, alias = "claimMappings")]
     pub claim_mappings: BTreeMap<String, Vec<String>>,
     #[serde(default, alias = "toolsListAccessControl")]
@@ -87,8 +72,6 @@ impl Default for AccessControlConfig {
             default_include: false,
             skip_path_prefixes: Vec::new(),
             log_full_cel_context: false,
-            portal_command_policy_revision: None,
-            required_portal_command_endpoints: Vec::new(),
             claim_mappings: BTreeMap::new(),
             tools_list_access_control: ToolsListAccessControlConfig::default(),
         }
@@ -265,77 +248,6 @@ impl AccessControlRuntime {
         let payload = serde_json::to_vec(&normalized).unwrap_or_default();
         let digest = Sha256::digest(payload);
         hex::encode(digest)
-    }
-
-    pub fn portal_command_policy_revision(&self) -> Option<&str> {
-        self.access
-            .as_ref()
-            .and_then(|config| config.portal_command_policy_revision.as_deref())
-            .map(str::trim)
-            .filter(|revision| !revision.is_empty())
-    }
-
-    pub fn required_portal_command_endpoints(&self) -> &[String] {
-        self.access.as_ref().map_or(&[], |config| {
-            config.required_portal_command_endpoints.as_slice()
-        })
-    }
-
-    /// Qualifies the config-server publication before a gateway may serve
-    /// Portal command traffic. Required endpoints are exact logical endpoint
-    /// names; wildcard coverage is deliberately insufficient for this gate.
-    pub fn validate_portal_command_policy(&self) -> Result<(), String> {
-        let endpoints = self.required_portal_command_endpoints();
-        if endpoints.is_empty() {
-            return Ok(());
-        }
-        let revision = self.portal_command_policy_revision().ok_or_else(|| {
-            "access-control portalCommandPolicyRevision is required when requiredPortalCommandEndpoints is configured"
-                .to_string()
-        })?;
-        if revision.len() > 128
-            || !revision.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
-            })
-        {
-            return Err(
-                "access-control portalCommandPolicyRevision must be a bounded HTTP-safe revision token"
-                    .to_string(),
-            );
-        }
-        let mut seen = BTreeSet::new();
-        for endpoint in endpoints {
-            let endpoint = endpoint.trim();
-            if endpoint.is_empty() {
-                return Err(
-                    "access-control requiredPortalCommandEndpoints must not contain an empty endpoint"
-                        .to_string(),
-                );
-            }
-            if !seen.insert(endpoint) {
-                return Err(format!(
-                    "access-control requiredPortalCommandEndpoints contains duplicate endpoint `{endpoint}`"
-                ));
-            }
-            self.validate_request_policy(endpoint)?;
-            let Some(EndpointConfig::Map(endpoint_rules)) = self.rules.endpoint_rules.get(endpoint)
-            else {
-                return Err(format!(
-                    "access-control endpoint `{endpoint}` is not configured"
-                ));
-            };
-            let has_roles = endpoint_rules
-                .get("permission")
-                .and_then(JsonValue::as_object)
-                .and_then(|permission| permission.get("roles"))
-                .is_some_and(configured_roles_are_valid);
-            if !has_roles {
-                return Err(format!(
-                    "access-control endpoint `{endpoint}` has no active role permission"
-                ));
-            }
-        }
-        Ok(())
     }
 
     pub fn validate_request_policy(&self, endpoint: &str) -> Result<(), String> {
@@ -1048,11 +960,7 @@ pub fn load_access_control_runtime(
         );
     }
 
-    let runtime = AccessControlRuntime::new(access_config, rule_config);
-    runtime
-        .validate_portal_command_policy()
-        .map_err(RuntimeError::Config)?;
-    Ok(Some(runtime))
+    Ok(Some(AccessControlRuntime::new(access_config, rule_config)))
 }
 
 fn load_values_config<T>(
@@ -2195,21 +2103,6 @@ fn value_to_string(value: &JsonValue) -> Option<String> {
     }
 }
 
-fn configured_roles_are_valid(value: &JsonValue) -> bool {
-    match value {
-        JsonValue::String(value) => value
-            .split(|character: char| character.is_whitespace() || character == ',')
-            .any(|role| !role.is_empty()),
-        JsonValue::Array(values) => {
-            !values.is_empty()
-                && values
-                    .iter()
-                    .all(|role| role.as_str().is_some_and(|role| !role.trim().is_empty()))
-        }
-        _ => false,
-    }
-}
-
 fn has_any_configured_permission(actual: Option<&str>, configured: Option<&str>) -> bool {
     let Some(actual) = actual else {
         return false;
@@ -2354,94 +2247,6 @@ ruleBodies:
             first
                 .validate_request_policy("/ctrl/missing@connect")
                 .is_err()
-        );
-    }
-
-    #[test]
-    fn portal_command_policy_requires_revision_and_exact_request_access_rules() {
-        let endpoint = "lightapi.net/rule/createRule/0.1.0";
-        let rules: RuleFileConfig = serde_yaml::from_str(
-            r#"
-ruleBodies:
-  allow-rule-admin:
-    common: Y
-    ruleId: allow-rule-admin
-    ruleName: Allow rule admin
-    ruleType: req-acc
-    actions:
-      - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
-endpointRules:
-  lightapi.net/rule/createRule/0.1.0:
-    permission:
-      roles: admin host-admin
-    req-acc: [allow-rule-admin]
-"#,
-        )
-        .expect("portal command policy");
-        let mut config = AccessControlConfig {
-            required_portal_command_endpoints: vec![endpoint.to_string()],
-            ..AccessControlConfig::default()
-        };
-        let missing_revision = AccessControlRuntime::new(Some(config.clone()), rules.clone());
-        assert!(
-            missing_revision
-                .validate_portal_command_policy()
-                .expect_err("revision is required")
-                .contains("portalCommandPolicyRevision")
-        );
-
-        config.portal_command_policy_revision = Some("portal-policy-17".to_string());
-        let qualified = AccessControlRuntime::new(Some(config.clone()), rules);
-        assert_eq!(
-            qualified.portal_command_policy_revision(),
-            Some("portal-policy-17")
-        );
-        assert!(qualified.validate_portal_command_policy().is_ok());
-
-        config.portal_command_policy_revision = Some("portal policy 17".to_string());
-        let unsafe_revision =
-            AccessControlRuntime::new(Some(config.clone()), RuleFileConfig::default());
-        assert!(
-            unsafe_revision
-                .validate_portal_command_policy()
-                .expect_err("revision must be header safe")
-                .contains("HTTP-safe revision token")
-        );
-        config.portal_command_policy_revision = Some("portal-policy-17".to_string());
-
-        let no_role_permission: RuleFileConfig = serde_yaml::from_str(
-            r#"
-ruleBodies:
-  allow-rule-admin:
-    common: Y
-    ruleId: allow-rule-admin
-    ruleName: Allow rule admin
-    ruleType: req-acc
-    expression: "true"
-    conditionLanguage: cel
-    conditionSecurityProfile: strict
-endpointRules:
-  lightapi.net/rule/createRule/0.1.0:
-    req-acc: [allow-rule-admin]
-"#,
-        )
-        .expect("policy without role permission");
-        let missing_role = AccessControlRuntime::new(Some(config.clone()), no_role_permission);
-        assert!(
-            missing_role
-                .validate_portal_command_policy()
-                .expect_err("role permission is required")
-                .contains("no active role permission")
-        );
-
-        config.required_portal_command_endpoints =
-            vec!["lightapi.net/rule/missing/0.1.0".to_string()];
-        let missing_endpoint = AccessControlRuntime::new(Some(config), RuleFileConfig::default());
-        assert!(
-            missing_endpoint
-                .validate_portal_command_policy()
-                .expect_err("endpoint must be exact")
-                .contains("is not configured")
         );
     }
 

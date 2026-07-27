@@ -937,7 +937,11 @@ Router target behavior:
 - `X-Forwarded-For`
 - `X-Forwarded-Proto`
 - `X-Forwarded-Host`
-- `X-Light-Gateway` or equivalent runtime marker
+
+It must also remove client-supplied internal trust markers such as
+`X-Light-Gateway`. The generic gateway does not synthesize a Portal-specific
+identity marker; deployments that require authenticated upstream identity must
+use a mutually authenticated transport or equivalent infrastructure control.
 
 Handler-specific upstream mutations should also run from this phase.
 

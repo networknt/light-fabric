@@ -56,7 +56,7 @@ use pingora::utils::tls::CertKey;
 use pingora::{Error, ErrorType};
 use serde_json::{Value as JsonValue, json};
 use sqlx::postgres::PgPoolOptions;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::BufReader;
 use std::path::{Component, Path};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -76,9 +76,6 @@ const EXTERNAL_CONFIG_DIR: &str = "config-cache";
 const HEALTH_PATH: &str = "/health";
 const ACCESS_CONTROL_MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
 const RUNTIME_INSTANCE_QUERY_ENDPOINT: &str = "lightapi.net/instance/getRuntimeInstance/0.1.0";
-const PORTAL_COMMAND_PATH: &str = "/portal/command";
-const PORTAL_POLICY_REVISION_HEADER: &str = "x-light-gateway-policy-revision";
-const PORTAL_COMMAND_ENDPOINT_INVENTORY: &str = include_str!("../portal-command-endpoints-v1.txt");
 
 #[derive(Clone)]
 struct GatewayApp;
@@ -620,7 +617,6 @@ impl GatewayProxy {
             config,
             active_handlers.is_handler_active("access-control"),
         )?;
-        validate_portal_command_policy_activation(&active_handlers, access_control.as_ref())?;
         log_access_control_revision(access_control.as_ref());
         let mcp_router = load_mcp_router_runtime(config, active_handlers.is_handler_active("mcp"))?;
         let websocket_router = load_websocket_router_runtime_with_policy(
@@ -1500,16 +1496,6 @@ impl GatewayProxy {
         ctx: &GatewayRequestContext,
     ) -> pingora::Result<()> {
         apply_correlation_response(response, &ctx.correlation)?;
-        // Non-secret acknowledgement consumed by deployment health checks.
-        if let Some(revision) = self
-            .access_control
-            .load()
-            .as_ref()
-            .as_ref()
-            .and_then(AccessControlRuntime::portal_command_policy_revision)
-        {
-            response.insert_header(PORTAL_POLICY_REVISION_HEADER, revision)?;
-        }
         if let Some(cors) = ctx.cors.as_ref() {
             apply_cors_response(response, cors)?;
         }
@@ -1815,7 +1801,6 @@ impl ReloadableModule for HandlerReloader {
             &ctx.runtime_config,
             active_handlers.is_handler_active("access-control"),
         )?;
-        validate_portal_command_policy_activation(&active_handlers, access_control.as_ref())?;
         log_access_control_revision(access_control.as_ref());
         let mcp_router = load_mcp_router_runtime_preserving_state(
             &ctx.runtime_config,
@@ -2305,7 +2290,6 @@ impl ReloadableModule for AccessControlReloader {
             &ctx.runtime_config,
             active_handlers.is_handler_active("access-control"),
         )?;
-        validate_portal_command_policy_activation(&active_handlers, access_control.as_ref())?;
         log_access_control_revision(access_control.as_ref());
         let mcp_router = load_mcp_router_runtime_preserving_state(
             &ctx.runtime_config,
@@ -3421,16 +3405,7 @@ impl ProxyHttp for GatewayProxy {
         if ctx.access_control_active || ctx.access_control_response_active {
             upstream_request.remove_header("accept-encoding");
         }
-        let access_control = self.access_control.load();
-        let portal_policy_revision = access_control
-            .as_ref()
-            .as_ref()
-            .and_then(AccessControlRuntime::portal_command_policy_revision);
-        apply_gateway_attestation_headers(
-            upstream_request,
-            ctx.request_path.as_str(),
-            portal_policy_revision,
-        )?;
+        strip_retired_gateway_marker(upstream_request);
         if let Some(correlation_id) = correlation_id_for_upstream(&ctx.correlation) {
             upstream_request.insert_header(light_pingora::CORRELATION_ID_HEADER, correlation_id)?;
         }
@@ -4116,7 +4091,6 @@ fn log_access_control_revision(runtime: Option<&AccessControlRuntime>) {
     if let Some(runtime) = runtime {
         info!(
             policy_revision = %runtime.policy_revision(),
-            portal_command_policy_revision = runtime.portal_command_policy_revision().unwrap_or(""),
             enabled = runtime.authorization_enabled(),
             default_deny = runtime.default_deny(),
             "access-control policy loaded"
@@ -4126,107 +4100,8 @@ fn log_access_control_revision(runtime: Option<&AccessControlRuntime>) {
     }
 }
 
-fn validate_portal_command_policy_activation(
-    active_handlers: &ActiveHandlerSet,
-    runtime: Option<&AccessControlRuntime>,
-) -> Result<(), RuntimeError> {
-    for method in ["GET", "POST"] {
-        let resolved = active_handlers.resolve_handler_chain(PORTAL_COMMAND_PATH, method)?;
-        if resolved.path.is_none() {
-            continue;
-        }
-        let runtime = runtime.ok_or_else(|| {
-            RuntimeError::Config(
-                "Portal command route requires an active access-control runtime".to_string(),
-            )
-        })?;
-        if runtime.required_portal_command_endpoints().is_empty() {
-            return Err(RuntimeError::Config(
-                "Portal command route requires requiredPortalCommandEndpoints from the config-server publication"
-                    .to_string(),
-            ));
-        }
-        runtime
-            .validate_portal_command_policy()
-            .map_err(RuntimeError::Config)?;
-        validate_portal_command_endpoint_inventory(runtime)?;
-
-        let access_index = resolved
-            .handler_ids
-            .iter()
-            .position(|handler| handler == "access-control")
-            .ok_or_else(|| {
-                RuntimeError::Config(format!(
-                    "Portal command {method} route must include the access-control handler"
-                ))
-            })?;
-        let security_index = resolved
-            .handler_ids
-            .iter()
-            .position(|handler| {
-                matches!(
-                    handler.as_str(),
-                    "security" | "jwt" | "unified-security" | "unified"
-                )
-            })
-            .ok_or_else(|| {
-                RuntimeError::Config(format!(
-                    "Portal command {method} route must include an authenticated security handler"
-                ))
-            })?;
-        if security_index >= access_index {
-            return Err(RuntimeError::Config(format!(
-                "Portal command {method} route must run security before access-control"
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn validate_portal_command_endpoint_inventory(
-    runtime: &AccessControlRuntime,
-) -> Result<(), RuntimeError> {
-    let expected = PORTAL_COMMAND_ENDPOINT_INVENTORY
-        .lines()
-        .map(str::trim)
-        .filter(|endpoint| !endpoint.is_empty())
-        .collect::<BTreeSet<_>>();
-    let configured = runtime
-        .required_portal_command_endpoints()
-        .iter()
-        .map(|endpoint| endpoint.trim())
-        .filter(|endpoint| !endpoint.is_empty())
-        .collect::<BTreeSet<_>>();
-    if configured == expected {
-        return Ok(());
-    }
-    let missing = expected.difference(&configured).next().copied();
-    let unexpected = configured.difference(&expected).next().copied();
-    Err(RuntimeError::Config(format!(
-        "Portal command endpoint inventory does not match the frozen Phase 0 contract (expected {}, configured {}, first missing: {}, first unexpected: {})",
-        expected.len(),
-        configured.len(),
-        missing.unwrap_or("none"),
-        unexpected.unwrap_or("none")
-    )))
-}
-
-fn apply_gateway_attestation_headers(
-    upstream_request: &mut pingora::http::RequestHeader,
-    request_path: &str,
-    portal_policy_revision: Option<&str>,
-) -> pingora::Result<()> {
-    // Attestation is authored only by this gateway. Removal is unconditional
-    // so a non-Portal upstream cannot receive a forged policy revision either.
+fn strip_retired_gateway_marker(upstream_request: &mut pingora::http::RequestHeader) {
     upstream_request.remove_header("x-light-gateway");
-    upstream_request.remove_header(PORTAL_POLICY_REVISION_HEADER);
-    upstream_request.insert_header("x-light-gateway", "light-pingora")?;
-    if request_path == PORTAL_COMMAND_PATH
-        && let Some(revision) = portal_policy_revision
-    {
-        upstream_request.insert_header(PORTAL_POLICY_REVISION_HEADER, revision)?;
-    }
-    Ok(())
 }
 
 fn agent_headers(session: &Session) -> Vec<(String, String)> {
@@ -5492,172 +5367,16 @@ endpointRules:
     }
 
     #[test]
-    fn portal_command_route_requires_qualified_security_and_policy_revision() {
-        let config_dir = TempDir::new().expect("config temp dir");
-        let external_dir = TempDir::new().expect("external temp dir");
-        std::fs::write(
-            config_dir.path().join(light_pingora::HANDLER_FILE),
-            r#"
-enabled: true
-handlers: [unified-security, access-control, router]
-chains: {}
-paths:
-  - path: /portal/command
-    method: POST
-    exec: [unified-security, access-control, router]
-defaultHandlers: []
-"#,
-        )
-        .expect("write handler config");
-        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
-        let handlers =
-            load_active_handlers(&config, &gateway_handler_registry()).expect("load handler chain");
-        assert!(validate_portal_command_policy_activation(&handlers, None).is_err());
+    fn retired_gateway_marker_is_stripped_before_proxying() {
+        let mut request =
+            pingora::http::RequestHeader::build("POST", b"/anything", Some(2)).expect("request");
+        request
+            .append_header("x-light-gateway", "light-pingora")
+            .expect("client marker");
 
-        let endpoint = "lightapi.net/rule/createRule/0.1.0";
-        let mut rules = serde_yaml::from_str::<light_pingora::RuleFileConfig>(
-            r#"
-ruleBodies:
-  allow-rule-admin:
-    common: Y
-    ruleId: allow-rule-admin
-    ruleName: Allow rule admin
-    ruleType: req-acc
-    actions:
-      - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
-endpointRules:
-  lightapi.net/rule/createRule/0.1.0:
-    permission:
-      roles: admin host-admin
-    req-acc: [allow-rule-admin]
-"#,
-        )
-        .expect("portal rules");
-        let endpoint_policy = rules
-            .endpoint_rules
-            .get(endpoint)
-            .cloned()
-            .expect("sample endpoint policy");
-        let incomplete_runtime = AccessControlRuntime::new(
-            Some(light_pingora::AccessControlConfig {
-                portal_command_policy_revision: Some("portal-policy-17".to_string()),
-                required_portal_command_endpoints: vec![endpoint.to_string()],
-                ..light_pingora::AccessControlConfig::default()
-            }),
-            rules.clone(),
-        );
-        assert!(
-            validate_portal_command_policy_activation(&handlers, Some(&incomplete_runtime))
-                .expect_err("partial endpoint inventory must fail")
-                .to_string()
-                .contains("frozen Phase 0 contract")
-        );
-        let required_endpoints = PORTAL_COMMAND_ENDPOINT_INVENTORY
-            .lines()
-            .map(str::trim)
-            .filter(|endpoint| !endpoint.is_empty())
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        for required in &required_endpoints {
-            rules
-                .endpoint_rules
-                .insert(required.clone(), endpoint_policy.clone());
-        }
-        let access = light_pingora::AccessControlConfig {
-            portal_command_policy_revision: Some("portal-policy-17".to_string()),
-            required_portal_command_endpoints: required_endpoints,
-            ..light_pingora::AccessControlConfig::default()
-        };
-        let runtime = AccessControlRuntime::new(Some(access), rules);
-        validate_portal_command_policy_activation(&handlers, Some(&runtime))
-            .expect("qualified Portal command policy");
+        strip_retired_gateway_marker(&mut request);
 
-        std::fs::write(
-            config_dir.path().join(light_pingora::HANDLER_FILE),
-            r#"
-enabled: true
-handlers: [unified-security, access-control, router]
-chains: {}
-paths:
-  - path: /portal/command
-    method: POST
-    exec: [unified-security, access-control, router]
-  - path: /portal/command
-    method: GET
-    exec: [access-control, unified-security, router]
-defaultHandlers: []
-"#,
-        )
-        .expect("write unsafe GET handler config");
-        let handlers =
-            load_active_handlers(&config, &gateway_handler_registry()).expect("reload handlers");
-        assert!(
-            validate_portal_command_policy_activation(&handlers, Some(&runtime))
-                .expect_err("GET route order must be qualified")
-                .to_string()
-                .contains("GET route must run security before access-control")
-        );
-    }
-
-    #[test]
-    fn upstream_filter_replaces_spoofed_gateway_attestation_headers() {
-        let mut portal_request =
-            pingora::http::RequestHeader::build("POST", b"/portal/command", Some(8))
-                .expect("portal request");
-        portal_request
-            .append_header("x-light-gateway", "attacker")
-            .expect("spoofed gateway header");
-        portal_request
-            .append_header(PORTAL_POLICY_REVISION_HEADER, "forged")
-            .expect("spoofed revision header");
-
-        apply_gateway_attestation_headers(
-            &mut portal_request,
-            PORTAL_COMMAND_PATH,
-            Some("portal-policy-17"),
-        )
-        .expect("apply gateway attestation");
-
-        let gateway_values = portal_request
-            .headers
-            .get_all("x-light-gateway")
-            .iter()
-            .map(|value| value.to_str().expect("gateway header value"))
-            .collect::<Vec<_>>();
-        let revision_values = portal_request
-            .headers
-            .get_all(PORTAL_POLICY_REVISION_HEADER)
-            .iter()
-            .map(|value| value.to_str().expect("revision header value"))
-            .collect::<Vec<_>>();
-        assert_eq!(gateway_values, vec!["light-pingora"]);
-        assert_eq!(revision_values, vec!["portal-policy-17"]);
-
-        let mut non_portal_request =
-            pingora::http::RequestHeader::build("GET", b"/v1/public", Some(4))
-                .expect("non-Portal request");
-        non_portal_request
-            .append_header(PORTAL_POLICY_REVISION_HEADER, "forged")
-            .expect("spoofed non-Portal revision");
-        apply_gateway_attestation_headers(
-            &mut non_portal_request,
-            "/v1/public",
-            Some("portal-policy-17"),
-        )
-        .expect("apply non-Portal gateway attestation");
-        assert!(
-            non_portal_request
-                .headers
-                .get(PORTAL_POLICY_REVISION_HEADER)
-                .is_none()
-        );
-        assert_eq!(
-            non_portal_request
-                .headers
-                .get("x-light-gateway")
-                .and_then(|value| value.to_str().ok()),
-            Some("light-pingora")
-        );
+        assert!(request.headers.get("x-light-gateway").is_none());
     }
 
     #[test]

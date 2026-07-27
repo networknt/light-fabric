@@ -4,6 +4,4 @@ defaultDeny: ${access-control.defaultDeny:true}
 defaultInclude: ${access-control.defaultInclude:false}
 skipPathPrefixes: ${access-control.skipPathPrefixes:[]}
 logFullCelContext: ${access-control.logFullCelContext:false}
-portalCommandPolicyRevision: ${access-control.portalCommandPolicyRevision:}
-requiredPortalCommandEndpoints: ${access-control.requiredPortalCommandEndpoints:[]}
 claimMappings: ${access-control.claimMappings:{}}
