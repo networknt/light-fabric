@@ -8,8 +8,14 @@ fi
 VERSION=""
 LOCAL_BUILD=false
 SKIP_BUILD=false
+NOTES_ONLY=false
+UPDATE_CHANGELOG=false
+INCLUDE_MERGES=false
 INSTALL_TARGETS=true
 DIST_DIR="${DIST_DIR:-dist}"
+FROM_REF=""
+TARGET_REF=""
+declare -a EXPLICIT_ISSUES=()
 
 TARGETS=(
   "x86_64-unknown-linux-gnu"
@@ -34,11 +40,17 @@ show_help() {
     echo "Error: ${error}"
     echo " "
   fi
-  echo "    release.sh [VERSION] [-l|--local] [--skip-build] [--no-target-add] [--dist DIR]"
+  echo "    release.sh [VERSION] [-l|--local] [--skip-build] [--notes-only] [options]"
   echo " "
   echo "    where [VERSION] is the GitHub release tag to build and publish"
   echo "          [-l|--local] builds and packages locally without uploading to GitHub"
   echo "          [--skip-build] packages existing target binaries without rebuilding"
+  echo "          [--notes-only] generates release notes without building, packaging, or publishing"
+  echo "          [--update-changelog] inserts or replaces VERSION in CHANGELOG.md"
+  echo "          [--from TAG] overrides the previous release tag"
+  echo "          [--target-ref REF] overrides the release-notes target ref"
+  echo "          [--include-merges] includes merge commits in the release notes"
+  echo "          [--issue NUMBER] adds an addressed issue; may be repeated"
   echo "          [--no-target-add] skips rustup target installation"
   echo "          [--dist DIR] writes release archives to DIR instead of dist"
   echo " "
@@ -50,6 +62,7 @@ show_help() {
   echo "          ./release.sh v0.1.0"
   echo "          ./release.sh v0.1.0 --local"
   echo "          ./release.sh v0.1.0 --skip-build"
+  echo "          ./release.sh v0.1.0 --notes-only --update-changelog"
   echo " "
 }
 
@@ -120,14 +133,35 @@ publish_release() {
   require_command gh
 
   if gh release view "$VERSION" >/dev/null 2>&1; then
-    echo "Uploading artifacts to existing GitHub release ${VERSION}"
-    gh release upload "$VERSION" "${ARCHIVES[@]}" --clobber
+    echo "Updating GitHub release ${VERSION}"
+    gh release edit "$VERSION" --notes-file "$NOTES_FILE"
+    if [[ ${#ARCHIVES[@]} -gt 0 ]]; then
+      gh release upload "$VERSION" "${ARCHIVES[@]}" --clobber
+    fi
   else
     echo "Creating GitHub release ${VERSION}"
     gh release create "$VERSION" "${ARCHIVES[@]}" \
       --title "$VERSION" \
-      --notes "Light-Fabric Linux release binaries"
+      --notes-file "$NOTES_FILE"
   fi
+}
+
+generate_release_notes() {
+  local notes_args=("$VERSION" --output "$NOTES_FILE")
+
+  [[ -z "$FROM_REF" ]] || notes_args+=(--from "$FROM_REF")
+  [[ -z "$TARGET_REF" ]] || notes_args+=(--target-ref "$TARGET_REF")
+  $INCLUDE_MERGES && notes_args+=(--include-merges)
+  $UPDATE_CHANGELOG && notes_args+=(--update-changelog)
+
+  for issue_number in "${EXPLICIT_ISSUES[@]}"; do
+    notes_args+=(--issue "$issue_number")
+  done
+  for target in "${TARGETS[@]}"; do
+    notes_args+=(--artifact "light-fabric-${VERSION}-${target}.tar.gz")
+  done
+
+  "${REPO_ROOT}/scripts/release-notes.sh" "${notes_args[@]}"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -143,6 +177,33 @@ while [[ $# -gt 0 ]]; do
     --skip-build)
       SKIP_BUILD=true
       shift
+      ;;
+    --notes-only)
+      NOTES_ONLY=true
+      shift
+      ;;
+    --update-changelog)
+      UPDATE_CHANGELOG=true
+      shift
+      ;;
+    --from)
+      [[ $# -ge 2 ]] || fail "--from requires a git tag"
+      FROM_REF="$2"
+      shift 2
+      ;;
+    --target|--target-ref)
+      [[ $# -ge 2 ]] || fail "--target-ref requires a git ref"
+      TARGET_REF="$2"
+      shift 2
+      ;;
+    --include-merges)
+      INCLUDE_MERGES=true
+      shift
+      ;;
+    --issue)
+      [[ $# -ge 2 ]] || fail "--issue requires an issue number"
+      EXPLICIT_ISSUES+=("$2")
+      shift 2
       ;;
     --no-target-add)
       INSTALL_TARGETS=false
@@ -174,21 +235,23 @@ if [[ -z "$VERSION" ]]; then
   exit 1
 fi
 
-require_command cargo
-require_command cp
-require_command mkdir
-require_command rm
-require_command tar
-
-if ! $LOCAL_BUILD; then
+if ! $LOCAL_BUILD && ! $NOTES_ONLY; then
   require_command gh
 fi
 
-if $INSTALL_TARGETS && ! $SKIP_BUILD; then
+if ! $NOTES_ONLY; then
+  require_command cargo
+  require_command cp
+  require_command mkdir
+  require_command rm
+  require_command tar
+fi
+
+if $INSTALL_TARGETS && ! $SKIP_BUILD && ! $NOTES_ONLY; then
   require_command rustup
 fi
 
-if ! $SKIP_BUILD; then
+if ! $SKIP_BUILD && ! $NOTES_ONLY; then
   for target in "${TARGETS[@]}"; do
     if [[ "$target" == "x86_64-unknown-linux-musl" ]]; then
       require_musl_toolchain
@@ -201,21 +264,28 @@ mkdir -p "$DIST_DIR"
 setup_build_env
 
 declare -a ARCHIVES=()
+NOTES_FILE="${DIST_DIR}/release-notes-${VERSION}.md"
+generate_release_notes
 
-for target in "${TARGETS[@]}"; do
-  if ! $SKIP_BUILD; then
-    build_target "$target"
-  fi
-  package_target "$target"
-done
+if ! $NOTES_ONLY; then
+  for target in "${TARGETS[@]}"; do
+    if ! $SKIP_BUILD; then
+      build_target "$target"
+    fi
+    package_target "$target"
+  done
 
-echo "Release archives:"
-for archive in "${ARCHIVES[@]}"; do
-  echo "  ${archive}"
-done
+  echo "Release archives:"
+  for archive in "${ARCHIVES[@]}"; do
+    echo "  ${archive}"
+  done
+fi
+echo "Release notes: ${NOTES_FILE}"
 
 if $LOCAL_BUILD; then
   echo "Skipping GitHub release upload due to local build flag (-l or --local)"
+elif $NOTES_ONLY; then
+  echo "Skipping GitHub release upload due to --notes-only"
 else
   publish_release
 fi

@@ -87,6 +87,42 @@ Build, package, and upload the Linux release artifacts with:
 ./release.sh v0.1.0
 ```
 
+The script generates `dist/release-notes-v0.1.0.md` from commits since the
+previous semantic-version tag. Commit references such as `fixes #123` are
+listed under **Issues Addressed**, and the same file is used for new and
+existing GitHub release pages.
+
+`--notes-only` never creates or updates a GitHub release, even when `--local`
+is omitted. Publishing an existing version deliberately replaces its GitHub
+release body with the newly generated notes before uploading artifacts.
+
+Prepare and review the checked-in changelog before publishing:
+
+```bash
+./release.sh v0.1.0 --notes-only --update-changelog
+git diff CHANGELOG.md
+# Review and commit CHANGELOG.md, then build and publish.
+./release.sh v0.1.0
+```
+
+Use `--from TAG` if automatic previous-tag selection is not appropriate, and
+repeat `--issue NUMBER` to include addressed issues that are not referenced by
+the release commits. Changelog updates are idempotent: rerunning the command
+replaces the version section rather than duplicating it.
+
+Automatic issue extraction requires a closing keyword immediately followed by
+one issue reference, such as `fixes #123`. For forms such as `fixes: #123` or
+additional issues in `fixes #123, #124`, add each missing number with
+`--issue NUMBER`.
+
+The publish command regenerates notes from Git history, so the final notes also
+include the reviewed changelog commit. For maintenance releases from an older
+branch, pass `--from TAG`; automatic selection uses the highest reachable
+semantic-version tag and may otherwise choose a newer release line.
+
+`CHANGELOG.md` intentionally starts with releases prepared by this workflow;
+historical tags have not been backfilled.
+
 To build and package locally without uploading to GitHub:
 
 ```bash
