@@ -3,8 +3,9 @@ use crate::security::{
     JwtExpiryMode, SecurityRuntime, load_security_runtime_from_file, verify_jwt_token,
 };
 use crate::spa_auth::{
-    AUTHORIZATION_HEADER, CookieSameSite, SpaAuthResponse, SpaCookieConfig, SpaSessionOutcome,
-    bearer_token, delete_cookie_header, generate_csrf,
+    AUTHORIZATION_HEADER, CookieSameSite, SpaAuthLegacyEndpoint, SpaAuthResponse, SpaCookieConfig,
+    SpaSessionOutcome, bearer_token, delete_cookie_header, generate_csrf,
+    record_spa_auth_legacy_get,
 };
 use light_runtime::{ModuleKind, RuntimeConfig, RuntimeError};
 use pingora::prelude::Session;
@@ -22,6 +23,12 @@ pub const SECURITY_MSAL_CONFIG_NAME: &str = "security-msal";
 
 const ACCESS_TOKEN_COOKIE: &str = "accessToken";
 const CSRF_COOKIE: &str = "csrf";
+
+fn method_not_allowed(allow: &'static str) -> HandlerRejection {
+    HandlerRejection::new(405, "ERR10008", "method not allowed")
+        .with_header("allow", allow)
+        .with_header("cache-control", "no-store")
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -131,10 +138,34 @@ impl MsalAuthRuntime {
 
         let path = session.req_header().uri.path();
         if path == self.config.login_path {
+            if session
+                .req_header()
+                .method
+                .as_str()
+                .eq_ignore_ascii_case("OPTIONS")
+            {
+                return Ok(SpaSessionOutcome::Continue {
+                    auth: None,
+                    response_headers: Vec::new(),
+                });
+            }
+            require_post(session.req_header().method.as_str())?;
             return self.handle_login(session).await;
         }
 
         if path == self.config.logout_path {
+            if session
+                .req_header()
+                .method
+                .as_str()
+                .eq_ignore_ascii_case("OPTIONS")
+            {
+                return Ok(SpaSessionOutcome::Continue {
+                    auth: None,
+                    response_headers: Vec::new(),
+                });
+            }
+            check_logout_method(session.req_header().method.as_str())?;
             return self.handle_logout(session).await;
         }
 
@@ -205,26 +236,17 @@ impl MsalAuthRuntime {
             "message": "success"
         });
 
-        Ok(SpaSessionOutcome::Respond(SpaAuthResponse::json(
-            200, body, headers,
-        )))
+        Ok(SpaSessionOutcome::Respond(
+            SpaAuthResponse::json(200, body, headers).with_no_store(),
+        ))
     }
 
     async fn handle_logout(
         &self,
         _session: &mut Session,
     ) -> Result<SpaSessionOutcome, HandlerRejection> {
-        let headers = vec![
-            delete_cookie_header(&self.config.cookie_config(), ACCESS_TOKEN_COOKIE, true),
-            delete_cookie_header(&self.config.cookie_config(), CSRF_COOKIE, false),
-        ];
-
-        let body = json!({
-            "message": "logged out"
-        });
-
-        Ok(SpaSessionOutcome::Respond(SpaAuthResponse::json(
-            200, body, headers,
+        Ok(SpaSessionOutcome::Respond(msal_auth_logout_response(
+            &self.config,
         )))
     }
 
@@ -263,6 +285,32 @@ impl MsalAuthRuntime {
 
         Ok(principal)
     }
+}
+
+fn msal_auth_logout_response(config: &MsalAuthConfig) -> SpaAuthResponse {
+    let cookies = config.cookie_config();
+    SpaAuthResponse::no_content(vec![
+        delete_cookie_header(&cookies, ACCESS_TOKEN_COOKIE, true),
+        delete_cookie_header(&cookies, CSRF_COOKIE, false),
+    ])
+}
+
+fn require_post(method: &str) -> Result<(), HandlerRejection> {
+    if method.eq_ignore_ascii_case("POST") {
+        return Ok(());
+    }
+    Err(method_not_allowed("POST"))
+}
+
+fn check_logout_method(method: &str) -> Result<(), HandlerRejection> {
+    if method.eq_ignore_ascii_case("GET") {
+        record_spa_auth_legacy_get(SpaAuthLegacyEndpoint::MsalAuthLogout);
+        return Ok(());
+    }
+    if method.eq_ignore_ascii_case("POST") {
+        return Ok(());
+    }
+    Err(method_not_allowed("GET, POST"))
 }
 
 pub fn load_msal_auth_config(
@@ -319,4 +367,52 @@ pub fn load_msal_auth_runtime(
     };
 
     Ok(Some(MsalAuthRuntime::new(config, msal_security)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn login_and_logout_method_contracts_are_distinct() {
+        assert!(require_post("POST").is_ok());
+        let login_rejection = require_post("GET").expect_err("login GET");
+        assert_eq!(login_rejection.status, 405);
+        assert!(
+            login_rejection
+                .headers
+                .contains(&("allow".into(), "POST".into()))
+        );
+        assert!(check_logout_method("POST").is_ok());
+        assert!(check_logout_method("GET").is_ok());
+        let rejection = check_logout_method("PATCH").expect_err("logout PATCH");
+        assert_eq!(rejection.status, 405);
+        assert_eq!(rejection.code, "ERR10008");
+        assert!(
+            rejection
+                .headers
+                .contains(&("allow".into(), "GET, POST".into()))
+        );
+    }
+
+    #[test]
+    fn msal_auth_logout_matches_no_content_contract() {
+        let response = msal_auth_logout_response(&MsalAuthConfig::default());
+        assert_eq!(response.status, 204);
+        assert_eq!(response.content_type, None);
+        assert!(response.body.is_empty());
+        assert_eq!(
+            response
+                .headers
+                .iter()
+                .filter(|(name, _)| name == "set-cookie")
+                .count(),
+            2
+        );
+        assert!(
+            response
+                .headers
+                .contains(&("cache-control".into(), "no-store".into()))
+        );
+    }
 }

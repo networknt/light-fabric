@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -260,13 +261,73 @@ impl SpaSessionRuntime {
     }
 
     pub fn logout_response(&self) -> SpaAuthResponse {
-        SpaAuthResponse {
-            status: 200,
-            content_type: "text/plain; charset=utf-8".to_string(),
-            body: Vec::new(),
-            headers: delete_cookie_headers(&self.cookies),
+        SpaAuthResponse::no_content(delete_cookie_headers(&self.cookies))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpaAuthLegacyEndpoint {
+    MsalExchange,
+    MsalExchangeLogout,
+    MsalAuthLogout,
+    StatelessLogout,
+}
+
+impl SpaAuthLegacyEndpoint {
+    fn counter(self) -> &'static AtomicU64 {
+        match self {
+            Self::MsalExchange => &LEGACY_MSAL_EXCHANGE_GET_COUNT,
+            Self::MsalExchangeLogout => &LEGACY_MSAL_EXCHANGE_LOGOUT_GET_COUNT,
+            Self::MsalAuthLogout => &LEGACY_MSAL_AUTH_LOGOUT_GET_COUNT,
+            Self::StatelessLogout => &LEGACY_STATELESS_LOGOUT_GET_COUNT,
         }
     }
+
+    fn dimensions(self) -> (&'static str, &'static str) {
+        match self {
+            Self::MsalExchange => ("msal-exchange", "exchange"),
+            Self::MsalExchangeLogout => ("msal-exchange", "logout"),
+            Self::MsalAuthLogout => ("msal-auth", "logout"),
+            Self::StatelessLogout => ("stateless-auth", "logout"),
+        }
+    }
+}
+
+static LEGACY_MSAL_EXCHANGE_GET_COUNT: AtomicU64 = AtomicU64::new(0);
+static LEGACY_MSAL_EXCHANGE_LOGOUT_GET_COUNT: AtomicU64 = AtomicU64::new(0);
+static LEGACY_MSAL_AUTH_LOGOUT_GET_COUNT: AtomicU64 = AtomicU64::new(0);
+static LEGACY_STATELESS_LOGOUT_GET_COUNT: AtomicU64 = AtomicU64::new(0);
+
+pub fn record_spa_auth_legacy_get(endpoint: SpaAuthLegacyEndpoint) -> u64 {
+    let count = endpoint.counter().fetch_add(1, Ordering::Relaxed) + 1;
+    let (runtime, endpoint_name) = endpoint.dimensions();
+    tracing::info!(
+        target: "light_pingora::spa_auth_telemetry",
+        event = "spa_auth_legacy_method",
+        runtime,
+        endpoint = endpoint_name,
+        method = "GET",
+        count,
+        counter_scope = "process",
+        reset = "process_restart",
+        "deprecated SPA auth endpoint method observed"
+    );
+    if count.is_power_of_two() {
+        tracing::warn!(
+            target: "light_pingora::spa_auth_telemetry",
+            event = "spa_auth_legacy_method_checkpoint",
+            runtime,
+            endpoint = endpoint_name,
+            method = "GET",
+            count,
+            "deprecated SPA auth endpoint remains in use"
+        );
+    }
+    count
+}
+
+pub fn spa_auth_legacy_get_count(endpoint: SpaAuthLegacyEndpoint) -> u64 {
+    endpoint.counter().load(Ordering::Relaxed)
 }
 
 pub enum SpaSessionOutcome {
@@ -280,7 +341,7 @@ pub enum SpaSessionOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpaAuthResponse {
     pub status: u16,
-    pub content_type: String,
+    pub content_type: Option<String>,
     pub body: Vec<u8>,
     pub headers: Vec<(String, String)>,
 }
@@ -289,10 +350,32 @@ impl SpaAuthResponse {
     pub fn json(status: u16, value: JsonValue, headers: Vec<(String, String)>) -> Self {
         Self {
             status,
-            content_type: CONTENT_TYPE_JSON.to_string(),
+            content_type: Some(CONTENT_TYPE_JSON.to_string()),
             body: serde_json::to_vec(&value).unwrap_or_default(),
             headers,
         }
+    }
+
+    pub fn no_content(headers: Vec<(String, String)>) -> Self {
+        Self {
+            status: 204,
+            content_type: None,
+            body: Vec::new(),
+            headers,
+        }
+        .with_no_store()
+    }
+
+    pub fn with_no_store(mut self) -> Self {
+        if !self
+            .headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("cache-control"))
+        {
+            self.headers
+                .push(("cache-control".to_string(), "no-store".to_string()));
+        }
+        self
     }
 }
 
@@ -797,7 +880,7 @@ pub fn delete_cookie_header(
     ("set-cookie".to_string(), cookie)
 }
 
-fn delete_cookie_headers(config: &SpaCookieConfig) -> Vec<(String, String)> {
+pub(crate) fn delete_cookie_headers(config: &SpaCookieConfig) -> Vec<(String, String)> {
     [
         ACCESS_TOKEN_COOKIE,
         REFRESH_TOKEN_COOKIE,
@@ -1174,6 +1257,49 @@ mod tests {
                 .any(|(_, value)| value.contains("SameSite=None"))
         );
         assert!(headers.iter().any(|(_, value)| value.contains("Secure")));
+    }
+
+    #[test]
+    fn no_content_has_no_representation_and_is_not_cacheable() {
+        let response = SpaAuthResponse::no_content(Vec::new());
+
+        assert_eq!(response.status, 204);
+        assert_eq!(response.content_type, None);
+        assert!(response.body.is_empty());
+        assert_eq!(
+            response.headers,
+            vec![("cache-control".to_string(), "no-store".to_string())]
+        );
+    }
+
+    #[test]
+    fn legacy_method_counter_has_explicit_process_lifetime() {
+        let endpoint = SpaAuthLegacyEndpoint::StatelessLogout;
+        let before = spa_auth_legacy_get_count(endpoint);
+        let count = record_spa_auth_legacy_get(endpoint);
+
+        assert_eq!(count, before + 1);
+        assert_eq!(spa_auth_legacy_get_count(endpoint), count);
+    }
+
+    #[test]
+    fn legacy_method_telemetry_dimensions_are_stable() {
+        assert_eq!(
+            SpaAuthLegacyEndpoint::MsalExchange.dimensions(),
+            ("msal-exchange", "exchange")
+        );
+        assert_eq!(
+            SpaAuthLegacyEndpoint::MsalExchangeLogout.dimensions(),
+            ("msal-exchange", "logout")
+        );
+        assert_eq!(
+            SpaAuthLegacyEndpoint::MsalAuthLogout.dimensions(),
+            ("msal-auth", "logout")
+        );
+        assert_eq!(
+            SpaAuthLegacyEndpoint::StatelessLogout.dimensions(),
+            ("stateless-auth", "logout")
+        );
     }
 
     #[test]

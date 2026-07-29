@@ -2,9 +2,10 @@ use crate::security::{
     JwtExpiryMode, load_security_runtime, load_security_runtime_from_file, verify_jwt_token,
 };
 use crate::spa_auth::{
-    AUTHORIZATION_HEADER, SpaAuthResponse, SpaCookieConfig, SpaSessionOutcome, SpaSessionRuntime,
-    bearer_token, bearer_token_from_header, delete_cookie_header, generate_csrf,
-    load_spa_token_client, request_cookie, session_cookie_header,
+    AUTHORIZATION_HEADER, SpaAuthLegacyEndpoint, SpaAuthResponse, SpaCookieConfig,
+    SpaSessionOutcome, SpaSessionRuntime, bearer_token, bearer_token_from_header,
+    delete_cookie_header, delete_cookie_headers, generate_csrf, load_spa_token_client,
+    record_spa_auth_legacy_get, request_cookie, session_cookie_header,
 };
 use light_runtime::{ModuleKind, RuntimeConfig, RuntimeError};
 use pingora::prelude::Session;
@@ -139,9 +140,39 @@ impl MsalExchangeRuntime {
     ) -> Result<MsalExchangeOutcome, crate::HandlerRejection> {
         let path = session.req_header().uri.path();
         if path == self.config.exchange_path {
+            if session
+                .req_header()
+                .method
+                .as_str()
+                .eq_ignore_ascii_case("OPTIONS")
+            {
+                return Ok(MsalExchangeOutcome::Continue {
+                    auth: None,
+                    response_headers: Vec::new(),
+                });
+            }
+            check_endpoint_method(
+                session.req_header().method.as_str(),
+                SpaAuthLegacyEndpoint::MsalExchange,
+            )?;
             return self.handle_exchange(session).await;
         }
         if path == self.config.logout_path {
+            if session
+                .req_header()
+                .method
+                .as_str()
+                .eq_ignore_ascii_case("OPTIONS")
+            {
+                return Ok(MsalExchangeOutcome::Continue {
+                    auth: None,
+                    response_headers: Vec::new(),
+                });
+            }
+            check_endpoint_method(
+                session.req_header().method.as_str(),
+                SpaAuthLegacyEndpoint::MsalExchangeLogout,
+            )?;
             return Ok(MsalExchangeOutcome::Respond(self.logout_response()));
         }
         if matches!(
@@ -266,11 +297,9 @@ impl MsalExchangeRuntime {
                 .as_ref()
                 .map(|(token, max_age)| (token.as_str(), *max_age)),
         );
-        Ok(MsalExchangeOutcome::Respond(SpaAuthResponse::json(
-            200,
-            json!({ "scopes": scopes }),
-            headers,
-        )))
+        Ok(MsalExchangeOutcome::Respond(
+            SpaAuthResponse::json(200, json!({ "scopes": scopes }), headers).with_no_store(),
+        ))
     }
 
     fn with_msal_access_cookie(
@@ -291,13 +320,10 @@ impl MsalExchangeRuntime {
     }
 
     fn logout_response(&self) -> SpaAuthResponse {
-        let mut response = self.session.logout_response();
-        response.headers.push(delete_cookie_header(
+        msal_exchange_logout_response(
             self.session.cookies(),
             self.config.msal_access_token_cookie.as_str(),
-            true,
-        ));
-        response
+        )
     }
 
     fn with_msal_access_delete(&self, mut response: SpaAuthResponse) -> SpaAuthResponse {
@@ -311,8 +337,39 @@ impl MsalExchangeRuntime {
                 true,
             ));
         }
-        response
+        response.with_no_store()
     }
+}
+
+fn msal_exchange_logout_response(
+    cookies: &SpaCookieConfig,
+    msal_access_token_cookie: &str,
+) -> SpaAuthResponse {
+    let mut headers = delete_cookie_headers(cookies);
+    headers.push(delete_cookie_header(
+        cookies,
+        msal_access_token_cookie,
+        true,
+    ));
+    SpaAuthResponse::no_content(headers)
+}
+
+fn check_endpoint_method(
+    method: &str,
+    endpoint: SpaAuthLegacyEndpoint,
+) -> Result<(), crate::HandlerRejection> {
+    if method.eq_ignore_ascii_case("GET") {
+        record_spa_auth_legacy_get(endpoint);
+        return Ok(());
+    }
+    if method.eq_ignore_ascii_case("POST") {
+        return Ok(());
+    }
+    Err(
+        crate::HandlerRejection::new(405, "ERR10008", "method not allowed")
+            .with_header("allow", "GET, POST")
+            .with_header("cache-control", "no-store"),
+    )
 }
 
 pub enum MsalExchangeOutcome {
@@ -664,5 +721,72 @@ msalAccessTokenHeader: X-Light-Token
             ..Default::default()
         };
         assert_eq!(msal_access_cookie_max_age(&principal_no_exp, 1000), 1000);
+    }
+
+    #[test]
+    fn endpoint_method_compatibility_matrix_is_bounded_and_rejects_others() {
+        let endpoint = SpaAuthLegacyEndpoint::MsalExchange;
+        let before = crate::spa_auth::spa_auth_legacy_get_count(endpoint);
+        assert!(check_endpoint_method("POST", endpoint).is_ok());
+        assert!(check_endpoint_method("GET", endpoint).is_ok());
+        assert_eq!(
+            crate::spa_auth::spa_auth_legacy_get_count(endpoint),
+            before + 1
+        );
+
+        let rejection =
+            check_endpoint_method("DELETE", endpoint).expect_err("DELETE must be rejected");
+        assert_eq!(rejection.status, 405);
+        assert_eq!(rejection.code, "ERR10008");
+        assert!(
+            rejection
+                .headers
+                .contains(&("allow".into(), "GET, POST".into()))
+        );
+        assert!(
+            rejection
+                .headers
+                .contains(&("cache-control".into(), "no-store".into()))
+        );
+    }
+
+    #[test]
+    fn msal_exchange_logout_is_no_content_and_deletes_every_owned_cookie() {
+        let config = MsalExchangeConfig::default();
+        let response = msal_exchange_logout_response(
+            &cookie_config(&config),
+            config.msal_access_token_cookie.as_str(),
+        );
+
+        assert_eq!(response.status, 204);
+        assert_eq!(response.content_type, None);
+        assert!(response.body.is_empty());
+        for name in [
+            "accessToken",
+            "refreshToken",
+            "csrf",
+            "userId",
+            "userType",
+            "roles",
+            "host",
+            "email",
+            "eid",
+            "msalAccessToken",
+        ] {
+            assert!(
+                response
+                    .headers
+                    .iter()
+                    .any(|(header, value)| header == "set-cookie"
+                        && value.starts_with(&format!("{name}="))
+                        && value.contains("Max-Age=0")),
+                "missing deletion cookie for {name}"
+            );
+        }
+        assert!(
+            response
+                .headers
+                .contains(&("cache-control".into(), "no-store".into()))
+        );
     }
 }

@@ -147,9 +147,10 @@ pub use service::{
 };
 pub use spa_auth::{
     ACCESS_TOKEN_COOKIE, CSRF_COOKIE, CookieSameSite, EID_COOKIE, EMAIL_COOKIE, HOST_COOKIE,
-    REFRESH_TOKEN_COOKIE, ROLES_COOKIE, SpaAuthResponse, SpaCookieConfig, SpaSessionOutcome,
-    SpaSessionRuntime, SpaTokenClient, TokenGrantResponse, USER_ID_COOKIE, USER_TYPE_COOKIE,
-    generate_csrf, load_spa_token_client, merge_extra_response_headers,
+    REFRESH_TOKEN_COOKIE, ROLES_COOKIE, SpaAuthLegacyEndpoint, SpaAuthResponse, SpaCookieConfig,
+    SpaSessionOutcome, SpaSessionRuntime, SpaTokenClient, TokenGrantResponse, USER_ID_COOKIE,
+    USER_TYPE_COOKIE, generate_csrf, load_spa_token_client, merge_extra_response_headers,
+    record_spa_auth_legacy_get, spa_auth_legacy_get_count,
 };
 pub use stateless_auth::{
     STATELESS_AUTH_CONFIG_NAME, STATELESS_AUTH_FILE, STATELESS_AUTH_LEGACY_FILE,

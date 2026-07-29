@@ -1,7 +1,7 @@
 use crate::security::load_security_runtime;
 use crate::spa_auth::{
-    SpaAuthResponse, SpaCookieConfig, SpaSessionOutcome, SpaSessionRuntime, generate_csrf,
-    load_spa_token_client, query_param, social_scopes,
+    SpaAuthLegacyEndpoint, SpaAuthResponse, SpaCookieConfig, SpaSessionOutcome, SpaSessionRuntime,
+    generate_csrf, load_spa_token_client, query_param, record_spa_auth_legacy_get, social_scopes,
 };
 use light_client::{ClientFactory, EndpointOptions};
 use light_runtime::{MaskSpec, ModuleKind, RuntimeConfig, RuntimeError};
@@ -159,6 +159,22 @@ impl StatelessAuthRuntime {
         handler_id: &str,
     ) -> Result<StatelessAuthOutcome, crate::HandlerRejection> {
         let path = session.req_header().uri.path();
+        let endpoint = StatelessEndpoint::classify(handler_id, path, &self.config);
+        if endpoint.is_some()
+            && session
+                .req_header()
+                .method
+                .as_str()
+                .eq_ignore_ascii_case("OPTIONS")
+        {
+            return Ok(StatelessAuthOutcome::Continue {
+                auth: None,
+                response_headers: Vec::new(),
+            });
+        }
+        if let Some(endpoint) = endpoint {
+            endpoint.check_method(session.req_header().method.as_str())?;
+        }
         match handler_id {
             "stateless" if path == self.config.auth_path => self.handle_login(session).await,
             "stateless" if path == self.config.logout_path => Ok(StatelessAuthOutcome::Respond(
@@ -436,7 +452,46 @@ impl StatelessAuthRuntime {
             }),
             headers,
         )
+        .with_no_store()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatelessEndpoint {
+    Callback,
+    Logout,
+}
+
+impl StatelessEndpoint {
+    fn classify(handler_id: &str, path: &str, config: &StatelessAuthConfig) -> Option<Self> {
+        match handler_id {
+            "stateless" if path == config.auth_path => Some(Self::Callback),
+            "stateless" if path == config.logout_path => Some(Self::Logout),
+            "google" if path == config.google_path => Some(Self::Callback),
+            "facebook" if path == config.facebook_path => Some(Self::Callback),
+            "github" if path == config.github_path => Some(Self::Callback),
+            _ => None,
+        }
+    }
+
+    fn check_method(self, method: &str) -> Result<(), crate::HandlerRejection> {
+        match self {
+            Self::Callback if method.eq_ignore_ascii_case("GET") => Ok(()),
+            Self::Logout if method.eq_ignore_ascii_case("POST") => Ok(()),
+            Self::Logout if method.eq_ignore_ascii_case("GET") => {
+                record_spa_auth_legacy_get(SpaAuthLegacyEndpoint::StatelessLogout);
+                Ok(())
+            }
+            Self::Callback => Err(method_not_allowed("GET")),
+            Self::Logout => Err(method_not_allowed("GET, POST")),
+        }
+    }
+}
+
+fn method_not_allowed(allow: &'static str) -> crate::HandlerRejection {
+    crate::HandlerRejection::new(405, "ERR10008", "method not allowed")
+        .with_header("allow", allow)
+        .with_header("cache-control", "no-store")
 }
 
 pub enum StatelessAuthOutcome {
@@ -719,6 +774,66 @@ githubPath: /github
         assert_eq!(
             subject.token_type,
             "urn:ietf:params:oauth:token-type:id_token"
+        );
+    }
+
+    #[test]
+    fn stateless_logout_is_no_content_and_deletes_every_owned_cookie() {
+        let config = StatelessAuthConfig::default();
+        let response = SpaAuthResponse::no_content(crate::spa_auth::delete_cookie_headers(
+            &cookie_config(&config),
+        ));
+
+        assert_eq!(response.status, 204);
+        assert_eq!(response.content_type, None);
+        assert!(response.body.is_empty());
+        assert_eq!(
+            response
+                .headers
+                .iter()
+                .filter(|(name, _)| name == "set-cookie")
+                .count(),
+            9
+        );
+        assert!(
+            response
+                .headers
+                .contains(&("cache-control".into(), "no-store".into()))
+        );
+    }
+
+    #[test]
+    fn stateless_endpoint_method_contract_preserves_get_callbacks() {
+        assert!(StatelessEndpoint::Callback.check_method("GET").is_ok());
+        let callback_rejection = StatelessEndpoint::Callback
+            .check_method("POST")
+            .expect_err("callback POST");
+        assert!(
+            callback_rejection
+                .headers
+                .contains(&("allow".into(), "GET".into()))
+        );
+
+        let before =
+            crate::spa_auth::spa_auth_legacy_get_count(SpaAuthLegacyEndpoint::StatelessLogout);
+        assert!(StatelessEndpoint::Logout.check_method("POST").is_ok());
+        assert!(StatelessEndpoint::Logout.check_method("GET").is_ok());
+        assert_eq!(
+            crate::spa_auth::spa_auth_legacy_get_count(SpaAuthLegacyEndpoint::StatelessLogout),
+            before + 1
+        );
+        let logout_rejection = StatelessEndpoint::Logout
+            .check_method("DELETE")
+            .expect_err("logout DELETE");
+        assert!(
+            logout_rejection
+                .headers
+                .contains(&("allow".into(), "GET, POST".into()))
+        );
+        assert!(
+            logout_rejection
+                .headers
+                .contains(&("cache-control".into(), "no-store".into()))
         );
     }
 }

@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "agent-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -42,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "agent-delegation"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "chrono",
@@ -56,7 +56,7 @@ dependencies = [
 
 [[package]]
 name = "agent-materializer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "agent-core",
  "agent-runtime-protocol",
@@ -69,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "agent-runtime-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "agent-core",
  "chrono",
@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "agent-session-policy"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -279,7 +279,7 @@ dependencies = [
 
 [[package]]
 name = "asymmetric-decryptor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "rand 0.8.5",
@@ -843,7 +843,7 @@ dependencies = [
 
 [[package]]
 name = "coding-agent-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "agent-runtime-protocol",
  "base64",
@@ -871,11 +871,11 @@ dependencies = [
 
 [[package]]
 name = "config-embed-build"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "config-loader"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes",
  "arc-swap",
@@ -1367,7 +1367,7 @@ dependencies = [
 
 [[package]]
 name = "execution-backend"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1381,7 +1381,7 @@ dependencies = [
 
 [[package]]
 name = "execution-backend-conformance"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "execution-backend",
  "execution-runner-protocol",
@@ -1390,7 +1390,7 @@ dependencies = [
 
 [[package]]
 name = "execution-backend-cube"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1414,7 +1414,7 @@ dependencies = [
 
 [[package]]
 name = "execution-backend-mock"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1429,7 +1429,7 @@ dependencies = [
 
 [[package]]
 name = "execution-backend-oci"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1444,7 +1444,7 @@ dependencies = [
 
 [[package]]
 name = "execution-fixed-action"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "execution-security",
@@ -1458,7 +1458,7 @@ dependencies = [
 
 [[package]]
 name = "execution-runner-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "hex",
@@ -1471,7 +1471,7 @@ dependencies = [
 
 [[package]]
 name = "execution-security"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "hex",
@@ -3197,7 +3197,7 @@ dependencies = [
 
 [[package]]
 name = "immutable-package"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "serde",
@@ -3610,7 +3610,7 @@ dependencies = [
 
 [[package]]
 name = "light-agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "agent-core",
  "agent-delegation",
@@ -3647,7 +3647,7 @@ dependencies = [
 
 [[package]]
 name = "light-agent-channel"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "agent-core",
  "anyhow",
@@ -3672,7 +3672,7 @@ dependencies = [
 
 [[package]]
 name = "light-agent-worker"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "agent-core",
  "agent-materializer",
@@ -3690,7 +3690,7 @@ dependencies = [
 
 [[package]]
 name = "light-axum"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3705,7 +3705,7 @@ dependencies = [
 
 [[package]]
 name = "light-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "reqwest",
  "rustls-pemfile",
@@ -3719,7 +3719,7 @@ dependencies = [
 
 [[package]]
 name = "light-coding-agent-fixture"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "coding-agent-runtime",
@@ -3730,7 +3730,7 @@ dependencies = [
 
 [[package]]
 name = "light-deployer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3758,7 +3758,7 @@ dependencies = [
 
 [[package]]
 name = "light-gateway"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "agent-delegation",
  "anyhow",
@@ -3789,7 +3789,7 @@ dependencies = [
 
 [[package]]
 name = "light-github-action-provider"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3813,7 +3813,7 @@ dependencies = [
 
 [[package]]
 name = "light-pi-rpc-adapter"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "coding-agent-runtime",
@@ -3826,7 +3826,7 @@ dependencies = [
 
 [[package]]
 name = "light-pingora"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "agent-delegation",
  "async-trait",
@@ -3866,7 +3866,7 @@ dependencies = [
 
 [[package]]
 name = "light-rule"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "cel",
@@ -3883,7 +3883,7 @@ dependencies = [
 
 [[package]]
 name = "light-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3911,7 +3911,7 @@ dependencies = [
 
 [[package]]
 name = "light-security"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jsonwebtoken",
  "light-client",
@@ -3927,7 +3927,7 @@ dependencies = [
 
 [[package]]
 name = "light-workflow"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -3958,7 +3958,7 @@ dependencies = [
 
 [[package]]
 name = "light-workflow-runner"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "agent-core",
  "agent-runtime-protocol",
@@ -4008,7 +4008,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "llm-gateway"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arc-swap",
  "async-stream",
@@ -4039,7 +4039,7 @@ dependencies = [
 
 [[package]]
 name = "llm-phase0-spikes"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -4054,7 +4054,7 @@ dependencies = [
 
 [[package]]
 name = "llm-provider-mock"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-stream",
  "axum",
@@ -4138,7 +4138,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -4236,7 +4236,7 @@ dependencies = [
 
 [[package]]
 name = "model-provider"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5075,7 +5075,7 @@ dependencies = [
 
 [[package]]
 name = "portal-registry"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "asymmetric-decryptor",
@@ -6405,7 +6405,7 @@ checksum = "a7973cce6668464ea31f176d85b13c7ab3bba2cb3b77a2ed26abd7801688010a"
 
 [[package]]
 name = "symmetric-decryptor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes",
  "block-padding",
@@ -7739,7 +7739,7 @@ dependencies = [
 
 [[package]]
 name = "workflow-builder"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
  "serde_yaml",
@@ -7748,7 +7748,7 @@ dependencies = [
 
 [[package]]
 name = "workflow-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -7757,7 +7757,7 @@ dependencies = [
 
 [[package]]
 name = "workflow-policy"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "execution-runner-protocol",
  "serde",
