@@ -66,6 +66,7 @@ Java config file:
 enabled: ${msal-exchange.enabled:true}
 exchangePath: ${msal-exchange.exchangePath:/auth/ms/exchange}
 logoutPath: ${msal-exchange.logoutPath:/auth/ms/logout}
+logoutCsrfEnforced: ${msal-exchange.logoutCsrfEnforced:false}
 cookieDomain: ${msal-exchange.cookieDomain:localhost}
 cookiePath: ${msal-exchange.cookiePath:/}
 cookieSecure: ${msal-exchange.cookieSecure:false}
@@ -84,7 +85,7 @@ runtime verifies/parses internal light-oauth access tokens used in cookies.
 
 Java request behavior:
 
-- `exchangePath`, normally `/auth/ms/exchange`, requires
+- `POST exchangePath`, normally `/auth/ms/exchange`, requires
   `Authorization: Bearer <microsoft-token>`.
 - Missing bearer token returns `ERR11647`.
 - The handler verifies the Microsoft token with `security-msal.yml`.
@@ -94,8 +95,9 @@ Java request behavior:
 - Token-exchange failure returns `ERR11648`.
 - On success, the handler sets the same BFF cookies as the stateless handler
   and returns JSON containing `scopes`.
-- `logoutPath`, normally `/auth/ms/logout`, clears BFF cookies and ends the
-  request.
+- `POST logoutPath`, normally `/auth/ms/logout`, validates the readable CSRF
+  cookie/header pair when enforcement is enabled, clears BFF cookies, and
+  returns `204 No Content`.
 - Subsequent requests use the same cookie, CSRF, refresh, and downstream
   `Authorization` injection flow as the stateless handler.
 
@@ -109,6 +111,8 @@ Error codes aligned:
 | `ERR10036` | CSRF token is missing from request |
 | `ERR10038` | CSRF claim is missing from JWT |
 | `ERR10039` | Request CSRF and JWT CSRF do not match |
+| `ERR10008` | Method is not allowed for a mutation endpoint |
+| `ERR11649` | Logout CSRF cookie/header validation failed without exposing either value |
 
 ## Rust Architecture
 
@@ -221,11 +225,33 @@ paths:
     method: POST
     exec:
       - bff
+  # Temporary compatibility bridge; remove only at the Phase 4 release gate.
+  - path: /auth/ms/exchange
+    method: GET
+    exec:
+      - bff
+  - path: /auth/ms/exchange
+    method: OPTIONS
+    exec:
+      - bff
+  - path: /auth/ms/logout
+    method: POST
+    exec:
+      - bff
+  # Temporary compatibility bridge; remove only at the Phase 4 release gate.
   - path: /auth/ms/logout
     method: GET
     exec:
       - bff
+  - path: /auth/ms/logout
+    method: OPTIONS
+    exec:
+      - bff
 ```
+
+`POST` is canonical for exchange and logout. The temporary GET routes exist
+only for cached pre-migration clients. Keep `OPTIONS` permanently and keep
+`cors` before `msal-exchange` in the selected chain.
 
 ### Exchange Flow
 
@@ -243,6 +269,27 @@ Authorization: Bearer <microsoft-token>
   -> set BFF cookies
   -> return { "scopes": [...] }
 ```
+
+The exchange request body is optional. A zero-length body is valid even when a
+shared client declares `Content-Type: application/json`.
+
+### Logout Flow
+
+```text
+POST /auth/ms/logout
+Cookie: accessToken=...; csrf=...
+X-CSRF-TOKEN: <csrf>
+
+  -> optionally enforce logout double-submit CSRF
+  -> emit deletion cookies for every cookie the runtime can set
+  -> return 204 No Content with no body or response content type
+```
+
+During compatibility, explicitly routed legacy GET exchange/logout requests
+remain accepted and measured. Phase 4 removes that bridge after the release
+gate. During the bridge, another mutation method returns `405`, `ERR10008`,
+and `Allow: GET, POST`. Strict enforcement returns `405`, `ERR10008`, and
+`Allow: POST`; explicit `OPTIONS` routing continues to reach CORS.
 
 The token-exchange request should use `client.yml`
 `oauth.token.token_exchange`:

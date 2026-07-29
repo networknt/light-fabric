@@ -58,11 +58,34 @@ paths:
     method: POST
     exec:
       - bff
+  # Temporary compatibility bridge; remove only at the Phase 4 release gate.
+  - path: /auth/ms/exchange
+    method: GET
+    exec:
+      - bff
+  - path: /auth/ms/exchange
+    method: OPTIONS
+    exec:
+      - bff
+  - path: /auth/ms/logout
+    method: POST
+    exec:
+      - bff
+  # Temporary compatibility bridge; remove only at the Phase 4 release gate.
   - path: /auth/ms/logout
     method: GET
     exec:
       - bff
+  - path: /auth/ms/logout
+    method: OPTIONS
+    exec:
+      - bff
 ```
+
+`POST` is canonical for exchange and logout. Keep the explicitly labeled GET
+routes only while old cached SPA bundles are supported. Keep the `OPTIONS`
+routes permanently, with `cors` before `msal-exchange`, so preflight is handled
+before the auth method guard.
 
 When the handler is active, the gateway needs these resolved config files:
 
@@ -113,6 +136,9 @@ On success, the response body contains the scopes from the light-oauth token:
   "scopes": ["scope1", "scope2"]
 }
 ```
+
+The exchange body is optional. A zero-length request is valid even when a
+shared client declares `Content-Type: application/json`.
 
 ## Session Cookies
 
@@ -266,6 +292,7 @@ Example default configuration:
 enabled: ${msal-exchange.enabled:true}
 exchangePath: ${msal-exchange.exchangePath:/auth/ms/exchange}
 logoutPath: ${msal-exchange.logoutPath:/auth/ms/logout}
+logoutCsrfEnforced: ${msal-exchange.logoutCsrfEnforced:false}
 cookieDomain: ${msal-exchange.cookieDomain:localhost}
 cookiePath: ${msal-exchange.cookiePath:/}
 cookieSecure: ${msal-exchange.cookieSecure:false}
@@ -291,6 +318,7 @@ Fields:
 | `enabled` | `true` | Enables or disables the handler once it is active in the chain. |
 | `exchangePath` | `/auth/ms/exchange` | Endpoint that receives the Azure MSAL ID token and creates the BFF session. |
 | `logoutPath` | `/auth/ms/logout` | Endpoint that clears BFF cookies. |
+| `logoutCsrfEnforced` | `false` | Enforces readable `csrf` cookie versus `X-CSRF-TOKEN` validation on logout after environment-specific observe-only qualification. |
 | `cookieDomain` | `localhost` | Cookie domain for session cookies. |
 | `cookiePath` | `/` | Cookie path for session cookies. |
 | `cookieSecure` | `false` | Adds the `Secure` cookie attribute. Use `true` for HTTPS deployments. |
@@ -405,11 +433,22 @@ light-oauth token into `lightTokenHeader`.
 Logout clears all BFF cookies managed by the handler:
 
 ```text
-GET /auth/ms/logout
+POST /auth/ms/logout
+Cookie: accessToken=...; csrf=...
+X-CSRF-TOKEN: <csrf>
 ```
 
-The handler returns an empty `200` response with deletion cookies for the known
-session cookie names.
+Send credentials and no request body. A zero-length request is also accepted
+when a shared client sets `Content-Type: application/json`. On success the
+handler returns `204 No Content`, no response content type or body, and
+deletion cookies for every cookie name the runtime can set.
+
+During the compatibility window, explicitly routed legacy GET exchange/logout
+requests still work and emit migration telemetry. Phase 4 removes those routes
+only after the compatibility and zero-legacy-traffic gates pass. During the
+bridge, another mutation method returns `405`, `ERR10008`, and
+`Allow: GET, POST`. Under strict enforcement, a legacy mutation method returns
+`405`, `ERR10008`, and `Allow: POST`. `OPTIONS` remains routed to CORS.
 
 ## Error Handling
 
@@ -424,6 +463,8 @@ Important error codes:
 | `ERR10038` | CSRF claim is missing from the light-oauth token. |
 | `ERR10039` | Request CSRF and token CSRF do not match. |
 | `ERR10052` | Token response does not contain `expires_in` and the JWT has no usable `exp`. |
+| `ERR10008` | Method is not allowed for the exchange or logout endpoint. |
+| `ERR11649` | Logout CSRF cookie/header validation failed without exposing either value. |
 
 ## Implementation Notes
 

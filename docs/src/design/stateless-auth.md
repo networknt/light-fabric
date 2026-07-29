@@ -78,6 +78,7 @@ denyUri: ${statelessAuth.denyUri:https://localhost:3000/#/app/dashboard}
 enableHttp2: ${statelessAuth.enableHttp2:false}
 authPath: ${statelessAuth.authPath:/authorization}
 logoutPath: ${statelessAuth.logoutPath:/logout}
+logoutCsrfEnforced: ${statelessAuth.logoutCsrfEnforced:false}
 cookieDomain: ${statelessAuth.cookieDomain:localhost}
 cookiePath: ${statelessAuth.cookiePath:/}
 cookieTimeoutUri: ${statelessAuth.cookieTimeoutUri:/}
@@ -107,8 +108,9 @@ Java request behavior:
   `oauth.token.authorization_code`.
 - On success, it sets browser cookies and returns JSON containing `scopes`,
   `redirectUri`, and `denyUri`.
-- `GET logoutPath`, normally `/logout`, clears BFF cookies and ends the
-  request.
+- `POST logoutPath`, normally `/logout`, validates the readable CSRF
+  cookie/header pair when enforcement is enabled, clears BFF cookies, and
+  returns `204 No Content`.
 - Other requests are treated as downstream BFF requests. The handler reads the
   `accessToken` cookie, verifies/parses it, validates CSRF, refreshes the token
   if it expires within 90 seconds, and injects
@@ -128,6 +130,8 @@ Java error codes to preserve:
 | `ERR10038` | CSRF claim is missing from JWT |
 | `ERR10039` | Request CSRF and JWT CSRF do not match |
 | `ERR10037` | Refresh-token response is empty |
+| `ERR10008` | Method is not allowed for a mutation or callback endpoint |
+| `ERR11649` | Logout CSRF cookie/header validation failed without exposing either value |
 
 ## Rust Architecture
 
@@ -265,13 +269,39 @@ paths:
     method: GET
     exec:
       - default
+  - path: /google
+    method: GET
+    exec:
+      - google
+  - path: /facebook
+    method: GET
+    exec:
+      - facebook
+  - path: /github
+    method: GET
+    exec:
+      - github
+  - path: /logout
+    method: POST
+    exec:
+      - default
+  # Temporary compatibility bridge; remove only at the Phase 4 release gate.
   - path: /logout
     method: GET
+    exec:
+      - default
+  - path: /logout
+    method: OPTIONS
     exec:
       - default
 ```
 
 The handler should normally run after CORS and before proxy/router/WebSocket.
+`POST /logout` is canonical. The authorization and enabled `/google`,
+`/facebook`, and `/github` authorization-code callbacks remain permanently
+GET-only. Keep the temporary logout GET only for cached clients during the
+compatibility window, and keep the explicit `OPTIONS /logout` route
+permanently.
 
 ### Login Flow
 
@@ -306,6 +336,27 @@ redirect_uri=<optional redirect_uri>
 csrf=<generated csrf>
 scope=<space separated scopes, if configured>
 ```
+
+### Logout Flow
+
+```text
+POST /logout
+Cookie: accessToken=...; csrf=...
+X-CSRF-TOKEN: <csrf>
+
+  -> optionally enforce logout double-submit CSRF
+  -> emit deletion cookies for every cookie the runtime can set
+  -> return 204 No Content with no body or response content type
+```
+
+The logout request has no required body. A zero-length body is valid even when
+a shared client declares `Content-Type: application/json`. During
+compatibility, the explicitly routed legacy GET logout remains accepted and
+measured. During the bridge, another logout method returns `405`, `ERR10008`,
+and `Allow: GET, POST`; a wrong callback method returns `405`, `ERR10008`, and
+`Allow: GET`. Phase 4 removes the logout bridge after the release gate; strict
+logout enforcement returns `405`, `ERR10008`, and `Allow: POST`. `OPTIONS`
+continues to reach CORS.
 
 ### Session Validation Flow
 

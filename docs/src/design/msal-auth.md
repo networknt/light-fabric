@@ -24,23 +24,41 @@ Register `msal-auth` in the handler chain before handlers that need `ctx.auth` o
 
 ```yaml
 handlers:
+  - cors
   - msal-auth
   - router
+
+chains:
+  bff:
+    - cors
+    - msal-auth
+    - router
 
 paths:
   - path: /auth/ms/login
     method: POST
     exec:
-      - msal-auth
+      - bff
+  - path: /auth/ms/login
+    method: OPTIONS
+    exec:
+      - bff
   - path: /auth/ms/logout
+    method: POST
     exec:
-      - msal-auth
-  - path: /**
+      - bff
+  # Temporary compatibility bridge; remove only at the Phase 4 release gate.
+  - path: /auth/ms/logout
+    method: GET
     exec:
-      - msal-auth
-      - router
+      - bff
+  - path: /auth/ms/logout
+    method: OPTIONS
+    exec:
+      - bff
 
 defaultHandlers:
+  - cors
   - msal-auth
   - router
 ```
@@ -51,6 +69,7 @@ defaultHandlers:
 enabled: ${msal-auth.enabled:true}
 loginPath: ${msal-auth.loginPath:/auth/ms/login}
 logoutPath: ${msal-auth.logoutPath:/auth/ms/logout}
+logoutCsrfEnforced: ${msal-auth.logoutCsrfEnforced:false}
 cookieDomain: ${msal-auth.cookieDomain:localhost}
 cookiePath: ${msal-auth.cookiePath:/}
 cookieSecure: ${msal-auth.cookieSecure:false}
@@ -75,7 +94,9 @@ jwt:
 ## Handlers
 
 - **Login (`/auth/ms/login`)**: Expects an Entra ID token in the `Authorization: Bearer` header. Validates it using the `security-msal` runtime with expiry enforcement. Generates a secure CSRF token and returns both `accessToken` and `csrf` as `Set-Cookie` headers.
-- **Logout (`/auth/ms/logout`)**: Clears the `accessToken` and `csrf` cookies and returns a success response.
+- **Logout (`POST /auth/ms/logout`)**: Validates logout CSRF when configured,
+  clears every cookie the runtime sets (`accessToken` and `csrf`), and returns
+  `204 No Content` without a response body or content type.
 - **Session Validation (any path with cookies)**: Reads the `accessToken` cookie. Validates the JWT with expiry enforcement. Checks that the CSRF request value matches the CSRF cookie. If valid, it sets the gateway auth principal and forwards the `accessToken` downstream in the `Authorization: Bearer` header.
 
 ## Frontend Integration
@@ -84,17 +105,25 @@ The Single Page Application (SPA) must coordinate with the gateway for session c
 
 ### Login Request
 
-When the SPA acquires an access token from Microsoft Entra ID (e.g., using MSAL.js), it must send that token to the gateway's login endpoint to establish the secure HTTP-only cookies. Both the login and logout requests are `POST` requests, but neither requires any payload in the body. You can simply send an empty JSON object `{}`.
+When the SPA acquires an access token from Microsoft Entra ID (e.g., using
+MSAL.js), it must send that token to the gateway's login endpoint to establish
+the secure HTTP-only cookies. Both login and logout use `POST`; neither needs a
+request body. A zero-length body is also accepted when a shared client sets
+`Content-Type: application/json`.
+
+For cross-origin deployments, both examples require preflight: login sends the
+non-safelisted `Authorization` header and CSRF-protected logout sends the
+non-safelisted `X-CSRF-TOKEN` header. Keep the explicit `OPTIONS` routes and
+qualify the exact origin, credentials, method, and requested headers.
 
 ```javascript
 async function gatewayLogin(entraIdToken) {
   const response = await fetch('/auth/ms/login', {
     method: 'POST',
+    credentials: 'include',
     headers: {
-      'Authorization': `Bearer ${entraIdToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({})
+      'Authorization': `Bearer ${entraIdToken}`
+    }
   });
 
   if (!response.ok) {
@@ -107,7 +136,9 @@ async function gatewayLogin(entraIdToken) {
 
 ### Logout Request
 
-When the user logs out, the SPA must call the gateway's logout endpoint to clear the HTTP-only session cookies. This is also a `POST` request with an empty body. Note that the browser will automatically include the HTTP-only `accessToken` cookie, but you must manually include the `X-CSRF-TOKEN` header read from the `csrf` cookie.
+When the user logs out, the SPA must call the gateway's logout endpoint to
+clear the HTTP-only session cookies. Send credentials and the
+`X-CSRF-TOKEN` header read from the readable `csrf` cookie; no body is needed.
 
 ```javascript
 // Helper to read the csrf cookie
@@ -122,20 +153,35 @@ async function gatewayLogout() {
   
   const response = await fetch('/auth/ms/logout', {
     method: 'POST',
+    credentials: 'include',
     headers: {
-      'Content-Type': 'application/json',
       'X-CSRF-TOKEN': csrfToken
-    },
-    body: JSON.stringify({})
+    }
   });
 
-  if (!response.ok) {
-    throw new Error('Failed to clear gateway session');
+  if (response.status !== 204) {
+    throw new Error(`Unexpected logout status ${response.status}`);
   }
-  
+
   console.log('Gateway session cleared');
 }
 ```
+
+During the compatibility window, an explicitly routed legacy GET logout is
+still accepted and measured. Phase 4 removes that route after the release
+gate. During the bridge, another logout method returns `405`, `ERR10008`, and
+`Allow: GET, POST`; login remains POST-only with `Allow: POST`. Under strict
+logout enforcement, the legacy GET returns `405`, `ERR10008`, and
+`Allow: POST`. Keep explicit `OPTIONS` routes permanently with `cors` before
+`msal-auth` in the selected chain.
+
+## Error Handling
+
+| Code | Meaning |
+| --- | --- |
+| `ERR10008` | Method is not allowed; inspect `Allow` for the endpoint's current bridge or strict contract. |
+| `ERR10036` | Logout CSRF header is missing when enforcement is enabled. |
+| `ERR11649` | Logout CSRF cookie/header validation failed without exposing either value. |
 
 ### API Request
 
