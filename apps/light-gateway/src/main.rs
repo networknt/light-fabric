@@ -638,14 +638,19 @@ impl DelegationReplayStore for PostgresDelegationReplayStore {
 }
 
 impl GatewayProxy {
-    fn active_spa_session_endpoint(&self, request_path: &str) -> Option<SpaSessionEndpointRoute> {
+    fn active_spa_session_endpoint(
+        &self,
+        active_handlers: &ActiveHandlerSet,
+        request_path: &str,
+    ) -> Result<Option<SpaSessionEndpointRoute>, RuntimeError> {
+        let mut candidates = Vec::new();
         let exchange = self.msal_exchange.load();
         if let Some(runtime) = exchange.as_ref().as_ref() {
             if request_path == runtime.config().exchange_path {
-                return Some(SpaSessionEndpointRoute::Exchange);
+                candidates.push(SpaSessionEndpointRoute::Exchange);
             }
             if request_path == runtime.config().logout_path {
-                return Some(SpaSessionEndpointRoute::ExchangeLogout);
+                candidates.push(SpaSessionEndpointRoute::ExchangeLogout);
             }
         }
         let auth = self.msal_auth.load();
@@ -655,35 +660,54 @@ impl GatewayProxy {
             .filter(|runtime| runtime.config.enabled)
         {
             if request_path == runtime.config.login_path {
-                return Some(SpaSessionEndpointRoute::AuthLogin);
+                candidates.push(SpaSessionEndpointRoute::AuthLogin);
             }
             if request_path == runtime.config.logout_path {
-                return Some(SpaSessionEndpointRoute::AuthLogout);
+                candidates.push(SpaSessionEndpointRoute::AuthLogout);
             }
         }
         let stateless = self.stateless_auth.load();
         if let Some(runtime) = stateless.as_ref().as_ref() {
             let config = runtime.config();
-            let active_handlers = self.active_handlers.load();
             if active_handlers.is_handler_active("stateless") && request_path == config.auth_path {
-                return Some(SpaSessionEndpointRoute::StatelessAuthorization);
+                candidates.push(SpaSessionEndpointRoute::StatelessAuthorization);
             }
             if active_handlers.is_handler_active("stateless") && request_path == config.logout_path
             {
-                return Some(SpaSessionEndpointRoute::StatelessLogout);
+                candidates.push(SpaSessionEndpointRoute::StatelessLogout);
             }
             if active_handlers.is_handler_active("google") && request_path == config.google_path {
-                return Some(SpaSessionEndpointRoute::GoogleCallback);
+                candidates.push(SpaSessionEndpointRoute::GoogleCallback);
             }
             if active_handlers.is_handler_active("facebook") && request_path == config.facebook_path
             {
-                return Some(SpaSessionEndpointRoute::FacebookCallback);
+                candidates.push(SpaSessionEndpointRoute::FacebookCallback);
             }
             if active_handlers.is_handler_active("github") && request_path == config.github_path {
-                return Some(SpaSessionEndpointRoute::GithubCallback);
+                candidates.push(SpaSessionEndpointRoute::GithubCallback);
             }
         }
-        None
+
+        let fallback = candidates.first().copied();
+        let mut selected = None;
+        for endpoint in candidates {
+            let resolved =
+                active_handlers.resolve_handler_chain(request_path, endpoint.allowed_method())?;
+            let Some(handler_index) = resolved
+                .handler_ids
+                .iter()
+                .position(|id| id == endpoint.handler_id())
+            else {
+                continue;
+            };
+            if selected
+                .as_ref()
+                .is_none_or(|(selected_index, _)| handler_index < *selected_index)
+            {
+                selected = Some((handler_index, endpoint));
+            }
+        }
+        Ok(selected.map(|(_, endpoint)| endpoint).or(fallback))
     }
 
     async fn authenticate_agent_delegation(
@@ -2650,8 +2674,10 @@ impl ProxyHttp for GatewayProxy {
 
         let method = session.req_header().method.as_str().to_string();
         ctx.method = method.clone();
-        let spa_session_endpoint = self.active_spa_session_endpoint(&request_path);
         let active_handlers = self.active_handlers.load();
+        let spa_session_endpoint = self
+            .active_spa_session_endpoint(&active_handlers, &request_path)
+            .map_err(pingora_internal_error)?;
         if let Some(endpoint) = spa_session_endpoint {
             if let Some(rejection) = spa_session_method_rejection(endpoint, &method) {
                 if spa_session_rejection_uses_cors(&active_handlers, &request_path, endpoint)
@@ -6416,12 +6442,19 @@ oauth:
         let stateless = proxy.current_stateless_auth();
         let stateless = stateless.as_ref().as_ref().expect("stateless runtime");
         assert_eq!(stateless.config().auth_path, "/authorization");
+        let active = proxy.active_handlers.load();
         assert!(matches!(
-            proxy.active_spa_session_endpoint("/authorization"),
+            proxy
+                .active_spa_session_endpoint(&active, "/authorization")
+                .expect("resolve stateless authorization endpoint"),
             Some(SpaSessionEndpointRoute::StatelessAuthorization)
         ));
-        assert!(proxy.active_spa_session_endpoint("/google").is_none());
-        let active = proxy.active_handlers.load();
+        assert!(
+            proxy
+                .active_spa_session_endpoint(&active, "/google")
+                .expect("resolve inactive Google callback")
+                .is_none()
+        );
         let resolved = active
             .resolve_handler_chain("/logout", "POST")
             .expect("resolve stateless POST logout route");
@@ -6822,6 +6855,169 @@ audience: spa-client
                 .iter()
                 .any(|entry| entry.module_id == light_pingora::MSAL_AUTH_MODULE_ID && entry.active)
         );
+    }
+
+    #[tokio::test]
+    async fn gateway_uses_canonical_chain_when_msal_runtimes_share_logout_path() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            r#"
+handlers:
+  - cors
+  - msal-exchange
+  - msal-auth
+paths:
+  - path: /auth/ms/exchange
+    method: POST
+    exec:
+      - cors
+      - msal-exchange
+  - path: /auth/ms/logout
+    method: POST
+    exec:
+      - cors
+      - msal-auth
+  - path: /auth/ms/exchange
+    method: OPTIONS
+    exec:
+      - cors
+      - msal-exchange
+  - path: /auth/ms/logout
+    method: OPTIONS
+    exec:
+      - cors
+      - msal-auth
+defaultHandlers: []
+"#,
+        )
+        .expect("write handler config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::MSAL_EXCHANGE_FILE),
+            r#"
+enabled: true
+exchangePath: /auth/ms/exchange
+logoutPath: /auth/ms/logout
+subjectTokenType: urn:ietf:params:oauth:token-type:jwt
+"#,
+        )
+        .expect("write msal-exchange config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::MSAL_AUTH_FILE),
+            r#"
+enabled: true
+loginPath: /auth/ms/login
+logoutPath: /auth/ms/logout
+sessionTimeout: 1200
+"#,
+        )
+        .expect("write msal-auth config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::SECURITY_MSAL_FILE),
+            r#"
+enableVerifyJwt: true
+issuer: https://login.microsoftonline.com/tenant/v2.0
+audience: spa-client
+"#,
+        )
+        .expect("write security-msal config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::CLIENT_FILE),
+            r#"
+tls:
+  verifyHostname: false
+oauth:
+  token:
+    server_url: http://localhost:6882
+    refresh_token:
+      uri: /oauth2/token
+      client_id: rt-client
+      client_secret: rt-secret
+    token_exchange:
+      uri: /oauth2/token
+      client_id: ex-client
+      client_secret: ex-secret
+"#,
+        )
+        .expect("write client config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::CORS_FILE),
+            r#"
+enabled: true
+allowedOrigins:
+  - https://portal.example.com
+allowedMethods:
+  - POST
+  - OPTIONS
+"#,
+        )
+        .expect("write CORS config");
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+        let proxy = GatewayProxy::from_runtime_config(&config).expect("build proxy");
+        let active = proxy.active_handlers.load();
+
+        assert!(matches!(
+            proxy
+                .active_spa_session_endpoint(&active, "/auth/ms/logout")
+                .expect("resolve shared MSAL logout path"),
+            Some(SpaSessionEndpointRoute::AuthLogout)
+        ));
+        assert!(matches!(
+            proxy
+                .active_spa_session_endpoint(&active, "/auth/ms/login")
+                .expect("classify configured MSAL login without a canonical route"),
+            Some(SpaSessionEndpointRoute::AuthLogin)
+        ));
+
+        let (mut client, server) = tokio::io::duplex(16 * 1024);
+        client
+            .write_all(
+                b"GET /auth/ms/logout HTTP/1.1\r\nHost: localhost\r\nOrigin: https://portal.example.com\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .expect("write legacy GET request");
+        let mut session = Session::new_h1(Box::new(server));
+        assert!(
+            session
+                .as_downstream_mut()
+                .read_request()
+                .await
+                .expect("parse legacy GET request")
+        );
+        let mut ctx = proxy.new_ctx();
+        assert!(
+            proxy
+                .request_filter(&mut session, &mut ctx)
+                .await
+                .expect("reject legacy GET")
+        );
+        assert!(ctx.handler_ids.is_empty(), "auth chain must remain blocked");
+
+        drop(session);
+        let mut wire = Vec::new();
+        client
+            .read_to_end(&mut wire)
+            .await
+            .expect("read strict-method response");
+        let response = String::from_utf8(wire).expect("HTTP response is UTF-8");
+        let response_lower = response.to_ascii_lowercase();
+        assert!(response_lower.starts_with("http/1.1 405"), "{response}");
+        assert!(response_lower.contains("allow: post\r\n"), "{response}");
+        assert!(
+            response_lower.contains("access-control-allow-origin: https://portal.example.com\r\n"),
+            "{response}"
+        );
+        assert!(
+            response_lower.contains("access-control-allow-credentials: true\r\n"),
+            "{response}"
+        );
+        assert!(
+            response_lower.contains("cache-control: no-store\r\n"),
+            "{response}"
+        );
+        assert!(response.contains("\"code\":\"ERR10008\""), "{response}");
+        assert!(!response_lower.contains("set-cookie:"), "{response}");
     }
 
     #[test]
