@@ -225,11 +225,6 @@ paths:
     method: POST
     exec:
       - bff
-  # Temporary compatibility bridge; remove only at the Phase 4 release gate.
-  - path: /auth/ms/exchange
-    method: GET
-    exec:
-      - bff
   - path: /auth/ms/exchange
     method: OPTIONS
     exec:
@@ -238,20 +233,14 @@ paths:
     method: POST
     exec:
       - bff
-  # Temporary compatibility bridge; remove only at the Phase 4 release gate.
-  - path: /auth/ms/logout
-    method: GET
-    exec:
-      - bff
   - path: /auth/ms/logout
     method: OPTIONS
     exec:
       - bff
 ```
 
-`POST` is canonical for exchange and logout. The temporary GET routes exist
-only for cached pre-migration clients. Keep `OPTIONS` permanently and keep
-`cors` before `msal-exchange` in the selected chain.
+Exchange and logout are POST-only. Keep `OPTIONS` permanently and keep `cors`
+before `msal-exchange` in the selected chain.
 
 ### Exchange Flow
 
@@ -285,11 +274,9 @@ X-CSRF-TOKEN: <csrf>
   -> return 204 No Content with no body or response content type
 ```
 
-During compatibility, explicitly routed legacy GET exchange/logout requests
-remain accepted and measured. Phase 4 removes that bridge after the release
-gate. During the bridge, another mutation method returns `405`, `ERR10008`,
-and `Allow: GET, POST`. Strict enforcement returns `405`, `ERR10008`, and
-`Allow: POST`; explicit `OPTIONS` routing continues to reach CORS.
+A legacy GET or any other unsupported exchange/logout method returns `405`,
+`ERR10008`, and `Allow: POST` before token-server, cookie, or proxy side
+effects. Explicit `OPTIONS` routing continues to reach CORS.
 
 The token-exchange request should use `client.yml`
 `oauth.token.token_exchange`:

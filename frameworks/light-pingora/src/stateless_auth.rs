@@ -492,10 +492,10 @@ impl StatelessEndpoint {
             Self::Logout if method.eq_ignore_ascii_case("POST") => Ok(()),
             Self::Logout if method.eq_ignore_ascii_case("GET") => {
                 record_spa_auth_legacy_get(SpaAuthLegacyEndpoint::StatelessLogout);
-                Ok(())
+                Err(method_not_allowed("POST"))
             }
             Self::Callback => Err(method_not_allowed("GET")),
-            Self::Logout => Err(method_not_allowed("GET, POST")),
+            Self::Logout => Err(method_not_allowed("POST")),
         }
     }
 }
@@ -834,7 +834,15 @@ githubPath: /github
         let before =
             crate::spa_auth::spa_auth_legacy_get_count(SpaAuthLegacyEndpoint::StatelessLogout);
         assert!(StatelessEndpoint::Logout.check_method("POST").is_ok());
-        assert!(StatelessEndpoint::Logout.check_method("GET").is_ok());
+        let get_rejection = StatelessEndpoint::Logout
+            .check_method("GET")
+            .expect_err("logout GET");
+        assert_eq!(get_rejection.status, 405);
+        assert!(
+            get_rejection
+                .headers
+                .contains(&("allow".into(), "POST".into()))
+        );
         assert_eq!(
             crate::spa_auth::spa_auth_legacy_get_count(SpaAuthLegacyEndpoint::StatelessLogout),
             before + 1
@@ -845,7 +853,7 @@ githubPath: /github
         assert!(
             logout_rejection
                 .headers
-                .contains(&("allow".into(), "GET, POST".into()))
+                .contains(&("allow".into(), "POST".into()))
         );
         assert!(
             logout_rejection

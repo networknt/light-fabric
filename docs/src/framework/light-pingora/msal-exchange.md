@@ -58,11 +58,6 @@ paths:
     method: POST
     exec:
       - bff
-  # Temporary compatibility bridge; remove only at the Phase 4 release gate.
-  - path: /auth/ms/exchange
-    method: GET
-    exec:
-      - bff
   - path: /auth/ms/exchange
     method: OPTIONS
     exec:
@@ -71,21 +66,15 @@ paths:
     method: POST
     exec:
       - bff
-  # Temporary compatibility bridge; remove only at the Phase 4 release gate.
-  - path: /auth/ms/logout
-    method: GET
-    exec:
-      - bff
   - path: /auth/ms/logout
     method: OPTIONS
     exec:
       - bff
 ```
 
-`POST` is canonical for exchange and logout. Keep the explicitly labeled GET
-routes only while old cached SPA bundles are supported. Keep the `OPTIONS`
-routes permanently, with `cors` before `msal-exchange`, so preflight is handled
-before the auth method guard.
+Exchange and logout are POST-only. Keep the `OPTIONS` routes permanently, with
+`cors` before `msal-exchange`, so preflight is handled before the auth method
+guard.
 
 When the handler is active, the gateway needs these resolved config files:
 
@@ -443,12 +432,9 @@ when a shared client sets `Content-Type: application/json`. On success the
 handler returns `204 No Content`, no response content type or body, and
 deletion cookies for every cookie name the runtime can set.
 
-During the compatibility window, explicitly routed legacy GET exchange/logout
-requests still work and emit migration telemetry. Phase 4 removes those routes
-only after the compatibility and zero-legacy-traffic gates pass. During the
-bridge, another mutation method returns `405`, `ERR10008`, and
-`Allow: GET, POST`. Under strict enforcement, a legacy mutation method returns
-`405`, `ERR10008`, and `Allow: POST`. `OPTIONS` remains routed to CORS.
+A legacy GET or any other unsupported exchange/logout method returns `405`,
+`ERR10008`, and `Allow: POST` before token-server, cookie, or proxy side
+effects. `OPTIONS` remains routed to CORS.
 
 ## Error Handling
 

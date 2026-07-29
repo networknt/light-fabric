@@ -47,11 +47,6 @@ paths:
     method: POST
     exec:
       - bff
-  # Temporary compatibility bridge; remove only at the Phase 4 release gate.
-  - path: /auth/ms/logout
-    method: GET
-    exec:
-      - bff
   - path: /auth/ms/logout
     method: OPTIONS
     exec:
@@ -167,19 +162,16 @@ async function gatewayLogout() {
 }
 ```
 
-During the compatibility window, an explicitly routed legacy GET logout is
-still accepted and measured. Phase 4 removes that route after the release
-gate. During the bridge, another logout method returns `405`, `ERR10008`, and
-`Allow: GET, POST`; login remains POST-only with `Allow: POST`. Under strict
-logout enforcement, the legacy GET returns `405`, `ERR10008`, and
-`Allow: POST`. Keep explicit `OPTIONS` routes permanently with `cors` before
+Login and logout are POST-only. A legacy GET or any other unsupported method
+returns `405`, `ERR10008`, and `Allow: POST` before authentication or cookie
+side effects. Keep explicit `OPTIONS` routes permanently with `cors` before
 `msal-auth` in the selected chain.
 
 ## Error Handling
 
 | Code | Meaning |
 | --- | --- |
-| `ERR10008` | Method is not allowed; inspect `Allow` for the endpoint's current bridge or strict contract. |
+| `ERR10008` | Method is not allowed; MSAL login/logout responses advertise `Allow: POST`. |
 | `ERR10036` | Logout CSRF header is missing when enforcement is enabled. |
 | `ERR11649` | Logout CSRF cookie/header validation failed without exposing either value. |
 

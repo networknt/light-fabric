@@ -285,11 +285,6 @@ paths:
     method: POST
     exec:
       - default
-  # Temporary compatibility bridge; remove only at the Phase 4 release gate.
-  - path: /logout
-    method: GET
-    exec:
-      - default
   - path: /logout
     method: OPTIONS
     exec:
@@ -297,11 +292,9 @@ paths:
 ```
 
 The handler should normally run after CORS and before proxy/router/WebSocket.
-`POST /logout` is canonical. The authorization and enabled `/google`,
+`POST /logout` is the only allowed logout method. The authorization and enabled `/google`,
 `/facebook`, and `/github` authorization-code callbacks remain permanently
-GET-only. Keep the temporary logout GET only for cached clients during the
-compatibility window, and keep the explicit `OPTIONS /logout` route
-permanently.
+GET-only. Keep the explicit `OPTIONS /logout` route permanently.
 
 ### Login Flow
 
@@ -350,12 +343,9 @@ X-CSRF-TOKEN: <csrf>
 ```
 
 The logout request has no required body. A zero-length body is valid even when
-a shared client declares `Content-Type: application/json`. During
-compatibility, the explicitly routed legacy GET logout remains accepted and
-measured. During the bridge, another logout method returns `405`, `ERR10008`,
-and `Allow: GET, POST`; a wrong callback method returns `405`, `ERR10008`, and
-`Allow: GET`. Phase 4 removes the logout bridge after the release gate; strict
-logout enforcement returns `405`, `ERR10008`, and `Allow: POST`. `OPTIONS`
+a shared client declares `Content-Type: application/json`. A legacy GET or any
+other unsupported logout method returns `405`, `ERR10008`, and `Allow: POST`;
+a wrong callback method returns `405`, `ERR10008`, and `Allow: GET`. `OPTIONS`
 continues to reach CORS.
 
 ### Session Validation Flow

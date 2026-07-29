@@ -13,8 +13,8 @@ use light_pingora::{
     MetricsRecorder, MsalAuthRuntime, MsalExchangeOutcome, MsalExchangeRuntime,
     PathPrefixServiceConfig, PiiTokenizationRuntime, PingoraApp, PingoraHandler,
     PingoraHandlerDescriptor, PingoraHandlerKind, PingoraHandlerRegistry, PingoraTransport,
-    ProxyRoute, ProxyTarget, RateLimitHeaders, RateLimitRuntime, ResolvedHandlerChain,
-    RouterDecision, RouterRoute, SecurityRuntime, SpaAuthResponse, StatelessAuthOutcome,
+    ProxyRoute, ProxyTarget, RateLimitHeaders, RateLimitRuntime, RouterDecision, RouterRoute,
+    SecurityRuntime, SpaAuthLegacyEndpoint, SpaAuthResponse, StatelessAuthOutcome,
     StatelessAuthRuntime, StaticResolution, StaticResourceSet, TokenRuntime, UnifiedSecurityConfig,
     WebSocketConnectionPermit, WebSocketHandshake, WebSocketRouteDecision, WebSocketRouteError,
     WebSocketRouterRuntime, apply_browser_websocket_upstream_credentials,
@@ -29,9 +29,9 @@ use light_pingora::{
     load_pii_tokenization_runtime, load_proxy_route, load_rate_limit_runtime, load_router_route,
     load_security_runtime, load_stateless_auth_runtime, load_static_resources, load_token_runtime,
     load_unified_security_config, load_websocket_router_runtime_with_policy,
-    merge_extra_response_headers, record_mcp_router_reload_rejection, select_router_target,
-    validate_mcp_router_runtime_config, verify_api_key, verify_basic_auth, verify_jwt_request,
-    verify_unified_security,
+    merge_extra_response_headers, record_mcp_router_reload_rejection, record_spa_auth_legacy_get,
+    select_router_target, validate_mcp_router_runtime_config, verify_api_key, verify_basic_auth,
+    verify_jwt_request, verify_unified_security,
 };
 use light_runtime::{
     CacheRegistry, ConfigManager, LightRuntimeBuilder, ModuleKind, ReloadContext, ReloadOutcome,
@@ -103,19 +103,27 @@ impl SpaSessionEndpointRoute {
         }
     }
 
-    fn supports_get_post_bridge(self) -> bool {
-        matches!(
-            self,
-            Self::Exchange | Self::ExchangeLogout | Self::AuthLogout | Self::StatelessLogout
-        )
+    fn allowed_method(self) -> &'static str {
+        match self {
+            Self::Exchange
+            | Self::ExchangeLogout
+            | Self::AuthLogin
+            | Self::AuthLogout
+            | Self::StatelessLogout => "POST",
+            Self::StatelessAuthorization
+            | Self::GoogleCallback
+            | Self::FacebookCallback
+            | Self::GithubCallback => "GET",
+        }
     }
 
     fn allow_header(self) -> &'static str {
         match self {
-            Self::Exchange | Self::ExchangeLogout | Self::AuthLogout | Self::StatelessLogout => {
-                "GET, POST"
-            }
-            Self::AuthLogin => "POST",
+            Self::Exchange
+            | Self::ExchangeLogout
+            | Self::AuthLogin
+            | Self::AuthLogout
+            | Self::StatelessLogout => "POST",
             Self::StatelessAuthorization
             | Self::GoogleCallback
             | Self::FacebookCallback
@@ -125,9 +133,14 @@ impl SpaSessionEndpointRoute {
 
     fn allows_method(self, method: &str) -> bool {
         method.eq_ignore_ascii_case("OPTIONS")
-            || (self.supports_get_post_bridge()
-                && (method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("POST")))
-            || (matches!(self, Self::AuthLogin) && method.eq_ignore_ascii_case("POST"))
+            || (matches!(
+                self,
+                Self::Exchange
+                    | Self::ExchangeLogout
+                    | Self::AuthLogin
+                    | Self::AuthLogout
+                    | Self::StatelessLogout
+            ) && method.eq_ignore_ascii_case("POST"))
             || (matches!(
                 self,
                 Self::StatelessAuthorization
@@ -136,52 +149,70 @@ impl SpaSessionEndpointRoute {
                     | Self::GithubCallback
             ) && method.eq_ignore_ascii_case("GET"))
     }
+
+    fn legacy_get_endpoint(self) -> Option<SpaAuthLegacyEndpoint> {
+        match self {
+            Self::Exchange => Some(SpaAuthLegacyEndpoint::MsalExchange),
+            Self::ExchangeLogout => Some(SpaAuthLegacyEndpoint::MsalExchangeLogout),
+            Self::AuthLogout => Some(SpaAuthLegacyEndpoint::MsalAuthLogout),
+            Self::StatelessLogout => Some(SpaAuthLegacyEndpoint::StatelessLogout),
+            Self::AuthLogin
+            | Self::StatelessAuthorization
+            | Self::GoogleCallback
+            | Self::FacebookCallback
+            | Self::GithubCallback => None,
+        }
+    }
+}
+
+fn spa_session_rejection_uses_cors(
+    active_handlers: &ActiveHandlerSet,
+    request_path: &str,
+    endpoint: SpaSessionEndpointRoute,
+) -> Result<bool, RuntimeError> {
+    let resolved =
+        active_handlers.resolve_handler_chain(request_path, endpoint.allowed_method())?;
+    let cors_index = resolved.handler_ids.iter().position(|id| id == "cors");
+    let auth_index = resolved
+        .handler_ids
+        .iter()
+        .position(|id| id == endpoint.handler_id());
+    Ok(matches!((cors_index, auth_index), (Some(cors), Some(auth)) if cors < auth))
+}
+
+fn capture_cors_outcome(
+    ctx: &mut GatewayRequestContext,
+    outcome: CorsRequestOutcome,
+) -> Option<u16> {
+    match outcome {
+        CorsRequestOutcome::Continue(headers) => {
+            ctx.cors = headers;
+            None
+        }
+        CorsRequestOutcome::Respond { status, headers } => {
+            ctx.cors = Some(headers);
+            Some(status)
+        }
+    }
 }
 
 fn spa_session_method_rejection(
     endpoint: SpaSessionEndpointRoute,
     method: &str,
 ) -> Option<HandlerRejection> {
-    (!endpoint.allows_method(method)).then(|| {
-        HandlerRejection::new(405, "ERR10008", "method not allowed")
-            .with_header("allow", endpoint.allow_header())
-            .with_header("cache-control", "no-store")
-    })
-}
-
-fn resolve_spa_session_compatible_chain(
-    active_handlers: &ActiveHandlerSet,
-    request_path: &str,
-    method: &str,
-    endpoint: Option<SpaSessionEndpointRoute>,
-) -> Result<ResolvedHandlerChain, RuntimeError> {
-    let mut resolved = active_handlers.resolve_handler_chain(request_path, method)?;
-    if let Some(endpoint) = endpoint.filter(|endpoint| endpoint.supports_get_post_bridge()) {
-        let is_bridge_method =
-            method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("POST");
-        if is_bridge_method
-            && !resolved
-                .handler_ids
-                .iter()
-                .any(|id| id == endpoint.handler_id())
-        {
-            let alternate_method = if method.eq_ignore_ascii_case("GET") {
-                "POST"
-            } else {
-                "GET"
-            };
-            let alternate =
-                active_handlers.resolve_handler_chain(request_path, alternate_method)?;
-            if alternate
-                .handler_ids
-                .iter()
-                .any(|id| id == endpoint.handler_id())
-            {
-                resolved = alternate;
-            }
+    if endpoint.allows_method(method) {
+        return None;
+    }
+    if method.eq_ignore_ascii_case("GET") {
+        if let Some(legacy_endpoint) = endpoint.legacy_get_endpoint() {
+            record_spa_auth_legacy_get(legacy_endpoint);
         }
     }
-    Ok(resolved)
+    Some(
+        HandlerRejection::new(405, "ERR10008", "method not allowed")
+            .with_header("allow", endpoint.allow_header())
+            .with_header("cache-control", "no-store"),
+    )
 }
 
 fn status_allows_content_length(status: u16) -> bool {
@@ -2620,22 +2651,34 @@ impl ProxyHttp for GatewayProxy {
         let method = session.req_header().method.as_str().to_string();
         ctx.method = method.clone();
         let spa_session_endpoint = self.active_spa_session_endpoint(&request_path);
+        let active_handlers = self.active_handlers.load();
         if let Some(endpoint) = spa_session_endpoint {
             if let Some(rejection) = spa_session_method_rejection(endpoint, &method) {
+                if spa_session_rejection_uses_cors(&active_handlers, &request_path, endpoint)
+                    .map_err(pingora_internal_error)?
+                {
+                    if let Some(config) = self.cors_config.load().as_ref().as_ref() {
+                        let outcome = evaluate_cors_request(
+                            session,
+                            config,
+                            &request_path,
+                            &self.server_scheme,
+                            self.server_port,
+                        );
+                        if let Some(status) = capture_cors_outcome(ctx, outcome) {
+                            return self.write_empty_response(session, ctx, status).await;
+                        }
+                    }
+                }
                 return self
                     .write_spa_session_rejection_response(session, ctx, rejection)
                     .await;
             }
         }
 
-        let active_handlers = self.active_handlers.load();
-        let resolved = resolve_spa_session_compatible_chain(
-            &active_handlers,
-            &request_path,
-            &method,
-            spa_session_endpoint,
-        )
-        .map_err(pingora_internal_error)?;
+        let resolved = active_handlers
+            .resolve_handler_chain(&request_path, &method)
+            .map_err(pingora_internal_error)?;
         ctx.handler_ids = resolved.handler_ids.clone();
         ctx.endpoint = resolved.endpoint(&request_path);
         ctx.path_params = resolved
@@ -2667,21 +2710,16 @@ impl ProxyHttp for GatewayProxy {
                 }
                 "cors" => {
                     if let Some(config) = self.cors_config.load().as_ref().as_ref() {
-                        match evaluate_cors_request(
+                        let outcome = evaluate_cors_request(
                             session,
                             config,
                             &request_path,
                             &self.server_scheme,
                             self.server_port,
-                        ) {
-                            CorsRequestOutcome::Continue(headers) => {
-                                ctx.cors = headers;
-                            }
-                            CorsRequestOutcome::Respond { status, headers } => {
-                                ctx.cors = Some(headers);
-                                ctx.record_handler_duration(&handler_id, started.elapsed());
-                                return self.write_empty_response(session, ctx, status).await;
-                            }
+                        );
+                        if let Some(status) = capture_cors_outcome(ctx, outcome) {
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            return self.write_empty_response(session, ctx, status).await;
                         }
                     }
                 }
@@ -6327,11 +6365,6 @@ paths:
       - cors
       - stateless
   - path: /logout
-    method: GET
-    exec:
-      - cors
-      - stateless
-  - path: /logout
     method: POST
     exec:
       - cors
@@ -6389,16 +6422,50 @@ oauth:
         ));
         assert!(proxy.active_spa_session_endpoint("/google").is_none());
         let active = proxy.active_handlers.load();
-        for method in ["GET", "POST"] {
-            let resolved = resolve_spa_session_compatible_chain(
+        let resolved = active
+            .resolve_handler_chain("/logout", "POST")
+            .expect("resolve stateless POST logout route");
+        assert!(resolved.handler_ids.iter().any(|id| id == "stateless"));
+        assert!(
+            spa_session_rejection_uses_cors(
                 &active,
                 "/logout",
-                method,
-                Some(SpaSessionEndpointRoute::StatelessLogout),
+                SpaSessionEndpointRoute::StatelessLogout,
             )
-            .expect("resolve stateless logout compatibility route");
-            assert!(resolved.handler_ids.iter().any(|id| id == "stateless"));
-        }
+            .expect("inspect stateless rejection CORS chain")
+        );
+        let mut rejection_ctx = GatewayRequestContext::default();
+        let cors_headers = CorsResponseHeaders {
+            allow_origin: Some("https://portal.example.com".to_string()),
+            allow_methods: vec!["POST".to_string(), "OPTIONS".to_string()],
+            allow_headers: "Content-Type, Authorization".to_string(),
+        };
+        assert_eq!(
+            capture_cors_outcome(
+                &mut rejection_ctx,
+                CorsRequestOutcome::Continue(Some(cors_headers))
+            ),
+            None
+        );
+        let mut rejection_response =
+            ResponseHeader::build(405, Some(8)).expect("build strict-method rejection response");
+        proxy
+            .apply_response_headers(&mut rejection_response, &rejection_ctx)
+            .expect("apply CORS to strict-method rejection response");
+        assert_eq!(
+            rejection_response
+                .headers
+                .get("access-control-allow-origin")
+                .and_then(|value| value.to_str().ok()),
+            Some("https://portal.example.com")
+        );
+        assert_eq!(
+            rejection_response
+                .headers
+                .get("access-control-allow-credentials")
+                .and_then(|value| value.to_str().ok()),
+            Some("true")
+        );
         let options = active
             .resolve_handler_chain("/logout", "OPTIONS")
             .expect("resolve stateless OPTIONS route");
@@ -6435,13 +6502,29 @@ oauth:
                 .expect("social callback POST rejected");
             assert!(rejection.headers.contains(&("allow".into(), "GET".into())));
         }
+        let legacy_before =
+            light_pingora::spa_auth_legacy_get_count(SpaAuthLegacyEndpoint::StatelessLogout);
+        let get_rejection =
+            spa_session_method_rejection(SpaSessionEndpointRoute::StatelessLogout, "GET")
+                .expect("logout GET rejected before default-handler fallback");
+        assert_eq!(get_rejection.status, 405);
+        assert_eq!(get_rejection.code, "ERR10008");
+        assert!(
+            get_rejection
+                .headers
+                .contains(&("allow".into(), "POST".into()))
+        );
+        assert_eq!(
+            light_pingora::spa_auth_legacy_get_count(SpaAuthLegacyEndpoint::StatelessLogout),
+            legacy_before + 1
+        );
         let logout_rejection =
             spa_session_method_rejection(SpaSessionEndpointRoute::StatelessLogout, "DELETE")
                 .expect("logout DELETE rejected before default-handler fallback");
         assert!(
             logout_rejection
                 .headers
-                .contains(&("allow".into(), "GET, POST".into()))
+                .contains(&("allow".into(), "POST".into()))
         );
         assert!(
             config
@@ -6541,17 +6624,28 @@ oauth:
         );
         let active = proxy.active_handlers.load();
         for path in ["/auth/ms/exchange", "/auth/ms/logout"] {
-            for method in ["GET", "POST"] {
-                let route = if path.ends_with("exchange") {
-                    SpaSessionEndpointRoute::Exchange
-                } else {
-                    SpaSessionEndpointRoute::ExchangeLogout
-                };
-                let resolved =
-                    resolve_spa_session_compatible_chain(&active, path, method, Some(route))
-                        .expect("resolve compatibility route");
-                assert!(resolved.handler_ids.iter().any(|id| id == "msal-exchange"));
-            }
+            let route = if path.ends_with("exchange") {
+                SpaSessionEndpointRoute::Exchange
+            } else {
+                SpaSessionEndpointRoute::ExchangeLogout
+            };
+            let resolved = active
+                .resolve_handler_chain(path, "POST")
+                .expect("resolve strict POST route");
+            assert!(resolved.handler_ids.iter().any(|id| id == "msal-exchange"));
+            assert!(
+                spa_session_rejection_uses_cors(&active, path, route)
+                    .expect("inspect MSAL exchange rejection CORS chain")
+            );
+            let get_rejection = spa_session_method_rejection(route, "GET")
+                .expect("GET rejected before default-handler fallback");
+            assert_eq!(get_rejection.status, 405);
+            assert_eq!(get_rejection.code, "ERR10008");
+            assert!(
+                get_rejection
+                    .headers
+                    .contains(&("allow".into(), "POST".into()))
+            );
             let options = active
                 .resolve_handler_chain(path, "OPTIONS")
                 .expect("resolve OPTIONS route");
@@ -6564,11 +6658,7 @@ oauth:
             .expect("DELETE rejected before route fallback");
         assert_eq!(rejection.status, 405);
         assert_eq!(rejection.code, "ERR10008");
-        assert!(
-            rejection
-                .headers
-                .contains(&("allow".into(), "GET, POST".into()))
-        );
+        assert!(rejection.headers.contains(&("allow".into(), "POST".into())));
         assert!(
             rejection
                 .headers
@@ -6592,6 +6682,37 @@ oauth:
         assert!(status_allows_content_length(200));
         assert!(should_write_response_body(200, false));
         assert!(!should_write_response_body(200, true));
+    }
+
+    #[test]
+    fn spa_session_rejection_captures_cors_headers_before_response() {
+        let headers = CorsResponseHeaders {
+            allow_origin: Some("https://portal.example.com".to_string()),
+            allow_methods: vec!["POST".to_string(), "OPTIONS".to_string()],
+            allow_headers: "Content-Type, Authorization".to_string(),
+        };
+        let mut ctx = GatewayRequestContext::default();
+
+        assert_eq!(
+            capture_cors_outcome(
+                &mut ctx,
+                CorsRequestOutcome::Continue(Some(headers.clone()))
+            ),
+            None
+        );
+        assert_eq!(ctx.cors, Some(headers.clone()));
+
+        assert_eq!(
+            capture_cors_outcome(
+                &mut ctx,
+                CorsRequestOutcome::Respond {
+                    status: 403,
+                    headers: headers.clone(),
+                },
+            ),
+            Some(403)
+        );
+        assert_eq!(ctx.cors, Some(headers));
     }
 
     #[test]
@@ -6662,16 +6783,28 @@ audience: spa-client
         assert_eq!(msal.config.login_path, "/auth/ms/login");
         assert_eq!(msal.config.session_timeout, 1200);
         let active = proxy.active_handlers.load();
-        for method in ["GET", "POST"] {
-            let resolved = resolve_spa_session_compatible_chain(
+        let resolved = active
+            .resolve_handler_chain("/auth/ms/logout", "POST")
+            .expect("resolve msal-auth POST logout route");
+        assert!(resolved.handler_ids.iter().any(|id| id == "msal-auth"));
+        assert!(
+            spa_session_rejection_uses_cors(
                 &active,
                 "/auth/ms/logout",
-                method,
-                Some(SpaSessionEndpointRoute::AuthLogout),
+                SpaSessionEndpointRoute::AuthLogout,
             )
-            .expect("resolve msal-auth logout compatibility route");
-            assert!(resolved.handler_ids.iter().any(|id| id == "msal-auth"));
-        }
+            .expect("inspect MSAL auth rejection CORS chain")
+        );
+        let get_rejection =
+            spa_session_method_rejection(SpaSessionEndpointRoute::AuthLogout, "GET")
+                .expect("MSAL logout GET rejected before default-handler fallback");
+        assert_eq!(get_rejection.status, 405);
+        assert_eq!(get_rejection.code, "ERR10008");
+        assert!(
+            get_rejection
+                .headers
+                .contains(&("allow".into(), "POST".into()))
+        );
         for path in ["/auth/ms/login", "/auth/ms/logout"] {
             let options = active
                 .resolve_handler_chain(path, "OPTIONS")

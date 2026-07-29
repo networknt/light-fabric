@@ -312,14 +312,13 @@ fn require_post(method: &str) -> Result<(), HandlerRejection> {
 }
 
 fn check_logout_method(method: &str) -> Result<(), HandlerRejection> {
-    if method.eq_ignore_ascii_case("GET") {
-        record_spa_auth_legacy_get(SpaAuthLegacyEndpoint::MsalAuthLogout);
-        return Ok(());
-    }
     if method.eq_ignore_ascii_case("POST") {
         return Ok(());
     }
-    Err(method_not_allowed("GET, POST"))
+    if method.eq_ignore_ascii_case("GET") {
+        record_spa_auth_legacy_get(SpaAuthLegacyEndpoint::MsalAuthLogout);
+    }
+    Err(method_not_allowed("POST"))
 }
 
 pub fn load_msal_auth_config(
@@ -393,15 +392,23 @@ mod tests {
                 .contains(&("allow".into(), "POST".into()))
         );
         assert!(check_logout_method("POST").is_ok());
-        assert!(check_logout_method("GET").is_ok());
+        let before =
+            crate::spa_auth::spa_auth_legacy_get_count(SpaAuthLegacyEndpoint::MsalAuthLogout);
+        let get_rejection = check_logout_method("GET").expect_err("logout GET");
+        assert_eq!(get_rejection.status, 405);
+        assert!(
+            get_rejection
+                .headers
+                .contains(&("allow".into(), "POST".into()))
+        );
+        assert_eq!(
+            crate::spa_auth::spa_auth_legacy_get_count(SpaAuthLegacyEndpoint::MsalAuthLogout),
+            before + 1
+        );
         let rejection = check_logout_method("PATCH").expect_err("logout PATCH");
         assert_eq!(rejection.status, 405);
         assert_eq!(rejection.code, "ERR10008");
-        assert!(
-            rejection
-                .headers
-                .contains(&("allow".into(), "GET, POST".into()))
-        );
+        assert!(rejection.headers.contains(&("allow".into(), "POST".into())));
     }
 
     #[test]

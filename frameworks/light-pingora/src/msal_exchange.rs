@@ -367,16 +367,15 @@ fn check_endpoint_method(
     method: &str,
     endpoint: SpaAuthLegacyEndpoint,
 ) -> Result<(), crate::HandlerRejection> {
-    if method.eq_ignore_ascii_case("GET") {
-        record_spa_auth_legacy_get(endpoint);
-        return Ok(());
-    }
     if method.eq_ignore_ascii_case("POST") {
         return Ok(());
     }
+    if method.eq_ignore_ascii_case("GET") {
+        record_spa_auth_legacy_get(endpoint);
+    }
     Err(
         crate::HandlerRejection::new(405, "ERR10008", "method not allowed")
-            .with_header("allow", "GET, POST")
+            .with_header("allow", "POST")
             .with_header("cache-control", "no-store"),
     )
 }
@@ -738,11 +737,24 @@ msalAccessTokenHeader: X-Light-Token
     }
 
     #[test]
-    fn endpoint_method_compatibility_matrix_is_bounded_and_rejects_others() {
+    fn endpoint_method_contract_is_post_only_and_observes_rejected_get() {
         let endpoint = SpaAuthLegacyEndpoint::MsalExchange;
         let before = crate::spa_auth::spa_auth_legacy_get_count(endpoint);
         assert!(check_endpoint_method("POST", endpoint).is_ok());
-        assert!(check_endpoint_method("GET", endpoint).is_ok());
+        let get_rejection =
+            check_endpoint_method("GET", endpoint).expect_err("GET must be rejected");
+        assert_eq!(get_rejection.status, 405);
+        assert_eq!(get_rejection.code, "ERR10008");
+        assert!(
+            get_rejection
+                .headers
+                .contains(&("allow".into(), "POST".into()))
+        );
+        assert!(
+            get_rejection
+                .headers
+                .contains(&("cache-control".into(), "no-store".into()))
+        );
         assert_eq!(
             crate::spa_auth::spa_auth_legacy_get_count(endpoint),
             before + 1
@@ -752,11 +764,7 @@ msalAccessTokenHeader: X-Light-Token
             check_endpoint_method("DELETE", endpoint).expect_err("DELETE must be rejected");
         assert_eq!(rejection.status, 405);
         assert_eq!(rejection.code, "ERR10008");
-        assert!(
-            rejection
-                .headers
-                .contains(&("allow".into(), "GET, POST".into()))
-        );
+        assert!(rejection.headers.contains(&("allow".into(), "POST".into())));
         assert!(
             rejection
                 .headers
