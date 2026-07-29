@@ -2,10 +2,10 @@ use crate::security::{
     JwtExpiryMode, load_security_runtime, load_security_runtime_from_file, verify_jwt_token,
 };
 use crate::spa_auth::{
-    AUTHORIZATION_HEADER, SpaAuthLegacyEndpoint, SpaAuthResponse, SpaCookieConfig,
-    SpaSessionOutcome, SpaSessionRuntime, bearer_token, bearer_token_from_header,
+    AUTHORIZATION_HEADER, SpaAuthCsrfEndpoint, SpaAuthLegacyEndpoint, SpaAuthResponse,
+    SpaCookieConfig, SpaSessionOutcome, SpaSessionRuntime, bearer_token, bearer_token_from_header,
     delete_cookie_header, delete_cookie_headers, generate_csrf, load_spa_token_client,
-    record_spa_auth_legacy_get, request_cookie, session_cookie_header,
+    record_spa_auth_legacy_get, request_cookie, session_cookie_header, validate_logout_csrf,
 };
 use light_runtime::{ModuleKind, RuntimeConfig, RuntimeError};
 use pingora::prelude::Session;
@@ -46,6 +46,8 @@ pub struct MsalExchangeConfig {
     pub exchange_path: String,
     #[serde(default = "default_logout_path")]
     pub logout_path: String,
+    #[serde(default)]
+    pub logout_csrf_enforced: bool,
     #[serde(default = "default_cookie_domain")]
     pub cookie_domain: String,
     #[serde(default = "default_cookie_path")]
@@ -86,6 +88,7 @@ impl Default for MsalExchangeConfig {
             enabled: true,
             exchange_path: default_exchange_path(),
             logout_path: default_logout_path(),
+            logout_csrf_enforced: false,
             cookie_domain: default_cookie_domain(),
             cookie_path: default_cookie_path(),
             cookie_secure: false,
@@ -172,6 +175,12 @@ impl MsalExchangeRuntime {
             check_endpoint_method(
                 session.req_header().method.as_str(),
                 SpaAuthLegacyEndpoint::MsalExchangeLogout,
+            )?;
+            validate_logout_csrf(
+                session,
+                SpaAuthCsrfEndpoint::MsalExchangeLogout,
+                self.config.logout_csrf_enforced,
+                &[self.config.msal_access_token_cookie.as_str()],
             )?;
             return Ok(MsalExchangeOutcome::Respond(self.logout_response()));
         }
@@ -626,6 +635,11 @@ subjectTokenType: urn:ietf:params:oauth:token-type:jwt
             config.msal_access_token_cookie,
             DEFAULT_MSAL_ACCESS_TOKEN_COOKIE
         );
+    }
+
+    #[test]
+    fn msal_exchange_logout_csrf_defaults_to_observe_only() {
+        assert!(!MsalExchangeConfig::default().logout_csrf_enforced);
     }
 
     #[test]

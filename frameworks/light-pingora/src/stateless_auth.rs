@@ -1,7 +1,8 @@
 use crate::security::load_security_runtime;
 use crate::spa_auth::{
-    SpaAuthLegacyEndpoint, SpaAuthResponse, SpaCookieConfig, SpaSessionOutcome, SpaSessionRuntime,
-    generate_csrf, load_spa_token_client, query_param, record_spa_auth_legacy_get, social_scopes,
+    SpaAuthCsrfEndpoint, SpaAuthLegacyEndpoint, SpaAuthResponse, SpaCookieConfig,
+    SpaSessionOutcome, SpaSessionRuntime, generate_csrf, load_spa_token_client, query_param,
+    record_spa_auth_legacy_get, social_scopes, validate_logout_csrf,
 };
 use light_client::{ClientFactory, EndpointOptions};
 use light_runtime::{MaskSpec, ModuleKind, RuntimeConfig, RuntimeError};
@@ -30,6 +31,8 @@ pub struct StatelessAuthConfig {
     pub auth_path: String,
     #[serde(default = "default_logout_path")]
     pub logout_path: String,
+    #[serde(default)]
+    pub logout_csrf_enforced: bool,
     #[serde(default = "default_cookie_domain")]
     pub cookie_domain: String,
     #[serde(default = "default_cookie_path")]
@@ -104,6 +107,7 @@ impl Default for StatelessAuthConfig {
             enable_http2: false,
             auth_path: default_auth_path(),
             logout_path: default_logout_path(),
+            logout_csrf_enforced: false,
             cookie_domain: default_cookie_domain(),
             cookie_path: default_cookie_path(),
             cookie_timeout_uri: default_cookie_timeout_uri(),
@@ -177,9 +181,17 @@ impl StatelessAuthRuntime {
         }
         match handler_id {
             "stateless" if path == self.config.auth_path => self.handle_login(session).await,
-            "stateless" if path == self.config.logout_path => Ok(StatelessAuthOutcome::Respond(
-                self.session.logout_response(),
-            )),
+            "stateless" if path == self.config.logout_path => {
+                validate_logout_csrf(
+                    session,
+                    SpaAuthCsrfEndpoint::StatelessLogout,
+                    self.config.logout_csrf_enforced,
+                    &[],
+                )?;
+                Ok(StatelessAuthOutcome::Respond(
+                    self.session.logout_response(),
+                ))
+            }
             "stateless" => self.handle_session(session).await,
             "google" if path == self.config.google_path => {
                 self.handle_social_login(session, SocialProvider::Google)
@@ -800,6 +812,11 @@ githubPath: /github
                 .headers
                 .contains(&("cache-control".into(), "no-store".into()))
         );
+    }
+
+    #[test]
+    fn stateless_logout_csrf_defaults_to_observe_only() {
+        assert!(!StatelessAuthConfig::default().logout_csrf_enforced);
     }
 
     #[test]

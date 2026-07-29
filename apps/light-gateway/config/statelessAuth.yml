@@ -4,6 +4,7 @@ denyUri: ${statelessAuth.denyUri:https://localhost:3000/#/app/dashboard}
 enableHttp2: ${statelessAuth.enableHttp2:false}
 authPath: ${statelessAuth.authPath:/authorization}
 logoutPath: ${statelessAuth.logoutPath:/logout}
+logoutCsrfEnforced: ${statelessAuth.logoutCsrfEnforced:false}
 cookieDomain: ${statelessAuth.cookieDomain:localhost}
 cookiePath: ${statelessAuth.cookiePath:/}
 cookieTimeoutUri: ${statelessAuth.cookieTimeoutUri:/}

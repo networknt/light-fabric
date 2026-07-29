@@ -1,6 +1,7 @@
 enabled: ${msal-exchange.enabled:true}
 exchangePath: ${msal-exchange.exchangePath:/auth/ms/exchange}
 logoutPath: ${msal-exchange.logoutPath:/auth/ms/logout}
+logoutCsrfEnforced: ${msal-exchange.logoutCsrfEnforced:false}
 cookieDomain: ${msal-exchange.cookieDomain:localhost}
 cookiePath: ${msal-exchange.cookiePath:/}
 cookieSecure: ${msal-exchange.cookieSecure:false}

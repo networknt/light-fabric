@@ -3,9 +3,9 @@ use crate::security::{
     JwtExpiryMode, SecurityRuntime, load_security_runtime_from_file, verify_jwt_token,
 };
 use crate::spa_auth::{
-    AUTHORIZATION_HEADER, CookieSameSite, SpaAuthLegacyEndpoint, SpaAuthResponse, SpaCookieConfig,
-    SpaSessionOutcome, bearer_token, delete_cookie_header, generate_csrf,
-    record_spa_auth_legacy_get,
+    AUTHORIZATION_HEADER, CookieSameSite, SpaAuthCsrfEndpoint, SpaAuthLegacyEndpoint,
+    SpaAuthResponse, SpaCookieConfig, SpaSessionOutcome, bearer_token, delete_cookie_header,
+    generate_csrf, record_spa_auth_legacy_get, validate_logout_csrf,
 };
 use light_runtime::{ModuleKind, RuntimeConfig, RuntimeError};
 use pingora::prelude::Session;
@@ -39,6 +39,8 @@ pub struct MsalAuthConfig {
     pub login_path: String,
     #[serde(default = "default_logout_path")]
     pub logout_path: String,
+    #[serde(default)]
+    pub logout_csrf_enforced: bool,
     #[serde(default = "default_cookie_domain")]
     pub cookie_domain: String,
     #[serde(default = "default_cookie_path")]
@@ -57,6 +59,7 @@ impl Default for MsalAuthConfig {
             enabled: true,
             login_path: default_login_path(),
             logout_path: default_logout_path(),
+            logout_csrf_enforced: false,
             cookie_domain: default_cookie_domain(),
             cookie_path: default_cookie_path(),
             cookie_secure: false,
@@ -243,8 +246,14 @@ impl MsalAuthRuntime {
 
     async fn handle_logout(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
     ) -> Result<SpaSessionOutcome, HandlerRejection> {
+        validate_logout_csrf(
+            session,
+            SpaAuthCsrfEndpoint::MsalAuthLogout,
+            self.config.logout_csrf_enforced,
+            &[],
+        )?;
         Ok(SpaSessionOutcome::Respond(msal_auth_logout_response(
             &self.config,
         )))
@@ -393,6 +402,11 @@ mod tests {
                 .headers
                 .contains(&("allow".into(), "GET, POST".into()))
         );
+    }
+
+    #[test]
+    fn msal_auth_logout_csrf_defaults_to_observe_only() {
+        assert!(!MsalAuthConfig::default().logout_csrf_enforced);
     }
 
     #[test]

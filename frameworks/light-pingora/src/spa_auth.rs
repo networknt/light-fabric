@@ -273,6 +273,31 @@ pub enum SpaAuthLegacyEndpoint {
     StatelessLogout,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpaAuthCsrfEndpoint {
+    MsalExchangeLogout,
+    MsalAuthLogout,
+    StatelessLogout,
+}
+
+impl SpaAuthCsrfEndpoint {
+    fn counter(self) -> &'static AtomicU64 {
+        match self {
+            Self::MsalExchangeLogout => &CSRF_MSAL_EXCHANGE_LOGOUT_WOULD_REJECT_COUNT,
+            Self::MsalAuthLogout => &CSRF_MSAL_AUTH_LOGOUT_WOULD_REJECT_COUNT,
+            Self::StatelessLogout => &CSRF_STATELESS_LOGOUT_WOULD_REJECT_COUNT,
+        }
+    }
+
+    fn dimensions(self) -> (&'static str, &'static str) {
+        match self {
+            Self::MsalExchangeLogout => ("msal-exchange", "logout"),
+            Self::MsalAuthLogout => ("msal-auth", "logout"),
+            Self::StatelessLogout => ("stateless-auth", "logout"),
+        }
+    }
+}
+
 impl SpaAuthLegacyEndpoint {
     fn counter(self) -> &'static AtomicU64 {
         match self {
@@ -297,6 +322,9 @@ static LEGACY_MSAL_EXCHANGE_GET_COUNT: AtomicU64 = AtomicU64::new(0);
 static LEGACY_MSAL_EXCHANGE_LOGOUT_GET_COUNT: AtomicU64 = AtomicU64::new(0);
 static LEGACY_MSAL_AUTH_LOGOUT_GET_COUNT: AtomicU64 = AtomicU64::new(0);
 static LEGACY_STATELESS_LOGOUT_GET_COUNT: AtomicU64 = AtomicU64::new(0);
+static CSRF_MSAL_EXCHANGE_LOGOUT_WOULD_REJECT_COUNT: AtomicU64 = AtomicU64::new(0);
+static CSRF_MSAL_AUTH_LOGOUT_WOULD_REJECT_COUNT: AtomicU64 = AtomicU64::new(0);
+static CSRF_STATELESS_LOGOUT_WOULD_REJECT_COUNT: AtomicU64 = AtomicU64::new(0);
 
 pub fn record_spa_auth_legacy_get(endpoint: SpaAuthLegacyEndpoint) -> u64 {
     let count = endpoint.counter().fetch_add(1, Ordering::Relaxed) + 1;
@@ -328,6 +356,95 @@ pub fn record_spa_auth_legacy_get(endpoint: SpaAuthLegacyEndpoint) -> u64 {
 
 pub fn spa_auth_legacy_get_count(endpoint: SpaAuthLegacyEndpoint) -> u64 {
     endpoint.counter().load(Ordering::Relaxed)
+}
+
+pub fn spa_auth_logout_csrf_would_reject_count(endpoint: SpaAuthCsrfEndpoint) -> u64 {
+    endpoint.counter().load(Ordering::Relaxed)
+}
+
+pub(crate) fn validate_logout_csrf(
+    session: &Session,
+    endpoint: SpaAuthCsrfEndpoint,
+    enforced: bool,
+    additional_session_cookies: &[&str],
+) -> Result<(), HandlerRejection> {
+    let cookies = request_cookies(session);
+    let header_csrf = request_header(session, CSRF_HEADER);
+    validate_logout_csrf_values(
+        &cookies,
+        header_csrf.as_deref(),
+        endpoint,
+        enforced,
+        additional_session_cookies,
+    )
+}
+
+fn validate_logout_csrf_values(
+    cookies: &BTreeMap<String, String>,
+    header_csrf: Option<&str>,
+    endpoint: SpaAuthCsrfEndpoint,
+    enforced: bool,
+    additional_session_cookies: &[&str],
+) -> Result<(), HandlerRejection> {
+    let has_session = [
+        ACCESS_TOKEN_COOKIE,
+        REFRESH_TOKEN_COOKIE,
+        CSRF_COOKIE,
+        USER_ID_COOKIE,
+        USER_TYPE_COOKIE,
+        ROLES_COOKIE,
+        HOST_COOKIE,
+        EMAIL_COOKIE,
+        EID_COOKIE,
+    ]
+    .iter()
+    .chain(additional_session_cookies.iter())
+    .any(|name| cookies.contains_key(*name));
+    if !has_session {
+        return Ok(());
+    }
+
+    let header_csrf = header_csrf.filter(|value| !value.trim().is_empty());
+    let cookie_csrf = cookies.get(CSRF_COOKIE);
+    let failure = if header_csrf.is_none() {
+        Some((
+            "header_missing",
+            "ERR10036",
+            "X-CSRF-TOKEN header is missing",
+        ))
+    } else if cookie_csrf.map(String::as_str) != header_csrf {
+        Some((
+            "cookie_invalid",
+            "ERR11649",
+            "CSRF cookie/header validation failed for logout.",
+        ))
+    } else {
+        None
+    };
+    let Some((failure, code, message)) = failure else {
+        return Ok(());
+    };
+
+    let count = endpoint.counter().fetch_add(1, Ordering::Relaxed) + 1;
+    let (runtime, endpoint_name) = endpoint.dimensions();
+    tracing::info!(
+        target: "light_pingora::spa_auth_telemetry",
+        event = "spa_auth_logout_csrf_would_reject",
+        runtime,
+        endpoint = endpoint_name,
+        failure,
+        enforced,
+        count,
+        counter_scope = "process",
+        reset = "process_restart",
+        "logout request failed double-submit CSRF qualification"
+    );
+
+    if enforced {
+        Err(HandlerRejection::new(400, code, message).with_header("cache-control", "no-store"))
+    } else {
+        Ok(())
+    }
 }
 
 pub enum SpaSessionOutcome {
@@ -1299,6 +1416,91 @@ mod tests {
         assert_eq!(
             SpaAuthLegacyEndpoint::StatelessLogout.dimensions(),
             ("stateless-auth", "logout")
+        );
+    }
+
+    #[test]
+    fn logout_csrf_telemetry_dimensions_are_endpoint_separated() {
+        assert_eq!(
+            SpaAuthCsrfEndpoint::MsalExchangeLogout.dimensions(),
+            ("msal-exchange", "logout")
+        );
+        assert_eq!(
+            SpaAuthCsrfEndpoint::MsalAuthLogout.dimensions(),
+            ("msal-auth", "logout")
+        );
+        assert_eq!(
+            SpaAuthCsrfEndpoint::StatelessLogout.dimensions(),
+            ("stateless-auth", "logout")
+        );
+    }
+
+    #[test]
+    fn logout_csrf_observation_and_enforcement_matrix_is_value_free() {
+        let endpoint = SpaAuthCsrfEndpoint::MsalExchangeLogout;
+        let before = spa_auth_logout_csrf_would_reject_count(endpoint);
+        let no_session = BTreeMap::new();
+        assert!(
+            validate_logout_csrf_values(&no_session, None, endpoint, true, &[]).is_ok(),
+            "no-session logout remains idempotent"
+        );
+        assert_eq!(spa_auth_logout_csrf_would_reject_count(endpoint), before);
+
+        let azure_session =
+            BTreeMap::from([("customMsalAccessToken".to_string(), "opaque".to_string())]);
+        let azure_missing_header = validate_logout_csrf_values(
+            &azure_session,
+            None,
+            endpoint,
+            true,
+            &["customMsalAccessToken"],
+        )
+        .expect_err("configured MSAL access-token cookie identifies a session");
+        assert_eq!(azure_missing_header.code, "ERR10036");
+        let after_azure = spa_auth_logout_csrf_would_reject_count(endpoint);
+
+        let session = BTreeMap::from([("accessToken".to_string(), "expired".to_string())]);
+        assert!(validate_logout_csrf_values(&session, None, endpoint, false, &[]).is_ok());
+        assert_eq!(
+            spa_auth_logout_csrf_would_reject_count(endpoint),
+            after_azure + 1
+        );
+
+        let missing_header = validate_logout_csrf_values(&session, None, endpoint, true, &[])
+            .expect_err("missing header must reject when enforced");
+        assert_eq!(missing_header.code, "ERR10036");
+
+        let missing_cookie =
+            validate_logout_csrf_values(&session, Some("header-secret"), endpoint, true, &[])
+                .expect_err("missing cookie must reject when enforced");
+        let mismatch_session = BTreeMap::from([
+            ("accessToken".to_string(), "expired".to_string()),
+            ("csrf".to_string(), "cookie-secret".to_string()),
+        ]);
+        let mismatch = validate_logout_csrf_values(
+            &mismatch_session,
+            Some("header-secret"),
+            endpoint,
+            true,
+            &[],
+        )
+        .expect_err("mismatch must reject when enforced");
+        assert_eq!(missing_cookie.code, "ERR11649");
+        assert_eq!(missing_cookie.message, mismatch.message);
+        assert_eq!(
+            mismatch.message,
+            "CSRF cookie/header validation failed for logout."
+        );
+        assert!(!mismatch.message.contains("header-secret"));
+        assert!(!mismatch.message.contains("cookie-secret"));
+
+        let matching = BTreeMap::from([
+            ("accessToken".to_string(), "expired".to_string()),
+            ("csrf".to_string(), "matching".to_string()),
+        ]);
+        assert!(
+            validate_logout_csrf_values(&matching, Some("matching"), endpoint, true, &[]).is_ok(),
+            "matching CSRF permits cleanup without validating the expired access token"
         );
     }
 
