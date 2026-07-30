@@ -313,16 +313,18 @@ Inputs:
 
 - `VERSION`: target tag, for example `0.3.0` or `v0.3.0`
 - optional `--from PREVIOUS_TAG`
-- optional `--target TARGET_REF`
+- optional `--target-ref TARGET_REF`
 
 Default behavior:
 
-1. If `--target` is supplied, use it as the end of the range.
-2. Else if the `VERSION` tag exists locally, use `VERSION`.
-3. Else use `HEAD`.
-4. If `--from` is supplied, use it as the start of the range.
-5. Else find the newest semver-like tag before `VERSION`.
-6. If no previous tag exists, use the first commit as the start.
+1. Unless `--from` is supplied, fetch tags from `origin` and stop if they
+   cannot be synchronized.
+2. If `--target-ref` is supplied, use it as the end of the range.
+3. Else if the `VERSION` tag exists locally, use `VERSION`.
+4. Else use `HEAD`.
+5. If `--from` is supplied, use it as the start of the range.
+6. Else find the newest semver-like tag before `VERSION`.
+7. If no previous tag exists, use the first commit as the start.
 
 For existing releases, this allows regenerating the notes for the exact tag. For
 new releases, this allows generating notes before the tag exists.

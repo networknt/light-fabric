@@ -93,6 +93,11 @@ done
 [[ -n "$VERSION" ]] || fail "VERSION is required"
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "Run this script in a git worktree"
 
+if [[ -z "$FROM_REF" ]] && git remote get-url origin >/dev/null 2>&1; then
+  echo "Synchronizing release tags from origin"
+  git fetch --tags origin || fail "Unable to synchronize release tags from origin; use --from REF to select the range explicitly"
+fi
+
 if [[ -z "$TARGET_REF" ]]; then
   if git rev-parse --verify --quiet "refs/tags/${VERSION}^{commit}" >/dev/null; then
     TARGET_REF="$VERSION"

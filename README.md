@@ -87,10 +87,12 @@ Build, package, and upload the Linux release artifacts with:
 ./release.sh v0.1.0
 ```
 
-The script generates `dist/release-notes-v0.1.0.md` from commits since the
-previous semantic-version tag. Commit references such as `fixes #123` are
-listed under **Issues Addressed**, and the same file is used for new and
-existing GitHub release pages.
+The script synchronizes tags from `origin`, then generates
+`dist/release-notes-v0.1.0.md` from commits since the previous semantic-version
+tag. Commit references such as `fixes #123` are listed under **Issues
+Addressed**, and the same file is used for new and existing GitHub release
+pages. If tag synchronization is unavailable, use `--from TAG` to select a
+known local boundary explicitly.
 
 `--notes-only` never creates or updates a GitHub release, even when `--local`
 is omitted. Publishing an existing version deliberately replaces its GitHub
