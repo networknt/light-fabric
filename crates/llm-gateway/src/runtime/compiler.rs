@@ -105,9 +105,11 @@ impl LlmCompiler {
             });
         }
         let mut deployments = BTreeMap::new();
-        let required_conformance_provenance = (!config.development_fixtures)
-            .then_some(config.production_projection.required_conformance_provenance);
         for (id, deployment) in &config.deployments {
+            let required_conformance_provenance = deployment
+                .conformance_result
+                .as_ref()
+                .map(|_| config.production_projection.required_conformance_provenance);
             let provider_config = &config.providers[&deployment.provider];
             let quota = provider_config
                 .quota_group_id
@@ -283,8 +285,6 @@ fn warn_on_mixed_format_extension_narrowing(config: &LlmRouterConfig) {
 
 fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
     let now = Utc::now();
-    let required_provenance = (!config.development_fixtures)
-        .then_some(config.production_projection.required_conformance_provenance);
     if config.path_prefix != "/v1"
         || config.global_concurrency == 0
         || config.global_stream_concurrency == 0
@@ -384,7 +384,13 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
                     "alias `{name}` references missing deployment `{deployment}`"
                 )));
             };
-            let requirements = alias_requirements(alias, required_provenance);
+            let requirements = alias_requirements(
+                alias,
+                candidate
+                    .conformance_result
+                    .as_ref()
+                    .map(|_| config.production_projection.required_conformance_provenance),
+            );
             match &candidate.conformance_result {
                 Some(result) if !result.satisfies(&requirements, now) => {
                     return Err(LlmGatewayError::Config(format!(
@@ -397,7 +403,7 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
                     result.pii_preservation.as_ref(),
                     now,
                 )?,
-                None if config.development_fixtures => {
+                None => {
                     if alias.pii.enabled
                         && candidate.pii_placeholder_preservation_percent
                             < alias.pii.minimum_placeholder_preservation_percent
@@ -407,22 +413,12 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
                         )));
                     }
                 }
-                None => {
-                    return Err(LlmGatewayError::Config(format!(
-                        "deployment `{deployment}` has no conformance result"
-                    )));
-                }
             }
         }
     }
     for (id, deployment) in &config.deployments {
         if !config.providers.contains_key(&deployment.provider)
             || deployment.concurrency == 0
-            || deployment.conformance_digest.len() != 64
-            || !deployment
-                .conformance_digest
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit())
             || deployment.pii_placeholder_preservation_percent > 100
         {
             return Err(LlmGatewayError::Config(format!(
@@ -431,7 +427,12 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
         }
         if let Some(result) = &deployment.conformance_result {
             let provider = &config.providers[&deployment.provider];
-            if !result.verify_digest()
+            if deployment.conformance_digest.len() != 64
+                || !deployment
+                    .conformance_digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+                || !result.verify_digest()
                 || result.digest != deployment.conformance_digest
                 || result.provider != provider.format
                 || result.physical_model != deployment.model
@@ -441,10 +442,6 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
                     "deployment `{id}` has invalid, mismatched, or expired conformance evidence"
                 )));
             }
-        } else if !config.development_fixtures {
-            return Err(LlmGatewayError::Config(format!(
-                "deployment `{id}` requires complete conformance evidence"
-            )));
         }
     }
     Ok(())

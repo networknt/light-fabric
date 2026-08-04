@@ -1036,6 +1036,37 @@ fn production_config_rejects_loopback_plaintext_fixture_provider() {
 }
 
 #[test]
+fn production_instance_properties_allow_declared_capabilities_without_conformance() {
+    let mut config = compiler_config();
+    config.development_fixtures = false;
+    let provider = config.providers.get_mut("p").unwrap();
+    provider.base_url = "https://api.example.com/v1".to_string();
+    provider.secret_ref = "env:PROVIDER_API_KEY".to_string();
+    let deployment = config.deployments.get_mut("d").unwrap();
+    deployment.conformance_digest.clear();
+    deployment.conformance_result = None;
+    deployment.tools = true;
+    config
+        .aliases
+        .get_mut("public-model")
+        .unwrap()
+        .required_capabilities
+        .tools = true;
+
+    let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
+        "env:PROVIDER_API_KEY".to_string(),
+        "locally-injected-value".to_string(),
+    )]))));
+    let snapshot = compiler.compile(&config, 1, None).expect(
+        "Portal-published declared capabilities must not require Portal-managed provider conformance",
+    );
+    assert!(snapshot.deployments["d"].supports(&CapabilityRequirements {
+        tools: true,
+        ..CapabilityRequirements::default()
+    }));
+}
+
+#[test]
 fn invalid_candidate_is_not_published_and_retirement_is_bounded() {
     let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
         "secret".to_string(),

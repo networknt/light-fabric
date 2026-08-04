@@ -1,6 +1,6 @@
 # Local LLM data plane. It is inert unless both this flag and the `llm`
-# handler are enabled. The endpoints and credentials below are development
-# fixtures and must be replaced for a production deployment.
+# handler are enabled. Provider topology is supplied through typed instance
+# properties rendered into values.yml; this template contains no provider fixtures.
 # When productionProjection is enabled, this file must not embed providers,
 # deployments, or aliases (production topology comes only from the immutable
 # projection) and developmentFixtures must be false; the gateway rejects the
@@ -32,7 +32,7 @@ developmentFixtures: ${llm-router.developmentFixtures:false}
 # strictest-wins parsing: adding an Anthropic fallback causes these extensions
 # to be rejected for the entire alias so every eligible fallback is encodable.
 # The compiler emits a warning when that compatibility narrowing is present.
-openaiExtensionAllowlist: []
+openaiExtensionAllowlist: ${llm-router.openaiExtensionAllowlist:[]}
 
 # Production-only config-server `/files` projection. When enabled, startup
 # fails closed until a valid full root is available in config-cache. Every
@@ -46,8 +46,7 @@ productionProjection:
   gatewayInstance: ${llm-router.productionProjection.gatewayInstance:gateway-local}
   pollIntervalMs: ${llm-router.productionProjection.pollIntervalMs:1000}
   maxArtifactBytes: ${llm-router.productionProjection.maxArtifactBytes:4194304}
-  # Production defaults to evidence captured from a real provider endpoint.
-  # synthetic_spec_derived is accepted only when developmentFixtures=true.
+  # This setting applies only to the legacy filesystem projection workflow.
   requiredConformanceProvenance: ${llm-router.productionProjection.requiredConformanceProvenance:captured_sanitized}
   credentialEnvironment: {}
 
@@ -82,77 +81,6 @@ auditRuntime:
   sinkPollMs: ${llm-router.auditRuntime.sinkPollMs:100}
   sinkRetryMaxMs: ${llm-router.auditRuntime.sinkRetryMaxMs:10000}
 
-providers:
-  openai-local:
-    format: openai
-    baseUrl: ${llm-router.openaiBaseUrl:http://127.0.0.1:18081/v1}
-    secretRef: env:LIGHT_GATEWAY_LLM_OPENAI_KEY
-    quotaGroupId: openai-local
-  anthropic-local:
-    format: anthropic
-    baseUrl: ${llm-router.anthropicBaseUrl:http://127.0.0.1:18082/v1}
-    secretRef: env:LIGHT_GATEWAY_LLM_ANTHROPIC_KEY
-    quotaGroupId: anthropic-local
-
-deployments:
-  # These compact capability flags are development fixtures only. Production
-  # projection resources must carry a complete, current conformanceResult whose
-  # canonical digest equals conformanceDigest.
-  openai-primary:
-    provider: openai-local
-    model: gpt-local
-    concurrency: 32
-    inputMicrosPerMillion: 1000000
-    outputMicrosPerMillion: 2000000
-    conformanceDigest: b8a824ffc02eeb85eb2f27bf0d95cac133db24b9968f025bca647e7205ff8661
-    text: true
-    images: true
-    tools: true
-    structuredJson: true
-    # Set only from the model/deployment preservation corpus. Zero makes this
-    # deployment ineligible for every reversible-PII alias.
-    piiPlaceholderPreservationPercent: 0
-  anthropic-fallback:
-    provider: anthropic-local
-    model: claude-local
-    concurrency: 32
-    inputMicrosPerMillion: 1000000
-    outputMicrosPerMillion: 2000000
-    conformanceDigest: 42fda39c867639ee97895ede7b18cb0526797e84eb5a63c4615074ee39ab0316
-    text: true
-    images: true
-    tools: true
-    structuredJson: false
-    piiPlaceholderPreservationPercent: 0
-
-aliases:
-  light-default:
-    deployments: [openai-primary, anthropic-fallback]
-    maxAttempts: 2
-    concurrency: 64
-    maxInputTokens: 32768
-    maxOutputTokens: 4096
-    maxCostMicros: 1000000
-    audit: required
-    # Post-MVP and fail-closed by default. Request scope never constructs or
-    # calls a vault. This LLM contract does not reuse pii-tokenization.yml.
-    # Session/host scopes remain rejected until their independently
-    # credentialed vault identity passes functional, security, durability, and
-    # PERF-4 promotion.
-    pii:
-      enabled: false
-      scope: request
-      unresolved: leave_masked
-      kinds: [email, us_ssn, phone]
-      maxPlaceholders: 128
-      maxValueBytes: 4096
-      detectorVersion: local-regex-v1
-      tokenFormatVersion: v1
-      minimumPlaceholderPreservationPercent: 100
-  legacy-agent-internal:
-    deployments: [openai-primary]
-    maxAttempts: 1
-    concurrency: 8
-    internal: true
-    boundPrincipal: test-agent
-    audit: required
+providers: ${llm-router.providers:{}}
+deployments: ${llm-router.deployments:{}}
+aliases: ${llm-router.aliases:{}}
