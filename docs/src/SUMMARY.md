@@ -87,6 +87,7 @@
 - [Light-Gateway](product/light-gateway.md)
   - [Light Rule](product/light-gateway/light-rule.md)
   - [LLM Gateway](product/light-gateway/llm-gateway.md)
+    - [API Contract](product/light-gateway/llm-gateway-api.md)
     - [Phase 0 ADR: Public Compatibility](adr/llm-gateway/0001-public-compatibility.md)
     - [Phase 0 ADR: Application Body Contract](adr/llm-gateway/0002-application-body-contract.md)
     - [Phase 0 ADR: Runtime Snapshot](adr/llm-gateway/0003-runtime-snapshot.md)
