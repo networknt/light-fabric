@@ -44,6 +44,36 @@ pub const CONTROLLER_MCP_PATH: &str = "/ctrl/mcp";
 pub const CONTROLLER_MCP_CONNECT_ENDPOINT: &str = "/ctrl/mcp@connect";
 const CSRF_PROTOCOL_PREFIX: &str = "csrf.";
 
+/// Converts a method-qualified HTTP endpoint identity into its WebSocket
+/// connection identity. A methodless selector is preserved in full.
+pub fn websocket_connect_endpoint(http_endpoint: &str) -> String {
+    let path = http_endpoint
+        .rsplit_once('@')
+        .filter(|(_path, method)| is_http_method_suffix(method))
+        .map_or(http_endpoint, |(path, _method)| path);
+    format!("{path}@connect")
+}
+
+/// Selects the WebSocket policy identity at the transport boundary.
+///
+/// The controller route is anchored to its concrete request path so handler
+/// templates cannot bypass its fail-closed authorization behavior.
+pub fn websocket_policy_endpoint(request_path: &str, http_endpoint: &str) -> String {
+    if request_path == CONTROLLER_MCP_PATH {
+        CONTROLLER_MCP_CONNECT_ENDPOINT.to_string()
+    } else {
+        websocket_connect_endpoint(http_endpoint)
+    }
+}
+
+fn is_http_method_suffix(method: &str) -> bool {
+    [
+        "get", "post", "put", "delete", "patch", "options", "head", "trace", "connect",
+    ]
+    .iter()
+    .any(|candidate| method.eq_ignore_ascii_case(candidate))
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WebSocketRouterConfig {
@@ -1390,6 +1420,38 @@ mod tests {
     use std::sync::Mutex;
     use tempfile::TempDir;
 
+    #[test]
+    fn websocket_endpoint_replaces_http_method_with_connect() {
+        assert_eq!(
+            websocket_connect_endpoint("/chat/{roomId}@get"),
+            "/chat/{roomId}@connect"
+        );
+        assert_eq!(
+            websocket_connect_endpoint("/users/foo@bar.com@get"),
+            "/users/foo@bar.com@connect"
+        );
+        assert_eq!(
+            websocket_connect_endpoint("/ctrl/mcp@get"),
+            CONTROLLER_MCP_CONNECT_ENDPOINT
+        );
+        assert_eq!(
+            websocket_connect_endpoint("/users/foo@bar.com"),
+            "/users/foo@bar.com@connect"
+        );
+    }
+
+    #[test]
+    fn controller_policy_endpoint_is_anchored_to_request_path() {
+        assert_eq!(
+            websocket_policy_endpoint(CONTROLLER_MCP_PATH, "/ctrl/{name}@get"),
+            CONTROLLER_MCP_CONNECT_ENDPOINT
+        );
+        assert_eq!(
+            websocket_policy_endpoint("/chat/room", "/chat/{room}@get"),
+            "/chat/{room}@connect"
+        );
+    }
+
     fn runtime_config(config_dir: &TempDir) -> RuntimeConfig {
         RuntimeConfig {
             bootstrap: BootstrapConfig::default(),
@@ -1774,6 +1836,46 @@ pathPrefixService:
     }
 
     #[tokio::test]
+    async fn websocket_upgrade_reaches_authorization_with_connect_identity() {
+        let policy = Arc::new(crate::access_control::AccessControlRuntime::new(
+            Some(crate::access_control::AccessControlConfig {
+                enabled: true,
+                access_rule_logic: "any".to_string(),
+                default_deny: true,
+                default_include: false,
+                skip_path_prefixes: Vec::new(),
+                ..crate::access_control::AccessControlConfig::default()
+            }),
+            crate::access_control::RuleFileConfig::default(),
+        ));
+        let runtime = WebSocketRouterRuntime::new_with_policy(
+            serde_yaml::from_str(
+                r#"
+pathPrefixService:
+  /chat: chat-service
+"#,
+            )
+            .expect("router config"),
+            Some(policy),
+        )
+        .expect("runtime");
+        let decision = runtime
+            .resolve("/chat/room", None, std::iter::empty::<(&str, &str)>())
+            .expect("resolve");
+        let endpoint = websocket_policy_endpoint("/chat/room", "/chat/{room}@get");
+
+        assert_eq!(endpoint, "/chat/{room}@connect");
+        assert_eq!(
+            runtime
+                .authorize(&decision, endpoint.as_str(), &[], None, None)
+                .await,
+            AccessDecision::Denied(
+                "Access denied: no access control rule defined for /chat/{room}@connect".into()
+            )
+        );
+    }
+
+    #[tokio::test]
     async fn controller_connection_fails_closed_without_enabled_policy() {
         let runtime = protected_runtime();
         let decision = runtime
@@ -1783,9 +1885,11 @@ pathPrefixService:
                 std::iter::empty::<(&str, &str)>(),
             )
             .expect("resolve");
+        let endpoint = websocket_policy_endpoint(CONTROLLER_MCP_PATH, "/ctrl/{controller}@get");
+        assert_eq!(endpoint, CONTROLLER_MCP_CONNECT_ENDPOINT);
         assert!(matches!(
             runtime
-                .authorize(&decision, CONTROLLER_MCP_CONNECT_ENDPOINT, &[], None, None,)
+                .authorize(&decision, endpoint.as_str(), &[], None, None,)
                 .await,
             AccessDecision::Denied(_)
         ));

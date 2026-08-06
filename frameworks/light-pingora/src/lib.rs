@@ -178,7 +178,8 @@ pub use websocket::{
     WebSocketRouteDecision, WebSocketRouteError, WebSocketRouteSource, WebSocketRouterConfig,
     WebSocketRouterRuntime, WebSocketServiceTarget, apply_browser_websocket_upstream_credentials,
     apply_websocket_upstream_request, load_websocket_router_runtime,
-    load_websocket_router_runtime_with_policy,
+    load_websocket_router_runtime_with_policy, websocket_connect_endpoint,
+    websocket_policy_endpoint,
 };
 
 pub trait PingoraApp: Send + Sync + 'static {

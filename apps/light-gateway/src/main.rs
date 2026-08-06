@@ -6,22 +6,21 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use light_pingora::{
     AccessControlRuntime, AccessDecision, ActiveHandlerSet, ApiKeyConfig, AuthPrincipal,
-    BasicAuthConfig, CONTROLLER_MCP_CONNECT_ENDPOINT, CONTROLLER_MCP_PATH, CorrelationConfig,
-    CorrelationState, CorsConfig, CorsRequestOutcome, CorsResponseHeaders, HandlerBuildContext,
-    HandlerMetricsLogLevel, HandlerRejection, HeaderConfig, McpHttpRequest, McpHttpResponse,
-    McpRequestContext, McpResponseBody, McpResponseStream, McpRouterRuntime, MetricsConfig,
-    MetricsRecorder, MsalAuthRuntime, MsalExchangeOutcome, MsalExchangeRuntime,
-    PathPrefixServiceConfig, PiiTokenizationRuntime, PingoraApp, PingoraHandler,
-    PingoraHandlerDescriptor, PingoraHandlerKind, PingoraHandlerRegistry, PingoraTransport,
-    ProxyRoute, ProxyTarget, RateLimitHeaders, RateLimitRuntime, RouterDecision, RouterRoute,
-    SecurityRuntime, SpaAuthLegacyEndpoint, SpaAuthResponse, StatelessAuthOutcome,
-    StatelessAuthRuntime, StaticResolution, StaticResourceSet, TokenRuntime, UnifiedSecurityConfig,
-    WebSocketConnectionPermit, WebSocketHandshake, WebSocketRouteDecision, WebSocketRouteError,
-    WebSocketRouterRuntime, apply_browser_websocket_upstream_credentials,
-    apply_correlation_request, apply_correlation_response, apply_cors_response,
-    apply_header_request, apply_header_response, apply_path_prefix_service,
-    apply_rate_limit_headers, apply_router_upstream_request, apply_token_request,
-    apply_websocket_upstream_request, build_metrics_event, check_rate_limit,
+    BasicAuthConfig, CorrelationConfig, CorrelationState, CorsConfig, CorsRequestOutcome,
+    CorsResponseHeaders, HandlerBuildContext, HandlerMetricsLogLevel, HandlerRejection,
+    HeaderConfig, McpHttpRequest, McpHttpResponse, McpRequestContext, McpResponseBody,
+    McpResponseStream, McpRouterRuntime, MetricsConfig, MetricsRecorder, MsalAuthRuntime,
+    MsalExchangeOutcome, MsalExchangeRuntime, PathPrefixServiceConfig, PiiTokenizationRuntime,
+    PingoraApp, PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerKind,
+    PingoraHandlerRegistry, PingoraTransport, ProxyRoute, ProxyTarget, RateLimitHeaders,
+    RateLimitRuntime, RouterDecision, RouterRoute, SecurityRuntime, SpaAuthLegacyEndpoint,
+    SpaAuthResponse, StatelessAuthOutcome, StatelessAuthRuntime, StaticResolution,
+    StaticResourceSet, TokenRuntime, UnifiedSecurityConfig, WebSocketConnectionPermit,
+    WebSocketHandshake, WebSocketRouteDecision, WebSocketRouteError, WebSocketRouterRuntime,
+    apply_browser_websocket_upstream_credentials, apply_correlation_request,
+    apply_correlation_response, apply_cors_response, apply_header_request, apply_header_response,
+    apply_path_prefix_service, apply_rate_limit_headers, apply_router_upstream_request,
+    apply_token_request, apply_websocket_upstream_request, build_metrics_event, check_rate_limit,
     correlation_id_for_upstream, evaluate_cors_request, load_access_control_runtime,
     load_active_handlers, load_api_key_config, load_basic_auth_config, load_correlation_config,
     load_cors_config, load_header_config, load_mcp_router_runtime, load_metrics_config,
@@ -31,7 +30,7 @@ use light_pingora::{
     load_unified_security_config, load_websocket_router_runtime_with_policy,
     merge_extra_response_headers, record_mcp_router_reload_rejection, record_spa_auth_legacy_get,
     select_router_target, validate_mcp_router_runtime_config, verify_api_key, verify_basic_auth,
-    verify_jwt_request, verify_unified_security,
+    verify_jwt_request, verify_unified_security, websocket_policy_endpoint,
 };
 use light_runtime::{
     CacheRegistry, ConfigManager, LightRuntimeBuilder, ModuleKind, ReloadContext, ReloadOutcome,
@@ -2706,7 +2705,7 @@ impl ProxyHttp for GatewayProxy {
             .resolve_handler_chain(&request_path, &method)
             .map_err(pingora_internal_error)?;
         ctx.handler_ids = resolved.handler_ids.clone();
-        ctx.endpoint = resolved.endpoint(&request_path);
+        ctx.endpoint = resolved.endpoint(&request_path, &method);
         ctx.path_params = resolved
             .path
             .as_ref()
@@ -3173,14 +3172,12 @@ impl ProxyHttp for GatewayProxy {
                                 .await;
                         }
                     };
+                    ctx.endpoint =
+                        websocket_policy_endpoint(request_path.as_str(), ctx.endpoint.as_str());
                     match runtime
                         .authorize(
                             &decision,
-                            if request_path == CONTROLLER_MCP_PATH {
-                                CONTROLLER_MCP_CONNECT_ENDPOINT
-                            } else {
-                                ctx.endpoint.as_str()
-                            },
+                            ctx.endpoint.as_str(),
                             &websocket_policy_headers(session),
                             ctx.auth.as_ref(),
                             ctx.correlation.correlation_id.as_deref(),
@@ -3190,11 +3187,7 @@ impl ProxyHttp for GatewayProxy {
                         AccessDecision::Allowed => {}
                         AccessDecision::Denied(message) => {
                             warn!(
-                                policy_endpoint = if request_path == CONTROLLER_MCP_PATH {
-                                    CONTROLLER_MCP_CONNECT_ENDPOINT
-                                } else {
-                                    ctx.endpoint.as_str()
-                                },
+                                policy_endpoint = ctx.endpoint.as_str(),
                                 denial_category = "connection_policy_denied",
                                 "websocket connection denied by access-control policy"
                             );

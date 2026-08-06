@@ -230,11 +230,13 @@ pub struct ResolvedHandlerChain {
 }
 
 impl ResolvedHandlerChain {
-    pub fn endpoint(&self, request_path: &str) -> String {
-        self.path
+    pub fn endpoint(&self, request_path: &str, request_method: &str) -> String {
+        let path = self
+            .path
             .as_ref()
             .map(|path| path.path.clone())
-            .unwrap_or_else(|| request_path.to_string())
+            .unwrap_or_else(|| request_path.to_string());
+        format!("{path}@{}", request_method.to_ascii_lowercase())
     }
 }
 
@@ -1061,14 +1063,20 @@ defaultHandlers:
             .resolve_handler_chain("/oauth2/AZZRJE52eXu3t1hseacnGQ/token", "POST")
             .expect("resolve API chain");
         assert_eq!(
-            resolved.path.expect("matched path").params["hostId"],
-            "AZZRJE52eXu3t1hseacnGQ"
+            resolved.endpoint("/oauth2/AZZRJE52eXu3t1hseacnGQ/token", "POST"),
+            "/oauth2/{hostId}/token@post"
         );
         assert_eq!(
-            active
-                .resolve_handler_ids("/spa/account/settings", "GET")
-                .expect("resolve default handlers"),
-            vec!["unused".to_string()]
+            resolved.path.as_ref().expect("matched path").params["hostId"],
+            "AZZRJE52eXu3t1hseacnGQ"
+        );
+        let resolved = active
+            .resolve_handler_chain("/spa/account/settings", "GET")
+            .expect("resolve default handlers");
+        assert_eq!(resolved.handler_ids, vec!["unused".to_string()]);
+        assert_eq!(
+            resolved.endpoint("/spa/account/settings", "GET"),
+            "/spa/account/settings@get"
         );
     }
 

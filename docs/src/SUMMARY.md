@@ -85,6 +85,7 @@
   - [Run Standalone](product/light-deployer/run-standalone.md)
   - [Run Kubernetes](product/light-deployer/run-kubernetes.md)
 - [Light-Gateway](product/light-gateway.md)
+  - [Endpoint Identity](product/light-gateway/endpoint-identity.md)
   - [Light Rule](product/light-gateway/light-rule.md)
   - [LLM Gateway](product/light-gateway/llm-gateway.md)
     - [API Contract](product/light-gateway/llm-gateway-api.md)
