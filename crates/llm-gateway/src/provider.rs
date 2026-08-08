@@ -684,6 +684,7 @@ mod tests {
                     EmbeddingEncoding::Base64,
                 ]),
                 max_response_bytes: 4096,
+                space: None,
             },
             Duration::from_secs(1),
             true,

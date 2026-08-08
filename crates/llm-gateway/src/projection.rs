@@ -6,8 +6,8 @@
 //! applied root. It never performs control-plane or secret I/O on a request.
 
 use crate::config::{
-    AliasCapabilityRequirements, AliasConfig, AuditMode, DeploymentConfig, LlmRouterConfig,
-    ProviderConfig,
+    AliasCapabilityRequirements, AliasConfig, AuditMode, DeploymentConfig, EmbeddingWorkloadLane,
+    LlmRouterConfig, ProviderConfig,
 };
 use crate::error::LlmGatewayError;
 use crate::runtime::{LlmCompiler, LlmSnapshotStore, PublishOutcome};
@@ -636,6 +636,10 @@ struct RoutePayload {
     pii: crate::pii::PiiProfile,
     #[serde(default)]
     required_capabilities: AliasCapabilityRequirements,
+    #[serde(default)]
+    require_expected_embedding_space: bool,
+    #[serde(default)]
+    embedding_workload_lane: EmbeddingWorkloadLane,
 }
 
 #[derive(Debug, Deserialize)]
@@ -775,6 +779,8 @@ fn assemble_config(
                         audit: payload.audit,
                         pii: payload.pii,
                         required_capabilities: payload.required_capabilities,
+                        require_expected_embedding_space: payload.require_expected_embedding_space,
+                        embedding_workload_lane: payload.embedding_workload_lane,
                     },
                 );
             }
@@ -1691,6 +1697,29 @@ mod tests {
                 "accepted unsafe component {unsafe_component:?}"
             );
         }
+    }
+
+    #[test]
+    fn portal_embedding_route_contract_accepts_only_the_six_space_fields() {
+        let route = serde_json::json!({
+            "aliasName":"kb-query",
+            "operations":["embed"],
+            "deployments":["deployment-a"],
+            "internal":true,
+            "boundPrincipal":"kb-query-workload",
+            "requireExpectedEmbeddingSpace":true,
+            "embeddingWorkloadLane":"kb_query",
+            "requiredCapabilities":{"embeddingSpace":{
+                "spaceId":"docs", "revision":1, "dimension":768,
+                "normalization":"l2", "distanceMetric":"cosine",
+                "documentInputTransformVersion":"document-v1"
+            }}
+        });
+        assert!(serde_json::from_value::<RoutePayload>(route.clone()).is_ok());
+        let mut poisoned = route;
+        poisoned["requiredCapabilities"]["embeddingSpace"]["providerModel"] =
+            Value::String("must-not-cross-portal-projection".to_string());
+        assert!(serde_json::from_value::<RoutePayload>(poisoned).is_err());
     }
 
     #[cfg(unix)]

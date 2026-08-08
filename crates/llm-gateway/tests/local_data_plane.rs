@@ -5,7 +5,8 @@ use llm_gateway::audit::{
     AuditAdmission, AuditFinish, AuditReservation, AuditStart, WalAudit, WalConfig,
 };
 use llm_gateway::config::{
-    AliasConfig, AuditMode, DeploymentConfig, LlmRouterConfig, ProviderConfig,
+    AliasCapabilityRequirements, AliasConfig, AuditMode, DeploymentConfig, EmbeddingWorkloadLane,
+    LlmRouterConfig, ProviderConfig,
 };
 use llm_gateway::credentials::MapSecretResolver;
 use llm_gateway::http::{BodyAccessControl, BufferedHttpRequest, LlmBufferedHttp, LlmHttpResponse};
@@ -23,8 +24,9 @@ use llm_gateway::{LlmGatewayError, LlmRequestContext, LlmRuntime};
 use model_provider::conformance::{CapabilityRequirements, ConformanceResult, FixtureProvenance};
 use model_provider::inference::{
     AcceptanceEvidence, CompiledProvider, ContentBlock, ContentCapabilities, EmbeddingCapabilities,
-    EmbeddingEncoding, EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, EmbeddingVector,
-    FinishReason, GenerateOutputItem, GenerationCapabilities, GenerationProvider, GenerationStream,
+    EmbeddingDistanceMetric, EmbeddingEncoding, EmbeddingNormalization, EmbeddingProvider,
+    EmbeddingRequest, EmbeddingResponse, EmbeddingSpaceContract, EmbeddingVector, FinishReason,
+    GenerateOutputItem, GenerationCapabilities, GenerationProvider, GenerationStream,
     InferenceError, InferenceEvent, InferenceRequest, InferenceResponse, ItemStatus,
     NormalizedUsage, Operation, ProviderCapabilities, ProviderEvidence, ProviderProtocol,
     ProviderRequestContext, Role, TerminalState,
@@ -62,6 +64,7 @@ struct PiiEchoProvider {
 struct ScriptedEmbeddingProvider {
     results: Mutex<VecDeque<Result<EmbeddingResponse, InferenceError>>>,
     calls: AtomicUsize,
+    received_dimensions: Mutex<Vec<Option<u32>>>,
     capabilities: EmbeddingCapabilities,
 }
 
@@ -78,9 +81,13 @@ impl EmbeddingProvider for ScriptedEmbeddingProvider {
     async fn embed(
         &self,
         _context: ProviderRequestContext,
-        _request: EmbeddingRequest,
+        request: EmbeddingRequest,
     ) -> Result<EmbeddingResponse, InferenceError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        self.received_dimensions
+            .lock()
+            .unwrap()
+            .push(request.dimensions);
         self.results
             .lock()
             .unwrap()
@@ -431,6 +438,18 @@ fn embedding_capabilities() -> EmbeddingCapabilities {
         supported_dimensions: BTreeSet::from([2]),
         supported_encodings: BTreeSet::from([EmbeddingEncoding::Float, EmbeddingEncoding::Base64]),
         max_response_bytes: 4096,
+        space: Some(embedding_space(2)),
+    }
+}
+
+fn embedding_space(dimension: u32) -> EmbeddingSpaceContract {
+    EmbeddingSpaceContract {
+        space_id: format!("test-space-{dimension}"),
+        revision: 1,
+        dimension,
+        normalization: EmbeddingNormalization::L2,
+        distance_metric: EmbeddingDistanceMetric::Cosine,
+        document_input_transform_version: "identity-v1".to_string(),
     }
 }
 
@@ -440,6 +459,7 @@ fn scripted_embedding_provider(
     Arc::new(ScriptedEmbeddingProvider {
         results: Mutex::new(results.into()),
         calls: AtomicUsize::new(0),
+        received_dimensions: Mutex::new(Vec::new()),
         capabilities: embedding_capabilities(),
     })
 }
@@ -473,6 +493,24 @@ fn embedding_runtime(
     providers: Vec<(Arc<ScriptedEmbeddingProvider>, EmbeddingPrice)>,
     attempts: usize,
     max_cost_micros: Option<u64>,
+) -> (Arc<LlmRuntime>, Arc<UsageLedger>) {
+    embedding_runtime_with_policy(
+        providers,
+        attempts,
+        max_cost_micros,
+        false,
+        EmbeddingWorkloadLane::Standard,
+        EmbeddingWorkloadLane::Standard,
+    )
+}
+
+fn embedding_runtime_with_policy(
+    providers: Vec<(Arc<ScriptedEmbeddingProvider>, EmbeddingPrice)>,
+    attempts: usize,
+    max_cost_micros: Option<u64>,
+    require_expected_embedding_space: bool,
+    alias_lane: EmbeddingWorkloadLane,
+    root_lane: EmbeddingWorkloadLane,
 ) -> (Arc<LlmRuntime>, Arc<UsageLedger>) {
     let deployments = providers
         .into_iter()
@@ -519,7 +557,12 @@ fn embedding_runtime(
         bound_principal: None,
         audit: AuditMode::Required,
         pii: PiiProfile::default(),
-        required_capabilities: Default::default(),
+        required_capabilities: AliasCapabilityRequirements {
+            embedding_space: Some(embedding_space(2)),
+            ..Default::default()
+        },
+        require_expected_embedding_space,
+        embedding_workload_lane: alias_lane,
         ledger: Arc::clone(&ledger),
     });
     let snapshot = LlmPublishedSnapshot {
@@ -560,6 +603,7 @@ fn embedding_runtime(
             authorization_timeout_ms: 1000,
         },
         embedding_memory_permits: Arc::new(Semaphore::new(1)),
+        embedding_workload_lane: root_lane,
         aliases: BTreeMap::from([("embedding-default".to_string(), alias)]),
         deployments: deployments
             .into_iter()
@@ -704,6 +748,8 @@ fn runtime_with_deployment(
         audit: AuditMode::Required,
         pii: Default::default(),
         required_capabilities: Default::default(),
+        require_expected_embedding_space: false,
+        embedding_workload_lane: EmbeddingWorkloadLane::Standard,
         ledger: Arc::new(UsageLedger::default()),
     });
     let snapshot = LlmPublishedSnapshot {
@@ -721,6 +767,7 @@ fn runtime_with_deployment(
         max_replay_bytes: 4096,
         embedding_memory: test_embedding_memory_bounds(1),
         embedding_memory_permits: Arc::new(Semaphore::new(1)),
+        embedding_workload_lane: EmbeddingWorkloadLane::Standard,
         aliases: BTreeMap::from([("public-model".to_string(), alias)]),
         deployments: BTreeMap::from([(deployment.id.clone(), deployment)]),
         principal_permits: Arc::new(PrincipalPermitStripes::new(8, 2)),
@@ -785,6 +832,8 @@ fn runtime_with_mode_and_pii(
         audit: audit_mode,
         pii: pii.clone(),
         required_capabilities: Default::default(),
+        require_expected_embedding_space: false,
+        embedding_workload_lane: EmbeddingWorkloadLane::Standard,
         ledger: Arc::new(UsageLedger::default()),
     });
     let internal_alias = Arc::new(AliasPlan {
@@ -802,6 +851,8 @@ fn runtime_with_mode_and_pii(
         audit: audit_mode,
         pii: Default::default(),
         required_capabilities: Default::default(),
+        require_expected_embedding_space: false,
+        embedding_workload_lane: EmbeddingWorkloadLane::Standard,
         ledger: Arc::new(UsageLedger::default()),
     });
     let snapshot = LlmPublishedSnapshot {
@@ -819,6 +870,7 @@ fn runtime_with_mode_and_pii(
         max_replay_bytes: max_replay,
         embedding_memory: test_embedding_memory_bounds(1),
         embedding_memory_permits: Arc::new(Semaphore::new(1)),
+        embedding_workload_lane: EmbeddingWorkloadLane::Standard,
         aliases: BTreeMap::from([
             ("public-model".to_string(), alias),
             ("legacy-agent-internal".to_string(), internal_alias),
@@ -1106,6 +1158,8 @@ fn compiler_config() -> LlmRouterConfig {
                 audit: AuditMode::Disabled,
                 pii: Default::default(),
                 required_capabilities: Default::default(),
+                require_expected_embedding_space: false,
+                embedding_workload_lane: EmbeddingWorkloadLane::Standard,
             },
         )]),
         ..Default::default()
@@ -1123,6 +1177,7 @@ fn embedding_memory_uses_admission_slots_not_deployment_concurrency() {
     config.providers.get_mut("p").unwrap().provider_protocol = ProviderProtocol::OpenAiEmbeddings;
     let alias = config.aliases.get_mut("public-model").unwrap();
     alias.operations = BTreeSet::from([Operation::Embed]);
+    alias.required_capabilities.embedding_space = Some(embedding_space(3072));
     alias.concurrency = 512;
     alias.max_attempts = 1;
     let deployment = config.deployments.get_mut("d").unwrap();
@@ -1141,6 +1196,7 @@ fn embedding_memory_uses_admission_slots_not_deployment_concurrency() {
         supported_dimensions: BTreeSet::from([3072]),
         supported_encodings: BTreeSet::from([EmbeddingEncoding::Float]),
         max_response_bytes: 32 * 1024 * 1024,
+        space: Some(embedding_space(3072)),
     });
     config.embedding_memory.items_per_permit = 256;
     config.embedding_memory.max_memory_bytes = 16 * 1024 * 1024 * 1024;
@@ -1163,6 +1219,12 @@ fn compiler_rejects_embedding_batch_weight_above_deployment_capacity() {
     let mut config = compiler_config();
     config.providers.get_mut("p").unwrap().provider_protocol = ProviderProtocol::OpenAiEmbeddings;
     config.aliases.get_mut("public-model").unwrap().operations = BTreeSet::from([Operation::Embed]);
+    config
+        .aliases
+        .get_mut("public-model")
+        .unwrap()
+        .required_capabilities
+        .embedding_space = Some(embedding_space(2));
     config.embedding_memory.items_per_permit = 2;
     let deployment = config.deployments.get_mut("d").unwrap();
     deployment.concurrency = 4;
@@ -1180,6 +1242,7 @@ fn compiler_rejects_embedding_batch_weight_above_deployment_capacity() {
         supported_dimensions: BTreeSet::from([2]),
         supported_encodings: BTreeSet::from([EmbeddingEncoding::Float]),
         max_response_bytes: 4096,
+        space: Some(embedding_space(2)),
     });
     let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
         "secret".to_string(),
@@ -1193,6 +1256,128 @@ fn compiler_rejects_embedding_batch_weight_above_deployment_capacity() {
         error.to_string().contains("maximum weighted batch"),
         "{error}"
     );
+}
+
+fn configure_compiler_embedding_alias(config: &mut LlmRouterConfig) {
+    config.providers.get_mut("p").unwrap().provider_protocol = ProviderProtocol::OpenAiEmbeddings;
+    let alias = config.aliases.get_mut("public-model").unwrap();
+    alias.operations = BTreeSet::from([Operation::Embed]);
+    alias.required_capabilities.embedding_space = Some(embedding_space(2));
+    alias.require_expected_embedding_space = true;
+    let deployment = config.deployments.get_mut("d").unwrap();
+    deployment.prices = BTreeMap::from([(
+        Operation::Embed,
+        OperationPrice::Embed(EmbeddingPrice {
+            version: 1,
+            input_micros_per_million: 1,
+        }),
+    )]);
+    deployment.embedding_capabilities = Some(EmbeddingCapabilities {
+        max_batch_items: 2,
+        max_input_tokens_per_item: 128,
+        max_aggregate_input_tokens: 256,
+        supported_dimensions: BTreeSet::from([2]),
+        supported_encodings: BTreeSet::from([EmbeddingEncoding::Float]),
+        max_response_bytes: 4096,
+        space: Some(embedding_space(2)),
+    });
+}
+
+#[test]
+fn compiler_rejects_mixed_or_repointed_embedding_spaces() {
+    let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
+        "secret".to_string(),
+        "value".to_string(),
+    )]))));
+    let mut mixed = compiler_config();
+    configure_compiler_embedding_alias(&mut mixed);
+    mixed
+        .deployments
+        .get_mut("d")
+        .unwrap()
+        .embedding_capabilities
+        .as_mut()
+        .unwrap()
+        .space
+        .as_mut()
+        .unwrap()
+        .space_id = "another-space".to_string();
+    let error = compiler
+        .compile(&mixed, 1, None)
+        .err()
+        .expect("mixed space");
+    assert!(error.to_string().contains("embedding space"), "{error}");
+
+    let mut original = compiler_config();
+    configure_compiler_embedding_alias(&mut original);
+    let first = compiler.compile(&original, 1, None).unwrap();
+    let changed = original
+        .aliases
+        .get_mut("public-model")
+        .unwrap()
+        .required_capabilities
+        .embedding_space
+        .as_mut()
+        .unwrap();
+    changed.revision = 2;
+    original
+        .deployments
+        .get_mut("d")
+        .unwrap()
+        .embedding_capabilities
+        .as_mut()
+        .unwrap()
+        .space
+        .as_mut()
+        .unwrap()
+        .revision = 2;
+    let error = compiler
+        .compile(&original, 2, Some(&first))
+        .err()
+        .expect("repointed space");
+    assert!(error.to_string().contains("immutable"), "{error}");
+}
+
+#[test]
+fn compiler_rejects_shared_capacity_between_query_and_index_lanes() {
+    let mut config = compiler_config();
+    configure_compiler_embedding_alias(&mut config);
+    let query = config.aliases.get_mut("public-model").unwrap();
+    query.internal = true;
+    query.bound_principal = Some("knowledge-service".to_string());
+    query.embedding_workload_lane = EmbeddingWorkloadLane::KbQuery;
+    let mut index = query.clone();
+    index.embedding_workload_lane = EmbeddingWorkloadLane::KbIndex;
+    config.aliases.insert("kb-index".to_string(), index);
+
+    let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
+        "secret".to_string(),
+        "value".to_string(),
+    )]))));
+    let error = compiler
+        .compile(&config, 1, None)
+        .err()
+        .expect("shared lane capacity");
+    assert!(error.to_string().contains("must not share"), "{error}");
+
+    let mut config = compiler_config();
+    configure_compiler_embedding_alias(&mut config);
+    let query = config.aliases.get_mut("public-model").unwrap();
+    query.internal = true;
+    query.bound_principal = Some("knowledge-service".to_string());
+    query.embedding_workload_lane = EmbeddingWorkloadLane::KbQuery;
+    let mut standard = query.clone();
+    standard.internal = false;
+    standard.bound_principal = None;
+    standard.embedding_workload_lane = EmbeddingWorkloadLane::Standard;
+    config
+        .aliases
+        .insert("tenant-embedding".to_string(), standard);
+    let error = compiler
+        .compile(&config, 1, None)
+        .err()
+        .expect("standard traffic must not share KB query capacity");
+    assert!(error.to_string().contains("must not share"), "{error}");
 }
 
 #[test]
@@ -1249,6 +1434,7 @@ fn compiler_accepts_alias_with_separate_generate_and_embed_deployments() {
                 supported_dimensions: BTreeSet::from([3]),
                 supported_encodings: BTreeSet::from([EmbeddingEncoding::Float]),
                 max_response_bytes: 1024,
+                space: Some(embedding_space(3)),
             }),
             conformance_digest: "b".repeat(64),
             conformance_result: None,
@@ -1262,6 +1448,7 @@ fn compiler_accepts_alias_with_separate_generate_and_embed_deployments() {
     );
     let alias = config.aliases.get_mut("public-model").unwrap();
     alias.operations = BTreeSet::from([Operation::Generate, Operation::Embed]);
+    alias.required_capabilities.embedding_space = Some(embedding_space(3));
     alias.deployments.push("embedding-deployment".to_string());
 
     let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
@@ -1303,6 +1490,7 @@ async fn embedding_alias_is_visible_while_chat_operation_mismatch_fails_before_d
     config.providers.get_mut("p").unwrap().provider_protocol = ProviderProtocol::OpenAiEmbeddings;
     let alias = config.aliases.get_mut("public-model").unwrap();
     alias.operations = BTreeSet::from([Operation::Embed]);
+    alias.required_capabilities.embedding_space = Some(embedding_space(3));
     let deployment = config.deployments.get_mut("d").unwrap();
     deployment.prices = BTreeMap::from([(
         Operation::Embed,
@@ -1318,6 +1506,7 @@ async fn embedding_alias_is_visible_while_chat_operation_mismatch_fails_before_d
         supported_dimensions: BTreeSet::from([3]),
         supported_encodings: BTreeSet::from([EmbeddingEncoding::Float]),
         max_response_bytes: 1024,
+        space: Some(embedding_space(3)),
     });
     let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
         "secret".to_string(),
@@ -1536,6 +1725,30 @@ fn compiler_rejects_zero_stream_response_memory_bound() {
     let mut config = compiler_config();
     config.max_stream_response_bytes = 0;
     assert!(compiler.compile(&config, 1, None).is_err());
+}
+
+#[test]
+fn compiler_requires_ingress_to_cover_the_single_parsed_embedding_request() {
+    let mut config = compiler_config();
+    config.embedding_memory.ingress_overhead_bytes = config
+        .embedding_memory
+        .max_request_body_bytes
+        .checked_mul(20)
+        .unwrap()
+        + (64 * 1024)
+        - 1;
+    let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
+        "secret".to_string(),
+        "value".to_string(),
+    )]))));
+    let error = compiler
+        .compile(&config, 1, None)
+        .err()
+        .expect("undersized parsed admission bound");
+    assert!(
+        error.to_string().contains("parsed admission amplification"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -2006,6 +2219,7 @@ async fn embeddings_http_supports_string_batch_float_and_base64() {
         .await;
     assert_eq!(first.status, 200);
     assert!(first.lifecycle.is_some());
+    assert!(!first.headers.contains_key("x-light-config-generation"));
     let first_json: serde_json::Value = serde_json::from_slice(&first.body).unwrap();
     assert_eq!(first_json["model"], "embedding-default");
     assert_eq!(first_json["data"][0]["index"], 0);
@@ -2028,6 +2242,119 @@ async fn embeddings_http_supports_string_batch_float_and_base64() {
     assert_eq!(f32::from_le_bytes(bytes[..4].try_into().unwrap()), 0.1);
     assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
     assert_eq!(ledger.charged(), 8);
+}
+
+#[tokio::test]
+async fn embeddings_expected_space_is_checked_before_admission_and_echoed_on_success() {
+    let provider = scripted_embedding_provider(vec![Ok(embedding_response(1, 2, 1, 0))]);
+    let (runtime, _) = embedding_runtime_with_policy(
+        vec![(
+            Arc::clone(&provider),
+            EmbeddingPrice {
+                version: 1,
+                input_micros_per_million: 1,
+            },
+        )],
+        1,
+        None,
+        true,
+        EmbeddingWorkloadLane::KbQuery,
+        EmbeddingWorkloadLane::KbQuery,
+    );
+    let http = LlmBufferedHttp::new(
+        Arc::clone(&runtime),
+        Arc::new(Allow),
+        1024,
+        16,
+        Duration::from_secs(1),
+    );
+
+    let missing = http
+        .handle(embedding_http_request(
+            br#"{"model":"embedding-default","input":"x"}"#,
+        ))
+        .await;
+    assert_eq!(missing.status, 400);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(runtime.embedding_memory_metrics().current_slots, 0);
+
+    let mut partial = embedding_http_request(br#"{"model":"embedding-default","input":"x"}"#);
+    partial.headers.insert(
+        "x-light-expected-embedding-space-id".to_string(),
+        "test-space-2".to_string(),
+    );
+    let partial = http.handle(partial).await;
+    assert_eq!(partial.status, 400);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+
+    let mut mismatch = embedding_http_request(br#"{"model":"embedding-default","input":"x"}"#);
+    mismatch.headers.insert(
+        "x-light-expected-embedding-space-id".to_string(),
+        "another-space".to_string(),
+    );
+    mismatch.headers.insert(
+        "x-light-expected-embedding-space-revision".to_string(),
+        "1".to_string(),
+    );
+    let mismatch = http.handle(mismatch).await;
+    assert_eq!(mismatch.status, 400);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(runtime.embedding_memory_metrics().current_slots, 0);
+
+    let mut matching = embedding_http_request(br#"{"model":"embedding-default","input":"x"}"#);
+    matching.headers.insert(
+        "x-light-expected-embedding-space-id".to_string(),
+        "test-space-2".to_string(),
+    );
+    matching.headers.insert(
+        "x-light-expected-embedding-space-revision".to_string(),
+        "1".to_string(),
+    );
+    let matching = http.handle(matching).await;
+    assert_eq!(matching.status, 200);
+    assert_eq!(
+        matching.headers["x-light-embedding-space-id"],
+        "test-space-2"
+    );
+    assert_eq!(matching.headers["x-light-embedding-space-revision"], "1");
+    assert_eq!(matching.headers["x-light-config-generation"], "7");
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        provider.received_dimensions.lock().unwrap().as_slice(),
+        &[Some(2)]
+    );
+}
+
+#[tokio::test]
+async fn embeddings_hide_aliases_assigned_to_another_workload_lane() {
+    let provider = scripted_embedding_provider(vec![]);
+    let (runtime, _) = embedding_runtime_with_policy(
+        vec![(
+            Arc::clone(&provider),
+            EmbeddingPrice {
+                version: 1,
+                input_micros_per_million: 1,
+            },
+        )],
+        1,
+        None,
+        true,
+        EmbeddingWorkloadLane::KbIndex,
+        EmbeddingWorkloadLane::KbQuery,
+    );
+    let http = LlmBufferedHttp::new(runtime, Arc::new(Allow), 1024, 16, Duration::from_secs(1));
+    let mut request = embedding_http_request(br#"{"model":"embedding-default","input":"x"}"#);
+    request.headers.insert(
+        "x-light-expected-embedding-space-id".to_string(),
+        "test-space-2".to_string(),
+    );
+    request.headers.insert(
+        "x-light-expected-embedding-space-revision".to_string(),
+        "1".to_string(),
+    );
+    let response = http.handle(request).await;
+    assert_eq!(response.status, 404);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

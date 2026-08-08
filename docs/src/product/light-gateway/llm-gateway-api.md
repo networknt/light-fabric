@@ -216,6 +216,37 @@ gateway-re-encoded little-endian `base64`. Consequently,
 `supported_encodings` gates the canonical provider-side `float` seam; client
 base64 output does not require provider base64 passthrough.
 
+### Durable embedding-space stability
+
+OpenAI-compatible request and response bodies do not identify a vector space.
+An embedding alias therefore declares an immutable `embeddingSpace` contract:
+space ID and revision, dimension, normalization, distance metric, and document
+input-transform version. Every eligible primary, fallback, and canary must
+publish the exact same contract. Matching dimensions alone are insufficient.
+
+Knowledge Base aliases set `requireExpectedEmbeddingSpace: true`. Their clients
+send both `x-light-expected-embedding-space-id` and
+`x-light-expected-embedding-space-revision`. A missing, partial, malformed, or
+mismatched expectation fails before provider dispatch. Successful qualified
+calls return `x-light-embedding-space-id`,
+`x-light-embedding-space-revision`, and `x-light-config-generation`; ordinary
+SDK calls that omit the expectation do not receive the configuration generation.
+The gateway pins or injects the contract dimension on required-space aliases.
+
+`Idempotency-Key` is currently accepted only as forward-compatible request
+metadata; the gateway does not deduplicate embedding dispatch or billing by
+that header. Durable ingestion workers must commit vectors with their own
+input-hash/job idempotency record. Server-side dispatch deduplication remains a
+future extension and must not be assumed by clients.
+
+Query and indexing traffic use separate, network-restricted gateway instances
+configured with `embeddingWorkloadLane: kb_query` and `kb_index`. A request
+header cannot select a lane. Both lanes may use different budgets and capacity,
+but must advertise the same embedding-space contract. OpenAI-compatible local
+servers such as llama.cpp or Ollama can participate as physical embedding
+deployments after endpoint, model, dimension, transform behavior, and the
+operator-approved space revision pass the same conformance and drift gates.
+
 ### Optional Anthropic Messages profile
 
 | Method and path | Status | Canonical operation | Contract |

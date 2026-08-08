@@ -27,6 +27,10 @@ pub struct AuditStart {
     pub snapshot_digest: String,
     pub max_attempts: usize,
     pub pii_profile: String,
+    pub expected_embedding_space_id: Option<String>,
+    pub expected_embedding_space_revision: Option<u64>,
+    pub selected_embedding_space_id: Option<String>,
+    pub selected_embedding_space_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +89,14 @@ pub struct AuditEvent {
     pub duration_ms: u64,
     pub content_mode: String,
     pub pii_profile: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_embedding_space_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_embedding_space_revision: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_embedding_space_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_embedding_space_revision: Option<u64>,
     pub principal_digest: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub charged_micros: Option<u64>,
@@ -392,6 +404,10 @@ fn event(
             .unwrap_or(u64::MAX),
         content_mode: "metadata_only".to_string(),
         pii_profile: start.pii_profile.clone(),
+        expected_embedding_space_id: start.expected_embedding_space_id.clone(),
+        expected_embedding_space_revision: start.expected_embedding_space_revision,
+        selected_embedding_space_id: start.selected_embedding_space_id.clone(),
+        selected_embedding_space_revision: start.selected_embedding_space_revision,
         principal_digest: format!("{:x}", Sha256::digest(start.principal_id.as_bytes())),
         charged_micros,
         usage_complete,
@@ -431,6 +447,10 @@ mod tests {
             snapshot_digest: "a".repeat(64),
             max_attempts: 1,
             pii_profile: "none".to_string(),
+            expected_embedding_space_id: None,
+            expected_embedding_space_revision: None,
+            selected_embedding_space_id: None,
+            selected_embedding_space_revision: None,
         }
     }
 

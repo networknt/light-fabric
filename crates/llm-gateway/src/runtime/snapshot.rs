@@ -1,4 +1,4 @@
-use crate::config::{AliasCapabilityRequirements, AuditMode};
+use crate::config::{AliasCapabilityRequirements, AuditMode, EmbeddingWorkloadLane};
 use crate::pii::PiiProfile;
 use crate::routing::PassiveCircuit;
 use crate::usage::{EmbeddingPrice, GenerationPrice, OperationPrice, UsageLedger};
@@ -102,6 +102,8 @@ pub struct AliasPlan {
     pub audit: AuditMode,
     pub pii: PiiProfile,
     pub required_capabilities: AliasCapabilityRequirements,
+    pub require_expected_embedding_space: bool,
+    pub embedding_workload_lane: EmbeddingWorkloadLane,
     pub ledger: Arc<UsageLedger>,
 }
 
@@ -155,6 +157,7 @@ pub struct LlmPublishedSnapshot {
     pub max_replay_bytes: usize,
     pub embedding_memory: EmbeddingMemoryBounds,
     pub embedding_memory_permits: Arc<Semaphore>,
+    pub embedding_workload_lane: EmbeddingWorkloadLane,
     pub aliases: BTreeMap<String, Arc<AliasPlan>>,
     pub deployments: BTreeMap<String, Arc<DeploymentRuntime>>,
     pub principal_permits: Arc<PrincipalPermitStripes>,

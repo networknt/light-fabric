@@ -22,8 +22,10 @@ embeddingMemory:
   maxReplayBytes: ${llm-router.embeddingMemory.maxReplayBytes:4194304}
   maxMemoryBytes: ${llm-router.embeddingMemory.maxMemoryBytes:17179869184}
   ingressConcurrency: ${llm-router.embeddingMemory.ingressConcurrency:32}
-  maxIngressMemoryBytes: ${llm-router.embeddingMemory.maxIngressMemoryBytes:268435456}
-  ingressOverheadBytes: ${llm-router.embeddingMemory.ingressOverheadBytes:65536}
+  maxIngressMemoryBytes: ${llm-router.embeddingMemory.maxIngressMemoryBytes:3221225472}
+  # Covers worst-case tiny-string JSON expansion: 20x the wire body for
+  # Value/Vec/String allocations plus 64 KiB fixed parser bookkeeping.
+  ingressOverheadBytes: ${llm-router.embeddingMemory.ingressOverheadBytes:83951616}
   itemsPerPermit: ${llm-router.embeddingMemory.itemsPerPermit:256}
   maxInputBytesPerItem: ${llm-router.embeddingMemory.maxInputBytesPerItem:1048576}
   maxTotalInputBytes: ${llm-router.embeddingMemory.maxTotalInputBytes:4194304}
@@ -43,6 +45,12 @@ streamIdleTimeoutMs: ${llm-router.streamIdleTimeoutMs:15000}
 streamMinimumDrainBytesPerSecond: ${llm-router.streamMinimumDrainBytesPerSecond:128}
 streamDrainGraceMs: ${llm-router.streamDrainGraceMs:1000}
 developmentFixtures: ${llm-router.developmentFixtures:false}
+# One gateway deployment serves one embedding admission lane. Deploy separate,
+# network-restricted instances for kb_query and kb_index; a request header does
+# not select this value. The 3 GiB ingress default above is a publication bound,
+# not a preallocation; small-footprint instances should reduce
+# ingressConcurrency and/or maxRequestBodyBytes with matching checked bounds.
+embeddingWorkloadLane: ${llm-router.embeddingWorkloadLane:standard}
 
 # OpenAI-only request fields may be allowlisted here. Mixed-format aliases use
 # strictest-wins parsing: adding an Anthropic fallback causes these extensions

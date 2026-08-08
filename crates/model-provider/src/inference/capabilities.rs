@@ -10,6 +10,34 @@ pub enum EmbeddingEncoding {
     Base64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddingNormalization {
+    None,
+    L2,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddingDistanceMetric {
+    Cosine,
+    InnerProduct,
+    L2,
+}
+
+/// Immutable identity of a document-vector space. Dimension is an integrity
+/// property of the identity, not a substitute for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EmbeddingSpaceContract {
+    pub space_id: String,
+    pub revision: u64,
+    pub dimension: u32,
+    pub normalization: EmbeddingNormalization,
+    pub distance_metric: EmbeddingDistanceMetric,
+    pub document_input_transform_version: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContentCapabilities {
@@ -39,6 +67,8 @@ pub struct EmbeddingCapabilities {
     #[serde(default)]
     pub supported_encodings: BTreeSet<EmbeddingEncoding>,
     pub max_response_bytes: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space: Option<EmbeddingSpaceContract>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

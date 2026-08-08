@@ -56,6 +56,18 @@ impl LlmCompiler {
         previous: Option<&LlmPublishedSnapshot>,
     ) -> Result<LlmPublishedSnapshot, LlmGatewayError> {
         validate(config)?;
+        if let Some(previous) = previous {
+            for (name, alias) in &config.aliases {
+                if let Some(old) = previous.aliases.get(name)
+                    && old.required_capabilities.embedding_space
+                        != alias.required_capabilities.embedding_space
+                {
+                    return Err(LlmGatewayError::Config(format!(
+                        "embedding space for alias `{name}` is immutable; publish a new alias/profile instead"
+                    )));
+                }
+            }
+        }
         let embedding_memory = compile_embedding_memory_bounds(config)?;
         let embedding_memory_permits = previous
             .filter(|old| old.embedding_memory == embedding_memory)
@@ -230,6 +242,9 @@ impl LlmCompiler {
                         && old.audit == alias.audit
                         && old.pii == alias.pii
                         && old.required_capabilities == alias.required_capabilities
+                        && old.require_expected_embedding_space
+                            == alias.require_expected_embedding_space
+                        && old.embedding_workload_lane == alias.embedding_workload_lane
                 };
                 let retained_state = previous_alias.filter(|old| same_alias_contract(old));
                 let reusable = retained_state
@@ -260,6 +275,9 @@ impl LlmCompiler {
                             audit: alias.audit,
                             pii: alias.pii.clone(),
                             required_capabilities: alias.required_capabilities.clone(),
+                            require_expected_embedding_space: alias
+                                .require_expected_embedding_space,
+                            embedding_workload_lane: alias.embedding_workload_lane,
                             ledger: retained_state
                                 .map(|old| Arc::clone(&old.ledger))
                                 .unwrap_or_else(|| Arc::new(UsageLedger::default())),
@@ -286,6 +304,7 @@ impl LlmCompiler {
             max_replay_bytes: config.max_replay_bytes,
             embedding_memory,
             embedding_memory_permits,
+            embedding_workload_lane: config.embedding_workload_lane,
             aliases,
             deployments,
             principal_permits,
@@ -401,6 +420,28 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
                 "internal alias `{name}` must bind a principal"
             )));
         }
+        let expected_embedding_space = alias.required_capabilities.embedding_space.as_ref();
+        if alias.operations.contains(&Operation::Embed) {
+            let Some(expected) = expected_embedding_space else {
+                return Err(LlmGatewayError::Config(format!(
+                    "embedding alias `{name}` requires an expected embedding-space contract"
+                )));
+            };
+            validate_embedding_space(expected, &format!("alias `{name}`"))?;
+        } else if expected_embedding_space.is_some() || alias.require_expected_embedding_space {
+            return Err(LlmGatewayError::Config(format!(
+                "non-embedding alias `{name}` cannot declare or require an embedding space"
+            )));
+        }
+        if alias.embedding_workload_lane != crate::config::EmbeddingWorkloadLane::Standard
+            && (!alias.operations.contains(&Operation::Embed)
+                || !alias.internal
+                || !alias.require_expected_embedding_space)
+        {
+            return Err(LlmGatewayError::Config(format!(
+                "Knowledge Base workload alias `{name}` must be internal, embedding-only, and require the expected space"
+            )));
+        }
         // This is a conservative reload-time cross-check between the raw HTTP
         // body admission bound and the canonical request replay bound.
         // Canonicalization can increase or decrease the serialized size, so
@@ -455,6 +496,41 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
                 return Err(LlmGatewayError::Config(format!(
                     "alias `{name}` deployment `{deployment}` is not declared, supported, and priced for its provider operation"
                 )));
+            }
+            if candidate_operation == Operation::Embed {
+                let capabilities = capabilities_for_deployment(candidate)
+                    .embedding
+                    .ok_or_else(|| {
+                        LlmGatewayError::Config(format!(
+                            "embedding deployment `{deployment}` has no embedding capabilities"
+                        ))
+                    })?;
+                let declared = capabilities.space.as_ref().ok_or_else(|| {
+                    LlmGatewayError::Config(format!(
+                        "embedding deployment `{deployment}` has no embedding-space contract"
+                    ))
+                })?;
+                validate_embedding_space(declared, &format!("deployment `{deployment}`"))?;
+                if Some(declared) != expected_embedding_space {
+                    return Err(LlmGatewayError::Config(format!(
+                        "embedding alias `{name}` mixes incompatible embedding spaces"
+                    )));
+                }
+                let dimensions_match = if alias.require_expected_embedding_space {
+                    capabilities.supported_dimensions.len() == 1
+                        && capabilities
+                            .supported_dimensions
+                            .contains(&declared.dimension)
+                } else {
+                    capabilities
+                        .supported_dimensions
+                        .contains(&declared.dimension)
+                };
+                if !dimensions_match {
+                    return Err(LlmGatewayError::Config(format!(
+                        "embedding deployment `{deployment}` dimensions do not preserve alias `{name}` space"
+                    )));
+                }
             }
             let requirements = alias_requirements(
                 alias,
@@ -551,12 +627,60 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
             )));
         }
     }
+    validate_embedding_lane_isolation(config)?;
+    Ok(())
+}
+
+fn validate_embedding_lane_isolation(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
+    use crate::config::EmbeddingWorkloadLane::{KbIndex, KbQuery, Standard};
+    let resources = |lane| {
+        let mut deployments = BTreeSet::new();
+        let mut accounts = BTreeSet::new();
+        for alias in config.aliases.values().filter(|alias| {
+            alias.embedding_workload_lane == lane && alias.operations.contains(&Operation::Embed)
+        }) {
+            for deployment_id in &alias.deployments {
+                deployments.insert(deployment_id.clone());
+                if let Some(deployment) = config.deployments.get(deployment_id)
+                    && let Some(provider) = config.providers.get(&deployment.provider)
+                {
+                    accounts.insert(
+                        provider
+                            .quota_group_id
+                            .clone()
+                            .unwrap_or_else(|| deployment.provider.clone()),
+                    );
+                }
+            }
+        }
+        (deployments, accounts)
+    };
+    let (query_deployments, query_accounts) = resources(KbQuery);
+    let (index_deployments, index_accounts) = resources(KbIndex);
+    let (standard_deployments, standard_accounts) = resources(Standard);
+    if !query_deployments.is_disjoint(&index_deployments)
+        || !query_accounts.is_disjoint(&index_accounts)
+        || !query_deployments.is_disjoint(&standard_deployments)
+        || !query_accounts.is_disjoint(&standard_accounts)
+        || !index_deployments.is_disjoint(&standard_deployments)
+        || !index_accounts.is_disjoint(&standard_accounts)
+    {
+        return Err(LlmGatewayError::Config(
+            "standard, KB query, and KB index embedding lanes must not share deployments or provider-account quota groups"
+                .to_string(),
+        ));
+    }
     Ok(())
 }
 
 fn compile_embedding_memory_bounds(
     config: &LlmRouterConfig,
 ) -> Result<EmbeddingMemoryBounds, LlmGatewayError> {
+    // Tiny strings can expand roughly 16x when represented as Value slots,
+    // Vec capacity, and individual heap allocations. Use 20x to also cover
+    // allocator bookkeeping and the peak while the Vec grows.
+    const PARSED_ADMISSION_WIRE_MULTIPLIER: usize = 20;
+    const PARSED_ADMISSION_FIXED_OVERHEAD_BYTES: usize = 64 * 1024;
     let limits = &config.embedding_memory;
     let checked_add = |left: usize, right: usize, label: &str| {
         left.checked_add(right)
@@ -566,6 +690,21 @@ fn compile_embedding_memory_bounds(
         left.checked_mul(right)
             .ok_or_else(|| LlmGatewayError::Config(format!("embedding {label} overflows usize")))
     };
+    let parsed_admission_variable_overhead = checked_mul(
+        limits.max_request_body_bytes,
+        PARSED_ADMISSION_WIRE_MULTIPLIER,
+        "parsed admission amplification",
+    )?;
+    let minimum_ingress_overhead = checked_add(
+        parsed_admission_variable_overhead,
+        PARSED_ADMISSION_FIXED_OVERHEAD_BYTES,
+        "parsed admission overhead",
+    )?;
+    if limits.ingress_overhead_bytes < minimum_ingress_overhead {
+        return Err(LlmGatewayError::Config(format!(
+            "embedding ingressOverheadBytes must be at least maxRequestBodyBytes * {PARSED_ADMISSION_WIRE_MULTIPLIER} + {PARSED_ADMISSION_FIXED_OVERHEAD_BYTES} bytes for parsed admission amplification"
+        )));
+    }
 
     let max_ingress_resident_bytes = checked_add(
         limits.max_request_body_bytes,
@@ -589,6 +728,9 @@ fn compile_embedding_memory_bounds(
     let mut provider_response_bytes = 0_usize;
     for (alias_name, alias) in &config.aliases {
         if !alias.operations.contains(&Operation::Embed) {
+            continue;
+        }
+        if alias.embedding_workload_lane != config.embedding_workload_lane {
             continue;
         }
         alias_slots = checked_add(alias_slots, alias.concurrency, "alias admission slots")?;
@@ -730,6 +872,9 @@ fn compile_embedding_memory_bounds(
 
 fn capabilities_for_provider(config: &LlmRouterConfig, provider: &str) -> ProviderCapabilities {
     let mut result = ProviderCapabilities::default();
+    let mut merged_embedding_space: Option<
+        Option<model_provider::inference::EmbeddingSpaceContract>,
+    > = None;
     for deployment in config
         .deployments
         .values()
@@ -766,9 +911,35 @@ fn capabilities_for_provider(config: &LlmRouterConfig, provider: &str) -> Provid
                 .extend(current.supported_encodings);
             embedding.max_response_bytes =
                 embedding.max_response_bytes.max(current.max_response_bytes);
+            merged_embedding_space = Some(match merged_embedding_space.take() {
+                None => current.space,
+                Some(existing) if existing == current.space => existing,
+                Some(_) => None,
+            });
         }
     }
+    if let Some(embedding) = result.embedding.as_mut() {
+        embedding.space = merged_embedding_space.flatten();
+    }
     result
+}
+
+fn validate_embedding_space(
+    contract: &model_provider::inference::EmbeddingSpaceContract,
+    owner: &str,
+) -> Result<(), LlmGatewayError> {
+    if contract.space_id.trim().is_empty()
+        || contract.space_id.len() > 255
+        || contract.revision == 0
+        || contract.dimension == 0
+        || contract.document_input_transform_version.trim().is_empty()
+        || contract.document_input_transform_version.len() > 255
+    {
+        return Err(LlmGatewayError::Config(format!(
+            "{owner} has an invalid embedding-space contract"
+        )));
+    }
+    Ok(())
 }
 
 fn capabilities_for_deployment(config: &crate::config::DeploymentConfig) -> ProviderCapabilities {

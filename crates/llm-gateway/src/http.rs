@@ -15,8 +15,8 @@ use tokio::sync::OwnedSemaphorePermit;
 
 use crate::error::LlmGatewayError;
 use crate::runtime::{
-    EmbeddingMemoryPermit, LlmRequestContext, LlmRuntime, LlmStreamExecution,
-    ResponsesResponseMetadata,
+    EmbeddingMemoryPermit, EmbeddingSpaceExpectation, EmbeddingSpaceSelection, LlmRequestContext,
+    LlmRuntime, LlmStreamExecution, ResponsesResponseMetadata,
 };
 
 #[derive(Debug, Clone)]
@@ -240,6 +240,36 @@ impl LlmBufferedHttp {
             )
             .await
             .map_err(|_| LlmGatewayError::ProviderUnavailable)??;
+            let expectation = parse_embedding_space_expectation(&request.headers)?;
+            let raw: Value = serde_json::from_slice(&request.body)
+                .map_err(|_| LlmGatewayError::InvalidRequest("invalid JSON".to_string()))?;
+            if json_depth(&raw) > self.max_json_depth {
+                return Err(LlmGatewayError::InvalidRequest(
+                    "JSON nesting limit exceeded".to_string(),
+                ));
+            }
+            let probe = embedding_admission_probe(&raw)?;
+            let selection = match self.runtime.probe_embedding_space(
+                &root,
+                &request.principal_id,
+                probe.model,
+                expectation.as_ref(),
+                probe.dimensions,
+            ) {
+                Ok(selection) => selection,
+                Err(error @ LlmGatewayError::UnsupportedCapability(_)) => {
+                    self.runtime
+                        .audit_embedding_space_rejection(
+                            &root,
+                            &request.principal_id,
+                            probe.model,
+                            expectation.as_ref(),
+                        )
+                        .await?;
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            };
             if root.embedding_memory.admission_slots == 0 {
                 drop(ingress_permit.take());
                 return Err(LlmGatewayError::AliasNotFound);
@@ -247,7 +277,7 @@ impl LlmBufferedHttp {
             let memory_permit = self.runtime.try_acquire_embedding_memory_slot(&root)?;
             drop(ingress_permit.take());
             return self
-                .handle_embeddings(request, root, memory_permit)
+                .handle_embeddings(request, raw, root, memory_permit, expectation, selection)
                 .await
                 .map(LlmHttpResponse::Buffered);
         }
@@ -452,16 +482,12 @@ impl LlmBufferedHttp {
     async fn handle_embeddings(
         &self,
         request: &BufferedHttpRequest,
+        raw: Value,
         root: Arc<crate::runtime::LlmPublishedSnapshot>,
         memory_permit: EmbeddingMemoryPermit,
+        expectation: Option<EmbeddingSpaceExpectation>,
+        selection: EmbeddingSpaceSelection,
     ) -> Result<BufferedHttpResponse, LlmGatewayError> {
-        let raw: Value = serde_json::from_slice(&request.body)
-            .map_err(|_| LlmGatewayError::InvalidRequest("invalid JSON".to_string()))?;
-        if json_depth(&raw) > self.max_json_depth {
-            return Err(LlmGatewayError::InvalidRequest(
-                "JSON nesting limit exceeded".to_string(),
-            ));
-        }
         let object = raw.as_object().ok_or_else(|| {
             LlmGatewayError::InvalidRequest("request must be a JSON object".to_string())
         })?;
@@ -503,7 +529,7 @@ impl LlmBufferedHttp {
                 ));
             }
         };
-        let dimensions = match object.get("dimensions").filter(|value| !value.is_null()) {
+        let mut dimensions = match object.get("dimensions").filter(|value| !value.is_null()) {
             None => None,
             Some(value) => Some(
                 value
@@ -517,6 +543,9 @@ impl LlmBufferedHttp {
                     })?,
             ),
         };
+        if selection.required && dimensions.is_none() {
+            dimensions = Some(selection.contract.dimension);
+        }
         let input = object
             .get("input")
             .ok_or_else(|| LlmGatewayError::InvalidRequest("input is required".to_string()))?;
@@ -565,7 +594,7 @@ impl LlmBufferedHttp {
         };
         let execution = self
             .runtime
-            .execute_embedding_with_snapshot(
+            .execute_embedding_with_snapshot_expectation(
                 context,
                 Arc::clone(&root),
                 EmbeddingRequest {
@@ -573,6 +602,7 @@ impl LlmBufferedHttp {
                     inputs,
                     dimensions,
                 },
+                expectation.clone(),
             )
             .await?;
         let data = execution
@@ -610,9 +640,25 @@ impl LlmBufferedHttp {
                 "rendered embedding response exceeds the compiled bound".to_string(),
             ));
         }
+        let mut headers =
+            BTreeMap::from([("content-type".to_string(), "application/json".to_string())]);
+        if expectation.is_some() || execution.selected_space.required {
+            headers.insert(
+                "x-light-embedding-space-id".to_string(),
+                execution.selected_space.contract.space_id,
+            );
+            headers.insert(
+                "x-light-embedding-space-revision".to_string(),
+                execution.selected_space.contract.revision.to_string(),
+            );
+            headers.insert(
+                "x-light-config-generation".to_string(),
+                execution.generation.to_string(),
+            );
+        }
         Ok(BufferedHttpResponse {
             status: 200,
-            headers: BTreeMap::from([("content-type".to_string(), "application/json".to_string())]),
+            headers,
             body,
             lifecycle: Some(BufferedResponseLifecycle {
                 memory_permit,
@@ -630,6 +676,63 @@ impl LlmBufferedHttp {
 enum ClientEmbeddingEncoding {
     Float,
     Base64,
+}
+
+struct EmbeddingAdmissionProbe<'a> {
+    model: &'a str,
+    dimensions: Option<u32>,
+}
+
+fn embedding_admission_probe(raw: &Value) -> Result<EmbeddingAdmissionProbe<'_>, LlmGatewayError> {
+    let object = raw.as_object().ok_or_else(|| {
+        LlmGatewayError::InvalidRequest("request must be a JSON object".to_string())
+    })?;
+    let model = object
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| LlmGatewayError::InvalidRequest("model is required".to_string()))?;
+    let dimensions = match object.get("dimensions").filter(|value| !value.is_null()) {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|value| *value > 0)
+                .ok_or_else(|| {
+                    LlmGatewayError::InvalidRequest(
+                        "dimensions must be a positive integer".to_string(),
+                    )
+                })?,
+        ),
+    };
+    Ok(EmbeddingAdmissionProbe { model, dimensions })
+}
+
+fn parse_embedding_space_expectation(
+    headers: &BTreeMap<String, String>,
+) -> Result<Option<EmbeddingSpaceExpectation>, LlmGatewayError> {
+    let id = headers.get("x-light-expected-embedding-space-id");
+    let revision = headers.get("x-light-expected-embedding-space-revision");
+    match (id, revision) {
+        (None, None) => Ok(None),
+        (Some(id), Some(revision)) => {
+            let id = id.trim();
+            let revision = revision.parse::<u64>().ok().filter(|value| *value > 0);
+            if id.is_empty() || id.len() > 255 || revision.is_none() {
+                return Err(LlmGatewayError::InvalidRequest(
+                    "expected embedding-space headers are malformed".to_string(),
+                ));
+            }
+            Ok(Some(EmbeddingSpaceExpectation {
+                space_id: id.to_string(),
+                revision: revision.expect("checked above"),
+            }))
+        }
+        _ => Err(LlmGatewayError::InvalidRequest(
+            "expected embedding-space headers must be supplied together".to_string(),
+        )),
+    }
 }
 
 fn client_codec_error(error: InferenceError) -> LlmGatewayError {

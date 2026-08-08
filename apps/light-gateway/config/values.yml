@@ -24,8 +24,8 @@ llm-router.embeddingMemory.maxRequestBodyBytes: 4194304
 llm-router.embeddingMemory.maxReplayBytes: 4194304
 llm-router.embeddingMemory.maxMemoryBytes: 17179869184
 llm-router.embeddingMemory.ingressConcurrency: 32
-llm-router.embeddingMemory.maxIngressMemoryBytes: 268435456
-llm-router.embeddingMemory.ingressOverheadBytes: 65536
+llm-router.embeddingMemory.maxIngressMemoryBytes: 3221225472
+llm-router.embeddingMemory.ingressOverheadBytes: 83951616
 llm-router.embeddingMemory.itemsPerPermit: 256
 llm-router.embeddingMemory.maxInputBytesPerItem: 1048576
 llm-router.embeddingMemory.maxTotalInputBytes: 4194304

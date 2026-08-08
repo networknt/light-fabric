@@ -9,8 +9,8 @@ pub mod response;
 pub mod stream;
 
 pub use capabilities::{
-    ContentCapabilities, EmbeddingCapabilities, EmbeddingEncoding, GenerationCapabilities,
-    ProviderCapabilities,
+    ContentCapabilities, EmbeddingCapabilities, EmbeddingDistanceMetric, EmbeddingEncoding,
+    EmbeddingNormalization, EmbeddingSpaceContract, GenerationCapabilities, ProviderCapabilities,
 };
 pub use compatibility::{LegacyProviderAdapter, OpenAiCompatibilityProfile};
 pub use content::{ContentBlock, ImageSource, Message, Role, ToolCall, ToolResult};

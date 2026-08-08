@@ -198,6 +198,10 @@ impl LlmRuntime {
                     snapshot_digest: root.digest.clone(),
                     max_attempts: alias.max_attempts,
                     pii_profile: pii.profile_id(),
+                    expected_embedding_space_id: None,
+                    expected_embedding_space_revision: None,
+                    selected_embedding_space_id: None,
+                    selected_embedding_space_revision: None,
                 },
             )
             .await?;

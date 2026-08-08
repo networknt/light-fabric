@@ -1,13 +1,22 @@
 use crate::pii::PiiProfile;
 use crate::usage::OperationPrice;
 use model_provider::conformance::{ConformanceResult, FixtureProvenance};
-use model_provider::inference::EmbeddingCapabilities;
+use model_provider::inference::{EmbeddingCapabilities, EmbeddingSpaceContract};
 use model_provider::inference::{Operation, ProviderProtocol};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const LLM_ROUTER_FILE: &str = "llm-router.yml";
 pub const LLM_ROUTER_MODULE_ID: &str = "light-pingora/llm-router";
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddingWorkloadLane {
+    #[default]
+    Standard,
+    KbQuery,
+    KbIndex,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +33,8 @@ pub struct LlmRouterConfig {
     pub max_replay_bytes: usize,
     #[serde(default)]
     pub embedding_memory: EmbeddingMemoryConfig,
+    #[serde(default)]
+    pub embedding_workload_lane: EmbeddingWorkloadLane,
     #[serde(default = "default_timeout_ms")]
     pub request_timeout_ms: u64,
     #[serde(default = "default_global_concurrency")]
@@ -69,6 +80,7 @@ impl Default for LlmRouterConfig {
             max_json_depth: default_json_depth(),
             max_replay_bytes: default_replay_bytes(),
             embedding_memory: EmbeddingMemoryConfig::default(),
+            embedding_workload_lane: EmbeddingWorkloadLane::Standard,
             request_timeout_ms: default_timeout_ms(),
             global_concurrency: default_global_concurrency(),
             global_stream_concurrency: default_global_stream_concurrency(),
@@ -326,6 +338,10 @@ pub struct AliasConfig {
     pub pii: PiiProfile,
     #[serde(default)]
     pub required_capabilities: AliasCapabilityRequirements,
+    #[serde(default)]
+    pub require_expected_embedding_space: bool,
+    #[serde(default)]
+    pub embedding_workload_lane: EmbeddingWorkloadLane,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -341,6 +357,8 @@ pub struct AliasCapabilityRequirements {
     pub structured_json: bool,
     #[serde(default)]
     pub streaming: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_space: Option<EmbeddingSpaceContract>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -389,10 +407,10 @@ fn default_embedding_ingress_concurrency() -> usize {
     32
 }
 fn default_embedding_ingress_memory_bytes() -> usize {
-    256 * 1024 * 1024
+    3 * 1024 * 1024 * 1024
 }
 fn default_embedding_ingress_overhead_bytes() -> usize {
-    64 * 1024
+    (4 * 1024 * 1024 * 20) + (64 * 1024)
 }
 fn default_embedding_items_per_permit() -> usize {
     256

@@ -68,6 +68,19 @@ pub struct LlmEmbeddingExecution {
     pub attempts: usize,
     pub usage: ReconciledUsage,
     pub generation: u64,
+    pub selected_space: EmbeddingSpaceSelection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddingSpaceExpectation {
+    pub space_id: String,
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddingSpaceSelection {
+    pub contract: model_provider::inference::EmbeddingSpaceContract,
+    pub required: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -296,6 +309,10 @@ impl LlmRuntime {
                     snapshot_digest: root.digest.clone(),
                     max_attempts: alias.max_attempts,
                     pii_profile: pii.profile_id(),
+                    expected_embedding_space_id: None,
+                    expected_embedding_space_revision: None,
+                    selected_embedding_space_id: None,
+                    selected_embedding_space_revision: None,
                 },
             )
             .await?;
@@ -680,7 +697,18 @@ impl LlmRuntime {
         &self,
         context: LlmRequestContext,
         root: Arc<LlmPublishedSnapshot>,
+        request: EmbeddingRequest,
+    ) -> Result<LlmEmbeddingExecution, LlmGatewayError> {
+        self.execute_embedding_with_snapshot_expectation(context, root, request, None)
+            .await
+    }
+
+    pub async fn execute_embedding_with_snapshot_expectation(
+        &self,
+        context: LlmRequestContext,
+        root: Arc<LlmPublishedSnapshot>,
         mut request: EmbeddingRequest,
+        expectation: Option<EmbeddingSpaceExpectation>,
     ) -> Result<LlmEmbeddingExecution, LlmGatewayError> {
         if context.deadline <= Instant::now() {
             return Err(LlmGatewayError::Provider(
@@ -700,6 +728,17 @@ impl LlmRuntime {
             return Err(LlmGatewayError::UnsupportedCapability(
                 "model alias does not support embed".to_string(),
             ));
+        }
+        if alias.embedding_workload_lane != root.embedding_workload_lane {
+            return Err(LlmGatewayError::AliasNotFound);
+        }
+        let selected_space = self.validate_embedding_space_expectation(
+            &alias,
+            expectation.as_ref(),
+            request.dimensions,
+        )?;
+        if selected_space.required && request.dimensions.is_none() {
+            request.dimensions = Some(selected_space.contract.dimension);
         }
         if request.inputs.is_empty() {
             return Err(LlmGatewayError::InvalidRequest(
@@ -721,6 +760,14 @@ impl LlmRuntime {
                     snapshot_digest: root.digest.clone(),
                     max_attempts: alias.max_attempts,
                     pii_profile: "none".to_string(),
+                    expected_embedding_space_id: expectation
+                        .as_ref()
+                        .map(|value| value.space_id.clone()),
+                    expected_embedding_space_revision: expectation
+                        .as_ref()
+                        .map(|value| value.revision),
+                    selected_embedding_space_id: Some(selected_space.contract.space_id.clone()),
+                    selected_embedding_space_revision: Some(selected_space.contract.revision),
                 },
             )
             .await?;
@@ -1160,6 +1207,7 @@ impl LlmRuntime {
                         attempts,
                         usage,
                         generation: root.generation,
+                        selected_space,
                     });
                 }
                 Err(error) => {
@@ -1232,6 +1280,121 @@ impl LlmRuntime {
         )
         .await?;
         Err(public_error)
+    }
+
+    pub fn probe_embedding_space(
+        &self,
+        root: &LlmPublishedSnapshot,
+        principal_id: &str,
+        model: &str,
+        expectation: Option<&EmbeddingSpaceExpectation>,
+        dimensions: Option<u32>,
+    ) -> Result<EmbeddingSpaceSelection, LlmGatewayError> {
+        let alias = root
+            .aliases
+            .get(model)
+            .ok_or(LlmGatewayError::AliasNotFound)?;
+        if alias.internal && alias.bound_principal.as_deref() != Some(principal_id) {
+            return Err(LlmGatewayError::AliasNotFound);
+        }
+        if !alias.operations.contains(&Operation::Embed) {
+            return Err(LlmGatewayError::UnsupportedCapability(
+                "model alias does not support embed".to_string(),
+            ));
+        }
+        if alias.embedding_workload_lane != root.embedding_workload_lane {
+            return Err(LlmGatewayError::AliasNotFound);
+        }
+        self.validate_embedding_space_expectation(alias, expectation, dimensions)
+    }
+
+    pub async fn audit_embedding_space_rejection(
+        &self,
+        root: &LlmPublishedSnapshot,
+        principal_id: &str,
+        model: &str,
+        expectation: Option<&EmbeddingSpaceExpectation>,
+    ) -> Result<(), LlmGatewayError> {
+        let Some(alias) = root.aliases.get(model) else {
+            return Ok(());
+        };
+        let selected = alias.required_capabilities.embedding_space.as_ref();
+        let audit = self
+            .audit
+            .reserve(
+                alias.audit,
+                AuditStart {
+                    request_id: uuid::Uuid::now_v7().to_string(),
+                    principal_id: principal_id.to_string(),
+                    alias: alias.public_name.clone(),
+                    operation: Operation::Embed,
+                    generation: root.generation,
+                    snapshot_digest: root.digest.clone(),
+                    max_attempts: 0,
+                    pii_profile: "none".to_string(),
+                    expected_embedding_space_id: expectation.map(|value| value.space_id.clone()),
+                    expected_embedding_space_revision: expectation.map(|value| value.revision),
+                    selected_embedding_space_id: selected.map(|value| value.space_id.clone()),
+                    selected_embedding_space_revision: selected.map(|value| value.revision),
+                },
+            )
+            .await?;
+        audit
+            .finish(AuditFinish {
+                terminal: "rejected",
+                attempts: 0,
+                charged_micros: 0,
+                usage_complete: true,
+            })
+            .await
+    }
+
+    fn validate_embedding_space_expectation(
+        &self,
+        alias: &AliasPlan,
+        expectation: Option<&EmbeddingSpaceExpectation>,
+        dimensions: Option<u32>,
+    ) -> Result<EmbeddingSpaceSelection, LlmGatewayError> {
+        let contract = alias
+            .required_capabilities
+            .embedding_space
+            .clone()
+            .ok_or_else(|| {
+                LlmGatewayError::Invariant(
+                    "published embedding alias has no embedding-space contract".to_string(),
+                )
+            })?;
+        if alias.require_expected_embedding_space && expectation.is_none() {
+            return Err(LlmGatewayError::UnsupportedCapability(
+                "model alias requires an expected embedding-space contract".to_string(),
+            ));
+        }
+        if expectation.is_some_and(|expected| {
+            expected.space_id != contract.space_id || expected.revision != contract.revision
+        }) {
+            tracing::warn!(
+                target: "llm_gateway_audit",
+                public_alias = %alias.public_name,
+                expected_space_id = expectation.map(|value| value.space_id.as_str()).unwrap_or(""),
+                expected_space_revision = expectation.map(|value| value.revision).unwrap_or_default(),
+                selected_space_id = %contract.space_id,
+                selected_space_revision = contract.revision,
+                outcome = "embedding_space_mismatch",
+                "LLM embedding space expectation rejected before dispatch"
+            );
+            return Err(LlmGatewayError::UnsupportedCapability(
+                "expected embedding space does not match the model alias".to_string(),
+            ));
+        }
+        if dimensions.is_some_and(|value| value != contract.dimension) {
+            return Err(LlmGatewayError::UnsupportedCapability(
+                "dimensions do not match the model alias embedding space".to_string(),
+            ));
+        }
+        Ok(EmbeddingSpaceSelection {
+            contract,
+            required: alias.require_expected_embedding_space,
+        })
     }
 
     pub fn eligible_formats(
