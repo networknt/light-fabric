@@ -8,6 +8,7 @@ license.workspace = true
 arc-swap = "1.7"
 async-stream = "0.3"
 async-trait.workspace = true
+base64 = "0.22"
 bytes.workspace = true
 chrono.workspace = true
 futures-util.workspace = true

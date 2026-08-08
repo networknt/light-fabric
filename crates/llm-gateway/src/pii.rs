@@ -322,7 +322,23 @@ impl RequestPiiSession {
         if !self.profile.enabled {
             return Ok(());
         }
-        self.recover_blocks(&mut response.content)?;
+        for item in &mut response.output {
+            match item {
+                model_provider::inference::GenerateOutputItem::Message { content, .. } => {
+                    self.recover_blocks(content)?
+                }
+                model_provider::inference::GenerateOutputItem::FunctionCall {
+                    arguments, ..
+                } => self.recover_json(arguments)?,
+                model_provider::inference::GenerateOutputItem::ReasoningSummary {
+                    summary, ..
+                } => {
+                    for text in summary {
+                        *text = self.recover_text(text)?;
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -338,6 +354,7 @@ impl RequestPiiSession {
         for block in blocks {
             match block {
                 ContentBlock::Text { text } => *text = self.tokenize_text(text)?,
+                ContentBlock::Refusal { refusal } => *refusal = self.tokenize_text(refusal)?,
                 ContentBlock::ToolCall { call } => self.tokenize_json(&mut call.arguments)?,
                 ContentBlock::ToolResult { result } => self.tokenize_blocks(&mut result.content)?,
                 ContentBlock::Image { .. } => {}
@@ -350,6 +367,7 @@ impl RequestPiiSession {
         for block in blocks {
             match block {
                 ContentBlock::Text { text } => *text = self.recover_text(text)?,
+                ContentBlock::Refusal { refusal } => *refusal = self.recover_text(refusal)?,
                 ContentBlock::ToolCall { call } => self.recover_json(&mut call.arguments)?,
                 ContentBlock::ToolResult { result } => self.recover_blocks(&mut result.content)?,
                 ContentBlock::Image { .. } => {}
@@ -972,8 +990,13 @@ mod tests {
         let email_token = token_for_value(&session, "a@example.com");
         let altered = email_token.replacen("email", "phone", 1);
         let mut response = InferenceResponse {
-            content: vec![ContentBlock::Text {
-                text: format!("known {email_token}; altered {altered}"),
+            output: vec![model_provider::inference::GenerateOutputItem::Message {
+                id: "message-0".to_string(),
+                role: model_provider::inference::Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: format!("known {email_token}; altered {altered}"),
+                }],
+                status: model_provider::inference::ItemStatus::Completed,
             }],
             finish_reason: FinishReason::Stop,
             usage: None,
@@ -981,7 +1004,12 @@ mod tests {
             terminal_state: TerminalState::Complete,
         };
         session.recover_response(&mut response).unwrap();
-        let ContentBlock::Text { text } = &response.content[0] else {
+        let model_provider::inference::GenerateOutputItem::Message { content, .. } =
+            &response.output[0]
+        else {
+            panic!()
+        };
+        let ContentBlock::Text { text } = &content[0] else {
             panic!()
         };
         assert!(text.contains("known a@example.com"));
@@ -1050,7 +1078,12 @@ mod tests {
         session.tokenize_request(&mut request).unwrap();
         let altered = token_for_value(&session, "a@example.com").replacen("email", "phone", 1);
         let mut response = InferenceResponse {
-            content: vec![ContentBlock::Text { text: altered }],
+            output: vec![model_provider::inference::GenerateOutputItem::Message {
+                id: "message-0".to_string(),
+                role: model_provider::inference::Role::Assistant,
+                content: vec![ContentBlock::Text { text: altered }],
+                status: model_provider::inference::ItemStatus::Completed,
+            }],
             finish_reason: FinishReason::Stop,
             usage: None,
             evidence: Default::default(),

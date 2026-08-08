@@ -42,10 +42,23 @@ pub struct ToolResult {
     rename_all_fields = "camelCase"
 )]
 pub enum ContentBlock {
-    Text { text: String },
-    Image { source: ImageSource },
-    ToolCall { call: ToolCall },
-    ToolResult { result: ToolResult },
+    Text {
+        text: String,
+    },
+    /// A provider safety refusal. This remains distinct from generated text so
+    /// client adapters cannot accidentally present it as a normal answer.
+    Refusal {
+        refusal: String,
+    },
+    Image {
+        source: ImageSource,
+    },
+    ToolCall {
+        call: ToolCall,
+    },
+    ToolResult {
+        result: ToolResult,
+    },
 }
 
 impl ContentBlock {

@@ -245,3 +245,55 @@ The default/`--closure` gate additionally requires all external baseline lanes
 to be complete and therefore fails closed while a manifest lane is
 `pending-external`. Do not relabel a lane `pass` until its raw results and
 environment manifest are checked in or attached to the release evidence.
+
+## Embeddings SDK smoke lane
+
+Run the buffered `/v1/embeddings` compatibility lane against a deployed
+gateway with the official OpenAI Python and TypeScript SDKs:
+
+```bash
+LLM_SDK_BASE_URL=https://gateway.example/v1 \
+LLM_SDK_API_KEY=... \
+LLM_SDK_EMBEDDING_MODEL=embedding-alias \
+LLM_SDK_EMBEDDING_DIMENSIONS=1536 \
+LLM_SDK_REVISION=... \
+LLM_SDK_PROJECTION_DIGEST=... \
+LLM_SDK_EMBEDDING_CONFORMANCE_DIGEST=... \
+./benchmarks/llm-gateway/scripts/run-sdk-embeddings-smoke.sh
+```
+
+The lane covers single and batch inputs, float and base64 encodings, and
+explicit dimensions. It installs pinned SDK versions in temporary directories
+and writes sanitized evidence described by
+`manifests/sdk-embeddings-smoke-manifest.json`.
+
+Run the equivalent buffered/streamed Responses lane with:
+
+```bash
+LLM_SDK_BASE_URL=https://gateway.example/v1 \
+LLM_SDK_API_KEY=... \
+LLM_SDK_RESPONSES_MODEL=coding-default \
+LLM_SDK_REVISION=... \
+LLM_SDK_PROJECTION_DIGEST=... \
+LLM_SDK_RESPONSES_CONFORMANCE_DIGEST=... \
+./benchmarks/llm-gateway/scripts/run-sdk-responses-smoke.sh
+```
+
+It covers string and typed input, a stateless function-call/output loop, and
+typed Responses streaming with the pinned official Python and TypeScript SDKs.
+
+The Codex lane uses the same endpoint with `wire_api = "responses"` and a
+Light-issued token:
+
+```bash
+LIGHT_LLM_TOKEN=... \
+LLM_SDK_BASE_URL=https://gateway.example/v1 \
+LLM_SDK_RESPONSES_MODEL=coding-default \
+LLM_SDK_REVISION=... \
+LLM_SDK_PROJECTION_DIGEST=... \
+LLM_SDK_RESPONSES_CONFORMANCE_DIGEST=... \
+./benchmarks/llm-gateway/scripts/run-codex-responses-smoke.sh
+```
+
+The Codex script uses ephemeral, read-only, noninteractive runs and records
+only pass/fail metadata for text generation and a client function-call loop.

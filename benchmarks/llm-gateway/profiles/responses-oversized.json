@@ -1,0 +1,5 @@
+{
+  "name": "responses-oversized",
+  "baseLatencyMs": 5,
+  "responseBytes": 8388608
+}

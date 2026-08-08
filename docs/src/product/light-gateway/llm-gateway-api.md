@@ -2,7 +2,7 @@
 
 ## Status
 
-- Status: Proposed target contract
+- Status: Core API implemented; live production qualification pending
 - Date: 2026-08-07
 - Scope: public inference APIs, provider adapters, and authentication boundaries
 
@@ -11,11 +11,11 @@ to call `llm-gateway`. It also defines how the gateway selects a provider wire
 protocol and obtains the provider credential after policy and routing have
 selected a deployment.
 
-This is a target contract, not a claim that every endpoint is implemented. The
-current Rust implementation supports `GET /v1/models` and
-`POST /v1/chat/completions`, including the existing OpenAI and Anthropic
-outbound codecs. The endpoint tables below distinguish required core work from
-optional and deferred compatibility profiles.
+The current Rust implementation supports model listing and retrieval, Chat
+Completions, buffered and streamed Responses, and buffered embeddings. Live SDK,
+Codex, provider, multi-replica publication, performance, canary, and rollback
+qualification remains required before production promotion. The endpoint tables
+below distinguish the implemented core from optional and deferred profiles.
 
 The terms **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 
@@ -176,12 +176,12 @@ unbounded public API commitment:
 | Method and path | Status | Canonical operation | Contract |
 |-----------------|--------|---------------------|----------|
 | `GET /v1/models` | Required core, implemented | `list_models` | Return only authorized public aliases in OpenAI model-list format. |
-| `GET /v1/models/{alias}` | Required core, planned | `list_models` | Return one authorized public alias or an indistinguishable not-found result. |
-| `POST /v1/responses` | Required core, planned; preferred for agents | `generate` | OpenAI Responses-compatible buffered or SSE generation, including typed items and tool calls. |
+| `GET /v1/models/{alias}` | Required core, implemented | `list_models` | Return one authorized public alias or an indistinguishable not-found result. |
+| `POST /v1/responses` | Required core, implemented; preferred for agents | `generate` | OpenAI Responses-compatible buffered or SSE generation, including typed items and tool calls. |
 | `GET /v1/responses/{response_id}` | Deferred `retained_results` profile | `get_result` | Retrieve a stored or background response only when the alias and route support retained results. |
 | `DELETE /v1/responses/{response_id}` | Deferred `retained_results` profile | `delete_result` | Delete gateway-owned retained response state and request provider deletion where applicable. |
 | `POST /v1/chat/completions` | Required core, implemented | `generate` | OpenAI Chat Completions-compatible buffered or SSE generation. |
-| `POST /v1/embeddings` | Required core, planned | `embed` | OpenAI-compatible embedding request and response. |
+| `POST /v1/embeddings` | Required core, implemented | `embed` | OpenAI-compatible embedding request and response. |
 | `POST /v1/rerank` | Optional extended profile | `rerank` | Cohere/Jina-style reranking after a canonical rerank operation and pricing contract exist. |
 
 `POST /v1/responses` is the standard agent contract. It MUST support, subject
@@ -200,6 +200,21 @@ The first release of Responses support MAY require `store: false`. If retained
 responses are not enabled, `store: true`, `previous_response_id`, retrieval,
 and deletion MUST return `unsupported_feature`; they MUST NOT be silently
 ignored.
+
+The portable first-release function-tool profile accepts `strict` when omitted
+or `false`. `strict: true` is rejected as `unsupported_feature` until strict
+tool-schema preservation is represented as a routed capability across every
+eligible provider protocol; it is never silently weakened. The deprecated
+Responses `user` forwarding field is likewise outside the stateless portable
+profile because its provider-side safety semantics cannot be preserved across
+routes.
+
+For embeddings, provider responses are decoded into canonical finite `f32`
+vectors. The gateway requests provider `float` encoding, validates declared
+dimensions and response bounds, and renders either client `float` JSON or
+gateway-re-encoded little-endian `base64`. Consequently,
+`supported_encodings` gates the canonical provider-side `float` seam; client
+base64 output does not require provider base64 passthrough.
 
 ### Optional Anthropic Messages profile
 

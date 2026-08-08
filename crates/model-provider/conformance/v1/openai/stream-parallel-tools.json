@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1",
   "id": "openai-stream-parallel-tools",
-  "provider": "openai",
+  "provider": "openai_chat",
   "kind": "stream",
   "input": {"chunks": [
     "data: {\"choices\":[{\"delta\":{\"content\":\"hi\",\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"one\",\"arguments\":\"{\\\"x\\\":\"}},{\"index\":1,\"id\":\"c2\",\"function\":{\"name\":\"two\",\"arguments\":\"{\\\"y\\\":\"}}]}}]}\n\n",

@@ -19,3 +19,18 @@ proxy.hosts: http://127.0.0.1:8081
 
 llm-router.enabled: false
 llm-router.pathPrefix: /v1
+llm-router.maxStreamResponseBytes: 16777216
+llm-router.embeddingMemory.maxRequestBodyBytes: 4194304
+llm-router.embeddingMemory.maxReplayBytes: 4194304
+llm-router.embeddingMemory.maxMemoryBytes: 17179869184
+llm-router.embeddingMemory.ingressConcurrency: 32
+llm-router.embeddingMemory.maxIngressMemoryBytes: 268435456
+llm-router.embeddingMemory.ingressOverheadBytes: 65536
+llm-router.embeddingMemory.itemsPerPermit: 256
+llm-router.embeddingMemory.maxInputBytesPerItem: 1048576
+llm-router.embeddingMemory.maxTotalInputBytes: 4194304
+llm-router.embeddingMemory.bodyReadTimeoutMs: 30000
+llm-router.embeddingMemory.minimumReceiveBytesPerSecond: 1024
+llm-router.embeddingMemory.authorizationTimeoutMs: 10000
+llm-router.embeddingMemory.writeTimeoutMs: 30000
+llm-router.embeddingMemory.minimumDrainBytesPerSecond: 1024

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use base64::Engine as _;
 use futures_util::stream;
 use llm_gateway::audit::{
     AuditAdmission, AuditFinish, AuditReservation, AuditStart, WalAudit, WalConfig,
@@ -15,14 +16,18 @@ use llm_gateway::runtime::{
     LlmSnapshotStore, PrincipalPermitStripes, ProviderAccountRuntime, PublishOutcome,
     StreamStartBarrier,
 };
-use llm_gateway::usage::{Price, UsageLedger, UsageReservation};
+use llm_gateway::usage::{
+    EmbeddingPrice, GenerationPrice, OperationPrice, UsageLedger, UsageReservation,
+};
 use llm_gateway::{LlmGatewayError, LlmRequestContext, LlmRuntime};
 use model_provider::conformance::{CapabilityRequirements, ConformanceResult, FixtureProvenance};
 use model_provider::inference::{
-    AcceptanceEvidence, ContentBlock, ContentCapabilities, FinishReason, InferenceError,
-    InferenceEvent, InferenceProvider, InferenceRequest, InferenceResponse, InferenceStream,
-    NormalizedUsage, Operation, ProviderCapabilities, ProviderEvidence, ProviderFormat,
-    ProviderRequestContext, TerminalState,
+    AcceptanceEvidence, CompiledProvider, ContentBlock, ContentCapabilities, EmbeddingCapabilities,
+    EmbeddingEncoding, EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, EmbeddingVector,
+    FinishReason, GenerateOutputItem, GenerationCapabilities, GenerationProvider, GenerationStream,
+    InferenceError, InferenceEvent, InferenceRequest, InferenceResponse, ItemStatus,
+    NormalizedUsage, Operation, ProviderCapabilities, ProviderEvidence, ProviderProtocol,
+    ProviderRequestContext, Role, TerminalState,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -31,14 +36,14 @@ use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 
 struct ScriptedProvider {
-    format: ProviderFormat,
+    protocol: ProviderProtocol,
     results: Mutex<VecDeque<Result<InferenceResponse, InferenceError>>>,
     calls: AtomicUsize,
-    capabilities: ProviderCapabilities,
+    capabilities: GenerationCapabilities,
 }
 
 struct SseProvider {
-    format: ProviderFormat,
+    protocol: ProviderProtocol,
     events: Vec<Result<InferenceEvent, InferenceError>>,
     calls: AtomicUsize,
     wait_for_cancellation: bool,
@@ -54,17 +59,47 @@ struct PiiEchoProvider {
     received: Arc<Mutex<Vec<String>>>,
 }
 
+struct ScriptedEmbeddingProvider {
+    results: Mutex<VecDeque<Result<EmbeddingResponse, InferenceError>>>,
+    calls: AtomicUsize,
+    capabilities: EmbeddingCapabilities,
+}
+
 #[async_trait]
-impl InferenceProvider for PiiEchoProvider {
-    fn format(&self) -> ProviderFormat {
-        ProviderFormat::OpenAi
+impl EmbeddingProvider for ScriptedEmbeddingProvider {
+    fn protocol(&self) -> ProviderProtocol {
+        ProviderProtocol::OpenAiEmbeddings
     }
 
-    fn capabilities(&self) -> ProviderCapabilities {
-        capabilities(true, true, true)
+    fn capabilities(&self) -> EmbeddingCapabilities {
+        self.capabilities.clone()
     }
 
-    async fn infer(
+    async fn embed(
+        &self,
+        _context: ProviderRequestContext,
+        _request: EmbeddingRequest,
+    ) -> Result<EmbeddingResponse, InferenceError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.results
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| Ok(embedding_response(2, 2, 3, 0)))
+    }
+}
+
+#[async_trait]
+impl GenerationProvider for PiiEchoProvider {
+    fn protocol(&self) -> ProviderProtocol {
+        ProviderProtocol::OpenAiChat
+    }
+
+    fn capabilities(&self) -> GenerationCapabilities {
+        generation_capabilities(true, true, true)
+    }
+
+    async fn generate(
         &self,
         _context: ProviderRequestContext,
         request: InferenceRequest,
@@ -75,15 +110,20 @@ impl InferenceProvider for PiiEchoProvider {
             panic!("PII test expects text")
         };
         let mut response = success_response();
-        response.content = vec![ContentBlock::text(text.clone())];
+        response.output = vec![GenerateOutputItem::Message {
+            id: "message-0".to_string(),
+            role: Role::Assistant,
+            content: vec![ContentBlock::text(text.clone())],
+            status: ItemStatus::Completed,
+        }];
         Ok(response)
     }
 
-    async fn stream(
+    async fn generate_stream(
         &self,
         _context: ProviderRequestContext,
         request: InferenceRequest,
-    ) -> Result<InferenceStream, InferenceError> {
+    ) -> Result<GenerationStream, InferenceError> {
         let encoded = serde_json::to_string(&request).unwrap();
         self.received.lock().unwrap().push(encoded);
         let ContentBlock::Text { text } = &request.messages[0].content[0] else {
@@ -108,16 +148,16 @@ impl InferenceProvider for PiiEchoProvider {
 }
 
 #[async_trait]
-impl InferenceProvider for DurableStartProvider {
-    fn format(&self) -> ProviderFormat {
-        ProviderFormat::OpenAi
+impl GenerationProvider for DurableStartProvider {
+    fn protocol(&self) -> ProviderProtocol {
+        ProviderProtocol::OpenAiChat
     }
 
-    fn capabilities(&self) -> ProviderCapabilities {
-        capabilities(true, true, true)
+    fn capabilities(&self) -> GenerationCapabilities {
+        generation_capabilities(true, true, true)
     }
 
-    async fn infer(
+    async fn generate(
         &self,
         _context: ProviderRequestContext,
         _request: InferenceRequest,
@@ -127,11 +167,11 @@ impl InferenceProvider for DurableStartProvider {
         Ok(success_response())
     }
 
-    async fn stream(
+    async fn generate_stream(
         &self,
         _context: ProviderRequestContext,
         _request: InferenceRequest,
-    ) -> Result<InferenceStream, InferenceError> {
+    ) -> Result<GenerationStream, InferenceError> {
         self.durable_before_dispatch
             .store(self.audit.status().durable_sequence >= 2, Ordering::SeqCst);
         Ok(Box::pin(stream::iter(SseProvider::success().events)))
@@ -141,7 +181,7 @@ impl InferenceProvider for DurableStartProvider {
 impl SseProvider {
     fn success() -> Self {
         Self {
-            format: ProviderFormat::OpenAi,
+            protocol: ProviderProtocol::OpenAiChat,
             events: vec![
                 Ok(InferenceEvent::TextDelta {
                     text: "hello".to_string(),
@@ -167,16 +207,16 @@ impl SseProvider {
 }
 
 #[async_trait]
-impl InferenceProvider for SseProvider {
-    fn format(&self) -> ProviderFormat {
-        self.format
+impl GenerationProvider for SseProvider {
+    fn protocol(&self) -> ProviderProtocol {
+        self.protocol
     }
 
-    fn capabilities(&self) -> ProviderCapabilities {
-        capabilities(true, true, true)
+    fn capabilities(&self) -> GenerationCapabilities {
+        generation_capabilities(true, true, true)
     }
 
-    async fn infer(
+    async fn generate(
         &self,
         _context: ProviderRequestContext,
         _request: InferenceRequest,
@@ -184,11 +224,11 @@ impl InferenceProvider for SseProvider {
         Err(InferenceError::unsupported("stream-only test provider"))
     }
 
-    async fn stream(
+    async fn generate_stream(
         &self,
         context: ProviderRequestContext,
         _request: InferenceRequest,
-    ) -> Result<InferenceStream, InferenceError> {
+    ) -> Result<GenerationStream, InferenceError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let events = self.events.clone();
         if !self.wait_for_cancellation {
@@ -227,19 +267,19 @@ impl InferenceProvider for SseProvider {
 
 impl ScriptedProvider {
     fn new(
-        format: ProviderFormat,
+        protocol: ProviderProtocol,
         results: Vec<Result<InferenceResponse, InferenceError>>,
     ) -> Self {
-        Self::with_capabilities(format, results, capabilities(true, true, true))
+        Self::with_capabilities(protocol, results, generation_capabilities(true, true, true))
     }
 
     fn with_capabilities(
-        format: ProviderFormat,
+        protocol: ProviderProtocol,
         results: Vec<Result<InferenceResponse, InferenceError>>,
-        capabilities: ProviderCapabilities,
+        capabilities: GenerationCapabilities,
     ) -> Self {
         Self {
-            format,
+            protocol,
             results: Mutex::new(results.into()),
             calls: AtomicUsize::new(0),
             capabilities,
@@ -248,14 +288,14 @@ impl ScriptedProvider {
 }
 
 #[async_trait]
-impl InferenceProvider for ScriptedProvider {
-    fn format(&self) -> ProviderFormat {
-        self.format
+impl GenerationProvider for ScriptedProvider {
+    fn protocol(&self) -> ProviderProtocol {
+        self.protocol
     }
-    fn capabilities(&self) -> ProviderCapabilities {
+    fn capabilities(&self) -> GenerationCapabilities {
         self.capabilities.clone()
     }
-    async fn infer(
+    async fn generate(
         &self,
         _context: ProviderRequestContext,
         _request: InferenceRequest,
@@ -267,11 +307,11 @@ impl InferenceProvider for ScriptedProvider {
             .pop_front()
             .unwrap_or_else(|| Ok(success_response()))
     }
-    async fn stream(
+    async fn generate_stream(
         &self,
         _context: ProviderRequestContext,
         _request: InferenceRequest,
-    ) -> Result<InferenceStream, InferenceError> {
+    ) -> Result<GenerationStream, InferenceError> {
         Err(InferenceError::unsupported("not used"))
     }
 }
@@ -345,9 +385,8 @@ impl StreamStartBarrier for BlockingStartBarrier {
     }
 }
 
-fn capabilities(images: bool, tools: bool, structured: bool) -> ProviderCapabilities {
-    ProviderCapabilities {
-        operations: BTreeSet::from([Operation::ChatCompletions]),
+fn generation_capabilities(images: bool, tools: bool, structured: bool) -> GenerationCapabilities {
+    GenerationCapabilities {
         content: ContentCapabilities {
             text: true,
             images,
@@ -362,7 +401,12 @@ fn capabilities(images: bool, tools: bool, structured: bool) -> ProviderCapabili
 
 fn success_response() -> InferenceResponse {
     InferenceResponse {
-        content: vec![ContentBlock::text("ok")],
+        output: vec![GenerateOutputItem::Message {
+            id: "message-0".to_string(),
+            role: Role::Assistant,
+            content: vec![ContentBlock::text("ok")],
+            status: ItemStatus::Completed,
+        }],
         finish_reason: FinishReason::Stop,
         usage: Some(NormalizedUsage {
             input_tokens: Some(10),
@@ -379,13 +423,199 @@ fn success_response() -> InferenceResponse {
     }
 }
 
-fn deployment(id: &str, provider: Arc<dyn InferenceProvider>) -> Arc<DeploymentRuntime> {
+fn embedding_capabilities() -> EmbeddingCapabilities {
+    EmbeddingCapabilities {
+        max_batch_items: 8,
+        max_input_tokens_per_item: 10,
+        max_aggregate_input_tokens: 80,
+        supported_dimensions: BTreeSet::from([2]),
+        supported_encodings: BTreeSet::from([EmbeddingEncoding::Float, EmbeddingEncoding::Base64]),
+        max_response_bytes: 4096,
+    }
+}
+
+fn scripted_embedding_provider(
+    results: Vec<Result<EmbeddingResponse, InferenceError>>,
+) -> Arc<ScriptedEmbeddingProvider> {
+    Arc::new(ScriptedEmbeddingProvider {
+        results: Mutex::new(results.into()),
+        calls: AtomicUsize::new(0),
+        capabilities: embedding_capabilities(),
+    })
+}
+
+fn embedding_response(
+    count: usize,
+    dimensions: usize,
+    input_tokens: u64,
+    output_tokens: u64,
+) -> EmbeddingResponse {
+    EmbeddingResponse {
+        vectors: (0..count)
+            .map(|index| EmbeddingVector {
+                index: index as u32,
+                values: (0..dimensions)
+                    .map(|dimension| (index + dimension + 1) as f32 / 10.0)
+                    .collect(),
+            })
+            .collect(),
+        usage: NormalizedUsage {
+            input_tokens: Some(input_tokens),
+            output_tokens: (output_tokens != 0).then_some(output_tokens),
+            cached_input_tokens: None,
+            reasoning_tokens: None,
+        },
+        evidence: ProviderEvidence::default(),
+    }
+}
+
+fn embedding_runtime(
+    providers: Vec<(Arc<ScriptedEmbeddingProvider>, EmbeddingPrice)>,
+    attempts: usize,
+    max_cost_micros: Option<u64>,
+) -> (Arc<LlmRuntime>, Arc<UsageLedger>) {
+    let deployments = providers
+        .into_iter()
+        .enumerate()
+        .map(|(index, (provider, price))| {
+            let provider: Arc<dyn EmbeddingProvider> = provider;
+            Arc::new(DeploymentRuntime {
+                id: format!("embed-{index}"),
+                model: format!("embed-{index}-physical"),
+                configured_concurrency: 4,
+                capabilities: ProviderCapabilities {
+                    operations: BTreeSet::from([Operation::Embed]),
+                    generation: None,
+                    embedding: Some(provider.capabilities()),
+                },
+                provider: CompiledProvider::Embedding(provider),
+                provider_digest: format!("embed-{index}"),
+                conformance_result: None,
+                required_conformance_provenance: None,
+                permits: Arc::new(Semaphore::new(4)),
+                circuit: Arc::new(PassiveCircuit::new(3, Duration::ZERO)),
+                account: Arc::new(ProviderAccountRuntime {
+                    provider_account_id: format!("embed-{index}"),
+                    quota_group_id: format!("embed-{index}"),
+                    configured_concurrency: 4,
+                    permits: Arc::new(Semaphore::new(4)),
+                }),
+                prices: BTreeMap::from([(Operation::Embed, OperationPrice::Embed(price))]),
+            })
+        })
+        .collect::<Vec<_>>();
+    let ledger = Arc::new(UsageLedger::default());
+    let alias = Arc::new(AliasPlan {
+        public_name: "embedding-default".to_string(),
+        deployments: deployments.clone(),
+        operations: BTreeSet::from([Operation::Embed]),
+        max_attempts: attempts,
+        configured_concurrency: 2,
+        permits: Arc::new(Semaphore::new(2)),
+        max_input_tokens: None,
+        max_output_tokens: None,
+        max_cost_micros,
+        internal: false,
+        bound_principal: None,
+        audit: AuditMode::Required,
+        pii: PiiProfile::default(),
+        required_capabilities: Default::default(),
+        ledger: Arc::clone(&ledger),
+    });
+    let snapshot = LlmPublishedSnapshot {
+        generation: 7,
+        digest: "embedding-root".to_string(),
+        global_concurrency: 2,
+        global_stream_concurrency: 1,
+        stream_channel_capacity: 1,
+        max_stream_response_bytes: 16 * 1024,
+        stream_write_timeout_ms: 100,
+        stream_setup_timeout_ms: 100,
+        stream_idle_timeout_ms: 100,
+        stream_minimum_drain_bytes_per_second: 1,
+        stream_drain_grace_ms: 100,
+        max_replay_bytes: 4096,
+        embedding_memory: llm_gateway::runtime::EmbeddingMemoryBounds {
+            admission_slots: 1,
+            per_slot_peak_bytes: 64 * 1024,
+            aggregate_peak_bytes: 64 * 1024,
+            max_memory_bytes: 64 * 1024,
+            max_request_body_bytes: 4096,
+            max_replay_bytes: 4096,
+            max_replay_resident_bytes: 12 * 1024,
+            max_canonical_vector_bytes: 4096,
+            max_rendered_response_bytes: 4096,
+            overlapping_provider_response_bytes: 4096,
+            ingress_concurrency: 2,
+            max_ingress_resident_bytes: 8192,
+            aggregate_ingress_bytes: 16 * 1024,
+            max_ingress_memory_bytes: 16 * 1024,
+            items_per_permit: 2,
+            write_timeout_ms: 1000,
+            minimum_drain_bytes_per_second: 1,
+            max_input_bytes_per_item: 1024,
+            max_total_input_bytes: 2048,
+            body_read_timeout_ms: 1000,
+            minimum_receive_bytes_per_second: 1,
+            authorization_timeout_ms: 1000,
+        },
+        embedding_memory_permits: Arc::new(Semaphore::new(1)),
+        aliases: BTreeMap::from([("embedding-default".to_string(), alias)]),
+        deployments: deployments
+            .into_iter()
+            .map(|deployment| (deployment.id.clone(), deployment))
+            .collect(),
+        principal_permits: Arc::new(PrincipalPermitStripes::new(8, 2)),
+    };
+    (
+        Arc::new(LlmRuntime::new(
+            Arc::new(LlmSnapshotStore::new(snapshot, 2)),
+            Arc::new(RecordingAudit::default()),
+        )),
+        ledger,
+    )
+}
+
+fn test_embedding_memory_bounds(
+    admission_slots: usize,
+) -> llm_gateway::runtime::EmbeddingMemoryBounds {
+    llm_gateway::runtime::EmbeddingMemoryBounds {
+        admission_slots,
+        per_slot_peak_bytes: 64 * 1024,
+        aggregate_peak_bytes: 64 * 1024 * admission_slots,
+        max_memory_bytes: 64 * 1024 * admission_slots,
+        max_request_body_bytes: 4096,
+        max_replay_bytes: 4096,
+        max_replay_resident_bytes: 12 * 1024,
+        max_canonical_vector_bytes: 4096,
+        max_rendered_response_bytes: 4096,
+        overlapping_provider_response_bytes: 4096,
+        ingress_concurrency: 2,
+        max_ingress_resident_bytes: 8192,
+        aggregate_ingress_bytes: 16 * 1024,
+        max_ingress_memory_bytes: 16 * 1024,
+        items_per_permit: 2,
+        write_timeout_ms: 1000,
+        minimum_drain_bytes_per_second: 1,
+        max_input_bytes_per_item: 1024,
+        max_total_input_bytes: 2048,
+        body_read_timeout_ms: 1000,
+        minimum_receive_bytes_per_second: 1,
+        authorization_timeout_ms: 1000,
+    }
+}
+
+fn deployment(id: &str, provider: Arc<dyn GenerationProvider>) -> Arc<DeploymentRuntime> {
     Arc::new(DeploymentRuntime {
         id: id.to_string(),
         model: format!("{id}-physical"),
         configured_concurrency: 2,
-        capabilities: provider.capabilities(),
-        provider,
+        capabilities: ProviderCapabilities {
+            operations: BTreeSet::from([Operation::Generate]),
+            generation: Some(provider.capabilities()),
+            embedding: None,
+        },
+        provider: CompiledProvider::Generation(provider),
         provider_digest: id.to_string(),
         conformance_result: None,
         required_conformance_provenance: None,
@@ -394,18 +624,23 @@ fn deployment(id: &str, provider: Arc<dyn InferenceProvider>) -> Arc<DeploymentR
         account: Arc::new(ProviderAccountRuntime {
             provider_account_id: id.to_string(),
             quota_group_id: id.to_string(),
+            configured_concurrency: 2,
+            permits: Arc::new(Semaphore::new(2)),
         }),
-        price: Price {
-            version: 7,
-            input_micros_per_million: 1_000_000,
-            output_micros_per_million: 2_000_000,
-        },
+        prices: BTreeMap::from([(
+            Operation::Generate,
+            OperationPrice::Generate(GenerationPrice {
+                version: 7,
+                input_micros_per_million: 1_000_000,
+                output_micros_per_million: 2_000_000,
+            }),
+        )]),
     })
 }
 
 fn conformance_result(provenance: FixtureProvenance, valid_until: &str) -> ConformanceResult {
     let mut result: ConformanceResult = serde_json::from_str(include_str!(
-        "../../model-provider/conformance/results/openai.json"
+        "../../model-provider/conformance/results/openai-chat.json"
     ))
     .expect("checked-in OpenAI conformance result");
     result.physical_model = "governed-physical".to_string();
@@ -419,7 +654,7 @@ fn conformance_result(provenance: FixtureProvenance, valid_until: &str) -> Confo
 }
 
 fn governed_deployment(
-    provider: Arc<dyn InferenceProvider>,
+    provider: Arc<dyn GenerationProvider>,
     conformance_result: ConformanceResult,
 ) -> Arc<DeploymentRuntime> {
     Arc::new(DeploymentRuntime {
@@ -427,7 +662,7 @@ fn governed_deployment(
         model: conformance_result.physical_model.clone(),
         configured_concurrency: 2,
         capabilities: conformance_result.capabilities.clone(),
-        provider,
+        provider: CompiledProvider::Generation(provider),
         provider_digest: "governed".to_string(),
         conformance_result: Some(conformance_result),
         required_conformance_provenance: Some(FixtureProvenance::CapturedSanitized),
@@ -436,12 +671,17 @@ fn governed_deployment(
         account: Arc::new(ProviderAccountRuntime {
             provider_account_id: "governed".to_string(),
             quota_group_id: "governed".to_string(),
+            configured_concurrency: 2,
+            permits: Arc::new(Semaphore::new(2)),
         }),
-        price: Price {
-            version: 7,
-            input_micros_per_million: 1_000_000,
-            output_micros_per_million: 2_000_000,
-        },
+        prices: BTreeMap::from([(
+            Operation::Generate,
+            OperationPrice::Generate(GenerationPrice {
+                version: 7,
+                input_micros_per_million: 1_000_000,
+                output_micros_per_million: 2_000_000,
+            }),
+        )]),
     })
 }
 
@@ -452,6 +692,7 @@ fn runtime_with_deployment(
     let alias = Arc::new(AliasPlan {
         public_name: "public-model".to_string(),
         deployments: vec![Arc::clone(&deployment)],
+        operations: BTreeSet::from([Operation::Generate]),
         max_attempts: 1,
         configured_concurrency: 2,
         permits: Arc::new(Semaphore::new(2)),
@@ -471,12 +712,15 @@ fn runtime_with_deployment(
         global_concurrency: 2,
         global_stream_concurrency: 1,
         stream_channel_capacity: 1,
+        max_stream_response_bytes: 16 * 1024,
         stream_write_timeout_ms: 100,
         stream_setup_timeout_ms: 100,
         stream_idle_timeout_ms: 100,
         stream_minimum_drain_bytes_per_second: 1,
         stream_drain_grace_ms: 100,
         max_replay_bytes: 4096,
+        embedding_memory: test_embedding_memory_bounds(1),
+        embedding_memory_permits: Arc::new(Semaphore::new(1)),
         aliases: BTreeMap::from([("public-model".to_string(), alias)]),
         deployments: BTreeMap::from([(deployment.id.clone(), deployment)]),
         principal_permits: Arc::new(PrincipalPermitStripes::new(8, 2)),
@@ -488,7 +732,7 @@ fn runtime_with_deployment(
 }
 
 fn runtime_with(
-    providers: Vec<Arc<dyn InferenceProvider>>,
+    providers: Vec<Arc<dyn GenerationProvider>>,
     attempts: usize,
     max_replay: usize,
     audit: Arc<dyn AuditAdmission>,
@@ -497,7 +741,7 @@ fn runtime_with(
 }
 
 fn runtime_with_mode(
-    providers: Vec<Arc<dyn InferenceProvider>>,
+    providers: Vec<Arc<dyn GenerationProvider>>,
     attempts: usize,
     max_replay: usize,
     audit: Arc<dyn AuditAdmission>,
@@ -514,7 +758,7 @@ fn runtime_with_mode(
 }
 
 fn runtime_with_mode_and_pii(
-    providers: Vec<Arc<dyn InferenceProvider>>,
+    providers: Vec<Arc<dyn GenerationProvider>>,
     attempts: usize,
     max_replay: usize,
     audit: Arc<dyn AuditAdmission>,
@@ -529,6 +773,7 @@ fn runtime_with_mode_and_pii(
     let alias = Arc::new(AliasPlan {
         public_name: "public-model".to_string(),
         deployments: deployments.clone(),
+        operations: BTreeSet::from([Operation::Generate]),
         max_attempts: attempts,
         configured_concurrency: 2,
         permits: Arc::new(Semaphore::new(2)),
@@ -545,6 +790,7 @@ fn runtime_with_mode_and_pii(
     let internal_alias = Arc::new(AliasPlan {
         public_name: "legacy-agent-internal".to_string(),
         deployments: vec![Arc::clone(&deployments[0])],
+        operations: BTreeSet::from([Operation::Generate]),
         max_attempts: 1,
         configured_concurrency: 1,
         permits: Arc::new(Semaphore::new(1)),
@@ -564,12 +810,15 @@ fn runtime_with_mode_and_pii(
         global_concurrency: 2,
         global_stream_concurrency: 1,
         stream_channel_capacity: 1,
+        max_stream_response_bytes: 16 * 1024,
         stream_write_timeout_ms: 100,
         stream_setup_timeout_ms: 100,
         stream_idle_timeout_ms: 100,
         stream_minimum_drain_bytes_per_second: 1,
         stream_drain_grace_ms: 100,
         max_replay_bytes: max_replay,
+        embedding_memory: test_embedding_memory_bounds(1),
+        embedding_memory_permits: Arc::new(Semaphore::new(1)),
         aliases: BTreeMap::from([
             ("public-model".to_string(), alias),
             ("legacy-agent-internal".to_string(), internal_alias),
@@ -588,9 +837,11 @@ fn runtime_with_mode_and_pii(
 
 #[test]
 fn deployment_supports_requires_current_passing_captured_conformance() {
-    let provider: Arc<dyn InferenceProvider> =
-        Arc::new(ScriptedProvider::new(ProviderFormat::OpenAi, Vec::new()));
-    let requirements = CapabilityRequirements::default();
+    let provider: Arc<dyn GenerationProvider> = Arc::new(ScriptedProvider::new(
+        ProviderProtocol::OpenAiChat,
+        Vec::new(),
+    ));
+    let requirements = CapabilityRequirements::generation();
 
     let captured = conformance_result(FixtureProvenance::CapturedSanitized, "2999-01-01T00:00:00Z");
     assert!(governed_deployment(Arc::clone(&provider), captured.clone()).supports(&requirements));
@@ -611,10 +862,10 @@ fn deployment_supports_requires_current_passing_captured_conformance() {
 #[tokio::test]
 async fn expired_conformance_is_excluded_from_every_gateway_route() {
     let provider = Arc::new(ScriptedProvider::new(
-        ProviderFormat::OpenAi,
+        ProviderProtocol::OpenAiChat,
         vec![Ok(success_response())],
     ));
-    let provider_runtime: Arc<dyn InferenceProvider> = provider.clone();
+    let provider_runtime: Arc<dyn GenerationProvider> = provider.clone();
     let deployment = governed_deployment(
         provider_runtime,
         conformance_result(FixtureProvenance::CapturedSanitized, "2000-01-01T00:00:00Z"),
@@ -625,7 +876,7 @@ async fn expired_conformance_is_excluded_from_every_gateway_route() {
     assert!(runtime.visible_models().is_empty());
     assert!(matches!(
         runtime.eligible_formats(&runtime.snapshot(), "user", &request, false),
-        Err(LlmGatewayError::ModelUnavailable)
+        Err(LlmGatewayError::NoReadyDeployment)
     ));
     assert!(matches!(
         runtime
@@ -634,7 +885,7 @@ async fn expired_conformance_is_excluded_from_every_gateway_route() {
                 request.clone(),
             )
             .await,
-        Err(LlmGatewayError::ModelUnavailable)
+        Err(LlmGatewayError::NoReadyDeployment)
     ));
     assert!(matches!(
         runtime
@@ -644,7 +895,7 @@ async fn expired_conformance_is_excluded_from_every_gateway_route() {
                 request,
             )
             .await,
-        Err(LlmGatewayError::ModelUnavailable)
+        Err(LlmGatewayError::NoReadyDeployment)
     ));
     assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
 }
@@ -652,11 +903,11 @@ async fn expired_conformance_is_excluded_from_every_gateway_route() {
 #[tokio::test]
 async fn lf5_single_attempt_never_uses_fallback_and_finalizes_audit() {
     let first = Arc::new(ScriptedProvider::new(
-        ProviderFormat::OpenAi,
+        ProviderProtocol::OpenAiChat,
         vec![Err(InferenceError::from_status(429, None, "limited"))],
     ));
     let second = Arc::new(ScriptedProvider::new(
-        ProviderFormat::Anthropic,
+        ProviderProtocol::AnthropicMessages,
         vec![Ok(success_response())],
     ));
     let audit = Arc::new(RecordingAudit::default());
@@ -677,11 +928,11 @@ async fn lf5_single_attempt_never_uses_fallback_and_finalizes_audit() {
 #[tokio::test]
 async fn lf5b_safe_failure_falls_back_once_and_reconciles_exact_usage() {
     let first = Arc::new(ScriptedProvider::new(
-        ProviderFormat::OpenAi,
+        ProviderProtocol::OpenAiChat,
         vec![Err(InferenceError::from_status(429, Some("1"), "limited"))],
     ));
     let second = Arc::new(ScriptedProvider::new(
-        ProviderFormat::Anthropic,
+        ProviderProtocol::AnthropicMessages,
         vec![Ok(success_response())],
     ));
     let runtime = runtime_with(
@@ -705,7 +956,7 @@ async fn lf5b_safe_failure_falls_back_once_and_reconciles_exact_usage() {
 #[tokio::test]
 async fn mandatory_retry_rejects_oversize_replay_before_dispatch() {
     let provider = Arc::new(ScriptedProvider::new(
-        ProviderFormat::OpenAi,
+        ProviderProtocol::OpenAiChat,
         vec![Ok(success_response())],
     ));
     let runtime = runtime_with(
@@ -728,7 +979,7 @@ async fn mandatory_retry_rejects_oversize_replay_before_dispatch() {
 #[tokio::test]
 async fn audit_finish_failure_remains_fail_closed_for_a_rejected_request() {
     let provider = Arc::new(ScriptedProvider::new(
-        ProviderFormat::OpenAi,
+        ProviderProtocol::OpenAiChat,
         vec![Ok(success_response())],
     ));
     let runtime = runtime_with(
@@ -753,7 +1004,7 @@ fn ambiguous_usage_is_conservatively_nonzero_and_incomplete() {
     let ledger = Arc::new(UsageLedger::default());
     let reservation = UsageReservation::reserve(Arc::clone(&ledger), 77, Some(100)).unwrap();
     let result = reservation.reconcile(
-        Price {
+        GenerationPrice {
             version: 9,
             input_micros_per_million: 1,
             output_micros_per_million: 1,
@@ -808,7 +1059,7 @@ fn compiler_config() -> LlmRouterConfig {
         providers: BTreeMap::from([(
             "p".to_string(),
             ProviderConfig {
-                format: ProviderFormat::OpenAi,
+                provider_protocol: ProviderProtocol::OpenAiChat,
                 base_url: "http://127.0.0.1:9/v1".to_string(),
                 secret_ref: "secret".to_string(),
                 headers: BTreeMap::new(),
@@ -821,8 +1072,15 @@ fn compiler_config() -> LlmRouterConfig {
                 provider: "p".to_string(),
                 model: "physical".to_string(),
                 concurrency: 2,
-                input_micros_per_million: Some(1),
-                output_micros_per_million: Some(2),
+                prices: BTreeMap::from([(
+                    Operation::Generate,
+                    OperationPrice::Generate(GenerationPrice {
+                        version: 1,
+                        input_micros_per_million: 1,
+                        output_micros_per_million: 2,
+                    }),
+                )]),
+                embedding_capabilities: None,
                 conformance_digest: "a".repeat(64),
                 conformance_result: None,
                 text: true,
@@ -836,6 +1094,7 @@ fn compiler_config() -> LlmRouterConfig {
         aliases: BTreeMap::from([(
             "public-model".to_string(),
             AliasConfig {
+                operations: BTreeSet::from([Operation::Generate]),
                 deployments: vec!["d".to_string()],
                 max_attempts: 1,
                 concurrency: 2,
@@ -851,6 +1110,234 @@ fn compiler_config() -> LlmRouterConfig {
         )]),
         ..Default::default()
     }
+}
+
+#[test]
+fn embedding_memory_uses_admission_slots_not_deployment_concurrency() {
+    assert_eq!(
+        2048_usize * 3072 * std::mem::size_of::<f32>(),
+        24 * 1024 * 1024
+    );
+    let mut config = compiler_config();
+    config.global_concurrency = 512;
+    config.providers.get_mut("p").unwrap().provider_protocol = ProviderProtocol::OpenAiEmbeddings;
+    let alias = config.aliases.get_mut("public-model").unwrap();
+    alias.operations = BTreeSet::from([Operation::Embed]);
+    alias.concurrency = 512;
+    alias.max_attempts = 1;
+    let deployment = config.deployments.get_mut("d").unwrap();
+    deployment.concurrency = 8;
+    deployment.prices = BTreeMap::from([(
+        Operation::Embed,
+        OperationPrice::Embed(EmbeddingPrice {
+            version: 1,
+            input_micros_per_million: 1,
+        }),
+    )]);
+    deployment.embedding_capabilities = Some(EmbeddingCapabilities {
+        max_batch_items: 2048,
+        max_input_tokens_per_item: 8192,
+        max_aggregate_input_tokens: 16_777_216,
+        supported_dimensions: BTreeSet::from([3072]),
+        supported_encodings: BTreeSet::from([EmbeddingEncoding::Float]),
+        max_response_bytes: 32 * 1024 * 1024,
+    });
+    config.embedding_memory.items_per_permit = 256;
+    config.embedding_memory.max_memory_bytes = 16 * 1024 * 1024 * 1024;
+    let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
+        "secret".to_string(),
+        "value".to_string(),
+    )]))));
+    let error = compiler
+        .compile(&config, 1, None)
+        .err()
+        .expect("512 admission slots must fail");
+    assert!(
+        error.to_string().contains("aggregate memory bound"),
+        "{error}"
+    );
+}
+
+#[test]
+fn compiler_rejects_embedding_batch_weight_above_deployment_capacity() {
+    let mut config = compiler_config();
+    config.providers.get_mut("p").unwrap().provider_protocol = ProviderProtocol::OpenAiEmbeddings;
+    config.aliases.get_mut("public-model").unwrap().operations = BTreeSet::from([Operation::Embed]);
+    config.embedding_memory.items_per_permit = 2;
+    let deployment = config.deployments.get_mut("d").unwrap();
+    deployment.concurrency = 4;
+    deployment.prices = BTreeMap::from([(
+        Operation::Embed,
+        OperationPrice::Embed(EmbeddingPrice {
+            version: 1,
+            input_micros_per_million: 1,
+        }),
+    )]);
+    deployment.embedding_capabilities = Some(EmbeddingCapabilities {
+        max_batch_items: 9,
+        max_input_tokens_per_item: 128,
+        max_aggregate_input_tokens: 1152,
+        supported_dimensions: BTreeSet::from([2]),
+        supported_encodings: BTreeSet::from([EmbeddingEncoding::Float]),
+        max_response_bytes: 4096,
+    });
+    let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
+        "secret".to_string(),
+        "value".to_string(),
+    )]))));
+    let error = compiler
+        .compile(&config, 1, None)
+        .err()
+        .expect("oversized weighted batch must fail");
+    assert!(
+        error.to_string().contains("maximum weighted batch"),
+        "{error}"
+    );
+}
+
+#[test]
+fn compiler_rejects_price_key_and_variant_mismatch() {
+    let mut config = compiler_config();
+    config.deployments.get_mut("d").unwrap().prices = BTreeMap::from([(
+        Operation::Generate,
+        OperationPrice::Embed(EmbeddingPrice {
+            version: 1,
+            input_micros_per_million: 1,
+        }),
+    )]);
+    let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
+        "secret".to_string(),
+        "value".to_string(),
+    )]))));
+    let error = compiler
+        .compile(&config, 1, None)
+        .err()
+        .expect("mismatched price variant must fail");
+    assert!(error.to_string().contains("price key"), "{error}");
+}
+
+#[test]
+fn compiler_accepts_alias_with_separate_generate_and_embed_deployments() {
+    let mut config = compiler_config();
+    config.providers.insert(
+        "embedding-provider".to_string(),
+        ProviderConfig {
+            provider_protocol: ProviderProtocol::OpenAiEmbeddings,
+            base_url: "http://127.0.0.1:9/v1".to_string(),
+            secret_ref: "secret".to_string(),
+            headers: BTreeMap::new(),
+            quota_group_id: Some("quota".to_string()),
+        },
+    );
+    config.deployments.insert(
+        "embedding-deployment".to_string(),
+        DeploymentConfig {
+            provider: "embedding-provider".to_string(),
+            model: "physical-embedding".to_string(),
+            concurrency: 2,
+            prices: BTreeMap::from([(
+                Operation::Embed,
+                OperationPrice::Embed(EmbeddingPrice {
+                    version: 1,
+                    input_micros_per_million: 1,
+                }),
+            )]),
+            embedding_capabilities: Some(EmbeddingCapabilities {
+                max_batch_items: 2,
+                max_input_tokens_per_item: 128,
+                max_aggregate_input_tokens: 256,
+                supported_dimensions: BTreeSet::from([3]),
+                supported_encodings: BTreeSet::from([EmbeddingEncoding::Float]),
+                max_response_bytes: 1024,
+            }),
+            conformance_digest: "b".repeat(64),
+            conformance_result: None,
+            text: false,
+            images: false,
+            tools: false,
+            structured_json: false,
+            streaming: false,
+            pii_placeholder_preservation_percent: 0,
+        },
+    );
+    let alias = config.aliases.get_mut("public-model").unwrap();
+    alias.operations = BTreeSet::from([Operation::Generate, Operation::Embed]);
+    alias.deployments.push("embedding-deployment".to_string());
+
+    let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
+        "secret".to_string(),
+        "value".to_string(),
+    )]))));
+    let snapshot = compiler.compile(&config, 1, None).unwrap();
+    assert_eq!(
+        snapshot.aliases["public-model"].operations,
+        BTreeSet::from([Operation::Generate, Operation::Embed])
+    );
+}
+
+#[tokio::test]
+async fn unconfigured_embeddings_route_is_not_reported_as_capacity() {
+    let config = compiler_config();
+    let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
+        "secret".to_string(),
+        "value".to_string(),
+    )]))));
+    let snapshot = compiler.compile(&config, 1, None).unwrap();
+    assert_eq!(snapshot.embedding_memory.admission_slots, 0);
+    let runtime = Arc::new(LlmRuntime::new(
+        Arc::new(LlmSnapshotStore::new(snapshot, 2)),
+        Arc::new(RecordingAudit::default()),
+    ));
+    let response = LlmBufferedHttp::new(runtime, Arc::new(Allow), 4096, 16, Duration::from_secs(1))
+        .handle(embedding_http_request(
+            br#"{"model":"missing-embedding","input":"hello"}"#,
+        ))
+        .await;
+    assert_eq!(response.status, 404);
+    assert!(String::from_utf8_lossy(&response.body).contains("model_not_found"));
+}
+
+#[tokio::test]
+async fn embedding_alias_is_visible_while_chat_operation_mismatch_fails_before_dispatch() {
+    let mut config = compiler_config();
+    config.providers.get_mut("p").unwrap().provider_protocol = ProviderProtocol::OpenAiEmbeddings;
+    let alias = config.aliases.get_mut("public-model").unwrap();
+    alias.operations = BTreeSet::from([Operation::Embed]);
+    let deployment = config.deployments.get_mut("d").unwrap();
+    deployment.prices = BTreeMap::from([(
+        Operation::Embed,
+        OperationPrice::Embed(EmbeddingPrice {
+            version: 1,
+            input_micros_per_million: 1,
+        }),
+    )]);
+    deployment.embedding_capabilities = Some(EmbeddingCapabilities {
+        max_batch_items: 2,
+        max_input_tokens_per_item: 128,
+        max_aggregate_input_tokens: 256,
+        supported_dimensions: BTreeSet::from([3]),
+        supported_encodings: BTreeSet::from([EmbeddingEncoding::Float]),
+        max_response_bytes: 1024,
+    });
+    let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
+        "secret".to_string(),
+        "value".to_string(),
+    )]))));
+    let snapshot = compiler.compile(&config, 1, None).unwrap();
+    let runtime = LlmRuntime::new(
+        Arc::new(LlmSnapshotStore::new(snapshot, 2)),
+        Arc::new(RecordingAudit::default()),
+    );
+
+    assert_eq!(runtime.visible_models(), vec!["public-model".to_string()]);
+    let error = runtime
+        .execute(
+            LlmRequestContext::with_timeout("user", Duration::from_secs(1)),
+            InferenceRequest::text("public-model", "hello"),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, LlmGatewayError::UnsupportedCapability(_)));
 }
 
 #[test]
@@ -1003,7 +1490,12 @@ fn development_fixture_deployment_supports_streaming_by_default() {
     // returned `model_not_found`. A YAML deployment without a `streaming` key
     // must keep SSE parity with production conformance-backed deployments.
     let deserialized: llm_gateway::config::DeploymentConfig =
-        serde_json::from_value(serde_json::json!({"provider": "p", "model": "physical"})).unwrap();
+        serde_json::from_value(serde_json::json!({
+            "provider": "p", "model": "physical",
+            "prices": {"generate": {"operation": "generate", "version": 1,
+                "inputMicrosPerMillion": 1, "outputMicrosPerMillion": 2}}
+        }))
+        .unwrap();
     assert!(deserialized.streaming);
 
     let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
@@ -1013,7 +1505,7 @@ fn development_fixture_deployment_supports_streaming_by_default() {
     let snapshot = compiler.compile(&compiler_config(), 1, None).unwrap();
     let streaming = CapabilityRequirements {
         streaming: true,
-        ..CapabilityRequirements::default()
+        ..CapabilityRequirements::generation()
     };
     assert!(snapshot.deployments["d"].supports(&streaming));
 
@@ -1021,7 +1513,7 @@ fn development_fixture_deployment_supports_streaming_by_default() {
     opted_out.deployments.get_mut("d").unwrap().streaming = false;
     let snapshot = compiler.compile(&opted_out, 2, None).unwrap();
     assert!(!snapshot.deployments["d"].supports(&streaming));
-    assert!(snapshot.deployments["d"].supports(&CapabilityRequirements::default()));
+    assert!(snapshot.deployments["d"].supports(&CapabilityRequirements::generation()));
 }
 
 #[test]
@@ -1032,6 +1524,17 @@ fn production_config_rejects_loopback_plaintext_fixture_provider() {
     )]))));
     let mut config = compiler_config();
     config.development_fixtures = false;
+    assert!(compiler.compile(&config, 1, None).is_err());
+}
+
+#[test]
+fn compiler_rejects_zero_stream_response_memory_bound() {
+    let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
+        "secret".to_string(),
+        "value".to_string(),
+    )]))));
+    let mut config = compiler_config();
+    config.max_stream_response_bytes = 0;
     assert!(compiler.compile(&config, 1, None).is_err());
 }
 
@@ -1062,7 +1565,7 @@ fn production_instance_properties_allow_declared_capabilities_without_conformanc
     );
     assert!(snapshot.deployments["d"].supports(&CapabilityRequirements {
         tools: true,
-        ..CapabilityRequirements::default()
+        ..CapabilityRequirements::generation()
     }));
 }
 
@@ -1120,10 +1623,296 @@ fn http_request(body: &[u8]) -> BufferedHttpRequest {
     }
 }
 
+fn embedding_http_request(body: &[u8]) -> BufferedHttpRequest {
+    let mut request = http_request(body);
+    request.path = "/v1/embeddings".to_string();
+    request
+}
+
+fn responses_http_request(body: &[u8]) -> BufferedHttpRequest {
+    let mut request = http_request(body);
+    request.path = "/v1/responses".to_string();
+    request
+}
+
+#[tokio::test]
+async fn buffered_responses_reuses_generation_and_hides_provider_identity() {
+    let mut provider_response = success_response();
+    provider_response
+        .output
+        .push(GenerateOutputItem::FunctionCall {
+            id: "provider-private-item".to_string(),
+            call_id: "call_1".to_string(),
+            name: "weather".to_string(),
+            arguments: serde_json::json!({"city":"Toronto"}),
+            status: ItemStatus::Completed,
+        });
+    let provider = Arc::new(ScriptedProvider::new(
+        ProviderProtocol::OpenAiChat,
+        vec![Ok(provider_response)],
+    ));
+    let runtime = runtime_with(
+        vec![provider.clone()],
+        1,
+        16 * 1024,
+        Arc::new(RecordingAudit::default()),
+    );
+    let http = LlmBufferedHttp::new(
+        runtime,
+        Arc::new(Allow),
+        16 * 1024,
+        32,
+        Duration::from_secs(1),
+    );
+    let response = http
+        .handle(responses_http_request(
+            br#"{
+        "model":"public-model","instructions":"be concise","input":[
+          {"role":"user","content":[{"type":"input_text","text":"weather?"}]}
+        ],"tools":[{"type":"function","name":"weather","parameters":{"type":"object"},"strict":false}],
+        "tool_choice":"required","temperature":0.2,"top_p":0.8,
+        "store":null
+    }"#,
+        ))
+        .await;
+    assert_eq!(
+        response.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&response.body)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(value["object"], "response");
+    assert_eq!(value["model"], "public-model");
+    assert_eq!(value["store"], false);
+    assert_eq!(value["instructions"], "be concise");
+    assert_eq!(value["tool_choice"], "required");
+    assert_eq!(value["temperature"], 0.2);
+    assert_eq!(value["top_p"], 0.8);
+    assert_eq!(value["tools"][0]["strict"], false);
+    assert_eq!(value["output"][1]["call_id"], "call_1");
+    let rendered = String::from_utf8(response.body).unwrap();
+    assert!(!rendered.contains("physical-secret"));
+    assert!(!rendered.contains("provider-private-item"));
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn responses_deferred_features_and_reasoning_mismatch_fail_before_dispatch() {
+    let provider = Arc::new(ScriptedProvider::new(
+        ProviderProtocol::OpenAiChat,
+        vec![Ok(success_response())],
+    ));
+    let runtime = runtime_with(
+        vec![provider.clone()],
+        1,
+        4096,
+        Arc::new(RecordingAudit::default()),
+    );
+    let http = LlmBufferedHttp::new(runtime, Arc::new(Allow), 4096, 32, Duration::from_secs(1));
+    for body in [
+        br#"{"model":"public-model","input":"x","store":true}"#.as_slice(),
+        br#"{"model":"public-model","input":"x","previous_response_id":"resp_1"}"#.as_slice(),
+        br#"{"model":"public-model","input":"x","tools":[{"type":"web_search_preview"}]}"#
+            .as_slice(),
+        br#"{"model":"public-model","input":"x","reasoning":{"effort":"high"}}"#.as_slice(),
+    ] {
+        let response = http.handle(responses_http_request(body)).await;
+        assert_eq!(
+            response.status,
+            400,
+            "{}",
+            String::from_utf8_lossy(&response.body)
+        );
+    }
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn responses_stream_uses_named_events_without_chat_done_marker() {
+    let mut provider = SseProvider::success();
+    provider.protocol = ProviderProtocol::OpenAiResponses;
+    let provider = Arc::new(provider);
+    let runtime = runtime_with(vec![provider], 1, 4096, Arc::new(RecordingAudit::default()));
+    let http = LlmBufferedHttp::new(runtime, Arc::new(Allow), 4096, 32, Duration::from_secs(1));
+    let LlmHttpResponse::Streaming(mut response) = http
+        .handle_route(responses_http_request(
+            br#"{"model":"public-model","input":"hello","stream":true}"#,
+        ))
+        .await
+    else {
+        panic!("expected Responses SSE")
+    };
+    let mut body = Vec::new();
+    while let Some(frame) = response.stream.next_frame().await {
+        body.extend_from_slice(&frame);
+    }
+    let body = String::from_utf8(body).unwrap();
+    assert!(body.contains("event: response.created"));
+    assert!(body.contains("event: response.output_text.delta"));
+    assert!(body.contains("event: response.completed"));
+    assert!(!body.contains("[DONE]"));
+    assert!(
+        body.find("response.created").unwrap() < body.find("response.output_text.delta").unwrap()
+    );
+}
+
+#[tokio::test]
+async fn responses_stream_preserves_function_argument_event_order() {
+    let provider = Arc::new(SseProvider {
+        protocol: ProviderProtocol::OpenAiResponses,
+        events: vec![
+            Ok(InferenceEvent::ToolCallDelta {
+                delta: model_provider::inference::ToolCallDelta {
+                    index: 0,
+                    id: Some("call_1".to_string()),
+                    name: Some("weather".to_string()),
+                    arguments_fragment: "{\"city\":".to_string(),
+                },
+            }),
+            Ok(InferenceEvent::ToolCallDelta {
+                delta: model_provider::inference::ToolCallDelta {
+                    index: 0,
+                    id: None,
+                    name: None,
+                    arguments_fragment: "\"Toronto\"}".to_string(),
+                },
+            }),
+            Ok(InferenceEvent::Usage {
+                usage: NormalizedUsage {
+                    input_tokens: Some(3),
+                    output_tokens: Some(2),
+                    ..Default::default()
+                },
+            }),
+            Ok(InferenceEvent::MessageEnd {
+                finish_reason: FinishReason::ToolCalls,
+                terminal_state: TerminalState::Complete,
+            }),
+        ],
+        calls: AtomicUsize::new(0),
+        wait_for_cancellation: false,
+        cancellation_observed: Arc::new(AtomicBool::new(false)),
+    });
+    let runtime = runtime_with(vec![provider], 1, 4096, Arc::new(RecordingAudit::default()));
+    let http = LlmBufferedHttp::new(runtime, Arc::new(Allow), 4096, 32, Duration::from_secs(1));
+    let LlmHttpResponse::Streaming(mut response) = http
+        .handle_route(responses_http_request(
+            br#"{"model":"public-model","input":"weather?","tools":[{"type":"function","name":"weather","parameters":{"type":"object"},"strict":false}],"tool_choice":"required","temperature":0.2,"stream":true}"#,
+        ))
+        .await
+    else {
+        panic!("expected Responses SSE")
+    };
+    let mut body = Vec::new();
+    while let Some(frame) = response.stream.next_frame().await {
+        body.extend_from_slice(&frame);
+    }
+    let body = String::from_utf8(body).unwrap();
+    let added = body.find("event: response.output_item.added").unwrap();
+    let delta = body
+        .find("event: response.function_call_arguments.delta")
+        .unwrap();
+    let done = body
+        .find("event: response.function_call_arguments.done")
+        .unwrap();
+    let completed = body.find("event: response.completed").unwrap();
+    assert!(added < delta && delta < done && done < completed);
+    assert!(body.contains(r#"\"city\":\"Toronto\""#));
+    assert!(!body.contains("[DONE]"));
+}
+
+#[tokio::test]
+async fn responses_stream_assigns_unique_output_indices_for_mixed_text_and_tools() {
+    let provider = Arc::new(SseProvider {
+        protocol: ProviderProtocol::OpenAiChat,
+        events: vec![
+            Ok(InferenceEvent::TextDelta {
+                text: "checking".to_string(),
+            }),
+            Ok(InferenceEvent::ToolCallDelta {
+                delta: model_provider::inference::ToolCallDelta {
+                    index: 0,
+                    id: Some("call_1".to_string()),
+                    name: Some("weather".to_string()),
+                    arguments_fragment: "{}".to_string(),
+                },
+            }),
+            Ok(InferenceEvent::MessageEnd {
+                finish_reason: FinishReason::ToolCalls,
+                terminal_state: TerminalState::Complete,
+            }),
+        ],
+        calls: AtomicUsize::new(0),
+        wait_for_cancellation: false,
+        cancellation_observed: Arc::new(AtomicBool::new(false)),
+    });
+    let runtime = runtime_with(vec![provider], 1, 4096, Arc::new(RecordingAudit::default()));
+    let http = LlmBufferedHttp::new(runtime, Arc::new(Allow), 4096, 32, Duration::from_secs(1));
+    let LlmHttpResponse::Streaming(mut response) = http
+        .handle_route(responses_http_request(
+            br#"{"model":"public-model","input":"weather?","tools":[{"type":"function","name":"weather","parameters":{"type":"object"},"strict":false}],"tool_choice":"required","temperature":0.2,"stream":true}"#,
+        ))
+        .await
+    else { panic!("expected Responses SSE") };
+    let mut body = Vec::new();
+    while let Some(frame) = response.stream.next_frame().await {
+        body.extend_from_slice(&frame);
+    }
+    let body = String::from_utf8(body).unwrap();
+    let added_indices = body
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|event| event["type"] == "response.output_item.added")
+        .filter_map(|event| event["output_index"].as_u64())
+        .collect::<Vec<_>>();
+    assert_eq!(added_indices, vec![0, 1]);
+    assert!(body.contains(r#""tool_choice":"required""#), "{body}");
+    assert!(body.contains(r#""temperature":0.2"#), "{body}");
+}
+
+#[tokio::test]
+async fn responses_stream_cumulative_output_limit_cancels_and_fails_safely() {
+    let provider = Arc::new(SseProvider {
+        protocol: ProviderProtocol::OpenAiResponses,
+        events: vec![
+            Ok(InferenceEvent::TextDelta {
+                text: "x".repeat(20 * 1024),
+            }),
+            Ok(InferenceEvent::MessageEnd {
+                finish_reason: FinishReason::Stop,
+                terminal_state: TerminalState::Complete,
+            }),
+        ],
+        calls: AtomicUsize::new(0),
+        wait_for_cancellation: false,
+        cancellation_observed: Arc::new(AtomicBool::new(false)),
+    });
+    let runtime = runtime_with(vec![provider], 1, 4096, Arc::new(RecordingAudit::default()));
+    let http = LlmBufferedHttp::new(runtime, Arc::new(Allow), 4096, 32, Duration::from_secs(1));
+    let LlmHttpResponse::Streaming(mut response) = http
+        .handle_route(responses_http_request(
+            br#"{"model":"public-model","input":"large","stream":true}"#,
+        ))
+        .await
+    else {
+        panic!("expected Responses SSE")
+    };
+    let mut body = Vec::new();
+    while let Some(frame) = response.stream.next_frame().await {
+        body.extend_from_slice(&frame);
+    }
+    let body = String::from_utf8(body).unwrap();
+    assert!(body.contains("event: response.failed"));
+    assert!(body.contains("response_too_large"));
+    assert!(!body.contains("event: response.completed"));
+}
+
 #[tokio::test]
 async fn multi_attempt_http_rechecks_canonical_replay_size_before_dispatch() {
     let provider = Arc::new(ScriptedProvider::new(
-        ProviderFormat::OpenAi,
+        ProviderProtocol::OpenAiChat,
         vec![Ok(success_response())],
     ));
     let runtime = runtime_with(
@@ -1158,7 +1947,7 @@ async fn multi_attempt_http_rechecks_canonical_replay_size_before_dispatch() {
 async fn buffered_security_denies_before_json_and_alias_parse() {
     let calls = Arc::new(AtomicUsize::new(0));
     let provider = Arc::new(ScriptedProvider::new(
-        ProviderFormat::OpenAi,
+        ProviderProtocol::OpenAiChat,
         vec![Ok(success_response())],
     ));
     let runtime = runtime_with(vec![provider], 1, 4096, Arc::new(RecordingAudit::default()));
@@ -1192,10 +1981,331 @@ impl BodyAccessControl for Allow {
 }
 
 #[tokio::test]
-async fn buffered_response_uses_trusted_id_and_hides_physical_provider_evidence() {
-    let provider = Arc::new(ScriptedProvider::new(
-        ProviderFormat::OpenAi,
+async fn embeddings_http_supports_string_batch_float_and_base64() {
+    let provider = scripted_embedding_provider(vec![
+        Ok(embedding_response(1, 2, 3, 0)),
+        Ok(embedding_response(2, 2, 5, 0)),
+    ]);
+    let (runtime, ledger) = embedding_runtime(
+        vec![(
+            Arc::clone(&provider),
+            EmbeddingPrice {
+                version: 1,
+                input_micros_per_million: 1_000_000,
+            },
+        )],
+        1,
+        Some(100),
+    );
+    let http = LlmBufferedHttp::new(runtime, Arc::new(Allow), 1024, 16, Duration::from_secs(1));
+
+    let first = http
+        .handle(embedding_http_request(
+            br#"{"model":"embedding-default","input":"hello","dimensions":2}"#,
+        ))
+        .await;
+    assert_eq!(first.status, 200);
+    assert!(first.lifecycle.is_some());
+    let first_json: serde_json::Value = serde_json::from_slice(&first.body).unwrap();
+    assert_eq!(first_json["model"], "embedding-default");
+    assert_eq!(first_json["data"][0]["index"], 0);
+    let rendered = first_json["data"][0]["embedding"].as_array().unwrap();
+    assert!((rendered[0].as_f64().unwrap() - 0.1).abs() < 1e-6);
+    assert!((rendered[1].as_f64().unwrap() - 0.2).abs() < 1e-6);
+    drop(first);
+
+    let second = http
+        .handle(embedding_http_request(
+            br#"{"model":"embedding-default","input":["a","b"],"encoding_format":"base64","dimensions":2}"#,
+        ))
+        .await;
+    assert_eq!(second.status, 200);
+    let second_json: serde_json::Value = serde_json::from_slice(&second.body).unwrap();
+    let encoded = second_json["data"][0]["embedding"].as_str().unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .unwrap();
+    assert_eq!(f32::from_le_bytes(bytes[..4].try_into().unwrap()), 0.1);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(ledger.charged(), 8);
+}
+
+#[tokio::test]
+async fn embeddings_validation_and_operation_mismatch_fail_before_dispatch() {
+    let provider = scripted_embedding_provider(vec![]);
+    let (runtime, _) = embedding_runtime(
+        vec![(
+            Arc::clone(&provider),
+            EmbeddingPrice {
+                version: 1,
+                input_micros_per_million: 1,
+            },
+        )],
+        1,
+        None,
+    );
+    let http = LlmBufferedHttp::new(runtime, Arc::new(Allow), 1024, 16, Duration::from_secs(1));
+    for (body, status, code) in [
+        (
+            br#"{"model":"embedding-default","input":[]}"#.as_slice(),
+            400,
+            "invalid_request",
+        ),
+        (
+            br#"{"model":"embedding-default","input":[""]}"#.as_slice(),
+            400,
+            "invalid_request",
+        ),
+        (
+            br#"{"model":"embedding-default","input":[[1,2]]}"#.as_slice(),
+            400,
+            "unsupported_feature",
+        ),
+        (
+            br#"{"model":"embedding-default","input":"x","dimensions":3}"#.as_slice(),
+            400,
+            "unsupported_feature",
+        ),
+        (
+            br#"{"model":"embedding-default","input":"x","unknown":true}"#.as_slice(),
+            400,
+            "invalid_request",
+        ),
+    ] {
+        let response = http.handle(embedding_http_request(body)).await;
+        assert_eq!(response.status, status);
+        assert!(String::from_utf8_lossy(&response.body).contains(code));
+    }
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+
+    let chat_provider = Arc::new(ScriptedProvider::new(
+        ProviderProtocol::OpenAiChat,
         vec![Ok(success_response())],
+    ));
+    let chat_runtime = runtime_with(
+        vec![chat_provider.clone()],
+        1,
+        4096,
+        Arc::new(RecordingAudit::default()),
+    );
+    let chat_http = LlmBufferedHttp::new(
+        chat_runtime,
+        Arc::new(Allow),
+        4096,
+        16,
+        Duration::from_secs(1),
+    );
+    let response = chat_http
+        .handle(embedding_http_request(
+            br#"{"model":"public-model","input":"x"}"#,
+        ))
+        .await;
+    assert_eq!(response.status, 400);
+    assert!(String::from_utf8_lossy(&response.body).contains("unsupported_feature"));
+    assert_eq!(chat_provider.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn embeddings_denial_does_not_claim_the_post_authorization_memory_slot() {
+    let provider = scripted_embedding_provider(vec![Ok(embedding_response(1, 2, 1, 0))]);
+    let (runtime, _) = embedding_runtime(
+        vec![(
+            Arc::clone(&provider),
+            EmbeddingPrice {
+                version: 1,
+                input_micros_per_million: 1,
+            },
+        )],
+        1,
+        None,
+    );
+    let denied = LlmBufferedHttp::new(
+        Arc::clone(&runtime),
+        Arc::new(DenyBeforeParse {
+            calls: Arc::new(AtomicUsize::new(0)),
+        }),
+        1024,
+        16,
+        Duration::from_secs(1),
+    )
+    .handle(embedding_http_request(b"not-json"))
+    .await;
+    assert_eq!(denied.status, 403);
+    let allowed = LlmBufferedHttp::new(runtime, Arc::new(Allow), 1024, 16, Duration::from_secs(1))
+        .handle(embedding_http_request(
+            br#"{"model":"embedding-default","input":"x","dimensions":2}"#,
+        ))
+        .await;
+    assert_eq!(allowed.status, 200);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn embedding_memory_metrics_track_current_high_water_and_rejections() {
+    let provider = scripted_embedding_provider(vec![]);
+    let (runtime, _) = embedding_runtime(
+        vec![(
+            provider,
+            EmbeddingPrice {
+                version: 1,
+                input_micros_per_million: 1,
+            },
+        )],
+        1,
+        None,
+    );
+    let root = runtime.snapshot();
+    let permit = runtime
+        .try_acquire_embedding_memory_slot(&root)
+        .expect("first memory slot");
+    let active = runtime.embedding_memory_metrics();
+    assert_eq!(active.current_slots, 1);
+    assert_eq!(
+        active.current_retained_bytes,
+        root.embedding_memory.per_slot_peak_bytes
+    );
+    assert!(matches!(
+        runtime.try_acquire_embedding_memory_slot(&root),
+        Err(LlmGatewayError::Capacity)
+    ));
+    assert_eq!(runtime.embedding_memory_metrics().rejection_count, 1);
+    drop(permit);
+    let released = runtime.embedding_memory_metrics();
+    assert_eq!(released.current_slots, 0);
+    assert_eq!(released.current_retained_bytes, 0);
+    assert_eq!(released.high_water_slots, 1);
+    assert_eq!(
+        released.high_water_retained_bytes,
+        root.embedding_memory.per_slot_peak_bytes
+    );
+}
+
+#[tokio::test]
+async fn embeddings_reserve_each_fallback_price_and_reconcile_input_only_usage() {
+    let first = scripted_embedding_provider(vec![Err(InferenceError::timeout_before_acceptance())]);
+    let second = scripted_embedding_provider(vec![Ok(embedding_response(2, 2, 4, 0))]);
+    let prices = vec![
+        (
+            Arc::clone(&first),
+            EmbeddingPrice {
+                version: 1,
+                input_micros_per_million: 1_000_000,
+            },
+        ),
+        (
+            Arc::clone(&second),
+            EmbeddingPrice {
+                version: 2,
+                input_micros_per_million: 3_000_000,
+            },
+        ),
+    ];
+    let (budget_runtime, _) = embedding_runtime(prices.clone(), 2, Some(79));
+    let request = EmbeddingRequest {
+        model: "embedding-default".to_string(),
+        inputs: vec!["a".to_string(), "b".to_string()],
+        dimensions: Some(2),
+    };
+    let error = budget_runtime
+        .execute_embedding_with_snapshot(
+            LlmRequestContext::with_timeout("user", Duration::from_secs(1)),
+            budget_runtime.snapshot(),
+            request.clone(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error, LlmGatewayError::Budget);
+    assert_eq!(first.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(second.calls.load(Ordering::SeqCst), 0);
+
+    let (runtime, ledger) = embedding_runtime(prices, 2, Some(80));
+    let execution = runtime
+        .execute_embedding_with_snapshot(
+            LlmRequestContext::with_timeout("user", Duration::from_secs(1)),
+            runtime.snapshot(),
+            request,
+        )
+        .await
+        .unwrap();
+    assert!(execution.usage.complete);
+    assert_eq!(execution.usage.charged_micros, 12);
+    assert_eq!(ledger.reserved(), 0);
+    assert_eq!(ledger.charged(), 12);
+}
+
+#[tokio::test]
+async fn embeddings_reject_output_usage_and_preserve_ambiguous_charge() {
+    let invalid = scripted_embedding_provider(vec![Ok(embedding_response(1, 2, 2, 1))]);
+    let (runtime, ledger) = embedding_runtime(
+        vec![(
+            invalid,
+            EmbeddingPrice {
+                version: 1,
+                input_micros_per_million: 1_000_000,
+            },
+        )],
+        1,
+        None,
+    );
+    let request = EmbeddingRequest {
+        model: "embedding-default".to_string(),
+        inputs: vec!["x".to_string()],
+        dimensions: Some(2),
+    };
+    let error = runtime
+        .execute_embedding_with_snapshot(
+            LlmRequestContext::with_timeout("user", Duration::from_secs(1)),
+            runtime.snapshot(),
+            request.clone(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, LlmGatewayError::Invariant(_)));
+    assert_eq!(ledger.reserved(), 0);
+    assert_eq!(ledger.charged(), 10);
+
+    let ambiguous = scripted_embedding_provider(vec![Err(
+        InferenceError::timeout_after_possible_acceptance(),
+    )]);
+    let (runtime, ledger) = embedding_runtime(
+        vec![(
+            ambiguous,
+            EmbeddingPrice {
+                version: 1,
+                input_micros_per_million: 1_000_000,
+            },
+        )],
+        1,
+        None,
+    );
+    assert!(
+        runtime
+            .execute_embedding_with_snapshot(
+                LlmRequestContext::with_timeout("user", Duration::from_secs(1)),
+                runtime.snapshot(),
+                request,
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(ledger.reserved(), 0);
+    assert_eq!(ledger.charged(), 10);
+}
+
+#[tokio::test]
+async fn buffered_response_uses_trusted_id_and_hides_physical_provider_evidence() {
+    let mut refusal_response = success_response();
+    refusal_response.output = vec![GenerateOutputItem::Message {
+        id: "message-refusal".to_string(),
+        role: Role::Assistant,
+        content: vec![ContentBlock::Refusal {
+            refusal: "cannot comply".to_string(),
+        }],
+        status: ItemStatus::Completed,
+    }];
+    let provider = Arc::new(ScriptedProvider::new(
+        ProviderProtocol::OpenAiChat,
+        vec![Ok(success_response()), Ok(refusal_response)],
     ));
     let runtime = runtime_with(vec![provider], 1, 4096, Arc::new(RecordingAudit::default()));
     let http = LlmBufferedHttp::new(
@@ -1212,15 +2322,26 @@ async fn buffered_response_uses_trusted_id_and_hides_physical_provider_evidence(
         .await;
     assert_eq!(response.status, 200);
     assert_eq!(response.headers["x-request-id"], "trusted");
-    let body = String::from_utf8(response.body).unwrap();
-    assert!(!body.contains("physical-secret"));
-    assert!(body.contains("public-model"));
+    let body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+    assert!(!body.to_string().contains("physical-secret"));
+    assert_eq!(body["model"], "public-model");
+    assert!(body["choices"][0]["message"].get("refusal").is_none());
+
+    let refusal = http
+        .handle(http_request(
+            br#"{"model":"public-model","messages":[{"role":"user","content":"unsafe"}]}"#,
+        ))
+        .await;
+    assert_eq!(refusal.status, 200);
+    let refusal: serde_json::Value = serde_json::from_slice(&refusal.body).unwrap();
+    assert!(refusal["choices"][0]["message"]["content"].is_null());
+    assert_eq!(refusal["choices"][0]["message"]["refusal"], "cannot comply");
 }
 
 #[tokio::test]
 async fn buffered_http_rejects_method_media_size_and_operated_field_conflicts() {
     let provider = Arc::new(ScriptedProvider::new(
-        ProviderFormat::OpenAi,
+        ProviderProtocol::OpenAiChat,
         vec![Ok(success_response())],
     ));
     let runtime = runtime_with(
@@ -1266,14 +2387,14 @@ async fn buffered_http_rejects_method_media_size_and_operated_field_conflicts() 
 #[tokio::test]
 async fn mixed_format_alias_parses_for_the_eligible_provider_set() {
     let anthropic = Arc::new(ScriptedProvider::with_capabilities(
-        ProviderFormat::Anthropic,
+        ProviderProtocol::AnthropicMessages,
         vec![Ok(success_response())],
-        capabilities(false, true, false),
+        generation_capabilities(false, true, false),
     ));
     let openai = Arc::new(ScriptedProvider::with_capabilities(
-        ProviderFormat::OpenAi,
+        ProviderProtocol::OpenAiChat,
         vec![Ok(success_response())],
-        capabilities(true, true, true),
+        generation_capabilities(true, true, true),
     ));
     let runtime = runtime_with(
         vec![anthropic.clone(), openai.clone()],
@@ -1295,11 +2416,11 @@ async fn mixed_format_alias_parses_for_the_eligible_provider_set() {
 #[tokio::test]
 async fn mixed_format_alias_rejects_allowlisted_openai_only_extensions() {
     let openai = Arc::new(ScriptedProvider::new(
-        ProviderFormat::OpenAi,
+        ProviderProtocol::OpenAiChat,
         vec![Ok(success_response())],
     ));
     let anthropic = Arc::new(ScriptedProvider::new(
-        ProviderFormat::Anthropic,
+        ProviderProtocol::AnthropicMessages,
         vec![Ok(success_response())],
     ));
     let runtime = runtime_with(
@@ -1364,14 +2485,14 @@ async fn early_sse_smoke_frames_success_and_done_through_bounded_channel() {
 #[tokio::test]
 async fn full_sse_falls_back_before_visible_output_across_provider_formats() {
     let first = Arc::new(SseProvider {
-        format: ProviderFormat::OpenAi,
+        protocol: ProviderProtocol::OpenAiChat,
         events: vec![Err(InferenceError::from_status(429, None, "limited"))],
         calls: AtomicUsize::new(0),
         wait_for_cancellation: false,
         cancellation_observed: Arc::new(AtomicBool::new(false)),
     });
     let mut second_provider = SseProvider::success();
-    second_provider.format = ProviderFormat::Anthropic;
+    second_provider.protocol = ProviderProtocol::AnthropicMessages;
     let second = Arc::new(second_provider);
     let runtime = runtime_with(
         vec![first.clone(), second.clone()],
@@ -1435,7 +2556,7 @@ async fn full_sse_preserves_client_usage_preference_while_accounting_upstream_us
 async fn early_sse_disconnect_cancels_upstream_and_releases_stream_permits() {
     let observed = Arc::new(AtomicBool::new(false));
     let provider = Arc::new(SseProvider {
-        format: ProviderFormat::OpenAi,
+        protocol: ProviderProtocol::OpenAiChat,
         events: vec![Ok(InferenceEvent::TextDelta {
             text: "first".to_string(),
         })],
@@ -1515,7 +2636,7 @@ async fn full_sse_slow_consumer_is_bounded_and_releases_stream_permits() {
 #[tokio::test]
 async fn full_sse_rejects_duplicate_terminal_events_without_done() {
     let provider = Arc::new(SseProvider {
-        format: ProviderFormat::OpenAi,
+        protocol: ProviderProtocol::OpenAiChat,
         events: vec![
             Ok(InferenceEvent::TextDelta {
                 text: "visible".to_string(),
@@ -1556,7 +2677,7 @@ async fn full_sse_rejects_duplicate_terminal_events_without_done() {
 async fn early_sse_deadline_cancels_a_trickling_provider_and_releases_permits() {
     let observed = Arc::new(AtomicBool::new(false));
     let provider = Arc::new(SseProvider {
-        format: ProviderFormat::OpenAi,
+        protocol: ProviderProtocol::OpenAiChat,
         events: vec![Ok(InferenceEvent::TextDelta {
             text: "first".to_string(),
         })],
@@ -1608,7 +2729,7 @@ async fn early_sse_deadline_cancels_a_trickling_provider_and_releases_permits() 
 async fn full_sse_setup_deadline_cancels_a_provider_that_stalls_before_first_event() {
     let observed = Arc::new(AtomicBool::new(false));
     let provider = Arc::new(SseProvider {
-        format: ProviderFormat::OpenAi,
+        protocol: ProviderProtocol::OpenAiChat,
         events: Vec::new(),
         calls: AtomicUsize::new(0),
         wait_for_cancellation: true,
@@ -1774,7 +2895,7 @@ async fn local_durable_buffered_audit_commits_attempt_start_before_provider_disp
 #[tokio::test]
 async fn early_sse_never_emits_done_or_retries_after_visible_output_error() {
     let provider = Arc::new(SseProvider {
-        format: ProviderFormat::OpenAi,
+        protocol: ProviderProtocol::OpenAiChat,
         events: vec![
             Ok(InferenceEvent::TextDelta {
                 text: "visible".to_string(),
@@ -1815,7 +2936,7 @@ async fn early_sse_never_emits_done_or_retries_after_visible_output_error() {
 #[tokio::test]
 async fn models_never_enumerate_internal_aliases() {
     let provider = Arc::new(ScriptedProvider::new(
-        ProviderFormat::OpenAi,
+        ProviderProtocol::OpenAiChat,
         vec![Ok(success_response())],
     ));
     let runtime = runtime_with(vec![provider], 1, 4096, Arc::new(RecordingAudit::default()));
@@ -1834,12 +2955,34 @@ async fn models_never_enumerate_internal_aliases() {
     assert_eq!(response.status, 200);
     assert!(body.contains("public-model"));
     assert!(!body.contains("legacy-agent-internal"));
+
+    for (alias, expected_status) in [
+        ("public-model", 200),
+        ("legacy-agent-internal", 404),
+        ("missing", 404),
+    ] {
+        let response = http
+            .handle(BufferedHttpRequest {
+                method: "GET".to_string(),
+                path: format!("/v1/models/{alias}"),
+                headers: BTreeMap::new(),
+                body: Vec::new(),
+                principal_id: "test-agent".to_string(),
+                trusted_request_id: "trusted-model".to_string(),
+            })
+            .await;
+        assert_eq!(response.status, expected_status, "{alias}");
+        if expected_status == 200 {
+            let value: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+            assert_eq!(value["id"], "public-model");
+        }
+    }
 }
 
 #[tokio::test]
 async fn internal_alias_invocation_is_bound_to_its_approved_principal() {
     let provider = Arc::new(ScriptedProvider::new(
-        ProviderFormat::OpenAi,
+        ProviderProtocol::OpenAiChat,
         vec![Ok(success_response())],
     ));
     let runtime = runtime_with(
@@ -1862,7 +3005,7 @@ async fn internal_alias_invocation_is_bound_to_its_approved_principal() {
 #[tokio::test]
 async fn buffered_errors_preserve_retry_after_and_use_client_fault_message() {
     let rate_limited = Arc::new(ScriptedProvider::new(
-        ProviderFormat::OpenAi,
+        ProviderProtocol::OpenAiChat,
         vec![Err(InferenceError::from_status(
             429,
             Some("3"),
@@ -1889,7 +3032,7 @@ async fn buffered_errors_preserve_retry_after_and_use_client_fault_message() {
     assert!(!String::from_utf8_lossy(&response.body).contains("secret upstream detail"));
 
     let invalid = Arc::new(ScriptedProvider::new(
-        ProviderFormat::OpenAi,
+        ProviderProtocol::OpenAiChat,
         vec![Err(InferenceError::invalid_request(
             "secret invalid detail",
         ))],
@@ -1917,7 +3060,7 @@ async fn partial_usage_keeps_total_tokens_unknown() {
         reasoning_tokens: None,
     });
     let provider = Arc::new(ScriptedProvider::new(
-        ProviderFormat::OpenAi,
+        ProviderProtocol::OpenAiChat,
         vec![Ok(partial)],
     ));
     let runtime = runtime_with(vec![provider], 1, 4096, Arc::new(RecordingAudit::default()));
@@ -2002,7 +3145,10 @@ async fn request_scoped_pii_tokenizes_before_provider_and_recovers_buffered_resp
     let provider_request = &received.lock().unwrap()[0];
     assert!(!provider_request.contains("a@example.com"));
     assert!(provider_request.contains("[[PII:v1:email:"));
-    let ContentBlock::Text { text } = &execution.response.content[0] else {
+    let GenerateOutputItem::Message { content, .. } = &execution.response.output[0] else {
+        panic!("expected message response")
+    };
+    let ContentBlock::Text { text } = &content[0] else {
         panic!("expected text response")
     };
     assert_eq!(text, "contact a@example.com");

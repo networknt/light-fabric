@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "1",
+  "id": "responses-stream-unknown-event",
+  "provider": "openai_responses",
+  "kind": "stream",
+  "input": {"chunks": ["data: {\"type\":\"response.future_behavior.delta\",\"delta\":\"x\"}\n\n"]},
+  "expected": {"errorCategory": "protocol"}
+}

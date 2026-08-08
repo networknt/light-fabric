@@ -63,6 +63,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
+use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 use url::form_urlencoded;
 
@@ -222,6 +223,19 @@ fn should_write_response_body(status: u16, is_head: bool) -> bool {
     !is_head && status != 204
 }
 
+fn buffered_embedding_drain_deadline(
+    body_bytes: usize,
+    write_timeout: Duration,
+    minimum_drain_bytes_per_second: u64,
+) -> Duration {
+    let rate_ms = u64::try_from(body_bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(1_000)
+        .div_ceil(minimum_drain_bytes_per_second)
+        .max(1_000);
+    write_timeout.saturating_add(Duration::from_millis(rate_ms))
+}
+
 #[derive(Clone)]
 struct GatewayApp;
 
@@ -275,6 +289,11 @@ struct LlmGatewayModule {
     runtime: Arc<LlmRuntime>,
     http: LlmBufferedHttp,
     max_request_body_bytes: usize,
+    max_embedding_request_body_bytes: usize,
+    embedding_ingress_permits: Arc<Semaphore>,
+    embedding_body_read_timeout: Duration,
+    embedding_minimum_receive_bytes_per_second: u64,
+    embedding_authorization_timeout: Duration,
     projection_task: Option<Arc<LlmProjectionTask>>,
     audit_sink_task: Option<Arc<AuditSinkTask>>,
     audit_fingerprint: String,
@@ -569,6 +588,19 @@ fn load_llm_gateway_module(
         runtime,
         http,
         max_request_body_bytes: config.max_request_body_bytes,
+        max_embedding_request_body_bytes: config.embedding_memory.max_request_body_bytes,
+        embedding_ingress_permits: Arc::new(Semaphore::new(
+            config.embedding_memory.ingress_concurrency,
+        )),
+        embedding_body_read_timeout: Duration::from_millis(
+            config.embedding_memory.body_read_timeout_ms,
+        ),
+        embedding_minimum_receive_bytes_per_second: config
+            .embedding_memory
+            .minimum_receive_bytes_per_second,
+        embedding_authorization_timeout: Duration::from_millis(
+            config.embedding_memory.authorization_timeout_ms,
+        ),
         projection_task,
         audit_sink_task,
         audit_fingerprint,
@@ -1493,6 +1525,27 @@ impl GatewayProxy {
             Bytes::from_static(body.as_bytes()),
         )
         .await
+    }
+
+    async fn write_llm_error_response(
+        &self,
+        session: &mut Session,
+        ctx: &mut GatewayRequestContext,
+        status: u16,
+        code: &'static str,
+        message: &'static str,
+    ) -> pingora::Result<bool> {
+        let body =
+            serde_json::to_vec(&json!({"error":{"message":message,"type":code,"code":code}}))
+                .map(Bytes::from)
+                .map_err(|_| {
+                    Error::explain(
+                        ErrorType::InternalError,
+                        "LLM error response serialization failed",
+                    )
+                })?;
+        self.write_bytes_response(session, ctx, status, "application/json", None, body)
+            .await
     }
 
     async fn write_string_response(
@@ -3270,10 +3323,11 @@ impl ProxyHttp for GatewayProxy {
                     if !ordered_security {
                         ctx.record_handler_duration(&handler_id, started.elapsed());
                         return self
-                            .write_text_response(
+                            .write_llm_error_response(
                                 session,
                                 ctx,
                                 500,
+                                "internal_error",
                                 "invalid llm handler security order",
                             )
                             .await;
@@ -3285,23 +3339,88 @@ impl ProxyHttp for GatewayProxy {
                     ) {
                         ctx.record_handler_duration(&handler_id, started.elapsed());
                         return self
-                            .write_text_response(
+                            .write_llm_error_response(
                                 session,
                                 ctx,
                                 503,
+                                "service_unavailable",
                                 "LLM body-aware access control is unavailable",
                             )
                             .await;
                     }
+                    let embedding_route = request_path == "/v1/embeddings";
+                    let embedding_ingress_permit = if embedding_route {
+                        match Arc::clone(&module.embedding_ingress_permits).try_acquire_owned() {
+                            Ok(permit) => Some(permit),
+                            Err(_) => {
+                                ctx.record_handler_duration(&handler_id, started.elapsed());
+                                return self
+                                    .write_llm_error_response(
+                                        session,
+                                        ctx,
+                                        429,
+                                        "capacity_exhausted",
+                                        "embedding ingress capacity is exhausted",
+                                    )
+                                    .await;
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     let body = if method_has_request_body(&method) {
-                        let Some(body) =
-                            read_bounded_request_body(session, module.max_request_body_bytes)
-                                .await?
-                        else {
-                            ctx.record_handler_duration(&handler_id, started.elapsed());
-                            return self
-                                .write_text_response(session, ctx, 413, "request body is too large")
-                                .await;
+                        let body = if embedding_route {
+                            match read_bounded_request_body_with_rate(
+                                session,
+                                module.max_embedding_request_body_bytes,
+                                module.embedding_body_read_timeout,
+                                module.embedding_minimum_receive_bytes_per_second,
+                            )
+                            .await?
+                            {
+                                BoundedBodyRead::Complete(body) => body,
+                                BoundedBodyRead::TooLarge => {
+                                    ctx.record_handler_duration(&handler_id, started.elapsed());
+                                    return self
+                                        .write_llm_error_response(
+                                            session,
+                                            ctx,
+                                            413,
+                                            "payload_too_large",
+                                            "request body is too large",
+                                        )
+                                        .await;
+                                }
+                                BoundedBodyRead::TooSlow => {
+                                    ctx.record_handler_duration(&handler_id, started.elapsed());
+                                    return self
+                                        .write_llm_error_response(
+                                            session,
+                                            ctx,
+                                            408,
+                                            "request_timeout",
+                                            "embedding request body timed out",
+                                        )
+                                        .await;
+                                }
+                            }
+                        } else {
+                            let Some(body) =
+                                read_bounded_request_body(session, module.max_request_body_bytes)
+                                    .await?
+                            else {
+                                ctx.record_handler_duration(&handler_id, started.elapsed());
+                                return self
+                                    .write_llm_error_response(
+                                        session,
+                                        ctx,
+                                        413,
+                                        "payload_too_large",
+                                        "request body is too large",
+                                    )
+                                    .await;
+                            };
+                            body
                         };
                         if ctx.access_control_active {
                             let exchange = access_control_exchange(
@@ -3319,32 +3438,63 @@ impl ProxyHttp for GatewayProxy {
                                 .filter(|runtime| runtime.authorization_enabled())
                             else {
                                 return self
-                                    .write_text_response(
+                                    .write_llm_error_response(
                                         session,
                                         ctx,
                                         503,
+                                        "service_unavailable",
                                         "access control is unavailable",
                                     )
                                     .await;
                             };
-                            match runtime
-                                .authorize_http_endpoint(
-                                    exchange.endpoint.as_str(),
-                                    &agent_headers(session),
-                                    ctx.auth.as_ref(),
-                                    &exchange.request_data,
-                                    ctx.correlation.correlation_id.as_deref(),
+                            let authorization_headers = agent_headers(session);
+                            let authorization = runtime.authorize_http_endpoint(
+                                exchange.endpoint.as_str(),
+                                &authorization_headers,
+                                ctx.auth.as_ref(),
+                                &exchange.request_data,
+                                ctx.correlation.correlation_id.as_deref(),
+                            );
+                            let decision = if embedding_route {
+                                match tokio::time::timeout(
+                                    module.embedding_authorization_timeout,
+                                    authorization,
                                 )
                                 .await
-                            {
+                                {
+                                    Ok(decision) => decision,
+                                    Err(_) => {
+                                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                                        return self
+                                            .write_llm_error_response(
+                                                session,
+                                                ctx,
+                                                503,
+                                                "service_unavailable",
+                                                "embedding authorization timed out",
+                                            )
+                                            .await;
+                                    }
+                                }
+                            } else {
+                                authorization.await
+                            };
+                            match decision {
                                 AccessDecision::Allowed => {
                                     ctx.access_control_active = false;
                                     ctx.access_control_exchange = Some(exchange);
                                 }
                                 AccessDecision::Denied(message) => {
                                     ctx.record_handler_duration(&handler_id, started.elapsed());
+                                    tracing::debug!(reason = %message, "LLM request denied");
                                     return self
-                                        .write_string_response(session, ctx, 403, message)
+                                        .write_llm_error_response(
+                                            session,
+                                            ctx,
+                                            403,
+                                            "permission_denied",
+                                            "The request was denied",
+                                        )
                                         .await;
                                 }
                             }
@@ -3369,42 +3519,67 @@ impl ProxyHttp for GatewayProxy {
                         .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
                     let response = module
                         .http
-                        .handle_route(BufferedHttpRequest {
-                            method: method.clone(),
-                            path: request_path.clone(),
-                            headers,
-                            body,
-                            principal_id,
-                            trusted_request_id,
-                        })
+                        .handle_route_with_embedding_ingress(
+                            BufferedHttpRequest {
+                                method: method.clone(),
+                                path: request_path.clone(),
+                                headers,
+                                body,
+                                principal_id,
+                                trusted_request_id,
+                            },
+                            embedding_ingress_permit,
+                        )
                         .await;
                     ctx.record_handler_duration(&handler_id, started.elapsed());
                     return match response {
                         LlmHttpResponse::Buffered(response) => {
-                            let content_type = response
-                                .headers
+                            let llm_gateway::http::BufferedHttpResponse {
+                                status,
+                                headers,
+                                body,
+                                lifecycle,
+                            } = response;
+                            let content_type = headers
                                 .get("content-type")
                                 .map(String::as_str)
                                 .unwrap_or("application/json");
-                            let extra_headers = response
-                                .headers
+                            let extra_headers = headers
                                 .iter()
                                 .filter(|(name, _)| name.as_str() != "content-type")
                                 .map(|(name, value)| (name.clone(), value.clone()))
                                 .collect::<Vec<_>>();
-                            self.write_bytes_response_with_headers(
+                            let response_body = Bytes::from(body);
+                            let write = self.write_bytes_response_with_headers(
                                 session,
                                 ctx,
-                                response.status,
+                                status,
                                 Some(content_type),
                                 None,
-                                Bytes::from(response.body),
+                                response_body.clone(),
                                 &extra_headers,
-                            )
-                            .await
+                            );
+                            if let Some(lifecycle) = lifecycle {
+                                let deadline = buffered_embedding_drain_deadline(
+                                    response_body.len(),
+                                    lifecycle.write_timeout,
+                                    lifecycle.minimum_drain_bytes_per_second,
+                                );
+                                let result =
+                                    tokio::time::timeout(deadline, write).await.map_err(|_| {
+                                        Error::explain(
+                                            ErrorType::InternalError,
+                                            "embedding response write grace or minimum drain rate was exceeded",
+                                        )
+                                    })?;
+                                drop(lifecycle.memory_permit);
+                                result
+                            } else {
+                                write.await
+                            }
                         }
                         LlmHttpResponse::Streaming(response) => {
-                            self.write_llm_streaming_response(session, ctx, response)
+                            self.write_llm_streaming_response(session, ctx, *response)
                                 .await
                         }
                     };
@@ -4689,6 +4864,42 @@ async fn read_bounded_request_body(
     Ok(Some(body))
 }
 
+enum BoundedBodyRead {
+    Complete(Vec<u8>),
+    TooLarge,
+    TooSlow,
+}
+
+async fn read_bounded_request_body_with_rate(
+    session: &mut Session,
+    limit: usize,
+    timeout: Duration,
+    minimum_bytes_per_second: u64,
+) -> pingora::Result<BoundedBodyRead> {
+    let started = tokio::time::Instant::now();
+    let deadline = started + timeout;
+    let mut body = Vec::new();
+    loop {
+        let chunk = match tokio::time::timeout_at(deadline, session.read_request_body()).await {
+            Ok(chunk) => chunk?,
+            Err(_) => return Ok(BoundedBodyRead::TooSlow),
+        };
+        let Some(chunk) = chunk else { break };
+        if chunk.len() > limit.saturating_sub(body.len()) {
+            return Ok(BoundedBodyRead::TooLarge);
+        }
+        body.extend_from_slice(&chunk);
+        let elapsed = started.elapsed();
+        if elapsed >= Duration::from_secs(1)
+            && (body.len() as u128).saturating_mul(1_000_000_000)
+                < (minimum_bytes_per_second as u128).saturating_mul(elapsed.as_nanos())
+        {
+            return Ok(BoundedBodyRead::TooSlow);
+        }
+    }
+    Ok(BoundedBodyRead::Complete(body))
+}
+
 fn static_method_allowed(session: &Session) -> bool {
     matches!(
         session.req_header().method.as_str(),
@@ -5400,7 +5611,7 @@ enabled: true
 developmentFixtures: true
 providers:
   mock:
-    format: openai
+    providerProtocol: openai_chat
     baseUrl: http://127.0.0.1:18080/v1
     secretRef: env:LIGHT_GATEWAY_REL1_TEST_KEY
 deployments:
@@ -5408,11 +5619,16 @@ deployments:
     provider: mock
     model: mock-model
     concurrency: 1
-    inputMicrosPerMillion: 1
-    outputMicrosPerMillion: 1
+    prices:
+      generate:
+        operation: generate
+        version: 1
+        inputMicrosPerMillion: 1
+        outputMicrosPerMillion: 1
     conformanceDigest: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 aliases:
   public-model:
+    operations: [generate]
     deployments: [mock]
     maxAttempts: 1
     concurrency: 1
@@ -5460,7 +5676,7 @@ productionProjection:
   enabled: true
 providers:
   mock:
-    format: openai
+    providerProtocol: openai_chat
     baseUrl: https://example.invalid/v1
     secretRef: env:LIGHT_GATEWAY_PROJECTION_TEST_KEY
 "#,
@@ -6711,6 +6927,14 @@ oauth:
     }
 
     #[test]
+    fn buffered_embedding_drain_deadline_preserves_configured_rate_floor() {
+        let body_bytes = 25 * 1024 * 1024;
+        let deadline = buffered_embedding_drain_deadline(body_bytes, Duration::from_secs(30), 1024);
+        assert_eq!(deadline, Duration::from_secs(25_630));
+        assert!(deadline > Duration::from_secs(30));
+    }
+
+    #[test]
     fn spa_session_rejection_captures_cors_headers_before_response() {
         let headers = CorsResponseHeaders {
             allow_origin: Some("https://portal.example.com".to_string()),
@@ -7826,24 +8050,26 @@ tools: []
             .expect("bind mock provider");
         let provider_address = provider_listener.local_addr().expect("provider address");
         let provider_task = tokio::spawn(async move {
-            let (mut socket, _) = provider_listener.accept().await.expect("provider accept");
-            let mut request = vec![0_u8; 8192];
-            let read = socket.read(&mut request).await.expect("provider read");
-            assert!(String::from_utf8_lossy(&request[..read]).contains("\"stream\":true"));
-            let body = concat!(
-                "data: {\"id\":\"mock\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n",
-                "data: {\"id\":\"mock\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
-                "data: {\"id\":\"mock\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}\n\n",
-                "data: [DONE]\n\n"
-            );
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            socket
-                .write_all(response.as_bytes())
-                .await
-                .expect("provider write");
+            for _ in 0..2 {
+                let (mut socket, _) = provider_listener.accept().await.expect("provider accept");
+                let mut request = vec![0_u8; 8192];
+                let read = socket.read(&mut request).await.expect("provider read");
+                assert!(String::from_utf8_lossy(&request[..read]).contains("\"stream\":true"));
+                let body = concat!(
+                    "data: {\"id\":\"mock\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n",
+                    "data: {\"id\":\"mock\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                    "data: {\"id\":\"mock\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}\n\n",
+                    "data: [DONE]\n\n"
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("provider write");
+            }
         });
 
         let config_dir = TempDir::new().expect("config temp dir");
@@ -7867,13 +8093,16 @@ paths:
   - path: /v1/chat/completions
     method: POST
     exec: [correlation, unified-security, limit, access-control, llm]
+  - path: /v1/responses
+    method: POST
+    exec: [correlation, unified-security, limit, access-control, llm]
 defaultHandlers: []
 "#,
         )
         .expect("write handler config");
         std::fs::write(
             config_dir.path().join(light_pingora::UNIFIED_SECURITY_FILE),
-            "enabled: true\nanonymousPrefixes: [/v1/chat/completions]\npathPrefixAuths: []\n",
+            "enabled: true\nanonymousPrefixes: [/v1/chat/completions, /v1/responses]\npathPrefixAuths: []\n",
         )
         .expect("write unified security config");
         std::fs::write(
@@ -7893,7 +8122,7 @@ streamChannelCapacity: 1
 streamWriteTimeoutMs: 1000
 providers:
   mock:
-    format: openai
+    providerProtocol: openai_chat
     baseUrl: http://{provider_address}/v1
     secretRef: env:LIGHT_GATEWAY_LF6B_TEST_KEY
 deployments:
@@ -7901,11 +8130,16 @@ deployments:
     provider: mock
     model: mock-model
     concurrency: 1
-    inputMicrosPerMillion: 1
-    outputMicrosPerMillion: 1
+    prices:
+      generate:
+        operation: generate
+        version: 1
+        inputMicrosPerMillion: 1
+        outputMicrosPerMillion: 1
     conformanceDigest: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 aliases:
   public-model:
+    operations: [generate]
     deployments: [mock]
     maxAttempts: 1
     concurrency: 1
@@ -7956,6 +8190,34 @@ aliases:
         let usage = response.find("\"usage\"").unwrap();
         let done = response.find("data: [done]").unwrap();
         assert!(finish < usage && usage < done);
+
+        let body = r#"{"model":"public-model","input":"hello","stream":true}"#;
+        let request = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let mut client = TcpStream::connect(gateway_address)
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(request.as_bytes())
+            .await
+            .expect("write request");
+        let mut response = Vec::new();
+        timeout(
+            TokioDuration::from_secs(5),
+            client.read_to_end(&mut response),
+        )
+        .await
+        .expect("Responses SSE timeout")
+        .expect("read Responses SSE response");
+        let response = String::from_utf8_lossy(&response).to_ascii_lowercase();
+        assert!(response.contains("http/1.1 200"), "response: {response}");
+        assert!(response.contains("event: response.created"));
+        assert!(response.contains("event: response.output_text.delta"));
+        assert!(response.contains("event: response.completed"));
+        assert!(response.contains("\"model\":\"public-model\""));
+        assert!(!response.contains("data: [done]"));
 
         running.shutdown().await.expect("shutdown gateway");
         provider_task.await.expect("provider task");

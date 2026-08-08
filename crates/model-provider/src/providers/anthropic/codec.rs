@@ -1,8 +1,9 @@
-use crate::inference::content::{ContentBlock, Role, ToolCall};
+use crate::inference::content::{ContentBlock, Role};
 use crate::inference::error::InferenceError;
 use crate::inference::request::{InferenceRequest, ResponseFormat, ToolChoice};
 use crate::inference::response::{
-    FinishReason, InferenceResponse, NormalizedUsage, ProviderEvidence, TerminalState,
+    FinishReason, GenerateOutputItem, InferenceResponse, ItemStatus, NormalizedUsage,
+    ProviderEvidence, TerminalState,
 };
 use crate::inference::stream::{InferenceEvent, StreamDecoder, ToolCallDelta};
 use bytes::{Buf, BytesMut};
@@ -25,6 +26,11 @@ impl AnthropicCodec {
                 "OpenAI compatibility extensions cannot cross into Anthropic",
             ));
         }
+        if request.reasoning.is_some() {
+            return Err(InferenceError::unsupported(
+                "reasoning controls require an OpenAI Responses route",
+            ));
+        }
         let mut system = Vec::new();
         let mut messages = Vec::new();
         for message in &request.messages {
@@ -33,6 +39,11 @@ impl AnthropicCodec {
                     match block {
                         ContentBlock::Text { text } => {
                             system.push(json!({"type":"text","text":text}))
+                        }
+                        ContentBlock::Refusal { .. } => {
+                            return Err(InferenceError::unsupported(
+                                "refusal content cannot be used as Anthropic request input",
+                            ));
                         }
                         _ => {
                             return Err(InferenceError::unsupported(
@@ -133,7 +144,8 @@ impl AnthropicCodec {
                     "Anthropic response content is missing",
                 )
             })?;
-        let mut content = Vec::new();
+        let mut message_content = Vec::new();
+        let mut output = Vec::new();
         for block in blocks {
             match block.get("type").and_then(Value::as_str) {
                 Some("text") => {
@@ -142,16 +154,19 @@ impl AnthropicCodec {
                         .and_then(Value::as_str)
                         .filter(|text| !text.is_empty())
                     {
-                        content.push(ContentBlock::text(text));
+                        message_content.push(ContentBlock::text(text));
                     }
                 }
-                Some("tool_use") => content.push(ContentBlock::ToolCall {
-                    call: ToolCall {
-                        id: required_string(block, "id", "Anthropic tool id")?,
+                Some("tool_use") => {
+                    let call_id = required_string(block, "id", "Anthropic tool id")?;
+                    output.push(GenerateOutputItem::FunctionCall {
+                        id: format!("function-{call_id}"),
+                        call_id,
                         name: required_string(block, "name", "Anthropic tool name")?,
                         arguments: block.get("input").cloned().unwrap_or_else(|| json!({})),
-                    },
-                }),
+                        status: ItemStatus::Completed,
+                    });
+                }
                 Some("thinking") | Some("redacted_thinking") => {
                     // Provider reasoning is intentionally not exposed by the public contract.
                 }
@@ -173,8 +188,19 @@ impl AnthropicCodec {
             .get("stop_reason")
             .and_then(Value::as_str)
             .map(ToString::to_string);
+        if !message_content.is_empty() {
+            output.insert(
+                0,
+                GenerateOutputItem::Message {
+                    id: "message-0".to_string(),
+                    role: Role::Assistant,
+                    content: message_content,
+                    status: ItemStatus::Completed,
+                },
+            );
+        }
         Ok(InferenceResponse {
-            content,
+            output,
             finish_reason: map_stop_reason(raw_stop.as_deref()),
             usage: value.get("usage").map(decode_usage).transpose()?,
             evidence: ProviderEvidence {
@@ -215,6 +241,9 @@ impl AnthropicCodec {
 fn encode_content(block: &ContentBlock) -> Result<Value, InferenceError> {
     match block {
         ContentBlock::Text { text } => Ok(json!({"type":"text","text":text})),
+        ContentBlock::Refusal { .. } => Err(InferenceError::unsupported(
+            "refusal content cannot be used as Anthropic request input",
+        )),
         ContentBlock::Image { source } => {
             if source.url.starts_with("data:") {
                 let (header, data) = source.url.split_once(',').ok_or_else(|| {
@@ -584,7 +613,10 @@ mod tests {
             "usage":{"input_tokens":2,"output_tokens":1}
         });
         let decoded = AnthropicCodec.decode_response(&response).unwrap();
-        assert_eq!(decoded.content, vec![ContentBlock::text("answer")]);
+        assert!(
+            matches!(&decoded.output[0], GenerateOutputItem::Message { content, .. }
+            if content == &vec![ContentBlock::text("answer")])
+        );
         assert!(
             !serde_json::to_string(&decoded)
                 .unwrap()

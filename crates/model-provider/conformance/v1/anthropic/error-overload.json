@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1",
   "id": "anthropic-error-overload",
-  "provider": "anthropic",
+  "provider": "anthropic_messages",
   "kind": "error",
   "input": {"status": 529, "retryAfter": "1", "body": {"error": {"type": "overloaded_error", "message": "overloaded"}}},
   "expected": {

@@ -1,6 +1,8 @@
 use crate::pii::PiiProfile;
+use crate::usage::OperationPrice;
 use model_provider::conformance::{ConformanceResult, FixtureProvenance};
-use model_provider::inference::ProviderFormat;
+use model_provider::inference::EmbeddingCapabilities;
+use model_provider::inference::{Operation, ProviderProtocol};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,6 +22,8 @@ pub struct LlmRouterConfig {
     pub max_json_depth: usize,
     #[serde(default = "default_replay_bytes")]
     pub max_replay_bytes: usize,
+    #[serde(default)]
+    pub embedding_memory: EmbeddingMemoryConfig,
     #[serde(default = "default_timeout_ms")]
     pub request_timeout_ms: u64,
     #[serde(default = "default_global_concurrency")]
@@ -28,6 +32,8 @@ pub struct LlmRouterConfig {
     pub global_stream_concurrency: usize,
     #[serde(default = "default_stream_channel_capacity")]
     pub stream_channel_capacity: usize,
+    #[serde(default = "default_max_stream_response_bytes")]
+    pub max_stream_response_bytes: usize,
     #[serde(default = "default_stream_write_timeout_ms")]
     pub stream_write_timeout_ms: u64,
     #[serde(default = "default_stream_setup_timeout_ms")]
@@ -62,10 +68,12 @@ impl Default for LlmRouterConfig {
             max_request_body_bytes: default_body_bytes(),
             max_json_depth: default_json_depth(),
             max_replay_bytes: default_replay_bytes(),
+            embedding_memory: EmbeddingMemoryConfig::default(),
             request_timeout_ms: default_timeout_ms(),
             global_concurrency: default_global_concurrency(),
             global_stream_concurrency: default_global_stream_concurrency(),
             stream_channel_capacity: default_stream_channel_capacity(),
+            max_stream_response_bytes: default_max_stream_response_bytes(),
             stream_write_timeout_ms: default_stream_write_timeout_ms(),
             stream_setup_timeout_ms: default_stream_setup_timeout_ms(),
             stream_idle_timeout_ms: default_stream_idle_timeout_ms(),
@@ -78,6 +86,60 @@ impl Default for LlmRouterConfig {
             providers: BTreeMap::new(),
             deployments: BTreeMap::new(),
             aliases: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EmbeddingMemoryConfig {
+    #[serde(default = "default_embedding_body_bytes")]
+    pub max_request_body_bytes: usize,
+    #[serde(default = "default_embedding_replay_bytes")]
+    pub max_replay_bytes: usize,
+    #[serde(default = "default_embedding_memory_bytes")]
+    pub max_memory_bytes: usize,
+    #[serde(default = "default_embedding_ingress_concurrency")]
+    pub ingress_concurrency: usize,
+    #[serde(default = "default_embedding_ingress_memory_bytes")]
+    pub max_ingress_memory_bytes: usize,
+    #[serde(default = "default_embedding_ingress_overhead_bytes")]
+    pub ingress_overhead_bytes: usize,
+    #[serde(default = "default_embedding_items_per_permit")]
+    pub items_per_permit: usize,
+    #[serde(default = "default_embedding_input_bytes_per_item")]
+    pub max_input_bytes_per_item: usize,
+    #[serde(default = "default_embedding_total_input_bytes")]
+    pub max_total_input_bytes: usize,
+    #[serde(default = "default_embedding_body_read_timeout_ms")]
+    pub body_read_timeout_ms: u64,
+    #[serde(default = "default_embedding_minimum_receive_rate")]
+    pub minimum_receive_bytes_per_second: u64,
+    #[serde(default = "default_embedding_authorization_timeout_ms")]
+    pub authorization_timeout_ms: u64,
+    #[serde(default = "default_embedding_write_timeout_ms")]
+    pub write_timeout_ms: u64,
+    #[serde(default = "default_embedding_minimum_drain_rate")]
+    pub minimum_drain_bytes_per_second: u64,
+}
+
+impl Default for EmbeddingMemoryConfig {
+    fn default() -> Self {
+        Self {
+            max_request_body_bytes: default_embedding_body_bytes(),
+            max_replay_bytes: default_embedding_replay_bytes(),
+            max_memory_bytes: default_embedding_memory_bytes(),
+            ingress_concurrency: default_embedding_ingress_concurrency(),
+            max_ingress_memory_bytes: default_embedding_ingress_memory_bytes(),
+            ingress_overhead_bytes: default_embedding_ingress_overhead_bytes(),
+            items_per_permit: default_embedding_items_per_permit(),
+            max_input_bytes_per_item: default_embedding_input_bytes_per_item(),
+            max_total_input_bytes: default_embedding_total_input_bytes(),
+            body_read_timeout_ms: default_embedding_body_read_timeout_ms(),
+            minimum_receive_bytes_per_second: default_embedding_minimum_receive_rate(),
+            authorization_timeout_ms: default_embedding_authorization_timeout_ms(),
+            write_timeout_ms: default_embedding_write_timeout_ms(),
+            minimum_drain_bytes_per_second: default_embedding_minimum_drain_rate(),
         }
     }
 }
@@ -194,7 +256,7 @@ impl Default for ProductionProjectionConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConfig {
-    pub format: ProviderFormat,
+    pub provider_protocol: ProviderProtocol,
     pub base_url: String,
     pub secret_ref: String,
     #[serde(default)]
@@ -210,10 +272,9 @@ pub struct DeploymentConfig {
     pub model: String,
     #[serde(default = "default_deployment_concurrency")]
     pub concurrency: usize,
+    pub prices: BTreeMap<Operation, OperationPrice>,
     #[serde(default)]
-    pub input_micros_per_million: Option<u64>,
-    #[serde(default)]
-    pub output_micros_per_million: Option<u64>,
+    pub embedding_capabilities: Option<EmbeddingCapabilities>,
     #[serde(default)]
     pub conformance_digest: String,
     /// Complete, self-digested deployment evidence. It is mandatory outside
@@ -243,6 +304,7 @@ pub struct DeploymentConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AliasConfig {
+    pub operations: BTreeSet<Operation>,
     pub deployments: Vec<String>,
     #[serde(default = "default_attempts")]
     pub max_attempts: usize,
@@ -314,6 +376,48 @@ fn default_json_depth() -> usize {
 fn default_replay_bytes() -> usize {
     1024 * 1024
 }
+fn default_embedding_body_bytes() -> usize {
+    4 * 1024 * 1024
+}
+fn default_embedding_replay_bytes() -> usize {
+    4 * 1024 * 1024
+}
+fn default_embedding_memory_bytes() -> usize {
+    16 * 1024 * 1024 * 1024
+}
+fn default_embedding_ingress_concurrency() -> usize {
+    32
+}
+fn default_embedding_ingress_memory_bytes() -> usize {
+    256 * 1024 * 1024
+}
+fn default_embedding_ingress_overhead_bytes() -> usize {
+    64 * 1024
+}
+fn default_embedding_items_per_permit() -> usize {
+    256
+}
+fn default_embedding_input_bytes_per_item() -> usize {
+    1024 * 1024
+}
+fn default_embedding_total_input_bytes() -> usize {
+    4 * 1024 * 1024
+}
+fn default_embedding_body_read_timeout_ms() -> u64 {
+    30_000
+}
+fn default_embedding_minimum_receive_rate() -> u64 {
+    1024
+}
+fn default_embedding_authorization_timeout_ms() -> u64 {
+    10_000
+}
+fn default_embedding_write_timeout_ms() -> u64 {
+    30_000
+}
+fn default_embedding_minimum_drain_rate() -> u64 {
+    1024
+}
 fn default_timeout_ms() -> u64 {
     30_000
 }
@@ -325,6 +429,9 @@ fn default_global_stream_concurrency() -> usize {
 }
 fn default_stream_channel_capacity() -> usize {
     8
+}
+fn default_max_stream_response_bytes() -> usize {
+    16 * 1024 * 1024
 }
 fn default_stream_write_timeout_ms() -> u64 {
     5_000

@@ -179,11 +179,12 @@ pub fn request_capabilities(request: &InferenceRequest, streaming: bool) -> Capa
         .flat_map(|message| &message.content)
         .any(|content| matches!(content, ContentBlock::Image { .. }));
     CapabilityRequirements {
-        operation: Operation::ChatCompletions,
+        operation: Operation::Generate,
         images,
         tools: !request.tools.is_empty(),
-        parallel_tools: false,
+        parallel_tools: request.parallel_tool_calls,
         structured_json: request.response_format.is_some(),
+        reasoning: request.reasoning.is_some(),
         streaming,
         required_provenance: None,
     }

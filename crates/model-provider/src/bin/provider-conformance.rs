@@ -34,8 +34,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .into());
         }
         let name = match result.provider {
-            model_provider::inference::ProviderFormat::OpenAi => "openai.json",
-            model_provider::inference::ProviderFormat::Anthropic => "anthropic.json",
+            model_provider::inference::ProviderProtocol::OpenAiChat => "openai-chat.json",
+            model_provider::inference::ProviderProtocol::AnthropicMessages => {
+                "anthropic-messages.json"
+            }
+            model_provider::inference::ProviderProtocol::OpenAiResponses => "openai-responses.json",
+            model_provider::inference::ProviderProtocol::OpenAiEmbeddings => {
+                "openai-embeddings.json"
+            }
         };
         if let Some(expected) = &expected {
             let expected_result: model_provider::conformance::ConformanceResult =

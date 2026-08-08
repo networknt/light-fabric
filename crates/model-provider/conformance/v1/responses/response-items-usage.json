@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "1",
+  "id": "responses-response-items-usage",
+  "provider": "openai_responses",
+  "kind": "response",
+  "input": {
+    "id": "resp_private",
+    "model": "physical-responses",
+    "status": "completed",
+    "output": [
+      {"type": "message", "id": "msg_private", "status": "completed", "content": [{"type": "output_text", "text": "hello"}]},
+      {"type": "function_call", "id": "fc_private", "call_id": "call_1", "name": "weather", "arguments": "{\"city\":\"Toronto\"}", "status": "completed"},
+      {"type": "reasoning", "id": "rs_private", "status": "completed", "summary": [{"type": "summary_text", "text": "Checked inputs."}]}
+    ],
+    "usage": {"input_tokens": 10, "output_tokens": 4, "input_tokens_details": {"cached_tokens": 2}, "output_tokens_details": {"reasoning_tokens": 1}}
+  },
+  "expected": {
+    "output": [
+      {"type": "message", "id": "msg_private", "role": "assistant", "content": [{"type": "text", "text": "hello"}], "status": "completed"},
+      {"type": "function_call", "id": "fc_private", "call_id": "call_1", "name": "weather", "arguments": {"city": "Toronto"}, "status": "completed"},
+      {"type": "reasoning_summary", "id": "rs_private", "summary": ["Checked inputs."], "status": "completed"}
+    ],
+    "finishReason": "tool_calls",
+    "usage": {"inputTokens": 10, "outputTokens": 4, "cachedInputTokens": 2, "reasoningTokens": 1},
+    "evidence": {"requestId": "resp_private", "physicalModel": "physical-responses", "rawFinishReason": "completed"},
+    "terminalState": "complete"
+  }
+}

@@ -34,7 +34,12 @@ pub enum ToolChoice {
 pub enum ResponseFormat {
     Text,
     JsonObject,
-    JsonSchema { name: String, schema: Value },
+    JsonSchema {
+        name: String,
+        schema: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -53,6 +58,15 @@ pub struct SamplingOptions {
 pub struct TokenLimits {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReasoningOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 impl TokenLimits {
@@ -83,12 +97,20 @@ pub struct InferenceRequest {
     pub tool_choice: Option<ToolChoice>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_format: Option<ResponseFormat>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub parallel_tool_calls: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningOptions>,
     #[serde(default)]
     pub sampling: SamplingOptions,
     #[serde(default)]
     pub token_limits: TokenLimits,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extensions: BTreeMap<String, Value>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl InferenceRequest {
@@ -99,6 +121,8 @@ impl InferenceRequest {
             tools: Vec::new(),
             tool_choice: None,
             response_format: None,
+            parallel_tool_calls: false,
+            reasoning: None,
             sampling: SamplingOptions::default(),
             token_limits: TokenLimits::default(),
             extensions: BTreeMap::new(),

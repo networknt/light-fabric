@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1",
   "id": "compat-non-default-unsupported",
-  "provider": "openai",
+  "provider": "openai_chat",
   "kind": "compatibility",
   "input": {"request": {"model": "public-alias", "messages": [], "logprobs": true}},
   "expected": {"errorCategory": "unsupported_feature"}

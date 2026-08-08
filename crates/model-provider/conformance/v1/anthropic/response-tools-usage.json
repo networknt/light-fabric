@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1",
   "id": "anthropic-response-tools-usage",
-  "provider": "anthropic",
+  "provider": "anthropic_messages",
   "kind": "response",
   "input": {
     "id": "msg-1",
@@ -15,9 +15,9 @@
     "usage": {"input_tokens": 30, "output_tokens": 9, "cache_read_input_tokens": 5}
   },
   "expected": {
-    "content": [
-      {"type": "text", "text": "checking"},
-      {"type": "tool_call", "call": {"id": "call-1", "name": "lookup", "arguments": {"id": 7}}}
+    "output": [
+      {"type": "message", "id": "message-0", "role": "assistant", "content": [{"type": "text", "text": "checking"}], "status": "completed"},
+      {"type": "function_call", "id": "function-call-1", "call_id": "call-1", "name": "lookup", "arguments": {"id": 7}, "status": "completed"}
     ],
     "finishReason": "tool_calls",
     "usage": {"inputTokens": 30, "outputTokens": 9, "cachedInputTokens": 5},

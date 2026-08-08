@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "1",
+  "client": "codex-cli",
+  "wireApi": "responses",
+  "requiredOperations": ["text", "clientFunctionLoop"],
+  "evidence": "benchmarks/llm-gateway/reports/codex-responses-smoke.json",
+  "secretsRecorded": false
+}

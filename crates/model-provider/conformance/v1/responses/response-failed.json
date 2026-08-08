@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "1",
+  "id": "responses-response-failed",
+  "provider": "openai_responses",
+  "kind": "response",
+  "input": {"id": "resp_private", "status": "failed", "output": [], "error": {"code": "server_error"}},
+  "expected": {"errorCategory": "protocol"}
+}

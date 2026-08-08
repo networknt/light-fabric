@@ -1,0 +1,6 @@
+{
+  "name": "responses-malformed",
+  "baseLatencyMs": 5,
+  "responseBytes": 64,
+  "responsesFault": "malformed"
+}

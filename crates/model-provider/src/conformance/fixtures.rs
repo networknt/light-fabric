@@ -1,4 +1,5 @@
-use crate::inference::provider::ProviderFormat;
+use crate::inference::EmbeddingCapabilities;
+use crate::inference::provider::ProviderProtocol;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -17,9 +18,11 @@ pub struct CorpusManifest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderProfile {
-    pub provider: ProviderFormat,
+    pub provider: ProviderProtocol,
     pub physical_model: String,
     pub api_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_capabilities: Option<EmbeddingCapabilities>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,7 +44,8 @@ pub enum FixtureProvenance {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConformanceCapability {
-    ChatCompletions,
+    Generate,
+    Embed,
     Text,
     Images,
     Tools,
@@ -66,7 +70,7 @@ pub enum FixtureKind {
 pub struct CorpusFixture {
     pub schema_version: String,
     pub id: String,
-    pub provider: ProviderFormat,
+    pub provider: ProviderProtocol,
     pub kind: FixtureKind,
     pub input: Value,
     pub expected: Value,

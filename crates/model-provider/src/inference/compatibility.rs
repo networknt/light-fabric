@@ -1,9 +1,10 @@
 use super::content::{ContentBlock, Message, Role};
 use super::error::InferenceError;
-use super::provider::{InferenceProvider, ProviderFormat, ProviderRequestContext};
+use super::provider::{GenerationProvider, ProviderProtocol, ProviderRequestContext};
 use super::request::{
     InferenceRequest, ResponseFormat, SamplingOptions, TokenLimits, ToolChoice, ToolDefinition,
 };
+use super::response::GenerateOutputItem;
 use crate::traits::{
     ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities as LegacyCapabilities,
     TokenUsage, ToolCall as LegacyToolCall, ToolSpec,
@@ -100,7 +101,7 @@ impl OpenAiCompatibilityProfile {
     pub fn parse_request(
         &self,
         bytes: &[u8],
-        provider_format: ProviderFormat,
+        provider_protocol: ProviderProtocol,
     ) -> Result<InferenceRequest, InferenceError> {
         let public: PublicRequest = serde_json::from_slice(bytes)
             .map_err(|error| InferenceError::invalid_request(format!("invalid JSON: {error}")))?;
@@ -136,7 +137,7 @@ impl OpenAiCompatibilityProfile {
             if is_supported_default(&name, &value) {
                 continue;
             }
-            if provider_format != ProviderFormat::OpenAi {
+            if provider_protocol != ProviderProtocol::OpenAiChat {
                 if !value.is_null() {
                     return Err(InferenceError::unsupported(format!(
                         "field `{name}` cannot be forwarded across provider formats"
@@ -173,6 +174,8 @@ impl OpenAiCompatibilityProfile {
             tools,
             tool_choice,
             response_format,
+            parallel_tool_calls: false,
+            reasoning: None,
             sampling: SamplingOptions {
                 temperature: public.temperature,
                 top_p: public.top_p,
@@ -292,16 +295,32 @@ fn parse_response_format(value: Value) -> Result<ResponseFormat, InferenceError>
         Some("text") => Ok(ResponseFormat::Text),
         Some("json_object") => Ok(ResponseFormat::JsonObject),
         Some("json_schema") => {
-            let schema = value
+            let payload = value
                 .get("json_schema")
                 .cloned()
                 .ok_or_else(|| InferenceError::invalid_request("json_schema payload is missing"))?;
-            let name = schema
+            let name = payload
                 .get("name")
                 .and_then(Value::as_str)
                 .unwrap_or("response")
                 .to_string();
-            Ok(ResponseFormat::JsonSchema { name, schema })
+            let schema = payload
+                .get("schema")
+                .cloned()
+                .ok_or_else(|| InferenceError::invalid_request("json_schema schema is missing"))?;
+            let strict = payload
+                .get("strict")
+                .map(|value| {
+                    value.as_bool().ok_or_else(|| {
+                        InferenceError::invalid_request("json_schema strict must be a boolean")
+                    })
+                })
+                .transpose()?;
+            Ok(ResponseFormat::JsonSchema {
+                name,
+                schema,
+                strict,
+            })
         }
         _ => Err(InferenceError::unsupported("unsupported response_format")),
     }
@@ -333,7 +352,7 @@ impl<P> LegacyProviderAdapter<P> {
 #[async_trait]
 impl<P> Provider for LegacyProviderAdapter<P>
 where
-    P: InferenceProvider + 'static,
+    P: GenerationProvider + 'static,
 {
     fn capabilities(&self) -> LegacyCapabilities {
         let capabilities = self.provider.capabilities();
@@ -387,22 +406,35 @@ where
         let canonical = legacy_request(request, model, temperature);
         let response = self
             .provider
-            .infer(
+            .generate(
                 ProviderRequestContext::with_timeout("legacy-adapter", self.timeout),
                 canonical,
             )
             .await?;
         let mut text = Vec::new();
         let mut tool_calls = Vec::new();
-        for block in response.content {
-            match block {
-                ContentBlock::Text { text: value } => text.push(value),
-                ContentBlock::ToolCall { call } => tool_calls.push(LegacyToolCall {
-                    id: call.id,
-                    name: call.name,
-                    arguments: serde_json::to_string(&call.arguments)?,
-                }),
-                _ => {}
+        for item in response.output {
+            match item {
+                GenerateOutputItem::Message { content, .. } => {
+                    for block in content {
+                        if let ContentBlock::Text { text: value } = block {
+                            text.push(value);
+                        }
+                    }
+                }
+                GenerateOutputItem::FunctionCall {
+                    call_id,
+                    name,
+                    arguments,
+                    ..
+                } => {
+                    tool_calls.push(LegacyToolCall {
+                        id: call_id,
+                        name,
+                        arguments: serde_json::to_string(&arguments)?,
+                    });
+                }
+                GenerateOutputItem::ReasoningSummary { .. } => {}
             }
         }
         Ok(ChatResponse {
@@ -460,6 +492,8 @@ fn legacy_request(request: ChatRequest<'_>, model: &str, temperature: f64) -> In
             .collect(),
         tool_choice: request.tools.map(|_| ToolChoice::Auto),
         response_format: None,
+        parallel_tool_calls: false,
+        reasoning: None,
         sampling: SamplingOptions {
             temperature: Some(temperature),
             top_p: None,
@@ -561,7 +595,7 @@ mod tests {
         let error = OpenAiCompatibilityProfile::default()
             .parse_request(
                 br#"{"model":"x","messages":[],"max_tokens":10,"max_completion_tokens":11}"#,
-                ProviderFormat::OpenAi,
+                ProviderProtocol::OpenAiChat,
             )
             .unwrap_err();
         assert_eq!(
@@ -575,7 +609,7 @@ mod tests {
         let error = OpenAiCompatibilityProfile::default()
             .parse_request(
                 br#"{"model":"x","messages":[],"logprobs":true}"#,
-                ProviderFormat::OpenAi,
+                ProviderProtocol::OpenAiChat,
             )
             .unwrap_err();
         assert_eq!(
@@ -593,10 +627,10 @@ mod tests {
         }"#;
         let profile = OpenAiCompatibilityProfile::default();
         let openai_request = profile
-            .parse_request(public, ProviderFormat::OpenAi)
+            .parse_request(public, ProviderProtocol::OpenAiChat)
             .unwrap();
         let anthropic_request = profile
-            .parse_request(public, ProviderFormat::Anthropic)
+            .parse_request(public, ProviderProtocol::AnthropicMessages)
             .unwrap();
         assert!(OpenAiCodec.encode_request(&openai_request, false).is_ok());
         assert!(

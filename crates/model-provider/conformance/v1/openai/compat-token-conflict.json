@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1",
   "id": "compat-token-limits-conflict",
-  "provider": "openai",
+  "provider": "openai_chat",
   "kind": "compatibility",
   "input": {"request": {"model": "public-alias", "messages": [], "max_tokens": 64, "max_completion_tokens": 65}},
   "expected": {"errorCategory": "invalid_request"}

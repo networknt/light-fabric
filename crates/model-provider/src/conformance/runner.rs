@@ -2,10 +2,12 @@ use super::fixtures::{
     ConformanceCapability, CorpusFixture, CorpusManifest, FixtureKind, FixtureReference,
     ProviderProfile,
 };
-use crate::inference::capabilities::{ContentCapabilities, ProviderCapabilities};
+use crate::inference::capabilities::{
+    ContentCapabilities, GenerationCapabilities, ProviderCapabilities,
+};
 use crate::inference::compatibility::OpenAiCompatibilityProfile;
 use crate::inference::error::InferenceError;
-use crate::inference::provider::{Operation, ProviderFormat};
+use crate::inference::provider::{Operation, ProviderProtocol};
 use crate::inference::request::InferenceRequest;
 use crate::inference::stream::StreamDecoder;
 use crate::providers::{anthropic, openai};
@@ -45,7 +47,7 @@ pub struct CapabilityEvidence {
 #[serde(rename_all = "camelCase")]
 pub struct ConformanceResult {
     pub schema_version: String,
-    pub provider: ProviderFormat,
+    pub provider: ProviderProtocol,
     pub provider_codec_version: String,
     pub physical_model: String,
     pub api_version: String,
@@ -129,33 +131,45 @@ pub struct CapabilityRequirements {
     pub tools: bool,
     pub parallel_tools: bool,
     pub structured_json: bool,
+    pub reasoning: bool,
     pub streaming: bool,
     pub required_provenance: Option<super::fixtures::FixtureProvenance>,
 }
 
-impl Default for CapabilityRequirements {
-    fn default() -> Self {
+impl CapabilityRequirements {
+    pub fn generation() -> Self {
         Self {
-            operation: Operation::ChatCompletions,
+            operation: Operation::Generate,
             images: false,
             tools: false,
             parallel_tools: false,
             structured_json: false,
+            reasoning: false,
             streaming: false,
             required_provenance: None,
         }
     }
-}
 
-impl CapabilityRequirements {
+    pub fn embedding() -> Self {
+        let mut requirements = Self::generation();
+        requirements.operation = Operation::Embed;
+        requirements
+    }
+
     fn satisfied_by(&self, result: &ConformanceResult) -> bool {
         let capabilities = &result.capabilities;
+        let generation = capabilities.generation.as_ref();
         capabilities.supports(self.operation)
-            && (!self.images || capabilities.content.images)
-            && (!self.tools || capabilities.content.tools)
-            && (!self.parallel_tools || capabilities.content.parallel_tools)
-            && (!self.structured_json || capabilities.content.structured_json)
-            && (!self.streaming || capabilities.streaming)
+            && (!self.images || generation.is_some_and(|value| value.content.images))
+            && (!self.tools || generation.is_some_and(|value| value.content.tools))
+            && (!self.parallel_tools
+                || generation.is_some_and(|value| value.content.parallel_tools))
+            && (!self.structured_json
+                || generation.is_some_and(|value| value.content.structured_json))
+            && (!self.reasoning
+                || (result.provider == ProviderProtocol::OpenAiResponses
+                    && generation.is_some_and(|value| value.content.reasoning_usage)))
+            && (!self.streaming || generation.is_some_and(|value| value.streaming))
             && self.required_provenance.is_none_or(|provenance| {
                 self.required_attestations()
                     .into_iter()
@@ -166,8 +180,11 @@ impl CapabilityRequirements {
     fn required_attestations(&self) -> BTreeSet<ConformanceCapability> {
         let mut required = BTreeSet::new();
         match self.operation {
-            Operation::ChatCompletions => {
-                required.insert(ConformanceCapability::ChatCompletions);
+            Operation::Generate => {
+                required.insert(ConformanceCapability::Generate);
+            }
+            Operation::Embed => {
+                required.insert(ConformanceCapability::Embed);
             }
         }
         if self.images {
@@ -181,6 +198,9 @@ impl CapabilityRequirements {
         }
         if self.structured_json {
             required.insert(ConformanceCapability::StructuredJson);
+        }
+        if self.reasoning {
+            required.insert(ConformanceCapability::ReasoningUsage);
         }
         if self.streaming {
             required.insert(ConformanceCapability::Streaming);
@@ -329,7 +349,7 @@ impl ConformanceRunner {
         };
         let capability_evidence =
             capability_evidence_from_passing_fixtures(profile.provider, fixtures, &cases);
-        let capabilities = capabilities_from_evidence(&capability_evidence);
+        let capabilities = capabilities_from_evidence(profile, &capability_evidence);
         let operations = capabilities.operations.clone();
         let mut result = ConformanceResult {
             schema_version: "1".to_string(),
@@ -357,25 +377,86 @@ impl ConformanceRunner {
 
     fn run_fixture(&self, fixture: &CorpusFixture) -> Result<(), Box<dyn std::error::Error>> {
         let actual = match fixture.kind {
-            FixtureKind::Request => {
-                let request: InferenceRequest = serde_json::from_value(fixture.input.clone())?;
-                match fixture.provider {
-                    ProviderFormat::OpenAi => {
-                        openai::OpenAiCodec.encode_request(&request, false)?
+            FixtureKind::Request => match fixture.provider {
+                ProviderProtocol::OpenAiChat => {
+                    let request: InferenceRequest = serde_json::from_value(fixture.input.clone())?;
+                    openai::OpenAiCodec.encode_request(&request, false)?
+                }
+                ProviderProtocol::AnthropicMessages => {
+                    let request: InferenceRequest = serde_json::from_value(fixture.input.clone())?;
+                    anthropic::AnthropicCodec.encode_request(&request, false)?
+                }
+                ProviderProtocol::OpenAiResponses => {
+                    let request: InferenceRequest = serde_json::from_value(fixture.input.clone())?;
+                    openai::OpenAiResponsesCodec.encode_request(&request, false)?
+                }
+                ProviderProtocol::OpenAiEmbeddings => {
+                    let request: crate::inference::EmbeddingRequest =
+                        serde_json::from_value(fixture.input.clone())?;
+                    openai::OpenAiEmbeddingsCodec.encode_request(&request)
+                }
+            },
+            FixtureKind::Response => {
+                let decoded: Result<Value, InferenceError> = match fixture.provider {
+                    ProviderProtocol::OpenAiChat => openai::OpenAiCodec
+                        .decode_response(&fixture.input)
+                        .and_then(|value| {
+                            serde_json::to_value(value).map_err(|error| {
+                                InferenceError::provider_protocol(Some(502), error.to_string())
+                            })
+                        }),
+                    ProviderProtocol::AnthropicMessages => anthropic::AnthropicCodec
+                        .decode_response(&fixture.input)
+                        .and_then(|value| {
+                            serde_json::to_value(value).map_err(|error| {
+                                InferenceError::provider_protocol(Some(502), error.to_string())
+                            })
+                        }),
+                    ProviderProtocol::OpenAiResponses => openai::OpenAiResponsesCodec
+                        .decode_response(&fixture.input)
+                        .and_then(|value| {
+                            serde_json::to_value(value).map_err(|error| {
+                                InferenceError::provider_protocol(Some(502), error.to_string())
+                            })
+                        }),
+                    ProviderProtocol::OpenAiEmbeddings => (|| {
+                        let response = fixture.input.get("response").ok_or_else(|| {
+                            InferenceError::invalid_request(
+                                "embedding response fixture has no response",
+                            )
+                        })?;
+                        let expected_count = fixture
+                            .input
+                            .get("expectedCount")
+                            .and_then(Value::as_u64)
+                            .and_then(|value| usize::try_from(value).ok())
+                            .ok_or_else(|| {
+                                InferenceError::invalid_request(
+                                    "embedding response fixture has no expectedCount",
+                                )
+                            })?;
+                        let expected_dimensions = fixture
+                            .input
+                            .get("expectedDimensions")
+                            .and_then(Value::as_u64)
+                            .and_then(|value| u32::try_from(value).ok());
+                        openai::OpenAiEmbeddingsCodec
+                            .decode_response(response, expected_count, expected_dimensions)
+                            .and_then(|value| {
+                                serde_json::to_value(value).map_err(|error| {
+                                    InferenceError::provider_protocol(Some(502), error.to_string())
+                                })
+                            })
+                    })(),
+                };
+                match decoded {
+                    Ok(value) => value,
+                    Err(error) if fixture.expected.get("errorCategory").is_some() => {
+                        json!({"errorCategory":serde_json::to_value(error.category)?})
                     }
-                    ProviderFormat::Anthropic => {
-                        anthropic::AnthropicCodec.encode_request(&request, false)?
-                    }
+                    Err(error) => return Err(error.into()),
                 }
             }
-            FixtureKind::Response => match fixture.provider {
-                ProviderFormat::OpenAi => {
-                    serde_json::to_value(openai::OpenAiCodec.decode_response(&fixture.input)?)?
-                }
-                ProviderFormat::Anthropic => serde_json::to_value(
-                    anthropic::AnthropicCodec.decode_response(&fixture.input)?,
-                )?,
-            },
             FixtureKind::Stream => match self.run_stream_fixture(fixture) {
                 Ok(events) => events,
                 Err(error) if fixture.expected.get("errorCategory").is_some() => {
@@ -390,11 +471,17 @@ impl ConformanceRunner {
                 let retry_after = fixture.input["retryAfter"].as_str();
                 let body = serde_json::to_vec(&fixture.input["body"])?;
                 let error = match fixture.provider {
-                    ProviderFormat::OpenAi => {
+                    ProviderProtocol::OpenAiChat => {
                         openai::OpenAiCodec.decode_error(status, retry_after, &body)
                     }
-                    ProviderFormat::Anthropic => {
+                    ProviderProtocol::AnthropicMessages => {
                         anthropic::AnthropicCodec.decode_error(status, retry_after, &body)
+                    }
+                    ProviderProtocol::OpenAiResponses => {
+                        openai::OpenAiResponsesCodec.decode_error(status, retry_after, &body)
+                    }
+                    ProviderProtocol::OpenAiEmbeddings => {
+                        openai::OpenAiCodec.decode_error(status, retry_after, &body)
                     }
                 };
                 serde_json::to_value(error)?
@@ -429,7 +516,7 @@ impl ConformanceRunner {
             .ok_or_else(|| InferenceError::invalid_request("stream fixture has no chunks"))?;
         let mut events = Vec::new();
         match fixture.provider {
-            ProviderFormat::OpenAi => {
+            ProviderProtocol::OpenAiChat => {
                 let mut decoder = openai::OpenAiStreamDecoder::default();
                 for chunk in chunks {
                     let chunk = chunk.as_str().ok_or_else(|| {
@@ -439,7 +526,7 @@ impl ConformanceRunner {
                 }
                 events.extend(decoder.finish()?);
             }
-            ProviderFormat::Anthropic => {
+            ProviderProtocol::AnthropicMessages => {
                 let mut decoder = anthropic::AnthropicStreamDecoder::default();
                 for chunk in chunks {
                     let chunk = chunk.as_str().ok_or_else(|| {
@@ -448,6 +535,21 @@ impl ConformanceRunner {
                     events.extend(decoder.push(chunk.as_bytes())?);
                 }
                 events.extend(decoder.finish()?);
+            }
+            ProviderProtocol::OpenAiResponses => {
+                let mut decoder = openai::OpenAiResponsesStreamDecoder::default();
+                for chunk in chunks {
+                    let chunk = chunk.as_str().ok_or_else(|| {
+                        InferenceError::invalid_request("stream chunk is not text")
+                    })?;
+                    events.extend(decoder.push(chunk.as_bytes())?);
+                }
+                events.extend(decoder.finish()?);
+            }
+            ProviderProtocol::OpenAiEmbeddings => {
+                return Err(InferenceError::unsupported(
+                    "embedding protocol does not stream",
+                ));
             }
         }
         serde_json::to_value(events).map_err(|error| InferenceError::protocol(error.to_string()))
@@ -495,7 +597,11 @@ fn load_fixtures(
 
 fn fixture_demonstrates(fixture: &CorpusFixture, capability: ConformanceCapability) -> bool {
     match capability {
-        ConformanceCapability::ChatCompletions => fixture.kind == FixtureKind::Request,
+        ConformanceCapability::Generate => fixture.kind == FixtureKind::Request,
+        ConformanceCapability::Embed => {
+            fixture.provider == ProviderProtocol::OpenAiEmbeddings
+                && matches!(fixture.kind, FixtureKind::Request | FixtureKind::Response)
+        }
         ConformanceCapability::Text => {
             contains_type(&fixture.input, &["text", "text_delta"])
                 || contains_type(&fixture.expected, &["text", "text_delta"])
@@ -508,11 +614,25 @@ fn fixture_demonstrates(fixture: &CorpusFixture, capability: ConformanceCapabili
             contains_non_empty_array_field(&fixture.input, "tools")
                 || contains_type(
                     &fixture.input,
-                    &["tool_call", "tool_use", "tool_result", "tool_call_delta"],
+                    &[
+                        "tool_call",
+                        "tool_use",
+                        "tool_result",
+                        "tool_call_delta",
+                        "function_call",
+                        "function_call_output",
+                    ],
                 )
                 || contains_type(
                     &fixture.expected,
-                    &["tool_call", "tool_use", "tool_result", "tool_call_delta"],
+                    &[
+                        "tool_call",
+                        "tool_use",
+                        "tool_result",
+                        "tool_call_delta",
+                        "function_call",
+                        "function_call_output",
+                    ],
                 )
         }
         ConformanceCapability::ParallelTools => {
@@ -587,7 +707,9 @@ fn demonstrates_parallel_tools(value: &Value) -> bool {
             }
             Value::Object(object) => {
                 match object.get("type").and_then(Value::as_str) {
-                    Some("tool_call") | Some("tool_use") => *complete_calls += 1,
+                    Some("tool_call") | Some("tool_use") | Some("function_call") => {
+                        *complete_calls += 1
+                    }
                     Some("tool_call_delta") => {
                         if let Some(index) = object
                             .get("delta")
@@ -614,7 +736,7 @@ fn demonstrates_parallel_tools(value: &Value) -> bool {
 }
 
 fn capability_evidence_from_passing_fixtures(
-    provider: ProviderFormat,
+    provider: ProviderProtocol,
     fixtures: &[LoadedFixture],
     cases: &[CaseResult],
 ) -> BTreeMap<ConformanceCapability, CapabilityEvidence> {
@@ -642,31 +764,45 @@ fn capability_evidence_from_passing_fixtures(
 }
 
 fn capabilities_from_evidence(
+    profile: &ProviderProfile,
     evidence: &BTreeMap<ConformanceCapability, CapabilityEvidence>,
 ) -> ProviderCapabilities {
     let covered = evidence.keys().copied().collect::<BTreeSet<_>>();
     let mut operations = BTreeSet::new();
-    if covered.contains(&ConformanceCapability::ChatCompletions) {
-        operations.insert(Operation::ChatCompletions);
+    if covered.contains(&ConformanceCapability::Generate) {
+        operations.insert(Operation::Generate);
+    }
+    if covered.contains(&ConformanceCapability::Embed) {
+        operations.insert(Operation::Embed);
     }
     ProviderCapabilities {
         operations,
-        content: ContentCapabilities {
-            text: covered.contains(&ConformanceCapability::Text),
-            images: covered.contains(&ConformanceCapability::Images),
-            tools: covered.contains(&ConformanceCapability::Tools),
-            parallel_tools: covered.contains(&ConformanceCapability::ParallelTools),
-            structured_json: covered.contains(&ConformanceCapability::StructuredJson),
-            reasoning_usage: covered.contains(&ConformanceCapability::ReasoningUsage),
-        },
-        streaming: covered.contains(&ConformanceCapability::Streaming),
+        generation: covered.contains(&ConformanceCapability::Generate).then(|| {
+            GenerationCapabilities {
+                content: ContentCapabilities {
+                    text: covered.contains(&ConformanceCapability::Text),
+                    images: covered.contains(&ConformanceCapability::Images),
+                    tools: covered.contains(&ConformanceCapability::Tools),
+                    parallel_tools: covered.contains(&ConformanceCapability::ParallelTools),
+                    structured_json: covered.contains(&ConformanceCapability::StructuredJson),
+                    reasoning_usage: covered.contains(&ConformanceCapability::ReasoningUsage),
+                },
+                streaming: covered.contains(&ConformanceCapability::Streaming),
+            }
+        }),
+        embedding: covered
+            .contains(&ConformanceCapability::Embed)
+            .then(|| profile.embedding_capabilities.clone())
+            .flatten(),
     }
 }
 
-fn codec_version(provider: ProviderFormat) -> &'static str {
+fn codec_version(provider: ProviderProtocol) -> &'static str {
     match provider {
-        ProviderFormat::OpenAi => openai::CODEC_VERSION,
-        ProviderFormat::Anthropic => anthropic::CODEC_VERSION,
+        ProviderProtocol::OpenAiChat => openai::CODEC_VERSION,
+        ProviderProtocol::AnthropicMessages => anthropic::CODEC_VERSION,
+        ProviderProtocol::OpenAiResponses => openai::RESPONSES_CODEC_VERSION,
+        ProviderProtocol::OpenAiEmbeddings => "openai-embeddings-v1",
     }
 }
 
@@ -714,7 +850,7 @@ mod tests {
             .with_timezone(&Utc);
         let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("conformance/v1");
         let results = ConformanceRunner::default().run(&corpus, now).unwrap();
-        assert_eq!(results.len(), 2);
+        assert_eq!(results.len(), 4);
         for result in &results {
             assert_eq!(result.state, ConformanceState::Pass, "{:#?}", result.cases);
             assert!(result.verify_digest());
@@ -726,7 +862,7 @@ mod tests {
             result: result.clone(),
         };
         assert_eq!(
-            eligible_deployment_ids(&[active], &CapabilityRequirements::default(), now),
+            eligible_deployment_ids(&[active], &CapabilityRequirements::generation(), now),
             vec!["openai-primary"]
         );
         let quarantined = DeploymentEligibility {
@@ -734,7 +870,7 @@ mod tests {
             result: result.quarantine("codec drift"),
         };
         assert!(
-            eligible_deployment_ids(&[quarantined], &CapabilityRequirements::default(), now)
+            eligible_deployment_ids(&[quarantined], &CapabilityRequirements::generation(), now)
                 .is_empty()
         );
         let expired = DeploymentEligibility {
@@ -744,7 +880,7 @@ mod tests {
         assert!(
             eligible_deployment_ids(
                 &[expired],
-                &CapabilityRequirements::default(),
+                &CapabilityRequirements::generation(),
                 now + Duration::days(8)
             )
             .is_empty()
@@ -794,7 +930,7 @@ mod tests {
             .run(&corpus, now)
             .unwrap()
             .into_iter()
-            .find(|result| result.provider == ProviderFormat::Anthropic)
+            .find(|result| result.provider == ProviderProtocol::AnthropicMessages)
             .unwrap();
         let deployment = DeploymentEligibility {
             deployment_id: "anthropic-fallback".to_string(),
@@ -802,7 +938,7 @@ mod tests {
         };
         let requirements = CapabilityRequirements {
             structured_json: true,
-            ..CapabilityRequirements::default()
+            ..CapabilityRequirements::generation()
         };
         assert!(eligible_deployment_ids(&[deployment], &requirements, now).is_empty());
     }
@@ -817,12 +953,12 @@ mod tests {
             .run(&corpus, now)
             .unwrap()
             .into_iter()
-            .find(|result| result.provider == ProviderFormat::OpenAi)
+            .find(|result| result.provider == ProviderProtocol::OpenAiChat)
             .unwrap();
         let captured = super::super::FixtureProvenance::CapturedSanitized;
         result
             .capability_evidence
-            .get_mut(&ConformanceCapability::ChatCompletions)
+            .get_mut(&ConformanceCapability::Generate)
             .unwrap()
             .provenances
             .insert(captured);
@@ -831,7 +967,7 @@ mod tests {
         let requirements = CapabilityRequirements {
             images: true,
             required_provenance: Some(captured),
-            ..CapabilityRequirements::default()
+            ..CapabilityRequirements::generation()
         };
         let deployment = DeploymentEligibility {
             deployment_id: "openai-vision".to_string(),
@@ -874,14 +1010,30 @@ mod tests {
         let profile = manifest
             .profiles
             .iter()
-            .find(|profile| profile.provider == ProviderFormat::OpenAi)
+            .find(|profile| profile.provider == ProviderProtocol::OpenAiChat)
             .unwrap();
         let result = ConformanceRunner::default()
             .run_profile(&manifest, profile, &fixtures, now)
             .unwrap();
         assert_eq!(result.state, ConformanceState::Pass);
-        assert!(!result.capabilities.content.images);
-        assert!(result.capabilities.content.tools);
+        assert!(
+            !result
+                .capabilities
+                .generation
+                .as_ref()
+                .unwrap()
+                .content
+                .images
+        );
+        assert!(
+            result
+                .capabilities
+                .generation
+                .as_ref()
+                .unwrap()
+                .content
+                .tools
+        );
         let tool_evidence = &result.capability_evidence[&ConformanceCapability::Tools];
         assert!(
             tool_evidence

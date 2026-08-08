@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1",
   "id": "compat-bounded-allowlisted-extension",
-  "provider": "openai",
+  "provider": "openai_chat",
   "kind": "compatibility",
   "input": {"request": {"model": "public-alias", "messages": [], "metadata": {"tenant": "demo"}, "seed": null}},
   "expected": {

@@ -1,28 +1,30 @@
 {
   "schemaVersion": "1",
-  "provider": "openai",
+  "provider": "openai_chat",
   "providerCodecVersion": "openai-chat-completions-v1",
   "physicalModel": "gpt-test",
   "apiVersion": "2026-07-01",
   "testedOperations": [
-    "chat_completions"
+    "generate"
   ],
   "capabilities": {
     "operations": [
-      "chat_completions"
+      "generate"
     ],
-    "content": {
-      "text": true,
-      "images": true,
-      "tools": true,
-      "parallelTools": true,
-      "structuredJson": true,
-      "reasoningUsage": true
-    },
-    "streaming": true
+    "generation": {
+      "content": {
+        "text": true,
+        "images": true,
+        "tools": true,
+        "parallelTools": true,
+        "structuredJson": true,
+        "reasoningUsage": true
+      },
+      "streaming": true
+    }
   },
   "capabilityEvidence": {
-    "chat_completions": {
+    "generate": {
       "fixtureIds": [
         "openai-request-multimodal-tools"
       ],
@@ -90,8 +92,8 @@
     }
   },
   "state": "pass",
-  "corpusVersion": "1.1.0",
-  "corpusDigest": "ef0565badd856a00ca3977bd74e6ec5985fe008d98f2e66ee6f341d207f6ef53",
+  "corpusVersion": "1.2.0",
+  "corpusDigest": "ad07ecbb0b9806188472df548ec7f3e5fc42f7160dd29eb1d1dfcee15a7399ef",
   "testedAt": "2026-07-19T00:00:00Z",
   "validUntil": "2026-07-26T00:00:00Z",
   "refreshBeforeSeconds": 86400,
@@ -138,5 +140,5 @@
       "passed": true
     }
   ],
-  "digest": "b8a824ffc02eeb85eb2f27bf0d95cac133db24b9968f025bca647e7205ff8661"
+  "digest": "053584865eb41f529003858bad06cc5a7834f51b0e4493a2b5843c1c2027d6c5"
 }

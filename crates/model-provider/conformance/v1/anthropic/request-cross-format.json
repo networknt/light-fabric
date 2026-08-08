@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1",
   "id": "anthropic-request-cross-format",
-  "provider": "anthropic",
+  "provider": "anthropic_messages",
   "kind": "request",
   "input": {
     "model": "claude-test",

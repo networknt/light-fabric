@@ -5,8 +5,16 @@ use thiserror::Error;
 pub enum LlmGatewayError {
     #[error("configuration error: {0}")]
     Config(String),
-    #[error("model is not available")]
-    ModelUnavailable,
+    #[error("route is not found")]
+    RouteNotFound,
+    #[error("model alias is not found")]
+    AliasNotFound,
+    #[error("requested capability is not supported: {0}")]
+    UnsupportedCapability(String),
+    #[error("no ready deployment can serve the request")]
+    NoReadyDeployment,
+    #[error("gateway invariant failed: {0}")]
+    Invariant(String),
     #[error("request is not authorized")]
     Forbidden,
     #[error("request is invalid: {0}")]
@@ -37,7 +45,10 @@ impl LlmGatewayError {
             Self::UnsupportedMediaType => 415,
             Self::PayloadTooLarge => 413,
             Self::Forbidden => 403,
-            Self::ModelUnavailable => 404,
+            Self::RouteNotFound | Self::AliasNotFound => 404,
+            Self::UnsupportedCapability(_) => 400,
+            Self::NoReadyDeployment => 503,
+            Self::Invariant(_) => 500,
             Self::Capacity | Self::Budget => 429,
             Self::Provider(error) => match error.category {
                 InferenceErrorCategory::InvalidRequest
@@ -60,7 +71,11 @@ impl LlmGatewayError {
             Self::UnsupportedMediaType => "unsupported_media_type",
             Self::PayloadTooLarge => "payload_too_large",
             Self::Forbidden => "permission_denied",
-            Self::ModelUnavailable => "model_not_found",
+            Self::RouteNotFound => "route_not_found",
+            Self::AliasNotFound => "model_not_found",
+            Self::UnsupportedCapability(_) => "unsupported_feature",
+            Self::NoReadyDeployment => "model_unavailable",
+            Self::Invariant(_) => "internal_error",
             Self::Capacity => "capacity_exhausted",
             Self::Budget => "budget_exhausted",
             Self::Provider(error) if error.category == InferenceErrorCategory::RateLimited => {
@@ -70,6 +85,29 @@ impl LlmGatewayError {
             Self::Config(_) | Self::AuditUnavailable | Self::ProviderUnavailable => {
                 "service_unavailable"
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LlmGatewayError;
+
+    #[test]
+    fn route_alias_capability_and_readiness_remain_distinct() {
+        let cases = [
+            (LlmGatewayError::RouteNotFound, 404, "route_not_found"),
+            (LlmGatewayError::AliasNotFound, 404, "model_not_found"),
+            (
+                LlmGatewayError::UnsupportedCapability("embed".to_string()),
+                400,
+                "unsupported_feature",
+            ),
+            (LlmGatewayError::NoReadyDeployment, 503, "model_unavailable"),
+        ];
+        for (error, status, code) in cases {
+            assert_eq!(error.public_status(), status);
+            assert_eq!(error.public_code(), code);
         }
     }
 }

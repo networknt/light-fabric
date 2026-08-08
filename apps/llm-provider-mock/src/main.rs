@@ -5,6 +5,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -42,6 +43,10 @@ struct MockProfile {
     usage_prompt_tokens: u64,
     #[serde(default = "default_completion_tokens")]
     usage_completion_tokens: u64,
+    #[serde(default)]
+    embedding_fault: Option<String>,
+    #[serde(default)]
+    responses_fault: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,6 +55,27 @@ struct ChatRequest {
     model: String,
     #[serde(default)]
     messages: Vec<Value>,
+    #[serde(default)]
+    stream: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct EmbeddingRequest {
+    #[serde(default = "default_model")]
+    model: String,
+    input: Value,
+    #[serde(default)]
+    dimensions: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResponsesRequest {
+    #[serde(default = "default_model")]
+    model: String,
+    #[serde(default)]
+    input: Value,
+    #[serde(default)]
+    tools: Vec<Value>,
     #[serde(default)]
     stream: bool,
 }
@@ -163,6 +189,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/metrics", get(prometheus_metrics))
         .route("/metrics.json", get(json_metrics))
         .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/responses", post(responses))
+        .route("/v1/embeddings", post(embeddings))
         .with_state(state);
     let address: SocketAddr = env::var("MOCK_LISTEN")
         .unwrap_or_else(|_| "0.0.0.0:8080".to_string())
@@ -171,6 +199,286 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(address).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn responses(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let guard = InflightGuard::new(Arc::clone(&state.metrics));
+    let request: ResponsesRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            state.metrics.errors.fetch_add(1, Ordering::Relaxed);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":{"message":error.to_string(),"type":"invalid_request_error"}})),
+            )
+                .into_response();
+        }
+    };
+    let profile_name = headers
+        .get("x-mock-profile")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or(&state.default_profile);
+    let Some(profile) = state.profiles.get(profile_name).cloned() else {
+        state.metrics.errors.fetch_add(1, Ordering::Relaxed);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(
+                json!({"error":{"message":"unknown mock profile","type":"invalid_request_error"}}),
+            ),
+        )
+            .into_response();
+    };
+    let request_id = request_id(&body);
+    sleep(deterministic_latency(&profile, &request_id)).await;
+    if let Some(status) = profile.error_status {
+        state.metrics.errors.fetch_add(1, Ordering::Relaxed);
+        return (StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), Json(json!({"error":{"message":"deterministic provider error","type":"mock_provider_error"}}))).into_response();
+    }
+    if profile.responses_fault.as_deref() == Some("malformed") {
+        state.metrics.errors.fetch_add(1, Ordering::Relaxed);
+        drop(guard);
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{malformed"))
+            .expect("valid response");
+    }
+    if request.stream {
+        state.metrics.streams.fetch_add(1, Ordering::Relaxed);
+        responses_stream(state.metrics.clone(), guard, request, profile, request_id)
+    } else {
+        responses_buffered(state.metrics.clone(), guard, request, profile, request_id)
+    }
+}
+
+fn responses_output(
+    request: &ResponsesRequest,
+    profile: &MockProfile,
+    request_id: &str,
+) -> Vec<Value> {
+    let has_result = request.input.as_array().is_some_and(|items| {
+        items
+            .iter()
+            .any(|item| item.get("type").and_then(Value::as_str) == Some("function_call_output"))
+    });
+    if !request.tools.is_empty() && !has_result {
+        let name = request.tools[0]
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("mock_tool");
+        vec![
+            json!({"id":format!("fc-{request_id}"),"type":"function_call","call_id":format!("call-{request_id}"),"name":name,"arguments":"{}","status":"completed"}),
+        ]
+    } else {
+        vec![
+            json!({"id":format!("msg-{request_id}"),"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"x".repeat(profile.response_bytes),"annotations":[]}]}),
+        ]
+    }
+}
+
+fn responses_buffered(
+    metrics: Arc<Metrics>,
+    guard: InflightGuard,
+    request: ResponsesRequest,
+    profile: MockProfile,
+    request_id: String,
+) -> Response {
+    let output = responses_output(&request, &profile, &request_id);
+    let encoded = serde_json::to_vec(&json!({
+        "id":request_id,"object":"response","created_at":1721260800_u64,"status":"completed","store":false,
+        "model":request.model,"output":output,"usage":{"input_tokens":profile.usage_prompt_tokens,"output_tokens":profile.usage_completion_tokens,"total_tokens":profile.usage_prompt_tokens + profile.usage_completion_tokens}
+    })).expect("mock Responses response serializes");
+    if profile.reset_after_chunks.is_some() {
+        let cutoff = encoded.len().min(profile.chunk_bytes.max(1));
+        let first = Bytes::copy_from_slice(&encoded[..cutoff]);
+        let body = stream! { yield Ok::<Bytes, std::io::Error>(first); yield Err(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "deterministic mock reset")); drop(guard); };
+        metrics.errors.fetch_add(1, Ordering::Relaxed);
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from_stream(body))
+            .expect("valid reset response");
+    }
+    metrics.successes.fetch_add(1, Ordering::Relaxed);
+    metrics
+        .bytes_sent
+        .fetch_add(encoded.len() as u64, Ordering::Relaxed);
+    drop(guard);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("x-mock-profile", profile.name)
+        .body(Body::from(encoded))
+        .expect("valid Responses response")
+}
+
+fn responses_stream(
+    metrics: Arc<Metrics>,
+    guard: InflightGuard,
+    request: ResponsesRequest,
+    profile: MockProfile,
+    request_id: String,
+) -> Response {
+    let output = responses_output(&request, &profile, &request_id);
+    let stream = stream! {
+        sleep(Duration::from_millis(profile.first_token_delay_ms)).await;
+        let created = format!("event: response.created\ndata: {}\n\n", json!({"type":"response.created","response":{"id":request_id,"status":"in_progress","output":[]}}));
+        yield Ok::<Bytes, std::io::Error>(Bytes::from(created));
+        if output[0]["type"] == "function_call" {
+            let added = format!("event: response.output_item.added\ndata: {}\n\n", json!({"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":output[0]["call_id"],"name":output[0]["name"]}}));
+            yield Ok(Bytes::from(added));
+            let delta = format!("event: response.function_call_arguments.delta\ndata: {}\n\n", json!({"type":"response.function_call_arguments.delta","output_index":0,"delta":"{}"}));
+            yield Ok(Bytes::from(delta));
+        } else {
+            let text = output[0].pointer("/content/0/text").and_then(Value::as_str).unwrap_or_default();
+            for (index, chunk) in text.as_bytes().chunks(profile.chunk_bytes.max(1)).enumerate() {
+                if profile.reset_after_chunks.is_some_and(|reset| index >= reset) { metrics.errors.fetch_add(1, Ordering::Relaxed); yield Err(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "deterministic mock reset")); drop(guard); return; }
+                if index > 0 { sleep(Duration::from_millis(profile.chunk_interval_ms)).await; }
+                let delta = String::from_utf8_lossy(chunk);
+                yield Ok(Bytes::from(format!("event: response.output_text.delta\ndata: {}\n\n", json!({"type":"response.output_text.delta","delta":delta}))));
+            }
+        }
+        let completed = format!("event: response.completed\ndata: {}\n\n", json!({"type":"response.completed","response":{"id":request_id,"status":"completed","output":output,"usage":{"input_tokens":profile.usage_prompt_tokens,"output_tokens":profile.usage_completion_tokens,"total_tokens":profile.usage_prompt_tokens + profile.usage_completion_tokens}}}));
+        metrics.bytes_sent.fetch_add(completed.len() as u64, Ordering::Relaxed);
+        yield Ok(Bytes::from(completed));
+        metrics.successes.fetch_add(1, Ordering::Relaxed);
+        drop(guard);
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header("x-mock-profile", profile.name)
+        .body(Body::from_stream(stream))
+        .expect("valid Responses stream")
+}
+
+async fn embeddings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let guard = InflightGuard::new(Arc::clone(&state.metrics));
+    let request: EmbeddingRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            state.metrics.errors.fetch_add(1, Ordering::Relaxed);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":{"message":error.to_string(),"type":"invalid_request_error"}})),
+            )
+                .into_response();
+        }
+    };
+    let profile_name = headers
+        .get("x-mock-profile")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or(&state.default_profile);
+    let Some(profile) = state.profiles.get(profile_name).cloned() else {
+        state.metrics.errors.fetch_add(1, Ordering::Relaxed);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(
+                json!({"error":{"message":"unknown mock profile","type":"invalid_request_error"}}),
+            ),
+        )
+            .into_response();
+    };
+    let request_id = request_id(&body);
+    sleep(deterministic_latency(&profile, &request_id)).await;
+    if let Some(status) = profile.error_status {
+        state.metrics.errors.fetch_add(1, Ordering::Relaxed);
+        return (
+            StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Json(json!({
+                "error":{"message":"deterministic provider error","type":"mock_provider_error"},
+                "request_id":request_id,
+                "profile":profile.name
+            })),
+        )
+            .into_response();
+    }
+    let inputs = match &request.input {
+        Value::String(_) => 1,
+        Value::Array(values) if !values.is_empty() => values.len(),
+        _ => {
+            state.metrics.errors.fetch_add(1, Ordering::Relaxed);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":{"message":"input must not be empty","type":"invalid_request_error"}})),
+            )
+                .into_response();
+        }
+    };
+    let dimensions = if profile.embedding_fault.as_deref() == Some("oversized") {
+        profile.response_bytes.div_ceil(std::mem::size_of::<f32>())
+    } else {
+        request.dimensions.unwrap_or(3) as usize
+    };
+    let data = (0..inputs)
+        .map(|index| {
+            let mut vector = (0..dimensions)
+                .map(|dimension| (index + dimension + 1) as f32 / 10.0)
+                .collect::<Vec<_>>();
+            if profile.embedding_fault.as_deref() == Some("dimension_mismatch") {
+                vector.push(9.9);
+            }
+            let embedding = if profile.embedding_fault.as_deref() == Some("malformed_base64") {
+                Value::String("%%%not-base64%%%".to_string())
+            } else if profile.embedding_fault.as_deref() == Some("base64") {
+                Value::String(
+                    STANDARD.encode(
+                        vector
+                            .iter()
+                            .flat_map(|value| value.to_le_bytes())
+                            .collect::<Vec<_>>(),
+                    ),
+                )
+            } else {
+                json!(vector)
+            };
+            json!({"object":"embedding","index":index,"embedding":embedding})
+        })
+        .collect::<Vec<_>>();
+    let encoded = serde_json::to_vec(&json!({
+        "object":"list",
+        "data":data,
+        "model":request.model,
+        "usage":{"prompt_tokens":profile.usage_prompt_tokens,"total_tokens":profile.usage_prompt_tokens},
+        "id":request_id
+    }))
+    .expect("mock embedding response serializes");
+    if profile.reset_after_chunks.is_some() {
+        let cutoff = encoded.len().min(profile.chunk_bytes.max(1));
+        let first = Bytes::copy_from_slice(&encoded[..cutoff]);
+        let body = stream! {
+            yield Ok::<Bytes, std::io::Error>(first);
+            yield Err(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "deterministic mock reset"));
+            drop(guard);
+        };
+        state.metrics.errors.fetch_add(1, Ordering::Relaxed);
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from_stream(body))
+            .expect("valid reset response");
+    }
+    state.metrics.successes.fetch_add(1, Ordering::Relaxed);
+    state
+        .metrics
+        .bytes_sent
+        .fetch_add(encoded.len() as u64, Ordering::Relaxed);
+    drop(guard);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("x-mock-profile", profile.name)
+        .body(Body::from(encoded))
+        .expect("valid embedding response")
 }
 
 fn load_profiles(dir: &Path) -> Result<BTreeMap<String, MockProfile>, Box<dyn std::error::Error>> {
@@ -465,6 +773,8 @@ mod tests {
             chunk_bytes: 2,
             usage_prompt_tokens: 1,
             usage_completion_tokens: 1,
+            embedding_fault: None,
+            responses_fault: None,
         };
         assert_eq!(request_id(b"same"), request_id(b"same"));
         assert_eq!(

@@ -2,10 +2,12 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use model_provider::inference::{
-    AcceptanceEvidence, FinishReason, InferenceError, InferenceErrorCategory, InferenceEvent,
-    InferenceRequest, NormalizedUsage, ProviderRequestContext,
+    AcceptanceEvidence, ClientProtocol, FinishReason, InferenceError, InferenceErrorCategory,
+    InferenceEvent, InferenceRequest, NormalizedUsage, Operation, ProviderRequestContext,
+    ToolCallDelta,
 };
-use serde_json::json;
+use serde_json::{Map, Value, json};
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -28,6 +30,55 @@ pub trait StreamStartBarrier: Send + Sync {
 
 pub struct ImmediateStreamStartBarrier;
 
+/// Sanitized client-visible Responses request settings. The client codec has
+/// already validated these values before this profile is constructed.
+#[derive(Clone)]
+pub struct ResponsesResponseMetadata {
+    fields: Map<String, Value>,
+}
+
+impl ResponsesResponseMetadata {
+    pub fn from_validated_request(request: &Value) -> Self {
+        let mut fields = Map::new();
+        for (key, default) in [
+            ("instructions", Value::Null),
+            ("max_output_tokens", Value::Null),
+            ("parallel_tool_calls", Value::Bool(false)),
+            ("reasoning", json!({"effort":null,"summary":null})),
+            ("temperature", Value::Null),
+            ("text", json!({"format":{"type":"text"}})),
+            ("tool_choice", json!("auto")),
+            ("tools", json!([])),
+            ("top_p", Value::Null),
+            ("truncation", json!("disabled")),
+            ("metadata", json!({})),
+        ] {
+            fields.insert(
+                key.to_string(),
+                request
+                    .get(key)
+                    .filter(|value| !value.is_null())
+                    .cloned()
+                    .unwrap_or(default),
+            );
+        }
+        Self { fields }
+    }
+
+    pub(crate) fn apply(&self, response: &mut Value) {
+        let Some(object) = response.as_object_mut() else {
+            return;
+        };
+        object.extend(self.fields.clone());
+    }
+}
+
+impl Default for ResponsesResponseMetadata {
+    fn default() -> Self {
+        Self::from_validated_request(&Value::Null)
+    }
+}
+
 #[async_trait]
 impl StreamStartBarrier for ImmediateStreamStartBarrier {
     async fn wait_until_durable(&self, _request_id: &str) -> Result<(), LlmGatewayError> {
@@ -36,8 +87,9 @@ impl StreamStartBarrier for ImmediateStreamStartBarrier {
 }
 
 pub struct LlmStreamExecution {
-    receiver: mpsc::Receiver<Bytes>,
+    receiver: mpsc::Receiver<GatewayStreamEvent>,
     cancellation: CancellationToken,
+    encoder: ClientStreamEncoder,
     pub request_id: String,
     pub alias: String,
     pub generation: u64,
@@ -48,7 +100,17 @@ pub struct LlmStreamExecution {
 
 impl LlmStreamExecution {
     pub async fn next_frame(&mut self) -> Option<Bytes> {
-        self.receiver.recv().await
+        loop {
+            if let Some(frame) = self.encoder.pending.pop_front() {
+                return Some(frame);
+            }
+            let event = self.receiver.recv().await?;
+            self.encoder.encode(event);
+            if self.encoder.limit_exceeded {
+                self.cancellation.cancel();
+                self.receiver.close();
+            }
+        }
     }
 
     pub fn cancel(&self) {
@@ -77,8 +139,28 @@ impl LlmRuntime {
         &self,
         context: LlmRequestContext,
         root: Arc<super::LlmPublishedSnapshot>,
-        mut request: InferenceRequest,
+        request: InferenceRequest,
         client_include_usage: bool,
+    ) -> Result<LlmStreamExecution, LlmGatewayError> {
+        self.execute_stream_with_snapshot_protocol(
+            context,
+            root,
+            request,
+            ClientProtocol::OpenAiChat,
+            client_include_usage,
+            None,
+        )
+        .await
+    }
+
+    pub async fn execute_stream_with_snapshot_protocol(
+        &self,
+        context: LlmRequestContext,
+        root: Arc<super::LlmPublishedSnapshot>,
+        mut request: InferenceRequest,
+        client_protocol: ClientProtocol,
+        client_include_usage: bool,
+        responses_metadata: Option<ResponsesResponseMetadata>,
     ) -> Result<LlmStreamExecution, LlmGatewayError> {
         if context.deadline <= Instant::now() {
             return Err(LlmGatewayError::Provider(
@@ -88,11 +170,16 @@ impl LlmRuntime {
         let alias = root
             .aliases
             .get(&request.model)
-            .ok_or(LlmGatewayError::ModelUnavailable)?
+            .ok_or(LlmGatewayError::AliasNotFound)?
             .clone();
         if alias.internal && alias.bound_principal.as_deref() != Some(context.principal_id.as_str())
         {
-            return Err(LlmGatewayError::ModelUnavailable);
+            return Err(LlmGatewayError::AliasNotFound);
+        }
+        if !alias.operations.contains(&Operation::Generate) {
+            return Err(LlmGatewayError::UnsupportedCapability(
+                "model alias does not support generate".to_string(),
+            ));
         }
         let principal_permit = root.principal_permits.permits_for(&context.principal_id);
         let request_permits =
@@ -106,6 +193,7 @@ impl LlmRuntime {
                     request_id: context.request_id.clone(),
                     principal_id: context.principal_id.clone(),
                     alias: alias.public_name.clone(),
+                    operation: Operation::Generate,
                     generation: root.generation,
                     snapshot_digest: root.digest.clone(),
                     max_attempts: alias.max_attempts,
@@ -165,20 +253,49 @@ impl LlmRuntime {
         }
 
         let required = alias.merge_requirements(request_capabilities(&request, true));
+        if !alias
+            .deployments
+            .iter()
+            .any(|deployment| deployment.supports_static(&required))
+        {
+            let error = LlmGatewayError::UnsupportedCapability(
+                "no configured route preserves the requested streaming capabilities".to_string(),
+            );
+            finish_audit(
+                audit,
+                rejected_finish(),
+                error.public_status(),
+                error.public_code(),
+            )
+            .await?;
+            return Err(error);
+        }
         let candidates = alias
             .deployments
             .iter()
             .filter(|deployment| deployment.supports(&required))
             .cloned()
             .collect::<Vec<_>>();
-        let Some(first_price) = candidates.first().map(|candidate| candidate.price) else {
+        let Some(first_price) = candidates.first().map(|candidate| {
+            candidate
+                .generation_price()
+                .expect("generation route has generation price")
+        }) else {
             finish_audit(audit, rejected_finish(), 404, "model_not_found").await?;
-            return Err(LlmGatewayError::ModelUnavailable);
+            return Err(LlmGatewayError::NoReadyDeployment);
         };
         let envelope = candidates
             .iter()
             .take(alias.max_attempts)
-            .map(|deployment| cost(deployment.price, estimated_input, max_output))
+            .map(|deployment| {
+                cost(
+                    deployment
+                        .generation_price()
+                        .expect("generation route has generation price"),
+                    estimated_input,
+                    max_output,
+                )
+            })
             .fold(0_u64, u64::saturating_add);
         let reservation = match UsageReservation::reserve(
             Arc::clone(&alias.ledger),
@@ -230,8 +347,13 @@ impl LlmRuntime {
                 })
                 .await
             {
-                let usage =
-                    reservation.reconcile(deployment.price, None, AcceptanceEvidence::NotAccepted);
+                let usage = reservation.reconcile(
+                    deployment
+                        .generation_price()
+                        .expect("generation route has generation price"),
+                    None,
+                    AcceptanceEvidence::NotAccepted,
+                );
                 finish_audit(
                     audit,
                     AuditFinish {
@@ -248,7 +370,9 @@ impl LlmRuntime {
             }
             attempts = next_attempt;
             attempted_envelope = attempted_envelope.saturating_add(cost(
-                deployment.price,
+                deployment
+                    .generation_price()
+                    .expect("generation route has generation price"),
                 estimated_input,
                 max_output,
             ));
@@ -269,7 +393,9 @@ impl LlmRuntime {
                     .await
                 {
                     let usage = reservation.reconcile(
-                        deployment.price,
+                        deployment
+                            .generation_price()
+                            .expect("generation route has generation price"),
                         None,
                         AcceptanceEvidence::NotAccepted,
                     );
@@ -287,8 +413,13 @@ impl LlmRuntime {
                     .await?;
                     return Err(audit_error);
                 }
-                let usage =
-                    reservation.reconcile(deployment.price, None, AcceptanceEvidence::NotAccepted);
+                let usage = reservation.reconcile(
+                    deployment
+                        .generation_price()
+                        .expect("generation route has generation price"),
+                    None,
+                    AcceptanceEvidence::NotAccepted,
+                );
                 finish_audit(
                     audit,
                     AuditFinish {
@@ -318,7 +449,9 @@ impl LlmRuntime {
                     attempt_cancellation.cancel();
                     Err(InferenceError::timeout_after_possible_acceptance())
                 }
-                result = deployment.provider.stream(provider_context, provider_request) => result,
+                result = deployment.provider.generation()
+                    .expect("generate route selected a generation executor")
+                    .generate_stream(provider_context, provider_request) => result,
             };
             match stream_result {
                 Ok(mut provider_stream) => {
@@ -360,7 +493,9 @@ impl LlmRuntime {
                                 .await;
                             if let Err(audit_error) = attempt_audit {
                                 let usage = reservation.reconcile_with_ambiguous_bound(
-                                    deployment.price,
+                                    deployment
+                                        .generation_price()
+                                        .expect("generation route has generation price"),
                                     None,
                                     error.acceptance,
                                     attempted_envelope,
@@ -398,7 +533,9 @@ impl LlmRuntime {
                         .await;
                     if let Err(audit_error) = attempt_audit {
                         let usage = reservation.reconcile_with_ambiguous_bound(
-                            deployment.price,
+                            deployment
+                                .generation_price()
+                                .expect("generation route has generation price"),
                             None,
                             error.acceptance,
                             attempted_envelope,
@@ -443,7 +580,13 @@ impl LlmRuntime {
                 error.acceptance,
                 attempted_envelope,
             );
-            let public_error = LlmGatewayError::Provider(error);
+            let public_error = if error.category == InferenceErrorCategory::UnsupportedFeature {
+                LlmGatewayError::Invariant(
+                    "eligible streaming provider returned UnsupportedFeature".to_string(),
+                )
+            } else {
+                LlmGatewayError::Provider(error)
+            };
             finish_audit(
                 audit,
                 AuditFinish {
@@ -527,12 +670,10 @@ impl LlmRuntime {
                                 break;
                             }
                         };
-                        if let Some(frame) =
-                            event.and_then(|event| semantic_frame(&request_id, event))
-                        {
-                            if let Err(error) = send_frame(
+                        if let Some(event) = event.and_then(GatewayStreamEvent::from_provider) {
+                            if let Err(error) = send_event(
                                 &sender,
-                                frame,
+                                event,
                                 &producer_cancellation,
                                 deadline,
                                 progress_timeout,
@@ -558,10 +699,10 @@ impl LlmRuntime {
                     match pii.finish() {
                         Ok(events) => {
                             for event in events {
-                                if let Some(frame) = semantic_frame(&request_id, event) {
-                                    if let Err(error) = send_frame(
+                                if let Some(event) = GatewayStreamEvent::from_provider(event) {
+                                    if let Err(error) = send_event(
                                         &sender,
-                                        frame,
+                                        event,
                                         &producer_cancellation,
                                         deadline,
                                         progress_timeout,
@@ -585,31 +726,23 @@ impl LlmRuntime {
                         // Do not emit a successful terminal marker after PII
                         // recovery failed.
                     } else {
-                        let terminal_frames =
-                            std::iter::once(finish_frame(&request_id, &finish_reason))
-                                .chain(
-                                    client_include_usage
-                                        .then_some(usage.as_ref())
-                                        .flatten()
-                                        .map(|value| usage_frame(&request_id, value)),
-                                )
-                                .chain(std::iter::once(Bytes::from_static(b"data: [DONE]\n\n")));
-                        for frame in terminal_frames {
-                            if let Err(error) = send_frame(
-                                &sender,
-                                frame,
-                                &producer_cancellation,
-                                deadline,
-                                progress_timeout,
-                            )
-                            .await
-                            {
-                                producer_cancellation.cancel();
-                                stream_error = Some(error);
-                                break;
-                            }
-                            visible = true;
+                        if let Err(error) = send_event(
+                            &sender,
+                            GatewayStreamEvent::Completed {
+                                finish_reason,
+                                usage: usage.clone(),
+                                include_usage: client_include_usage,
+                            },
+                            &producer_cancellation,
+                            deadline,
+                            progress_timeout,
+                        )
+                        .await
+                        {
+                            producer_cancellation.cancel();
+                            stream_error = Some(error);
                         }
+                        visible = true;
                         completed = stream_error.is_none();
                     }
                 } else {
@@ -620,9 +753,9 @@ impl LlmRuntime {
             }
 
             if stream_error.is_some() && !producer_cancellation.is_cancelled() {
-                let _ = send_frame(
+                let _ = send_event(
                     &sender,
-                    stream_error_frame(),
+                    GatewayStreamEvent::Failed,
                     &producer_cancellation,
                     deadline,
                     progress_timeout,
@@ -641,7 +774,13 @@ impl LlmRuntime {
                         error.acceptance
                     })
             };
-            let reconciled = reservation.reconcile(deployment.price, usage.as_ref(), acceptance);
+            let reconciled = reservation.reconcile(
+                deployment
+                    .generation_price()
+                    .expect("generation route has generation price"),
+                usage.as_ref(),
+                acceptance,
+            );
             if completed {
                 circuit_permit.success();
             } else if let Some(error) = stream_error.as_ref() {
@@ -705,6 +844,13 @@ impl LlmRuntime {
         Ok(LlmStreamExecution {
             receiver,
             cancellation,
+            encoder: ClientStreamEncoder::new(
+                client_protocol,
+                context.request_id.clone(),
+                alias.public_name.clone(),
+                root.max_stream_response_bytes,
+                responses_metadata.unwrap_or_default(),
+            ),
             request_id: context.request_id,
             alias: alias.public_name.clone(),
             generation: root.generation,
@@ -724,9 +870,42 @@ fn rejected_finish() -> AuditFinish {
     }
 }
 
-async fn send_frame(
-    sender: &mpsc::Sender<Bytes>,
-    frame: Bytes,
+#[derive(Debug)]
+enum GatewayStreamEvent {
+    MessageStart,
+    TextDelta(String),
+    RefusalDelta(String),
+    ReasoningSummaryDelta {
+        index: u32,
+        text: String,
+    },
+    ToolCallDelta(ToolCallDelta),
+    Completed {
+        finish_reason: FinishReason,
+        usage: Option<NormalizedUsage>,
+        include_usage: bool,
+    },
+    Failed,
+}
+
+impl GatewayStreamEvent {
+    fn from_provider(event: InferenceEvent) -> Option<Self> {
+        match event {
+            InferenceEvent::MessageStart { .. } => Some(Self::MessageStart),
+            InferenceEvent::TextDelta { text } => Some(Self::TextDelta(text)),
+            InferenceEvent::RefusalDelta { refusal } => Some(Self::RefusalDelta(refusal)),
+            InferenceEvent::ReasoningSummaryDelta { index, text } => {
+                Some(Self::ReasoningSummaryDelta { index, text })
+            }
+            InferenceEvent::ToolCallDelta { delta } => Some(Self::ToolCallDelta(delta)),
+            InferenceEvent::Usage { .. } | InferenceEvent::MessageEnd { .. } => None,
+        }
+    }
+}
+
+async fn send_event(
+    sender: &mpsc::Sender<GatewayStreamEvent>,
+    event: GatewayStreamEvent,
     cancellation: &CancellationToken,
     deadline: tokio::time::Instant,
     progress_timeout: Duration,
@@ -739,65 +918,343 @@ async fn send_frame(
         _ = tokio::time::sleep(progress_timeout) => {
             Err(InferenceError::timeout_after_possible_acceptance())
         }
-        result = sender.send(frame) => result.map_err(|_| InferenceError::cancelled()),
+        result = sender.send(event) => result.map_err(|_| InferenceError::cancelled()),
     }
 }
 
-fn semantic_frame(request_id: &str, event: InferenceEvent) -> Option<Bytes> {
-    let value = match event {
-        InferenceEvent::MessageStart { .. } => json!({
-            "id": format!("chatcmpl-{request_id}"),
-            "object": "chat.completion.chunk",
-            "choices": [{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]
-        }),
-        InferenceEvent::TextDelta { text } => json!({
-            "id": format!("chatcmpl-{request_id}"),
-            "object": "chat.completion.chunk",
-            "choices": [{"index":0,"delta":{"content":text},"finish_reason":null}]
-        }),
-        InferenceEvent::ToolCallDelta { delta } => json!({
-            "id": format!("chatcmpl-{request_id}"),
-            "object": "chat.completion.chunk",
-            "choices": [{"index":0,"delta":{"tool_calls":[{
-                "index":delta.index,"id":delta.id,"type":"function",
-                "function":{"name":delta.name,"arguments":delta.arguments_fragment}
-            }]},"finish_reason":null}]
-        }),
-        InferenceEvent::Usage { .. } | InferenceEvent::MessageEnd { .. } => return None,
-    };
-    Some(sse_json(value))
+struct ClientStreamEncoder {
+    protocol: ClientProtocol,
+    request_id: String,
+    alias: String,
+    created_at: u64,
+    sequence_number: u64,
+    pending: VecDeque<Bytes>,
+    text: String,
+    text_started: bool,
+    refusal: String,
+    refusal_started: bool,
+    message_output_index: Option<u32>,
+    responses_started: bool,
+    tool_calls: BTreeMap<u32, EncodedToolCall>,
+    reasoning_summaries: BTreeMap<u32, EncodedReasoningSummary>,
+    next_output_index: u32,
+    max_response_bytes: usize,
+    response_bytes: usize,
+    limit_exceeded: bool,
+    responses_metadata: ResponsesResponseMetadata,
 }
 
-fn usage_frame(request_id: &str, usage: &NormalizedUsage) -> Bytes {
-    sse_json(json!({
-        "id": format!("chatcmpl-{request_id}"),
-        "object": "chat.completion.chunk",
-        "choices": [],
-        "usage": {
-            "prompt_tokens": usage.input_tokens,
-            "completion_tokens": usage.output_tokens,
-            "total_tokens": usage.input_tokens.zip(usage.output_tokens)
-                .map(|(input, output)| input.saturating_add(output))
+#[derive(Clone, Default)]
+struct EncodedToolCall {
+    output_index: u32,
+    call_id: String,
+    name: String,
+    arguments: String,
+}
+
+#[derive(Clone, Default)]
+struct EncodedReasoningSummary {
+    output_index: u32,
+    text: String,
+}
+
+impl ClientStreamEncoder {
+    fn new(
+        protocol: ClientProtocol,
+        request_id: String,
+        alias: String,
+        max_response_bytes: usize,
+        responses_metadata: ResponsesResponseMetadata,
+    ) -> Self {
+        Self {
+            protocol,
+            request_id,
+            alias,
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |value| value.as_secs()),
+            sequence_number: 0,
+            pending: VecDeque::new(),
+            text: String::new(),
+            text_started: false,
+            refusal: String::new(),
+            refusal_started: false,
+            message_output_index: None,
+            responses_started: false,
+            tool_calls: BTreeMap::new(),
+            reasoning_summaries: BTreeMap::new(),
+            next_output_index: 0,
+            max_response_bytes,
+            response_bytes: 0,
+            limit_exceeded: false,
+            responses_metadata,
         }
-    }))
-}
+    }
 
-fn finish_frame(request_id: &str, finish_reason: &FinishReason) -> Bytes {
-    sse_json(json!({
-        "id": format!("chatcmpl-{request_id}"),
-        "object": "chat.completion.chunk",
-        "choices": [{"index":0,"delta":{},"finish_reason":finish_reason}]
-    }))
-}
-
-fn stream_error_frame() -> Bytes {
-    sse_json(json!({
-        "error": {
-            "message": "The model stream terminated before completion.",
-            "type": "provider_error",
-            "code": "provider_error"
+    fn encode(&mut self, event: GatewayStreamEvent) {
+        match self.protocol {
+            ClientProtocol::OpenAiResponses => self.encode_responses(event),
+            ClientProtocol::OpenAiChat | ClientProtocol::InternalCanonical => {
+                self.encode_chat(event)
+            }
+            ClientProtocol::OpenAiEmbeddings => self.pending.push_back(sse_json(json!({
+                "error":{"message":"Invalid streaming protocol.","type":"server_error","code":"internal_error"}
+            }))),
         }
-    }))
+    }
+
+    fn encode_chat(&mut self, event: GatewayStreamEvent) {
+        let id = format!("chatcmpl-{}", self.request_id);
+        match event {
+            GatewayStreamEvent::MessageStart => self.pending.push_back(sse_json(json!({
+                "id":id,"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]
+            }))),
+            GatewayStreamEvent::TextDelta(text) => self.pending.push_back(sse_json(json!({
+                "id":id,"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]
+            }))),
+            GatewayStreamEvent::RefusalDelta(refusal) => self.pending.push_back(sse_json(json!({
+                "id":id,"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"refusal":refusal},"finish_reason":null}]
+            }))),
+            GatewayStreamEvent::ReasoningSummaryDelta { .. } => {},
+            GatewayStreamEvent::ToolCallDelta(delta) => self.pending.push_back(sse_json(json!({
+                "id":id,"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{
+                    "index":delta.index,"id":delta.id,"type":"function","function":{"name":delta.name,"arguments":delta.arguments_fragment}
+                }]},"finish_reason":null}]
+            }))),
+            GatewayStreamEvent::Completed { finish_reason, usage, include_usage } => {
+                self.pending.push_back(sse_json(json!({"id":id,"object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":finish_reason}]})));
+                if include_usage && let Some(usage) = usage {
+                    self.pending.push_back(sse_json(json!({"id":id,"object":"chat.completion.chunk","choices":[],"usage":{
+                        "prompt_tokens":usage.input_tokens,"completion_tokens":usage.output_tokens,
+                        "total_tokens":usage.input_tokens.zip(usage.output_tokens).map(|(input,output)| input.saturating_add(output))
+                    }})));
+                }
+                self.pending.push_back(Bytes::from_static(b"data: [DONE]\n\n"));
+            }
+            GatewayStreamEvent::Failed => self.pending.push_back(sse_json(json!({"error":{
+                "message":"The model stream terminated before completion.","type":"provider_error","code":"provider_error"
+            }}))),
+        }
+    }
+
+    fn encode_responses(&mut self, event: GatewayStreamEvent) {
+        if self.limit_exceeded {
+            return;
+        }
+        let response_id = format!("resp_{}", self.request_id);
+        if !self.responses_started {
+            self.responses_started = true;
+            let mut response = json!({
+                "id":response_id,"object":"response","created_at":self.created_at,"status":"in_progress",
+                "background":false,"error":null,"incomplete_details":null,
+                "model":self.alias,"output":[],"previous_response_id":null,
+                "store":false,"usage":null
+            });
+            self.responses_metadata.apply(&mut response);
+            self.push_named(
+                "response.created",
+                json!({"type":"response.created","response":response}),
+            );
+        }
+        match event {
+            GatewayStreamEvent::MessageStart => {}
+            GatewayStreamEvent::TextDelta(delta) => {
+                if !self.text_started {
+                    self.text_started = true;
+                    let output_index = self.ensure_message_output_index();
+                    let message_id = format!("msg_{}_{}", self.request_id, output_index);
+                    self.push_named("response.output_item.added", json!({"type":"response.output_item.added","output_index":output_index,"item":{"id":message_id,"type":"message","role":"assistant","status":"in_progress","content":[]}}));
+                    self.push_named("response.content_part.added", json!({"type":"response.content_part.added","item_id":message_id,"output_index":output_index,"content_index":0,"part":{"type":"output_text","text":"","annotations":[]}}));
+                }
+                self.text.push_str(&delta);
+                let output_index = self.message_output_index.unwrap_or(0);
+                let message_id = format!("msg_{}_{}", self.request_id, output_index);
+                self.push_named("response.output_text.delta", json!({"type":"response.output_text.delta","item_id":message_id,"output_index":output_index,"content_index":0,"delta":delta}));
+            }
+            GatewayStreamEvent::RefusalDelta(delta) => {
+                let output_index = self.ensure_message_output_index();
+                let message_id = format!("msg_{}_{}", self.request_id, output_index);
+                let content_index = u32::from(self.text_started);
+                if !self.refusal_started {
+                    self.refusal_started = true;
+                    if !self.text_started {
+                        self.push_named("response.output_item.added", json!({"type":"response.output_item.added","output_index":output_index,"item":{"id":message_id,"type":"message","role":"assistant","status":"in_progress","content":[]}}));
+                    }
+                    self.push_named("response.content_part.added", json!({"type":"response.content_part.added","item_id":message_id,"output_index":output_index,"content_index":content_index,"part":{"type":"refusal","refusal":""}}));
+                }
+                self.refusal.push_str(&delta);
+                self.push_named("response.refusal.delta", json!({"type":"response.refusal.delta","item_id":message_id,"output_index":output_index,"content_index":content_index,"delta":delta}));
+            }
+            GatewayStreamEvent::ReasoningSummaryDelta { index, text } => {
+                let is_new = !self.reasoning_summaries.contains_key(&index);
+                if is_new {
+                    let output_index = self.allocate_output_index();
+                    self.reasoning_summaries.insert(index, EncodedReasoningSummary { output_index, text: String::new() });
+                    let item_id = format!("rs_{}_{}", self.request_id, output_index);
+                    self.push_named("response.output_item.added", json!({"type":"response.output_item.added","output_index":output_index,"item":{"id":item_id,"type":"reasoning","status":"in_progress","summary":[]}}));
+                    self.push_named("response.reasoning_summary_part.added", json!({"type":"response.reasoning_summary_part.added","item_id":item_id,"output_index":output_index,"summary_index":0,"part":{"type":"summary_text","text":""}}));
+                }
+                let output_index = self.reasoning_summaries.get(&index).map(|summary| summary.output_index).unwrap_or(0);
+                if let Some(summary) = self.reasoning_summaries.get_mut(&index) {
+                    summary.text.push_str(&text);
+                }
+                let item_id = format!("rs_{}_{}", self.request_id, output_index);
+                self.push_named("response.reasoning_summary_text.delta", json!({"type":"response.reasoning_summary_text.delta","item_id":item_id,"output_index":output_index,"summary_index":0,"delta":text}));
+            }
+            GatewayStreamEvent::ToolCallDelta(delta) => {
+                let is_new = !self.tool_calls.contains_key(&delta.index);
+                if is_new {
+                    let output_index = self.allocate_output_index();
+                    let call_id = delta.id.clone().unwrap_or_else(|| format!("call_{}_{}", self.request_id, delta.index));
+                    let name = delta.name.clone().unwrap_or_default();
+                    self.tool_calls.insert(delta.index, EncodedToolCall { output_index, call_id: call_id.clone(), name: name.clone(), arguments: String::new() });
+                    let item_id = format!("fc_{}_{}", self.request_id, output_index);
+                    self.push_named("response.output_item.added", json!({"type":"response.output_item.added","output_index":output_index,"item":{"id":item_id,"type":"function_call","call_id":call_id,"name":name,"arguments":"","status":"in_progress"}}));
+                }
+                let output_index = self.tool_calls.get(&delta.index).map(|call| call.output_index).unwrap_or(0);
+                let item_id = format!("fc_{}_{}", self.request_id, output_index);
+                if let Some(call) = self.tool_calls.get_mut(&delta.index) {
+                    if let Some(id) = delta.id { call.call_id = id; }
+                    if let Some(name) = delta.name { call.name = name; }
+                    call.arguments.push_str(&delta.arguments_fragment);
+                }
+                self.push_named("response.function_call_arguments.delta", json!({"type":"response.function_call_arguments.delta","item_id":item_id,"output_index":output_index,"delta":delta.arguments_fragment}));
+            }
+            GatewayStreamEvent::Completed { finish_reason, usage, .. } => {
+                let mut output = Vec::<(u32, Value)>::new();
+                if let Some(output_index) = self.message_output_index {
+                    let message_id = format!("msg_{}_{}", self.request_id, output_index);
+                    let mut content = Vec::new();
+                    if self.text_started {
+                        self.push_named("response.output_text.done", json!({"type":"response.output_text.done","item_id":message_id,"output_index":output_index,"content_index":0,"text":self.text}));
+                        self.push_named("response.content_part.done", json!({"type":"response.content_part.done","item_id":message_id,"output_index":output_index,"content_index":0,"part":{"type":"output_text","text":self.text,"annotations":[]}}));
+                        content.push(json!({"type":"output_text","text":self.text,"annotations":[]}));
+                    }
+                    if self.refusal_started {
+                        let content_index = u32::from(self.text_started);
+                        self.push_named("response.refusal.done", json!({"type":"response.refusal.done","item_id":message_id,"output_index":output_index,"content_index":content_index,"refusal":self.refusal}));
+                        self.push_named("response.content_part.done", json!({"type":"response.content_part.done","item_id":message_id,"output_index":output_index,"content_index":content_index,"part":{"type":"refusal","refusal":self.refusal}}));
+                        content.push(json!({"type":"refusal","refusal":self.refusal}));
+                    }
+                    let item = json!({"id":message_id,"type":"message","role":"assistant","status":"completed","content":content});
+                    self.push_named("response.output_item.done", json!({"type":"response.output_item.done","output_index":output_index,"item":item}));
+                    output.push((output_index, item));
+                }
+                let completed_calls = self
+                    .tool_calls
+                    .iter()
+                    .map(|(index, call)| (*index, call.clone()))
+                    .collect::<Vec<_>>();
+                for (_, call) in completed_calls {
+                    let index = call.output_index;
+                    let item_id = format!("fc_{}_{}", self.request_id, index);
+                    self.push_named("response.function_call_arguments.done", json!({"type":"response.function_call_arguments.done","item_id":item_id,"output_index":index,"arguments":call.arguments}));
+                    let item = json!({"id":item_id,"type":"function_call","call_id":call.call_id,"name":call.name,"arguments":call.arguments,"status":"completed"});
+                    self.push_named("response.output_item.done", json!({"type":"response.output_item.done","output_index":index,"item":item}));
+                    output.push((index, item));
+                }
+                let completed_reasoning = self.reasoning_summaries.values().cloned().collect::<Vec<_>>();
+                for summary in completed_reasoning {
+                    let index = summary.output_index;
+                    let item_id = format!("rs_{}_{}", self.request_id, index);
+                    self.push_named("response.reasoning_summary_text.done", json!({"type":"response.reasoning_summary_text.done","item_id":item_id,"output_index":index,"summary_index":0,"text":summary.text}));
+                    self.push_named("response.reasoning_summary_part.done", json!({"type":"response.reasoning_summary_part.done","item_id":item_id,"output_index":index,"summary_index":0,"part":{"type":"summary_text","text":summary.text}}));
+                    let item = json!({"id":item_id,"type":"reasoning","status":"completed","summary":[{"type":"summary_text","text":summary.text}]});
+                    self.push_named("response.output_item.done", json!({"type":"response.output_item.done","output_index":index,"item":item}));
+                    output.push((index, item));
+                }
+                output.sort_by_key(|(index, _)| *index);
+                let output = output.into_iter().map(|(_, item)| item).collect::<Vec<_>>();
+                let usage_value = usage.as_ref().map(responses_usage).unwrap_or(Value::Null);
+                let terminal_event = if finish_reason == FinishReason::Length {
+                    "response.incomplete"
+                } else {
+                    "response.completed"
+                };
+                let mut response = json!({
+                    "id":response_id,"object":"response","created_at":self.created_at,
+                    "status":if finish_reason == FinishReason::Length {"incomplete"} else {"completed"},
+                    "background":false,"error":null,
+                    "incomplete_details":if finish_reason == FinishReason::Length {json!({"reason":"max_output_tokens"})} else {Value::Null},
+                    "model":self.alias,"output":output,"previous_response_id":null,"store":false,"usage":usage_value
+                });
+                self.responses_metadata.apply(&mut response);
+                self.push_named(terminal_event, json!({"type":terminal_event,"response":response}));
+            }
+            GatewayStreamEvent::Failed => self.push_named("response.failed", json!({"type":"response.failed","response":{
+                "id":response_id,"object":"response","status":"failed","store":false,"output":[],"error":{"code":"provider_error","message":"The model stream terminated before completion."}
+            }})),
+        }
+    }
+
+    fn allocate_output_index(&mut self) -> u32 {
+        let index = self.next_output_index;
+        self.next_output_index = self.next_output_index.saturating_add(1);
+        index
+    }
+
+    fn ensure_message_output_index(&mut self) -> u32 {
+        if let Some(index) = self.message_output_index {
+            return index;
+        }
+        let index = self.allocate_output_index();
+        self.message_output_index = Some(index);
+        index
+    }
+
+    fn push_named(&mut self, name: &str, mut value: serde_json::Value) {
+        if self.limit_exceeded {
+            return;
+        }
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "sequence_number".to_string(),
+                Value::from(self.sequence_number),
+            );
+        }
+        self.sequence_number = self.sequence_number.saturating_add(1);
+        let frame = named_sse(name, value);
+        let Some(total) = self.response_bytes.checked_add(frame.len()) else {
+            self.fail_response_limit();
+            return;
+        };
+        if total > self.max_response_bytes {
+            self.fail_response_limit();
+            return;
+        }
+        self.response_bytes = total;
+        self.pending.push_back(frame);
+    }
+
+    fn fail_response_limit(&mut self) {
+        self.limit_exceeded = true;
+        self.pending.clear();
+        self.text.clear();
+        self.refusal.clear();
+        self.tool_calls.clear();
+        self.reasoning_summaries.clear();
+        let response_id = format!("resp_{}", self.request_id);
+        self.pending.push_back(named_sse("response.failed", json!({
+            "type":"response.failed","sequence_number":self.sequence_number,"response":{
+                "id":response_id,"object":"response","status":"failed","store":false,"output":[],
+                "error":{"code":"response_too_large","message":"The model response exceeded the gateway output limit."}
+            }
+        })));
+    }
+}
+
+fn responses_usage(usage: &NormalizedUsage) -> Value {
+    json!({
+        "input_tokens":usage.input_tokens,
+        "output_tokens":usage.output_tokens,
+        "total_tokens":usage.input_tokens.zip(usage.output_tokens).map(|(input,output)| input.saturating_add(output)),
+        "input_tokens_details":{"cached_tokens":usage.cached_input_tokens},
+        "output_tokens_details":{"reasoning_tokens":usage.reasoning_tokens}
+    })
+}
+
+fn named_sse(name: &str, value: serde_json::Value) -> Bytes {
+    Bytes::from(format!("event: {name}\ndata: {value}\n\n"))
 }
 
 fn sse_json(value: serde_json::Value) -> Bytes {

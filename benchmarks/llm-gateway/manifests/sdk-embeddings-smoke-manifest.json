@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "1",
+  "clients": {
+    "python": {
+      "package": "openai",
+      "version": "2.46.0"
+    },
+    "typescript": {
+      "package": "openai",
+      "version": "6.48.0"
+    }
+  },
+  "providerProtocol": "openai_embeddings",
+  "operation": "embed",
+  "requiredOperations": [
+    "singleFloat",
+    "batchFloat",
+    "singleBase64",
+    "explicitDimensions"
+  ],
+  "evidence": "benchmarks/llm-gateway/reports/sdk-embeddings-smoke.json",
+  "secretsRecorded": false
+}

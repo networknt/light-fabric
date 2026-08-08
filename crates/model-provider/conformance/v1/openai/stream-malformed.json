@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1",
   "id": "openai-stream-malformed-event",
-  "provider": "openai",
+  "provider": "openai_chat",
   "kind": "stream",
   "input": {"chunks": ["data: {not-json}\n\n"]},
   "expected": {"errorCategory": "protocol"}

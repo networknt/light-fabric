@@ -1,0 +1,8 @@
+{
+  "name": "embedding-malformed",
+  "baseLatencyMs": 5,
+  "responseBytes": 128,
+  "usagePromptTokens": 16,
+  "usageCompletionTokens": 0,
+  "embeddingFault": "malformed_base64"
+}

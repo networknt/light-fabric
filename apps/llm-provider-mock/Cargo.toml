@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 async-stream = "0.3"
 axum.workspace = true
+base64 = "0.22"
 bytes.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true

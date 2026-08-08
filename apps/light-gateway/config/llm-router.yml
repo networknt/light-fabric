@@ -17,10 +17,26 @@ maxJsonDepth: ${llm-router.maxJsonDepth:64}
 # multi-attempt alias it must be at least maxRequestBodyBytes as a conservative
 # reload check, and every canonical request is checked exactly before dispatch.
 maxReplayBytes: ${llm-router.maxReplayBytes:1048576}
+embeddingMemory:
+  maxRequestBodyBytes: ${llm-router.embeddingMemory.maxRequestBodyBytes:4194304}
+  maxReplayBytes: ${llm-router.embeddingMemory.maxReplayBytes:4194304}
+  maxMemoryBytes: ${llm-router.embeddingMemory.maxMemoryBytes:17179869184}
+  ingressConcurrency: ${llm-router.embeddingMemory.ingressConcurrency:32}
+  maxIngressMemoryBytes: ${llm-router.embeddingMemory.maxIngressMemoryBytes:268435456}
+  ingressOverheadBytes: ${llm-router.embeddingMemory.ingressOverheadBytes:65536}
+  itemsPerPermit: ${llm-router.embeddingMemory.itemsPerPermit:256}
+  maxInputBytesPerItem: ${llm-router.embeddingMemory.maxInputBytesPerItem:1048576}
+  maxTotalInputBytes: ${llm-router.embeddingMemory.maxTotalInputBytes:4194304}
+  bodyReadTimeoutMs: ${llm-router.embeddingMemory.bodyReadTimeoutMs:30000}
+  minimumReceiveBytesPerSecond: ${llm-router.embeddingMemory.minimumReceiveBytesPerSecond:1024}
+  authorizationTimeoutMs: ${llm-router.embeddingMemory.authorizationTimeoutMs:10000}
+  writeTimeoutMs: ${llm-router.embeddingMemory.writeTimeoutMs:30000}
+  minimumDrainBytesPerSecond: ${llm-router.embeddingMemory.minimumDrainBytesPerSecond:1024}
 requestTimeoutMs: ${llm-router.requestTimeoutMs:30000}
 globalConcurrency: ${llm-router.globalConcurrency:256}
 globalStreamConcurrency: ${llm-router.globalStreamConcurrency:64}
 streamChannelCapacity: ${llm-router.streamChannelCapacity:8}
+maxStreamResponseBytes: ${llm-router.maxStreamResponseBytes:16777216}
 streamWriteTimeoutMs: ${llm-router.streamWriteTimeoutMs:5000}
 streamSetupTimeoutMs: ${llm-router.streamSetupTimeoutMs:10000}
 streamIdleTimeoutMs: ${llm-router.streamIdleTimeoutMs:15000}

@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "1",
+  "id": "embeddings-response-malformed-base64",
+  "provider": "openai_embeddings",
+  "kind": "response",
+  "input": {"expectedCount": 1, "expectedDimensions": 2, "response": {"data": [{"index": 0, "embedding": "not-base64"}], "usage": {"prompt_tokens": 1}}},
+  "expected": {"errorCategory": "protocol"}
+}

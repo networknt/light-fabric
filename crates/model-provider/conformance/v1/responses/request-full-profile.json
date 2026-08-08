@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "1",
+  "id": "responses-request-full-profile",
+  "provider": "openai_responses",
+  "kind": "request",
+  "input": {
+    "model": "physical-responses",
+    "messages": [
+      {"role": "system", "content": [{"type": "text", "text": "Be concise."}]},
+      {"role": "user", "content": [{"type": "text", "text": "Describe this."}, {"type": "image", "source": {"url": "https://example.test/image.png"}}]},
+      {"role": "assistant", "content": [
+        {"type": "tool_call", "call": {"id": "call_1", "name": "weather", "arguments": {"city": "Toronto"}}},
+        {"type": "tool_call", "call": {"id": "call_2", "name": "clock", "arguments": {"zone": "UTC"}}}
+      ]},
+      {"role": "tool", "content": [{"type": "tool_result", "result": {"toolCallId": "call_1", "content": [{"type": "text", "text": "sunny"}], "isError": false}}]}
+    ],
+    "tools": [{"name": "weather", "description": "Weather", "inputSchema": {"type": "object"}}],
+    "toolChoice": {"type": "tool", "name": "weather"},
+    "responseFormat": {"type": "json_schema", "name": "answer", "schema": {"type": "object"}},
+    "parallelToolCalls": true,
+    "reasoning": {"effort": "medium", "summary": "auto"},
+    "sampling": {},
+    "tokenLimits": {"maxOutputTokens": 64}
+  },
+  "expected": {
+    "model": "physical-responses",
+    "store": false,
+    "stream": false,
+    "instructions": "Be concise.",
+    "input": [
+      {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Describe this."}, {"type": "input_image", "image_url": "https://example.test/image.png"}]},
+      {"type": "function_call", "call_id": "call_1", "name": "weather", "arguments": "{\"city\":\"Toronto\"}"},
+      {"type": "function_call", "call_id": "call_2", "name": "clock", "arguments": "{\"zone\":\"UTC\"}"},
+      {"type": "function_call_output", "call_id": "call_1", "output": "sunny"}
+    ],
+    "tools": [{"type": "function", "name": "weather", "description": "Weather", "parameters": {"type": "object"}}],
+    "tool_choice": {"type": "function", "name": "weather"},
+    "parallel_tool_calls": true,
+    "text": {"format": {"type": "json_schema", "name": "answer", "schema": {"type": "object"}}},
+    "reasoning": {"effort": "medium", "summary": "auto"},
+    "max_output_tokens": 64
+  }
+}

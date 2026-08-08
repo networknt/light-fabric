@@ -1,0 +1,70 @@
+{
+  "schemaVersion": "1",
+  "provider": "openai_embeddings",
+  "providerCodecVersion": "openai-embeddings-v1",
+  "physicalModel": "embedding-test",
+  "apiVersion": "2026-08-01",
+  "testedOperations": [
+    "embed"
+  ],
+  "capabilities": {
+    "operations": [
+      "embed"
+    ],
+    "embedding": {
+      "maxBatchItems": 2048,
+      "maxInputTokensPerItem": 8192,
+      "maxAggregateInputTokens": 16777216,
+      "supportedDimensions": [
+        2
+      ],
+      "supportedEncodings": [
+        "float",
+        "base64"
+      ],
+      "maxResponseBytes": 33554432
+    }
+  },
+  "capabilityEvidence": {
+    "embed": {
+      "fixtureIds": [
+        "embeddings-request-batch",
+        "embeddings-response-base64",
+        "embeddings-response-float"
+      ],
+      "provenances": [
+        "synthetic_spec_derived"
+      ]
+    }
+  },
+  "state": "pass",
+  "corpusVersion": "1.2.0",
+  "corpusDigest": "ad07ecbb0b9806188472df548ec7f3e5fc42f7160dd29eb1d1dfcee15a7399ef",
+  "testedAt": "2026-07-19T00:00:00Z",
+  "validUntil": "2026-07-26T00:00:00Z",
+  "refreshBeforeSeconds": 86400,
+  "piiPreservation": null,
+  "cases": [
+    {
+      "id": "embeddings-request-batch",
+      "passed": true
+    },
+    {
+      "id": "embeddings-response-float",
+      "passed": true
+    },
+    {
+      "id": "embeddings-response-base64",
+      "passed": true
+    },
+    {
+      "id": "embeddings-response-dimension-mismatch",
+      "passed": true
+    },
+    {
+      "id": "embeddings-response-malformed-base64",
+      "passed": true
+    }
+  ],
+  "digest": "6cfef9d995a5a50b744b3126b3fd9e97fc9a5bffc81cdec880ef3985c726a3b8"
+}

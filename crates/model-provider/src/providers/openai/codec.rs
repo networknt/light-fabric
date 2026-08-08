@@ -1,8 +1,9 @@
-use crate::inference::content::{ContentBlock, Message, Role, ToolCall};
+use crate::inference::content::{ContentBlock, Message, Role};
 use crate::inference::error::InferenceError;
 use crate::inference::request::{InferenceRequest, ResponseFormat, ToolChoice};
 use crate::inference::response::{
-    FinishReason, InferenceResponse, NormalizedUsage, ProviderEvidence, TerminalState,
+    FinishReason, GenerateOutputItem, InferenceResponse, ItemStatus, NormalizedUsage,
+    ProviderEvidence, TerminalState,
 };
 use crate::inference::stream::{InferenceEvent, StreamDecoder, ToolCallDelta};
 use bytes::{Buf, BytesMut};
@@ -66,6 +67,14 @@ impl OpenAiCodec {
                 ),
             );
         }
+        if request.parallel_tool_calls {
+            object.insert("parallel_tool_calls".to_string(), Value::Bool(true));
+        }
+        if request.reasoning.is_some() {
+            return Err(InferenceError::unsupported(
+                "reasoning controls require an OpenAI Responses route",
+            ));
+        }
         if let Some(choice) = &request.tool_choice {
             object.insert("tool_choice".to_string(), encode_tool_choice(choice));
         }
@@ -97,13 +106,31 @@ impl OpenAiCodec {
         let message = choice.get("message").ok_or_else(|| {
             InferenceError::provider_protocol(Some(502), "OpenAI choice has no message")
         })?;
-        let mut content = Vec::new();
+        let mut output = Vec::new();
+        let mut message_content = Vec::new();
         if let Some(text) = message
             .get("content")
             .and_then(Value::as_str)
             .filter(|text| !text.is_empty())
         {
-            content.push(ContentBlock::text(text));
+            message_content.push(ContentBlock::text(text));
+        }
+        if let Some(refusal) = message
+            .get("refusal")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+        {
+            message_content.push(ContentBlock::Refusal {
+                refusal: refusal.to_string(),
+            });
+        }
+        if !message_content.is_empty() {
+            output.push(GenerateOutputItem::Message {
+                id: "message-0".to_string(),
+                role: Role::Assistant,
+                content: message_content,
+                status: ItemStatus::Completed,
+            });
         }
         if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
             for call in calls {
@@ -120,12 +147,12 @@ impl OpenAiCodec {
                         format!("OpenAI tool arguments drift: {error}"),
                     )
                 })?;
-                content.push(ContentBlock::ToolCall {
-                    call: ToolCall {
-                        id,
-                        name,
-                        arguments,
-                    },
+                output.push(GenerateOutputItem::FunctionCall {
+                    id: format!("function-{id}"),
+                    call_id: id,
+                    name,
+                    arguments,
+                    status: ItemStatus::Completed,
                 });
             }
         }
@@ -134,7 +161,7 @@ impl OpenAiCodec {
             .and_then(Value::as_str)
             .map(ToString::to_string);
         Ok(InferenceResponse {
-            content,
+            output,
             finish_reason: map_finish_reason(raw_finish.as_deref()),
             usage: value.get("usage").map(decode_usage).transpose()?,
             evidence: ProviderEvidence {
@@ -209,6 +236,11 @@ fn encode_message(message: &Message) -> Result<Value, InferenceError> {
                 text.push_str(value);
                 rich_content.push(json!({"type":"text","text":value}));
             }
+            ContentBlock::Refusal { .. } => {
+                return Err(InferenceError::unsupported(
+                    "refusal content cannot be used as Chat request input",
+                ));
+            }
             ContentBlock::Image { source } => {
                 rich_content.push(json!({"type":"image_url","image_url":{"url":source.url}}));
             }
@@ -245,6 +277,9 @@ fn flatten_text(content: &[ContentBlock]) -> Result<String, InferenceError> {
     for block in content {
         match block {
             ContentBlock::Text { text: value } => text.push_str(value),
+            ContentBlock::Refusal { .. } => {
+                return Err(InferenceError::unsupported("refusal is not a tool result"));
+            }
             _ => return Err(InferenceError::unsupported("non-text OpenAI tool result")),
         }
     }
@@ -264,8 +299,17 @@ fn encode_response_format(format: &ResponseFormat) -> Value {
     match format {
         ResponseFormat::Text => json!({"type":"text"}),
         ResponseFormat::JsonObject => json!({"type":"json_object"}),
-        ResponseFormat::JsonSchema { name, schema } => {
-            json!({"type":"json_schema","json_schema":{"name":name,"schema":schema}})
+        ResponseFormat::JsonSchema {
+            name,
+            schema,
+            strict,
+        } => {
+            let mut value =
+                json!({"type":"json_schema","json_schema":{"name":name,"schema":schema}});
+            if let Some(strict) = strict {
+                value["json_schema"]["strict"] = Value::Bool(*strict);
+            }
+            value
         }
     }
 }
@@ -478,6 +522,15 @@ fn decode_stream_value(
     {
         events.push(InferenceEvent::TextDelta {
             text: text.to_string(),
+        });
+    }
+    if let Some(refusal) = delta
+        .get("refusal")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    {
+        events.push(InferenceEvent::RefusalDelta {
+            refusal: refusal.to_string(),
         });
     }
     if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {

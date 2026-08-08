@@ -1,28 +1,30 @@
 {
   "schemaVersion": "1",
-  "provider": "anthropic",
+  "provider": "anthropic_messages",
   "providerCodecVersion": "anthropic-messages-v1",
   "physicalModel": "claude-test",
   "apiVersion": "2023-06-01",
   "testedOperations": [
-    "chat_completions"
+    "generate"
   ],
   "capabilities": {
     "operations": [
-      "chat_completions"
+      "generate"
     ],
-    "content": {
-      "text": true,
-      "images": true,
-      "tools": true,
-      "parallelTools": true,
-      "structuredJson": false,
-      "reasoningUsage": false
-    },
-    "streaming": true
+    "generation": {
+      "content": {
+        "text": true,
+        "images": true,
+        "tools": true,
+        "parallelTools": true,
+        "structuredJson": false,
+        "reasoningUsage": false
+      },
+      "streaming": true
+    }
   },
   "capabilityEvidence": {
-    "chat_completions": {
+    "generate": {
       "fixtureIds": [
         "anthropic-request-cross-format"
       ],
@@ -76,8 +78,8 @@
     }
   },
   "state": "pass",
-  "corpusVersion": "1.1.0",
-  "corpusDigest": "ef0565badd856a00ca3977bd74e6ec5985fe008d98f2e66ee6f341d207f6ef53",
+  "corpusVersion": "1.2.0",
+  "corpusDigest": "ad07ecbb0b9806188472df548ec7f3e5fc42f7160dd29eb1d1dfcee15a7399ef",
   "testedAt": "2026-07-19T00:00:00Z",
   "validUntil": "2026-07-26T00:00:00Z",
   "refreshBeforeSeconds": 86400,
@@ -112,5 +114,5 @@
       "passed": true
     }
   ],
-  "digest": "42fda39c867639ee97895ede7b18cb0526797e84eb5a63c4615074ee39ab0316"
+  "digest": "5d8b8bc01710949c26a0cf40966c4be82cd2cf390f5eb4fe312bb2dc893aea83"
 }

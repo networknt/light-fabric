@@ -1,5 +1,6 @@
-use super::content::ContentBlock;
+use super::content::{ContentBlock, Role};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -47,11 +48,42 @@ pub struct ProviderEvidence {
     pub raw_finish_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemStatus {
+    InProgress,
+    Completed,
+    Incomplete,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum GenerateOutputItem {
+    Message {
+        id: String,
+        role: Role,
+        content: Vec<ContentBlock>,
+        status: ItemStatus,
+    },
+    FunctionCall {
+        id: String,
+        call_id: String,
+        name: String,
+        arguments: Value,
+        status: ItemStatus,
+    },
+    ReasoningSummary {
+        id: String,
+        summary: Vec<String>,
+        status: ItemStatus,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InferenceResponse {
     /// Public content only. Provider reasoning or chain-of-thought content must not be included.
-    pub content: Vec<ContentBlock>,
+    pub output: Vec<GenerateOutputItem>,
     pub finish_reason: FinishReason,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<NormalizedUsage>,

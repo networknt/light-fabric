@@ -11,9 +11,10 @@ use crate::config::{
 };
 use crate::error::LlmGatewayError;
 use crate::runtime::{LlmCompiler, LlmSnapshotStore, PublishOutcome};
+use crate::usage::{EmbeddingPrice, GenerationPrice, OperationPrice};
 use chrono::{SecondsFormat, Utc};
 use model_provider::conformance::ConformanceResult;
-use model_provider::inference::ProviderFormat;
+use model_provider::inference::{Operation, ProviderProtocol};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -21,8 +22,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tracing::warn;
 
-pub const PROJECTION_SCHEMA_VERSION: &str = "1";
+pub const PROJECTION_SCHEMA_VERSION: &str = "2";
 pub const GATEWAY_COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const SUPPORTED_ROUTING_FEATURE: &str = "ordered-routing";
 const MAX_PROJECTION_RESOURCES: usize = 1_024;
@@ -110,8 +112,40 @@ pub struct ProjectionStatus {
     pub applied_roots: u64,
     pub duplicate_roots: u64,
     pub rejected_roots: u64,
+    pub rejected_by_class: BTreeMap<ProjectionRejectionClass, u64>,
     pub acknowledgement_failures: u64,
     pub resyncs: u64,
+}
+
+/// Fixed labels keep projection rejection metrics bounded while the event
+/// retains enough metadata to prove which serving root was preserved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ProjectionRejectionClass {
+    Transport,
+    Contract,
+    SequenceGap,
+    Compile,
+}
+
+impl ProjectionRejectionClass {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Transport => "transport",
+            Self::Contract => "contract",
+            Self::SequenceGap => "sequence_gap",
+            Self::Compile => "compile",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionRejectionEvent {
+    pub reason_class: ProjectionRejectionClass,
+    pub sanitized_reason: String,
+    pub rejected_sequence: Option<u64>,
+    pub rejected_digest: Option<String>,
+    pub retained_generation: u64,
+    pub retained_digest: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,6 +272,8 @@ pub struct LlmProjectionWorker {
     base_config: LlmRouterConfig,
     current_config: Option<LlmRouterConfig>,
     pending_acknowledgement: Option<ProjectionAcknowledgement>,
+    candidate_identity: Option<(u64, String)>,
+    last_rejection: Option<ProjectionRejectionEvent>,
     status: ProjectionStatus,
 }
 
@@ -264,6 +300,8 @@ impl LlmProjectionWorker {
             base_config,
             current_config: None,
             pending_acknowledgement: None,
+            candidate_identity: None,
+            last_rejection: None,
             status: ProjectionStatus {
                 last_applied_sequence: checkpoint.sequence,
                 last_root_digest: checkpoint.root_digest,
@@ -274,6 +312,10 @@ impl LlmProjectionWorker {
 
     pub fn status(&self) -> &ProjectionStatus {
         &self.status
+    }
+
+    pub fn last_rejection(&self) -> Option<&ProjectionRejectionEvent> {
+        self.last_rejection.as_ref()
     }
 
     pub fn apply_latest(&mut self) -> Result<ProjectionApplyOutcome, ProjectionError> {
@@ -292,16 +334,65 @@ impl LlmProjectionWorker {
                 self.status.acknowledgement_failures.saturating_add(1);
             return Err(error);
         }
+        self.candidate_identity = None;
         let result = self.apply_inner(full_resync);
-        if matches!(result, Err(ref error) if !matches!(error, ProjectionError::Acknowledgement(_)))
+        if let Err(error) = &result
+            && !matches!(error, ProjectionError::Acknowledgement(_))
         {
-            self.status.rejected_roots += 1;
+            self.record_rejection(error);
         }
         if matches!(result, Err(ProjectionError::Acknowledgement(_))) {
             self.status.acknowledgement_failures =
                 self.status.acknowledgement_failures.saturating_add(1);
         }
         result
+    }
+
+    fn record_rejection(&mut self, error: &ProjectionError) {
+        let reason_class = match error {
+            ProjectionError::Transport(_) => ProjectionRejectionClass::Transport,
+            ProjectionError::Contract(_) => ProjectionRejectionClass::Contract,
+            ProjectionError::SequenceGap { .. } => ProjectionRejectionClass::SequenceGap,
+            ProjectionError::Compile(_) => ProjectionRejectionClass::Compile,
+            ProjectionError::Acknowledgement(_) => return,
+        };
+        self.status.rejected_roots = self.status.rejected_roots.saturating_add(1);
+        let class_count = self
+            .status
+            .rejected_by_class
+            .entry(reason_class)
+            .or_default();
+        *class_count = class_count.saturating_add(1);
+        let retained = self.store.load();
+        let (rejected_sequence, rejected_digest) = self
+            .candidate_identity
+            .clone()
+            .map_or((None, None), |(sequence, digest)| {
+                (Some(sequence), Some(digest))
+            });
+        let event = ProjectionRejectionEvent {
+            reason_class,
+            sanitized_reason: error.to_string(),
+            rejected_sequence,
+            rejected_digest,
+            retained_generation: retained.generation,
+            retained_digest: retained.digest.clone(),
+        };
+        warn!(
+            target: "llm_projection_audit",
+            event_kind = "projection_candidate_rejected",
+            metric_name = "llm_projection_rejected_roots_total",
+            metric_increment = 1_u64,
+            reason_class = reason_class.as_str(),
+            retained_last_valid_root = true,
+            rejected_sequence = ?event.rejected_sequence,
+            rejected_digest = ?event.rejected_digest,
+            retained_generation = event.retained_generation,
+            retained_digest = %event.retained_digest,
+            reason = %event.sanitized_reason,
+            "LLM projection candidate rejected; retained last valid root"
+        );
+        self.last_rejection = Some(event);
     }
 
     fn retry_pending_acknowledgement(&mut self) -> Result<(), ProjectionError> {
@@ -320,6 +411,10 @@ impl LlmProjectionWorker {
         full_resync: bool,
     ) -> Result<ProjectionApplyOutcome, ProjectionError> {
         let bundle = self.source.load_latest()?;
+        self.candidate_identity = Some((
+            bundle.manifest.sequence,
+            normalize_digest(&bundle.manifest.root_digest),
+        ));
         validate_bundle(&bundle)?;
         let manifest = &bundle.manifest;
         let config = assemble_config(&self.base_config, &bundle)?;
@@ -501,7 +596,7 @@ fn validate_manifest(manifest: &ProjectionManifest) -> Result<(), ProjectionErro
 struct DeploymentPayload {
     deployment_id: String,
     provider_id: String,
-    format: ProviderFormat,
+    provider_protocol: ProviderProtocol,
     base_url: String,
     credential_ref: String,
     #[serde(default)]
@@ -519,6 +614,7 @@ struct DeploymentPayload {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RoutePayload {
     alias_name: String,
+    operations: BTreeSet<Operation>,
     deployments: Vec<String>,
     #[serde(default = "default_attempts")]
     max_attempts: usize,
@@ -546,8 +642,18 @@ struct RoutePayload {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PricingPayload {
     deployment_id: String,
+    operation: Operation,
+    price_version: u64,
     input_micros_per_million: u64,
-    output_micros_per_million: u64,
+    #[serde(default, deserialize_with = "deserialize_optional_non_null_u64")]
+    output_micros_per_million: Option<u64>,
+}
+
+fn deserialize_optional_non_null_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    u64::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Deserialize)]
@@ -559,6 +665,8 @@ struct PolicyPayload {
     global_stream_concurrency: Option<usize>,
     #[serde(default)]
     stream_channel_capacity: Option<usize>,
+    #[serde(default)]
+    max_stream_response_bytes: Option<usize>,
     #[serde(default)]
     stream_write_timeout_ms: Option<u64>,
     #[serde(default)]
@@ -589,7 +697,7 @@ fn assemble_config(
                     ));
                 }
                 let provider = ProviderConfig {
-                    format: payload.format,
+                    provider_protocol: payload.provider_protocol,
                     base_url: payload.base_url,
                     secret_ref: payload.credential_ref,
                     headers: payload.headers,
@@ -616,15 +724,30 @@ fn assemble_config(
                         provider: payload.provider_id,
                         model: payload.model,
                         concurrency: payload.concurrency,
-                        input_micros_per_million: None,
-                        output_micros_per_million: None,
+                        prices: BTreeMap::new(),
+                        embedding_capabilities: capabilities.embedding.clone(),
                         conformance_digest: payload.conformance_digest,
                         conformance_result: Some(payload.conformance_result),
-                        text: capabilities.content.text,
-                        images: capabilities.content.images,
-                        tools: capabilities.content.tools,
-                        structured_json: capabilities.content.structured_json,
-                        streaming: capabilities.streaming,
+                        text: capabilities
+                            .generation
+                            .as_ref()
+                            .is_some_and(|value| value.content.text),
+                        images: capabilities
+                            .generation
+                            .as_ref()
+                            .is_some_and(|value| value.content.images),
+                        tools: capabilities
+                            .generation
+                            .as_ref()
+                            .is_some_and(|value| value.content.tools),
+                        structured_json: capabilities
+                            .generation
+                            .as_ref()
+                            .is_some_and(|value| value.content.structured_json),
+                        streaming: capabilities
+                            .generation
+                            .as_ref()
+                            .is_some_and(|value| value.streaming),
                         pii_placeholder_preservation_percent: 0,
                     },
                 );
@@ -640,6 +763,7 @@ fn assemble_config(
                 config.aliases.insert(
                     payload.alias_name,
                     AliasConfig {
+                        operations: payload.operations,
                         deployments: payload.deployments,
                         max_attempts: payload.max_attempts,
                         concurrency: payload.concurrency,
@@ -678,6 +802,13 @@ fn assemble_config(
                         config.stream_channel_capacity,
                     )?;
                 }
+                if let Some(value) = payload.max_stream_response_bytes {
+                    require_local_bound(
+                        "maxStreamResponseBytes",
+                        value,
+                        config.max_stream_response_bytes,
+                    )?;
+                }
                 if let Some(value) = payload.stream_write_timeout_ms {
                     require_local_bound(
                         "streamWriteTimeoutMs",
@@ -706,8 +837,35 @@ fn assemble_config(
             .ok_or_else(|| {
                 ProjectionError::Contract("pricing references a missing deployment".to_string())
             })?;
-        deployment.input_micros_per_million = Some(price.input_micros_per_million);
-        deployment.output_micros_per_million = Some(price.output_micros_per_million);
+        let operation_price = match price.operation {
+            Operation::Generate => OperationPrice::Generate(GenerationPrice {
+                version: price.price_version,
+                input_micros_per_million: price.input_micros_per_million,
+                output_micros_per_million: price.output_micros_per_million.ok_or_else(|| {
+                    ProjectionError::Contract("generation price requires output rate".to_string())
+                })?,
+            }),
+            Operation::Embed => {
+                if price.output_micros_per_million.is_some() {
+                    return Err(ProjectionError::Contract(
+                        "embedding price must not contain an output rate".to_string(),
+                    ));
+                }
+                OperationPrice::Embed(EmbeddingPrice {
+                    version: price.price_version,
+                    input_micros_per_million: price.input_micros_per_million,
+                })
+            }
+        };
+        if deployment
+            .prices
+            .insert(price.operation, operation_price)
+            .is_some()
+        {
+            return Err(ProjectionError::Contract(
+                "duplicate deployment operation price".to_string(),
+            ));
+        }
     }
     if config.deployments.is_empty() || config.aliases.is_empty() {
         return Err(ProjectionError::Contract(
@@ -859,7 +1017,7 @@ mod tests {
 
     fn captured_conformance_result() -> ConformanceResult {
         let mut result: ConformanceResult = serde_json::from_str(include_str!(
-            "../../model-provider/conformance/results/openai.json"
+            "../../model-provider/conformance/results/openai-chat.json"
         ))
         .expect("checked-in OpenAI conformance result");
         result.physical_model = "gpt-governed".to_string();
@@ -936,7 +1094,7 @@ mod tests {
         payload: Value,
     ) -> ProjectionResource {
         let mut resource = ProjectionResource {
-            schema_version: "1".to_string(),
+            schema_version: PROJECTION_SCHEMA_VERSION.to_string(),
             host_id: "host-a".to_string(),
             environment: "prod".to_string(),
             resource_type: resource_type.to_string(),
@@ -963,7 +1121,7 @@ mod tests {
                 serde_json::json!({
                     "deploymentId":"openai-primary",
                     "providerId":"openai-account",
-                    "format":"openai",
+                    "providerProtocol":"openai_chat",
                     "baseUrl":"https://provider.example/v1",
                     "credentialRef":"credential://host-a/openai",
                     "quotaGroupId":"openai-capacity",
@@ -979,6 +1137,7 @@ mod tests {
                 sequence,
                 serde_json::json!({
                     "aliasName":"governed-chat",
+                    "operations":["generate"],
                     "deployments":["openai-primary"],
                     "maxAttempts":1,
                     "concurrency":8,
@@ -991,6 +1150,8 @@ mod tests {
                 sequence,
                 serde_json::json!({
                     "deploymentId":"openai-primary",
+                    "operation":"generate",
+                    "priceVersion":1,
                     "inputMicrosPerMillion":1000,
                     "outputMicrosPerMillion":2000
                 }),
@@ -1017,7 +1178,7 @@ mod tests {
             })
             .collect();
         let mut manifest = ProjectionManifest {
-            schema_version: "1".to_string(),
+            schema_version: PROJECTION_SCHEMA_VERSION.to_string(),
             host_id: "host-a".to_string(),
             environment: "prod".to_string(),
             sequence,
@@ -1069,6 +1230,28 @@ mod tests {
         let config = assemble_config(&LlmRouterConfig::default(), projection).unwrap();
         let snapshot = compiler.compile(&config, 0, None).unwrap();
         Arc::new(LlmSnapshotStore::new(snapshot, 2))
+    }
+
+    #[test]
+    fn embedding_pricing_requires_output_rate_to_be_absent_not_null() {
+        let missing = serde_json::from_value::<PricingPayload>(serde_json::json!({
+            "deploymentId":"embedding",
+            "operation":"embed",
+            "priceVersion":1,
+            "inputMicrosPerMillion":10
+        }))
+        .unwrap();
+        assert_eq!(missing.output_micros_per_million, None);
+        assert!(
+            serde_json::from_value::<PricingPayload>(serde_json::json!({
+                "deploymentId":"embedding",
+                "operation":"embed",
+                "priceVersion":1,
+                "inputMicrosPerMillion":10,
+                "outputMicrosPerMillion":null
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -1130,10 +1313,11 @@ mod tests {
         );
         let rotated = store_a.load();
         assert_eq!(rotated.digest, old_root_digest);
-        assert!(!Arc::ptr_eq(
-            &old_deployment.provider,
-            &rotated.deployments["openai-primary"].provider
-        ));
+        assert!(
+            !old_deployment
+                .provider
+                .ptr_eq(&rotated.deployments["openai-primary"].provider)
+        );
         assert!(Arc::ptr_eq(
             &old_deployment.account,
             &rotated.deployments["openai-primary"].account
@@ -1212,6 +1396,17 @@ mod tests {
         *source.0.lock().unwrap() = invalid;
         assert!(worker.apply_latest().is_err());
         assert!(Arc::ptr_eq(&valid, &store.load()));
+        assert_eq!(worker.status().rejected_roots, 1);
+        assert_eq!(
+            worker.status().rejected_by_class[&ProjectionRejectionClass::Contract],
+            1
+        );
+        let rejection = worker
+            .last_rejection()
+            .expect("rejection must be observable");
+        assert_eq!(rejection.rejected_sequence, Some(2));
+        assert_eq!(rejection.retained_generation, valid.generation);
+        assert_eq!(rejection.retained_digest, valid.digest);
 
         *source.0.lock().unwrap() = bundle(3);
         assert!(matches!(
@@ -1329,11 +1524,8 @@ mod tests {
         let new_deployment = &after.deployments["openai-primary"];
         let new_alias = &after.aliases["governed-chat"];
         assert!(!Arc::ptr_eq(&old_deployment, new_deployment));
-        assert_ne!(old_deployment.price, new_deployment.price);
-        assert!(Arc::ptr_eq(
-            &old_deployment.provider,
-            &new_deployment.provider
-        ));
+        assert_ne!(old_deployment.prices, new_deployment.prices);
+        assert!(old_deployment.provider.ptr_eq(&new_deployment.provider));
         assert!(Arc::ptr_eq(
             &old_deployment.account,
             &new_deployment.account
@@ -1380,7 +1572,7 @@ mod tests {
         .unwrap();
         worker.apply_latest().unwrap();
         let original_root = store.load();
-        let original_price = original_root.deployments["openai-primary"].price;
+        let original_prices = original_root.deployments["openai-primary"].prices.clone();
         let original_circuit = original_root.deployments["openai-primary"].circuit.clone();
 
         let mut changed = bundle(2);
@@ -1397,8 +1589,8 @@ mod tests {
         *source.0.lock().unwrap() = changed;
         worker.apply_latest().unwrap();
         assert_ne!(
-            store.load().deployments["openai-primary"].price,
-            original_price
+            store.load().deployments["openai-primary"].prices,
+            original_prices
         );
 
         // Rollback is a new publication that references the last-known-good
@@ -1416,7 +1608,10 @@ mod tests {
         let restored = store.load();
         assert_eq!(restored.generation, 3);
         assert_eq!(restored.digest, rollback_digest);
-        assert_eq!(restored.deployments["openai-primary"].price, original_price);
+        assert_eq!(
+            restored.deployments["openai-primary"].prices,
+            original_prices
+        );
         assert!(Arc::ptr_eq(
             &restored.deployments["openai-primary"].circuit,
             &original_circuit

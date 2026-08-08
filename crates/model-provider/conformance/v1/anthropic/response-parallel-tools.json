@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1",
   "id": "anthropic-response-parallel-tools",
-  "provider": "anthropic",
+  "provider": "anthropic_messages",
   "kind": "response",
   "input": {
     "id": "msg-parallel",
@@ -14,9 +14,9 @@
     "usage": {"input_tokens": 12, "output_tokens": 8}
   },
   "expected": {
-    "content": [
-      {"type": "tool_call", "call": {"id": "call-1", "name": "lookup_one", "arguments": {"id": 1}}},
-      {"type": "tool_call", "call": {"id": "call-2", "name": "lookup_two", "arguments": {"id": 2}}}
+    "output": [
+      {"type": "function_call", "id": "function-call-1", "call_id": "call-1", "name": "lookup_one", "arguments": {"id": 1}, "status": "completed"},
+      {"type": "function_call", "id": "function-call-2", "call_id": "call-2", "name": "lookup_two", "arguments": {"id": 2}, "status": "completed"}
     ],
     "finishReason": "tool_calls",
     "usage": {"inputTokens": 12, "outputTokens": 8},

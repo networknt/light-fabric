@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1",
   "id": "openai-request-multimodal-tools",
-  "provider": "openai",
+  "provider": "openai_chat",
   "kind": "request",
   "input": {
     "model": "gpt-test",

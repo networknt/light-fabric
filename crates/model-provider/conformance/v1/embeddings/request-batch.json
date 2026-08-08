@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "1",
+  "id": "embeddings-request-batch",
+  "provider": "openai_embeddings",
+  "kind": "request",
+  "input": {"model": "physical-embedding", "inputs": ["one", "two"], "dimensions": 2},
+  "expected": {"model": "physical-embedding", "input": ["one", "two"], "encoding_format": "float", "dimensions": 2}
+}

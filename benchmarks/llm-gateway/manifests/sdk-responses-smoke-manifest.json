@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "1",
+  "clients": {
+    "python": {"package": "openai", "version": "2.46.0"},
+    "typescript": {"package": "openai", "version": "6.48.0"}
+  },
+  "providerProtocol": "openai_responses",
+  "operation": "generate",
+  "requiredOperations": ["stringInput", "typedInput", "functionLoop", "streaming"],
+  "evidence": "benchmarks/llm-gateway/reports/sdk-responses-smoke.json",
+  "secretsRecorded": false
+}

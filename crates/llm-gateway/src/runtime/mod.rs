@@ -5,11 +5,13 @@ mod streaming;
 
 pub use compiler::{CompileProbe, LlmCompiler};
 pub use snapshot::{
-    AliasPlan, DeploymentRuntime, LlmPublishedSnapshot, PrincipalPermitStripes,
-    ProviderAccountRuntime,
+    AliasPlan, DeploymentRuntime, EmbeddingMemoryBounds, LlmPublishedSnapshot,
+    PrincipalPermitStripes, ProviderAccountRuntime,
 };
 pub use store::{LlmSnapshotStore, PublishOutcome};
-pub use streaming::{ImmediateStreamStartBarrier, LlmStreamExecution, StreamStartBarrier};
+pub use streaming::{
+    ImmediateStreamStartBarrier, LlmStreamExecution, ResponsesResponseMetadata, StreamStartBarrier,
+};
 
 use crate::admission::fail_fast_permits;
 use crate::audit::{
@@ -19,14 +21,16 @@ use crate::audit::{
 use crate::error::LlmGatewayError;
 use crate::pii::RequestPiiSession;
 use crate::routing::{request_capabilities, retryable};
-use crate::usage::{ReconciledUsage, UsageReservation, cost};
+use crate::usage::{ReconciledUsage, UsageReservation, cost, cost_embedding};
 use model_provider::inference::{
-    AcceptanceEvidence, InferenceRequest, InferenceResponse, ProviderFormat, ProviderRequestContext,
+    AcceptanceEvidence, EmbeddingEncoding, EmbeddingRequest, EmbeddingResponse, InferenceRequest,
+    InferenceResponse, Operation, ProviderProtocol, ProviderRequestContext,
 };
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -56,12 +60,70 @@ pub struct LlmExecution {
     pub generation: u64,
 }
 
+#[derive(Debug)]
+pub struct LlmEmbeddingExecution {
+    pub response: EmbeddingResponse,
+    pub request_id: String,
+    pub alias: String,
+    pub attempts: usize,
+    pub usage: ReconciledUsage,
+    pub generation: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbeddingMemoryMetricsSnapshot {
+    pub current_slots: usize,
+    pub current_retained_bytes: usize,
+    pub high_water_slots: usize,
+    pub high_water_retained_bytes: usize,
+    pub rejection_count: u64,
+}
+
+#[derive(Debug, Default)]
+struct EmbeddingMemoryMetrics {
+    current_slots: AtomicUsize,
+    current_retained_bytes: AtomicUsize,
+    high_water_slots: AtomicUsize,
+    high_water_retained_bytes: AtomicUsize,
+    rejection_count: AtomicU64,
+}
+
+#[derive(Debug)]
+pub struct EmbeddingMemoryPermit {
+    _permit: OwnedSemaphorePermit,
+    metrics: Arc<EmbeddingMemoryMetrics>,
+    retained_bytes: usize,
+}
+
+impl Drop for EmbeddingMemoryPermit {
+    fn drop(&mut self) {
+        let current_slots = self
+            .metrics
+            .current_slots
+            .fetch_sub(1, Ordering::AcqRel)
+            .saturating_sub(1);
+        let current_retained_bytes = self
+            .metrics
+            .current_retained_bytes
+            .fetch_sub(self.retained_bytes, Ordering::AcqRel)
+            .saturating_sub(self.retained_bytes);
+        tracing::info!(
+            target: "llm_gateway_metrics",
+            metric = "embedding_memory_retained",
+            current_slots,
+            current_retained_bytes,
+            "LLM embedding memory slot released"
+        );
+    }
+}
+
 pub struct LlmRuntime {
     store: Arc<LlmSnapshotStore>,
     audit: Arc<dyn AuditAdmission>,
     global_permits: Arc<Semaphore>,
     stream_permits: Arc<Semaphore>,
     stream_start_barrier: Arc<dyn StreamStartBarrier>,
+    embedding_memory_metrics: Arc<EmbeddingMemoryMetrics>,
 }
 
 impl LlmRuntime {
@@ -74,6 +136,7 @@ impl LlmRuntime {
             global_permits: Arc::new(Semaphore::new(permits)),
             stream_permits: Arc::new(Semaphore::new(stream_permits)),
             stream_start_barrier: Arc::new(ImmediateStreamStartBarrier),
+            embedding_memory_metrics: Arc::new(EmbeddingMemoryMetrics::default()),
         }
     }
 
@@ -94,6 +157,91 @@ impl LlmRuntime {
 
     pub fn publish(&self, candidate: LlmPublishedSnapshot) -> PublishOutcome {
         self.store.publish(candidate)
+    }
+
+    pub fn try_acquire_embedding_memory_slot(
+        &self,
+        root: &LlmPublishedSnapshot,
+    ) -> Result<EmbeddingMemoryPermit, LlmGatewayError> {
+        let permit = match Arc::clone(&root.embedding_memory_permits).try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                let rejection_count = self
+                    .embedding_memory_metrics
+                    .rejection_count
+                    .fetch_add(1, Ordering::AcqRel)
+                    .saturating_add(1);
+                tracing::warn!(
+                    target: "llm_gateway_metrics",
+                    metric = "embedding_memory_rejections",
+                    rejection_count,
+                    "LLM embedding memory admission rejected"
+                );
+                return Err(LlmGatewayError::Capacity);
+            }
+        };
+        let retained_bytes = root.embedding_memory.per_slot_peak_bytes;
+        let current_slots = self
+            .embedding_memory_metrics
+            .current_slots
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        let current_retained_bytes = self
+            .embedding_memory_metrics
+            .current_retained_bytes
+            .fetch_add(retained_bytes, Ordering::AcqRel)
+            .saturating_add(retained_bytes);
+        self.embedding_memory_metrics
+            .high_water_slots
+            .fetch_max(current_slots, Ordering::AcqRel);
+        self.embedding_memory_metrics
+            .high_water_retained_bytes
+            .fetch_max(current_retained_bytes, Ordering::AcqRel);
+        tracing::info!(
+            target: "llm_gateway_metrics",
+            metric = "embedding_memory_retained",
+            current_slots,
+            current_retained_bytes,
+            high_water_slots = self
+                .embedding_memory_metrics
+                .high_water_slots
+                .load(Ordering::Acquire),
+            high_water_retained_bytes = self
+                .embedding_memory_metrics
+                .high_water_retained_bytes
+                .load(Ordering::Acquire),
+            "LLM embedding memory slot acquired"
+        );
+        Ok(EmbeddingMemoryPermit {
+            _permit: permit,
+            metrics: Arc::clone(&self.embedding_memory_metrics),
+            retained_bytes,
+        })
+    }
+
+    pub fn embedding_memory_metrics(&self) -> EmbeddingMemoryMetricsSnapshot {
+        EmbeddingMemoryMetricsSnapshot {
+            current_slots: self
+                .embedding_memory_metrics
+                .current_slots
+                .load(Ordering::Acquire),
+            current_retained_bytes: self
+                .embedding_memory_metrics
+                .current_retained_bytes
+                .load(Ordering::Acquire),
+            high_water_slots: self
+                .embedding_memory_metrics
+                .high_water_slots
+                .load(Ordering::Acquire),
+            high_water_retained_bytes: self
+                .embedding_memory_metrics
+                .high_water_retained_bytes
+                .load(Ordering::Acquire),
+            rejection_count: self
+                .embedding_memory_metrics
+                .rejection_count
+                .load(Ordering::Acquire),
+        }
     }
 
     pub async fn execute(
@@ -120,11 +268,16 @@ impl LlmRuntime {
         let alias = root
             .aliases
             .get(&request.model)
-            .ok_or(LlmGatewayError::ModelUnavailable)?
+            .ok_or(LlmGatewayError::AliasNotFound)?
             .clone();
         if alias.internal && alias.bound_principal.as_deref() != Some(context.principal_id.as_str())
         {
-            return Err(LlmGatewayError::ModelUnavailable);
+            return Err(LlmGatewayError::AliasNotFound);
+        }
+        if !alias.operations.contains(&Operation::Generate) {
+            return Err(LlmGatewayError::UnsupportedCapability(
+                "model alias does not support generate".to_string(),
+            ));
         }
         let principal_permit = root.principal_permits.permits_for(&context.principal_id);
         let _permits = fail_fast_permits(&self.global_permits, &principal_permit, &alias.permits)?;
@@ -138,6 +291,7 @@ impl LlmRuntime {
                     request_id: context.request_id.clone(),
                     principal_id: context.principal_id.clone(),
                     alias: alias.public_name.clone(),
+                    operation: Operation::Generate,
                     generation: root.generation,
                     snapshot_digest: root.digest.clone(),
                     max_attempts: alias.max_attempts,
@@ -214,14 +368,40 @@ impl LlmRuntime {
         }
 
         let required = alias.merge_requirements(request_capabilities(&request, false));
+        if !alias
+            .deployments
+            .iter()
+            .any(|deployment| deployment.supports_static(&required))
+        {
+            let error = LlmGatewayError::UnsupportedCapability(
+                "no configured route preserves the requested generate capabilities".to_string(),
+            );
+            finish_audit(
+                audit,
+                AuditFinish {
+                    terminal: "rejected",
+                    attempts: 0,
+                    charged_micros: 0,
+                    usage_complete: true,
+                },
+                error.public_status(),
+                error.public_code(),
+            )
+            .await?;
+            return Err(error);
+        }
         let candidates = alias
             .deployments
             .iter()
             .filter(|deployment| deployment.supports(&required))
             .cloned()
             .collect::<Vec<_>>();
-        let Some(first_price) = candidates.first().map(|candidate| candidate.price) else {
-            let error = LlmGatewayError::ModelUnavailable;
+        let Some(first_price) = candidates.first().map(|candidate| {
+            candidate
+                .generation_price()
+                .expect("generation route has generation price")
+        }) else {
+            let error = LlmGatewayError::NoReadyDeployment;
             finish_audit(
                 audit,
                 AuditFinish {
@@ -239,7 +419,15 @@ impl LlmRuntime {
         let envelope = candidates
             .iter()
             .take(alias.max_attempts)
-            .map(|candidate| cost(candidate.price, estimated_input, max_output))
+            .map(|candidate| {
+                cost(
+                    candidate
+                        .generation_price()
+                        .expect("generation route has generation price"),
+                    estimated_input,
+                    max_output,
+                )
+            })
             .fold(0_u64, u64::saturating_add);
         let reservation = match UsageReservation::reserve(
             Arc::clone(&alias.ledger),
@@ -289,8 +477,13 @@ impl LlmRuntime {
                 })
                 .await
             {
-                let usage =
-                    reservation.reconcile(deployment.price, None, AcceptanceEvidence::NotAccepted);
+                let usage = reservation.reconcile(
+                    deployment
+                        .generation_price()
+                        .expect("generation route has generation price"),
+                    None,
+                    AcceptanceEvidence::NotAccepted,
+                );
                 finish_audit(
                     audit,
                     AuditFinish {
@@ -307,7 +500,9 @@ impl LlmRuntime {
             }
             attempts = next_attempt;
             attempted_envelope = attempted_envelope.saturating_add(cost(
-                deployment.price,
+                deployment
+                    .generation_price()
+                    .expect("generation route has generation price"),
                 estimated_input,
                 max_output,
             ));
@@ -320,13 +515,21 @@ impl LlmRuntime {
             };
             match deployment
                 .provider
-                .infer(provider_context, request.clone())
+                .generation()
+                .ok_or_else(|| {
+                    LlmGatewayError::Invariant(
+                        "generate route selected an embedding executor".to_string(),
+                    )
+                })?
+                .generate(provider_context, request.clone())
                 .await
             {
                 Ok(mut response) => {
                     circuit_permit.success();
                     let usage = reservation.reconcile(
-                        deployment.price,
+                        deployment
+                            .generation_price()
+                            .expect("generation route has generation price"),
                         response.usage.as_ref(),
                         AcceptanceEvidence::Accepted,
                     );
@@ -406,7 +609,9 @@ impl LlmRuntime {
                         .await;
                     if let Err(audit_error) = attempt_audit {
                         let usage = reservation.reconcile_with_ambiguous_bound(
-                            deployment.price,
+                            deployment
+                                .generation_price()
+                                .expect("generation route has generation price"),
                             None,
                             error.acceptance,
                             attempted_envelope,
@@ -447,7 +652,573 @@ impl LlmRuntime {
             error.acceptance,
             attempted_envelope,
         );
-        let public_error = LlmGatewayError::Provider(error);
+        let public_error = if error.category
+            == model_provider::inference::InferenceErrorCategory::UnsupportedFeature
+        {
+            LlmGatewayError::Invariant(
+                "eligible generation provider returned UnsupportedFeature".to_string(),
+            )
+        } else {
+            LlmGatewayError::Provider(error)
+        };
+        finish_audit(
+            audit,
+            AuditFinish {
+                terminal: "failed",
+                attempts,
+                charged_micros: usage.charged_micros,
+                usage_complete: usage.complete,
+            },
+            public_error.public_status(),
+            public_error.public_code(),
+        )
+        .await?;
+        Err(public_error)
+    }
+
+    pub async fn execute_embedding_with_snapshot(
+        &self,
+        context: LlmRequestContext,
+        root: Arc<LlmPublishedSnapshot>,
+        mut request: EmbeddingRequest,
+    ) -> Result<LlmEmbeddingExecution, LlmGatewayError> {
+        if context.deadline <= Instant::now() {
+            return Err(LlmGatewayError::Provider(
+                model_provider::inference::InferenceError::timeout_before_acceptance(),
+            ));
+        }
+        let alias = root
+            .aliases
+            .get(&request.model)
+            .ok_or(LlmGatewayError::AliasNotFound)?
+            .clone();
+        if alias.internal && alias.bound_principal.as_deref() != Some(context.principal_id.as_str())
+        {
+            return Err(LlmGatewayError::AliasNotFound);
+        }
+        if !alias.operations.contains(&Operation::Embed) {
+            return Err(LlmGatewayError::UnsupportedCapability(
+                "model alias does not support embed".to_string(),
+            ));
+        }
+        if request.inputs.is_empty() {
+            return Err(LlmGatewayError::InvalidRequest(
+                "embedding input must not be empty".to_string(),
+            ));
+        }
+        let principal_permit = root.principal_permits.permits_for(&context.principal_id);
+        let _permits = fail_fast_permits(&self.global_permits, &principal_permit, &alias.permits)?;
+        let audit = self
+            .audit
+            .reserve(
+                alias.audit,
+                AuditStart {
+                    request_id: context.request_id.clone(),
+                    principal_id: context.principal_id.clone(),
+                    alias: alias.public_name.clone(),
+                    operation: Operation::Embed,
+                    generation: root.generation,
+                    snapshot_digest: root.digest.clone(),
+                    max_attempts: alias.max_attempts,
+                    pii_profile: "none".to_string(),
+                },
+            )
+            .await?;
+        if alias.max_attempts > 1
+            && serde_json::to_vec(&request).map_or(true, |bytes| {
+                bytes.len() > root.embedding_memory.max_replay_bytes
+            })
+        {
+            let error = LlmGatewayError::InvalidRequest(
+                "embedding request exceeds replay bound required by retry policy".to_string(),
+            );
+            finish_audit(
+                audit,
+                AuditFinish {
+                    terminal: "rejected",
+                    attempts: 0,
+                    charged_micros: 0,
+                    usage_complete: true,
+                },
+                error.public_status(),
+                error.public_code(),
+            )
+            .await?;
+            return Err(error);
+        }
+        let item_count = request.inputs.len();
+        let items_per_permit = root.embedding_memory.items_per_permit;
+        let compatible = |deployment: &DeploymentRuntime, dynamic: bool| {
+            let requirements = model_provider::conformance::CapabilityRequirements::embedding();
+            let base = if dynamic {
+                deployment.supports(&requirements)
+            } else {
+                deployment.supports_static(&requirements)
+            };
+            let Some(capabilities) = deployment.capabilities.embedding.as_ref() else {
+                return false;
+            };
+            let weight = item_count.div_ceil(items_per_permit);
+            base && item_count <= capabilities.max_batch_items as usize
+                && weight <= deployment.configured_concurrency
+                && capabilities
+                    .supported_encodings
+                    .contains(&EmbeddingEncoding::Float)
+                && request.dimensions.is_none_or(|dimensions| {
+                    capabilities.supported_dimensions.contains(&dimensions)
+                })
+        };
+        if !alias
+            .deployments
+            .iter()
+            .any(|deployment| compatible(deployment, false))
+        {
+            let error = LlmGatewayError::UnsupportedCapability(
+                "no configured route preserves the requested embedding capabilities".to_string(),
+            );
+            finish_audit(
+                audit,
+                AuditFinish {
+                    terminal: "rejected",
+                    attempts: 0,
+                    charged_micros: 0,
+                    usage_complete: true,
+                },
+                error.public_status(),
+                error.public_code(),
+            )
+            .await?;
+            return Err(error);
+        }
+        let candidates = alias
+            .deployments
+            .iter()
+            .filter(|deployment| compatible(deployment, true))
+            .cloned()
+            .collect::<Vec<_>>();
+        let Some(first_price) = candidates
+            .first()
+            .and_then(|candidate| candidate.embedding_price())
+        else {
+            let error = LlmGatewayError::NoReadyDeployment;
+            finish_audit(
+                audit,
+                AuditFinish {
+                    terminal: "rejected",
+                    attempts: 0,
+                    charged_micros: 0,
+                    usage_complete: true,
+                },
+                error.public_status(),
+                error.public_code(),
+            )
+            .await?;
+            return Err(error);
+        };
+        let candidate_envelope = |deployment: &DeploymentRuntime| {
+            let capabilities = deployment
+                .capabilities
+                .embedding
+                .as_ref()
+                .expect("embedding route has embedding capabilities");
+            let count = u64::try_from(item_count).unwrap_or(u64::MAX);
+            let input_bound = count
+                .saturating_mul(capabilities.max_input_tokens_per_item)
+                .min(capabilities.max_aggregate_input_tokens);
+            cost_embedding(
+                deployment
+                    .embedding_price()
+                    .expect("embedding route has embedding price"),
+                input_bound,
+                0,
+            )
+        };
+        let envelope_result =
+            candidates
+                .iter()
+                .take(alias.max_attempts)
+                .try_fold(0_u64, |total, candidate| {
+                    candidate_envelope(candidate).and_then(|cost| {
+                        total.checked_add(cost).ok_or_else(|| {
+                            LlmGatewayError::Invariant(
+                                "embedding reservation envelope overflow".to_string(),
+                            )
+                        })
+                    })
+                });
+        let envelope = match envelope_result {
+            Ok(envelope) => envelope,
+            Err(error) => {
+                finish_audit(
+                    audit,
+                    AuditFinish {
+                        terminal: "rejected",
+                        attempts: 0,
+                        charged_micros: 0,
+                        usage_complete: true,
+                    },
+                    error.public_status(),
+                    error.public_code(),
+                )
+                .await?;
+                return Err(error);
+            }
+        };
+        let reservation = match UsageReservation::reserve(
+            Arc::clone(&alias.ledger),
+            envelope,
+            alias.max_cost_micros,
+        ) {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                finish_audit(
+                    audit,
+                    AuditFinish {
+                        terminal: "rejected",
+                        attempts: 0,
+                        charged_micros: 0,
+                        usage_complete: true,
+                    },
+                    error.public_status(),
+                    error.public_code(),
+                )
+                .await?;
+                return Err(error);
+            }
+        };
+        let mut attempts = 0;
+        let mut last_error = None;
+        let mut attempted_envelope = 0_u64;
+        for deployment in candidates.into_iter().take(alias.max_attempts) {
+            if context.deadline <= Instant::now() {
+                last_error =
+                    Some(model_provider::inference::InferenceError::timeout_before_acceptance());
+                break;
+            }
+            let circuit_permit = match deployment.circuit.acquire(Instant::now()) {
+                Ok(permit) => permit,
+                Err(_) => continue,
+            };
+            let weight = item_count.div_ceil(items_per_permit);
+            let Ok(weight) = u32::try_from(weight) else {
+                return Err(LlmGatewayError::Invariant(
+                    "embedding permit weight exceeds u32".to_string(),
+                ));
+            };
+            let _account_permit =
+                match Arc::clone(&deployment.account.permits).try_acquire_many_owned(weight) {
+                    Ok(permit) => permit,
+                    Err(_) => continue,
+                };
+            let _provider_permit =
+                match Arc::clone(&deployment.permits).try_acquire_many_owned(weight) {
+                    Ok(permit) => permit,
+                    Err(_) => continue,
+                };
+            let next_attempt = attempts + 1;
+            if let Err(audit_error) = audit
+                .attempt_started(AuditAttemptStart {
+                    attempt: next_attempt,
+                    deployment_id: deployment.id.clone(),
+                })
+                .await
+            {
+                let usage = match reservation.reconcile_embedding(
+                    deployment
+                        .embedding_price()
+                        .expect("embedding route has embedding price"),
+                    None,
+                    AcceptanceEvidence::NotAccepted,
+                    attempted_envelope,
+                ) {
+                    Ok(usage) => usage,
+                    Err(reconcile_error) => {
+                        finish_audit(
+                            audit,
+                            AuditFinish {
+                                terminal: "audit_failed",
+                                attempts,
+                                charged_micros: 0,
+                                usage_complete: false,
+                            },
+                            reconcile_error.public_status(),
+                            reconcile_error.public_code(),
+                        )
+                        .await?;
+                        return Err(reconcile_error);
+                    }
+                };
+                finish_audit(
+                    audit,
+                    AuditFinish {
+                        terminal: "audit_failed",
+                        attempts,
+                        charged_micros: usage.charged_micros,
+                        usage_complete: usage.complete,
+                    },
+                    audit_error.public_status(),
+                    audit_error.public_code(),
+                )
+                .await?;
+                return Err(audit_error);
+            }
+            attempts = next_attempt;
+            attempted_envelope = attempted_envelope
+                .checked_add(candidate_envelope(&deployment)?)
+                .ok_or_else(|| {
+                    LlmGatewayError::Invariant("embedding attempted envelope overflow".to_string())
+                })?;
+            request.model = deployment.model.clone();
+            let provider_context = ProviderRequestContext {
+                deadline: context.deadline,
+                cancellation: tokio_util::sync::CancellationToken::new(),
+                attempt_id: format!("{}-{attempts}", context.request_id),
+                trace: Default::default(),
+            };
+            match deployment
+                .provider
+                .embedding()
+                .ok_or_else(|| {
+                    LlmGatewayError::Invariant(
+                        "embed route selected a generation executor".to_string(),
+                    )
+                })?
+                .embed(provider_context, request.clone())
+                .await
+            {
+                Ok(response) => {
+                    if let Err(error) = validate_embedding_response(
+                        &deployment,
+                        &request,
+                        &response,
+                        root.embedding_memory.max_canonical_vector_bytes,
+                    ) {
+                        circuit_permit.failure(&error, Instant::now());
+                        audit
+                            .attempt_finished(AuditAttemptFinish {
+                                attempt: attempts,
+                                terminal: "failed",
+                                category: "protocol",
+                            })
+                            .await?;
+                        let usage = match reservation.reconcile_embedding(
+                            deployment
+                                .embedding_price()
+                                .expect("embedding route has embedding price"),
+                            None,
+                            error.acceptance,
+                            attempted_envelope,
+                        ) {
+                            Ok(usage) => usage,
+                            Err(reconcile_error) => {
+                                finish_audit(
+                                    audit,
+                                    AuditFinish {
+                                        terminal: "failed",
+                                        attempts,
+                                        charged_micros: 0,
+                                        usage_complete: false,
+                                    },
+                                    reconcile_error.public_status(),
+                                    reconcile_error.public_code(),
+                                )
+                                .await?;
+                                return Err(reconcile_error);
+                            }
+                        };
+                        let public_error = LlmGatewayError::Provider(error);
+                        finish_audit(
+                            audit,
+                            AuditFinish {
+                                terminal: "failed",
+                                attempts,
+                                charged_micros: usage.charged_micros,
+                                usage_complete: usage.complete,
+                            },
+                            public_error.public_status(),
+                            public_error.public_code(),
+                        )
+                        .await?;
+                        return Err(public_error);
+                    }
+                    circuit_permit.success();
+                    if response
+                        .usage
+                        .output_tokens
+                        .is_some_and(|tokens| tokens != 0)
+                    {
+                        let usage = match reservation.reconcile_embedding(
+                            deployment
+                                .embedding_price()
+                                .expect("embedding route has embedding price"),
+                            None,
+                            AcceptanceEvidence::Accepted,
+                            attempted_envelope,
+                        ) {
+                            Ok(usage) => usage,
+                            Err(reconcile_error) => {
+                                finish_audit(
+                                    audit,
+                                    AuditFinish {
+                                        terminal: "failed",
+                                        attempts,
+                                        charged_micros: 0,
+                                        usage_complete: false,
+                                    },
+                                    reconcile_error.public_status(),
+                                    reconcile_error.public_code(),
+                                )
+                                .await?;
+                                return Err(reconcile_error);
+                            }
+                        };
+                        let error = LlmGatewayError::Invariant(
+                            "embedding usage reported output tokens".to_string(),
+                        );
+                        audit
+                            .attempt_finished(AuditAttemptFinish {
+                                attempt: attempts,
+                                terminal: "failed",
+                                category: "invariant",
+                            })
+                            .await?;
+                        finish_audit(
+                            audit,
+                            AuditFinish {
+                                terminal: "failed",
+                                attempts,
+                                charged_micros: usage.charged_micros,
+                                usage_complete: usage.complete,
+                            },
+                            error.public_status(),
+                            error.public_code(),
+                        )
+                        .await?;
+                        return Err(error);
+                    }
+                    let usage = match reservation.reconcile_embedding(
+                        deployment
+                            .embedding_price()
+                            .expect("embedding route has embedding price"),
+                        Some(&response.usage),
+                        AcceptanceEvidence::Accepted,
+                        attempted_envelope,
+                    ) {
+                        Ok(usage) => usage,
+                        Err(error) => {
+                            audit
+                                .attempt_finished(AuditAttemptFinish {
+                                    attempt: attempts,
+                                    terminal: "failed",
+                                    category: "invariant",
+                                })
+                                .await?;
+                            finish_audit(
+                                audit,
+                                AuditFinish {
+                                    terminal: "failed",
+                                    attempts,
+                                    charged_micros: 0,
+                                    usage_complete: false,
+                                },
+                                error.public_status(),
+                                error.public_code(),
+                            )
+                            .await?;
+                            return Err(error);
+                        }
+                    };
+                    audit
+                        .attempt_finished(AuditAttemptFinish {
+                            attempt: attempts,
+                            terminal: "complete",
+                            category: "success",
+                        })
+                        .await?;
+                    finish_audit(
+                        audit,
+                        AuditFinish {
+                            terminal: "complete",
+                            attempts,
+                            charged_micros: usage.charged_micros,
+                            usage_complete: usage.complete,
+                        },
+                        200,
+                        "success",
+                    )
+                    .await?;
+                    tracing::info!(
+                        target: "llm_gateway_metrics",
+                        operation = "embed",
+                        embedding_items = item_count,
+                        "LLM embedding request completed"
+                    );
+                    return Ok(LlmEmbeddingExecution {
+                        response,
+                        request_id: context.request_id,
+                        alias: alias.public_name.clone(),
+                        attempts,
+                        usage,
+                        generation: root.generation,
+                    });
+                }
+                Err(error) => {
+                    circuit_permit.failure(&error, Instant::now());
+                    audit
+                        .attempt_finished(AuditAttemptFinish {
+                            attempt: attempts,
+                            terminal: "failed",
+                            category: inference_error_category(error.category),
+                        })
+                        .await?;
+                    let can_retry = retryable(&error) && attempts < alias.max_attempts;
+                    last_error = Some(error);
+                    if !can_retry {
+                        break;
+                    }
+                }
+            }
+        }
+        let error = last_error.unwrap_or_else(|| model_provider::inference::InferenceError {
+            category: model_provider::inference::InferenceErrorCategory::ProviderOverload,
+            provider_status: None,
+            retry: model_provider::inference::RetryDisposition::Safe,
+            acceptance: AcceptanceEvidence::NotAccepted,
+            retry_after_ms: None,
+            detail: "no embedding deployment is currently available".to_string(),
+        });
+        let usage = match reservation.reconcile_embedding(
+            first_price,
+            None,
+            error.acceptance,
+            attempted_envelope,
+        ) {
+            Ok(usage) => usage,
+            Err(reconcile_error) => {
+                finish_audit(
+                    audit,
+                    AuditFinish {
+                        terminal: "failed",
+                        attempts,
+                        charged_micros: 0,
+                        usage_complete: false,
+                    },
+                    reconcile_error.public_status(),
+                    reconcile_error.public_code(),
+                )
+                .await?;
+                return Err(reconcile_error);
+            }
+        };
+        let public_error = if error.category
+            == model_provider::inference::InferenceErrorCategory::UnsupportedFeature
+        {
+            LlmGatewayError::Invariant(
+                "eligible embedding provider returned UnsupportedFeature".to_string(),
+            )
+        } else {
+            LlmGatewayError::Provider(error)
+        };
         finish_audit(
             audit,
             AuditFinish {
@@ -469,23 +1240,32 @@ impl LlmRuntime {
         principal: &str,
         request: &InferenceRequest,
         streaming: bool,
-    ) -> Result<BTreeSet<ProviderFormat>, LlmGatewayError> {
+    ) -> Result<BTreeSet<ProviderProtocol>, LlmGatewayError> {
         let alias = root
             .aliases
             .get(&request.model)
-            .ok_or(LlmGatewayError::ModelUnavailable)?;
+            .ok_or(LlmGatewayError::AliasNotFound)?;
         if alias.internal && alias.bound_principal.as_deref() != Some(principal) {
-            return Err(LlmGatewayError::ModelUnavailable);
+            return Err(LlmGatewayError::AliasNotFound);
         }
         let required = alias.merge_requirements(request_capabilities(request, streaming));
+        if !alias
+            .deployments
+            .iter()
+            .any(|deployment| deployment.supports_static(&required))
+        {
+            return Err(LlmGatewayError::UnsupportedCapability(
+                "no configured route preserves the requested generate capabilities".to_string(),
+            ));
+        }
         let formats = alias
             .deployments
             .iter()
             .filter(|deployment| deployment.supports(&required))
-            .map(|deployment| deployment.provider.format())
+            .map(|deployment| deployment.provider.protocol())
             .collect::<BTreeSet<_>>();
         if formats.is_empty() {
-            return Err(LlmGatewayError::ModelUnavailable);
+            return Err(LlmGatewayError::NoReadyDeployment);
         }
         Ok(formats)
     }
@@ -497,10 +1277,18 @@ impl LlmRuntime {
             .values()
             .filter(|alias| {
                 !alias.internal
-                    && alias.deployments.iter().any(|deployment| {
-                        deployment.supports(&alias.merge_requirements(
-                            model_provider::conformance::CapabilityRequirements::default(),
-                        ))
+                    && alias.operations.iter().any(|operation| {
+                        let required = match operation {
+                            Operation::Generate => {
+                                model_provider::conformance::CapabilityRequirements::generation()
+                            }
+                            Operation::Embed => {
+                                model_provider::conformance::CapabilityRequirements::embedding()
+                            }
+                        };
+                        alias.deployments.iter().any(|deployment| {
+                            deployment.supports(&alias.merge_requirements(required.clone()))
+                        })
                     })
             })
             .map(|alias| alias.public_name.clone())
@@ -531,6 +1319,80 @@ fn estimate_tokens(request: &InferenceRequest) -> u64 {
     // provider-aware tokenizers. JSON framing and tool schemas are included.
     let bytes = serde_json::to_vec(request).map_or(0, |bytes| bytes.len() as u64);
     bytes.saturating_add(3) / 4
+}
+
+fn validate_embedding_response(
+    deployment: &DeploymentRuntime,
+    request: &EmbeddingRequest,
+    response: &EmbeddingResponse,
+    max_canonical_vector_bytes: usize,
+) -> Result<(), model_provider::inference::InferenceError> {
+    let capabilities = deployment.capabilities.embedding.as_ref().ok_or_else(|| {
+        model_provider::inference::InferenceError::provider_protocol(
+            Some(502),
+            "embedding deployment has no compiled capabilities",
+        )
+    })?;
+    if response.vectors.len() != request.inputs.len() {
+        return Err(
+            model_provider::inference::InferenceError::provider_protocol(
+                Some(502),
+                "embedding provider returned the wrong vector count",
+            ),
+        );
+    }
+    let mut bytes = 0_usize;
+    for (position, vector) in response.vectors.iter().enumerate() {
+        let dimensions = u32::try_from(vector.values.len()).map_err(|_| {
+            model_provider::inference::InferenceError::provider_protocol(
+                Some(502),
+                "embedding vector dimension exceeds u32",
+            )
+        })?;
+        if usize::try_from(vector.index).ok() != Some(position)
+            || dimensions == 0
+            || !capabilities.supported_dimensions.contains(&dimensions)
+            || request
+                .dimensions
+                .is_some_and(|expected| expected != dimensions)
+            || vector.values.iter().any(|value| !value.is_finite())
+        {
+            return Err(
+                model_provider::inference::InferenceError::provider_protocol(
+                    Some(502),
+                    "embedding provider returned invalid indices, dimensions, or values",
+                ),
+            );
+        }
+        bytes = bytes
+            .checked_add(
+                vector
+                    .values
+                    .len()
+                    .checked_mul(std::mem::size_of::<f32>())
+                    .ok_or_else(|| {
+                        model_provider::inference::InferenceError::provider_protocol(
+                            Some(502),
+                            "embedding vector byte size overflow",
+                        )
+                    })?,
+            )
+            .ok_or_else(|| {
+                model_provider::inference::InferenceError::provider_protocol(
+                    Some(502),
+                    "embedding response byte size overflow",
+                )
+            })?;
+    }
+    if bytes > max_canonical_vector_bytes {
+        return Err(
+            model_provider::inference::InferenceError::provider_protocol(
+                Some(502),
+                "embedding canonical vectors exceed the compiled byte bound",
+            ),
+        );
+    }
+    Ok(())
 }
 
 fn inference_error_category(

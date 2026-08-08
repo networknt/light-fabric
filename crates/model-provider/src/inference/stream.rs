@@ -27,6 +27,13 @@ pub enum InferenceEvent {
     TextDelta {
         text: String,
     },
+    RefusalDelta {
+        refusal: String,
+    },
+    ReasoningSummaryDelta {
+        index: u32,
+        text: String,
+    },
     ToolCallDelta {
         delta: ToolCallDelta,
     },

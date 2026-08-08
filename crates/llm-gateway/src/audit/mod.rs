@@ -15,12 +15,14 @@ use uuid::Uuid;
 
 use crate::config::AuditMode;
 use crate::error::LlmGatewayError;
+use model_provider::inference::Operation;
 
 #[derive(Debug, Clone)]
 pub struct AuditStart {
     pub request_id: String,
     pub principal_id: String,
     pub alias: String,
+    pub operation: Operation,
     pub generation: u64,
     pub snapshot_digest: String,
     pub max_attempts: usize,
@@ -375,7 +377,11 @@ fn event(
         snapshot_digest: start.snapshot_digest.clone(),
         host_id: host_id.to_string(),
         public_alias: start.alias.clone(),
-        operation: "chat_completions".to_string(),
+        operation: match start.operation {
+            Operation::Generate => "generate",
+            Operation::Embed => "embed",
+        }
+        .to_string(),
         status: status.to_string(),
         category: category.to_string(),
         deployment_id: deployment_id.map(str::to_string),
@@ -420,6 +426,7 @@ mod tests {
             request_id: Uuid::now_v7().to_string(),
             principal_id: "principal-secret".to_string(),
             alias: "public-model".to_string(),
+            operation: Operation::Generate,
             generation: 7,
             snapshot_digest: "a".repeat(64),
             max_attempts: 1,

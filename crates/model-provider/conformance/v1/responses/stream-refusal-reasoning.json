@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "1",
+  "id": "responses-stream-refusal-reasoning",
+  "provider": "openai_responses",
+  "kind": "stream",
+  "input": {"chunks": [
+    "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_private\"}}\n\n",
+    "data: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_private\"}}\n\n",
+    "data: {\"type\":\"response.refusal.delta\",\"delta\":\"cannot\"}\n\n",
+    "data: {\"type\":\"response.reasoning_summary_text.delta\",\"output_index\":1,\"delta\":\"Checked policy.\"}\n\n",
+    "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":2,\"output_tokens\":3,\"output_tokens_details\":{\"reasoning_tokens\":1}}}}\n\n"
+  ]},
+  "expected": [
+    {"type": "message_start", "evidence": {"requestId": "resp_private"}},
+    {"type": "refusal_delta", "refusal": "cannot"},
+    {"type": "reasoning_summary_delta", "index": 1, "text": "Checked policy."},
+    {"type": "usage", "usage": {"inputTokens": 2, "outputTokens": 3, "reasoningTokens": 1}},
+    {"type": "message_end", "finishReason": "stop", "terminalState": "complete"}
+  ]
+}

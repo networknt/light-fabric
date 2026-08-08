@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1",
   "id": "anthropic-stream-unknown-event",
-  "provider": "anthropic",
+  "provider": "anthropic_messages",
   "kind": "stream",
   "input": {"chunks": ["event: future_event\ndata: {\"type\":\"future_event\"}\n\n"]},
   "expected": {"errorCategory": "protocol"}
