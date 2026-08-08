@@ -1404,6 +1404,32 @@ impl AgentRepository {
         Ok(())
     }
 
+    pub async fn bind_session_memory_bank(
+        &self,
+        host_id: Uuid,
+        session_id: AgentSessionId,
+        bank_id: Uuid,
+    ) -> Result<()> {
+        let bound: Option<Uuid> = sqlx::query_scalar(
+            "UPDATE agent_session_t
+             SET bank_id=$3,
+                 session_version=CASE WHEN bank_id IS NULL THEN session_version+1 ELSE session_version END,
+                 updated_ts=now()
+             WHERE host_id=$1 AND session_id=$2 AND user_id IS NOT NULL
+               AND (bank_id IS NULL OR bank_id=$3)
+             RETURNING bank_id",
+        )
+        .bind(host_id)
+        .bind(session_id.0)
+        .bind(bank_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        if bound != Some(bank_id) {
+            bail!("durable agent session memory-bank binding mismatch");
+        }
+        Ok(())
+    }
+
     pub async fn admit_user_turn(
         &self,
         host_id: Uuid,
@@ -2207,6 +2233,25 @@ mod tests {
         sqlx::query("INSERT INTO agent_memory_bank_t(host_id,bank_id,agent_def_id,user_id,bank_name) VALUES($1,$2,$3,$4,'test-history')")
             .bind(host_id).bind(session.0).bind(agent_def_id).bind(principal_id)
             .execute(&pool).await.unwrap();
+        repository
+            .bind_session_memory_bank(host_id, session, session.0)
+            .await
+            .unwrap();
+        let persisted_bank: Option<Uuid> = sqlx::query_scalar(
+            "SELECT bank_id FROM agent_session_t WHERE host_id=$1 AND session_id=$2",
+        )
+        .bind(host_id)
+        .bind(session.0)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(persisted_bank, Some(session.0));
+        assert!(
+            repository
+                .bind_session_memory_bank(host_id, session, Uuid::now_v7())
+                .await
+                .is_err()
+        );
         sqlx::query("UPDATE agent_definition_t SET policy_snapshot_id=$3 WHERE host_id=$1 AND agent_def_id=$2")
             .bind(host_id)
             .bind(agent_def_id)
@@ -2220,6 +2265,37 @@ mod tests {
             .unwrap();
         assert_eq!(published.snapshot_id, session.0);
         assert_eq!(published.catalog_digest, digest("catalog"));
+        let workflow_job = Uuid::now_v7();
+        sqlx::query("INSERT INTO agent_job_t(host_id,job_id,workflow_process_id,workflow_task_id,agent_def_id,
+                idempotency_key,input,input_schema_digest,output_schema,policy_digest,data_boundary_digest,
+                deadline_ts,token_budget,cost_budget_micros,delegation_depth,state)
+                VALUES($1,$2,$3,$4,$5,$6,'{}'::jsonb,$7,'{}'::jsonb,$8,$9,$10,1000,1000,0,'PENDING')")
+            .bind(host_id)
+            .bind(workflow_job)
+            .bind(Uuid::now_v7())
+            .bind(Uuid::now_v7())
+            .bind(agent_def_id)
+            .bind(format!("workflow-bankless-{workflow_job}"))
+            .bind(digest("workflow-input-schema"))
+            .bind(policy_document_digest(&published).unwrap())
+            .bind(&published.data_boundary_digest)
+            .bind(Utc::now() + Duration::hours(1))
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(repository.reconcile_agent_jobs().await.unwrap() > 0);
+        let workflow_bank: Option<Uuid> = sqlx::query_scalar(
+            "SELECT bank_id FROM agent_session_t WHERE host_id=$1 AND session_id=$2",
+        )
+        .bind(host_id)
+        .bind(workflow_job)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            workflow_bank, None,
+            "workflow-job admission must remain bankless"
+        );
         let first = repository
             .admit_user_turn(host_id, session, "message-1", "hello")
             .await

@@ -2894,16 +2894,6 @@ async fn handle_socket(
         return;
     }
 
-    let _ = sender
-        .send(Message::Text(
-            serde_json::to_string(&ServerMessage::Session {
-                session_id: session_id_string.clone(),
-            })
-            .unwrap()
-            .into(),
-        ))
-        .await;
-
     // 1. Load or Initialize Session
     let bank_id = session_id; // Using session as bank for simplicity
     if let Err(e) = state
@@ -2927,6 +2917,31 @@ async fn handle_socket(
         }
         return;
     }
+    if let Err(e) = state
+        .domain
+        .bind_session_memory_bank(state.host_id, AgentSessionId(session_id), bank_id)
+        .await
+    {
+        error!("Failed to bind durable session to memory bank: {}", e);
+        let payload = serde_json::to_string(&ServerMessage::Error {
+            message: "Failed to bind session memory".to_string(),
+        })
+        .unwrap_or_else(|_| {
+            "{\"type\":\"error\",\"message\":\"Session initialization failed\"}".to_string()
+        });
+        let _ = sender.send(Message::Text(payload.into())).await;
+        return;
+    }
+
+    let _ = sender
+        .send(Message::Text(
+            serde_json::to_string(&ServerMessage::Session {
+                session_id: session_id_string.clone(),
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await;
 
     while let Some(Ok(msg)) = receiver.next().await {
         if let Message::Text(text) = msg {

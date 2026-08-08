@@ -47,8 +47,10 @@ image, or import the rebuilt image before redeploying.
 
 ## Required Values
 
-- `lightPortalAuthorization`: bearer token for config-server bootstrap and
-  controller registration.
+- `lightPortalAuthorization`: client-credentials bearer token for config-server
+  bootstrap, controller registration, and runtime-only Hindsight commands. A
+  logged-in Portal user's authorization-code token is not valid for the
+  runtime-only command path.
 - `bootstrapCaPemBase64`: base64 content of the CA PEM used to trust
   config-server, controller, and the gateway.
 - `lightAgentHostId`: UUID used by Hindsight memory tables.
