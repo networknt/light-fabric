@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lightapi.net/contracts/llm/sidecar-manifest.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "profileVersion", "configSha256", "certificateIdentitySha256", "isolationEvidenceSha256", "physicalRuntimeId", "enabledPaths", "runtimeBaseUrlSha256", "runtimeAuth", "maxRequestTimeMs", "connectTimeoutMs", "streamSetupTimeoutMs", "idleTimeoutMs", "maxRequestBodyBytes", "maxResponseBodyBytes"],
+  "properties": {
+    "schemaVersion": {"const": "1"},
+    "profileVersion": {"type": "string", "minLength": 1},
+    "configSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "certificateIdentitySha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "isolationEvidenceSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "physicalRuntimeId": {"type": "string", "minLength": 1},
+    "runtimeBaseUrlSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "runtimeAuth": {"type": "object"},
+    "maxRequestTimeMs": {"type": "integer", "minimum": 1},
+    "connectTimeoutMs": {"type": "integer", "minimum": 1},
+    "streamSetupTimeoutMs": {"type": "integer", "minimum": 1},
+    "idleTimeoutMs": {"type": "integer", "minimum": 1},
+    "maxRequestBodyBytes": {"type": "integer", "minimum": 1},
+    "maxResponseBodyBytes": {"type": "integer", "minimum": 1},
+    "enabledPaths": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["method", "path"],
+        "properties": {"method": {"type": "string"}, "path": {"type": "string", "pattern": "^/"}}
+      }
+    }
+  }
+}

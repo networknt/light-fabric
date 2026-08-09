@@ -57,12 +57,18 @@ pub struct LlmRouterConfig {
     pub stream_drain_grace_ms: u64,
     #[serde(default)]
     pub development_fixtures: bool,
+    /// Protected rollout switch. V3 local profiles parse while this is false,
+    /// but compilation fails before any legacy development-fixture advice.
+    #[serde(default)]
+    pub local_transport_enabled: bool,
     #[serde(default)]
     pub openai_extension_allowlist: BTreeSet<String>,
     #[serde(default)]
     pub production_projection: ProductionProjectionConfig,
     #[serde(default)]
     pub audit_runtime: AuditRuntimeConfig,
+    #[serde(default)]
+    pub network_zones: BTreeMap<String, NetworkZone>,
     #[serde(default)]
     pub providers: BTreeMap<String, ProviderConfig>,
     #[serde(default)]
@@ -92,9 +98,11 @@ impl Default for LlmRouterConfig {
             stream_minimum_drain_bytes_per_second: default_stream_minimum_drain_rate(),
             stream_drain_grace_ms: default_stream_drain_grace_ms(),
             development_fixtures: false,
+            local_transport_enabled: false,
             openai_extension_allowlist: BTreeSet::new(),
             production_projection: ProductionProjectionConfig::default(),
             audit_runtime: AuditRuntimeConfig::default(),
+            network_zones: BTreeMap::new(),
             providers: BTreeMap::new(),
             deployments: BTreeMap::new(),
             aliases: BTreeMap::new(),
@@ -247,6 +255,29 @@ pub struct ProductionProjectionConfig {
     /// variable names. Values are names, never secret material.
     #[serde(default)]
     pub credential_environment: BTreeMap<String, String>,
+    /// Maps approved `config://` trust-bundle references to protected local
+    /// PEM paths. The projection carries only the reference and digest.
+    #[serde(default)]
+    pub trust_bundle_files: BTreeMap<String, String>,
+    /// Protected runner public keys, encoded as base64 raw Ed25519 keys.
+    #[serde(default)]
+    pub evidence_public_keys: BTreeMap<String, String>,
+    #[serde(default)]
+    pub evidence_key_set_version: String,
+    #[serde(default)]
+    pub evidence_key_set_digest: String,
+    #[serde(default)]
+    pub replica_inventory_id: String,
+    #[serde(default)]
+    pub replica_inventory_generation: u64,
+    #[serde(default)]
+    pub replica_inventory_digest: String,
+    #[serde(default)]
+    pub acknowledgement_endpoint: Option<String>,
+    #[serde(default)]
+    pub acknowledgement_token_file: Option<String>,
+    #[serde(default)]
+    pub acknowledgement_audience: Option<String>,
 }
 
 impl Default for ProductionProjectionConfig {
@@ -261,16 +292,196 @@ impl Default for ProductionProjectionConfig {
             max_artifact_bytes: default_projection_artifact_bytes(),
             required_conformance_provenance: default_conformance_provenance(),
             credential_environment: BTreeMap::new(),
+            trust_bundle_files: BTreeMap::new(),
+            evidence_public_keys: BTreeMap::new(),
+            evidence_key_set_version: String::new(),
+            evidence_key_set_digest: String::new(),
+            replica_inventory_id: String::new(),
+            replica_inventory_generation: 0,
+            replica_inventory_digest: String::new(),
+            acknowledgement_endpoint: None,
+            acknowledgement_token_file: None,
+            acknowledgement_audience: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EndpointApiKeyHeader {
+    #[default]
+    XApiKey,
+    Authorization,
+}
+
+impl EndpointApiKeyHeader {
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Self::XApiKey => "x-api-key",
+            Self::Authorization => "authorization",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EndpointAuth {
+    None,
+    Bearer {
+        credential_ref: String,
+    },
+    ApiKey {
+        credential_ref: String,
+        header: EndpointApiKeyHeader,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RuntimeAuth {
+    None,
+    Bearer {
+        credential_ref: String,
+    },
+    ApiKey {
+        credential_ref: String,
+        header: EndpointApiKeyHeader,
+    },
+}
+
+impl Default for RuntimeAuth {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkProfileMode {
+    #[default]
+    PublicTls,
+    PrivateTls,
+    PrivatePlaintext,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkTermination {
+    #[default]
+    Native,
+    LightGatewaySidecar,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TrustBundleReference {
+    pub trust_bundle_ref: String,
+    pub trust_bundle_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderConnectionPolicy {
+    #[serde(default = "default_pool_idle_timeout_ms")]
+    pub pool_idle_timeout_ms: u64,
+    #[serde(default = "default_client_refresh_interval_ms")]
+    pub client_refresh_interval_ms: u64,
+}
+
+impl Default for ProviderConnectionPolicy {
+    fn default() -> Self {
+        Self {
+            pool_idle_timeout_ms: default_pool_idle_timeout_ms(),
+            client_refresh_interval_ms: default_client_refresh_interval_ms(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NetworkProfile {
+    #[serde(default)]
+    pub mode: NetworkProfileMode,
+    #[serde(default)]
+    pub termination: NetworkTermination,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_zone_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls: Option<TrustBundleReference>,
+    #[serde(default)]
+    pub connection: ProviderConnectionPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NetworkZone {
+    pub id: String,
+    #[serde(default)]
+    pub dns_names: BTreeSet<String>,
+    #[serde(default)]
+    pub cidrs: BTreeSet<String>,
+    #[serde(default)]
+    pub ports: BTreeSet<u16>,
+    #[serde(default)]
+    pub allow_private_tls: bool,
+    #[serde(default)]
+    pub allow_private_plaintext: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadinessPolicy {
+    #[default]
+    Immediate,
+    WarmBeforeEligible,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeCapacity {
+    pub physical_runtime_id: String,
+    pub capacity_domain_id: String,
+    pub max_parallel_requests: usize,
+    pub max_queued_requests: usize,
+    #[serde(default)]
+    pub readiness_policy: ReadinessPolicy,
+    pub cold_start_timeout_ms: u64,
+    pub stream_setup_timeout_ms: u64,
+    pub request_timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SidecarExpectation {
+    pub profile_version: String,
+    pub config_sha256: String,
+    #[serde(default)]
+    pub runtime_auth: RuntimeAuth,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PricingBasis {
+    #[default]
+    ExternalProvider,
+    ZeroMarginal,
+    AmortizedInternal,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConfig {
+    #[serde(default)]
+    pub provider_account_id: String,
     pub provider_protocol: ProviderProtocol,
     pub base_url: String,
+    /// Deprecated v2 compatibility input. V3 endpoints use `endpointAuth`.
+    #[serde(default)]
     pub secret_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_auth: Option<EndpointAuth>,
+    #[serde(default)]
+    pub network_profile: NetworkProfile,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
     #[serde(default)]
@@ -281,9 +492,17 @@ pub struct ProviderConfig {
 #[serde(rename_all = "camelCase")]
 pub struct DeploymentConfig {
     pub provider: String,
+    #[serde(default)]
+    pub deployment_revision_id: String,
     pub model: String,
     #[serde(default = "default_deployment_concurrency")]
     pub concurrency: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_capacity: Option<RuntimeCapacity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidecar: Option<SidecarExpectation>,
+    #[serde(default)]
+    pub pricing_basis: PricingBasis,
     pub prices: BTreeMap<Operation, OperationPrice>,
     #[serde(default)]
     pub embedding_capabilities: Option<EmbeddingCapabilities>,
@@ -534,6 +753,14 @@ fn default_projection_poll_ms() -> u64 {
 }
 fn default_projection_artifact_bytes() -> usize {
     4 * 1024 * 1024
+}
+
+fn default_pool_idle_timeout_ms() -> u64 {
+    30_000
+}
+
+fn default_client_refresh_interval_ms() -> u64 {
+    300_000
 }
 
 fn default_conformance_provenance() -> FixtureProvenance {

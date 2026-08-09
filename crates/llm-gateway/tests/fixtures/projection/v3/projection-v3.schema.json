@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lightapi.net/contracts/llm/projection-v3.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "publicationId", "sequence", "rootDigest", "minimumGatewayVersion", "resources"],
+  "properties": {
+    "schemaVersion": {"const": "3"},
+    "publicationId": {"type": "string", "format": "uuid"},
+    "sequence": {"type": "integer", "minimum": 1},
+    "rootDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "minimumGatewayVersion": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "resources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schemaVersion", "resourceType", "resourceId", "resourceVersion", "sequence", "payload"],
+        "properties": {
+          "schemaVersion": {"const": 3},
+          "resourceType": {"enum": ["llm-network-zone", "llm-provider-endpoint", "llm-deployment", "llm-pricing", "llm-route"]},
+          "resourceId": {"type": "string", "minLength": 1},
+          "resourceVersion": {"type": "integer", "minimum": 1},
+          "sequence": {"type": "integer", "minimum": 1},
+          "payload": {"type": "object"}
+        }
+      }
+    }
+  }
+}
+

@@ -7,7 +7,8 @@
 
 use crate::config::{
     AliasCapabilityRequirements, AliasConfig, AuditMode, DeploymentConfig, EmbeddingWorkloadLane,
-    LlmRouterConfig, ProviderConfig,
+    EndpointAuth, LlmRouterConfig, NetworkProfile, NetworkZone, PricingBasis, ProviderConfig,
+    RuntimeCapacity, SidecarExpectation,
 };
 use crate::error::LlmGatewayError;
 use crate::runtime::{LlmCompiler, LlmSnapshotStore, PublishOutcome};
@@ -25,6 +26,8 @@ use std::sync::Arc;
 use tracing::warn;
 
 pub const PROJECTION_SCHEMA_VERSION: &str = "2";
+pub const PROJECTION_SCHEMA_VERSION_V3: &str = "3";
+pub const PROJECTION_ACKNOWLEDGEMENT_SCHEMA_VERSION: &str = "2";
 pub const GATEWAY_COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const SUPPORTED_ROUTING_FEATURE: &str = "ordered-routing";
 const MAX_PROJECTION_RESOURCES: usize = 1_024;
@@ -33,6 +36,8 @@ const MAX_PROJECTION_RESOURCES: usize = 1_024;
 #[serde(rename_all = "camelCase")]
 pub struct ProjectionManifest {
     pub schema_version: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub publication_id: String,
     pub host_id: String,
     pub environment: String,
     pub sequence: u64,
@@ -88,13 +93,45 @@ pub trait ProjectionAcknowledgementSink: Send + Sync {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectionAcknowledgement {
+    pub schema_version: String,
+    pub gateway_publication_id: String,
     pub host_id: String,
     pub environment: String,
+    pub inventory_id: String,
+    pub inventory_generation: u64,
+    pub inventory_digest: String,
     pub sequence: u64,
     pub root_digest: String,
+    pub applied_schema_version: String,
     pub applied_at: String,
     pub gateway_version: String,
+    pub reader_version: String,
     pub gateway_instance: String,
+    pub material_generation: u64,
+    pub resolved_trust_digest: String,
+    pub evidence_key_set_version: String,
+    pub evidence_key_set_digest: String,
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<String>,
+    pub acknowledgement_digest: String,
+}
+
+impl ProjectionAcknowledgement {
+    pub fn refresh_digest(&mut self) -> Result<(), ProjectionError> {
+        self.acknowledgement_digest.clear();
+        self.acknowledgement_digest =
+            canonical_digest(&serde_json::to_value(&*self).map_err(contract_json)?)?;
+        Ok(())
+    }
+
+    pub fn verify_digest(&self) -> bool {
+        let mut candidate = self.clone();
+        let expected = candidate.acknowledgement_digest.clone();
+        candidate.refresh_digest().is_ok() && candidate.acknowledgement_digest == expected
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -254,10 +291,18 @@ impl ProjectionAcknowledgementSink for FileAcknowledgementSink {
         acknowledgement: &ProjectionAcknowledgement,
     ) -> Result<(), ProjectionError> {
         validate_path_component(&acknowledgement.gateway_instance)?;
+        if !acknowledgement.verify_digest() {
+            return Err(ProjectionError::Contract(
+                "projection acknowledgement digest mismatch".to_string(),
+            ));
+        }
         fs::create_dir_all(&self.directory).map_err(transport)?;
-        let path = self
-            .directory
-            .join(format!("{}.json", acknowledgement.gateway_instance));
+        let publication_directory = self.directory.join(format!(
+            "publication-{}-{}",
+            acknowledgement.sequence, acknowledgement.root_digest
+        ));
+        fs::create_dir_all(&publication_directory).map_err(transport)?;
+        let path = publication_directory.join(format!("{}.json", acknowledgement.gateway_instance));
         atomic_write_json(&path, acknowledgement)
     }
 }
@@ -271,6 +316,7 @@ pub struct LlmProjectionWorker {
     gateway_instance: String,
     base_config: LlmRouterConfig,
     current_config: Option<LlmRouterConfig>,
+    last_acknowledgement: Option<ProjectionAcknowledgement>,
     pending_acknowledgement: Option<ProjectionAcknowledgement>,
     candidate_identity: Option<(u64, String)>,
     last_rejection: Option<ProjectionRejectionEvent>,
@@ -299,6 +345,7 @@ impl LlmProjectionWorker {
             gateway_instance: gateway_instance.into(),
             base_config,
             current_config: None,
+            last_acknowledgement: None,
             pending_acknowledgement: None,
             candidate_identity: None,
             last_rejection: None,
@@ -461,16 +508,43 @@ impl LlmProjectionWorker {
         self.status.last_applied_sequence = checkpoint.sequence;
         self.status.last_root_digest = checkpoint.root_digest;
         self.status.applied_roots += 1;
-        self.current_config = Some(config);
-        self.pending_acknowledgement = Some(ProjectionAcknowledgement {
+        let mut acknowledgement = ProjectionAcknowledgement {
+            schema_version: PROJECTION_ACKNOWLEDGEMENT_SCHEMA_VERSION.to_string(),
+            gateway_publication_id: manifest.publication_id.clone(),
             host_id: manifest.host_id.clone(),
             environment: manifest.environment.clone(),
+            inventory_id: config.production_projection.replica_inventory_id.clone(),
+            inventory_generation: config.production_projection.replica_inventory_generation,
+            inventory_digest: normalize_digest(
+                &config.production_projection.replica_inventory_digest,
+            ),
             sequence: manifest.sequence,
             root_digest: self.status.last_root_digest.clone(),
+            applied_schema_version: manifest.schema_version.clone(),
             applied_at: unix_timestamp_string(),
             gateway_version: GATEWAY_COMPILER_VERSION.to_string(),
+            // Closed, sorted set of projection schemas accepted by this dual
+            // reader. It is independent of the schema applied by this root.
+            reader_version: "projection-reader-v3".to_string(),
             gateway_instance: self.gateway_instance.clone(),
-        });
+            material_generation: self.status.credential_generation,
+            resolved_trust_digest: aggregate_resolved_trust_digest(&config),
+            evidence_key_set_version: config
+                .production_projection
+                .evidence_key_set_version
+                .clone(),
+            evidence_key_set_digest: normalize_digest(
+                &config.production_projection.evidence_key_set_digest,
+            ),
+            state: "applied".to_string(),
+            failure_category: None,
+            failure_code: None,
+            acknowledgement_digest: String::new(),
+        };
+        acknowledgement.refresh_digest()?;
+        self.current_config = Some(config);
+        self.last_acknowledgement = Some(acknowledgement.clone());
+        self.pending_acknowledgement = Some(acknowledgement);
         self.retry_pending_acknowledgement()?;
         Ok(match outcome {
             PublishOutcome::Published => ProjectionApplyOutcome::Published,
@@ -482,14 +556,14 @@ impl LlmProjectionWorker {
     /// bounded rotation notification. No projection or request-time lookup is
     /// involved, and unchanged providers/accounts retain their stable Arcs.
     pub fn reload_secrets(&mut self) -> Result<ProjectionApplyOutcome, ProjectionError> {
-        let config = self.current_config.as_ref().ok_or_else(|| {
+        let config = self.current_config.clone().ok_or_else(|| {
             ProjectionError::Contract("cannot rotate before a root is loaded".to_string())
         })?;
         let previous = self.store.load();
         let mut candidate = self
             .compiler
             .compile(
-                config,
+                &config,
                 previous.generation.saturating_add(1),
                 Some(&previous),
             )
@@ -498,6 +572,18 @@ impl LlmProjectionWorker {
         let outcome = self.store.publish(candidate);
         if matches!(outcome, PublishOutcome::Published) {
             self.status.credential_generation = self.status.credential_generation.saturating_add(1);
+            let mut acknowledgement = self.last_acknowledgement.clone().ok_or_else(|| {
+                ProjectionError::Contract(
+                    "cannot acknowledge rotated material before a root is loaded".to_string(),
+                )
+            })?;
+            acknowledgement.material_generation = self.status.credential_generation;
+            acknowledgement.resolved_trust_digest = aggregate_resolved_trust_digest(&config);
+            acknowledgement.applied_at = unix_timestamp_string();
+            acknowledgement.refresh_digest()?;
+            self.last_acknowledgement = Some(acknowledgement.clone());
+            self.pending_acknowledgement = Some(acknowledgement);
+            self.retry_pending_acknowledgement()?;
             Ok(ProjectionApplyOutcome::Published)
         } else {
             Ok(ProjectionApplyOutcome::MaterializationUnchanged)
@@ -537,7 +623,7 @@ fn validate_bundle(bundle: &ProjectionBundle) -> Result<(), ProjectionError> {
         })?;
         if resource.host_id != manifest.host_id
             || resource.environment != manifest.environment
-            || resource.schema_version != PROJECTION_SCHEMA_VERSION
+            || resource.schema_version != manifest.schema_version
             || resource.sequence > manifest.sequence
             || resource.resource_version != reference.resource_version
             || normalize_digest(&resource.digest) != normalize_digest(&reference.digest)
@@ -563,8 +649,10 @@ fn validate_bundle(bundle: &ProjectionBundle) -> Result<(), ProjectionError> {
 }
 
 fn validate_manifest(manifest: &ProjectionManifest) -> Result<(), ProjectionError> {
-    if manifest.schema_version != PROJECTION_SCHEMA_VERSION
-        || manifest.host_id.trim().is_empty()
+    if !matches!(
+        manifest.schema_version.as_str(),
+        PROJECTION_SCHEMA_VERSION | PROJECTION_SCHEMA_VERSION_V3
+    ) || manifest.host_id.trim().is_empty()
         || manifest.environment.trim().is_empty()
         || manifest.sequence == 0
         || manifest.resources.is_empty()
@@ -572,6 +660,13 @@ fn validate_manifest(manifest: &ProjectionManifest) -> Result<(), ProjectionErro
     {
         return Err(ProjectionError::Contract(
             "invalid projection manifest envelope".to_string(),
+        ));
+    }
+    if manifest.schema_version == PROJECTION_SCHEMA_VERSION_V3
+        && manifest.publication_id.trim().is_empty()
+    {
+        return Err(ProjectionError::Contract(
+            "projection v3 manifest requires publicationId".to_string(),
         ));
     }
     if version_is_newer(&manifest.minimum_gateway_version, GATEWAY_COMPILER_VERSION)? {
@@ -606,6 +701,38 @@ struct DeploymentPayload {
     model: String,
     #[serde(default = "default_deployment_concurrency")]
     concurrency: usize,
+    conformance_digest: String,
+    conformance_result: ConformanceResult,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProviderEndpointPayloadV3 {
+    provider_endpoint_id: String,
+    provider_account_id: String,
+    provider_protocol: ProviderProtocol,
+    base_url: String,
+    endpoint_auth: EndpointAuth,
+    network_profile: NetworkProfile,
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
+    #[serde(default)]
+    quota_group_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DeploymentPayloadV3 {
+    deployment_id: String,
+    deployment_revision_id: String,
+    provider_endpoint_id: String,
+    model: String,
+    #[serde(default = "default_deployment_concurrency")]
+    concurrency: usize,
+    runtime_capacity: RuntimeCapacity,
+    #[serde(default)]
+    sidecar: Option<SidecarExpectation>,
+    pricing_basis: PricingBasis,
     conformance_digest: String,
     conformance_result: ConformanceResult,
 }
@@ -683,6 +810,19 @@ fn assemble_config(
     base: &LlmRouterConfig,
     bundle: &ProjectionBundle,
 ) -> Result<LlmRouterConfig, ProjectionError> {
+    match bundle.manifest.schema_version.as_str() {
+        PROJECTION_SCHEMA_VERSION => assemble_config_v2(base, bundle),
+        PROJECTION_SCHEMA_VERSION_V3 => assemble_config_v3(base, bundle),
+        _ => Err(ProjectionError::Contract(
+            "unsupported projection schema version".to_string(),
+        )),
+    }
+}
+
+fn assemble_config_v2(
+    base: &LlmRouterConfig,
+    bundle: &ProjectionBundle,
+) -> Result<LlmRouterConfig, ProjectionError> {
     let mut config = base.clone();
     config.enabled = true;
     config.development_fixtures = false;
@@ -701,9 +841,12 @@ fn assemble_config(
                     ));
                 }
                 let provider = ProviderConfig {
+                    provider_account_id: payload.provider_id.clone(),
                     provider_protocol: payload.provider_protocol,
                     base_url: payload.base_url,
                     secret_ref: payload.credential_ref,
+                    endpoint_auth: None,
+                    network_profile: Default::default(),
                     headers: payload.headers,
                     quota_group_id: payload.quota_group_id,
                 };
@@ -726,8 +869,12 @@ fn assemble_config(
                     payload.deployment_id,
                     DeploymentConfig {
                         provider: payload.provider_id,
+                        deployment_revision_id: String::new(),
                         model: payload.model,
                         concurrency: payload.concurrency,
+                        runtime_capacity: None,
+                        sidecar: None,
+                        pricing_basis: Default::default(),
                         prices: BTreeMap::new(),
                         embedding_capabilities: capabilities.embedding.clone(),
                         conformance_digest: payload.conformance_digest,
@@ -881,6 +1028,257 @@ fn assemble_config(
     Ok(config)
 }
 
+fn assemble_config_v3(
+    base: &LlmRouterConfig,
+    bundle: &ProjectionBundle,
+) -> Result<LlmRouterConfig, ProjectionError> {
+    let mut config = base.clone();
+    config.enabled = true;
+    config.development_fixtures = false;
+    config.network_zones.clear();
+    config.providers.clear();
+    config.deployments.clear();
+    config.aliases.clear();
+
+    for resource in bundle.resources.values() {
+        match resource.resource_type.as_str() {
+            "llm-network-zone" => {
+                let zone: NetworkZone =
+                    serde_json::from_value(resource.payload.clone()).map_err(contract_json)?;
+                if zone.id != resource.resource_id
+                    || config.network_zones.insert(zone.id.clone(), zone).is_some()
+                {
+                    return Err(ProjectionError::Contract(
+                        "network-zone payload/resource id mismatch or duplicate".to_string(),
+                    ));
+                }
+            }
+            "llm-provider-endpoint" => {
+                let endpoint: ProviderEndpointPayloadV3 =
+                    serde_json::from_value(resource.payload.clone()).map_err(contract_json)?;
+                if endpoint.provider_endpoint_id != resource.resource_id {
+                    return Err(ProjectionError::Contract(
+                        "provider-endpoint payload/resource id mismatch".to_string(),
+                    ));
+                }
+                let provider = ProviderConfig {
+                    provider_account_id: endpoint.provider_account_id,
+                    provider_protocol: endpoint.provider_protocol,
+                    base_url: endpoint.base_url,
+                    secret_ref: String::new(),
+                    endpoint_auth: Some(endpoint.endpoint_auth),
+                    network_profile: endpoint.network_profile,
+                    headers: endpoint.headers,
+                    quota_group_id: endpoint.quota_group_id,
+                };
+                if config
+                    .providers
+                    .insert(endpoint.provider_endpoint_id, provider)
+                    .is_some()
+                {
+                    return Err(ProjectionError::Contract(
+                        "duplicate provider endpoint".to_string(),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut prices = Vec::new();
+    for resource in bundle.resources.values() {
+        match resource.resource_type.as_str() {
+            "llm-network-zone" | "llm-provider-endpoint" => {}
+            "llm-deployment" => {
+                let payload: DeploymentPayloadV3 =
+                    serde_json::from_value(resource.payload.clone()).map_err(contract_json)?;
+                if payload.deployment_id != resource.resource_id
+                    || !config.providers.contains_key(&payload.provider_endpoint_id)
+                {
+                    return Err(ProjectionError::Contract(
+                        "v3 deployment payload/resource/endpoint mismatch".to_string(),
+                    ));
+                }
+                let capabilities = payload.conformance_result.capabilities.clone();
+                config.deployments.insert(
+                    payload.deployment_id,
+                    DeploymentConfig {
+                        provider: payload.provider_endpoint_id,
+                        deployment_revision_id: payload.deployment_revision_id,
+                        model: payload.model,
+                        concurrency: payload.concurrency,
+                        runtime_capacity: Some(payload.runtime_capacity),
+                        sidecar: payload.sidecar,
+                        pricing_basis: payload.pricing_basis,
+                        prices: BTreeMap::new(),
+                        embedding_capabilities: capabilities.embedding.clone(),
+                        conformance_digest: payload.conformance_digest,
+                        conformance_result: Some(payload.conformance_result),
+                        text: capabilities
+                            .generation
+                            .as_ref()
+                            .is_some_and(|value| value.content.text),
+                        images: capabilities
+                            .generation
+                            .as_ref()
+                            .is_some_and(|value| value.content.images),
+                        tools: capabilities
+                            .generation
+                            .as_ref()
+                            .is_some_and(|value| value.content.tools),
+                        structured_json: capabilities
+                            .generation
+                            .as_ref()
+                            .is_some_and(|value| value.content.structured_json),
+                        streaming: capabilities
+                            .generation
+                            .as_ref()
+                            .is_some_and(|value| value.streaming),
+                        pii_placeholder_preservation_percent: 0,
+                    },
+                );
+            }
+            "llm-route" => {
+                let payload: RoutePayload =
+                    serde_json::from_value(resource.payload.clone()).map_err(contract_json)?;
+                if payload.alias_name != resource.resource_id {
+                    return Err(ProjectionError::Contract(
+                        "route payload/resource id mismatch".to_string(),
+                    ));
+                }
+                let alias_name = payload.alias_name.clone();
+                config.aliases.insert(alias_name, alias_config(payload));
+            }
+            "llm-pricing" => prices.push(
+                serde_json::from_value::<PricingPayload>(resource.payload.clone())
+                    .map_err(contract_json)?,
+            ),
+            "llm-policy" => apply_policy_payload(&mut config, resource)?,
+            other => {
+                return Err(ProjectionError::Contract(format!(
+                    "unsupported v3 projection resource type `{other}`"
+                )));
+            }
+        }
+    }
+    apply_prices(&mut config, prices)?;
+    if config.deployments.is_empty() || config.aliases.is_empty() {
+        return Err(ProjectionError::Contract(
+            "projection root has no deployable alias".to_string(),
+        ));
+    }
+    Ok(config)
+}
+
+fn alias_config(payload: RoutePayload) -> AliasConfig {
+    AliasConfig {
+        operations: payload.operations,
+        deployments: payload.deployments,
+        max_attempts: payload.max_attempts,
+        concurrency: payload.concurrency,
+        max_input_tokens: payload.max_input_tokens,
+        max_output_tokens: payload.max_output_tokens,
+        max_cost_micros: payload.max_cost_micros,
+        internal: payload.internal,
+        bound_principal: payload.bound_principal,
+        audit: payload.audit,
+        pii: payload.pii,
+        required_capabilities: payload.required_capabilities,
+        require_expected_embedding_space: payload.require_expected_embedding_space,
+        embedding_workload_lane: payload.embedding_workload_lane,
+    }
+}
+
+fn apply_policy_payload(
+    config: &mut LlmRouterConfig,
+    resource: &ProjectionResource,
+) -> Result<(), ProjectionError> {
+    let payload: PolicyPayload =
+        serde_json::from_value(resource.payload.clone()).map_err(contract_json)?;
+    if let Some(value) = payload.global_concurrency {
+        require_local_bound("globalConcurrency", value, config.global_concurrency)?;
+    }
+    if let Some(value) = payload.global_stream_concurrency {
+        require_local_bound(
+            "globalStreamConcurrency",
+            value,
+            config.global_stream_concurrency,
+        )?;
+    }
+    if let Some(value) = payload.stream_channel_capacity {
+        require_local_bound(
+            "streamChannelCapacity",
+            value,
+            config.stream_channel_capacity,
+        )?;
+    }
+    if let Some(value) = payload.max_stream_response_bytes {
+        require_local_bound(
+            "maxStreamResponseBytes",
+            value,
+            config.max_stream_response_bytes,
+        )?;
+    }
+    if let Some(value) = payload.stream_write_timeout_ms {
+        require_local_bound(
+            "streamWriteTimeoutMs",
+            value,
+            config.stream_write_timeout_ms,
+        )?;
+    }
+    if let Some(value) = payload.max_replay_bytes {
+        require_local_bound("maxReplayBytes", value, config.max_replay_bytes)?;
+    }
+    if let Some(value) = payload.request_timeout_ms {
+        require_local_bound("requestTimeoutMs", value, config.request_timeout_ms)?;
+    }
+    Ok(())
+}
+
+fn apply_prices(
+    config: &mut LlmRouterConfig,
+    prices: Vec<PricingPayload>,
+) -> Result<(), ProjectionError> {
+    for price in prices {
+        let deployment = config
+            .deployments
+            .get_mut(&price.deployment_id)
+            .ok_or_else(|| {
+                ProjectionError::Contract("pricing references a missing deployment".to_string())
+            })?;
+        let operation_price = match price.operation {
+            Operation::Generate => OperationPrice::Generate(GenerationPrice {
+                version: price.price_version,
+                input_micros_per_million: price.input_micros_per_million,
+                output_micros_per_million: price.output_micros_per_million.ok_or_else(|| {
+                    ProjectionError::Contract("generation price requires output rate".to_string())
+                })?,
+            }),
+            Operation::Embed => {
+                if price.output_micros_per_million.is_some() {
+                    return Err(ProjectionError::Contract(
+                        "embedding price must not contain an output rate".to_string(),
+                    ));
+                }
+                OperationPrice::Embed(EmbeddingPrice {
+                    version: price.price_version,
+                    input_micros_per_million: price.input_micros_per_million,
+                })
+            }
+        };
+        if deployment
+            .prices
+            .insert(price.operation, operation_price)
+            .is_some()
+        {
+            return Err(ProjectionError::Contract(
+                "duplicate deployment operation price".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn require_local_bound<T: PartialEq>(
     name: &str,
     published: T,
@@ -898,6 +1296,26 @@ fn canonical_digest(value: &Value) -> Result<String, ProjectionError> {
     let canonical = canonicalize(value);
     let encoded = serde_json::to_vec(&canonical).map_err(contract_json)?;
     Ok(format!("{:x}", Sha256::digest(encoded)))
+}
+
+fn aggregate_resolved_trust_digest(config: &LlmRouterConfig) -> String {
+    let trust = config
+        .providers
+        .iter()
+        .map(|(id, provider)| {
+            (
+                id,
+                provider
+                    .network_profile
+                    .tls
+                    .as_ref()
+                    .map(|value| value.trust_bundle_sha256.as_str())
+                    .unwrap_or("public-roots"),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    canonical_digest(&serde_json::to_value(trust).expect("trust material serializes"))
+        .expect("trust material canonicalizes")
 }
 
 fn canonicalize(value: &Value) -> Value {
@@ -1185,6 +1603,7 @@ mod tests {
             .collect();
         let mut manifest = ProjectionManifest {
             schema_version: PROJECTION_SCHEMA_VERSION.to_string(),
+            publication_id: "publication-fixture".to_string(),
             host_id: "host-a".to_string(),
             environment: "prod".to_string(),
             sequence,
@@ -1328,7 +1747,23 @@ mod tests {
             &old_deployment.account,
             &rotated.deployments["openai-primary"].account
         ));
+        assert!(Arc::ptr_eq(
+            &old_deployment.permits,
+            &rotated.deployments["openai-primary"].permits
+        ));
+        assert!(Arc::ptr_eq(
+            &old_deployment.circuit,
+            &rotated.deployments["openai-primary"].circuit
+        ));
+        assert!(Arc::ptr_eq(
+            &old_deployment.readiness,
+            &rotated.deployments["openai-primary"].readiness
+        ));
         assert_eq!(replica_a.status().credential_generation, 1);
+        let acknowledgements = acks.0.lock().unwrap();
+        assert_eq!(acknowledgements.len(), 3);
+        assert_eq!(acknowledgements.last().unwrap().material_generation, 1);
+        assert!(acknowledgements.last().unwrap().verify_digest());
     }
 
     #[test]
@@ -1673,19 +2108,39 @@ mod tests {
         validate_bundle(&loaded).unwrap();
         let sink = FileAcknowledgementSink::new(directory.path().join("acks"));
         for instance in ["gateway-a", "gateway-b"] {
-            sink.acknowledge(&ProjectionAcknowledgement {
+            let mut acknowledgement = ProjectionAcknowledgement {
+                schema_version: PROJECTION_ACKNOWLEDGEMENT_SCHEMA_VERSION.to_string(),
+                gateway_publication_id: "publication-fixture".to_string(),
                 host_id: "host-a".to_string(),
                 environment: "prod".to_string(),
+                inventory_id: "inventory-a".to_string(),
+                inventory_generation: 1,
+                inventory_digest: "a".repeat(64),
                 sequence: 7,
                 root_digest: loaded.manifest.root_digest.clone(),
+                applied_schema_version: PROJECTION_SCHEMA_VERSION.to_string(),
                 applied_at: "1".to_string(),
                 gateway_version: GATEWAY_COMPILER_VERSION.to_string(),
+                reader_version: "projection-reader-v3".to_string(),
                 gateway_instance: instance.to_string(),
-            })
-            .unwrap();
+                material_generation: 1,
+                resolved_trust_digest: "b".repeat(64),
+                evidence_key_set_version: "keys-v1".to_string(),
+                evidence_key_set_digest: "c".repeat(64),
+                state: "applied".to_string(),
+                failure_category: None,
+                failure_code: None,
+                acknowledgement_digest: String::new(),
+            };
+            acknowledgement.refresh_digest().unwrap();
+            sink.acknowledge(&acknowledgement).unwrap();
         }
-        assert!(directory.path().join("acks/gateway-a.json").is_file());
-        assert!(directory.path().join("acks/gateway-b.json").is_file());
+        let publication = directory.path().join(format!(
+            "acks/publication-7-{}",
+            loaded.manifest.root_digest
+        ));
+        assert!(publication.join("gateway-a.json").is_file());
+        assert!(publication.join("gateway-b.json").is_file());
     }
 
     #[test]

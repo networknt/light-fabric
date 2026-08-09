@@ -7,7 +7,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["Steve Hu <stevehu@gmail.com>"]
@@ -34,9 +34,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 url = "2"
 uuid = { version = "1", features = ["serde", "v4", "v7"] }
 hmac = "0.12"
+http = "1"
+hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
+ipnet = "2"
 hex = "0.4"
 jsonschema = { version = "=0.48.0", default-features = false }
 parking_lot = "0.12"
+tower = { version = "0.5", features = ["util"] }
 bytes = "1"
 rkyv = { version = "=0.8.12", default-features = false, features = ["std", "bytecheck", "little_endian", "aligned", "pointer_width_32", "uuid-1"] }
 

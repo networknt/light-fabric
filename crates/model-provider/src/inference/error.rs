@@ -14,6 +14,7 @@ pub enum InferenceErrorCategory {
     TimeoutAfterPossibleAcceptance,
     ProviderOverload,
     Network,
+    SecurityInvariant,
     Protocol,
     Cancelled,
     UnsupportedFeature,
@@ -111,6 +112,17 @@ impl InferenceError {
             provider_status: None,
             retry: RetryDisposition::Conditional,
             acceptance: AcceptanceEvidence::PossiblyAccepted,
+            retry_after_ms: None,
+            detail: detail.into(),
+        }
+    }
+
+    pub fn security_invariant(detail: impl Into<String>) -> Self {
+        Self {
+            category: InferenceErrorCategory::SecurityInvariant,
+            provider_status: None,
+            retry: RetryDisposition::Never,
+            acceptance: AcceptanceEvidence::NotAccepted,
             retry_after_ms: None,
             detail: detail.into(),
         }

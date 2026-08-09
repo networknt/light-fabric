@@ -1,0 +1,72 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: provider-qualification-runner
+  namespace: model-qualification
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: provider-qualification-runner
+  namespace: model-qualification
+spec:
+  # The v1 runner has a process-local singleton lease. Horizontal scale-out is
+  # forbidden until Portal provides a fenced work-claim protocol.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: provider-qualification-runner}
+  template:
+    metadata:
+      labels: {app: provider-qualification-runner}
+    spec:
+      serviceAccountName: provider-qualification-runner
+      automountServiceAccountToken: false
+      hostNetwork: false
+      containers:
+        - name: runner
+          image: lightapi/provider-qualification-runner:0.2.1
+          args: [/etc/qualification/provider-qualification-runner.json]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/qualification, readOnly: true}
+            - {name: signing-key, mountPath: /var/run/secrets/qualification, readOnly: true}
+            - {name: portal-token, mountPath: /var/run/secrets/tokens, readOnly: true}
+            - {name: lease, mountPath: /var/run/provider-qualification-runner}
+      volumes:
+        - name: config
+          configMap: {name: provider-qualification-runner}
+        - name: signing-key
+          secret: {secretName: provider-qualification-ed25519}
+        - name: portal-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: portal
+                  audience: portal-llm-qualification
+                  expirationSeconds: 600
+        - name: lease
+          emptyDir: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: provider-qualification-runner
+  namespace: model-qualification
+spec:
+  podSelector:
+    matchLabels: {app: provider-qualification-runner}
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    # Replace these examples with the Portal and published endpoint CIDRs. Do
+    # not add the target model Pod CIDR or raw runtime port.
+    - to:
+        - ipBlock: {cidr: 192.0.2.0/24}
+      ports:
+        - {protocol: TCP, port: 443}

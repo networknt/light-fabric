@@ -1,9 +1,14 @@
 mod compiler;
+mod readiness;
 mod snapshot;
 mod store;
 mod streaming;
 
 pub use compiler::{CompileProbe, LlmCompiler};
+pub use readiness::{
+    DeploymentReadiness, DeploymentReadinessState, ReadinessControllerTask,
+    start_readiness_controller,
+};
 pub use snapshot::{
     AliasPlan, DeploymentRuntime, EmbeddingMemoryBounds, LlmPublishedSnapshot,
     PrincipalPermitStripes, ProviderAccountRuntime,
@@ -491,6 +496,7 @@ impl LlmRuntime {
                 .attempt_started(AuditAttemptStart {
                     attempt: next_attempt,
                     deployment_id: deployment.id.clone(),
+                    transport_context: Some(deployment.audit_transport.clone()),
                 })
                 .await
             {
@@ -524,23 +530,29 @@ impl LlmRuntime {
                 max_output,
             ));
             request.model = deployment.model.clone();
+            let deployment_deadline = context
+                .deadline
+                .min(Instant::now() + Duration::from_millis(deployment.request_timeout_ms));
             let provider_context = ProviderRequestContext {
-                deadline: context.deadline,
+                deadline: deployment_deadline,
                 cancellation: tokio_util::sync::CancellationToken::new(),
                 attempt_id: format!("{}-{attempts}", context.request_id),
                 trace: Default::default(),
             };
-            match deployment
-                .provider
-                .generation()
-                .ok_or_else(|| {
-                    LlmGatewayError::Invariant(
-                        "generate route selected an embedding executor".to_string(),
-                    )
-                })?
-                .generate(provider_context, request.clone())
-                .await
-            {
+            let provider = deployment.provider.generation().ok_or_else(|| {
+                LlmGatewayError::Invariant(
+                    "generate route selected an embedding executor".to_string(),
+                )
+            })?;
+            let provider_result = tokio::time::timeout(
+                deployment_deadline.saturating_duration_since(Instant::now()),
+                provider.generate(provider_context, request.clone()),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err(model_provider::inference::InferenceError::timeout_after_possible_acceptance())
+            });
+            match provider_result {
                 Ok(mut response) => {
                     circuit_permit.success();
                     let usage = reservation.reconcile(
@@ -967,6 +979,7 @@ impl LlmRuntime {
                 .attempt_started(AuditAttemptStart {
                     attempt: next_attempt,
                     deployment_id: deployment.id.clone(),
+                    transport_context: Some(deployment.audit_transport.clone()),
                 })
                 .await
             {
@@ -1016,23 +1029,27 @@ impl LlmRuntime {
                     LlmGatewayError::Invariant("embedding attempted envelope overflow".to_string())
                 })?;
             request.model = deployment.model.clone();
+            let deployment_deadline = context
+                .deadline
+                .min(Instant::now() + Duration::from_millis(deployment.request_timeout_ms));
             let provider_context = ProviderRequestContext {
-                deadline: context.deadline,
+                deadline: deployment_deadline,
                 cancellation: tokio_util::sync::CancellationToken::new(),
                 attempt_id: format!("{}-{attempts}", context.request_id),
                 trace: Default::default(),
             };
-            match deployment
-                .provider
-                .embedding()
-                .ok_or_else(|| {
-                    LlmGatewayError::Invariant(
-                        "embed route selected a generation executor".to_string(),
-                    )
-                })?
-                .embed(provider_context, request.clone())
-                .await
-            {
+            let provider = deployment.provider.embedding().ok_or_else(|| {
+                LlmGatewayError::Invariant("embed route selected a generation executor".to_string())
+            })?;
+            let provider_result = tokio::time::timeout(
+                deployment_deadline.saturating_duration_since(Instant::now()),
+                provider.embed(provider_context, request.clone()),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err(model_provider::inference::InferenceError::timeout_after_possible_acceptance())
+            });
+            match provider_result {
                 Ok(response) => {
                     if let Err(error) = validate_embedding_response(
                         &deployment,
@@ -1571,6 +1588,7 @@ fn inference_error_category(
         Category::TimeoutAfterPossibleAcceptance => "timeout_after_possible_acceptance",
         Category::ProviderOverload => "provider_overload",
         Category::Network => "network",
+        Category::SecurityInvariant => "security_invariant",
         Category::Protocol => "protocol",
         Category::Cancelled => "cancelled",
         Category::UnsupportedFeature => "unsupported_feature",

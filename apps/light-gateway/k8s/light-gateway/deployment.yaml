@@ -27,6 +27,10 @@ spec:
           image: ${image.repository:networknt/light-gateway}:${image.tag:rust-local}
           imagePullPolicy: ${image.pullPolicy:IfNotPresent}
           env:
+            - name: llm_gateway_instance
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
             - name: LIGHT_PORTAL_AUTHORIZATION
               valueFrom:
                 secretKeyRef:
@@ -72,6 +76,9 @@ spec:
               readOnly: true
             - name: config-cache
               mountPath: /app/config-cache
+            - name: llm-publication-ack-token
+              mountPath: /var/run/secrets/lightapi/llm-ack
+              readOnly: true
       volumes:
         - name: bootstrap-config
           projected:
@@ -85,3 +92,10 @@ spec:
                       path: ca.pem
         - name: config-cache
           emptyDir: {}
+        - name: llm-publication-ack-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: ${llmAcknowledgement.audience:genai-command}
+                  expirationSeconds: ${llmAcknowledgement.expirationSeconds:3600}
+                  path: token

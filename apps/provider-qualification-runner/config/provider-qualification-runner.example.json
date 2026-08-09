@@ -1,0 +1,24 @@
+{
+  "hostId": "018f8f43-2b75-7d8b-8a7b-5f45fd38a7ef",
+  "pendingWorkUrl": "https://portal-query.example.com/query",
+  "completionUrl": "https://portal-command.example.com/command",
+  "workloadTokenFile": "/var/run/secrets/tokens/portal",
+  "signingSeedFile": "/var/run/secrets/qualification/ed25519-seed",
+  "signerKeyId": "qualification-2026-q3",
+  "singletonLockFile": "/var/run/provider-qualification-runner/active.lock",
+  "pageSize": 20,
+  "pollSeconds": 30,
+  "credentialEnvironment": {
+    "credential://model-provider/embedding": "MODEL_PROVIDER_EMBEDDING_KEY"
+  },
+  "trustBundleFiles": {
+    "config://model-provider/private-ca": "/var/run/secrets/provider-ca/ca.crt"
+  },
+  "runnerVantage": {
+    "kind": "external_workload",
+    "environmentId": "production-ca-central-1",
+    "sourceWorkloadId": "provider-qualification-runner",
+    "sourceNetworkZoneId": "qualification-probes",
+    "sourceNetworkNamespaceId": "model-qualification"
+  }
+}

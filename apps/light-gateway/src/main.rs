@@ -4,6 +4,7 @@ use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use light_gateway::model_provider_sidecar;
 use light_pingora::{
     AccessControlRuntime, AccessDecision, ActiveHandlerSet, ApiKeyConfig, AuthPrincipal,
     BasicAuthConfig, CorrelationConfig, CorrelationState, CorsConfig, CorsRequestOutcome,
@@ -49,7 +50,9 @@ use llm_gateway::http::{
 use llm_gateway::projection::{
     FileAcknowledgementSink, FileProjectionSource, LlmProjectionWorker, ProjectionApplyOutcome,
 };
-use llm_gateway::runtime::{LlmCompiler, LlmSnapshotStore};
+use llm_gateway::runtime::{
+    LlmCompiler, LlmSnapshotStore, ReadinessControllerTask, start_readiness_controller,
+};
 use pingora::http::ResponseHeader;
 use pingora::prelude::{HttpPeer, ProxyHttp, Session};
 use pingora::utils::tls::CertKey;
@@ -59,13 +62,18 @@ use sqlx::postgres::PgPoolOptions;
 use std::collections::BTreeMap;
 use std::io::BufReader;
 use std::path::{Component, Path};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
 use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 use url::form_urlencoded;
+
+mod projection_ack;
+use projection_ack::{
+    ProjectionAcknowledgementForwarderConfig, start_projection_acknowledgement_forwarder,
+};
 
 mod embedded_config {
     include!(concat!(env!("OUT_DIR"), "/embedded_config.rs"));
@@ -296,23 +304,31 @@ struct LlmGatewayModule {
     embedding_authorization_timeout: Duration,
     projection_task: Option<Arc<LlmProjectionTask>>,
     audit_sink_task: Option<Arc<AuditSinkTask>>,
+    readiness_task: Arc<ReadinessControllerTask>,
     audit_fingerprint: String,
 }
 
 struct LlmProjectionTask {
     fingerprint: String,
     handle: tokio::task::JoinHandle<()>,
+    acknowledgement_forwarder: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Drop for LlmProjectionTask {
     fn drop(&mut self) {
         self.handle.abort();
+        if let Some(handle) = &self.acknowledgement_forwarder {
+            handle.abort();
+        }
     }
 }
 
 impl LlmProjectionTask {
     fn stop(&self) {
         self.handle.abort();
+        if let Some(handle) = &self.acknowledgement_forwarder {
+            handle.abort();
+        }
     }
 }
 
@@ -387,9 +403,27 @@ fn start_llm_projection_task(
             }
         }
     });
+    let acknowledgement_forwarder = match (
+        &projection.acknowledgement_endpoint,
+        &projection.acknowledgement_token_file,
+        &projection.acknowledgement_audience,
+    ) {
+        (Some(endpoint), Some(token_file), Some(audience)) => Some(
+            start_projection_acknowledgement_forwarder(ProjectionAcknowledgementForwarderConfig {
+                outbox: Path::new(&projection.acknowledgement_directory).to_path_buf(),
+                endpoint: endpoint.trim().to_string(),
+                token_file: Path::new(token_file.trim()).to_path_buf(),
+                audience: audience.trim().to_string(),
+                poll_interval: poll_interval,
+            })
+            .map_err(RuntimeError::Config)?,
+        ),
+        _ => None,
+    };
     Ok(Arc::new(LlmProjectionTask {
         fingerprint,
         handle,
+        acknowledgement_forwarder,
     }))
 }
 
@@ -416,7 +450,96 @@ fn validate_llm_config_authority(config: &LlmRouterConfig) -> Result<(), Runtime
             "developmentFixtures must be false when productionProjection is enabled".to_string(),
         ));
     }
+    let projection_instance = config.production_projection.gateway_instance.trim();
+    let audit_instance = config.audit_runtime.gateway_instance.trim();
+    if projection_instance.is_empty()
+        || projection_instance == "gateway-local"
+        || audit_instance.is_empty()
+        || audit_instance == "gateway-local"
+        || projection_instance != audit_instance
+    {
+        return Err(RuntimeError::Config(
+            "production projection requires one non-default gatewayInstance shared by projection and audit"
+                .to_string(),
+        ));
+    }
+    let projection = &config.production_projection;
+    let endpoint = projection
+        .acknowledgement_endpoint
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let token_file = projection
+        .acknowledgement_token_file
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let audience = projection
+        .acknowledgement_audience
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if endpoint.is_none() || token_file.is_none() || audience.is_none() {
+        return Err(RuntimeError::Config(
+            "production projection requires non-empty authenticated Portal acknowledgement forwarder settings"
+                .to_string(),
+        ));
+    }
+    let endpoint = url::Url::parse(endpoint.expect("checked above")).map_err(|_| {
+        RuntimeError::Config(
+            "production acknowledgementEndpoint must be a valid HTTPS URL".to_string(),
+        )
+    })?;
+    if endpoint.scheme() != "https"
+        || endpoint.host_str().is_none()
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+    {
+        return Err(RuntimeError::Config(
+            "production acknowledgementEndpoint must be an HTTPS URL without credentials, query, or fragment"
+                .to_string(),
+        ));
+    }
+    let token_file = Path::new(token_file.expect("checked above"));
+    if !token_file.is_absolute()
+        || !token_file.is_file()
+        || std::fs::read_to_string(token_file)
+            .ok()
+            .is_none_or(|value| value.trim().is_empty())
+    {
+        return Err(RuntimeError::Config(
+            "production acknowledgementTokenFile must be an existing absolute regular file containing a token"
+                .to_string(),
+        ));
+    }
+    if uuid::Uuid::parse_str(projection.replica_inventory_id.trim()).is_err()
+        || projection.replica_inventory_generation == 0
+        || !is_lower_hex_sha256(&projection.replica_inventory_digest)
+    {
+        return Err(RuntimeError::Config(
+            "production projection requires a UUID inventoryId, positive inventoryGeneration, and SHA-256 inventoryDigest"
+                .to_string(),
+        ));
+    }
+    if projection.evidence_key_set_version.trim().is_empty()
+        || !is_lower_hex_sha256(&projection.evidence_key_set_digest)
+        || projection.evidence_public_keys.is_empty()
+    {
+        return Err(RuntimeError::Config(
+            "production projection requires complete evidence key-set metadata and at least one verification key"
+                .to_string(),
+        ));
+    }
     Ok(())
+}
+
+fn is_lower_hex_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn load_llm_gateway_module(
@@ -566,6 +689,12 @@ fn load_llm_gateway_module(
     } else {
         None
     };
+    let readiness_task = previous
+        .filter(|module| Arc::ptr_eq(&module.runtime, &runtime))
+        .map(|module| Arc::clone(&module.readiness_task))
+        .unwrap_or_else(|| {
+            start_readiness_controller(runtime.snapshot_store(), Duration::from_secs(1))
+        });
     let http = LlmBufferedHttp::new(
         Arc::clone(&runtime),
         // The Pingora handler requires ctx.access_control_exchange before it
@@ -581,6 +710,11 @@ fn load_llm_gateway_module(
         && projection_task
             .as_ref()
             .is_none_or(|task| !Arc::ptr_eq(task, previous_task))
+    {
+        previous_task.stop();
+    }
+    if let Some(previous_task) = previous.map(|module| &module.readiness_task)
+        && !Arc::ptr_eq(previous_task, &readiness_task)
     {
         previous_task.stop();
     }
@@ -603,6 +737,7 @@ fn load_llm_gateway_module(
         ),
         projection_task,
         audit_sink_task,
+        readiness_task,
         audit_fingerprint,
     })))
 }
@@ -615,6 +750,7 @@ fn stop_llm_background_tasks(previous: Option<&Arc<LlmGatewayModule>>) {
         if let Some(task) = module.audit_sink_task.as_ref() {
             task.stop();
         }
+        module.readiness_task.stop();
     }
 }
 
@@ -3650,6 +3786,27 @@ impl ProxyHttp for GatewayProxy {
                     ctx.record_handler_duration(&handler_id, started.elapsed());
                     return self.write_text_response(session, ctx, 200, "ok").await;
                 }
+                "sidecar-deny" => {
+                    ctx.record_handler_duration(&handler_id, started.elapsed());
+                    return self
+                        .write_text_response(session, ctx, 404, "not found")
+                        .await;
+                }
+                "sidecar-identity" => {
+                    let body = model_provider_sidecar::sidecar_identity_json()
+                        .map_err(|error| pingora_internal_error(RuntimeError::Config(error)))?;
+                    ctx.record_handler_duration(&handler_id, started.elapsed());
+                    return self
+                        .write_bytes_response(
+                            session,
+                            ctx,
+                            200,
+                            "application/json",
+                            Some("no-store"),
+                            Bytes::from(body),
+                        )
+                        .await;
+                }
                 "virtual" => {
                     let host_header = request_header(session, "host");
                     let resolution = self
@@ -3803,6 +3960,17 @@ impl ProxyHttp for GatewayProxy {
         if let Some(timeout) = self.upstream_connect_timeout {
             peer.options.connection_timeout = Some(timeout);
         }
+        if self
+            .active_handlers
+            .load()
+            .is_handler_active(model_provider_sidecar::SIDECAR_IDENTITY_HANDLER)
+        {
+            let (connect_ms, _, idle_ms, _, _) = model_provider_sidecar::sidecar_limits()
+                .map_err(|error| pingora_internal_error(RuntimeError::Config(error)))?;
+            peer.options.connection_timeout = Some(Duration::from_millis(connect_ms));
+            peer.options.read_timeout = Some(Duration::from_millis(idle_ms));
+            peer.options.write_timeout = Some(Duration::from_millis(idle_ms));
+        }
         if ctx.websocket_decision.is_some()
             && let Some(timeout) = websocket_io_timeout(ctx)
         {
@@ -3861,6 +4029,15 @@ impl ProxyHttp for GatewayProxy {
         if ctx.access_control_active || ctx.access_control_response_active {
             upstream_request.remove_header("accept-encoding");
         }
+        if self
+            .active_handlers
+            .load()
+            .is_handler_active(model_provider_sidecar::SIDECAR_IDENTITY_HANDLER)
+        {
+            model_provider_sidecar::apply_sidecar_upstream_headers(upstream_request)
+                .await
+                .map_err(|error| pingora_internal_error(RuntimeError::Config(error)))?;
+        }
         strip_retired_gateway_marker(upstream_request);
         if let Some(correlation_id) = correlation_id_for_upstream(&ctx.correlation) {
             upstream_request.insert_header(light_pingora::CORRELATION_ID_HEADER, correlation_id)?;
@@ -3885,6 +4062,7 @@ impl ProxyHttp for GatewayProxy {
     where
         Self::CTX: Send + Sync,
     {
+        ctx.upstream_connected_at = Some(Instant::now());
         if ctx.websocket_decision.is_some() {
             let now = Instant::now();
             ctx.websocket_connected_at = Some(now);
@@ -3905,6 +4083,23 @@ impl ProxyHttp for GatewayProxy {
     {
         if ctx.websocket_decision.is_some() && session.was_upgraded() {
             enforce_websocket_tunnel_limits(ctx, body)?;
+        }
+        if self
+            .active_handlers
+            .load()
+            .is_handler_active(model_provider_sidecar::SIDECAR_IDENTITY_HANDLER)
+        {
+            let (_, _, _, request_limit, _) = model_provider_sidecar::sidecar_limits()
+                .map_err(|error| pingora_internal_error(RuntimeError::Config(error)))?;
+            ctx.sidecar_request_bytes = ctx
+                .sidecar_request_bytes
+                .saturating_add(body.as_ref().map_or(0, Bytes::len));
+            if ctx.sidecar_request_bytes > request_limit {
+                return Err(Error::explain(
+                    ErrorType::HTTPStatus(413),
+                    "sidecar request body exceeds the generated profile limit",
+                ));
+            }
         }
         if ctx.tokenize_active {
             let runtime = self.pii_tokenization.load();
@@ -4041,6 +4236,23 @@ impl ProxyHttp for GatewayProxy {
         if ctx.websocket_decision.is_some() && session.was_upgraded() {
             enforce_websocket_tunnel_limits(ctx, body)?;
         }
+        if self
+            .active_handlers
+            .load()
+            .is_handler_active(model_provider_sidecar::SIDECAR_IDENTITY_HANDLER)
+        {
+            let (_, _, _, _, response_limit) = model_provider_sidecar::sidecar_limits()
+                .map_err(|error| pingora_internal_error(RuntimeError::Config(error)))?;
+            ctx.sidecar_response_bytes = ctx
+                .sidecar_response_bytes
+                .saturating_add(body.as_ref().map_or(0, Bytes::len));
+            if ctx.sidecar_response_bytes > response_limit {
+                return Err(Error::explain(
+                    ErrorType::HTTPStatus(502),
+                    "sidecar response body exceeds the generated profile limit",
+                ));
+            }
+        }
         if ctx.detokenize_active {
             let runtime = self.pii_tokenization.load();
             let Some(runtime) = runtime.as_ref().as_ref() else {
@@ -4119,6 +4331,25 @@ impl ProxyHttp for GatewayProxy {
         Self::CTX: Send + Sync,
     {
         ctx.upstream_status = Some(upstream_response.status.as_u16());
+        if self
+            .active_handlers
+            .load()
+            .is_handler_active(model_provider_sidecar::SIDECAR_IDENTITY_HANDLER)
+        {
+            let (_, setup_ms, _, _, _) = model_provider_sidecar::sidecar_limits()
+                .map_err(|error| pingora_internal_error(RuntimeError::Config(error)))?;
+            let upstream_connected_at = ctx.upstream_connected_at.ok_or_else(|| {
+                pingora_internal_error(RuntimeError::Config(
+                    "sidecar response arrived without an upstream connection timestamp".to_string(),
+                ))
+            })?;
+            if upstream_connected_at.elapsed() > Duration::from_millis(setup_ms) {
+                return Err(Error::explain(
+                    ErrorType::HTTPStatus(504),
+                    "sidecar stream setup exceeded the generated profile limit",
+                ));
+            }
+        }
         if ctx.detokenize_active {
             if upstream_response.headers.get("content-encoding").is_some() {
                 return Err(handler_rejection_error(HandlerRejection::new(
@@ -4208,6 +4439,7 @@ struct GatewayRequestContext {
     websocket_max_connection_duration: Option<Duration>,
     websocket_connected_at: Option<Instant>,
     websocket_last_activity: Option<Instant>,
+    upstream_connected_at: Option<Instant>,
     request_start: Instant,
     handler_ids: Vec<String>,
     request_path: String,
@@ -4227,6 +4459,8 @@ struct GatewayRequestContext {
     detokenize_response_body: Vec<u8>,
     access_control_request_body: Vec<u8>,
     access_control_response_body: Vec<u8>,
+    sidecar_request_bytes: usize,
+    sidecar_response_bytes: usize,
     access_control_exchange: Option<AccessControlExchange>,
     upstream_status: Option<u16>,
     rate_limit_headers: Option<RateLimitHeaders>,
@@ -4253,6 +4487,7 @@ impl Default for GatewayRequestContext {
             websocket_max_connection_duration: None,
             websocket_connected_at: None,
             websocket_last_activity: None,
+            upstream_connected_at: None,
             request_start: Instant::now(),
             handler_ids: Vec::new(),
             request_path: String::new(),
@@ -4272,6 +4507,8 @@ impl Default for GatewayRequestContext {
             detokenize_response_body: Vec::new(),
             access_control_request_body: Vec::new(),
             access_control_response_body: Vec::new(),
+            sidecar_request_bytes: 0,
+            sidecar_response_bytes: 0,
             access_control_exchange: None,
             upstream_status: None,
             rate_limit_headers: None,
@@ -4299,6 +4536,7 @@ impl GatewayRequestContext {
         self.websocket_max_connection_duration = None;
         self.websocket_connected_at = None;
         self.websocket_last_activity = None;
+        self.upstream_connected_at = None;
         self.request_start = Instant::now();
         self.handler_ids.clear();
         self.request_path.clear();
@@ -4316,6 +4554,8 @@ impl GatewayRequestContext {
         self.detokenize_response_body.clear();
         self.access_control_request_body.clear();
         self.access_control_response_body.clear();
+        self.sidecar_request_bytes = 0;
+        self.sidecar_response_bytes = 0;
         self.access_control_exchange = None;
         self.upstream_status = None;
         self.rate_limit_headers = None;
@@ -5395,6 +5635,8 @@ const GATEWAY_HANDLER_DESCRIPTORS: &[(&str, PingoraHandlerKind)] = &[
     ("chaosget", PingoraHandlerKind::Application),
     ("chaospost", PingoraHandlerKind::Application),
     ("health", PingoraHandlerKind::Application),
+    ("sidecar-deny", PingoraHandlerKind::Security),
+    ("sidecar-identity", PingoraHandlerKind::Application),
     ("info", PingoraHandlerKind::Application),
     ("getLogger", PingoraHandlerKind::Application),
     ("postLogger", PingoraHandlerKind::Application),
@@ -5650,6 +5892,7 @@ aliases:
         let task = Arc::new(LlmProjectionTask {
             fingerprint: "rollout-disable-test".to_string(),
             handle: tokio::spawn(std::future::pending()),
+            acknowledgement_forwarder: None,
         });
         Arc::get_mut(&mut module)
             .expect("module has one owner")
@@ -5715,14 +5958,69 @@ productionProjection:
 
     #[test]
     fn production_projection_accepts_topology_free_non_fixture_authority() {
+        let token = tempfile::NamedTempFile::new().expect("token file");
+        std::fs::write(token.path(), "test-token\n").expect("write token");
         let mut config = LlmRouterConfig {
             enabled: true,
             ..LlmRouterConfig::default()
         };
         config.production_projection.enabled = true;
+        config.production_projection.gateway_instance = "pod-uid-a".to_string();
+        config.production_projection.acknowledgement_endpoint =
+            Some("https://portal.invalid/command".to_string());
+        config.production_projection.acknowledgement_token_file =
+            Some(token.path().to_string_lossy().into_owned());
+        config.production_projection.acknowledgement_audience = Some("portal-command".to_string());
+        config.production_projection.replica_inventory_id =
+            "018f8f43-2b75-7d8b-8a7b-5f45fd38a7ef".to_string();
+        config.production_projection.replica_inventory_generation = 1;
+        config.production_projection.replica_inventory_digest = "a".repeat(64);
+        config.production_projection.evidence_key_set_version = "keys-v1".to_string();
+        config.production_projection.evidence_key_set_digest = "b".repeat(64);
+        config
+            .production_projection
+            .evidence_public_keys
+            .insert("runner-1".to_string(), "AA==".to_string());
+        config.audit_runtime.gateway_instance = "pod-uid-a".to_string();
 
         validate_llm_config_authority(&config)
             .expect("strict topology-free production authority must pass validation");
+
+        for field in ["endpoint", "token", "audience"] {
+            let mut invalid = config.clone();
+            match field {
+                "endpoint" => {
+                    invalid.production_projection.acknowledgement_endpoint = Some(" ".to_string())
+                }
+                "token" => {
+                    invalid.production_projection.acknowledgement_token_file = Some("".to_string())
+                }
+                _ => invalid.production_projection.acknowledgement_audience = Some(" ".to_string()),
+            }
+            let error = validate_llm_config_authority(&invalid)
+                .expect_err("blank acknowledgement setting must fail closed");
+            assert!(error.to_string().contains("non-empty authenticated"));
+        }
+    }
+
+    #[test]
+    fn production_projection_rejects_default_empty_and_mismatched_replica_identity() {
+        let mut config = LlmRouterConfig {
+            enabled: true,
+            ..LlmRouterConfig::default()
+        };
+        config.production_projection.enabled = true;
+        for (projection, audit) in [
+            ("gateway-local", "gateway-local"),
+            ("", ""),
+            ("pod-uid-a", "pod-uid-b"),
+        ] {
+            config.production_projection.gateway_instance = projection.to_string();
+            config.audit_runtime.gateway_instance = audit.to_string();
+            let error = validate_llm_config_authority(&config)
+                .expect_err("invalid production replica identity must fail");
+            assert!(error.to_string().contains("non-default gatewayInstance"));
+        }
     }
 
     #[test]
@@ -6262,6 +6560,368 @@ endpointRules:
             .local_addr()
             .expect("free port address")
             .port()
+    }
+
+    async fn raw_http_exchange(address: std::net::SocketAddr, request: &str) -> Vec<u8> {
+        let mut client = TcpStream::connect(address)
+            .await
+            .expect("connect test HTTP listener");
+        client
+            .write_all(request.as_bytes())
+            .await
+            .expect("write test HTTP request");
+        let mut response = Vec::new();
+        timeout(
+            TokioDuration::from_secs(5),
+            client.read_to_end(&mut response),
+        )
+        .await
+        .expect("test HTTP response timeout")
+        .expect("read test HTTP response");
+        response
+    }
+
+    async fn read_complete_http_request(socket: &mut TcpStream) -> Vec<u8> {
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        loop {
+            let read = timeout(TokioDuration::from_secs(2), socket.read(&mut buffer))
+                .await
+                .expect("runtime request timeout")
+                .expect("runtime request read");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+            let Some(header_end) = request.windows(4).position(|value| value == b"\r\n\r\n") else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]).to_ascii_lowercase();
+            let content_length = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            if headers.lines().any(|line| {
+                line.strip_prefix("transfer-encoding:")
+                    .is_some_and(|value| value.trim().eq_ignore_ascii_case("chunked"))
+            }) {
+                if request[header_end + 4..]
+                    .windows(5)
+                    .any(|value| value == b"0\r\n\r\n")
+                {
+                    break;
+                }
+                continue;
+            }
+            if request.len() >= header_end + 4 + content_length {
+                break;
+            }
+        }
+        request
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn model_provider_sidecar_denies_unmatched_method_paths_without_runtime_contact() {
+        let runtime_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind counting runtime");
+        let runtime_address = runtime_listener.local_addr().expect("runtime address");
+        let runtime_connections = Arc::new(AtomicUsize::new(0));
+        let runtime_disconnects = Arc::new(AtomicUsize::new(0));
+        let runtime_saw_chunked_body = Arc::new(AtomicBool::new(false));
+        let runtime_task = tokio::spawn({
+            let runtime_connections = Arc::clone(&runtime_connections);
+            let runtime_disconnects = Arc::clone(&runtime_disconnects);
+            let runtime_saw_chunked_body = Arc::clone(&runtime_saw_chunked_body);
+            async move {
+                while let Ok((mut socket, _peer)) = runtime_listener.accept().await {
+                    runtime_connections.fetch_add(1, Ordering::SeqCst);
+                    let request = read_complete_http_request(&mut socket).await;
+                    let body = String::from_utf8_lossy(&request);
+                    if body.contains("chunked-body") {
+                        runtime_saw_chunked_body.store(true, Ordering::SeqCst);
+                    }
+                    let response_body = if body.contains("large-response") {
+                        "x".repeat(8_192)
+                    } else {
+                        r#"{"data":[{"embedding":[0.1,0.2],"index":0}],"model":"fake"}"#.to_string()
+                    };
+                    if body.contains("disconnect-mode") {
+                        if socket
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                            )
+                            .await
+                            .is_ok()
+                        {
+                            let mut chunk = b"1000\r\n".to_vec();
+                            chunk.extend(std::iter::repeat_n(b'x', 4_096));
+                            chunk.extend_from_slice(b"\r\n");
+                            for _ in 0..200 {
+                                if socket.write_all(&chunk).await.is_err() {
+                                    runtime_disconnects.fetch_add(1, Ordering::SeqCst);
+                                    break;
+                                }
+                                sleep(TokioDuration::from_millis(10)).await;
+                            }
+                        } else {
+                            runtime_disconnects.fetch_add(1, Ordering::SeqCst);
+                        }
+                    } else if body.contains("stream-mode") {
+                        let midpoint = response_body.len() / 2;
+                        let first = &response_body[..midpoint];
+                        let second = &response_body[midpoint..];
+                        socket
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                            )
+                            .await
+                            .expect("write streaming runtime headers");
+                        for chunk in [first, second] {
+                            socket
+                                .write_all(format!("{:x}\r\n{chunk}\r\n", chunk.len()).as_bytes())
+                                .await
+                                .expect("write streaming runtime chunk");
+                            sleep(TokioDuration::from_millis(20)).await;
+                        }
+                        socket
+                            .write_all(b"0\r\n\r\n")
+                            .await
+                            .expect("finish streaming runtime response");
+                    } else {
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                            response_body.len()
+                        );
+                        let _ = socket.write_all(response.as_bytes()).await;
+                    }
+                }
+            }
+        });
+
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        let gateway_port = free_tcp_port();
+        let gateway_address = format!("127.0.0.1:{gateway_port}")
+            .parse::<std::net::SocketAddr>()
+            .expect("gateway address");
+        std::fs::write(
+            config_dir.path().join("server.yml"),
+            format!(
+                "ip: 127.0.0.1\nadvertisedAddress: 127.0.0.1\nhttpPort: {gateway_port}\nenableHttp: true\nhttpsPort: 8443\nenableHttps: false\nserviceId: com.networknt.model-provider-sidecar-1.0.0\nenableRegistry: false\nstartOnRegistryFailure: true\ndynamicPort: false\nenvironment: test\nshutdownGracefulPeriod: 100\n"
+            ),
+        )
+        .expect("write server config");
+        let request = model_provider_sidecar::SidecarProfileRequest {
+            profile_version: "embedding-only-v1".to_string(),
+            physical_runtime_id: "test-node/runtime-a".to_string(),
+            runtime_base_url: format!("http://{runtime_address}"),
+            certificate_identity_sha256: "a".repeat(64),
+            isolation_evidence_sha256: "b".repeat(64),
+            operations: std::collections::BTreeSet::from([
+                model_provider_sidecar::SidecarOperation::Embeddings,
+            ]),
+            jwt_trust: model_provider_sidecar::SidecarJwtTrust {
+                issuer: "https://issuer.example".to_string(),
+                audience: "model-provider-sidecar".to_string(),
+                key_server_url: "https://oauth.example".to_string(),
+                key_uri: "/oauth2/key".to_string(),
+                key_service_id: None,
+                ca_cert_path: None,
+            },
+            runtime_auth: llm_gateway::config::RuntimeAuth::None,
+            max_request_time_ms: 5_000,
+            connect_timeout_ms: 500,
+            stream_setup_timeout_ms: 1_000,
+            idle_timeout_ms: 1_000,
+            max_request_body_bytes: 512,
+            max_response_body_bytes: 4_096,
+        };
+        let bundle = model_provider_sidecar::generate_sidecar_bundle(&request)
+            .expect("generate sidecar profile");
+        model_provider_sidecar::write_sidecar_bundle(config_dir.path(), &bundle)
+            .expect("write generated sidecar profile");
+        // The integration fixture intentionally uses local plaintext and
+        // anonymous routes. Production consumes the generated TLS/JWT files.
+        std::fs::write(
+            config_dir.path().join("server.yml"),
+            format!(
+                "ip: 127.0.0.1\nadvertisedAddress: 127.0.0.1\nhttpPort: {gateway_port}\nenableHttp: true\nhttpsPort: 8443\nenableHttps: false\nserviceId: com.networknt.model-provider-sidecar-1.0.0\nenableRegistry: false\nstartOnRegistryFailure: true\ndynamicPort: false\nenvironment: test\nshutdownGracefulPeriod: 100\n"
+            ),
+        )
+        .expect("override production TLS for integration fixture");
+        std::fs::write(
+            config_dir.path().join("security.yml"),
+            "enableVerifyJwt: true\nenableVerifyScope: false\nbootstrapFromKeyService: false\n",
+        )
+        .expect("disable key bootstrap for anonymous integration fixture");
+        std::fs::write(
+            config_dir.path().join(light_pingora::UNIFIED_SECURITY_FILE),
+            "enabled: true\nanonymousPrefixes: [/v1/embeddings, /sidecar/health, /sidecar/identity]\npathPrefixAuths: []\n",
+        )
+        .expect("make generated operation paths anonymous for proxy integration test");
+        let manifest_path = config_dir.path().join("sidecar-manifest.json");
+        // SAFETY: this is the only test that boots the process-wide sidecar manifest,
+        // and the value is removed after the runtime is shut down.
+        unsafe { std::env::set_var("MODEL_PROVIDER_SIDECAR_MANIFEST", &manifest_path) };
+
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp))
+            .with_config_dir(config_dir.path())
+            .with_external_config_dir(external_dir.path())
+            .build();
+        let running = runtime.start().await.expect("start sidecar gateway");
+        wait_for_tcp(gateway_address).await;
+
+        for (method, path) in [
+            ("POST", "/api/tags"),
+            ("POST", "/api/pull"),
+            ("GET", "/v1/embeddings"),
+            ("POST", "/v1/chat/completions"),
+        ] {
+            let request = format!(
+                "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let response = raw_http_exchange(gateway_address, &request).await;
+            let response = String::from_utf8_lossy(&response);
+            assert!(
+                response.starts_with("HTTP/1.1 404"),
+                "{method} {path} was not denied locally: {response}"
+            );
+        }
+
+        sleep(TokioDuration::from_millis(100)).await;
+        assert_eq!(
+            runtime_connections.load(Ordering::SeqCst),
+            0,
+            "a denied sidecar request reached the raw model runtime"
+        );
+
+        let health = raw_http_exchange(
+            gateway_address,
+            &format!(
+                "GET /sidecar/health HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nConnection: close\r\n\r\n"
+            ),
+        )
+        .await;
+        let health = String::from_utf8_lossy(&health);
+        assert!(health.starts_with("HTTP/1.1 200"));
+        assert!(health.ends_with("ok"));
+
+        let identity = raw_http_exchange(
+            gateway_address,
+            &format!(
+                "GET /sidecar/identity HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nConnection: close\r\n\r\n"
+            ),
+        )
+        .await;
+        let identity = String::from_utf8_lossy(&identity);
+        assert!(identity.starts_with("HTTP/1.1 200"));
+        assert!(identity.contains("\"profileVersion\":\"embedding-only-v1\""));
+        assert!(identity.contains("\"path\":\"/v1/embeddings\""));
+        assert!(!identity.contains(&request.runtime_base_url));
+
+        for body in [r#"{"input":["buffered"]}"#, r#"{"input":["stream-mode"]}"#] {
+            let request = format!(
+                "POST /v1/embeddings HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let response = raw_http_exchange(gateway_address, &request).await;
+            let response = String::from_utf8_lossy(&response);
+            assert!(response.starts_with("HTTP/1.1 200"), "response: {response}");
+            assert!(response.contains("embedding"), "response: {response}");
+        }
+        assert_eq!(runtime_connections.load(Ordering::SeqCst), 2);
+
+        let chunked_body = r#"{"input":["chunked-body"]}"#;
+        let chunked_response = raw_http_exchange(
+            gateway_address,
+            &format!(
+                "POST /v1/embeddings HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{chunked_body}\r\n0\r\n\r\n",
+                chunked_body.len()
+            ),
+        )
+        .await;
+        assert!(
+            String::from_utf8_lossy(&chunked_response).starts_with("HTTP/1.1 200"),
+            "chunked sidecar request failed: {}",
+            String::from_utf8_lossy(&chunked_response)
+        );
+        assert!(
+            runtime_saw_chunked_body.load(Ordering::SeqCst),
+            "sidecar lost the chunked request body before forwarding"
+        );
+
+        let large_body = r#"{"input":["large-response"]}"#;
+        let large_response = raw_http_exchange(
+            gateway_address,
+            &format!(
+                "POST /v1/embeddings HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{large_body}",
+                large_body.len()
+            ),
+        )
+        .await;
+        assert!(
+            large_response.iter().filter(|byte| **byte == b'x').count() < 8_192,
+            "generated sidecar response limit allowed the full oversized response"
+        );
+
+        let disconnect_body = r#"{"input":["disconnect-mode"]}"#;
+        let disconnect_request = format!(
+            "POST /v1/embeddings HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{disconnect_body}",
+            disconnect_body.len()
+        );
+        let mut disconnecting_client = TcpStream::connect(gateway_address)
+            .await
+            .expect("connect disconnecting sidecar client");
+        disconnecting_client
+            .write_all(disconnect_request.as_bytes())
+            .await
+            .expect("write disconnect probe");
+        let mut first_response = [0_u8; 512];
+        let first_read = timeout(
+            TokioDuration::from_secs(5),
+            disconnecting_client.read(&mut first_response),
+        )
+        .await
+        .expect("disconnect stream did not start")
+        .expect("read disconnect stream");
+        assert!(
+            first_read > 0,
+            "disconnect stream closed before its first bytes"
+        );
+        let disconnecting_client = disconnecting_client
+            .into_std()
+            .expect("convert disconnecting client");
+        socket2::SockRef::from(&disconnecting_client)
+            .set_linger(Some(std::time::Duration::ZERO))
+            .expect("configure downstream reset");
+        drop(disconnecting_client);
+        timeout(TokioDuration::from_secs(5), async {
+            while runtime_disconnects.load(Ordering::SeqCst) == 0 {
+                sleep(TokioDuration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("downstream disconnect did not propagate to the runtime stream");
+
+        let oversized_body = format!(r#"{{"input":"{}"}}"#, "x".repeat(1_024));
+        let oversized = raw_http_exchange(
+            gateway_address,
+            &format!(
+                "POST /v1/embeddings HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{oversized_body}",
+                oversized_body.len()
+            ),
+        )
+        .await;
+        assert!(
+            String::from_utf8_lossy(&oversized).starts_with("HTTP/1.1 413"),
+            "generated sidecar request limit did not fail closed: {}",
+            String::from_utf8_lossy(&oversized)
+        );
+        running.shutdown().await.expect("shutdown sidecar gateway");
+        unsafe { std::env::remove_var("MODEL_PROVIDER_SIDECAR_MANIFEST") };
+        runtime_task.abort();
     }
 
     fn header_value(request: &WsServerRequest, name: &str) -> Option<String> {

@@ -17,6 +17,7 @@ uuid = { workspace = true }
 futures-util = { workspace = true }
 chrono = { workspace = true }
 base64 = "0.22"
+ring = "0.17"
 bytes.workspace = true
 hmac = { workspace = true }
 sha2 = { workspace = true }

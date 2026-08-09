@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "1",
+  "algorithm": "Ed25519",
+  "seedBase64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "publicKeyBase64": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+  "payloadSha256": "736cc08b1fbc2ca6a70664e201146e464c8015100286a429fe818b7442791995",
+  "signature": "base64:1wDdmukxja7lZqMHUt7Fnu3hF4dJOJIhU19ftTe2qCrYUz4ge/QneB3GVO4Adr1TWmoUPSkNP7is4qCDwlNEBg==",
+  "payload": {
+    "capacityDeclarationSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "deploymentRevisionId": "tenant-embedding-local-v1/r4",
+    "evidenceKind": "live_endpoint",
+    "networkProfileSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "physicalRuntimeId": "models-host-01/ollama-embedding",
+    "providerEndpointSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "runnerVantage": {
+      "environmentId": "production-ca-central-1",
+      "kind": "external_workload",
+      "rawProbeTargetSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "sourceNetworkNamespaceId": "runner/qualification-7f94",
+      "sourceNetworkZoneId": "qualification-probes",
+      "sourceWorkloadId": "provider-qualification-runner",
+      "targetNetworkNamespaceId": "models/embedding-01"
+    },
+    "sidecar": {
+      "certificateIdentitySha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "configSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "isolationEvidenceSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "profileVersion": "model-provider-sidecar/v1",
+      "rawPortReachable": false
+    },
+    "signerKeyId": "provider-qualification-test",
+    "testedAt": "2026-08-08T16:00:00Z",
+    "testedOperations": ["embed"],
+    "validUntil": "2026-08-15T16:00:00Z"
+  }
+}

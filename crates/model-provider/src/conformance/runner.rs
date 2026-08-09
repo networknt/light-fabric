@@ -2,6 +2,10 @@ use super::fixtures::{
     ConformanceCapability, CorpusFixture, CorpusManifest, FixtureKind, FixtureReference,
     ProviderProfile,
 };
+use super::signing::{
+    Ed25519EvidenceSigner, EvidenceSignatureError, TrustedEvidenceKeySet, canonical_json_bytes,
+    sha256_hex,
+};
 use crate::inference::capabilities::{
     ContentCapabilities, GenerationCapabilities, ProviderCapabilities,
 };
@@ -13,8 +17,7 @@ use crate::inference::stream::StreamDecoder;
 use crate::providers::{anthropic, openai};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path};
@@ -25,6 +28,54 @@ pub enum ConformanceState {
     Pass,
     Fail,
     Quarantined,
+}
+
+pub const CONFORMANCE_RESULT_SCHEMA_VERSION: &str = "2";
+pub const DEPLOYMENT_DELTA_SCHEMA_VERSION: &str = "2";
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceKind {
+    #[default]
+    CodecCorpus,
+    LiveEndpoint,
+    KbEmbedding,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SidecarEvidence {
+    pub profile_version: String,
+    pub config_sha256: String,
+    pub certificate_identity_sha256: String,
+    pub isolation_evidence_sha256: String,
+    pub raw_port_reachable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunnerVantage {
+    pub kind: String,
+    pub environment_id: String,
+    pub source_workload_id: String,
+    pub source_network_zone_id: String,
+    pub source_network_namespace_id: String,
+    pub target_network_namespace_id: String,
+    pub raw_probe_target_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LiveEvidenceBinding {
+    pub deployment_revision_id: String,
+    pub provider_endpoint_sha256: String,
+    pub network_profile_sha256: String,
+    pub physical_runtime_id: String,
+    pub capacity_declaration_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidecar: Option<SidecarEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner_vantage: Option<RunnerVantage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +98,10 @@ pub struct CapabilityEvidence {
 #[serde(rename_all = "camelCase")]
 pub struct ConformanceResult {
     pub schema_version: String,
+    #[serde(default)]
+    pub evidence_kind: EvidenceKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_evidence: Option<LiveEvidenceBinding>,
     pub provider: ProviderProtocol,
     pub provider_codec_version: String,
     pub physical_model: String,
@@ -64,6 +119,10 @@ pub struct ConformanceResult {
     pub cases: Vec<CaseResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quarantine_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer_key_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
     pub digest: String,
 }
 
@@ -76,6 +135,8 @@ impl ConformanceResult {
         let mut result = self.clone();
         result.state = ConformanceState::Quarantined;
         result.quarantine_reason = Some(reason.into());
+        result.signer_key_id = None;
+        result.signature = None;
         result.digest.clear();
         result.digest = digest_serializable(&result);
         result
@@ -95,6 +156,42 @@ impl ConformanceResult {
     pub fn refresh_digest(&mut self) {
         self.digest.clear();
         self.digest = digest_serializable(self);
+    }
+
+    pub fn sign(&mut self, signer: &Ed25519EvidenceSigner) -> Result<(), EvidenceSignatureError> {
+        self.schema_version = CONFORMANCE_RESULT_SCHEMA_VERSION.to_string();
+        self.signer_key_id = Some(signer.key_id().to_string());
+        self.signature = None;
+        self.digest.clear();
+        self.signature = Some(signer.sign_bytes(&self.signature_payload()?));
+        self.refresh_digest();
+        Ok(())
+    }
+
+    pub fn verify_signature(
+        &self,
+        trust: &TrustedEvidenceKeySet,
+    ) -> Result<(), EvidenceSignatureError> {
+        if !self.verify_digest() {
+            return Err(EvidenceSignatureError::VerificationFailed);
+        }
+        let key_id = self
+            .signer_key_id
+            .as_deref()
+            .ok_or_else(|| EvidenceSignatureError::UnknownKey("missing".to_string()))?;
+        let signature = self
+            .signature
+            .as_deref()
+            .ok_or(EvidenceSignatureError::InvalidSignatureEncoding)?;
+        trust.verify(key_id, &self.signature_payload()?, signature)
+    }
+
+    fn signature_payload(&self) -> Result<Vec<u8>, EvidenceSignatureError> {
+        let mut unsigned = self.clone();
+        unsigned.signature = None;
+        unsigned.digest.clear();
+        canonical_json_bytes(&unsigned)
+            .map_err(|error| EvidenceSignatureError::Serialization(error.to_string()))
     }
 
     /// Returns true only when this exact, digested result is current, passing,
@@ -252,7 +349,7 @@ impl DeploymentDelta {
         now: DateTime<Utc>,
     ) -> Self {
         let mut delta = Self {
-            schema_version: "1".to_string(),
+            schema_version: DEPLOYMENT_DELTA_SCHEMA_VERSION.to_string(),
             sequence,
             deployment_id: deployment_id.into(),
             previous_root_digest: previous_root_digest.into(),
@@ -352,7 +449,9 @@ impl ConformanceRunner {
         let capabilities = capabilities_from_evidence(profile, &capability_evidence);
         let operations = capabilities.operations.clone();
         let mut result = ConformanceResult {
-            schema_version: "1".to_string(),
+            schema_version: CONFORMANCE_RESULT_SCHEMA_VERSION.to_string(),
+            evidence_kind: EvidenceKind::CodecCorpus,
+            live_evidence: None,
             provider: profile.provider,
             provider_codec_version: codec_version(profile.provider).to_string(),
             physical_model: profile.physical_model.clone(),
@@ -369,6 +468,8 @@ impl ConformanceRunner {
             pii_preservation: None,
             cases,
             quarantine_reason: None,
+            signer_key_id: None,
+            signature: None,
             digest: String::new(),
         };
         result.digest = digest_serializable(&result);
@@ -807,32 +908,7 @@ fn codec_version(provider: ProviderProtocol) -> &'static str {
 }
 
 fn digest_serializable<T: Serialize>(value: &T) -> String {
-    let value = serde_json::to_value(value).expect("conformance result serializes");
-    let canonical = canonicalize(&value);
-    sha256_hex(&serde_json::to_vec(&canonical).expect("canonical JSON serializes"))
-}
-
-fn canonicalize(value: &Value) -> Value {
-    match value {
-        Value::Array(items) => Value::Array(items.iter().map(canonicalize).collect()),
-        Value::Object(object) => {
-            let mut output = Map::new();
-            let mut keys = object.keys().collect::<Vec<_>>();
-            keys.sort_unstable();
-            for key in keys {
-                output.insert(key.clone(), canonicalize(&object[key]));
-            }
-            Value::Object(output)
-        }
-        _ => value.clone(),
-    }
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    sha256_hex(&canonical_json_bytes(value).expect("canonical JSON serializes"))
 }
 
 #[cfg(test)]

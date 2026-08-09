@@ -1,4 +1,8 @@
-use crate::config::{AliasCapabilityRequirements, AuditMode, EmbeddingWorkloadLane};
+use super::readiness::DeploymentReadiness;
+use crate::audit::AuditTransportContext;
+use crate::config::{
+    AliasCapabilityRequirements, AuditMode, EmbeddingWorkloadLane, ReadinessPolicy,
+};
 use crate::pii::PiiProfile;
 use crate::routing::PassiveCircuit;
 use crate::usage::{EmbeddingPrice, GenerationPrice, OperationPrice, UsageLedger};
@@ -10,6 +14,7 @@ use model_provider::inference::{
 use std::collections::{BTreeMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Semaphore;
 
 pub struct ProviderAccountRuntime {
@@ -21,13 +26,22 @@ pub struct ProviderAccountRuntime {
 
 pub struct DeploymentRuntime {
     pub id: String,
+    pub provider_endpoint_id: String,
     pub model: String,
     pub configured_concurrency: usize,
     pub provider: CompiledProvider,
     pub provider_digest: String,
+    pub provider_client_generation: u64,
+    pub provider_client_built_at: Instant,
+    pub audit_transport: AuditTransportContext,
     pub capabilities: ProviderCapabilities,
     pub conformance_result: Option<ConformanceResult>,
     pub required_conformance_provenance: Option<FixtureProvenance>,
+    pub readiness_policy: ReadinessPolicy,
+    pub readiness: Arc<DeploymentReadiness>,
+    pub cold_start_timeout_ms: u64,
+    pub request_timeout_ms: u64,
+    pub stream_setup_timeout_ms: u64,
     pub permits: Arc<Semaphore>,
     pub circuit: Arc<PassiveCircuit>,
     pub account: Arc<ProviderAccountRuntime>,
@@ -35,6 +49,10 @@ pub struct DeploymentRuntime {
 }
 
 impl DeploymentRuntime {
+    pub fn readiness_policy(&self) -> ReadinessPolicy {
+        self.readiness_policy
+    }
+
     pub fn generation_price(&self) -> Option<GenerationPrice> {
         match self.prices.get(&Operation::Generate) {
             Some(OperationPrice::Generate(price)) => Some(*price),
@@ -48,6 +66,9 @@ impl DeploymentRuntime {
         }
     }
     pub fn supports(&self, required: &CapabilityRequirements) -> bool {
+        if !self.readiness.is_ready() {
+            return false;
+        }
         let mut required = required.clone();
         required.required_provenance = self.required_conformance_provenance;
         if let Some(result) = &self.conformance_result {

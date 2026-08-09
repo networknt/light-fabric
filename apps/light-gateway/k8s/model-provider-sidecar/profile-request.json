@@ -1,0 +1,22 @@
+{
+  "profileVersion": "ollama-embedding-v1",
+  "physicalRuntimeId": "gpu-node-a/ollama-embedding",
+  "runtimeBaseUrl": "http://127.0.0.1:11434",
+  "certificateIdentitySha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "isolationEvidenceSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "operations": ["embeddings"],
+  "jwtTrust": {
+    "issuer": "https://issuer.example",
+    "audience": "model-provider-sidecar",
+    "keyServerUrl": "https://oauth.example",
+    "keyUri": "/oauth2/key",
+    "caCertPath": "/var/run/secrets/sidecar-jwt-ca/ca.crt"
+  },
+  "runtimeAuth": {"mode": "none"},
+  "maxRequestTimeMs": 120000,
+  "connectTimeoutMs": 5000,
+  "streamSetupTimeoutMs": 30000,
+  "idleTimeoutMs": 30000,
+  "maxRequestBodyBytes": 4194304,
+  "maxResponseBodyBytes": 16777216
+}

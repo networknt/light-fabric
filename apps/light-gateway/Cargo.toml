@@ -17,9 +17,11 @@ bytes = { workspace = true }
 chrono = { workspace = true }
 pingora = { version = "0.8.0", features = ["proxy", "rustls"] }
 rustls-pemfile = "2.2"
+reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
+sha2 = { workspace = true }
 sqlx = { version = "0.8", features = ["chrono", "postgres", "runtime-tokio-rustls", "uuid"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -29,6 +31,7 @@ uuid = { workspace = true }
 [dev-dependencies]
 futures-util = { workspace = true }
 portal-registry = { path = "../../crates/portal-registry" }
+socket2 = "0.6"
 tempfile = "3"
 tokio-tungstenite = { version = "0.24" }
 

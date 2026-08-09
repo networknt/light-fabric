@@ -113,6 +113,7 @@ impl UsageReservation {
                 true,
             ),
             _ if acceptance == AcceptanceEvidence::NotAccepted => (0, true),
+            _ if self.reserved == 0 => (0, false),
             _ => (ambiguous_charge_micros.min(self.reserved).max(1), false),
         };
         self.ledger
@@ -150,6 +151,7 @@ impl UsageReservation {
                 true,
             ),
             _ if acceptance == AcceptanceEvidence::NotAccepted => (0, true),
+            _ if self.reserved == 0 => (0, false),
             _ => (ambiguous_charge_micros.min(self.reserved).max(1), false),
         };
         self.ledger
@@ -216,6 +218,47 @@ pub fn worst_case_cost(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_price_ambiguous_generation_never_charges_without_a_reservation() {
+        let ledger = Arc::new(UsageLedger::default());
+        let reservation = UsageReservation::reserve(Arc::clone(&ledger), 0, Some(0)).unwrap();
+        let reconciled = reservation.reconcile_with_ambiguous_bound(
+            GenerationPrice {
+                version: 1,
+                input_micros_per_million: 0,
+                output_micros_per_million: 0,
+            },
+            None,
+            AcceptanceEvidence::PossiblyAccepted,
+            1,
+        );
+        assert_eq!(reconciled.charged_micros, 0);
+        assert!(!reconciled.complete);
+        assert_eq!(ledger.reserved(), 0);
+        assert_eq!(ledger.charged(), 0);
+    }
+
+    #[test]
+    fn zero_price_ambiguous_embedding_never_charges_without_a_reservation() {
+        let ledger = Arc::new(UsageLedger::default());
+        let reservation = UsageReservation::reserve(Arc::clone(&ledger), 0, Some(0)).unwrap();
+        let reconciled = reservation
+            .reconcile_embedding(
+                EmbeddingPrice {
+                    version: 1,
+                    input_micros_per_million: 0,
+                },
+                None,
+                AcceptanceEvidence::PossiblyAccepted,
+                1,
+            )
+            .unwrap();
+        assert_eq!(reconciled.charged_micros, 0);
+        assert!(!reconciled.complete);
+        assert_eq!(ledger.reserved(), 0);
+        assert_eq!(ledger.charged(), 0);
+    }
 
     #[test]
     fn embedding_price_has_no_output_rate_and_rejects_output_usage() {

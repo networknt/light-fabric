@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama-embedding-sidecar
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: ollama-embedding-sidecar}
+  template:
+    metadata:
+      labels: {app: ollama-embedding-sidecar, lightapi.net/model-sidecar: "true"}
+    spec:
+      hostNetwork: false
+      automountServiceAccountToken: false
+      containers:
+        - name: model-runtime
+          image: ollama/ollama:0.11.2
+          env:
+            - {name: OLLAMA_HOST, value: "127.0.0.1:11434"}
+            - {name: OLLAMA_KEEP_ALIVE, value: "-1"}
+            - {name: OLLAMA_NUM_PARALLEL, value: "1"}
+            - {name: OLLAMA_MAX_LOADED_MODELS, value: "1"}
+          # Deliberately no containerPort, Service, hostPort, or hostNetwork.
+          volumeMounts:
+            - {name: model-data, mountPath: /root/.ollama}
+        - name: light-gateway-sidecar
+          image: ghcr.io/networknt/light-gateway:0.2.1
+          ports:
+            - {name: provider-tls, containerPort: 8443, protocol: TCP}
+          env:
+            - name: MODEL_PROVIDER_SIDECAR_MANIFEST
+              value: /config/sidecar-manifest.json
+          volumeMounts:
+            - {name: sidecar-config, mountPath: /config, readOnly: true}
+            - {name: sidecar-server-key, mountPath: /var/run/secrets/sidecar-server, readOnly: true}
+            - {name: sidecar-jwt-ca, mountPath: /var/run/secrets/sidecar-jwt-ca, readOnly: true}
+            - {name: runtime-credential, mountPath: /var/run/secrets/sidecar-runtime, readOnly: true}
+          readinessProbe:
+            httpGet: {path: /sidecar/health, port: provider-tls, scheme: HTTPS}
+      volumes:
+        - name: model-data
+          persistentVolumeClaim: {claimName: ollama-model-data}
+        - name: sidecar-config
+          configMap: {name: ollama-embedding-sidecar-profile}
+        - name: sidecar-server-key
+          secret: {secretName: ollama-sidecar-server-tls}
+        - name: sidecar-jwt-ca
+          secret: {secretName: model-provider-sidecar-jwt-ca}
+        - name: runtime-credential
+          secret: {secretName: ollama-runtime-credential, optional: true}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama-embedding-provider
+spec:
+  selector: {app: ollama-embedding-sidecar}
+  ports:
+    - {name: https, port: 443, targetPort: provider-tls, protocol: TCP}
+  # The raw 11434 runtime port is intentionally not published.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ollama-embedding-sidecar-ingress
+spec:
+  podSelector:
+    matchLabels: {app: ollama-embedding-sidecar}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {lightapi.net/llm-gateway: "true"}
+      ports:
+        - {port: 8443, protocol: TCP}

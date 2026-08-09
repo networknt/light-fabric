@@ -1,16 +1,26 @@
+use super::readiness::{DeploymentReadiness, DeploymentReadinessState};
 use super::snapshot::{
     AliasPlan, DeploymentRuntime, EmbeddingMemoryBounds, LlmPublishedSnapshot,
     PrincipalPermitStripes, ProviderAccountRuntime,
 };
-use crate::config::LlmRouterConfig;
-use crate::credentials::SecretResolver;
+use crate::audit::AuditTransportContext;
+use crate::config::{
+    EndpointAuth, LlmRouterConfig, NetworkProfileMode, NetworkTermination, PricingBasis,
+    ReadinessPolicy,
+};
+use crate::credentials::{FileTrustBundleResolver, SecretResolver, TrustBundleResolver};
 use crate::error::LlmGatewayError;
 use crate::pii::validate_pii_promotion;
-use crate::provider::{HttpEmbeddingProvider, HttpInferenceProvider};
+use crate::provider::{
+    CompiledAddressPolicy, HttpEmbeddingProvider, HttpInferenceProvider, ProviderTransportMaterial,
+};
 use crate::routing::PassiveCircuit;
 use crate::usage::{OperationPrice, UsageLedger};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::Utc;
-use model_provider::conformance::{CapabilityRequirements, FixtureProvenance};
+use model_provider::conformance::{
+    CapabilityRequirements, EvidenceKind, FixtureProvenance, TrustedEvidenceKeySet,
+};
 use model_provider::inference::{
     CompiledProvider, ContentCapabilities, EmbeddingCapabilities, GenerationCapabilities,
     Operation, ProviderCapabilities,
@@ -93,47 +103,88 @@ impl LlmCompiler {
         let mut accounts = BTreeMap::<String, Arc<ProviderAccountRuntime>>::new();
         let mut providers = BTreeMap::new();
         for (id, provider) in &config.providers {
-            self.probe
-                .secret_resolutions
-                .fetch_add(1, Ordering::Relaxed);
-            let secret = self.resolver.resolve(&provider.secret_ref)?;
+            let credential_ref = endpoint_credential_ref(provider)?;
+            let secret = if let Some(reference) = credential_ref {
+                self.probe
+                    .secret_resolutions
+                    .fetch_add(1, Ordering::Relaxed);
+                Some(self.resolver.resolve(reference)?)
+            } else {
+                None
+            };
+            let (transport_material, resolved_trust_digest) =
+                provider_transport_material(config, provider)?;
+            let network_zone_digest = provider
+                .network_profile
+                .network_zone_id
+                .as_ref()
+                .and_then(|zone_id| config.network_zones.get(zone_id))
+                .map(canonical_sha256);
             let capabilities = capabilities_for_provider(config, id);
-            let material_digest = provider_digest(provider, &secret);
-            let reusable_client = previous
-                .and_then(|old| {
-                    old.deployments.values().find(|deployment| {
-                        deployment.account.provider_account_id == *id
-                            && deployment.provider_digest == material_digest
-                    })
+            let material_digest = provider_digest(
+                provider,
+                secret.as_deref(),
+                resolved_trust_digest.as_deref(),
+                network_zone_digest.as_deref(),
+            );
+            let previous_client = previous.and_then(|old| {
+                old.deployments.values().find(|deployment| {
+                    deployment.provider_endpoint_id == *id
+                        && deployment.provider_digest == material_digest
                 })
-                .map(|deployment| deployment.provider.clone());
-            let client = match reusable_client {
-                Some(client) => client,
+            });
+            let reusable_client = previous_client.filter(|deployment| {
+                deployment.provider_client_built_at.elapsed()
+                    < Duration::from_millis(
+                        provider
+                            .network_profile
+                            .connection
+                            .client_refresh_interval_ms,
+                    )
+            });
+            let (client, client_generation, client_built_at) = match reusable_client {
+                Some(deployment) => (
+                    deployment.provider.clone(),
+                    deployment.provider_client_generation,
+                    deployment.provider_client_built_at,
+                ),
                 None => {
                     self.probe.client_builds.fetch_add(1, Ordering::Relaxed);
-                    match provider.provider_protocol.operation() {
-                        Operation::Generate => {
-                            CompiledProvider::Generation(Arc::new(HttpInferenceProvider::build(
+                    let client = match provider.provider_protocol.operation() {
+                        Operation::Generate => CompiledProvider::Generation(Arc::new(
+                            HttpInferenceProvider::build_with_material(
                                 provider,
-                                &secret,
+                                secret.as_deref(),
                                 capabilities.generation.unwrap_or_default(),
                                 timeout,
-                                config.development_fixtures,
-                            )?))
-                        }
-                        Operation::Embed => {
-                            CompiledProvider::Embedding(Arc::new(HttpEmbeddingProvider::build(
+                                transport_material.clone(),
+                            )?,
+                        )),
+                        Operation::Embed => CompiledProvider::Embedding(Arc::new(
+                            HttpEmbeddingProvider::build_with_material(
                                 provider,
-                                &secret,
+                                secret.as_deref(),
                                 capabilities.embedding.unwrap_or_default(),
                                 timeout,
-                                config.development_fixtures,
-                            )?))
-                        }
-                    }
+                                transport_material,
+                            )?,
+                        )),
+                    };
+                    (
+                        client,
+                        previous_client
+                            .map(|deployment| {
+                                deployment.provider_client_generation.saturating_add(1)
+                            })
+                            .unwrap_or(1),
+                        std::time::Instant::now(),
+                    )
                 }
             };
-            providers.insert(id.clone(), (client, material_digest));
+            providers.insert(
+                id.clone(),
+                (client, material_digest, client_generation, client_built_at),
+            );
             let quota = provider
                 .quota_group_id
                 .clone()
@@ -148,7 +199,11 @@ impl LlmCompiler {
             accounts.entry(quota.clone()).or_insert_with(|| {
                 previous_account.unwrap_or_else(|| {
                     Arc::new(ProviderAccountRuntime {
-                        provider_account_id: id.clone(),
+                        provider_account_id: if provider.provider_account_id.is_empty() {
+                            id.clone()
+                        } else {
+                            provider.provider_account_id.clone()
+                        },
                         quota_group_id: quota.clone(),
                         configured_concurrency: quota_concurrency[&quota],
                         permits: Arc::new(Semaphore::new(quota_concurrency[&quota])),
@@ -168,7 +223,10 @@ impl LlmCompiler {
                 .clone()
                 .unwrap_or_else(|| deployment.provider.clone());
             let capabilities = capabilities_for_deployment(deployment);
-            let (provider, provider_digest) = &providers[&deployment.provider];
+            let audit_transport =
+                audit_transport_context(&deployment.provider, provider_config, deployment);
+            let (provider, provider_digest, provider_client_generation, provider_client_built_at) =
+                &providers[&deployment.provider];
             let previous_deployment = previous.and_then(|old| old.deployments.get(id));
             let reusable = previous_deployment
                 .filter(|old| {
@@ -179,6 +237,13 @@ impl LlmCompiler {
                         && old.required_conformance_provenance == required_conformance_provenance
                         && old.prices == deployment.prices
                         && old.provider_digest == *provider_digest
+                        && old.provider_client_generation == *provider_client_generation
+                        && old.audit_transport == audit_transport
+                        && old.readiness_policy() == readiness_policy(deployment)
+                        && old.cold_start_timeout_ms == cold_start_timeout_ms(deployment)
+                        && old.request_timeout_ms == request_timeout_ms(config, deployment)
+                        && old.stream_setup_timeout_ms
+                            == stream_setup_timeout_ms(config, deployment)
                 })
                 .cloned();
             let runtime = reusable.unwrap_or_else(|| {
@@ -188,18 +253,36 @@ impl LlmCompiler {
                         && old.capabilities == capabilities
                         && old.conformance_result == deployment.conformance_result
                         && old.required_conformance_provenance == required_conformance_provenance
-                        && old.provider_digest == *provider_digest
                         && old.account.quota_group_id == quota
+                        && old.audit_transport == audit_transport
+                        && old.readiness_policy() == readiness_policy(deployment)
+                        && old.cold_start_timeout_ms == cold_start_timeout_ms(deployment)
+                        && old.request_timeout_ms == request_timeout_ms(config, deployment)
+                        && old.stream_setup_timeout_ms
+                            == stream_setup_timeout_ms(config, deployment)
                 });
                 Arc::new(DeploymentRuntime {
                     id: id.clone(),
+                    provider_endpoint_id: deployment.provider.clone(),
                     model: deployment.model.clone(),
                     configured_concurrency: deployment.concurrency,
                     provider: provider.clone(),
                     provider_digest: provider_digest.clone(),
+                    provider_client_generation: *provider_client_generation,
+                    provider_client_built_at: *provider_client_built_at,
+                    audit_transport,
                     capabilities,
                     conformance_result: deployment.conformance_result.clone(),
                     required_conformance_provenance,
+                    readiness_policy: readiness_policy(deployment),
+                    readiness: retained_state
+                        .map(|old| Arc::clone(&old.readiness))
+                        .unwrap_or_else(|| {
+                            Arc::new(DeploymentReadiness::new(initial_readiness(deployment)))
+                        }),
+                    cold_start_timeout_ms: cold_start_timeout_ms(deployment),
+                    request_timeout_ms: request_timeout_ms(config, deployment),
+                    stream_setup_timeout_ms: stream_setup_timeout_ms(config, deployment),
                     permits: retained_state
                         .map(|old| Arc::clone(&old.permits))
                         .unwrap_or_else(|| Arc::new(Semaphore::new(deployment.concurrency))),
@@ -312,6 +395,87 @@ impl LlmCompiler {
     }
 }
 
+fn readiness_policy(deployment: &crate::config::DeploymentConfig) -> ReadinessPolicy {
+    deployment
+        .runtime_capacity
+        .as_ref()
+        .map(|capacity| capacity.readiness_policy)
+        .unwrap_or(ReadinessPolicy::Immediate)
+}
+
+fn initial_readiness(deployment: &crate::config::DeploymentConfig) -> DeploymentReadinessState {
+    match readiness_policy(deployment) {
+        ReadinessPolicy::Immediate => DeploymentReadinessState::Ready,
+        ReadinessPolicy::WarmBeforeEligible => DeploymentReadinessState::Unqualified,
+    }
+}
+
+fn cold_start_timeout_ms(deployment: &crate::config::DeploymentConfig) -> u64 {
+    deployment
+        .runtime_capacity
+        .as_ref()
+        .map(|capacity| capacity.cold_start_timeout_ms)
+        .unwrap_or(30_000)
+}
+
+fn request_timeout_ms(
+    config: &LlmRouterConfig,
+    deployment: &crate::config::DeploymentConfig,
+) -> u64 {
+    deployment
+        .runtime_capacity
+        .as_ref()
+        .map(|capacity| capacity.request_timeout_ms)
+        .unwrap_or(config.request_timeout_ms)
+}
+
+fn stream_setup_timeout_ms(
+    config: &LlmRouterConfig,
+    deployment: &crate::config::DeploymentConfig,
+) -> u64 {
+    deployment
+        .runtime_capacity
+        .as_ref()
+        .map(|capacity| capacity.stream_setup_timeout_ms)
+        .unwrap_or(config.stream_setup_timeout_ms)
+}
+
+fn audit_transport_context(
+    provider_endpoint_id: &str,
+    provider: &crate::config::ProviderConfig,
+    deployment: &crate::config::DeploymentConfig,
+) -> AuditTransportContext {
+    let capacity = deployment.runtime_capacity.as_ref();
+    AuditTransportContext {
+        network_profile_mode: match provider.network_profile.mode {
+            NetworkProfileMode::PublicTls => "public_tls",
+            NetworkProfileMode::PrivateTls => "private_tls",
+            NetworkProfileMode::PrivatePlaintext => "private_plaintext",
+        }
+        .to_string(),
+        termination: match provider.network_profile.termination {
+            NetworkTermination::Native => "native",
+            NetworkTermination::LightGatewaySidecar => "light_gateway_sidecar",
+        }
+        .to_string(),
+        provider_endpoint_id: provider_endpoint_id.to_string(),
+        profile_digest: canonical_sha256(&provider.network_profile),
+        physical_runtime_id: capacity.map(|value| value.physical_runtime_id.clone()),
+        capacity_domain_id: capacity.map(|value| value.capacity_domain_id.clone()),
+        pricing_basis: match deployment.pricing_basis {
+            PricingBasis::ExternalProvider => "external_provider",
+            PricingBasis::ZeroMarginal => "zero_marginal",
+            PricingBasis::AmortizedInternal => "amortized_internal",
+        }
+        .to_string(),
+        trust_digest_prefix: provider
+            .network_profile
+            .tls
+            .as_ref()
+            .map(|value| value.trust_bundle_sha256.chars().take(12).collect()),
+    }
+}
+
 fn warn_on_mixed_format_extension_narrowing(config: &LlmRouterConfig) {
     if config.openai_extension_allowlist.is_empty() {
         return;
@@ -336,6 +500,17 @@ fn warn_on_mixed_format_extension_narrowing(config: &LlmRouterConfig) {
 
 fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
     let now = Utc::now();
+    let evidence_keys = trusted_evidence_keys(config)?;
+    if !config.local_transport_enabled
+        && config
+            .providers
+            .values()
+            .any(|provider| provider.network_profile.mode != NetworkProfileMode::PublicTls)
+    {
+        return Err(LlmGatewayError::Config(
+            "local transport not enabled".to_string(),
+        ));
+    }
     if config.path_prefix != "/v1"
         || config.global_concurrency == 0
         || config.global_stream_concurrency == 0
@@ -389,14 +564,104 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
             || host
                 .parse::<std::net::IpAddr>()
                 .is_ok_and(|address| address.is_loopback());
-        let production_reference = provider.secret_ref.starts_with("env:")
-            || provider.secret_ref.starts_with("credential://");
-        if !config.development_fixtures
-            && (url.scheme() != "https" || local || !production_reference)
+        if !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
         {
             return Err(LlmGatewayError::Config(format!(
-                "provider `{id}` must use HTTPS, a non-loopback host, and an approved credential reference outside development fixtures"
+                "provider `{id}` URL contains forbidden authority, query, or fragment data"
             )));
+        }
+        let credential_ref = endpoint_credential_ref(provider)?;
+        if credential_ref.is_some_and(|reference| {
+            !reference.starts_with("env:") && !reference.starts_with("credential://")
+        }) && !config.development_fixtures
+        {
+            return Err(LlmGatewayError::Config(format!(
+                "provider `{id}` has an unapproved credential reference"
+            )));
+        }
+        let profile = &provider.network_profile;
+        if profile.connection.pool_idle_timeout_ms == 0
+            || profile.connection.client_refresh_interval_ms == 0
+            || profile.connection.client_refresh_interval_ms
+                < profile.connection.pool_idle_timeout_ms
+        {
+            return Err(LlmGatewayError::Config(format!(
+                "provider `{id}` has invalid pool or client refresh bounds"
+            )));
+        }
+        match profile.mode {
+            NetworkProfileMode::PublicTls => {
+                if !config.development_fixtures && (url.scheme() != "https" || local) {
+                    return Err(LlmGatewayError::Config(format!(
+                        "provider `{id}` must use HTTPS and a non-loopback host outside development fixtures"
+                    )));
+                }
+                if profile.network_zone_id.is_some() || profile.tls.is_some() {
+                    return Err(LlmGatewayError::Config(format!(
+                        "public provider `{id}` cannot declare a private zone or trust bundle"
+                    )));
+                }
+            }
+            NetworkProfileMode::PrivateTls | NetworkProfileMode::PrivatePlaintext => {
+                let zone_id = profile.network_zone_id.as_deref().ok_or_else(|| {
+                    LlmGatewayError::Config(format!(
+                        "private provider `{id}` requires a network zone"
+                    ))
+                })?;
+                let zone = config.network_zones.get(zone_id).ok_or_else(|| {
+                    LlmGatewayError::Config(format!(
+                        "private provider `{id}` references an unknown network zone"
+                    ))
+                })?;
+                let port = url.port_or_known_default().ok_or_else(|| {
+                    LlmGatewayError::Config(format!("provider `{id}` URL has no effective port"))
+                })?;
+                if zone.id != zone_id || !zone.ports.contains(&port) {
+                    return Err(LlmGatewayError::Config(format!(
+                        "private provider `{id}` host zone does not permit its port"
+                    )));
+                }
+                let host_allowed = host.parse::<std::net::IpAddr>().is_ok()
+                    || zone
+                        .dns_names
+                        .iter()
+                        .any(|allowed| dns_name_matches(allowed, host));
+                if !host_allowed {
+                    return Err(LlmGatewayError::Config(format!(
+                        "private provider `{id}` host is not allowed by its network zone"
+                    )));
+                }
+                match profile.mode {
+                    NetworkProfileMode::PrivateTls => {
+                        if url.scheme() != "https" || !zone.allow_private_tls {
+                            return Err(LlmGatewayError::Config(format!(
+                                "private TLS provider `{id}` has an incompatible scheme or zone"
+                            )));
+                        }
+                        let trust = profile.tls.as_ref().ok_or_else(|| {
+                            LlmGatewayError::Config(format!(
+                                "private TLS provider `{id}` requires a trust bundle"
+                            ))
+                        })?;
+                        validate_digest(&trust.trust_bundle_sha256, "trust bundle")?;
+                    }
+                    NetworkProfileMode::PrivatePlaintext => {
+                        if url.scheme() != "http"
+                            || !zone.allow_private_plaintext
+                            || !matches!(provider.endpoint_auth, Some(EndpointAuth::None))
+                            || profile.tls.is_some()
+                        {
+                            return Err(LlmGatewayError::Config(format!(
+                                "private plaintext provider `{id}` requires HTTP, an approved zone, no TLS bundle, and endpointAuth none"
+                            )));
+                        }
+                    }
+                    NetworkProfileMode::PublicTls => unreachable!(),
+                }
+            }
         }
     }
     for (name, alias) in &config.aliases {
@@ -579,6 +844,8 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
             }
         }
     }
+    let mut runtime_registrations =
+        BTreeMap::<String, (String, crate::config::NetworkProfile, String)>::new();
     for (id, deployment) in &config.deployments {
         if !config.providers.contains_key(&deployment.provider)
             || deployment.concurrency == 0
@@ -589,6 +856,60 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
             )));
         }
         let provider = &config.providers[&deployment.provider];
+        if let Some(capacity) = &deployment.runtime_capacity {
+            if capacity.physical_runtime_id.trim().is_empty()
+                || capacity.capacity_domain_id.trim().is_empty()
+                || capacity.max_parallel_requests == 0
+                || capacity.max_queued_requests == 0
+                || capacity.cold_start_timeout_ms == 0
+                || capacity.stream_setup_timeout_ms == 0
+                || capacity.request_timeout_ms == 0
+                || capacity.stream_setup_timeout_ms > capacity.request_timeout_ms
+                || capacity.request_timeout_ms > config.request_timeout_ms
+                || capacity.stream_setup_timeout_ms > config.stream_setup_timeout_ms
+                || deployment.concurrency > capacity.max_parallel_requests
+            {
+                return Err(LlmGatewayError::Config(format!(
+                    "deployment `{id}` has invalid runtime capacity or exceeds qualified parallelism"
+                )));
+            }
+            let registration = (
+                deployment.provider.clone(),
+                provider.network_profile.clone(),
+                capacity.capacity_domain_id.clone(),
+            );
+            if runtime_registrations
+                .insert(capacity.physical_runtime_id.clone(), registration.clone())
+                .is_some_and(|existing| existing != registration)
+            {
+                return Err(LlmGatewayError::Config(format!(
+                    "physical runtime `{}` is registered through multiple endpoint or transport boundaries",
+                    capacity.physical_runtime_id
+                )));
+            }
+        } else if provider.network_profile.mode != NetworkProfileMode::PublicTls {
+            return Err(LlmGatewayError::Config(format!(
+                "local deployment `{id}` requires runtime capacity"
+            )));
+        }
+        match deployment.pricing_basis {
+            PricingBasis::ZeroMarginal
+                if deployment
+                    .prices
+                    .values()
+                    .any(|price| !price_is_zero(price)) =>
+            {
+                return Err(LlmGatewayError::Config(format!(
+                    "deployment `{id}` zero_marginal pricing contains a non-zero rate"
+                )));
+            }
+            PricingBasis::AmortizedInternal if deployment.prices.values().all(price_is_zero) => {
+                return Err(LlmGatewayError::Config(format!(
+                    "deployment `{id}` amortized_internal pricing requires a non-zero rate"
+                )));
+            }
+            _ => {}
+        }
         let provider_operation = provider.provider_protocol.operation();
         if !capabilities_for_deployment(deployment).supports(provider_operation)
             || !deployment.prices.contains_key(&provider_operation)
@@ -626,6 +947,14 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
                 "deployment `{id}` has invalid, mismatched, or expired conformance evidence"
             )));
         }
+        if !config.development_fixtures && provider.endpoint_auth.is_some() {
+            let result = deployment.conformance_result.as_ref().ok_or_else(|| {
+                LlmGatewayError::Config(format!(
+                    "deployment `{id}` requires signed live conformance evidence"
+                ))
+            })?;
+            validate_live_evidence(id, provider, deployment, result, evidence_keys.as_ref())?;
+        }
     }
     validate_embedding_lane_isolation(config)?;
     Ok(())
@@ -636,6 +965,7 @@ fn validate_embedding_lane_isolation(config: &LlmRouterConfig) -> Result<(), Llm
     let resources = |lane| {
         let mut deployments = BTreeSet::new();
         let mut accounts = BTreeSet::new();
+        let mut capacity_domains = BTreeSet::new();
         for alias in config.aliases.values().filter(|alias| {
             alias.embedding_workload_lane == lane && alias.operations.contains(&Operation::Embed)
         }) {
@@ -650,20 +980,26 @@ fn validate_embedding_lane_isolation(config: &LlmRouterConfig) -> Result<(), Llm
                             .clone()
                             .unwrap_or_else(|| deployment.provider.clone()),
                     );
+                    if let Some(capacity) = &deployment.runtime_capacity {
+                        capacity_domains.insert(capacity.capacity_domain_id.clone());
+                    }
                 }
             }
         }
-        (deployments, accounts)
+        (deployments, accounts, capacity_domains)
     };
-    let (query_deployments, query_accounts) = resources(KbQuery);
-    let (index_deployments, index_accounts) = resources(KbIndex);
-    let (standard_deployments, standard_accounts) = resources(Standard);
+    let (query_deployments, query_accounts, query_domains) = resources(KbQuery);
+    let (index_deployments, index_accounts, index_domains) = resources(KbIndex);
+    let (standard_deployments, standard_accounts, standard_domains) = resources(Standard);
     if !query_deployments.is_disjoint(&index_deployments)
         || !query_accounts.is_disjoint(&index_accounts)
         || !query_deployments.is_disjoint(&standard_deployments)
         || !query_accounts.is_disjoint(&standard_accounts)
         || !index_deployments.is_disjoint(&standard_deployments)
         || !index_accounts.is_disjoint(&standard_accounts)
+        || !query_domains.is_disjoint(&index_domains)
+        || !query_domains.is_disjoint(&standard_domains)
+        || !index_domains.is_disjoint(&standard_domains)
     {
         return Err(LlmGatewayError::Config(
             "standard, KB query, and KB index embedding lanes must not share deployments or provider-account quota groups"
@@ -987,10 +1323,291 @@ fn alias_requirements(
     }
 }
 
-fn provider_digest(config: &crate::config::ProviderConfig, secret: &str) -> String {
+fn provider_digest(
+    config: &crate::config::ProviderConfig,
+    secret: Option<&str>,
+    resolved_trust_digest: Option<&str>,
+    network_zone_digest: Option<&str>,
+) -> String {
     let mut digest = Sha256::new();
+    digest.update(b"provider-client-v2\0");
     digest.update(serde_json::to_vec(config).unwrap_or_default());
     digest.update([0]);
-    digest.update(secret.as_bytes());
+    if let Some(secret) = secret {
+        digest.update(Sha256::digest(secret.as_bytes()));
+    } else {
+        digest.update(b"<none>");
+    }
+    digest.update([0]);
+    digest.update(resolved_trust_digest.unwrap_or("<public-roots>").as_bytes());
+    digest.update([0]);
+    digest.update(network_zone_digest.unwrap_or("<public-zone>").as_bytes());
     format!("{:x}", digest.finalize())
+}
+
+fn provider_transport_material(
+    config: &LlmRouterConfig,
+    provider: &crate::config::ProviderConfig,
+) -> Result<(ProviderTransportMaterial, Option<String>), LlmGatewayError> {
+    let address_policy = match provider.network_profile.mode {
+        NetworkProfileMode::PublicTls if config.development_fixtures => {
+            CompiledAddressPolicy::development()
+        }
+        NetworkProfileMode::PublicTls => CompiledAddressPolicy::public_tls(),
+        NetworkProfileMode::PrivateTls | NetworkProfileMode::PrivatePlaintext => {
+            let zone_id = provider
+                .network_profile
+                .network_zone_id
+                .as_ref()
+                .ok_or_else(|| {
+                    LlmGatewayError::Config("private provider has no zone".to_string())
+                })?;
+            let zone = config.network_zones.get(zone_id).ok_or_else(|| {
+                LlmGatewayError::Config("private provider zone is unavailable".to_string())
+            })?;
+            let networks = zone
+                .cidrs
+                .iter()
+                .map(|cidr| {
+                    cidr.parse::<ipnet::IpNet>().map_err(|_| {
+                        LlmGatewayError::Config(format!(
+                            "network zone `{zone_id}` contains invalid CIDR `{cidr}`"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            CompiledAddressPolicy::private(networks)?
+        }
+    };
+    let (trust_bundle_pem, resolved_trust_digest) =
+        if let Some(expected) = &provider.network_profile.tls {
+            let resolver = FileTrustBundleResolver::new(
+                config.production_projection.trust_bundle_files.clone(),
+                1024 * 1024,
+            );
+            let resolved = resolver.resolve(&expected.trust_bundle_ref)?;
+            if !resolved
+                .sha256
+                .eq_ignore_ascii_case(&expected.trust_bundle_sha256)
+            {
+                return Err(LlmGatewayError::Config(
+                    "resolved trust bundle digest does not match projection".to_string(),
+                ));
+            }
+            (Some(resolved.pem), Some(resolved.sha256))
+        } else {
+            (None, None)
+        };
+    Ok((
+        ProviderTransportMaterial {
+            address_policy,
+            trust_bundle_pem,
+        },
+        resolved_trust_digest,
+    ))
+}
+
+fn endpoint_credential_ref(
+    provider: &crate::config::ProviderConfig,
+) -> Result<Option<&str>, LlmGatewayError> {
+    match &provider.endpoint_auth {
+        Some(EndpointAuth::None) => Ok(None),
+        Some(EndpointAuth::Bearer { credential_ref })
+        | Some(EndpointAuth::ApiKey { credential_ref, .. }) => {
+            if credential_ref.trim().is_empty() {
+                Err(LlmGatewayError::Config(
+                    "credential-bearing endpoint auth requires a non-empty reference".to_string(),
+                ))
+            } else {
+                Ok(Some(credential_ref))
+            }
+        }
+        None if provider.secret_ref.trim().is_empty() => Err(LlmGatewayError::Config(
+            "legacy provider requires a non-empty secretRef".to_string(),
+        )),
+        None => Ok(Some(&provider.secret_ref)),
+    }
+}
+
+fn validate_digest(value: &str, name: &str) -> Result<(), LlmGatewayError> {
+    if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(LlmGatewayError::Config(format!(
+            "{name} digest must be 64 hexadecimal characters"
+        )))
+    }
+}
+
+fn dns_name_matches(pattern: &str, host: &str) -> bool {
+    let pattern = pattern.trim_end_matches('.').to_ascii_lowercase();
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if pattern == host {
+        return true;
+    }
+    pattern.strip_prefix("*.").is_some_and(|suffix| {
+        host.strip_suffix(&format!(".{suffix}"))
+            .is_some_and(|label| !label.is_empty() && !label.contains('.'))
+    })
+}
+
+#[cfg(test)]
+mod dns_name_tests {
+    use super::dns_name_matches;
+
+    #[test]
+    fn wildcard_matches_exactly_one_dns_label() {
+        assert!(dns_name_matches("*.internal.example", "a.internal.example"));
+        assert!(dns_name_matches(
+            "*.INTERNAL.EXAMPLE.",
+            "A.internal.example."
+        ));
+        assert!(!dns_name_matches("*.internal.example", "internal.example"));
+        assert!(!dns_name_matches(
+            "*.internal.example",
+            "a.b.internal.example"
+        ));
+    }
+}
+
+fn price_is_zero(price: &OperationPrice) -> bool {
+    match price {
+        OperationPrice::Generate(price) => {
+            price.input_micros_per_million == 0 && price.output_micros_per_million == 0
+        }
+        OperationPrice::Embed(price) => price.input_micros_per_million == 0,
+    }
+}
+
+fn trusted_evidence_keys(
+    config: &LlmRouterConfig,
+) -> Result<Option<TrustedEvidenceKeySet>, LlmGatewayError> {
+    if config.production_projection.evidence_public_keys.is_empty() {
+        return Ok(None);
+    }
+    let keys = config
+        .production_projection
+        .evidence_public_keys
+        .iter()
+        .map(|(key_id, encoded)| {
+            STANDARD
+                .decode(encoded)
+                .map(|key| (key_id.clone(), key))
+                .map_err(|_| {
+                    LlmGatewayError::Config(format!(
+                        "evidence public key `{key_id}` is not valid base64"
+                    ))
+                })
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let trust = TrustedEvidenceKeySet::new(
+        config
+            .production_projection
+            .evidence_key_set_version
+            .clone(),
+        keys,
+    )
+    .map_err(|error| LlmGatewayError::Config(error.to_string()))?;
+    let published = &config.production_projection.evidence_key_set_digest;
+    if !published.is_empty() && !published.eq_ignore_ascii_case(trust.digest()) {
+        return Err(LlmGatewayError::Config(
+            "evidence key-set digest does not match protected keys".to_string(),
+        ));
+    }
+    Ok(Some(trust))
+}
+
+fn validate_live_evidence(
+    id: &str,
+    provider: &crate::config::ProviderConfig,
+    deployment: &crate::config::DeploymentConfig,
+    result: &model_provider::conformance::ConformanceResult,
+    evidence_keys: Option<&TrustedEvidenceKeySet>,
+) -> Result<(), LlmGatewayError> {
+    if result.schema_version != model_provider::conformance::CONFORMANCE_RESULT_SCHEMA_VERSION
+        || result.evidence_kind != EvidenceKind::LiveEndpoint
+    {
+        return Err(LlmGatewayError::Config(format!(
+            "deployment `{id}` requires ConformanceResult v2 live_endpoint evidence"
+        )));
+    }
+    let trust = evidence_keys.ok_or_else(|| {
+        LlmGatewayError::Config("protected evidence trust store is not configured".to_string())
+    })?;
+    result
+        .verify_signature(trust)
+        .map_err(|error| LlmGatewayError::Config(format!("live evidence signature: {error}")))?;
+    let live = result.live_evidence.as_ref().ok_or_else(|| {
+        LlmGatewayError::Config(format!("deployment `{id}` live evidence has no binding"))
+    })?;
+    let endpoint_digest = canonical_sha256(&serde_json::json!({
+        "providerProtocol": provider.provider_protocol,
+        "baseUrl": provider.base_url.trim_end_matches('/'),
+        "endpointAuth": provider.endpoint_auth,
+        "headerNames": provider.headers.keys().collect::<Vec<_>>(),
+    }));
+    let profile_digest = canonical_sha256(&provider.network_profile);
+    let capacity_digest = canonical_sha256(&deployment.runtime_capacity);
+    if live.deployment_revision_id != deployment.deployment_revision_id
+        || live.provider_endpoint_sha256 != endpoint_digest
+        || live.network_profile_sha256 != profile_digest
+        || live.capacity_declaration_sha256 != capacity_digest
+        || deployment
+            .runtime_capacity
+            .as_ref()
+            .is_some_and(|capacity| live.physical_runtime_id != capacity.physical_runtime_id)
+    {
+        return Err(LlmGatewayError::Config(format!(
+            "deployment `{id}` live evidence does not match endpoint, profile, revision, runtime, or capacity"
+        )));
+    }
+    match provider.network_profile.termination {
+        crate::config::NetworkTermination::Native => {
+            if live.sidecar.is_some() {
+                return Err(LlmGatewayError::Config(format!(
+                    "native deployment `{id}` carries unexpected sidecar evidence"
+                )));
+            }
+        }
+        crate::config::NetworkTermination::LightGatewaySidecar => {
+            let expected = deployment.sidecar.as_ref().ok_or_else(|| {
+                LlmGatewayError::Config(format!(
+                    "sidecar deployment `{id}` has no expected sidecar identity"
+                ))
+            })?;
+            let sidecar = live.sidecar.as_ref().ok_or_else(|| {
+                LlmGatewayError::Config(format!(
+                    "sidecar deployment `{id}` has no signed sidecar evidence"
+                ))
+            })?;
+            let vantage = live.runner_vantage.as_ref().ok_or_else(|| {
+                LlmGatewayError::Config(format!(
+                    "sidecar deployment `{id}` has no external runner vantage"
+                ))
+            })?;
+            if sidecar.profile_version != expected.profile_version
+                || sidecar.config_sha256 != expected.config_sha256
+                || sidecar.raw_port_reachable
+                || !is_digest(&sidecar.isolation_evidence_sha256)
+                || vantage.source_network_namespace_id == vantage.target_network_namespace_id
+                || !is_digest(&vantage.raw_probe_target_sha256)
+            {
+                return Err(LlmGatewayError::Config(format!(
+                    "sidecar deployment `{id}` has mismatched identity or invalid isolation evidence"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn canonical_sha256(value: &impl serde::Serialize) -> String {
+    model_provider::conformance::sha256_hex(
+        &model_provider::conformance::canonical_json_bytes(value)
+            .expect("compiled LLM contract serializes"),
+    )
+}
+
+fn is_digest(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }

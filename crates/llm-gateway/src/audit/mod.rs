@@ -37,6 +37,20 @@ pub struct AuditStart {
 pub struct AuditAttemptStart {
     pub attempt: usize,
     pub deployment_id: String,
+    pub transport_context: Option<AuditTransportContext>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditTransportContext {
+    pub network_profile_mode: String,
+    pub termination: String,
+    pub provider_endpoint_id: String,
+    pub profile_digest: String,
+    pub physical_runtime_id: Option<String>,
+    pub capacity_domain_id: Option<String>,
+    pub pricing_basis: String,
+    pub trust_digest_prefix: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +100,8 @@ pub struct AuditEvent {
     pub category: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deployment_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_context: Option<AuditTransportContext>,
     pub duration_ms: u64,
     pub content_mode: String,
     pub pii_profile: String,
@@ -244,7 +260,7 @@ struct WalReservation {
 #[async_trait]
 impl AuditReservation for WalReservation {
     async fn attempt_started(&self, start: AuditAttemptStart) -> Result<(), LlmGatewayError> {
-        let event = event(
+        let mut event = event(
             &self.start,
             &self.host_id,
             AuditEventKind::AttemptStarted,
@@ -257,6 +273,7 @@ impl AuditReservation for WalReservation {
             &self.request_day,
             self.admitted_at,
         );
+        event.transport_context = start.transport_context;
         match self.wal.append(&event, self.mode.is_local_durable()).await {
             Err(_) if self.mode == AuditMode::BestEffort => Ok(()),
             result => result.map(|_| ()),
@@ -397,6 +414,7 @@ fn event(
         status: status.to_string(),
         category: category.to_string(),
         deployment_id: deployment_id.map(str::to_string),
+        transport_context: None,
         duration_ms: admitted_at
             .elapsed()
             .as_millis()
@@ -477,6 +495,7 @@ mod tests {
             .attempt_started(AuditAttemptStart {
                 attempt: 1,
                 deployment_id: "deployment-a".to_string(),
+                transport_context: None,
             })
             .await
             .unwrap();
@@ -518,6 +537,7 @@ mod tests {
             .attempt_started(AuditAttemptStart {
                 attempt: 1,
                 deployment_id: "deployment-a".to_string(),
+                transport_context: None,
             })
             .await
             .unwrap();
@@ -594,6 +614,7 @@ mod tests {
                 .attempt_started(AuditAttemptStart {
                     attempt: 1,
                     deployment_id: "deployment-a".to_string(),
+                    transport_context: None,
                 })
                 .await
                 .unwrap();
@@ -642,6 +663,7 @@ mod tests {
                 .attempt_started(AuditAttemptStart {
                     attempt: 1,
                     deployment_id: "deployment-a".to_string(),
+                    transport_context: None,
                 })
                 .await
                 .unwrap();
@@ -698,6 +720,7 @@ mod tests {
             .attempt_started(AuditAttemptStart {
                 attempt: 1,
                 deployment_id: "deployment-a".to_string(),
+                transport_context: None,
             })
             .await
             .unwrap();
@@ -774,6 +797,7 @@ mod tests {
             .attempt_started(AuditAttemptStart {
                 attempt: 1,
                 deployment_id: "deployment-kill".to_string(),
+                transport_context: None,
             })
             .await
             .unwrap();
@@ -839,6 +863,7 @@ mod tests {
             .attempt_started(AuditAttemptStart {
                 attempt: 1,
                 deployment_id: "deployment-a".to_string(),
+                transport_context: None,
             })
             .await
             .unwrap();

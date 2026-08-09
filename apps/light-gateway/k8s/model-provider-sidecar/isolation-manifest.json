@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "1",
+  "hostNetwork": false,
+  "runtimeBind": "127.0.0.1:11434",
+  "rawRuntimeService": false,
+  "rawRuntimeHostPort": false,
+  "allowedContainerNames": ["model-runtime", "light-gateway-sidecar"],
+  "publishedContainer": "light-gateway-sidecar",
+  "publishedPort": 8443,
+  "externalProbeRequired": true
+}

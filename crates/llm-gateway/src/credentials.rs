@@ -1,9 +1,64 @@
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::PathBuf;
+
+use sha2::{Digest, Sha256};
 
 use crate::error::LlmGatewayError;
 
 pub trait SecretResolver: Send + Sync {
     fn resolve(&self, secret_ref: &str) -> Result<String, LlmGatewayError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedTrustBundle {
+    pub pem: Vec<u8>,
+    pub sha256: String,
+}
+
+/// Resolves only non-secret CA material for the central provider client. This
+/// API deliberately has no sidecar-runtime credential purpose.
+pub trait TrustBundleResolver: Send + Sync {
+    fn resolve(&self, trust_bundle_ref: &str) -> Result<ResolvedTrustBundle, LlmGatewayError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct FileTrustBundleResolver {
+    references: BTreeMap<String, PathBuf>,
+    max_bundle_bytes: usize,
+}
+
+impl FileTrustBundleResolver {
+    pub fn new(references: BTreeMap<String, String>, max_bundle_bytes: usize) -> Self {
+        Self {
+            references: references
+                .into_iter()
+                .map(|(reference, path)| (reference, PathBuf::from(path)))
+                .collect(),
+            max_bundle_bytes: max_bundle_bytes.max(1),
+        }
+    }
+}
+
+impl TrustBundleResolver for FileTrustBundleResolver {
+    fn resolve(&self, trust_bundle_ref: &str) -> Result<ResolvedTrustBundle, LlmGatewayError> {
+        let path = self.references.get(trust_bundle_ref).ok_or_else(|| {
+            LlmGatewayError::Config("trust bundle reference is not authorized".to_string())
+        })?;
+        let metadata = fs::metadata(path).map_err(|_| {
+            LlmGatewayError::Config("trust bundle could not be materialized".to_string())
+        })?;
+        if !metadata.is_file() || metadata.len() > self.max_bundle_bytes as u64 {
+            return Err(LlmGatewayError::Config(
+                "trust bundle is not a bounded regular file".to_string(),
+            ));
+        }
+        let pem = fs::read(path).map_err(|_| {
+            LlmGatewayError::Config("trust bundle could not be materialized".to_string())
+        })?;
+        let sha256 = format!("{:x}", Sha256::digest(&pem));
+        Ok(ResolvedTrustBundle { pem, sha256 })
+    }
 }
 
 #[derive(Debug, Clone, Default)]

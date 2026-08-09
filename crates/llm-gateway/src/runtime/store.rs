@@ -31,10 +31,10 @@ impl LlmSnapshotStore {
         let current = self.load();
         let same_materialization = current.deployments.len() == candidate.deployments.len()
             && current.deployments.iter().all(|(id, deployment)| {
-                candidate
-                    .deployments
-                    .get(id)
-                    .is_some_and(|other| other.provider_digest == deployment.provider_digest)
+                candidate.deployments.get(id).is_some_and(|other| {
+                    other.provider_digest == deployment.provider_digest
+                        && other.provider_client_generation == deployment.provider_client_generation
+                })
             });
         if current.digest == candidate.digest && same_materialization {
             return PublishOutcome::Unchanged;

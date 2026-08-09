@@ -67,12 +67,22 @@ productionProjection:
   rootDirectory: ${llm-router.productionProjection.rootDirectory:config-cache/llm-projection}
   checkpointPath: ${llm-router.productionProjection.checkpointPath:data/llm-projection/checkpoint.json}
   acknowledgementDirectory: ${llm-router.productionProjection.acknowledgementDirectory:data/llm-projection/acknowledgements}
-  gatewayInstance: ${llm-router.productionProjection.gatewayInstance:gateway-local}
+  gatewayInstance: ${llm_gateway_instance:gateway-local}
   pollIntervalMs: ${llm-router.productionProjection.pollIntervalMs:1000}
   maxArtifactBytes: ${llm-router.productionProjection.maxArtifactBytes:4194304}
   # This setting applies only to the legacy filesystem projection workflow.
   requiredConformanceProvenance: ${llm-router.productionProjection.requiredConformanceProvenance:captured_sanitized}
   credentialEnvironment: {}
+  trustBundleFiles: {}
+  evidencePublicKeys: {}
+  evidenceKeySetVersion: ${llm-router.productionProjection.evidenceKeySetVersion:}
+  evidenceKeySetDigest: ${llm-router.productionProjection.evidenceKeySetDigest:}
+  replicaInventoryId: ${llm-router.productionProjection.replicaInventoryId:}
+  replicaInventoryGeneration: ${llm-router.productionProjection.replicaInventoryGeneration:0}
+  replicaInventoryDigest: ${llm-router.productionProjection.replicaInventoryDigest:}
+  acknowledgementEndpoint: ${llm-router.productionProjection.acknowledgementEndpoint:}
+  acknowledgementTokenFile: ${llm-router.productionProjection.acknowledgementTokenFile:}
+  acknowledgementAudience: ${llm-router.productionProjection.acknowledgementAudience:}
 
 # Production projection uses the bounded single-writer WAL. `required` aliases
 # map to bounded-async; `local_durable` aliases additionally require
@@ -86,7 +96,7 @@ productionProjection:
 # restart so two reload generations can never own the same WAL concurrently.
 auditRuntime:
   directory: ${llm-router.auditRuntime.directory:data/llm-audit}
-  gatewayInstance: ${llm-router.auditRuntime.gatewayInstance:gateway-local}
+  gatewayInstance: ${llm_gateway_instance:gateway-local}
   hostId: ${llm-router.auditRuntime.hostId:host-local}
   maxRecordBytes: ${llm-router.auditRuntime.maxRecordBytes:4096}
   maxSegmentBytes: ${llm-router.auditRuntime.maxSegmentBytes:67108864}

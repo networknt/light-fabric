@@ -2,20 +2,22 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use futures_util::stream;
 use llm_gateway::audit::{
-    AuditAdmission, AuditFinish, AuditReservation, AuditStart, WalAudit, WalConfig,
+    AuditAdmission, AuditFinish, AuditReservation, AuditStart, AuditTransportContext, WalAudit,
+    WalConfig,
 };
 use llm_gateway::config::{
     AliasCapabilityRequirements, AliasConfig, AuditMode, DeploymentConfig, EmbeddingWorkloadLane,
-    LlmRouterConfig, ProviderConfig,
+    EndpointAuth, LlmRouterConfig, NetworkProfileMode, NetworkTermination, NetworkZone,
+    ProviderConfig, ReadinessPolicy, RuntimeCapacity,
 };
 use llm_gateway::credentials::MapSecretResolver;
 use llm_gateway::http::{BodyAccessControl, BufferedHttpRequest, LlmBufferedHttp, LlmHttpResponse};
 use llm_gateway::pii::{PiiKind, PiiProfile, UnresolvedPiiBehavior};
 use llm_gateway::routing::PassiveCircuit;
 use llm_gateway::runtime::{
-    AliasPlan, CompileProbe, DeploymentRuntime, LlmCompiler, LlmPublishedSnapshot,
-    LlmSnapshotStore, PrincipalPermitStripes, ProviderAccountRuntime, PublishOutcome,
-    StreamStartBarrier,
+    AliasPlan, CompileProbe, DeploymentReadiness, DeploymentReadinessState, DeploymentRuntime,
+    LlmCompiler, LlmPublishedSnapshot, LlmSnapshotStore, PrincipalPermitStripes,
+    ProviderAccountRuntime, PublishOutcome, StreamStartBarrier,
 };
 use llm_gateway::usage::{
     EmbeddingPrice, GenerationPrice, OperationPrice, UsageLedger, UsageReservation,
@@ -519,6 +521,7 @@ fn embedding_runtime_with_policy(
             let provider: Arc<dyn EmbeddingProvider> = provider;
             Arc::new(DeploymentRuntime {
                 id: format!("embed-{index}"),
+                provider_endpoint_id: format!("embed-{index}"),
                 model: format!("embed-{index}-physical"),
                 configured_concurrency: 4,
                 capabilities: ProviderCapabilities {
@@ -528,8 +531,16 @@ fn embedding_runtime_with_policy(
                 },
                 provider: CompiledProvider::Embedding(provider),
                 provider_digest: format!("embed-{index}"),
+                provider_client_generation: 1,
+                provider_client_built_at: Instant::now(),
+                audit_transport: test_audit_transport(&format!("embed-{index}")),
                 conformance_result: None,
                 required_conformance_provenance: None,
+                readiness_policy: ReadinessPolicy::Immediate,
+                readiness: Arc::new(DeploymentReadiness::new(DeploymentReadinessState::Ready)),
+                cold_start_timeout_ms: 30_000,
+                request_timeout_ms: 30_000,
+                stream_setup_timeout_ms: 10_000,
                 permits: Arc::new(Semaphore::new(4)),
                 circuit: Arc::new(PassiveCircuit::new(3, Duration::ZERO)),
                 account: Arc::new(ProviderAccountRuntime {
@@ -652,6 +663,7 @@ fn test_embedding_memory_bounds(
 fn deployment(id: &str, provider: Arc<dyn GenerationProvider>) -> Arc<DeploymentRuntime> {
     Arc::new(DeploymentRuntime {
         id: id.to_string(),
+        provider_endpoint_id: id.to_string(),
         model: format!("{id}-physical"),
         configured_concurrency: 2,
         capabilities: ProviderCapabilities {
@@ -661,8 +673,16 @@ fn deployment(id: &str, provider: Arc<dyn GenerationProvider>) -> Arc<Deployment
         },
         provider: CompiledProvider::Generation(provider),
         provider_digest: id.to_string(),
+        provider_client_generation: 1,
+        provider_client_built_at: Instant::now(),
+        audit_transport: test_audit_transport(id),
         conformance_result: None,
         required_conformance_provenance: None,
+        readiness_policy: ReadinessPolicy::Immediate,
+        readiness: Arc::new(DeploymentReadiness::new(DeploymentReadinessState::Ready)),
+        cold_start_timeout_ms: 30_000,
+        request_timeout_ms: 30_000,
+        stream_setup_timeout_ms: 10_000,
         permits: Arc::new(Semaphore::new(2)),
         circuit: Arc::new(PassiveCircuit::new(1, Duration::ZERO)),
         account: Arc::new(ProviderAccountRuntime {
@@ -703,13 +723,22 @@ fn governed_deployment(
 ) -> Arc<DeploymentRuntime> {
     Arc::new(DeploymentRuntime {
         id: "governed".to_string(),
+        provider_endpoint_id: "governed".to_string(),
         model: conformance_result.physical_model.clone(),
         configured_concurrency: 2,
         capabilities: conformance_result.capabilities.clone(),
         provider: CompiledProvider::Generation(provider),
         provider_digest: "governed".to_string(),
+        provider_client_generation: 1,
+        provider_client_built_at: Instant::now(),
+        audit_transport: test_audit_transport("governed"),
         conformance_result: Some(conformance_result),
         required_conformance_provenance: Some(FixtureProvenance::CapturedSanitized),
+        readiness_policy: ReadinessPolicy::Immediate,
+        readiness: Arc::new(DeploymentReadiness::new(DeploymentReadinessState::Ready)),
+        cold_start_timeout_ms: 30_000,
+        request_timeout_ms: 30_000,
+        stream_setup_timeout_ms: 10_000,
         permits: Arc::new(Semaphore::new(2)),
         circuit: Arc::new(PassiveCircuit::new(1, Duration::ZERO)),
         account: Arc::new(ProviderAccountRuntime {
@@ -1104,6 +1133,19 @@ fn half_open_probe_non_circuit_failure_releases_probe_slot() {
     );
 }
 
+fn test_audit_transport(endpoint: &str) -> AuditTransportContext {
+    AuditTransportContext {
+        network_profile_mode: "public_tls".to_string(),
+        termination: "native".to_string(),
+        provider_endpoint_id: endpoint.to_string(),
+        profile_digest: "a".repeat(64),
+        physical_runtime_id: None,
+        capacity_domain_id: None,
+        pricing_basis: "external_provider".to_string(),
+        trust_digest_prefix: None,
+    }
+}
+
 fn compiler_config() -> LlmRouterConfig {
     LlmRouterConfig {
         enabled: true,
@@ -1111,9 +1153,12 @@ fn compiler_config() -> LlmRouterConfig {
         providers: BTreeMap::from([(
             "p".to_string(),
             ProviderConfig {
+                provider_account_id: "p".to_string(),
                 provider_protocol: ProviderProtocol::OpenAiChat,
                 base_url: "http://127.0.0.1:9/v1".to_string(),
                 secret_ref: "secret".to_string(),
+                endpoint_auth: None,
+                network_profile: Default::default(),
                 headers: BTreeMap::new(),
                 quota_group_id: Some("quota".to_string()),
             },
@@ -1122,8 +1167,12 @@ fn compiler_config() -> LlmRouterConfig {
             "d".to_string(),
             DeploymentConfig {
                 provider: "p".to_string(),
+                deployment_revision_id: String::new(),
                 model: "physical".to_string(),
                 concurrency: 2,
+                runtime_capacity: None,
+                sidecar: None,
+                pricing_basis: Default::default(),
                 prices: BTreeMap::from([(
                     Operation::Generate,
                     OperationPrice::Generate(GenerationPrice {
@@ -1164,6 +1213,76 @@ fn compiler_config() -> LlmRouterConfig {
         )]),
         ..Default::default()
     }
+}
+
+fn private_plaintext_compiler_config() -> LlmRouterConfig {
+    let mut config = compiler_config();
+    config.development_fixtures = true;
+    config.local_transport_enabled = false;
+    config.network_zones.insert(
+        "local-zone".to_string(),
+        NetworkZone {
+            id: "local-zone".to_string(),
+            dns_names: BTreeSet::new(),
+            cidrs: BTreeSet::from(["10.0.0.0/8".to_string()]),
+            ports: BTreeSet::from([9]),
+            allow_private_tls: false,
+            allow_private_plaintext: true,
+        },
+    );
+    let provider = config.providers.get_mut("p").unwrap();
+    provider.base_url = "http://10.0.0.9:9/v1".to_string();
+    provider.endpoint_auth = Some(EndpointAuth::None);
+    provider.network_profile.mode = NetworkProfileMode::PrivatePlaintext;
+    provider.network_profile.termination = NetworkTermination::Native;
+    provider.network_profile.network_zone_id = Some("local-zone".to_string());
+    config.deployments.get_mut("d").unwrap().runtime_capacity = Some(RuntimeCapacity {
+        physical_runtime_id: "runtime-local".to_string(),
+        capacity_domain_id: "capacity-local".to_string(),
+        max_parallel_requests: 2,
+        max_queued_requests: 2,
+        readiness_policy: ReadinessPolicy::Immediate,
+        cold_start_timeout_ms: 30_000,
+        stream_setup_timeout_ms: 10_000,
+        request_timeout_ms: 30_000,
+    });
+    config
+}
+
+#[test]
+fn local_profile_rejection_precedes_legacy_development_fixture_validation() {
+    let probe = Arc::new(CompileProbe::default());
+    let compiler = LlmCompiler::with_probe(
+        Arc::new(MapSecretResolver(BTreeMap::new())),
+        Arc::clone(&probe),
+    );
+    let mut config = private_plaintext_compiler_config();
+    config.development_fixtures = false;
+    let error = compiler
+        .compile(&config, 1, None)
+        .err()
+        .expect("disabled local transport must fail");
+    assert_eq!(
+        error.to_string(),
+        "configuration error: local transport not enabled"
+    );
+    assert_eq!(probe.secret_resolutions.load(Ordering::SeqCst), 0);
+    assert_eq!(probe.client_builds.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn credential_free_plaintext_never_calls_the_secret_resolver() {
+    let probe = Arc::new(CompileProbe::default());
+    let compiler = LlmCompiler::with_probe(
+        Arc::new(MapSecretResolver(BTreeMap::new())),
+        Arc::clone(&probe),
+    );
+    let mut config = private_plaintext_compiler_config();
+    config.local_transport_enabled = true;
+    let snapshot = compiler.compile(&config, 1, None).unwrap();
+    assert_eq!(probe.secret_resolutions.load(Ordering::SeqCst), 0);
+    assert_eq!(probe.client_builds.load(Ordering::SeqCst), 1);
+    assert_eq!(snapshot.deployments["d"].provider_endpoint_id, "p");
 }
 
 #[test]
@@ -1407,9 +1526,12 @@ fn compiler_accepts_alias_with_separate_generate_and_embed_deployments() {
     config.providers.insert(
         "embedding-provider".to_string(),
         ProviderConfig {
+            provider_account_id: "embedding-provider".to_string(),
             provider_protocol: ProviderProtocol::OpenAiEmbeddings,
             base_url: "http://127.0.0.1:9/v1".to_string(),
             secret_ref: "secret".to_string(),
+            endpoint_auth: None,
+            network_profile: Default::default(),
             headers: BTreeMap::new(),
             quota_group_id: Some("quota".to_string()),
         },
@@ -1418,8 +1540,12 @@ fn compiler_accepts_alias_with_separate_generate_and_embed_deployments() {
         "embedding-deployment".to_string(),
         DeploymentConfig {
             provider: "embedding-provider".to_string(),
+            deployment_revision_id: String::new(),
             model: "physical-embedding".to_string(),
             concurrency: 2,
+            runtime_capacity: None,
+            sidecar: None,
+            pricing_basis: Default::default(),
             prices: BTreeMap::from([(
                 Operation::Embed,
                 OperationPrice::Embed(EmbeddingPrice {
@@ -1641,6 +1767,76 @@ fn credential_rotation_rebuilds_client_but_preserves_provider_account_runtime() 
         &first.deployments["d"].account,
         &second.deployments["d"].account
     ));
+    assert!(Arc::ptr_eq(
+        &first.deployments["d"].permits,
+        &second.deployments["d"].permits
+    ));
+    assert!(Arc::ptr_eq(
+        &first.deployments["d"].circuit,
+        &second.deployments["d"].circuit
+    ));
+    assert!(Arc::ptr_eq(
+        &first.deployments["d"].readiness,
+        &second.deployments["d"].readiness
+    ));
+}
+
+#[test]
+fn same_material_client_refresh_replaces_pool_and_advances_generation() {
+    let mut config = compiler_config();
+    let connection = &mut config
+        .providers
+        .get_mut("p")
+        .unwrap()
+        .network_profile
+        .connection;
+    connection.pool_idle_timeout_ms = 1;
+    connection.client_refresh_interval_ms = 1;
+    let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
+        "secret".to_string(),
+        "value".to_string(),
+    )]))));
+    let first = compiler.compile(&config, 1, None).unwrap();
+    std::thread::sleep(Duration::from_millis(2));
+    let second = compiler.compile(&config, 2, Some(&first)).unwrap();
+    assert_eq!(first.deployments["d"].provider_client_generation, 1);
+    assert_eq!(second.deployments["d"].provider_client_generation, 2);
+    assert!(!Arc::ptr_eq(
+        &first.deployments["d"],
+        &second.deployments["d"]
+    ));
+    let store = LlmSnapshotStore::new(first, 1);
+    assert!(matches!(store.publish(second), PublishOutcome::Published));
+}
+
+#[test]
+fn warm_before_eligible_receives_no_user_traffic_until_atomic_warmup_success() {
+    let mut config = compiler_config();
+    config.deployments.get_mut("d").unwrap().runtime_capacity = Some(RuntimeCapacity {
+        physical_runtime_id: "runtime-a".to_string(),
+        capacity_domain_id: "capacity-a".to_string(),
+        max_parallel_requests: 2,
+        max_queued_requests: 1,
+        readiness_policy: ReadinessPolicy::WarmBeforeEligible,
+        cold_start_timeout_ms: 1_000,
+        stream_setup_timeout_ms: 1_000,
+        request_timeout_ms: 1_000,
+    });
+    let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
+        "secret".to_string(),
+        "value".to_string(),
+    )]))));
+    let snapshot = compiler.compile(&config, 1, None).unwrap();
+    let readiness = Arc::clone(&snapshot.deployments["d"].readiness);
+    let runtime = LlmRuntime::new(
+        Arc::new(LlmSnapshotStore::new(snapshot, 1)),
+        Arc::new(RecordingAudit::default()),
+    );
+    assert!(runtime.visible_models().is_empty());
+    assert!(readiness.begin_warmup());
+    assert!(runtime.visible_models().is_empty());
+    assert!(readiness.warmup_succeeded());
+    assert_eq!(runtime.visible_models(), ["public-model"]);
 }
 
 #[test]

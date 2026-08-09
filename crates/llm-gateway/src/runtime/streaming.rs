@@ -319,9 +319,7 @@ impl LlmRuntime {
             }
         };
 
-        let deadline = tokio::time::Instant::from_std(context.deadline);
-        let setup_deadline = deadline
-            .min(tokio::time::Instant::now() + Duration::from_millis(root.stream_setup_timeout_ms));
+        let mut deadline = tokio::time::Instant::from_std(context.deadline);
         let cancellation = CancellationToken::new();
         let idle_timeout = Duration::from_millis(root.stream_idle_timeout_ms);
         let progress_timeout = Duration::from_millis(root.stream_write_timeout_ms);
@@ -348,6 +346,7 @@ impl LlmRuntime {
                 .attempt_started(AuditAttemptStart {
                     attempt: next_attempt,
                     deployment_id: deployment.id.clone(),
+                    transport_context: Some(deployment.audit_transport.clone()),
                 })
                 .await
             {
@@ -380,6 +379,13 @@ impl LlmRuntime {
                 estimated_input,
                 max_output,
             ));
+
+            let attempt_started_at = tokio::time::Instant::now();
+            let deployment_deadline = deadline
+                .min(attempt_started_at + Duration::from_millis(deployment.request_timeout_ms));
+            let setup_deadline = deployment_deadline.min(
+                attempt_started_at + Duration::from_millis(deployment.stream_setup_timeout_ms),
+            );
 
             let barrier = tokio::select! {
                 _ = tokio::time::sleep_until(setup_deadline) => {
@@ -443,7 +449,7 @@ impl LlmRuntime {
             provider_request.model = deployment.model.clone();
             let attempt_cancellation = cancellation.child_token();
             let provider_context = ProviderRequestContext {
-                deadline: context.deadline,
+                deadline: deployment_deadline.into_std(),
                 cancellation: attempt_cancellation.clone(),
                 attempt_id: format!("{}-{attempts}", context.request_id),
                 trace: Default::default(),
@@ -476,6 +482,10 @@ impl LlmRuntime {
                     };
                     match first {
                         Ok(event) => {
+                            // Once an attempt is selected, all downstream
+                            // stream reads/writes use its qualified total
+                            // request deadline rather than the router default.
+                            deadline = deployment_deadline;
                             selected = Some((
                                 deployment,
                                 circuit_permit,
