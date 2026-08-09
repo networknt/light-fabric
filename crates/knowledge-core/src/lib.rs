@@ -207,6 +207,99 @@ impl AuthorizationSnapshot {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AclMode {
+    UniformScope,
+    MirrorSourceAcl,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AclEffect {
+    Allow,
+    Deny,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AclSubjectType {
+    User,
+    Group,
+    Organization,
+    Everyone,
+    Unresolved,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AclSubject {
+    pub provider_subject_id: String,
+    pub subject_type: AclSubjectType,
+    pub subject_id: String,
+    pub effect: AclEffect,
+    pub mapping_complete: bool,
+    pub provider_evidence_digest: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NormalizedAclRevision {
+    pub mode: AclMode,
+    pub complete: bool,
+    pub observed_at: DateTime<Utc>,
+    pub fresh_until: DateTime<Utc>,
+    pub provider_effective_decision: bool,
+    pub subjects: Vec<AclSubject>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PrincipalContext {
+    pub subject_id: String,
+    pub subject_type: String,
+    pub groups: BTreeSet<String>,
+    pub organizations: BTreeSet<String>,
+}
+
+pub fn authorize_document_acl(
+    acl: &NormalizedAclRevision,
+    principal: &PrincipalContext,
+    now: DateTime<Utc>,
+) -> bool {
+    if acl.mode == AclMode::UniformScope {
+        return true;
+    }
+    if !acl.complete
+        || !acl.provider_effective_decision
+        || acl.observed_at > now
+        || acl.fresh_until <= now
+        || acl.subjects.iter().any(|subject| !subject.mapping_complete)
+    {
+        return false;
+    }
+    let matches = |subject: &AclSubject| match subject.subject_type {
+        AclSubjectType::User => {
+            principal.subject_type.eq_ignore_ascii_case("user")
+                && subject.subject_id == principal.subject_id
+        }
+        AclSubjectType::Group => principal.groups.contains(&subject.subject_id),
+        AclSubjectType::Organization => principal.organizations.contains(&subject.subject_id),
+        AclSubjectType::Everyone => subject.subject_id == "*",
+        AclSubjectType::Unresolved => false,
+    };
+    if acl
+        .subjects
+        .iter()
+        .any(|subject| subject.effect == AclEffect::Deny && matches(subject))
+    {
+        return false;
+    }
+    acl.subjects
+        .iter()
+        .any(|subject| subject.effect == AclEffect::Allow && matches(subject))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RetrieveRequest {
@@ -369,6 +462,9 @@ pub fn ingest_markdown_repository(
             fs::read(&path).map_err(|error| KnowledgeError::InvalidSource(error.to_string()))?;
         let markdown = String::from_utf8(bytes)
             .map_err(|_| KnowledgeError::InvalidSource("markdown must be UTF-8".into()))?;
+        if !is_indexable_markdown(&markdown) {
+            continue;
+        }
         let relative = path
             .strip_prefix(&canonical_root)
             .map_err(|error| KnowledgeError::InvalidSource(error.to_string()))?;
@@ -492,6 +588,11 @@ pub fn build_full_base(
             });
         }
     }
+    let document_count = chunks
+        .iter()
+        .map(|chunk| chunk.document_id)
+        .collect::<BTreeSet<_>>()
+        .len();
     let generation_seed =
         canonical_generation_seed(knowledge_base_id, snapshot_watermark, &chunks, contract);
     let generation_id = stable_uuid(&[b"generation", generation_seed.as_bytes()]);
@@ -503,7 +604,7 @@ pub fn build_full_base(
             segment_id,
             knowledge_base_id,
             snapshot_watermark,
-            document_count: documents.len(),
+            document_count,
             chunk_count: chunks.len(),
             vector_count: chunks.len(),
             parser_digest: contract.parser_digest.clone(),
@@ -637,6 +738,16 @@ pub fn retrieve(
     request: &RetrieveRequest,
     now: DateTime<Utc>,
 ) -> Result<RetrievalResponse, KnowledgeError> {
+    retrieve_with_lexical_gate(generation, authorization, request, now, true)
+}
+
+pub fn retrieve_with_lexical_gate(
+    generation: &FullBaseGeneration,
+    authorization: &AuthorizationSnapshot,
+    request: &RetrieveRequest,
+    now: DateTime<Utc>,
+    lexical_evidence_required: bool,
+) -> Result<RetrievalResponse, KnowledgeError> {
     if request.knowledge_base_ids.len() != 1 {
         return Err(KnowledgeError::MultipleKnowledgeBases);
     }
@@ -751,7 +862,7 @@ pub fn retrieve(
     }
     // Vector similarity alone is not sufficient evidence for an unrelated query
     // in the deterministic pilot. At least one lexical candidate is required.
-    if lexical_ranks.is_empty() {
+    if lexical_evidence_required && lexical_ranks.is_empty() {
         results.clear();
     }
     Ok(RetrievalResponse {
@@ -864,6 +975,612 @@ pub fn default_authorization(
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ChangeKind {
+    Add,
+    Modify,
+    Delete,
+    AclOnly,
+    MetadataOnly,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CorpusDocumentState {
+    pub source_object_id: String,
+    pub canonical_uri: String,
+    pub source_version: String,
+    pub content_digest: String,
+    pub metadata_digest: String,
+    pub acl_digest: String,
+    pub markdown: String,
+}
+
+impl From<DocumentInput> for CorpusDocumentState {
+    fn from(input: DocumentInput) -> Self {
+        Self {
+            source_object_id: input.source_object_id,
+            canonical_uri: input.canonical_uri,
+            source_version: input.source_version,
+            content_digest: sha256_hex(input.markdown.as_bytes()),
+            metadata_digest: sha256_hex(b"{}"),
+            acl_digest: sha256_hex(b"UNIFORM_SCOPE"),
+            markdown: input.markdown,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClassifiedChange {
+    pub operation_id: Uuid,
+    pub source_object_id: String,
+    pub kind: ChangeKind,
+    pub previous_source_version: Option<String>,
+    pub selected_source_version: Option<String>,
+    pub change_digest: String,
+}
+
+pub fn classify_corpus_changes(
+    knowledge_base_id: Uuid,
+    previous: &[CorpusDocumentState],
+    current: &[CorpusDocumentState],
+) -> Vec<ClassifiedChange> {
+    let before = previous
+        .iter()
+        .filter(|document| is_indexable_markdown(&document.markdown))
+        .map(|document| (document.source_object_id.as_str(), document))
+        .collect::<BTreeMap<_, _>>();
+    let after = current
+        .iter()
+        .filter(|document| is_indexable_markdown(&document.markdown))
+        .map(|document| (document.source_object_id.as_str(), document))
+        .collect::<BTreeMap<_, _>>();
+    let identities = before
+        .keys()
+        .chain(after.keys())
+        .copied()
+        .collect::<BTreeSet<_>>();
+    identities
+        .into_iter()
+        .filter_map(|source_object_id| {
+            let previous = before.get(source_object_id).copied();
+            let selected = after.get(source_object_id).copied();
+            let kind = match (previous, selected) {
+                (None, Some(_)) => ChangeKind::Add,
+                (Some(_), None) => ChangeKind::Delete,
+                (Some(left), Some(right)) if left.content_digest != right.content_digest => {
+                    ChangeKind::Modify
+                }
+                (Some(left), Some(right)) if left.acl_digest != right.acl_digest => {
+                    ChangeKind::AclOnly
+                }
+                (Some(left), Some(right)) if left.metadata_digest != right.metadata_digest => {
+                    ChangeKind::MetadataOnly
+                }
+                _ => return None,
+            };
+            let seed = format!(
+                "{}\n{:?}\n{}\n{}\n{}\n{}",
+                source_object_id,
+                kind,
+                previous.map_or("", |document| document.source_version.as_str()),
+                selected.map_or("", |document| document.source_version.as_str()),
+                selected.map_or("", |document| document.metadata_digest.as_str()),
+                selected.map_or("", |document| document.acl_digest.as_str()),
+            );
+            let change_digest = sha256_hex(seed.as_bytes());
+            Some(ClassifiedChange {
+                operation_id: stable_uuid(&[
+                    b"knowledge-change-v1",
+                    knowledge_base_id.as_bytes(),
+                    change_digest.as_bytes(),
+                ]),
+                source_object_id: source_object_id.to_string(),
+                kind,
+                previous_source_version: previous.map(|value| value.source_version.clone()),
+                selected_source_version: selected.map(|value| value.source_version.clone()),
+                change_digest,
+            })
+        })
+        .collect()
+}
+
+pub fn is_indexable_markdown(markdown: &str) -> bool {
+    !markdown.trim().is_empty()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeltaDocumentOperation {
+    pub operation_id: Uuid,
+    pub kind: ChangeKind,
+    pub document_id: Uuid,
+    pub source_object_id: String,
+    pub chunks: Vec<Chunk>,
+    pub acl_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeltaSegment {
+    pub segment_id: Uuid,
+    pub knowledge_base_id: Uuid,
+    pub snapshot_watermark: u64,
+    pub predecessor_manifest_digest: String,
+    pub manifest_digest: String,
+    pub operations: Vec<DeltaDocumentOperation>,
+}
+
+pub fn stable_passage_anchor_id(chunk: &Chunk, citation_contract_digest: &str) -> Uuid {
+    let section = chunk.section_path.join("\u{1f}");
+    stable_uuid(&[
+        b"knowledge-passage-anchor-v1",
+        chunk.document_id.as_bytes(),
+        citation_contract_digest.as_bytes(),
+        section.as_bytes(),
+        chunk.content_digest.as_bytes(),
+    ])
+}
+
+pub fn build_delta_segment(
+    knowledge_base_id: Uuid,
+    snapshot_watermark: u64,
+    predecessor_manifest_digest: &str,
+    previous: &[CorpusDocumentState],
+    current: &[CorpusDocumentState],
+    contract: &ProcessingContract,
+    limits: &SourceLimits,
+) -> Result<DeltaSegment, KnowledgeError> {
+    let changes = classify_corpus_changes(knowledge_base_id, previous, current);
+    let selected = current
+        .iter()
+        .map(|document| (document.source_object_id.as_str(), document))
+        .collect::<BTreeMap<_, _>>();
+    let mut operations = Vec::with_capacity(changes.len());
+    for change in changes {
+        let document_id = stable_uuid(&[
+            knowledge_base_id.as_bytes(),
+            change.source_object_id.as_bytes(),
+        ]);
+        let (chunks, acl_digest) = match change.kind {
+            ChangeKind::Add | ChangeKind::Modify | ChangeKind::MetadataOnly => {
+                let document = selected[change.source_object_id.as_str()];
+                let generation = build_full_base(
+                    knowledge_base_id,
+                    snapshot_watermark,
+                    &[DocumentInput {
+                        source_object_id: document.source_object_id.clone(),
+                        canonical_uri: document.canonical_uri.clone(),
+                        source_version: document.source_version.clone(),
+                        markdown: document.markdown.clone(),
+                    }],
+                    contract,
+                    limits,
+                )?;
+                (generation.chunks, Some(document.acl_digest.clone()))
+            }
+            ChangeKind::AclOnly => (
+                Vec::new(),
+                Some(
+                    selected[change.source_object_id.as_str()]
+                        .acl_digest
+                        .clone(),
+                ),
+            ),
+            ChangeKind::Delete => (Vec::new(), None),
+        };
+        operations.push(DeltaDocumentOperation {
+            operation_id: stable_uuid(&[
+                b"knowledge-delta-operation-v1",
+                knowledge_base_id.as_bytes(),
+                &snapshot_watermark.to_be_bytes(),
+                change.source_object_id.as_bytes(),
+                change.change_digest.as_bytes(),
+            ]),
+            kind: change.kind,
+            document_id,
+            source_object_id: change.source_object_id,
+            chunks,
+            acl_digest,
+        });
+    }
+    operations.sort_by(|left, right| {
+        left.source_object_id
+            .cmp(&right.source_object_id)
+            .then_with(|| left.operation_id.cmp(&right.operation_id))
+    });
+    let operation_seed = operations
+        .iter()
+        .map(|operation| {
+            format!(
+                "{}:{:?}:{}",
+                operation.operation_id,
+                operation.kind,
+                operation
+                    .chunks
+                    .iter()
+                    .map(|chunk| chunk.content_digest.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let manifest_seed = format!(
+        "{knowledge_base_id}\n{snapshot_watermark}\n{predecessor_manifest_digest}\n{operation_seed}"
+    );
+    let manifest_digest = sha256_hex(manifest_seed.as_bytes());
+    Ok(DeltaSegment {
+        segment_id: stable_uuid(&[
+            b"knowledge-delta-v1",
+            knowledge_base_id.as_bytes(),
+            manifest_digest.as_bytes(),
+        ]),
+        knowledge_base_id,
+        snapshot_watermark,
+        predecessor_manifest_digest: predecessor_manifest_digest.to_string(),
+        manifest_digest,
+        operations,
+    })
+}
+
+pub fn resolve_base_plus_deltas(
+    base: &FullBaseGeneration,
+    deltas: &[DeltaSegment],
+) -> Result<FullBaseGeneration, KnowledgeError> {
+    if base.manifest.segment_kind != "BASE" {
+        return Err(KnowledgeError::NotFullBase);
+    }
+    let mut chunks_by_document = base.chunks.iter().cloned().fold(
+        BTreeMap::<Uuid, Vec<Chunk>>::new(),
+        |mut output, chunk| {
+            output.entry(chunk.document_id).or_default().push(chunk);
+            output
+        },
+    );
+    let mut ordered = deltas.to_vec();
+    ordered.sort_by_key(|delta| (delta.snapshot_watermark, delta.segment_id));
+    let mut predecessor = base.manifest.manifest_digest.clone();
+    for delta in &ordered {
+        if delta.knowledge_base_id != base.manifest.knowledge_base_id
+            || delta.predecessor_manifest_digest != predecessor
+        {
+            return Err(KnowledgeError::InvalidSource(
+                "DELTA predecessor or Knowledge Base mismatch".into(),
+            ));
+        }
+        for operation in &delta.operations {
+            match operation.kind {
+                ChangeKind::Delete => {
+                    chunks_by_document.remove(&operation.document_id);
+                }
+                ChangeKind::Add | ChangeKind::Modify | ChangeKind::MetadataOnly => {
+                    chunks_by_document.insert(operation.document_id, operation.chunks.clone());
+                }
+                ChangeKind::AclOnly => {}
+            }
+        }
+        predecessor = delta.manifest_digest.clone();
+    }
+    let mut chunks = chunks_by_document
+        .into_values()
+        .flatten()
+        .collect::<Vec<_>>();
+    chunks.sort_by_key(|chunk| (chunk.document_id, chunk.ordinal, chunk.chunk_id));
+    let snapshot_watermark = ordered
+        .last()
+        .map_or(base.manifest.snapshot_watermark, |delta| {
+            delta.snapshot_watermark
+        });
+    let manifest_digest = sha256_hex(
+        format!(
+            "{}\n{}\n{}",
+            base.manifest.manifest_digest,
+            ordered
+                .iter()
+                .map(|delta| delta.manifest_digest.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            chunks
+                .iter()
+                .map(|chunk| chunk.chunk_id.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+        .as_bytes(),
+    );
+    let generation_id = stable_uuid(&[
+        b"knowledge-logical-generation-v1",
+        base.manifest.knowledge_base_id.as_bytes(),
+        manifest_digest.as_bytes(),
+    ]);
+    Ok(FullBaseGeneration {
+        manifest: BaseManifest {
+            generation_id,
+            segment_id: ordered
+                .last()
+                .map_or(base.manifest.segment_id, |d| d.segment_id),
+            knowledge_base_id: base.manifest.knowledge_base_id,
+            snapshot_watermark,
+            document_count: chunks
+                .iter()
+                .map(|chunk| chunk.document_id)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            chunk_count: chunks.len(),
+            vector_count: chunks.len(),
+            parser_digest: base.manifest.parser_digest.clone(),
+            chunker_digest: base.manifest.chunker_digest.clone(),
+            lexical_digest: base.manifest.lexical_digest.clone(),
+            citation_digest: base.manifest.citation_digest.clone(),
+            space_id: base.manifest.space_id.clone(),
+            space_revision: base.manifest.space_revision,
+            dimension: base.manifest.dimension,
+            manifest_digest,
+            segment_kind: "BASE+DELTA".into(),
+        },
+        chunks,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ScopedEmbeddingReuseKey {
+    pub knowledge_base_id: Uuid,
+    pub input_digest: String,
+    pub space_id: String,
+    pub space_revision: u64,
+    pub dimension: usize,
+    pub transform_digest: String,
+}
+
+#[derive(Debug, Default)]
+pub struct EmbeddingReuseLedger {
+    entries: BTreeMap<ScopedEmbeddingReuseKey, (Uuid, usize)>,
+}
+
+impl EmbeddingReuseLedger {
+    pub fn acquire(&mut self, key: ScopedEmbeddingReuseKey) -> (Uuid, bool) {
+        if let Some((artifact_id, references)) = self.entries.get_mut(&key) {
+            *references += 1;
+            return (*artifact_id, true);
+        }
+        let artifact_id = stable_uuid(&[
+            b"knowledge-embedding-artifact-v1",
+            key.knowledge_base_id.as_bytes(),
+            key.input_digest.as_bytes(),
+            key.space_id.as_bytes(),
+            &key.space_revision.to_be_bytes(),
+            key.transform_digest.as_bytes(),
+        ]);
+        self.entries.insert(key, (artifact_id, 1));
+        (artifact_id, false)
+    }
+
+    pub fn release(&mut self, key: &ScopedEmbeddingReuseKey) -> bool {
+        let Some((_, references)) = self.entries.get_mut(key) else {
+            return false;
+        };
+        *references = references.saturating_sub(1);
+        if *references == 0 {
+            self.entries.remove(key);
+            return true;
+        }
+        false
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct KnowledgeBaseRankedResponse {
+    pub response: RetrievalResponse,
+    pub priority: i32,
+    pub embedding_group_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MultiKnowledgeBaseHit {
+    pub knowledge_base_id: Uuid,
+    pub generation_id: Uuid,
+    pub local_rank: usize,
+    pub cross_knowledge_base_score: f64,
+    pub hit: RetrievalHit,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MultiKnowledgeBaseResponse {
+    pub status: String,
+    pub disposition: String,
+    pub knowledge_base_ids: Vec<Uuid>,
+    pub embedding_group_count: usize,
+    pub warnings: Vec<String>,
+    pub exclusions: Vec<String>,
+    pub results: Vec<MultiKnowledgeBaseHit>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum KnowledgeSearchResponse {
+    Single(RetrievalResponse),
+    Multi(MultiKnowledgeBaseResponse),
+}
+
+pub fn fuse_knowledge_base_results(
+    mut ranked: Vec<KnowledgeBaseRankedResponse>,
+    maximum_knowledge_bases: usize,
+    top_k: usize,
+    token_budget: usize,
+) -> Result<MultiKnowledgeBaseResponse, KnowledgeError> {
+    if ranked.is_empty() || ranked.len() > maximum_knowledge_bases.min(4) {
+        return Err(KnowledgeError::MultipleKnowledgeBases);
+    }
+    ranked.sort_by(|left, right| {
+        right.priority.cmp(&left.priority).then_with(|| {
+            left.response
+                .knowledge_base_id
+                .cmp(&right.response.knowledge_base_id)
+        })
+    });
+    let knowledge_base_ids = ranked
+        .iter()
+        .map(|entry| entry.response.knowledge_base_id)
+        .collect::<Vec<_>>();
+    let embedding_group_count = ranked
+        .iter()
+        .map(|entry| entry.embedding_group_key.clone())
+        .collect::<BTreeSet<_>>()
+        .len();
+    let mut candidates = ranked
+        .iter()
+        .flat_map(|entry| {
+            entry
+                .response
+                .results
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(move |(index, hit)| MultiKnowledgeBaseHit {
+                    knowledge_base_id: entry.response.knowledge_base_id,
+                    generation_id: entry.response.generation_id,
+                    local_rank: index + 1,
+                    cross_knowledge_base_score: 1.0 / (RRF_K + index as f64 + 1.0),
+                    hit,
+                })
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        right
+            .cross_knowledge_base_score
+            .partial_cmp(&left.cross_knowledge_base_score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| {
+                let left_priority = ranked
+                    .iter()
+                    .find(|entry| entry.response.knowledge_base_id == left.knowledge_base_id)
+                    .map_or(0, |entry| entry.priority);
+                let right_priority = ranked
+                    .iter()
+                    .find(|entry| entry.response.knowledge_base_id == right.knowledge_base_id)
+                    .map_or(0, |entry| entry.priority);
+                right_priority.cmp(&left_priority)
+            })
+            .then_with(|| left.knowledge_base_id.cmp(&right.knowledge_base_id))
+            .then_with(|| left.hit.chunk_id.cmp(&right.hit.chunk_id))
+    });
+    let mut consumed_tokens: usize = 0;
+    let mut results = Vec::new();
+    let mut selected_chunks = BTreeSet::new();
+
+    // Preserve the Phase 1b fairness contract before filling the remaining
+    // budget by cross-KB RRF: every non-empty KB gets one local result when
+    // the caller's top-k and token budget permit it.
+    for entry in &ranked {
+        let Some(candidate) = candidates
+            .iter()
+            .find(|candidate| candidate.knowledge_base_id == entry.response.knowledge_base_id)
+        else {
+            continue;
+        };
+        if results.len() >= top_k.max(1) {
+            break;
+        }
+        let tokens = candidate.hit.text.split_whitespace().count();
+        if consumed_tokens.saturating_add(tokens) <= token_budget {
+            consumed_tokens += tokens;
+            selected_chunks.insert(candidate.hit.chunk_id);
+            results.push(candidate.clone());
+        }
+    }
+    for candidate in candidates {
+        if selected_chunks.contains(&candidate.hit.chunk_id) {
+            continue;
+        }
+        let tokens = candidate.hit.text.split_whitespace().count();
+        if results.len() >= top_k.max(1) {
+            break;
+        }
+        if consumed_tokens.saturating_add(tokens) > token_budget {
+            continue;
+        }
+        consumed_tokens += tokens;
+        results.push(candidate);
+    }
+    Ok(MultiKnowledgeBaseResponse {
+        status: "COMPLETE".into(),
+        disposition: if results.is_empty() {
+            "NO_QUALIFIED_EVIDENCE".into()
+        } else {
+            "EVIDENCE_FOUND".into()
+        },
+        knowledge_base_ids,
+        embedding_group_count,
+        warnings: Vec::new(),
+        exclusions: Vec::new(),
+        results,
+    })
+}
+
+pub fn retrieve_resolved_generation(
+    generation: &FullBaseGeneration,
+    authorization: &AuthorizationSnapshot,
+    request: &RetrieveRequest,
+    now: DateTime<Utc>,
+) -> Result<RetrievalResponse, KnowledgeError> {
+    retrieve_resolved_generation_with_gate(generation, authorization, request, now, true)
+}
+
+pub fn retrieve_resolved_generation_with_gate(
+    generation: &FullBaseGeneration,
+    authorization: &AuthorizationSnapshot,
+    request: &RetrieveRequest,
+    now: DateTime<Utc>,
+    lexical_evidence_required: bool,
+) -> Result<RetrievalResponse, KnowledgeError> {
+    let mut resolved = generation.clone();
+    if resolved.manifest.segment_kind == "BASE+DELTA" {
+        resolved.manifest.segment_kind = "BASE".into();
+    }
+    retrieve_with_lexical_gate(
+        &resolved,
+        authorization,
+        request,
+        now,
+        lexical_evidence_required,
+    )
+}
+
+pub fn compact_resolved_generation(
+    resolved: &FullBaseGeneration,
+) -> Result<FullBaseGeneration, KnowledgeError> {
+    if resolved.manifest.segment_kind != "BASE+DELTA" {
+        return Err(KnowledgeError::InvalidSource(
+            "compaction requires a resolved BASE+DELTA generation".into(),
+        ));
+    }
+    let corpus_digest = sha256_hex(
+        resolved
+            .chunks
+            .iter()
+            .map(|chunk| format!("{}:{}", chunk.chunk_id, chunk.content_digest))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .as_bytes(),
+    );
+    let generation_id = stable_uuid(&[
+        b"knowledge-compaction-v1",
+        resolved.manifest.knowledge_base_id.as_bytes(),
+        corpus_digest.as_bytes(),
+    ]);
+    let mut compacted = resolved.clone();
+    compacted.manifest.generation_id = generation_id;
+    compacted.manifest.segment_id = stable_uuid(&[b"base", generation_id.as_bytes()]);
+    compacted.manifest.manifest_digest = corpus_digest;
+    compacted.manifest.segment_kind = "BASE".into();
+    Ok(compacted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -911,6 +1628,41 @@ mod tests {
         assert_eq!(first.manifest.segment_kind, "BASE");
         assert_eq!(first.manifest.vector_count, first.manifest.chunk_count);
         assert!(first.chunks.iter().all(|chunk| chunk.vector.len() == 32));
+    }
+
+    #[test]
+    fn zero_chunk_documents_are_not_part_of_the_indexed_corpus() {
+        let knowledge_base_id = Uuid::from_u128(1);
+        let mut inputs = documents();
+        inputs.push(DocumentInput {
+            source_object_id: "empty.md".into(),
+            canonical_uri: "repo://empty.md".into(),
+            source_version: "empty-v1".into(),
+            markdown: " \n\t".into(),
+        });
+        let generation = build_full_base(
+            knowledge_base_id,
+            7,
+            &inputs,
+            &ProcessingContract::default(),
+            &SourceLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(generation.manifest.document_count, 2);
+        assert!(
+            generation
+                .chunks
+                .iter()
+                .all(|chunk| chunk.source_object_id != "empty.md")
+        );
+        assert!(
+            classify_corpus_changes(
+                knowledge_base_id,
+                &[],
+                &[corpus_state("empty.md", " \n\t", "{}", "scope")]
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -1049,6 +1801,12 @@ mod tests {
             ingest_markdown_repository(directory.path(), &limits),
             Err(KnowledgeError::SourceLimit("maximum_documents"))
         );
+        fs::write(directory.path().join("empty.md"), " \n\t").unwrap();
+        let docs = ingest_markdown_repository(directory.path(), &SourceLimits::default()).unwrap();
+        assert!(
+            docs.iter()
+                .all(|document| document.source_object_id != "empty.md")
+        );
     }
 
     #[test]
@@ -1069,5 +1827,265 @@ mod tests {
         );
         ledger.complete(kb, host, "r1");
         assert!(ledger.admit(kb, host, "r2", now, &policy).unwrap());
+    }
+
+    fn corpus_state(id: &str, content: &str, metadata: &str, acl: &str) -> CorpusDocumentState {
+        CorpusDocumentState {
+            source_object_id: id.into(),
+            canonical_uri: format!("repo://{id}"),
+            source_version: format!("v-{content}-{metadata}-{acl}"),
+            content_digest: sha256_hex(content.as_bytes()),
+            metadata_digest: sha256_hex(metadata.as_bytes()),
+            acl_digest: sha256_hex(acl.as_bytes()),
+            markdown: content.into(),
+        }
+    }
+
+    #[test]
+    fn incremental_classifier_covers_all_five_operations() {
+        let before = vec![
+            corpus_state("delete.md", "delete", "m", "a"),
+            corpus_state("modify.md", "old", "m", "a"),
+            corpus_state("acl.md", "same", "m", "old"),
+            corpus_state("metadata.md", "same", "old", "a"),
+        ];
+        let after = vec![
+            corpus_state("add.md", "add", "m", "a"),
+            corpus_state("modify.md", "new", "m", "a"),
+            corpus_state("acl.md", "same", "m", "new"),
+            corpus_state("metadata.md", "same", "new", "a"),
+        ];
+        let changes = classify_corpus_changes(Uuid::from_u128(1), &before, &after);
+        assert_eq!(
+            changes
+                .iter()
+                .map(|change| change.kind)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                ChangeKind::Add,
+                ChangeKind::Modify,
+                ChangeKind::Delete,
+                ChangeKind::AclOnly,
+                ChangeKind::MetadataOnly,
+            ])
+        );
+        assert_eq!(
+            changes,
+            classify_corpus_changes(Uuid::from_u128(1), &before, &after)
+        );
+    }
+
+    #[test]
+    fn delta_resolution_and_compaction_preserve_effective_corpus() {
+        let kb = Uuid::from_u128(1);
+        let contract = ProcessingContract::default();
+        let limits = SourceLimits::default();
+        let original = documents()
+            .into_iter()
+            .map(CorpusDocumentState::from)
+            .collect::<Vec<_>>();
+        let base = build_full_base(
+            kb,
+            1,
+            &original
+                .iter()
+                .map(|document| DocumentInput {
+                    source_object_id: document.source_object_id.clone(),
+                    canonical_uri: document.canonical_uri.clone(),
+                    source_version: document.source_version.clone(),
+                    markdown: document.markdown.clone(),
+                })
+                .collect::<Vec<_>>(),
+            &contract,
+            &limits,
+        )
+        .unwrap();
+        let current = vec![
+            corpus_state(
+                "config/server.md",
+                "# Server\nSet `serviceId` and `environment` in server.yml.",
+                "{}",
+                "UNIFORM_SCOPE",
+            ),
+            corpus_state(
+                "new.md",
+                "# New\nIncremental content.",
+                "{}",
+                "UNIFORM_SCOPE",
+            ),
+        ];
+        let delta = build_delta_segment(
+            kb,
+            2,
+            &base.manifest.manifest_digest,
+            &original,
+            &current,
+            &contract,
+            &limits,
+        )
+        .unwrap();
+        let resolved = resolve_base_plus_deltas(&base, &[delta]).unwrap();
+        assert_eq!(resolved.manifest.segment_kind, "BASE+DELTA");
+        assert!(
+            resolved
+                .chunks
+                .iter()
+                .any(|chunk| chunk.text.contains("environment"))
+        );
+        assert!(
+            !resolved
+                .chunks
+                .iter()
+                .any(|chunk| chunk.text.contains("Authorization"))
+        );
+        let compacted = compact_resolved_generation(&resolved).unwrap();
+        assert_eq!(compacted.manifest.segment_kind, "BASE");
+        assert_eq!(compacted.chunks, resolved.chunks);
+        assert_ne!(
+            compacted.manifest.generation_id,
+            resolved.manifest.generation_id
+        );
+        assert_eq!(compacted, compact_resolved_generation(&resolved).unwrap());
+    }
+
+    #[test]
+    fn recurring_semantic_change_has_distinct_occurrence_identity() {
+        let kb = Uuid::from_u128(1);
+        let contract = ProcessingContract::default();
+        let limits = SourceLimits::default();
+        let v1 = vec![corpus_state("doc.md", "v1", "{}", "scope")];
+        let v2 = vec![corpus_state("doc.md", "v2", "{}", "scope")];
+        let first =
+            build_delta_segment(kb, 2, &"a".repeat(64), &v1, &v2, &contract, &limits).unwrap();
+        let repeated =
+            build_delta_segment(kb, 4, &"b".repeat(64), &v1, &v2, &contract, &limits).unwrap();
+        let deterministic_retry =
+            build_delta_segment(kb, 4, &"b".repeat(64), &v1, &v2, &contract, &limits).unwrap();
+        assert_ne!(
+            first.operations[0].operation_id,
+            repeated.operations[0].operation_id
+        );
+        assert_eq!(repeated, deterministic_retry);
+    }
+
+    #[test]
+    fn principal_acl_is_fresh_complete_deny_first_and_fail_closed() {
+        let now = Utc::now();
+        let principal = PrincipalContext {
+            subject_id: "user-1".into(),
+            subject_type: "user".into(),
+            groups: BTreeSet::from(["group-readers".into()]),
+            organizations: BTreeSet::from(["org-1".into()]),
+        };
+        let allow_group = AclSubject {
+            provider_subject_id: "provider-group-readers".into(),
+            subject_type: AclSubjectType::Group,
+            subject_id: "group-readers".into(),
+            effect: AclEffect::Allow,
+            mapping_complete: true,
+            provider_evidence_digest: "a".repeat(64),
+        };
+        let mut acl = NormalizedAclRevision {
+            mode: AclMode::MirrorSourceAcl,
+            complete: true,
+            observed_at: now - Duration::minutes(1),
+            fresh_until: now + Duration::minutes(14),
+            provider_effective_decision: true,
+            subjects: vec![allow_group],
+        };
+        assert!(authorize_document_acl(&acl, &principal, now));
+
+        acl.subjects.push(AclSubject {
+            provider_subject_id: "provider-user-1".into(),
+            subject_type: AclSubjectType::User,
+            subject_id: "user-1".into(),
+            effect: AclEffect::Deny,
+            mapping_complete: true,
+            provider_evidence_digest: "b".repeat(64),
+        });
+        assert!(!authorize_document_acl(&acl, &principal, now));
+        acl.subjects.pop();
+        acl.complete = false;
+        assert!(!authorize_document_acl(&acl, &principal, now));
+        acl.complete = true;
+        acl.fresh_until = now;
+        assert!(!authorize_document_acl(&acl, &principal, now));
+        acl.fresh_until = now + Duration::minutes(1);
+        acl.subjects[0].mapping_complete = false;
+        assert!(!authorize_document_acl(&acl, &principal, now));
+    }
+
+    #[test]
+    fn embedding_reuse_is_scoped_and_last_reference_deletes() {
+        let mut ledger = EmbeddingReuseLedger::default();
+        let key = ScopedEmbeddingReuseKey {
+            knowledge_base_id: Uuid::from_u128(1),
+            input_digest: "a".repeat(64),
+            space_id: "space".into(),
+            space_revision: 1,
+            dimension: 32,
+            transform_digest: "b".repeat(64),
+        };
+        let (artifact, reused) = ledger.acquire(key.clone());
+        assert!(!reused);
+        assert_eq!(ledger.acquire(key.clone()), (artifact, true));
+        let mut other = key.clone();
+        other.knowledge_base_id = Uuid::from_u128(2);
+        assert_ne!(ledger.acquire(other).0, artifact);
+        assert!(!ledger.release(&key));
+        assert!(ledger.release(&key));
+    }
+
+    #[test]
+    fn multi_kb_fusion_is_deterministic_fair_and_space_grouped() {
+        let now = Utc::now();
+        let host = Uuid::from_u128(9);
+        let responses = [Uuid::from_u128(1), Uuid::from_u128(2)]
+            .into_iter()
+            .enumerate()
+            .map(|(index, kb)| {
+                let generation = build_full_base(
+                    kb,
+                    1,
+                    &documents(),
+                    &ProcessingContract::default(),
+                    &SourceLimits::default(),
+                )
+                .unwrap();
+                let request = RetrieveRequest {
+                    knowledge_base_ids: vec![kb],
+                    environment: "dev".into(),
+                    query: "serviceId".into(),
+                    top_k: 2,
+                    token_budget: 1000,
+                    filters: None,
+                };
+                KnowledgeBaseRankedResponse {
+                    response: retrieve(
+                        &generation,
+                        &default_authorization(kb, host, "dev"),
+                        &request,
+                        now,
+                    )
+                    .unwrap(),
+                    priority: 10 - index as i32,
+                    embedding_group_key: "fake:v1:32".into(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let first = fuse_knowledge_base_results(responses.clone(), 4, 2, 1000).unwrap();
+        let second = fuse_knowledge_base_results(responses, 4, 2, 1000).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.embedding_group_count, 1);
+        assert_eq!(first.results.len(), 2);
+        assert_eq!(
+            first
+                .results
+                .iter()
+                .map(|result| result.knowledge_base_id)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            2
+        );
     }
 }

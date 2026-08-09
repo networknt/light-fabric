@@ -12,7 +12,10 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use hindsight_client::{HindsightMemory, PgHindsightClient};
-use knowledge_client::{KnowledgeClient, render_untrusted_evidence};
+use knowledge_client::{
+    KnowledgeClient, render_untrusted_evidence, render_untrusted_multi_evidence,
+};
+use knowledge_core::KnowledgeSearchResponse;
 use knowledge_core::RetrieveRequest;
 use light_axum::{AxumApp, AxumTransport, ServerContext};
 use light_runtime::{
@@ -559,6 +562,12 @@ struct AgentKnowledgeBinding {
     evidence_required: bool,
     #[serde(default)]
     active: bool,
+    #[serde(default = "default_knowledge_binding_priority")]
+    priority: i32,
+}
+
+fn default_knowledge_binding_priority() -> i32 {
+    50
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -569,7 +578,7 @@ struct AgentKnowledgeBindingsResponse {
 
 #[derive(Clone)]
 struct CachedAgentKnowledgeBinding {
-    binding: Option<AgentKnowledgeBinding>,
+    bindings: Vec<AgentKnowledgeBinding>,
     expires_at: Instant,
 }
 
@@ -900,7 +909,7 @@ impl PortalQueryClient {
         host_id: Uuid,
         agent_def_id: Uuid,
         environment: &str,
-    ) -> Result<Option<AgentKnowledgeBinding>> {
+    ) -> Result<Vec<AgentKnowledgeBinding>> {
         let request = serde_json::json!({
             "host": "lightapi.net",
             "service": "genai",
@@ -935,10 +944,16 @@ impl PortalQueryClient {
             .into_iter()
             .filter(|binding| binding.active && binding.agent_id == agent_def_id)
             .collect::<Vec<_>>();
-        if bindings.len() > 1 {
-            bail!("Phase 1a permits at most one active Knowledge Base binding per Agent")
+        if bindings.len() > 4 {
+            bail!("Phase 1b permits at most four active Knowledge Base bindings per Agent")
         }
-        Ok(bindings.pop())
+        bindings.sort_by(|left, right| {
+            right
+                .priority
+                .cmp(&left.priority)
+                .then_with(|| left.knowledge_base_id.cmp(&right.knowledge_base_id))
+        });
+        Ok(bindings)
     }
 }
 
@@ -4139,7 +4154,7 @@ async fn run_agent_loop(
             .as_ref()
             .context("Knowledge retrieval requires the Portal binding query")?;
         let cache_key = (turn_resolution.agent_def_id, environment.to_string());
-        let binding = match portal
+        let bindings = match portal
             .get_agent_knowledge_binding(
                 turn_resolution.host_id,
                 turn_resolution.agent_def_id,
@@ -4147,18 +4162,18 @@ async fn run_agent_loop(
             )
             .await
         {
-            Ok(binding) => {
+            Ok(bindings) => {
                 state.knowledge_binding_cache.write().await.insert(
                     cache_key.clone(),
                     CachedAgentKnowledgeBinding {
-                        binding: binding.clone(),
+                        bindings: bindings.clone(),
                         expires_at: Instant::now() + Duration::from_secs(30),
                     },
                 );
-                binding
+                bindings
             }
             Err(error) => {
-                if error.to_string().contains("at most one active") {
+                if is_knowledge_binding_cardinality_error(&error) {
                     return Err(error);
                 }
                 let cached = state
@@ -4173,10 +4188,10 @@ async fn run_agent_loop(
                     )?;
                 warn!(%error,
                     "Knowledge binding lookup unavailable; applying fresh cached evidence policy");
-                cached.binding
+                cached.bindings
             }
         };
-        if let Some(binding) = binding {
+        if !bindings.is_empty() {
             let delegated = knowledge_authorization(
                 state,
                 authenticated,
@@ -4187,15 +4202,18 @@ async fn run_agent_loop(
             )?;
             let request_id = Uuid::now_v7().to_string();
             let request = RetrieveRequest {
-                knowledge_base_ids: vec![binding.knowledge_base_id],
+                knowledge_base_ids: bindings
+                    .iter()
+                    .map(|binding| binding.knowledge_base_id)
+                    .collect(),
                 environment: environment.to_string(),
                 query: user_prompt.clone(),
                 top_k: 5,
                 token_budget: 2_000,
                 filters: None,
             };
-            match client.retrieve(&request_id, &delegated, &request).await {
-                Ok(response) => {
+            match client.search(&request_id, &delegated, &request).await {
+                Ok(KnowledgeSearchResponse::Single(response)) => {
                     let rendered =
                         render_untrusted_evidence(&response, state.limits.max_tool_output_bytes);
                     if !response.no_answer {
@@ -4218,7 +4236,37 @@ async fn run_agent_loop(
                         })).collect::<Vec<_>>()
                     }));
                 }
-                Err(error) if binding.evidence_required => {
+                Ok(KnowledgeSearchResponse::Multi(response)) => {
+                    let rendered = render_untrusted_multi_evidence(
+                        &response,
+                        state.limits.max_tool_output_bytes,
+                    );
+                    if !response.results.is_empty() {
+                        if let Some(message) = messages.last_mut() {
+                            message.content = format!("{rendered}\n\n{}", message.content);
+                        }
+                    }
+                    knowledge_evidence = Some(serde_json::json!({
+                        "requestId": request_id,
+                        "status": response.status,
+                        "disposition": response.disposition,
+                        "knowledgeBaseIds": response.knowledge_base_ids,
+                        "embeddingGroupCount": response.embedding_group_count,
+                        "warnings": response.warnings,
+                        "exclusions": response.exclusions,
+                        "citations": response.results.iter().map(|result| serde_json::json!({
+                            "knowledgeBaseId": result.knowledge_base_id,
+                            "generationId": result.generation_id,
+                            "chunkId": result.hit.chunk_id,
+                            "documentId": result.hit.citation.document_id,
+                            "documentVersionId": result.hit.citation.document_version_id,
+                            "contentDigest": result.hit.citation.content_digest,
+                            "canonicalUri": result.hit.citation.canonical_uri,
+                            "sourceVersion": result.hit.citation.source_version
+                        })).collect::<Vec<_>>()
+                    }));
+                }
+                Err(error) if bindings.iter().any(|binding| binding.evidence_required) => {
                     bail!("required Knowledge Base evidence failed: {error}")
                 }
                 Err(error) => {
@@ -4488,6 +4536,12 @@ async fn run_agent_loop(
     }
 
     Ok((response, trusted_usage, knowledge_evidence))
+}
+
+fn is_knowledge_binding_cardinality_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    message.contains("active Knowledge Base binding")
+        && (message.contains("at most one") || message.contains("at most four"))
 }
 
 async fn build_agent_state(
@@ -4863,9 +4917,9 @@ mod tests {
         ModelProviderConfig, SessionOwner, TurnDispatchCoordinator, agent_ca_cert_path_from_config,
         bind_authenticated_principal, bound_untrusted_text, build_effective_catalog_data,
         choose_model, collect_catalog_tool_names, collect_policy_diagnostics, filter_gateway_tools,
-        is_local_cli_provider, normalize_provider_id, normalized_claim_values,
-        parse_tool_arguments, select_catalog_tools, trim_history, validate_repository_input_uri,
-        validate_session_owner,
+        is_knowledge_binding_cardinality_error, is_local_cli_provider, normalize_provider_id,
+        normalized_claim_values, parse_tool_arguments, select_catalog_tools, trim_history,
+        validate_repository_input_uri, validate_session_owner,
     };
     use light_agent::domain::AgentRepository;
     use light_runtime::config::{BootstrapConfig, ClientConfig};
@@ -4907,6 +4961,19 @@ mod tests {
             validate_repository_input_uri("https://attacker.invalid/repository.bundle", prefix)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn phase1b_binding_cardinality_failure_is_fail_closed() {
+        assert!(is_knowledge_binding_cardinality_error(&anyhow::anyhow!(
+            "Phase 1b permits at most four active Knowledge Base bindings per Agent"
+        )));
+        assert!(is_knowledge_binding_cardinality_error(&anyhow::anyhow!(
+            "at most one active Knowledge Base binding is permitted"
+        )));
+        assert!(!is_knowledge_binding_cardinality_error(&anyhow::anyhow!(
+            "Portal query temporarily unavailable"
+        )));
     }
 
     #[tokio::test]

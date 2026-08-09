@@ -3522,6 +3522,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "knowledge-connectors"
+version = "0.2.1"
+dependencies = [
+ "chrono",
+ "knowledge-core",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "url",
+]
+
+[[package]]
 name = "knowledge-core"
 version = "0.2.1"
 dependencies = [
@@ -3936,7 +3949,9 @@ name = "light-knowledge-worker"
 version = "0.2.1"
 dependencies = [
  "anyhow",
+ "chrono",
  "hmac",
+ "knowledge-connectors",
  "knowledge-core",
  "reqwest",
  "serde",

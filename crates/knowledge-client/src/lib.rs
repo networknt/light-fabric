@@ -1,9 +1,12 @@
 //! Bounded client used by Agents and workflows to retrieve cited KB evidence.
 
-use knowledge_core::{RetrievalResponse, RetrieveRequest};
+use knowledge_core::{
+    KnowledgeSearchResponse, MultiKnowledgeBaseResponse, RetrievalResponse, RetrieveRequest,
+};
 use reqwest::StatusCode;
 use thiserror::Error;
 use url::Url;
+use uuid::Uuid;
 
 #[derive(Debug, Error)]
 pub enum ClientError {
@@ -48,9 +51,27 @@ impl KnowledgeClient {
         delegated_authorization: &str,
         request: &RetrieveRequest,
     ) -> Result<RetrievalResponse, ClientError> {
-        if request.knowledge_base_ids.len() != 1 {
-            return Err(ClientError::Rejected {
+        match self
+            .search(request_id, delegated_authorization, request)
+            .await?
+        {
+            KnowledgeSearchResponse::Single(response) => Ok(response),
+            KnowledgeSearchResponse::Multi(_) => Err(ClientError::Rejected {
                 status: StatusCode::UNPROCESSABLE_ENTITY,
+                code: "KNOWLEDGE_MULTI_KB_RESPONSE_REQUIRES_SEARCH".to_string(),
+            }),
+        }
+    }
+
+    pub async fn search(
+        &self,
+        request_id: &str,
+        delegated_authorization: &str,
+        request: &RetrieveRequest,
+    ) -> Result<KnowledgeSearchResponse, ClientError> {
+        if request.knowledge_base_ids.is_empty() || request.knowledge_base_ids.len() > 4 {
+            return Err(ClientError::Rejected {
+                status: StatusCode::BAD_REQUEST,
                 code: "KNOWLEDGE_BASE_SELECTION_LIMIT_EXCEEDED".to_string(),
             });
         }
@@ -78,6 +99,31 @@ impl KnowledgeClient {
         }
         Ok(serde_json::from_slice(&body)?)
     }
+}
+
+pub fn render_untrusted_multi_evidence(
+    response: &MultiKnowledgeBaseResponse,
+    maximum_bytes: usize,
+) -> String {
+    let flattened = RetrievalResponse {
+        knowledge_base_id: response
+            .knowledge_base_ids
+            .first()
+            .copied()
+            .unwrap_or_default(),
+        generation_id: response
+            .results
+            .first()
+            .map_or_else(Uuid::nil, |result| result.generation_id),
+        strategy: "MULTI_KB_LOCAL_RANK_RRF".into(),
+        no_answer: response.results.is_empty(),
+        results: response
+            .results
+            .iter()
+            .map(|result| result.hit.clone())
+            .collect(),
+    };
+    render_untrusted_evidence(&flattened, maximum_bytes)
 }
 
 /// Evidence is explicitly delimited before it enters an Agent prompt. The

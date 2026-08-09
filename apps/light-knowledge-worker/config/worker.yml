@@ -22,6 +22,11 @@ embeddingSpaceId: light-knowledge-fake-v1
 embeddingSpaceRevision: 1
 embeddingDimension: 32
 snapshotWatermark: 1
+# Phase 2 connector workers use one of the following mutually exclusive inputs.
+# enterpriseConnectorFixtureFile: /config/sharepoint-page-v1.json
+# enterpriseConnectorPageUrl: https://connector.internal/v1/pages
+# enterpriseConnectorAuthorizationFile: /run/secrets/knowledge-connector-authorization
+# enterpriseConnectorApprovedOrigin: https://graph.microsoft.com
 limits:
   maximumDocuments: 10000
   maximumSourceBytes: 268435456

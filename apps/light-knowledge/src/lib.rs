@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration as StdDuration, Instant};
 
 use agent_delegation::{DelegationKind, DelegationVerifier};
+use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -14,8 +15,9 @@ use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
 use knowledge_core::{
-    AuthorizationSnapshot, BaseManifest, Chunk, FullBaseGeneration, KnowledgeError,
-    RetrievalResponse, RetrieveRequest, retrieve,
+    AuthorizationSnapshot, BaseManifest, Chunk, FullBaseGeneration, KnowledgeBaseRankedResponse,
+    KnowledgeError, KnowledgeSearchResponse, MultiKnowledgeBaseResponse, RetrievalResponse,
+    RetrieveRequest, fuse_knowledge_base_results, retrieve_resolved_generation_with_gate,
 };
 use light_runtime::{RuntimeConfig, RuntimeError};
 use serde::{Deserialize, Serialize};
@@ -90,6 +92,8 @@ pub struct FeatureFlags {
     pub context_expansion: bool,
     pub multi_knowledge_base: bool,
     pub graph_assisted: bool,
+    #[serde(default)]
+    pub enterprise_source_acls: bool,
 }
 
 impl KnowledgeConfig {
@@ -147,13 +151,16 @@ impl KnowledgeConfig {
         {
             return Err("invalid Phase 1a limits, lease, or embedding-space contract".into());
         }
-        if self.features.delta_segments
-            || self.features.uploads
-            || self.features.context_expansion
-            || self.features.multi_knowledge_base
-            || self.features.graph_assisted
+        if self.features.graph_assisted {
+            return Err("graph-assisted retrieval remains disabled before Phase 4".into());
+        }
+        if (self.features.uploads || self.features.context_expansion)
+            && !self.features.delta_segments
         {
-            return Err("Phase 1a unsupported features must remain disabled".into());
+            return Err("Phase 1b uploads and context expansion require delta segments".into());
+        }
+        if self.features.enterprise_source_acls && !self.features.delta_segments {
+            return Err("Phase 2 enterprise source ACLs require delta segments".into());
         }
         if !self.database_url_file.is_file() {
             return Err("databaseUrlFile must be a readable regular file".into());
@@ -263,12 +270,340 @@ pub fn knowledge_router(state: Arc<KnowledgeState>) -> Router {
         .route("/ready", get(ready))
         .route("/metrics", get(metrics))
         .route("/v1/knowledge/retrieve", post(retrieve_handler))
+        .route("/v1/knowledge/uploads", post(upload_handler))
+        .route("/mcp", post(mcp_handler))
         .route(
             "/v1/knowledge/documents/{document_id}/versions/{document_version_id}",
             get(document_version_handler),
         )
+        .route(
+            "/v1/knowledge/documents/{document_id}/passages/{passage_anchor_id}",
+            get(passage_anchor_handler),
+        )
         .layer(DefaultBodyLimit::max(state.config.maximum_request_bytes))
         .with_state(state)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UploadAcceptedResponse {
+    upload_id: Uuid,
+    lifecycle_state: String,
+    staged_digest: String,
+}
+
+async fn upload_handler(
+    State(state): State<Arc<KnowledgeState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<(StatusCode, Json<UploadAcceptedResponse>), ApiError> {
+    if !state.config.features.uploads || body.is_empty() || body.len() > 100 * 1024 * 1024 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "KNOWLEDGE_INVALID_REQUEST",
+        ));
+    }
+    let authenticated = authenticated_context(&headers, &state).await?;
+    let knowledge_base_id = required_uuid_header(&headers, "x-knowledge-base-id")?;
+    let source_id = required_uuid_header(&headers, "x-knowledge-source-id")?;
+    let filename = required_text_header(&headers, "x-upload-filename")?;
+    let media_type = required_text_header(&headers, "content-type")?
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if !matches!(
+        media_type.as_str(),
+        "text/plain" | "text/markdown" | "text/html"
+    ) || filename.len() > 512
+        || filename.contains(['\n', '\r', '\0'])
+    {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "KNOWLEDGE_UNSUPPORTED_CONTRACT",
+        ));
+    }
+    let authorized = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(
+           SELECT 1 FROM knowledge_source_t source
+           JOIN knowledge_base_t kb ON kb.knowledge_base_id=source.knowledge_base_id
+           JOIN knowledge_runtime_authorization_t auth
+             ON auth.knowledge_base_id=kb.knowledge_base_id
+          WHERE source.source_id=$1 AND source.knowledge_base_id=$2
+            AND auth.consumer_host_id=$3 AND auth.agent_id=$4
+            AND auth.environment=$5 AND auth.active=TRUE)",
+    )
+    .bind(source_id)
+    .bind(knowledge_base_id)
+    .bind(authenticated.host_id)
+    .bind(authenticated.agent_def_id)
+    .bind(&authenticated.environment)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(ApiError::database)?;
+    if !authorized {
+        return Err(ApiError::new(StatusCode::FORBIDDEN, "KNOWLEDGE_FORBIDDEN"));
+    }
+    let upload_id = Uuid::now_v7();
+    let digest = sha256_hex(&body);
+    let upload_root = state.config.object_store_root.join("uploads");
+    fs::create_dir_all(&upload_root).map_err(ApiError::database)?;
+    let staged_path = upload_root.join(format!("{upload_id}.staged"));
+    const EICAR_MARKER: &[u8] = b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE";
+    let decoded = std::str::from_utf8(&body);
+    let rejected = body
+        .windows(EICAR_MARKER.len())
+        .any(|window| window == EICAR_MARKER)
+        || decoded.is_err()
+        || decoded.is_ok_and(|markdown| !knowledge_core::is_indexable_markdown(markdown));
+    let (scan_state, lifecycle_state, rejection_code) = if rejected {
+        ("REJECTED", "REJECTED", Some("UPLOAD_CONTENT_REJECTED"))
+    } else {
+        ("PENDING", "STAGED", None)
+    };
+    let mut tx = state.pool.begin().await.map_err(ApiError::database)?;
+    sqlx::query(
+        "INSERT INTO knowledge_upload_t(
+           upload_id,knowledge_base_id,source_id,source_object_id,
+           original_filename,media_type,content_length,staged_locator,
+           staged_digest,scan_state,lifecycle_state,rejection_code,requested_by,
+           verified_ts,purge_after_ts)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
+           NULL,now()+interval '24 hours')",
+    )
+    .bind(upload_id)
+    .bind(knowledge_base_id)
+    .bind(source_id)
+    .bind(format!("upload:{upload_id}"))
+    .bind(&filename)
+    .bind(&media_type)
+    .bind(i64::try_from(body.len()).unwrap_or(i64::MAX))
+    .bind(staged_path.to_string_lossy().as_ref())
+    .bind(&digest)
+    .bind(scan_state)
+    .bind(lifecycle_state)
+    .bind(rejection_code)
+    .bind(authenticated.agent_def_id.to_string())
+    .execute(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    tx.commit().await.map_err(ApiError::database)?;
+    if rejected {
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(UploadAcceptedResponse {
+                upload_id,
+                lifecycle_state: lifecycle_state.into(),
+                staged_digest: digest,
+            }),
+        ));
+    }
+    if let Err(error) = fs::write(&staged_path, &body) {
+        let _ = mark_upload_orphaned(&state.pool, upload_id, "UPLOAD_STAGING_FAILED").await;
+        let _ = fs::remove_file(&staged_path);
+        return Err(ApiError::database(error));
+    }
+    let mut tx = state.pool.begin().await.map_err(ApiError::database)?;
+    let finalize_result = async {
+        sqlx::query(
+            "UPDATE knowledge_upload_t
+                SET scan_state='CLEAN',lifecycle_state='VERIFIED',verified_ts=now()
+              WHERE upload_id=$1 AND lifecycle_state='STAGED'",
+        )
+        .bind(upload_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO knowledge_job_t(
+               job_id,knowledge_base_id,source_id,job_type,idempotency_key,
+               requested_by,payload)
+             VALUES($1,$2,$3,'UPLOAD',$4,$5,$6)
+             ON CONFLICT(knowledge_base_id,idempotency_key) DO NOTHING",
+        )
+        .bind(Uuid::now_v7())
+        .bind(knowledge_base_id)
+        .bind(source_id)
+        .bind(format!("upload:{upload_id}:{digest}"))
+        .bind(authenticated.agent_def_id.to_string())
+        .bind(json!({"uploadId": upload_id}))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await
+    }
+    .await;
+    if let Err(error) = finalize_result {
+        let _ = fs::remove_file(&staged_path);
+        let _ = mark_upload_orphaned(&state.pool, upload_id, "UPLOAD_FINALIZE_FAILED").await;
+        return Err(ApiError::database(error));
+    }
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(UploadAcceptedResponse {
+            upload_id,
+            lifecycle_state: "VERIFIED".into(),
+            staged_digest: digest,
+        }),
+    ))
+}
+
+async fn mark_upload_orphaned(
+    pool: &PgPool,
+    upload_id: Uuid,
+    rejection_code: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE knowledge_upload_t
+            SET scan_state='ERROR',lifecycle_state='ORPHANED',rejection_code=$2
+          WHERE upload_id=$1 AND lifecycle_state='STAGED'",
+    )
+    .bind(upload_id)
+    .bind(rejection_code)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct McpRequest {
+    jsonrpc: String,
+    #[serde(default)]
+    id: Value,
+    method: String,
+    #[serde(default)]
+    params: Value,
+}
+
+async fn mcp_handler(
+    State(state): State<Arc<KnowledgeState>>,
+    headers: HeaderMap,
+    Json(message): Json<McpRequest>,
+) -> Result<Json<Value>, ApiError> {
+    if message.jsonrpc != "2.0" {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "KNOWLEDGE_INVALID_REQUEST",
+        ));
+    }
+    let result = match message.method.as_str() {
+        "initialize" => json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {"tools": {"listChanged": false}},
+            "serverInfo": {"name": "light-knowledge", "version": env!("CARGO_PKG_VERSION")}
+        }),
+        "tools/list" => json!({"tools": [
+            {
+                "name": "knowledge.search",
+                "description": "Search up to four authorized Knowledge Bases with cited results.",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["query"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "query": {"type": "string", "maxLength": 8192},
+                        "knowledgeBaseIds": {"type": "array", "maxItems": 4, "items": {"type": "string", "format": "uuid"}},
+                        "topK": {"type": "integer", "minimum": 0, "maximum": 20},
+                        "filters": {"type": "object"}
+                    }
+                }
+            },
+            {
+                "name": "knowledge.get_document",
+                "description": "Resolve one exact authorized Knowledge citation.",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["knowledgeBaseId", "documentId", "documentVersionId"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "knowledgeBaseId": {"type": "string", "format": "uuid"},
+                        "documentId": {"type": "string", "format": "uuid"},
+                        "documentVersionId": {"type": "string", "format": "uuid"}
+                    }
+                }
+            }
+        ]}),
+        "tools/call" => {
+            let authenticated = authenticated_context(&headers, &state).await?;
+            let name = message
+                .params
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    ApiError::new(StatusCode::BAD_REQUEST, "KNOWLEDGE_INVALID_REQUEST")
+                })?;
+            let arguments = message
+                .params
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            let content = match name {
+                "knowledge.search" => {
+                    let mut request: RetrieveRequest =
+                        serde_json::from_value(arguments).map_err(|_| {
+                            ApiError::new(StatusCode::BAD_REQUEST, "KNOWLEDGE_INVALID_REQUEST")
+                        })?;
+                    validate_retrieve_request(&state.config, &request)?;
+                    request.environment = authenticated.environment.clone();
+                    let request_id = required_text_header(&headers, "x-request-id")?;
+                    serde_json::to_value(
+                        tokio::time::timeout(
+                            StdDuration::from_millis(state.config.request_timeout_ms),
+                            search_application(&state, &request_id, &authenticated, &request),
+                        )
+                        .await
+                        .map_err(|_| {
+                            ApiError::new(
+                                StatusCode::GATEWAY_TIMEOUT,
+                                "KNOWLEDGE_DEADLINE_EXCEEDED",
+                            )
+                        })??,
+                    )
+                    .map_err(|_| {
+                        ApiError::new(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KNOWLEDGE_RESPONSE_INVALID",
+                        )
+                    })?
+                }
+                "knowledge.get_document" => {
+                    let knowledge_base_id = mcp_uuid(&arguments, "knowledgeBaseId")?;
+                    let document_id = mcp_uuid(&arguments, "documentId")?;
+                    let document_version_id = mcp_uuid(&arguments, "documentVersionId")?;
+                    serde_json::to_value(
+                        load_document_version(
+                            &state,
+                            &authenticated,
+                            knowledge_base_id,
+                            document_id,
+                            document_version_id,
+                        )
+                        .await?,
+                    )
+                    .map_err(|_| {
+                        ApiError::new(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KNOWLEDGE_RESPONSE_INVALID",
+                        )
+                    })?
+                }
+                _ => return Err(ApiError::new(StatusCode::NOT_FOUND, "KNOWLEDGE_NOT_FOUND")),
+            };
+            json!({"content": [{"type": "text", "text": content.to_string()}], "structuredContent": content, "isError": false})
+        }
+        _ => return Err(ApiError::new(StatusCode::NOT_FOUND, "KNOWLEDGE_NOT_FOUND")),
+    };
+    Ok(Json(
+        json!({"jsonrpc": "2.0", "id": message.id, "result": result}),
+    ))
+}
+
+fn mcp_uuid(value: &Value, field: &str) -> Result<Uuid, ApiError> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "KNOWLEDGE_INVALID_REQUEST"))
 }
 
 async fn health() -> impl IntoResponse {
@@ -327,6 +662,11 @@ struct AuthenticatedKnowledgeRequest {
     environment: String,
     policy_digest: String,
     data_boundary_digest: String,
+    subject_id: String,
+    subject_type: String,
+    groups: Vec<String>,
+    organizations: Vec<String>,
+    normalized_claims_present: bool,
 }
 
 async fn authenticated_context(
@@ -386,6 +726,11 @@ async fn authenticated_context(
         environment: principal.environment.unwrap_or_default(),
         policy_digest: principal.policy_digest,
         data_boundary_digest: principal.data_boundary_digest,
+        subject_id: principal.subject_id,
+        subject_type: principal.subject_type,
+        groups: principal.groups.unwrap_or_default(),
+        organizations: principal.organizations.unwrap_or_default(),
+        normalized_claims_present,
     })
 }
 
@@ -393,62 +738,305 @@ async fn retrieve_handler(
     State(state): State<Arc<KnowledgeState>>,
     headers: HeaderMap,
     Json(mut request): Json<RetrieveRequest>,
-) -> Result<Json<RetrievalResponse>, ApiError> {
+) -> Result<Json<KnowledgeSearchResponse>, ApiError> {
     let authenticated = authenticated_context(&headers, &state).await?;
-    if request.query.trim().is_empty()
-        || request.query.len() > state.config.maximum_query_bytes.min(8192)
-        || request.top_k > 20
-    {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "KNOWLEDGE_INVALID_REQUEST",
-        ));
-    }
-    request.environment = authenticated.environment;
+    validate_retrieve_request(&state.config, &request)?;
+    request.environment = authenticated.environment.clone();
     let request_id = required_text_header(&headers, "x-request-id")?;
     let response = tokio::time::timeout(
         StdDuration::from_millis(state.config.request_timeout_ms),
-        retrieve_transaction(
-            &state,
-            &request_id,
-            authenticated.host_id,
-            authenticated.agent_def_id,
-            &authenticated.policy_digest,
-            &authenticated.data_boundary_digest,
-            &request,
-        ),
+        search_application(&state, &request_id, &authenticated, &request),
     )
     .await
     .map_err(|_| ApiError::new(StatusCode::GATEWAY_TIMEOUT, "KNOWLEDGE_DEADLINE_EXCEEDED"))??;
     Ok(Json(response))
 }
 
+fn validate_retrieve_request(
+    config: &KnowledgeConfig,
+    request: &RetrieveRequest,
+) -> Result<(), ApiError> {
+    if request.query.trim().is_empty()
+        || request.query.len() > config.maximum_query_bytes.min(8192)
+        || request.top_k > 20
+        || request
+            .knowledge_base_ids
+            .iter()
+            .collect::<BTreeSet<_>>()
+            .len()
+            > 4
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "KNOWLEDGE_INVALID_REQUEST",
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct SelectedKnowledgeBase {
+    knowledge_base_id: Uuid,
+    priority: i32,
+    maximum_knowledge_bases: usize,
+    top_k: usize,
+    token_budget: usize,
+    failure_policy: String,
+    embedding_group_key: String,
+    requires_normalized_claims: bool,
+}
+
+fn enforce_normalized_claims_for_selection(
+    authenticated: &AuthenticatedKnowledgeRequest,
+    selected: &[SelectedKnowledgeBase],
+) -> Result<(), ApiError> {
+    if !authenticated.normalized_claims_present
+        && selected
+            .iter()
+            .any(|selection| selection.requires_normalized_claims)
+    {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "KNOWLEDGE_DELEGATION_BINDING_INVALID",
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn search_application(
+    state: &KnowledgeState,
+    request_id: &str,
+    authenticated: &AuthenticatedKnowledgeRequest,
+    request: &RetrieveRequest,
+) -> Result<KnowledgeSearchResponse, ApiError> {
+    let selected = select_knowledge_bases(
+        state,
+        authenticated.host_id,
+        authenticated.agent_def_id,
+        &request.environment,
+        &request.knowledge_base_ids,
+    )
+    .await?;
+    enforce_normalized_claims_for_selection(authenticated, &selected)?;
+    if selected.len() == 1 {
+        let mut single_request = request.clone();
+        single_request.knowledge_base_ids = vec![selected[0].knowledge_base_id];
+        return retrieve_transaction(state, request_id, authenticated, &single_request)
+            .await
+            .map(KnowledgeSearchResponse::Single);
+    }
+    if !state.config.features.multi_knowledge_base {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "KNOWLEDGE_UNSUPPORTED_CONTRACT",
+        ));
+    }
+    let mut ranked = Vec::new();
+    let mut warnings = Vec::new();
+    let mut exclusions = Vec::new();
+    for selection in &selected {
+        let mut single_request = request.clone();
+        single_request.knowledge_base_ids = vec![selection.knowledge_base_id];
+        match retrieve_transaction(
+            state,
+            &format!("{request_id}:{}", selection.knowledge_base_id),
+            authenticated,
+            &single_request,
+        )
+        .await
+        {
+            Ok(response) => ranked.push(KnowledgeBaseRankedResponse {
+                response,
+                priority: selection.priority,
+                embedding_group_key: selection.embedding_group_key.clone(),
+            }),
+            Err(error)
+                if selection.failure_policy != "RETURN_PARTIAL"
+                    || error.status == StatusCode::FORBIDDEN =>
+            {
+                return Err(error);
+            }
+            Err(error) => {
+                warnings.push(format!(
+                    "KB_SKIPPED_GENERATION_UNAVAILABLE:{}:{}",
+                    selection.knowledge_base_id, error.code
+                ));
+                exclusions.push(selection.knowledge_base_id.to_string());
+            }
+        }
+    }
+    if ranked.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "KNOWLEDGE_DEPENDENCY_UNAVAILABLE",
+        ));
+    }
+    let mut response: MultiKnowledgeBaseResponse = fuse_knowledge_base_results(
+        ranked,
+        selected
+            .iter()
+            .map(|selection| selection.maximum_knowledge_bases)
+            .min()
+            .unwrap_or(1),
+        if request.top_k == 0 {
+            selected
+                .iter()
+                .map(|selection| selection.top_k)
+                .sum::<usize>()
+        } else {
+            request.top_k
+        }
+        .max(1)
+        .min(20),
+        selected
+            .iter()
+            .map(|selection| selection.token_budget)
+            .sum::<usize>()
+            .max(1),
+    )?;
+    response.status = if warnings.is_empty() {
+        "COMPLETE".into()
+    } else {
+        "PARTIAL".into()
+    };
+    if !warnings.is_empty() && response.results.is_empty() {
+        response.disposition = "UNKNOWN".into();
+    }
+    response.warnings = warnings;
+    response.exclusions = exclusions;
+    Ok(KnowledgeSearchResponse::Multi(response))
+}
+
+async fn select_knowledge_bases(
+    state: &KnowledgeState,
+    consumer_host_id: Uuid,
+    agent_def_id: Uuid,
+    environment: &str,
+    requested: &[Uuid],
+) -> Result<Vec<SelectedKnowledgeBase>, ApiError> {
+    let requested = requested.iter().copied().collect::<BTreeSet<_>>();
+    if requested.len() > 4 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "KNOWLEDGE_INVALID_REQUEST",
+        ));
+    }
+    let rows = sqlx::query(
+        "SELECT a.knowledge_base_id,a.priority,p.maximum_knowledge_bases,
+                p.top_k,p.token_budget,
+                p.operational_failure_policy,g.space_id,g.space_revision,g.dimension,
+                g.query_input_transform_version,
+                EXISTS(
+                  SELECT 1 FROM knowledge_source_t source
+                   WHERE source.knowledge_base_id=a.knowledge_base_id
+                     AND source.acl_mode='MIRROR_SOURCE_ACL'
+                ) AS requires_normalized_claims
+           FROM agent_knowledge_base_t a
+           JOIN knowledge_retrieval_profile_t p ON p.profile_id=a.retrieval_profile_id
+           LEFT JOIN knowledge_index_pointer_t pointer
+             ON pointer.knowledge_base_id=a.knowledge_base_id
+            AND pointer.environment=a.environment
+           LEFT JOIN knowledge_index_generation_t g
+             ON g.index_generation_id=pointer.index_generation_id
+          WHERE a.host_id=$1 AND a.agent_id=$2 AND a.environment=$3
+            AND a.active=TRUE AND p.active=TRUE
+            AND (cardinality($4::uuid[])=0 OR a.knowledge_base_id=ANY($4::uuid[]))
+          ORDER BY a.priority DESC,a.knowledge_base_id LIMIT 5",
+    )
+    .bind(consumer_host_id)
+    .bind(agent_def_id)
+    .bind(environment)
+    .bind(requested.iter().copied().collect::<Vec<_>>())
+    .fetch_all(&state.pool)
+    .await
+    .map_err(ApiError::database)?;
+    if rows.is_empty() || (!requested.is_empty() && rows.len() != requested.len()) {
+        return Err(ApiError::new(StatusCode::FORBIDDEN, "KNOWLEDGE_FORBIDDEN"));
+    }
+    let selected = rows
+        .into_iter()
+        .map(|row| -> Result<SelectedKnowledgeBase, ApiError> {
+            let knowledge_base_id = row
+                .try_get("knowledge_base_id")
+                .map_err(ApiError::database)?;
+            let space_id: Option<String> = row.try_get("space_id").map_err(ApiError::database)?;
+            let revision: Option<i64> =
+                row.try_get("space_revision").map_err(ApiError::database)?;
+            let dimension: Option<i32> = row.try_get("dimension").map_err(ApiError::database)?;
+            let transform: Option<String> = row
+                .try_get("query_input_transform_version")
+                .map_err(ApiError::database)?;
+            Ok(SelectedKnowledgeBase {
+                knowledge_base_id,
+                priority: row.try_get("priority").map_err(ApiError::database)?,
+                maximum_knowledge_bases: usize::try_from(
+                    row.try_get::<i32, _>("maximum_knowledge_bases")
+                        .map_err(ApiError::database)?,
+                )
+                .unwrap_or(1),
+                top_k: usize::try_from(row.try_get::<i32, _>("top_k").map_err(ApiError::database)?)
+                    .unwrap_or(1),
+                token_budget: usize::try_from(
+                    row.try_get::<i32, _>("token_budget")
+                        .map_err(ApiError::database)?,
+                )
+                .unwrap_or(1),
+                failure_policy: row
+                    .try_get("operational_failure_policy")
+                    .map_err(ApiError::database)?,
+                requires_normalized_claims: row
+                    .try_get("requires_normalized_claims")
+                    .map_err(ApiError::database)?,
+                embedding_group_key: match (space_id, revision, dimension, transform) {
+                    (Some(space_id), Some(revision), Some(dimension), Some(transform)) => {
+                        format!("{space_id}:{revision}:{dimension}:{transform}")
+                    }
+                    _ => format!("unavailable:{knowledge_base_id}"),
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let cap = selected
+        .iter()
+        .map(|selection| selection.maximum_knowledge_bases)
+        .min()
+        .unwrap_or(1)
+        .min(4);
+    if selected.len() > cap {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "KNOWLEDGE_INVALID_REQUEST",
+        ));
+    }
+    Ok(selected)
+}
+
 async fn retrieve_transaction(
     state: &KnowledgeState,
     request_id: &str,
-    consumer_host_id: Uuid,
-    agent_def_id: Uuid,
-    policy_digest: &str,
-    data_boundary_digest: &str,
+    authenticated: &AuthenticatedKnowledgeRequest,
     request: &RetrieveRequest,
 ) -> Result<RetrievalResponse, ApiError> {
     if request.knowledge_base_ids.len() > 1 {
         return Err(ApiError::from(KnowledgeError::MultipleKnowledgeBases));
     }
-    let knowledge_base_id =
-        resolve_knowledge_base_id(&state.pool, consumer_host_id, agent_def_id, request).await?;
-    admit_request(&state.pool, knowledge_base_id, consumer_host_id, request_id).await?;
-    let result = retrieve_snapshot(
-        state,
-        request_id,
-        knowledge_base_id,
-        consumer_host_id,
-        agent_def_id,
-        policy_digest,
-        data_boundary_digest,
+    let knowledge_base_id = resolve_knowledge_base_id(
+        &state.pool,
+        authenticated.host_id,
+        authenticated.agent_def_id,
         request,
     )
-    .await;
+    .await?;
+    admit_request(
+        &state.pool,
+        knowledge_base_id,
+        authenticated.host_id,
+        request_id,
+    )
+    .await?;
+    let result =
+        retrieve_snapshot(state, request_id, knowledge_base_id, authenticated, request).await;
     let terminal_state = if result.is_ok() {
         "COMPLETED"
     } else {
@@ -460,7 +1048,7 @@ async fn retrieve_transaction(
             AND request_id=$3 AND state='ADMITTED'",
     )
     .bind(knowledge_base_id)
-    .bind(consumer_host_id)
+    .bind(authenticated.host_id)
     .bind(request_id)
     .bind(terminal_state)
     .execute(&state.pool)
@@ -521,10 +1109,7 @@ async fn retrieve_snapshot(
     state: &KnowledgeState,
     request_id: &str,
     knowledge_base_id: Uuid,
-    consumer_host_id: Uuid,
-    agent_def_id: Uuid,
-    policy_digest: &str,
-    data_boundary_digest: &str,
+    authenticated: &AuthenticatedKnowledgeRequest,
     request: &RetrieveRequest,
 ) -> Result<RetrievalResponse, ApiError> {
     let mut transaction = state.pool.begin().await.map_err(ApiError::database)?;
@@ -535,8 +1120,8 @@ async fn retrieve_snapshot(
     let authorization = load_authorization(
         &mut transaction,
         knowledge_base_id,
-        consumer_host_id,
-        agent_def_id,
+        authenticated.host_id,
+        authenticated.agent_def_id,
         &request.environment,
         &state.heartbeat_secret,
     )
@@ -547,9 +1132,10 @@ async fn retrieve_snapshot(
         profile_token_budget,
         lexical_candidates,
         vector_candidates,
-    ): (Uuid, i32, i32, i32, i32) = sqlx::query_as(
+        lexical_evidence_required,
+    ): (Uuid, i32, i32, i32, i32, bool) = sqlx::query_as(
         "SELECT p.profile_id,p.top_k,p.token_budget,
-                p.lexical_candidates,p.vector_candidates
+                p.lexical_candidates,p.vector_candidates,p.lexical_evidence_required
            FROM knowledge_retrieval_profile_t p
           JOIN knowledge_runtime_authorization_t a
             ON a.retrieval_profile_id=p.profile_id
@@ -557,9 +1143,9 @@ async fn retrieve_snapshot(
            AND a.environment=$3 AND a.agent_id=$4 AND p.active=TRUE",
     )
     .bind(knowledge_base_id)
-    .bind(consumer_host_id)
+    .bind(authenticated.host_id)
     .bind(&request.environment)
-    .bind(agent_def_id)
+    .bind(authenticated.agent_def_id)
     .fetch_one(&mut *transaction)
     .await
     .map_err(ApiError::database)?;
@@ -582,12 +1168,19 @@ async fn retrieve_snapshot(
         &effective_request,
         lexical_candidates,
         vector_candidates,
-        policy_digest,
-        data_boundary_digest,
+        &authenticated.policy_digest,
+        &authenticated.data_boundary_digest,
+        authenticated,
     )
     .await?;
     let started = std::time::Instant::now();
-    let response = retrieve(&generation, &authorization, &effective_request, Utc::now())?;
+    let response = retrieve_resolved_generation_with_gate(
+        &generation,
+        &authorization,
+        &effective_request,
+        Utc::now(),
+        lexical_evidence_required,
+    )?;
     let result_identities = response
         .results
         .iter()
@@ -600,7 +1193,7 @@ async fn retrieve_snapshot(
     .bind(Uuid::now_v7())
     .bind(request_id)
     .bind(knowledge_base_id)
-    .bind(consumer_host_id)
+    .bind(authenticated.host_id)
     .bind(generation.manifest.generation_id)
     .bind(retrieval_profile_id)
     .bind(&generation.manifest.manifest_digest)
@@ -958,8 +1551,9 @@ async fn load_generation(
     vector_candidates: i32,
     policy_digest: &str,
     data_boundary_digest: &str,
+    principal: &AuthenticatedKnowledgeRequest,
 ) -> Result<FullBaseGeneration, ApiError> {
-    let row = sqlx::query("SELECT g.index_generation_id,s.index_segment_id,g.snapshot_watermark,g.parser_contract_digest,g.chunker_contract_digest,g.lexical_contract_digest,g.citation_contract_digest,g.space_id,g.space_revision,g.dimension,s.manifest_digest,s.document_count,s.chunk_count,s.vector_count FROM knowledge_index_pointer_t p JOIN knowledge_index_generation_t g ON g.index_generation_id=p.index_generation_id JOIN knowledge_generation_segment_t m ON m.index_generation_id=g.index_generation_id AND m.ordinal=0 JOIN knowledge_index_segment_t s ON s.index_segment_id=m.index_segment_id AND s.segment_kind='BASE' AND s.state='READY' WHERE p.knowledge_base_id=$1 AND p.environment=$2 AND g.state='PROMOTED'")
+    let row = sqlx::query("SELECT g.index_generation_id,s.index_segment_id,g.snapshot_watermark,g.parser_contract_digest,g.chunker_contract_digest,g.lexical_contract_digest,g.citation_contract_digest,g.space_id,g.space_revision,g.dimension,COALESCE(g.ordered_segment_manifest_digest,s.manifest_digest) AS manifest_digest FROM knowledge_index_pointer_t p JOIN knowledge_index_generation_t g ON g.index_generation_id=p.index_generation_id JOIN knowledge_generation_segment_t m ON m.index_generation_id=g.index_generation_id AND m.ordinal=0 JOIN knowledge_index_segment_t s ON s.index_segment_id=m.index_segment_id AND s.segment_kind='BASE' AND s.state='READY' WHERE p.knowledge_base_id=$1 AND p.environment=$2 AND g.state='PROMOTED'")
         .bind(knowledge_base_id).bind(environment)
         .fetch_optional(&mut **transaction).await.map_err(ApiError::database)?
         .ok_or_else(|| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "KNOWLEDGE_ACTIVE_GENERATION_UNAVAILABLE"))?;
@@ -1014,18 +1608,48 @@ async fn load_generation(
         ));
     }
     let rows = sqlx::query(
-        "WITH lexical_ranked AS (
+        "WITH generation_segments AS (
+           SELECT gs.index_segment_id,gs.ordinal
+             FROM knowledge_generation_segment_t gs
+             JOIN knowledge_index_segment_t s
+               ON s.index_segment_id=gs.index_segment_id AND s.state='READY'
+            WHERE gs.index_generation_id=$1
+         ), eligible_chunks AS (
+           SELECT member.index_segment_id,member.chunk_id,gs.ordinal
+             FROM generation_segments gs
+             JOIN knowledge_segment_chunk_t member
+               ON member.index_segment_id=gs.index_segment_id
+             JOIN knowledge_chunk_t chunk ON chunk.chunk_id=member.chunk_id
+             JOIN knowledge_document_version_t document_version
+               ON document_version.document_version_id=chunk.document_version_id
+             JOIN knowledge_document_t document
+               ON document.document_id=document_version.document_id
+            WHERE NOT EXISTS (
+              SELECT 1
+                FROM generation_segments later
+                JOIN knowledge_segment_operation_t operation
+                  ON operation.index_segment_id=later.index_segment_id
+               WHERE later.ordinal>gs.ordinal
+                 AND operation.document_id=chunk.document_id
+                 AND (operation.operation_kind IN (
+                       'SUPERSEDE_DOCUMENT','TOMBSTONE_DOCUMENT')
+                      OR (operation.operation_kind='TOMBSTONE_CHUNK'
+                          AND operation.chunk_id=member.chunk_id))
+            )
+              AND knowledge_document_acl_authorized(
+                document.document_id,$7,$10,$8::text[],$9::text[]
+              )
+         ), lexical_ranked AS (
            SELECT c.chunk_id,
                   row_number() OVER (ORDER BY
                     ts_rank_cd(c.lexical_input,
                       plainto_tsquery('english',$2)) DESC,c.chunk_id) AS lexical_rank
-             FROM knowledge_segment_chunk_t member
+             FROM eligible_chunks member
              JOIN knowledge_chunk_t c ON c.chunk_id=member.chunk_id
              JOIN knowledge_document_version_t dv
                ON dv.document_version_id=c.document_version_id
              JOIN knowledge_document_t d ON d.document_id=dv.document_id
-            WHERE member.index_segment_id=$1
-              AND c.lexical_input @@ plainto_tsquery('english',$2)
+            WHERE c.lexical_input @@ plainto_tsquery('english',$2)
               AND (cardinality($6::uuid[])=0 OR d.source_id=ANY($6::uuid[]))
             ORDER BY lexical_rank
             LIMIT $4
@@ -1033,13 +1657,15 @@ async fn load_generation(
            SELECT v.chunk_id,
                   row_number() OVER (ORDER BY
                     v.projection <=> $3::vector,v.chunk_id) AS vector_rank
-             FROM knowledge_segment_vector_t v
+             FROM eligible_chunks member
+             JOIN knowledge_segment_vector_t v
+               ON v.index_segment_id=member.index_segment_id
+              AND v.chunk_id=member.chunk_id
              JOIN knowledge_chunk_t c ON c.chunk_id=v.chunk_id
              JOIN knowledge_document_version_t dv
                ON dv.document_version_id=c.document_version_id
              JOIN knowledge_document_t d ON d.document_id=dv.document_id
-            WHERE v.index_segment_id=$1
-              AND (cardinality($6::uuid[])=0 OR d.source_id=ANY($6::uuid[]))
+            WHERE (cardinality($6::uuid[])=0 OR d.source_id=ANY($6::uuid[]))
             ORDER BY vector_rank
             LIMIT $5
          ), candidates AS (
@@ -1059,8 +1685,7 @@ async fn load_generation(
                 c.content_digest,v.projection::text AS projection,
                 candidate.lexical_rank,candidate.vector_rank
            FROM candidates candidate
-           JOIN knowledge_segment_chunk_t member
-             ON member.index_segment_id=$1 AND member.chunk_id=candidate.chunk_id
+           JOIN eligible_chunks member ON member.chunk_id=candidate.chunk_id
            JOIN knowledge_chunk_t c ON c.chunk_id=member.chunk_id
            JOIN knowledge_document_version_t dv
              ON dv.document_version_id=c.document_version_id
@@ -1070,12 +1695,16 @@ async fn load_generation(
             AND v.chunk_id=member.chunk_id
           ORDER BY c.chunk_id",
     )
-    .bind(segment_id)
+    .bind(generation_id)
     .bind(&request.query)
     .bind(query_vector)
     .bind(lexical_candidates.max(1))
     .bind(vector_candidates.max(1))
     .bind(source_ids)
+    .bind(&principal.subject_id)
+    .bind(&principal.groups)
+    .bind(&principal.organizations)
+    .bind(&principal.subject_type)
     .fetch_all(&mut **transaction)
     .await
     .map_err(ApiError::database)?;
@@ -1155,21 +1784,13 @@ async fn load_generation(
                     .map_err(ApiError::database)?,
             )
             .unwrap_or(0),
-            document_count: usize::try_from(
-                row.try_get::<i64, _>("document_count")
-                    .map_err(ApiError::database)?,
-            )
-            .unwrap_or(0),
-            chunk_count: usize::try_from(
-                row.try_get::<i64, _>("chunk_count")
-                    .map_err(ApiError::database)?,
-            )
-            .unwrap_or(0),
-            vector_count: usize::try_from(
-                row.try_get::<i64, _>("vector_count")
-                    .map_err(ApiError::database)?,
-            )
-            .unwrap_or(0),
+            document_count: chunks
+                .iter()
+                .map(|chunk| chunk.document_id)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            chunk_count: chunks.len(),
+            vector_count: chunks.len(),
             parser_digest: row
                 .try_get::<String, _>("parser_contract_digest")
                 .map_err(ApiError::database)?
@@ -1198,7 +1819,11 @@ async fn load_generation(
                 .map_err(ApiError::database)?
                 .trim()
                 .to_string(),
-            segment_kind: "BASE".into(),
+            segment_kind: if state.config.features.delta_segments {
+                "BASE+DELTA".into()
+            } else {
+                "BASE".into()
+            },
         },
         chunks,
     })
@@ -1235,6 +1860,90 @@ struct DocumentVersionResponse {
     chunks: Vec<Value>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PassageAnchorResponse {
+    passage_anchor_id: Uuid,
+    document_version_id: Uuid,
+    chunk_id: Uuid,
+    continuity_state: String,
+}
+
+async fn passage_anchor_handler(
+    State(state): State<Arc<KnowledgeState>>,
+    Path((document_id, passage_anchor_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+) -> Result<Json<PassageAnchorResponse>, ApiError> {
+    let authenticated = authenticated_context(&headers, &state).await?;
+    let knowledge_base_id = required_uuid_header(&headers, "x-knowledge-base-id")?;
+    let mut transaction = state.pool.begin().await.map_err(ApiError::database)?;
+    load_authorization(
+        &mut transaction,
+        knowledge_base_id,
+        authenticated.host_id,
+        authenticated.agent_def_id,
+        &authenticated.environment,
+        &state.heartbeat_secret,
+    )
+    .await?
+    .validate_fresh_active(Utc::now())?;
+    enforce_normalized_claims_for_knowledge_base(
+        &mut transaction,
+        knowledge_base_id,
+        &authenticated,
+    )
+    .await?;
+    let rows = sqlx::query(
+        "SELECT anchor.document_version_id,anchor.chunk_id,anchor.continuity_state,
+                anchor.anchor_sequence
+           FROM knowledge_passage_anchor_t anchor
+           JOIN knowledge_document_t document
+             ON document.document_id=anchor.document_id
+            AND document.knowledge_base_id=anchor.knowledge_base_id
+          WHERE anchor.knowledge_base_id=$1 AND anchor.document_id=$2
+            AND anchor.passage_anchor_id=$3
+            AND anchor.document_version_id=document.current_document_version_id
+            AND knowledge_document_acl_authorized(
+                  document.document_id,$4,$5,$6::text[],$7::text[]
+                )
+          ORDER BY anchor.anchor_sequence DESC LIMIT 2",
+    )
+    .bind(knowledge_base_id)
+    .bind(document_id)
+    .bind(passage_anchor_id)
+    .bind(&authenticated.subject_id)
+    .bind(&authenticated.subject_type)
+    .bind(&authenticated.groups)
+    .bind(&authenticated.organizations)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(ApiError::database)?;
+    let row = rows
+        .first()
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "KNOWLEDGE_NOT_FOUND"))?;
+    let continuity_state: String = row.get("continuity_state");
+    if continuity_state == "AMBIGUOUS"
+        || rows.get(1).is_some_and(|other| {
+            other.get::<i64, _>("anchor_sequence") == row.get::<i64, _>("anchor_sequence")
+        })
+    {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "KNOWLEDGE_STATE_CONFLICT",
+        ));
+    }
+    if continuity_state == "RETIRED" {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "KNOWLEDGE_NOT_FOUND"));
+    }
+    transaction.commit().await.map_err(ApiError::database)?;
+    Ok(Json(PassageAnchorResponse {
+        passage_anchor_id,
+        document_version_id: row.get("document_version_id"),
+        chunk_id: row.get("chunk_id"),
+        continuity_state,
+    }))
+}
+
 async fn document_version_handler(
     State(state): State<Arc<KnowledgeState>>,
     Path((document_id, document_version_id)): Path<(Uuid, Uuid)>,
@@ -1242,6 +1951,25 @@ async fn document_version_handler(
 ) -> Result<Json<DocumentVersionResponse>, ApiError> {
     let authenticated = authenticated_context(&headers, &state).await?;
     let knowledge_base_id = required_uuid_header(&headers, "x-knowledge-base-id")?;
+    Ok(Json(
+        load_document_version(
+            &state,
+            &authenticated,
+            knowledge_base_id,
+            document_id,
+            document_version_id,
+        )
+        .await?,
+    ))
+}
+
+async fn load_document_version(
+    state: &KnowledgeState,
+    authenticated: &AuthenticatedKnowledgeRequest,
+    knowledge_base_id: Uuid,
+    document_id: Uuid,
+    document_version_id: Uuid,
+) -> Result<DocumentVersionResponse, ApiError> {
     let environment = authenticated.environment.clone();
     let mut transaction = state.pool.begin().await.map_err(ApiError::database)?;
     let authorization = load_authorization(
@@ -1254,8 +1982,16 @@ async fn document_version_handler(
     )
     .await?;
     authorization.validate_fresh_active(Utc::now())?;
-    let chunks = sqlx::query("SELECT c.chunk_id,c.ordinal,c.section_path,c.start_offset,c.end_offset,c.chunk_text,c.content_digest FROM knowledge_chunk_t c JOIN knowledge_document_version_t v ON v.document_version_id=c.document_version_id WHERE c.knowledge_base_id=$1 AND v.document_id=$2 AND c.document_version_id=$3 ORDER BY c.ordinal")
+    enforce_normalized_claims_for_knowledge_base(
+        &mut transaction,
+        knowledge_base_id,
+        authenticated,
+    )
+    .await?;
+    let chunks: Vec<Value> = sqlx::query("SELECT c.chunk_id,c.ordinal,c.section_path,c.start_offset,c.end_offset,c.chunk_text,c.content_digest FROM knowledge_chunk_t c JOIN knowledge_document_version_t v ON v.document_version_id=c.document_version_id WHERE c.knowledge_base_id=$1 AND v.document_id=$2 AND c.document_version_id=$3 AND knowledge_document_acl_authorized(v.document_id,$4,$5,$6::text[],$7::text[]) ORDER BY c.ordinal")
         .bind(knowledge_base_id).bind(document_id).bind(document_version_id)
+        .bind(&authenticated.subject_id).bind(&authenticated.subject_type)
+        .bind(&authenticated.groups).bind(&authenticated.organizations)
         .fetch_all(&mut *transaction).await.map_err(ApiError::database)?
         .into_iter().map(|row| json!({
             "chunkId": row.get::<Uuid, _>("chunk_id"),
@@ -1263,14 +1999,44 @@ async fn document_version_handler(
             "sectionPath": row.get::<Value, _>("section_path"),
             "startOffset": row.get::<i64, _>("start_offset"),
             "endOffset": row.get::<i64, _>("end_offset"),
-            "text": row.get::<String, _>("chunk_text"),
-            "contentDigest": row.get::<String, _>("content_digest").trim()
-        })).collect();
+        "text": row.get::<String, _>("chunk_text"),
+        "contentDigest": row.get::<String, _>("content_digest").trim()
+    })).collect();
+    if chunks.is_empty() {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "KNOWLEDGE_NOT_FOUND"));
+    }
     transaction.commit().await.map_err(ApiError::database)?;
-    Ok(Json(DocumentVersionResponse {
+    Ok(DocumentVersionResponse {
         document_version_id,
         chunks,
-    }))
+    })
+}
+
+async fn enforce_normalized_claims_for_knowledge_base(
+    transaction: &mut Transaction<'_, Postgres>,
+    knowledge_base_id: Uuid,
+    authenticated: &AuthenticatedKnowledgeRequest,
+) -> Result<(), ApiError> {
+    if authenticated.normalized_claims_present {
+        return Ok(());
+    }
+    let requires_normalized_claims = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(
+           SELECT 1 FROM knowledge_source_t
+            WHERE knowledge_base_id=$1 AND acl_mode='MIRROR_SOURCE_ACL'
+         )",
+    )
+    .bind(knowledge_base_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(ApiError::database)?;
+    if requires_normalized_claims {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "KNOWLEDGE_DELEGATION_BINDING_INVALID",
+        ));
+    }
+    Ok(())
 }
 
 fn required_uuid_header(headers: &HeaderMap, name: &'static str) -> Result<Uuid, ApiError> {
@@ -1349,8 +2115,63 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    fn test_authenticated_request(
+        normalized_claims_present: bool,
+    ) -> AuthenticatedKnowledgeRequest {
+        AuthenticatedKnowledgeRequest {
+            host_id: Uuid::from_u128(1),
+            agent_def_id: Uuid::from_u128(2),
+            environment: "dev".into(),
+            policy_digest: "policy".into(),
+            data_boundary_digest: "boundary".into(),
+            subject_id: if normalized_claims_present {
+                "user-1".into()
+            } else {
+                String::new()
+            },
+            subject_type: if normalized_claims_present {
+                "USER".into()
+            } else {
+                String::new()
+            },
+            groups: Vec::new(),
+            organizations: Vec::new(),
+            normalized_claims_present,
+        }
+    }
+
+    fn test_selection(requires_normalized_claims: bool) -> SelectedKnowledgeBase {
+        SelectedKnowledgeBase {
+            knowledge_base_id: Uuid::from_u128(3),
+            priority: 0,
+            maximum_knowledge_bases: 1,
+            top_k: 5,
+            token_budget: 1024,
+            failure_policy: "FAIL_CLOSED".into(),
+            embedding_group_key: "test".into(),
+            requires_normalized_claims,
+        }
+    }
+
     #[test]
-    fn config_rejects_later_phase_features() {
+    fn legacy_delegation_cannot_select_mirrored_acl_knowledge_base() {
+        let legacy = test_authenticated_request(false);
+        assert!(enforce_normalized_claims_for_selection(&legacy, &[test_selection(false)]).is_ok());
+        let error =
+            enforce_normalized_claims_for_selection(&legacy, &[test_selection(true)]).unwrap_err();
+        assert_eq!(error.status, StatusCode::FORBIDDEN);
+        assert_eq!(error.code, "KNOWLEDGE_DELEGATION_BINDING_INVALID");
+        assert!(
+            enforce_normalized_claims_for_selection(
+                &test_authenticated_request(true),
+                &[test_selection(true)]
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn config_accepts_phase1b_features_but_rejects_invalid_dependencies_and_graph() {
         let directory = tempfile::tempdir().unwrap();
         let database = directory.path().join("database-url");
         let delegation = directory.path().join("delegation-secret");
@@ -1387,20 +2208,51 @@ mod tests {
                 context_expansion: false,
                 multi_knowledge_base: false,
                 graph_assisted: false,
+                enterprise_source_acls: false,
             },
         };
         assert!(config.validate().is_ok());
+        let valid_request = RetrieveRequest {
+            knowledge_base_ids: vec![Uuid::from_u128(1)],
+            environment: String::new(),
+            query: "configuration".into(),
+            top_k: 20,
+            token_budget: 0,
+            filters: None,
+        };
+        assert!(validate_retrieve_request(&config, &valid_request).is_ok());
+        let mut invalid_request = valid_request.clone();
+        invalid_request.query = " ".into();
+        assert!(validate_retrieve_request(&config, &invalid_request).is_err());
+        invalid_request = valid_request.clone();
+        invalid_request.top_k = 21;
+        assert!(validate_retrieve_request(&config, &invalid_request).is_err());
+        invalid_request = valid_request.clone();
+        invalid_request.knowledge_base_ids = (1..=5).map(Uuid::from_u128).collect();
+        assert!(validate_retrieve_request(&config, &invalid_request).is_err());
+        invalid_request.knowledge_base_ids = vec![Uuid::from_u128(1); 5];
+        assert!(validate_retrieve_request(&config, &invalid_request).is_ok());
+        invalid_request = valid_request.clone();
+        invalid_request.query = "x".repeat(513);
+        assert!(validate_retrieve_request(&config, &invalid_request).is_err());
         config.legacy_delegation_acceptance_deadline =
             Some(Utc::now() + chrono::Duration::minutes(11));
         assert!(config.validate().is_err());
         config.legacy_delegation_acceptance_deadline = None;
         config.features.delta_segments = true;
+        config.features.multi_knowledge_base = true;
+        assert!(config.validate().is_ok());
+        config.features.delta_segments = false;
+        config.features.uploads = true;
         assert!(
             config
                 .validate()
                 .unwrap_err()
-                .contains("unsupported features")
+                .contains("require delta segments")
         );
+        config.features.uploads = false;
+        config.features.graph_assisted = true;
+        assert!(config.validate().unwrap_err().contains("Phase 4"));
     }
 
     #[test]
@@ -1466,6 +2318,7 @@ mod tests {
                 context_expansion: false,
                 multi_knowledge_base: false,
                 graph_assisted: false,
+                enterprise_source_acls: false,
             },
         };
         let secret = b"01234567890123456789012345678901";

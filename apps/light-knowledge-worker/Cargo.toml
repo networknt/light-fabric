@@ -6,8 +6,10 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+chrono.workspace = true
 hmac = "0.12"
 knowledge-core = { path = "../../crates/knowledge-core" }
+knowledge-connectors = { path = "../../crates/knowledge-connectors" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
