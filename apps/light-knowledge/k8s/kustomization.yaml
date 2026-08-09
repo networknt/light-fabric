@@ -1,0 +1,14 @@
+resources:
+  - deployment.yaml
+  - service.yaml
+  - object-store-pvc.yaml
+configMapGenerator:
+  - name: light-knowledge-config
+    files:
+      - ../config/client.yml
+      - ../config/knowledge.yml
+      - ../config/portal-registry.yml
+      - ../config/security.yml
+      - ../config/server.yml
+      - ../config/startup.yml
+      - ../config/values.yml

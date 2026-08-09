@@ -1,0 +1,12 @@
+ip: ${server.ip:0.0.0.0}
+advertisedAddress: ${server.advertisedAddress:127.0.0.1}
+httpPort: ${server.httpPort:8092}
+enableHttp: ${server.enableHttp:true}
+httpsPort: ${server.httpsPort:8492}
+enableHttps: ${server.enableHttps:false}
+serviceId: ${server.serviceId:com.networknt.light-knowledge-1.0.0}
+enableRegistry: ${server.enableRegistry:false}
+startOnRegistryFailure: ${server.startOnRegistryFailure:false}
+dynamicPort: ${server.dynamicPort:false}
+environment: ${server.environment:dev}
+shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:5000}

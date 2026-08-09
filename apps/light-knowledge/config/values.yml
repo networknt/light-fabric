@@ -1,0 +1,3 @@
+server.enableRegistry: true
+server.httpPort: 8092
+security.enableVerifyJwt: true

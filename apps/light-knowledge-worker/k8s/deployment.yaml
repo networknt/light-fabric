@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: light-knowledge-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: light-knowledge-worker
+  template:
+    metadata:
+      labels:
+        app: light-knowledge-worker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: lightapi/light-knowledge-worker:phase1a
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          args: ["project-loop"]
+          env:
+            - name: LIGHT_KNOWLEDGE_WORKER_CONFIG_FILE
+              value: /config/worker.yml
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: secrets
+              mountPath: /run/secrets
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: config
+          configMap:
+            name: light-knowledge-worker-config
+        - name: secrets
+          secret:
+            secretName: light-knowledge-secrets

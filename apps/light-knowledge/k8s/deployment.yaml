@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: light-knowledge
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: light-knowledge
+  template:
+    metadata:
+      labels:
+        app: light-knowledge
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: light-knowledge
+          image: lightapi/light-knowledge:phase1a
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 8092
+          env:
+            - name: LIGHT_KNOWLEDGE_CONFIG_FILE
+              value: /etc/light-knowledge/knowledge.yml
+            - name: LIGHT_KNOWLEDGE_LOG_ANSI
+              value: "false"
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8092
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8092
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: config
+              mountPath: /etc/light-knowledge
+              readOnly: true
+            - name: secrets
+              mountPath: /run/secrets
+              readOnly: true
+            - name: objects
+              mountPath: /var/lib/light-knowledge/objects
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+      volumes:
+        - name: config
+          configMap:
+            name: light-knowledge-config
+        - name: secrets
+          secret:
+            secretName: light-knowledge-secrets
+        - name: objects
+          persistentVolumeClaim:
+            claimName: light-knowledge-objects

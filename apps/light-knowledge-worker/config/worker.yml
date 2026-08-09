@@ -1,0 +1,29 @@
+version: 1
+workerDatabaseUrlFile: /run/secrets/knowledge-worker-database-url
+projectorDatabaseUrlFile: /run/secrets/knowledge-projector-database-url
+heartbeatSecretFile: /run/secrets/knowledge-heartbeat-secret
+portalCommandUrl: https://light-portal-command:8443/portal/command
+portalAuthorizationFile: /run/secrets/knowledge-portal-authorization
+checkoutRoot: /var/lib/light-knowledge/checkouts
+approvedRepositoryUri: https://github.com/networknt/light-portal-doc.git
+immutableCommit: 0000000000000000000000000000000000000000
+maximumCheckoutSeconds: 120
+objectStoreRoot: /var/lib/light-knowledge/objects
+projectorId: light-knowledge-worker-dev
+knowledgeBaseId: 00000000-0000-7000-8000-000000000101
+sourceId: 00000000-0000-7000-8000-000000000102
+environment: dev
+embeddingProfileId: 00000000-0000-7000-8000-000000000103
+embeddingProfileRevision: 1
+deterministicPilot: true
+embeddingAlias: kb-index
+embeddingBatchSize: 32
+embeddingSpaceId: light-knowledge-fake-v1
+embeddingSpaceRevision: 1
+embeddingDimension: 32
+snapshotWatermark: 1
+limits:
+  maximumDocuments: 10000
+  maximumSourceBytes: 268435456
+  maximumChunks: 100000
+  maximumEmbeddingTokens: 20000000

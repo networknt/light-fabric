@@ -1,0 +1,25 @@
+version: 1
+databaseUrlFile: /run/secrets/knowledge-database-url
+delegationSecretFile: /run/secrets/agent-delegation-secret
+heartbeatSecretFile: /run/secrets/knowledge-heartbeat-secret
+delegationIssuer: light-agent
+objectStoreRoot: /var/lib/light-knowledge/objects
+maximumRequestBytes: 1048576
+maximumQueryBytes: 8192
+requestTimeoutMs: 1000
+maximumDatabaseConnections: 20
+projectionLeaseSeconds: 30
+deterministicPilot: true
+embeddingAlias: kb-query
+embeddingSpaceId: light-knowledge-fake-v1
+embeddingSpaceRevision: 1
+embeddingDimension: 32
+queryCacheMaximumEntries: 2048
+queryCacheMaximumBytes: 67108864
+queryCacheTtlSeconds: 300
+features:
+  deltaSegments: false
+  uploads: false
+  contextExpansion: false
+  multiKnowledgeBase: false
+  graphAssisted: false

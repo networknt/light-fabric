@@ -1,0 +1,8 @@
+host: dev.lightapi.net
+serviceId: ${server.serviceId:com.networknt.light-knowledge-1.0.0}
+envTag: ${server.environment:dev}
+acceptHeader: application/yaml
+timeout: 3000
+connectTimeout: 3000
+configServerUri: https://local.lightapi.net
+authorization: ${light_portal_authorization:}

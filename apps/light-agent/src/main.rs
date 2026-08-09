@@ -12,6 +12,8 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use hindsight_client::{HindsightMemory, PgHindsightClient};
+use knowledge_client::{KnowledgeClient, render_untrusted_evidence};
+use knowledge_core::RetrieveRequest;
 use light_axum::{AxumApp, AxumTransport, ServerContext};
 use light_runtime::{
     LightRuntimeBuilder, MaskSpec, ModuleKind, RuntimeConfig, RuntimeError, TracingOptions,
@@ -163,6 +165,9 @@ struct AuthenticatedRequest {
     owner: SessionOwner,
     caller_claims: serde_json::Value,
     caller_subject: String,
+    subject_type: String,
+    groups: Vec<String>,
+    organizations: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -545,6 +550,29 @@ struct EffectiveAgentCatalog {
     skills: Vec<CatalogSkill>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentKnowledgeBinding {
+    agent_id: Uuid,
+    knowledge_base_id: Uuid,
+    #[serde(default)]
+    evidence_required: bool,
+    #[serde(default)]
+    active: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct AgentKnowledgeBindingsResponse {
+    agent_knowledge_base_bindings: Vec<AgentKnowledgeBinding>,
+}
+
+#[derive(Clone)]
+struct CachedAgentKnowledgeBinding {
+    binding: Option<AgentKnowledgeBinding>,
+    expires_at: Instant,
+}
+
 impl Default for EffectiveAgentCatalog {
     fn default() -> Self {
         Self {
@@ -866,6 +894,52 @@ impl PortalQueryClient {
         }
         serde_json::from_value(value).context("Failed to parse effective agent catalog")
     }
+
+    async fn get_agent_knowledge_binding(
+        &self,
+        host_id: Uuid,
+        agent_def_id: Uuid,
+        environment: &str,
+    ) -> Result<Option<AgentKnowledgeBinding>> {
+        let request = serde_json::json!({
+            "host": "lightapi.net",
+            "service": "genai",
+            "action": "getAgentKnowledgeBaseBindings",
+            "version": "0.1.0",
+            "data": {
+                "hostId": host_id,
+                "agentId": agent_def_id,
+                "environment": environment
+            }
+        });
+        let response = self
+            .client
+            .post(&self.url)
+            .bearer_auth(&self.token)
+            .json(&request)
+            .send()
+            .await
+            .context("HTTP request for Agent Knowledge Base bindings failed")?;
+        if !response.status().is_success() {
+            bail!(
+                "Agent Knowledge Base binding query returned {}",
+                response.status()
+            );
+        }
+        let response: AgentKnowledgeBindingsResponse = response
+            .json()
+            .await
+            .context("Agent Knowledge Base binding response was invalid")?;
+        let mut bindings = response
+            .agent_knowledge_base_bindings
+            .into_iter()
+            .filter(|binding| binding.active && binding.agent_id == agent_def_id)
+            .collect::<Vec<_>>();
+        if bindings.len() > 1 {
+            bail!("Phase 1a permits at most one active Knowledge Base binding per Agent")
+        }
+        Ok(bindings.pop())
+    }
 }
 
 #[async_trait]
@@ -1096,6 +1170,8 @@ struct AgentState {
     catalog_semantic_limit: usize,
     coding_profile: Option<CodingProfileConfig>,
     personal_profile_digest: Option<String>,
+    knowledge_client: Option<KnowledgeClient>,
+    knowledge_binding_cache: Arc<RwLock<HashMap<(Uuid, String), CachedAgentKnowledgeBinding>>>,
 }
 
 #[derive(Clone)]
@@ -1616,15 +1692,52 @@ async fn authenticate_request(
         &state.service_id,
         state.agent_def_id,
     )?;
+    let caller_subject = principal
+        .user_id
+        .clone()
+        .or_else(|| principal.client_id.clone())
+        .unwrap_or_default();
+    let subject_type = if principal.user_id.is_some() {
+        "USER"
+    } else {
+        "WORKLOAD"
+    };
+    let groups = normalized_claim_values(&principal.claims, &["groups", "group"]);
+    let organizations = normalized_claim_values(
+        &principal.claims,
+        &["organizations", "organization", "orgs"],
+    );
     Ok(AuthenticatedRequest {
         authorization: format!("Bearer {token}"),
         owner,
         caller_claims: principal.claims,
-        caller_subject: principal
-            .user_id
-            .or(principal.client_id)
-            .unwrap_or_default(),
+        caller_subject,
+        subject_type: subject_type.into(),
+        groups,
+        organizations,
     })
+}
+
+fn normalized_claim_values(claims: &serde_json::Value, names: &[&str]) -> Vec<String> {
+    let Some(value) = names.iter().find_map(|name| claims.get(*name)) else {
+        return Vec::new();
+    };
+    let mut values = match value {
+        serde_json::Value::Array(values) => values
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        serde_json::Value::String(value) => value
+            .split(|character: char| character.is_whitespace() || character == ',')
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    };
+    values.sort_unstable();
+    values.dedup();
+    values
 }
 
 async fn ws_handler(
@@ -3360,7 +3473,7 @@ async fn handle_socket(
                         let _ = sender.send(Message::Text(payload.into())).await;
                     }
                 }
-                Ok(Ok((response, usage))) => {
+                Ok(Ok((response, usage, knowledge_evidence))) => {
                     if let Some(text) = response.text {
                         if let Err(err) = state
                             .domain
@@ -3375,6 +3488,7 @@ async fn handle_socket(
                                 usage.complete.then(|| {
                                     i64::try_from(usage.output_tokens).unwrap_or(i64::MAX)
                                 }),
+                                knowledge_evidence.as_ref(),
                             )
                             .await
                         {
@@ -3892,14 +4006,65 @@ fn gateway_authorization(
         audience: "light-gateway".into(),
         caller_subject: authenticated.caller_subject.clone(),
         caller_claims: authenticated.caller_claims.clone(),
+        subject_id: authenticated.caller_subject.clone(),
+        subject_type: authenticated.subject_type.clone(),
+        groups: Some(authenticated.groups.clone()),
+        organizations: Some(authenticated.organizations.clone()),
         agent_actor: state.service_id.clone(),
+        agent_def_id: Some(authenticated.owner.agent_def_id),
+        agent_policy_version: state.definition_version,
         host_id: state.host_id,
+        environment: state.env_tag.clone(),
         session_id,
         turn_id,
         action_attempt_id: action.map(|value| value.0),
         tool_ref: action.map(|value| value.1),
         tool_alias: tool_alias.map(str::to_string),
         destination: Some("mcp".into()),
+        data_boundary_digest: data_boundary_digest.to_string(),
+        policy_digest: policy_digest.to_string(),
+        replay_id: Uuid::now_v7(),
+        issued_at: now,
+        expires_at: now + 60,
+    })?;
+    Ok(format!("Bearer {token}"))
+}
+
+fn knowledge_authorization(
+    state: &AgentState,
+    authenticated: &AuthenticatedRequest,
+    session_id: Uuid,
+    turn_id: Uuid,
+    policy_digest: &str,
+    data_boundary_digest: &str,
+) -> Result<String> {
+    let signer = state
+        .delegation_signer
+        .as_ref()
+        .context("Knowledge retrieval requires the delegated workload signer")?;
+    let now = chrono::Utc::now().timestamp();
+    let token = signer.mint(DelegationClaims {
+        token_id: Uuid::now_v7(),
+        kind: DelegationKind::KnowledgeRetrieve,
+        issuer: String::new(),
+        audience: "light-knowledge".into(),
+        caller_subject: authenticated.caller_subject.clone(),
+        caller_claims: authenticated.caller_claims.clone(),
+        subject_id: authenticated.caller_subject.clone(),
+        subject_type: authenticated.subject_type.clone(),
+        groups: Some(authenticated.groups.clone()),
+        organizations: Some(authenticated.organizations.clone()),
+        agent_actor: state.service_id.clone(),
+        agent_def_id: Some(authenticated.owner.agent_def_id),
+        agent_policy_version: state.definition_version,
+        host_id: state.host_id,
+        environment: state.env_tag.clone(),
+        session_id,
+        turn_id,
+        action_attempt_id: None,
+        tool_ref: None,
+        tool_alias: None,
+        destination: Some("knowledge".into()),
         data_boundary_digest: data_boundary_digest.to_string(),
         policy_digest: policy_digest.to_string(),
         replay_id: Uuid::now_v7(),
@@ -3927,7 +4092,11 @@ async fn run_agent_loop(
     bank_id: Uuid,
     turn_resolution: &TurnRuntimeResolution,
     turn_runtime: &ModelProviderSelection,
-) -> Result<(ChatResponse, TrustedProviderUsage)> {
+) -> Result<(
+    ChatResponse,
+    TrustedProviderUsage,
+    Option<serde_json::Value>,
+)> {
     let user_prompt = messages
         .last()
         .map(|m| m.content.clone())
@@ -3953,6 +4122,109 @@ async fn run_agent_loop(
         // Inject as a system hint or prefix to the user message
         if let Some(msg) = messages.last_mut() {
             msg.content = format!("{}\n\n{}", context_msg, msg.content);
+        }
+    }
+
+    // Knowledge evidence remains separate from Hindsight. Portal selects the
+    // one Phase 1a binding, and light-knowledge independently authorizes the
+    // short-lived Agent delegation against its projection.
+    let mut knowledge_evidence = None;
+    if let Some(client) = state.knowledge_client.as_ref() {
+        let environment = state
+            .env_tag
+            .as_deref()
+            .context("Knowledge retrieval requires LIGHT_ENV_TAG")?;
+        let portal = state
+            .portal_query_client
+            .as_ref()
+            .context("Knowledge retrieval requires the Portal binding query")?;
+        let cache_key = (turn_resolution.agent_def_id, environment.to_string());
+        let binding = match portal
+            .get_agent_knowledge_binding(
+                turn_resolution.host_id,
+                turn_resolution.agent_def_id,
+                environment,
+            )
+            .await
+        {
+            Ok(binding) => {
+                state.knowledge_binding_cache.write().await.insert(
+                    cache_key.clone(),
+                    CachedAgentKnowledgeBinding {
+                        binding: binding.clone(),
+                        expires_at: Instant::now() + Duration::from_secs(30),
+                    },
+                );
+                binding
+            }
+            Err(error) => {
+                if error.to_string().contains("at most one active") {
+                    return Err(error);
+                }
+                let cached = state
+                    .knowledge_binding_cache
+                    .read()
+                    .await
+                    .get(&cache_key)
+                    .filter(|cached| cached.expires_at > Instant::now())
+                    .cloned()
+                    .context(
+                        "Knowledge binding lookup failed and no fresh evidence policy is cached",
+                    )?;
+                warn!(%error,
+                    "Knowledge binding lookup unavailable; applying fresh cached evidence policy");
+                cached.binding
+            }
+        };
+        if let Some(binding) = binding {
+            let delegated = knowledge_authorization(
+                state,
+                authenticated,
+                Uuid::parse_str(session_id)?,
+                turn_id,
+                policy_digest,
+                data_boundary_digest,
+            )?;
+            let request_id = Uuid::now_v7().to_string();
+            let request = RetrieveRequest {
+                knowledge_base_ids: vec![binding.knowledge_base_id],
+                environment: environment.to_string(),
+                query: user_prompt.clone(),
+                top_k: 5,
+                token_budget: 2_000,
+                filters: None,
+            };
+            match client.retrieve(&request_id, &delegated, &request).await {
+                Ok(response) => {
+                    let rendered =
+                        render_untrusted_evidence(&response, state.limits.max_tool_output_bytes);
+                    if !response.no_answer {
+                        if let Some(message) = messages.last_mut() {
+                            message.content = format!("{rendered}\n\n{}", message.content);
+                        }
+                    }
+                    knowledge_evidence = Some(serde_json::json!({
+                        "requestId": request_id,
+                        "knowledgeBaseId": response.knowledge_base_id,
+                        "generationId": response.generation_id,
+                        "noAnswer": response.no_answer,
+                        "citations": response.results.iter().map(|hit| serde_json::json!({
+                            "chunkId": hit.chunk_id,
+                            "documentId": hit.citation.document_id,
+                            "documentVersionId": hit.citation.document_version_id,
+                            "contentDigest": hit.citation.content_digest,
+                            "canonicalUri": hit.citation.canonical_uri,
+                            "sourceVersion": hit.citation.source_version
+                        })).collect::<Vec<_>>()
+                    }));
+                }
+                Err(error) if binding.evidence_required => {
+                    bail!("required Knowledge Base evidence failed: {error}")
+                }
+                Err(error) => {
+                    warn!(%error, "optional Knowledge Base evidence unavailable; continuing by policy");
+                }
+            }
         }
     }
 
@@ -4215,7 +4487,7 @@ async fn run_agent_loop(
             .map_err(|e| warn!("Failed to retain memory: {}", e));
     }
 
-    Ok((response, trusted_usage))
+    Ok((response, trusted_usage, knowledge_evidence))
 }
 
 async fn build_agent_state(
@@ -4411,6 +4683,20 @@ async fn build_agent_state(
             "LIGHT_AGENT_PERSONAL_PROFILE_DIGEST must be canonical SHA-256".into(),
         ));
     }
+    let knowledge_client = std::env::var("LIGHT_AGENT_KNOWLEDGE_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|endpoint| {
+            KnowledgeClient::new(
+                &endpoint,
+                Duration::from_millis(1_000),
+                bool_from_env("LIGHT_AGENT_KNOWLEDGE_ALLOW_PRIVATE_PLAINTEXT", false),
+            )
+        })
+        .transpose()
+        .map_err(|error| {
+            RuntimeError::Config(format!("failed to build Knowledge client: {error}"))
+        })?;
 
     let domain = AgentRepository::new(pool.clone());
     let turn_dispatch = TurnDispatchCoordinator::new(domain.clone());
@@ -4439,6 +4725,8 @@ async fn build_agent_state(
         catalog_semantic_limit,
         coding_profile,
         personal_profile_digest,
+        knowledge_client,
+        knowledge_binding_cache: Arc::new(RwLock::new(HashMap::new())),
     });
     state.domain.spawn_result_reconciler();
 
@@ -4575,8 +4863,9 @@ mod tests {
         ModelProviderConfig, SessionOwner, TurnDispatchCoordinator, agent_ca_cert_path_from_config,
         bind_authenticated_principal, bound_untrusted_text, build_effective_catalog_data,
         choose_model, collect_catalog_tool_names, collect_policy_diagnostics, filter_gateway_tools,
-        is_local_cli_provider, normalize_provider_id, parse_tool_arguments, select_catalog_tools,
-        trim_history, validate_repository_input_uri, validate_session_owner,
+        is_local_cli_provider, normalize_provider_id, normalized_claim_values,
+        parse_tool_arguments, select_catalog_tools, trim_history, validate_repository_input_uri,
+        validate_session_owner,
     };
     use light_agent::domain::AgentRepository;
     use light_runtime::config::{BootstrapConfig, ClientConfig};
@@ -4749,6 +5038,22 @@ mod tests {
         assert_eq!(normalize_provider_id(" gemini cli "), "gemini-cli");
         assert!(is_local_cli_provider("gemini-cli"));
         assert!(!is_local_cli_provider("gemini"));
+    }
+
+    #[test]
+    fn delegated_identity_claims_are_normalized_and_deduplicated() {
+        let claims = serde_json::json!({
+            "groups": ["engineering", "reader", "engineering"],
+            "organizations": "tenant-b,tenant-a tenant-b"
+        });
+        assert_eq!(
+            normalized_claim_values(&claims, &["groups"]),
+            vec!["engineering", "reader"]
+        );
+        assert_eq!(
+            normalized_claim_values(&claims, &["organizations"]),
+            vec!["tenant-a", "tenant-b"]
+        );
     }
 
     #[test]

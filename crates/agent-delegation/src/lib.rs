@@ -15,6 +15,7 @@ pub const MIN_SECRET_BYTES: usize = 32;
 pub enum DelegationKind {
     ToolsList,
     ToolCall,
+    KnowledgeRetrieve,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -26,8 +27,22 @@ pub struct DelegationClaims {
     pub audience: String,
     pub caller_subject: String,
     pub caller_claims: Value,
+    #[serde(default)]
+    pub subject_id: String,
+    #[serde(default)]
+    pub subject_type: String,
+    #[serde(default)]
+    pub groups: Option<Vec<String>>,
+    #[serde(default)]
+    pub organizations: Option<Vec<String>>,
     pub agent_actor: String,
+    #[serde(default)]
+    pub agent_def_id: Option<Uuid>,
+    #[serde(default)]
+    pub agent_policy_version: i64,
     pub host_id: Uuid,
+    #[serde(default)]
+    pub environment: Option<String>,
     pub session_id: Uuid,
     pub turn_id: Uuid,
     pub action_attempt_id: Option<Uuid>,
@@ -74,9 +89,27 @@ impl DelegationClaims {
             {
                 return Err(DelegationError::Binding);
             }
+            DelegationKind::KnowledgeRetrieve
+                if self.action_attempt_id.is_some()
+                    || self.tool_ref.is_some()
+                    || self.tool_alias.is_some()
+                    || self.destination.as_deref() != Some("knowledge")
+                    || self.environment.as_deref().is_none_or(str::is_empty) =>
+            {
+                return Err(DelegationError::Binding);
+            }
             _ => {}
         }
         if self.policy_digest.is_empty() || self.data_boundary_digest.is_empty() {
+            return Err(DelegationError::Binding);
+        }
+        if kind == DelegationKind::KnowledgeRetrieve
+            && (self.subject_id.is_empty()
+                || self.subject_type.is_empty()
+                || self.groups.is_none()
+                || self.organizations.is_none()
+                || self.agent_policy_version <= 0)
+        {
             return Err(DelegationError::Binding);
         }
         Ok(())
@@ -219,8 +252,15 @@ mod tests {
             audience: "light-gateway".into(),
             caller_subject: "user".into(),
             caller_claims: serde_json::json!({"roles":["reader"]}),
+            subject_id: "user".into(),
+            subject_type: "USER".into(),
+            groups: Some(vec!["reader".into()]),
+            organizations: Some(Vec::new()),
             agent_actor: "agent".into(),
+            agent_def_id: Some(Uuid::now_v7()),
+            agent_policy_version: 1,
             host_id: Uuid::now_v7(),
+            environment: Some("dev".into()),
             session_id: Uuid::now_v7(),
             turn_id: Uuid::now_v7(),
             action_attempt_id: (kind == DelegationKind::ToolCall).then(Uuid::now_v7),

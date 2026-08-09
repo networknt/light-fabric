@@ -30,6 +30,8 @@ url = { workspace = true }
 uuid = { workspace = true }
 tower-http = { version = "0.6", features = ["fs"] }
 hindsight-client = { path = "../../crates/hindsight-client" }
+knowledge-client = { path = "../../crates/knowledge-client" }
+knowledge-core = { path = "../../crates/knowledge-core" }
 portal-registry = { path = "../../crates/portal-registry" }
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
 async-trait = "0.1"

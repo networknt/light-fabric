@@ -1824,6 +1824,7 @@ impl AgentRepository {
         response: &str,
         input_tokens: Option<i64>,
         output_tokens: Option<i64>,
+        knowledge_evidence: Option<&Value>,
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
@@ -1861,6 +1862,20 @@ impl AgentRepository {
             }
             _ => QuotaSettlement::ReservationCeiling,
         };
+        if let Some(evidence) = knowledge_evidence {
+            append_event(
+                &mut tx,
+                host_id,
+                session_id.0,
+                Some(turn_id.0),
+                None,
+                "knowledge",
+                "KNOWLEDGE_EVIDENCE",
+                evidence.clone(),
+                &policy,
+            )
+            .await?;
+        }
         append_event(
             &mut tx,
             host_id,
@@ -2326,7 +2341,15 @@ mod tests {
         assert_eq!(runtime.model_provider, "mock");
         assert_eq!(runtime.model_name, "mock");
         repository
-            .complete_turn(host_id, session, first.turn_id, "world", Some(1), Some(0))
+            .complete_turn(
+                host_id,
+                session,
+                first.turn_id,
+                "world",
+                Some(1),
+                Some(0),
+                None,
+            )
             .await
             .unwrap();
         repository

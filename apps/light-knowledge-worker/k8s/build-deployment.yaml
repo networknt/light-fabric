@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: light-knowledge-builder
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: light-knowledge-builder
+  template:
+    metadata:
+      labels:
+        app: light-knowledge-builder
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: builder
+          image: lightapi/light-knowledge-worker:phase1a
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          args: ["build-loop"]
+          env:
+            - name: LIGHT_KNOWLEDGE_WORKER_CONFIG_FILE
+              value: /config/worker.yml
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: secrets
+              mountPath: /run/secrets
+              readOnly: true
+            - name: checkouts
+              mountPath: /var/lib/light-knowledge/checkouts
+            - name: objects
+              mountPath: /var/lib/light-knowledge/objects
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+      volumes:
+        - name: config
+          configMap:
+            name: light-knowledge-worker-config
+        - name: secrets
+          secret:
+            secretName: light-knowledge-secrets
+        - name: checkouts
+          emptyDir:
+            sizeLimit: 4Gi
+        - name: objects
+          persistentVolumeClaim:
+            claimName: light-knowledge-objects
