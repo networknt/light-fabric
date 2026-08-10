@@ -2474,6 +2474,23 @@ async fn embeddings_expected_space_is_checked_before_admission_and_echoed_on_suc
     assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
     assert_eq!(runtime.embedding_memory_metrics().current_slots, 0);
 
+    let mut over_budget = embedding_http_request(br#"{"model":"embedding-default","input":"x"}"#);
+    over_budget.headers.insert(
+        "x-light-expected-embedding-space-id".to_string(),
+        "test-space-2".to_string(),
+    );
+    over_budget.headers.insert(
+        "x-light-expected-embedding-space-revision".to_string(),
+        "1".to_string(),
+    );
+    over_budget.headers.insert(
+        "x-light-maximum-billed-cost-micros".to_string(),
+        "0".to_string(),
+    );
+    let over_budget = http.handle(over_budget).await;
+    assert_ne!(over_budget.status, 200);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+
     let mut partial = embedding_http_request(br#"{"model":"embedding-default","input":"x"}"#);
     partial.headers.insert(
         "x-light-expected-embedding-space-id".to_string(),
@@ -2514,6 +2531,7 @@ async fn embeddings_expected_space_is_checked_before_admission_and_echoed_on_suc
     );
     assert_eq!(matching.headers["x-light-embedding-space-revision"], "1");
     assert_eq!(matching.headers["x-light-config-generation"], "7");
+    assert_eq!(matching.headers["x-light-billed-cost-micros"], "1");
     assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         provider.received_dimensions.lock().unwrap().as_slice(),

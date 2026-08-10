@@ -16,11 +16,14 @@ environment: dev
 embeddingProfileId: 00000000-0000-7000-8000-000000000103
 embeddingProfileRevision: 1
 deterministicPilot: true
+migrationDeterministicPilot: false
 embeddingAlias: kb-index
 embeddingBatchSize: 32
 embeddingSpaceId: light-knowledge-fake-v1
 embeddingSpaceRevision: 1
 embeddingDimension: 32
+embeddingMigrationEnabled: false
+productionOperationsEnabled: false
 snapshotWatermark: 1
 # Phase 2 connector workers use one of the following mutually exclusive inputs.
 # enterpriseConnectorFixtureFile: /config/sharepoint-page-v1.json

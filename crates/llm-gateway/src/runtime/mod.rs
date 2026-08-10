@@ -719,8 +719,26 @@ impl LlmRuntime {
         &self,
         context: LlmRequestContext,
         root: Arc<LlmPublishedSnapshot>,
+        request: EmbeddingRequest,
+        expectation: Option<EmbeddingSpaceExpectation>,
+    ) -> Result<LlmEmbeddingExecution, LlmGatewayError> {
+        self.execute_embedding_with_snapshot_expectation_and_budget(
+            context,
+            root,
+            request,
+            expectation,
+            None,
+        )
+        .await
+    }
+
+    pub async fn execute_embedding_with_snapshot_expectation_and_budget(
+        &self,
+        context: LlmRequestContext,
+        root: Arc<LlmPublishedSnapshot>,
         mut request: EmbeddingRequest,
         expectation: Option<EmbeddingSpaceExpectation>,
+        maximum_billed_cost_micros: Option<u64>,
     ) -> Result<LlmEmbeddingExecution, LlmGatewayError> {
         if context.deadline <= Instant::now() {
             return Err(LlmGatewayError::Provider(
@@ -923,28 +941,29 @@ impl LlmRuntime {
                 return Err(error);
             }
         };
-        let reservation = match UsageReservation::reserve(
-            Arc::clone(&alias.ledger),
-            envelope,
-            alias.max_cost_micros,
-        ) {
-            Ok(reservation) => reservation,
-            Err(error) => {
-                finish_audit(
-                    audit,
-                    AuditFinish {
-                        terminal: "rejected",
-                        attempts: 0,
-                        charged_micros: 0,
-                        usage_complete: true,
-                    },
-                    error.public_status(),
-                    error.public_code(),
-                )
-                .await?;
-                return Err(error);
-            }
+        let request_budget = match (alias.max_cost_micros, maximum_billed_cost_micros) {
+            (Some(alias_budget), Some(request_budget)) => Some(alias_budget.min(request_budget)),
+            (alias_budget, request_budget) => alias_budget.or(request_budget),
         };
+        let reservation =
+            match UsageReservation::reserve(Arc::clone(&alias.ledger), envelope, request_budget) {
+                Ok(reservation) => reservation,
+                Err(error) => {
+                    finish_audit(
+                        audit,
+                        AuditFinish {
+                            terminal: "rejected",
+                            attempts: 0,
+                            charged_micros: 0,
+                            usage_complete: true,
+                        },
+                        error.public_status(),
+                        error.public_code(),
+                    )
+                    .await?;
+                    return Err(error);
+                }
+            };
         let mut attempts = 0;
         let mut last_error = None;
         let mut attempted_envelope = 0_u64;

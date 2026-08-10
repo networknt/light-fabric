@@ -24,3 +24,5 @@ features:
   multiKnowledgeBase: false
   graphAssisted: false
   enterpriseSourceAcls: false
+  embeddingMigration: false
+  productionOperations: false

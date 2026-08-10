@@ -39,6 +39,14 @@ pub enum KnowledgeError {
     QuotaExhausted,
     #[error("KNOWLEDGE_GENERATION_NOT_FULL_BASE")]
     NotFullBase,
+    #[error("KNOWLEDGE_MIGRATION_STATE_CONFLICT")]
+    MigrationStateConflict,
+    #[error("KNOWLEDGE_MIGRATION_COST_CEILING_EXCEEDED")]
+    MigrationCostCeilingExceeded,
+    #[error("KNOWLEDGE_MIGRATION_BACKFILL_INCOMPLETE")]
+    MigrationBackfillIncomplete,
+    #[error("KNOWLEDGE_MIGRATION_FINAL_FENCE_FAILED")]
+    MigrationFinalFenceFailed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1581,6 +1589,94 @@ pub fn compact_resolved_generation(
     Ok(compacted)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddingMigrationState {
+    Preflighted,
+    Backfilling,
+    Paused,
+    CatchingUp,
+    Validating,
+    Ready,
+    Promoted,
+    RolledBack,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddingMigrationLedger {
+    pub state: EmbeddingMigrationState,
+    pub snapshot_watermark: u64,
+    pub final_watermark: Option<u64>,
+    pub estimated_chunks: usize,
+    pub catchup_chunks: usize,
+    pub completed_chunks: usize,
+    pub accepted_cost_ceiling_micros: u64,
+    pub consumed_cost_micros: u64,
+}
+
+impl EmbeddingMigrationLedger {
+    pub fn start_backfill(&mut self) -> Result<(), KnowledgeError> {
+        if !matches!(
+            self.state,
+            EmbeddingMigrationState::Preflighted
+                | EmbeddingMigrationState::Paused
+                | EmbeddingMigrationState::CatchingUp
+        ) {
+            return Err(KnowledgeError::MigrationStateConflict);
+        }
+        self.state = EmbeddingMigrationState::Backfilling;
+        Ok(())
+    }
+
+    pub fn record_batch(&mut self, chunks: usize, cost_micros: u64) -> Result<(), KnowledgeError> {
+        if self.state != EmbeddingMigrationState::Backfilling {
+            return Err(KnowledgeError::MigrationStateConflict);
+        }
+        let next_cost = self.consumed_cost_micros.saturating_add(cost_micros);
+        if next_cost > self.accepted_cost_ceiling_micros {
+            self.state = EmbeddingMigrationState::Paused;
+            return Err(KnowledgeError::MigrationCostCeilingExceeded);
+        }
+        self.consumed_cost_micros = next_cost;
+        self.completed_chunks = self.completed_chunks.saturating_add(chunks);
+        Ok(())
+    }
+
+    pub fn begin_catchup(&mut self, newly_discovered_chunks: usize) -> Result<(), KnowledgeError> {
+        if self.state != EmbeddingMigrationState::Backfilling
+            || self.completed_chunks < self.estimated_chunks
+        {
+            return Err(KnowledgeError::MigrationBackfillIncomplete);
+        }
+        self.catchup_chunks = self.catchup_chunks.saturating_add(newly_discovered_chunks);
+        self.state = if newly_discovered_chunks == 0 {
+            EmbeddingMigrationState::Validating
+        } else {
+            EmbeddingMigrationState::Backfilling
+        };
+        Ok(())
+    }
+
+    pub fn final_fence(
+        &mut self,
+        candidate_watermark: u64,
+        active_watermark: u64,
+    ) -> Result<(), KnowledgeError> {
+        if self.state != EmbeddingMigrationState::Validating {
+            return Err(KnowledgeError::MigrationStateConflict);
+        }
+        if candidate_watermark != active_watermark
+            || self.completed_chunks < self.estimated_chunks + self.catchup_chunks
+        {
+            self.state = EmbeddingMigrationState::CatchingUp;
+            return Err(KnowledgeError::MigrationFinalFenceFailed);
+        }
+        self.final_watermark = Some(active_watermark);
+        self.state = EmbeddingMigrationState::Ready;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2087,5 +2183,70 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn embedding_migration_budget_and_final_fence_fail_closed() {
+        let mut migration = EmbeddingMigrationLedger {
+            state: EmbeddingMigrationState::Preflighted,
+            snapshot_watermark: 10,
+            final_watermark: None,
+            estimated_chunks: 2,
+            catchup_chunks: 0,
+            completed_chunks: 0,
+            accepted_cost_ceiling_micros: 100,
+            consumed_cost_micros: 0,
+        };
+        migration.start_backfill().unwrap();
+        migration.record_batch(2, 80).unwrap();
+        migration.begin_catchup(0).unwrap();
+        assert!(migration.final_fence(10, 11).is_err());
+        assert_eq!(migration.state, EmbeddingMigrationState::CatchingUp);
+
+        migration.start_backfill().unwrap();
+        assert!(migration.record_batch(1, 21).is_err());
+        assert_eq!(migration.state, EmbeddingMigrationState::Paused);
+        assert_eq!(migration.consumed_cost_micros, 80);
+    }
+
+    #[test]
+    fn final_fence_does_not_rewind_an_invalid_state() {
+        let mut migration = EmbeddingMigrationLedger {
+            state: EmbeddingMigrationState::Ready,
+            snapshot_watermark: 10,
+            final_watermark: Some(10),
+            estimated_chunks: 1,
+            catchup_chunks: 0,
+            completed_chunks: 1,
+            accepted_cost_ceiling_micros: 10,
+            consumed_cost_micros: 1,
+        };
+        assert_eq!(
+            migration.final_fence(10, 10),
+            Err(KnowledgeError::MigrationStateConflict)
+        );
+        assert_eq!(migration.state, EmbeddingMigrationState::Ready);
+    }
+
+    #[test]
+    fn embedding_migration_reaches_ready_only_at_one_current_watermark() {
+        let mut migration = EmbeddingMigrationLedger {
+            state: EmbeddingMigrationState::Preflighted,
+            snapshot_watermark: 20,
+            final_watermark: None,
+            estimated_chunks: 2,
+            catchup_chunks: 0,
+            completed_chunks: 0,
+            accepted_cost_ceiling_micros: 100,
+            consumed_cost_micros: 0,
+        };
+        migration.start_backfill().unwrap();
+        migration.record_batch(2, 50).unwrap();
+        migration.begin_catchup(1).unwrap();
+        migration.record_batch(1, 10).unwrap();
+        migration.begin_catchup(0).unwrap();
+        migration.final_fence(24, 24).unwrap();
+        assert_eq!(migration.state, EmbeddingMigrationState::Ready);
+        assert_eq!(migration.final_watermark, Some(24));
     }
 }

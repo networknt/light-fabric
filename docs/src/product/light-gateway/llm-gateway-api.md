@@ -233,6 +233,14 @@ calls return `x-light-embedding-space-id`,
 SDK calls that omit the expectation do not receive the configuration generation.
 The gateway pins or injects the contract dimension on required-space aliases.
 
+Budgeted embedding clients may also send
+`x-light-maximum-billed-cost-micros`. The gateway combines that request ceiling
+with the alias ceiling and rejects the request before provider dispatch when
+its conservative multi-attempt reservation envelope cannot fit. Every
+successful embedding response returns `x-light-billed-cost-micros` from the
+gateway's reconciled pricing ledger; callers must not infer billed cost from
+token counts or provider-specific response fields.
+
 `Idempotency-Key` is currently accepted only as forward-compatible request
 metadata; the gateway does not deduplicate embedding dispatch or billing by
 that header. Durable ingestion workers must commit vectors with their own

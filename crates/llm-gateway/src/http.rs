@@ -241,6 +241,7 @@ impl LlmBufferedHttp {
             .await
             .map_err(|_| LlmGatewayError::ProviderUnavailable)??;
             let expectation = parse_embedding_space_expectation(&request.headers)?;
+            let maximum_billed_cost_micros = parse_embedding_cost_ceiling(&request.headers)?;
             let raw: Value = serde_json::from_slice(&request.body)
                 .map_err(|_| LlmGatewayError::InvalidRequest("invalid JSON".to_string()))?;
             if json_depth(&raw) > self.max_json_depth {
@@ -277,7 +278,15 @@ impl LlmBufferedHttp {
             let memory_permit = self.runtime.try_acquire_embedding_memory_slot(&root)?;
             drop(ingress_permit.take());
             return self
-                .handle_embeddings(request, raw, root, memory_permit, expectation, selection)
+                .handle_embeddings(
+                    request,
+                    raw,
+                    root,
+                    memory_permit,
+                    expectation,
+                    selection,
+                    maximum_billed_cost_micros,
+                )
                 .await
                 .map(LlmHttpResponse::Buffered);
         }
@@ -487,6 +496,7 @@ impl LlmBufferedHttp {
         memory_permit: EmbeddingMemoryPermit,
         expectation: Option<EmbeddingSpaceExpectation>,
         selection: EmbeddingSpaceSelection,
+        maximum_billed_cost_micros: Option<u64>,
     ) -> Result<BufferedHttpResponse, LlmGatewayError> {
         let object = raw.as_object().ok_or_else(|| {
             LlmGatewayError::InvalidRequest("request must be a JSON object".to_string())
@@ -588,13 +598,13 @@ impl LlmBufferedHttp {
             return Err(LlmGatewayError::PayloadTooLarge);
         }
         let context = LlmRequestContext {
-            request_id: uuid::Uuid::now_v7().to_string(),
+            request_id: request.trusted_request_id.clone(),
             principal_id: request.principal_id.clone(),
             deadline: std::time::Instant::now() + self.timeout,
         };
         let execution = self
             .runtime
-            .execute_embedding_with_snapshot_expectation(
+            .execute_embedding_with_snapshot_expectation_and_budget(
                 context,
                 Arc::clone(&root),
                 EmbeddingRequest {
@@ -603,6 +613,7 @@ impl LlmBufferedHttp {
                     dimensions,
                 },
                 expectation.clone(),
+                maximum_billed_cost_micros,
             )
             .await?;
         let data = execution
@@ -656,6 +667,10 @@ impl LlmBufferedHttp {
                 execution.generation.to_string(),
             );
         }
+        headers.insert(
+            "x-light-billed-cost-micros".to_string(),
+            execution.usage.charged_micros.to_string(),
+        );
         Ok(BufferedHttpResponse {
             status: 200,
             headers,
@@ -733,6 +748,21 @@ fn parse_embedding_space_expectation(
             "expected embedding-space headers must be supplied together".to_string(),
         )),
     }
+}
+
+fn parse_embedding_cost_ceiling(
+    headers: &BTreeMap<String, String>,
+) -> Result<Option<u64>, LlmGatewayError> {
+    headers
+        .get("x-light-maximum-billed-cost-micros")
+        .map(|value| {
+            value.parse::<u64>().map_err(|_| {
+                LlmGatewayError::InvalidRequest(
+                    "maximum billed embedding cost header is malformed".to_string(),
+                )
+            })
+        })
+        .transpose()
 }
 
 fn client_codec_error(error: InferenceError) -> LlmGatewayError {

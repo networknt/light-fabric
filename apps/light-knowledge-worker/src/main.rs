@@ -49,6 +49,8 @@ struct WorkerConfig {
     #[serde(default = "default_true")]
     deterministic_pilot: bool,
     #[serde(default)]
+    migration_deterministic_pilot: bool,
+    #[serde(default)]
     embedding_gateway_url: Option<String>,
     #[serde(default)]
     embedding_authorization_file: Option<PathBuf>,
@@ -72,6 +74,10 @@ struct WorkerConfig {
     enterprise_connector_page_url: Option<String>,
     #[serde(default)]
     enterprise_connector_authorization_file: Option<PathBuf>,
+    #[serde(default)]
+    embedding_migration_enabled: bool,
+    #[serde(default)]
+    production_operations_enabled: bool,
 }
 
 impl WorkerConfig {
@@ -103,6 +109,7 @@ impl WorkerConfig {
             || config.embedding_space_id.trim().is_empty()
             || config.embedding_alias.trim().is_empty()
             || (config.deterministic_pilot && config.embedding_gateway_url.is_some())
+            || (config.migration_deterministic_pilot && !config.deterministic_pilot)
             || (!config.deterministic_pilot
                 && (config
                     .embedding_gateway_url
@@ -140,6 +147,7 @@ impl WorkerConfig {
 fn default_true() -> bool {
     true
 }
+
 fn default_embedding_alias() -> String {
     "kb-index".into()
 }
@@ -236,6 +244,18 @@ const BULK_JOB_TYPES: &[&str] = &[
     "CONNECTOR_SYNC",
     "PURGE",
     "RETRIEVAL_TEST",
+    "MIGRATION_PREFLIGHT",
+    "MIGRATION_BACKFILL",
+    "MIGRATION_CATCHUP",
+    "MIGRATION_VALIDATE",
+    "MIGRATION_PAUSE",
+    "MIGRATION_CANCEL",
+    "MIGRATION_PROMOTE",
+    "MIGRATION_ROLLBACK",
+    "MIGRATION_RETIRE",
+    "BACKUP_CHECKPOINT",
+    "RESTORE_VERIFY",
+    "SEGMENT_PURGE",
 ];
 
 fn projected_job_type(event_type: &str, enterprise_source: bool) -> Option<&'static str> {
@@ -250,6 +270,14 @@ fn projected_job_type(event_type: &str, enterprise_source: bool) -> Option<&'sta
         "KnowledgeBaseIndexGenerationPromotionRequestedEvent" => "PROMOTE",
         "KnowledgeBaseRetrievalTestRequestedEvent" => "RETRIEVAL_TEST",
         "KnowledgeBasePurgeRequestedEvent" => "PURGE",
+        "KnowledgeBaseEmbeddingMigrationRequestedEvent" => "MIGRATION_PREFLIGHT",
+        "KnowledgeBaseEmbeddingMigrationPausedEvent" => "MIGRATION_PAUSE",
+        "KnowledgeBaseEmbeddingMigrationResumedEvent" => "MIGRATION_BACKFILL",
+        "KnowledgeBaseEmbeddingMigrationCancelledEvent" => "MIGRATION_CANCEL",
+        "KnowledgeBaseIndexGenerationRollbackRequestedEvent" => "MIGRATION_ROLLBACK",
+        "KnowledgeBaseIndexGenerationRetirementRequestedEvent" => "MIGRATION_RETIRE",
+        "KnowledgeBaseBackupCheckpointRequestedEvent" => "BACKUP_CHECKPOINT",
+        "KnowledgeBasePhysicalRestoreVerificationRequestedEvent" => "RESTORE_VERIFY",
         _ => return None,
     })
 }
@@ -274,7 +302,15 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
                FROM knowledge_job_t
               WHERE state='QUEUED' AND {lane_predicate}
                 AND (next_attempt_ts IS NULL OR next_attempt_ts<=now())
-              ORDER BY created_ts FOR UPDATE SKIP LOCKED LIMIT 1"
+              ORDER BY CASE
+                WHEN job_type IN ('SYNC','DELTA_SYNC','CONNECTOR_SYNC','ACL_RECONCILE',
+                                  'MIGRATION_PREFLIGHT') THEN 0
+                WHEN job_type IN ('MIGRATION_PAUSE','MIGRATION_CANCEL') THEN 1
+                WHEN job_type IN ('MIGRATION_CATCHUP','MIGRATION_VALIDATE',
+                                  'MIGRATION_PROMOTE','MIGRATION_ROLLBACK') THEN 2
+                WHEN job_type='MIGRATION_BACKFILL' THEN 3
+                ELSE 4 END,
+                created_ts FOR UPDATE SKIP LOCKED LIMIT 1"
         ))
         .fetch_optional(&mut *tx)
         .await?;
@@ -285,6 +321,7 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
                 tokio::time::sleep(Duration::from_secs(1)).await;
             } else {
                 publish_promotion_acknowledgements(pool, config).await?;
+                schedule_production_maintenance(pool, config).await?;
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
             continue;
@@ -352,6 +389,30 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
             compact_generation(pool, config).await
         } else if job_type == "ANTI_ENTROPY" {
             run_anti_entropy(pool, config, &payload).await
+        } else if job_type == "MIGRATION_PREFLIGHT" {
+            migration_preflight(pool, config, &payload).await
+        } else if job_type == "MIGRATION_BACKFILL" {
+            migration_backfill(pool, config, &payload).await
+        } else if job_type == "MIGRATION_CATCHUP" {
+            migration_catchup(pool, config, &payload).await
+        } else if job_type == "MIGRATION_VALIDATE" {
+            migration_validate(pool, config, &payload).await
+        } else if job_type == "MIGRATION_PAUSE" {
+            migration_pause(pool, config, &payload).await
+        } else if job_type == "MIGRATION_CANCEL" {
+            migration_cancel(pool, config, &payload).await
+        } else if job_type == "MIGRATION_PROMOTE" {
+            migration_promote(pool, config, &payload).await
+        } else if job_type == "MIGRATION_ROLLBACK" {
+            migration_rollback(pool, config, &payload).await
+        } else if job_type == "MIGRATION_RETIRE" {
+            migration_retire(pool, config, &payload).await
+        } else if job_type == "BACKUP_CHECKPOINT" {
+            create_backup_checkpoint(pool, config, &payload).await
+        } else if job_type == "RESTORE_VERIFY" {
+            verify_restore_checkpoint(pool, config, &payload).await
+        } else if job_type == "SEGMENT_PURGE" {
+            purge_retired_generation(pool, config, &payload).await
         } else if matches!(job_type.as_str(), "PURGE" | "RETRIEVAL_TEST") {
             Err(anyhow::anyhow!(
                 "KNOWLEDGE_JOB_TYPE_NOT_IMPLEMENTED:{job_type}"
@@ -367,6 +428,15 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
             }
             Err(error) => {
                 tracing::error!(job_id=%job_id, %error, "bounded Knowledge build failed");
+                if matches!(
+                    job_type.as_str(),
+                    "MIGRATION_PREFLIGHT"
+                        | "MIGRATION_BACKFILL"
+                        | "MIGRATION_CATCHUP"
+                        | "MIGRATION_VALIDATE"
+                ) {
+                    record_migration_job_failure(pool, &payload, &error).await?;
+                }
                 sqlx::query("UPDATE knowledge_job_t SET state='FAILED',result=jsonb_build_object('code',$2),lease_expires_ts=NULL,update_ts=now() WHERE job_id=$1")
                     .bind(job_id)
                     .bind(worker_error_code(&error))
@@ -374,6 +444,54 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
             }
         }
     }
+}
+
+async fn record_migration_job_failure(
+    pool: &PgPool,
+    payload: &serde_json::Value,
+    error: &anyhow::Error,
+) -> Result<()> {
+    let Some(migration_id) = payload
+        .get("migrationId")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+    else {
+        return Ok(());
+    };
+    let code = migration_failure_code(error);
+    if code == "KNOWLEDGE_MIGRATION_EXTERNAL_EVALUATION_REQUIRED" {
+        return Ok(());
+    }
+    sqlx::query(
+        "UPDATE knowledge_embedding_migration_t
+            SET state='PAUSED',pause_reason='WORKER_FAILURE',failure_code=$2,
+                version=version+1,update_ts=now()
+          WHERE migration_id=$1 AND state IN (
+            'PREFLIGHTED','BACKFILLING','CATCHING_UP','VALIDATING')",
+    )
+    .bind(migration_id)
+    .bind(code)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+fn migration_failure_code(error: &anyhow::Error) -> String {
+    error
+        .chain()
+        .flat_map(|cause| {
+            cause
+                .to_string()
+                .split(|character: char| {
+                    !(character.is_ascii_uppercase()
+                        || character.is_ascii_digit()
+                        || character == '_')
+                })
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .find(|token| token.starts_with("KNOWLEDGE_") && token.len() <= 96)
+        .unwrap_or_else(|| "KNOWLEDGE_MIGRATION_DEPENDENCY_FAILURE".to_string())
 }
 
 fn worker_error_code(error: &anyhow::Error) -> &'static str {
@@ -385,6 +503,2159 @@ fn worker_error_code(error: &anyhow::Error) -> &'static str {
     } else {
         "KNOWLEDGE_BUILD_FAILED"
     }
+}
+
+async fn enqueue_migration_job(
+    pool: &PgPool,
+    config: &WorkerConfig,
+    migration_id: Uuid,
+    job_type: &str,
+    progress_identity: &str,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO knowledge_job_t(
+           job_id,knowledge_base_id,job_type,idempotency_key,requested_by,payload)
+         VALUES($1,$2,$3,$4,'light-knowledge-migration',$5)
+         ON CONFLICT(knowledge_base_id,idempotency_key) DO NOTHING",
+    )
+    .bind(Uuid::now_v7())
+    .bind(config.knowledge_base_id)
+    .bind(job_type)
+    .bind(format!(
+        "migration:{migration_id}:{job_type}:{progress_identity}"
+    ))
+    .bind(json!({"migrationId": migration_id}))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn migration_preflight(
+    pool: &PgPool,
+    config: &WorkerConfig,
+    payload: &serde_json::Value,
+) -> Result<()> {
+    if !config.embedding_migration_enabled {
+        bail!("KNOWLEDGE_EMBEDDING_MIGRATION_DISABLED");
+    }
+    let migration_id = uuid_value(payload, "migrationId")?;
+    let candidate_generation_id = uuid_value(payload, "candidateGenerationId")?;
+    let target_profile_id = uuid_value(payload, "targetEmbeddingProfileId")?;
+    let target_profile_revision = payload
+        .get("targetEmbeddingProfileRevision")
+        .and_then(serde_json::Value::as_i64)
+        .context("migration request requires targetEmbeddingProfileRevision")?;
+    let expected_active_generation_id = uuid_value(payload, "expectedActiveGenerationId")?;
+    let accepted_cost_ceiling = payload
+        .get("acceptedCostCeilingMicros")
+        .and_then(serde_json::Value::as_i64)
+        .context("migration request requires acceptedCostCeilingMicros")?;
+    let estimate_version = payload
+        .get("estimateVersion")
+        .and_then(serde_json::Value::as_i64)
+        .context("migration request requires estimateVersion")?;
+    if estimate_version != 1 {
+        bail!("KNOWLEDGE_MIGRATION_ESTIMATE_VERSION_UNSUPPORTED");
+    }
+    let rollback_window_seconds = payload
+        .get("rollbackWindowSeconds")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(86_400);
+    if !(300..=2_592_000).contains(&rollback_window_seconds) {
+        bail!("KNOWLEDGE_MIGRATION_ROLLBACK_WINDOW_INVALID");
+    }
+    let requested_by = payload
+        .get("requestedBy")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("portal-operator");
+    let mut tx = pool.begin().await?;
+    let active = sqlx::query(
+        "SELECT pointer.index_generation_id,generation.final_watermark,
+                generation.space_id,generation.space_revision,generation.dimension
+           FROM knowledge_index_pointer_t pointer
+           JOIN knowledge_index_generation_t generation
+             ON generation.index_generation_id=pointer.index_generation_id
+          WHERE pointer.knowledge_base_id=$1 AND pointer.environment=$2
+          FOR UPDATE OF pointer",
+    )
+    .bind(config.knowledge_base_id)
+    .bind(&config.environment)
+    .fetch_one(&mut *tx)
+    .await?;
+    if active.get::<Uuid, _>("index_generation_id") != expected_active_generation_id {
+        bail!("KNOWLEDGE_MIGRATION_ACTIVE_GENERATION_CONFLICT");
+    }
+    let target = sqlx::query(
+        "SELECT expected_space_id,expected_space_revision,dimension,
+                document_input_transform_version,query_input_transform_version,
+                alias_name
+           FROM knowledge_embedding_profile_runtime_v
+          WHERE profile_id=$1 AND profile_revision=$2",
+    )
+    .bind(target_profile_id)
+    .bind(target_profile_revision)
+    .fetch_one(&mut *tx)
+    .await?;
+    let target_space_id: String = target.get("expected_space_id");
+    let target_space_revision: i64 = target.get("expected_space_revision");
+    let target_dimension: i32 = target.get("dimension");
+    if target_space_id == active.get::<String, _>("space_id")
+        && target_space_revision == active.get::<i64, _>("space_revision")
+        && target_dimension == active.get::<i32, _>("dimension")
+    {
+        bail!("KNOWLEDGE_MIGRATION_TARGET_SPACE_UNCHANGED");
+    }
+    if config.migration_deterministic_pilot
+        && usize::try_from(target_dimension).ok() != Some(knowledge_core::FAKE_DIMENSION)
+    {
+        bail!("KNOWLEDGE_MIGRATION_PILOT_DIMENSION_UNSUPPORTED");
+    }
+    let estimate = sqlx::query(
+        "SELECT count(*)::bigint AS chunk_count,
+                COALESCE(sum(chunk.token_count),0)::bigint AS token_count,
+                COALESCE(sum(length(chunk.chunk_text)),0)::bigint AS source_bytes
+           FROM knowledge_resolved_generation_chunk($2) resolved
+           JOIN knowledge_chunk_t chunk ON chunk.chunk_id=resolved.chunk_id",
+    )
+    .bind(config.knowledge_base_id)
+    .bind(expected_active_generation_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let chunk_count: i64 = estimate.get("chunk_count");
+    let token_count: i64 = estimate.get("token_count");
+    let source_bytes: i64 = estimate.get("source_bytes");
+    let policy = sqlx::query(
+        "SELECT maximum_migration_cost_micros,
+                migration_cost_per_token_micros::float8 AS cost_per_token
+           FROM knowledge_operational_policy_t WHERE knowledge_base_id=$1",
+    )
+    .bind(config.knowledge_base_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (policy_ceiling, cost_per_token) = policy
+        .map(|row| {
+            (
+                row.get::<i64, _>("maximum_migration_cost_micros"),
+                row.get::<f64, _>("cost_per_token"),
+            )
+        })
+        .unwrap_or((100_000_000, 1.0));
+    let estimated_cost = ((token_count as f64) * cost_per_token).ceil() as i64;
+    if accepted_cost_ceiling < estimated_cost || accepted_cost_ceiling > policy_ceiling {
+        bail!("KNOWLEDGE_MIGRATION_COST_APPROVAL_INVALID");
+    }
+    let watermark = active.get::<Option<i64>, _>("final_watermark").unwrap_or(0);
+    sqlx::query(
+        "INSERT INTO knowledge_embedding_migration_t(
+           migration_id,knowledge_base_id,environment,source_generation_id,
+           candidate_generation_id,target_profile_id,target_profile_revision,
+           target_space_id,target_space_revision,target_dimension,estimate_version,
+           estimated_chunk_count,estimated_token_count,estimated_cost_micros,
+           estimated_duration_seconds,estimated_temporary_bytes,
+           accepted_cost_ceiling_micros,rollback_window_seconds,
+           start_watermark,snapshot_watermark,
+           predecessor_reconciled_watermark,state,requested_by)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
+                GREATEST(1,ceil($12::numeric/32)::bigint),$15,$16,$17,$18,$18,$18,
+                'PREFLIGHTED',$19)
+         ON CONFLICT(migration_id) DO NOTHING",
+    )
+    .bind(migration_id)
+    .bind(config.knowledge_base_id)
+    .bind(&config.environment)
+    .bind(expected_active_generation_id)
+    .bind(candidate_generation_id)
+    .bind(target_profile_id)
+    .bind(target_profile_revision)
+    .bind(&target_space_id)
+    .bind(target_space_revision)
+    .bind(target_dimension)
+    .bind(estimate_version)
+    .bind(chunk_count)
+    .bind(token_count)
+    .bind(estimated_cost)
+    .bind(source_bytes.saturating_add(chunk_count.saturating_mul(i64::from(target_dimension) * 4)))
+    .bind(accepted_cost_ceiling)
+    .bind(rollback_window_seconds)
+    .bind(watermark)
+    .bind(requested_by)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    enqueue_migration_job(pool, config, migration_id, "MIGRATION_BACKFILL", "initial").await
+}
+
+async fn migration_pause(
+    pool: &PgPool,
+    config: &WorkerConfig,
+    payload: &serde_json::Value,
+) -> Result<()> {
+    let affected = sqlx::query(
+        "UPDATE knowledge_embedding_migration_t
+            SET state='PAUSED',pause_reason=COALESCE($3,'OPERATOR_REQUEST'),
+                version=version+1,update_ts=now()
+          WHERE migration_id=$1 AND knowledge_base_id=$2
+            AND state IN ('PREFLIGHTED','BACKFILLING','CATCHING_UP','VALIDATING')
+            AND version=$4",
+    )
+    .bind(uuid_value(payload, "migrationId")?)
+    .bind(config.knowledge_base_id)
+    .bind(payload.get("reason").and_then(serde_json::Value::as_str))
+    .bind(
+        payload
+            .get("expectedMigrationVersion")
+            .and_then(serde_json::Value::as_i64)
+            .context("pause requires expectedMigrationVersion")?,
+    )
+    .execute(pool)
+    .await?;
+    if affected.rows_affected() != 1 {
+        bail!("KNOWLEDGE_MIGRATION_VERSION_OR_STATE_CONFLICT");
+    }
+    Ok(())
+}
+
+async fn migration_cancel(
+    pool: &PgPool,
+    config: &WorkerConfig,
+    payload: &serde_json::Value,
+) -> Result<()> {
+    let affected = sqlx::query(
+        "UPDATE knowledge_embedding_migration_t
+            SET state='CANCELLED',version=version+1,finished_ts=now(),update_ts=now()
+          WHERE migration_id=$1 AND knowledge_base_id=$2
+            AND state IN ('REQUESTED','PREFLIGHTED','BACKFILLING','PAUSED',
+                          'CATCHING_UP','VALIDATING','READY')
+            AND version=$3",
+    )
+    .bind(uuid_value(payload, "migrationId")?)
+    .bind(config.knowledge_base_id)
+    .bind(
+        payload
+            .get("expectedMigrationVersion")
+            .and_then(serde_json::Value::as_i64)
+            .context("cancel requires expectedMigrationVersion")?,
+    )
+    .execute(pool)
+    .await?;
+    if affected.rows_affected() != 1 {
+        bail!("KNOWLEDGE_MIGRATION_VERSION_OR_STATE_CONFLICT");
+    }
+    Ok(())
+}
+
+async fn initialize_migration_candidate(
+    pool: &PgPool,
+    config: &WorkerConfig,
+    migration_id: Uuid,
+) -> Result<Uuid> {
+    let mut tx = pool.begin().await?;
+    let migration = sqlx::query(
+        "SELECT migration.*,profile.document_input_transform_version,
+                profile.query_input_transform_version,
+                source.parser_contract_digest,source.chunker_contract_digest,
+                source.metadata_contract_digest,source.citation_contract_digest,
+                source.acl_normalization_contract_digest,source.lexical_contract_digest,
+                source.contract_set_digest
+           FROM knowledge_embedding_migration_t migration
+           JOIN knowledge_embedding_profile_t profile
+             ON profile.profile_id=migration.target_profile_id
+            AND profile.profile_revision=migration.target_profile_revision
+           JOIN knowledge_index_generation_t source
+             ON source.index_generation_id=migration.source_generation_id
+          WHERE migration.migration_id=$1 AND migration.knowledge_base_id=$2
+          FOR UPDATE OF migration",
+    )
+    .bind(migration_id)
+    .bind(config.knowledge_base_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let state: String = migration.get("state");
+    if matches!(state.as_str(), "CANCELLED" | "FAILED" | "RETIRED") {
+        tx.rollback().await?;
+        bail!("KNOWLEDGE_MIGRATION_TERMINAL");
+    }
+    if state == "PAUSED" {
+        tx.rollback().await?;
+        return Ok(migration.get("candidate_generation_id"));
+    }
+    let candidate_generation_id: Uuid = migration.get("candidate_generation_id");
+    let segment_id = derived_uuid("migration-base", candidate_generation_id);
+    let manifest_digest = sha256_hex(
+        format!(
+            "migration:{migration_id}:{candidate_generation_id}:{}:{}",
+            migration.get::<String, _>("target_space_id"),
+            migration.get::<i64, _>("target_space_revision")
+        )
+        .as_bytes(),
+    );
+    let embedding_contract_digest = sha256_hex(
+        format!(
+            "embedding:{}:{}:{}:{}",
+            migration.get::<String, _>("target_space_id"),
+            migration.get::<i64, _>("target_space_revision"),
+            migration.get::<i32, _>("target_dimension"),
+            migration.get::<String, _>("document_input_transform_version")
+        )
+        .as_bytes(),
+    );
+    let contract_set_digest = sha256_hex(
+        format!(
+            "{}:{embedding_contract_digest}",
+            migration.get::<String, _>("contract_set_digest")
+        )
+        .as_bytes(),
+    );
+    sqlx::query(
+        "INSERT INTO knowledge_index_generation_t(
+           index_generation_id,knowledge_base_id,embedding_profile_id,
+           embedding_profile_revision,space_id,space_revision,dimension,
+           parser_contract_digest,chunker_contract_digest,metadata_contract_digest,
+           citation_contract_digest,acl_normalization_contract_digest,
+           lexical_contract_digest,contract_set_digest,query_input_transform_version,
+           snapshot_watermark,ordered_segment_manifest_digest,state,evidence)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+                'BUILDING',jsonb_build_object('migrationId',$18,'canonicalChunksReused',true))
+         ON CONFLICT(index_generation_id) DO NOTHING",
+    )
+    .bind(candidate_generation_id)
+    .bind(config.knowledge_base_id)
+    .bind(migration.get::<Uuid, _>("target_profile_id"))
+    .bind(migration.get::<i64, _>("target_profile_revision"))
+    .bind(migration.get::<String, _>("target_space_id"))
+    .bind(migration.get::<i64, _>("target_space_revision"))
+    .bind(migration.get::<i32, _>("target_dimension"))
+    .bind(migration.get::<String, _>("parser_contract_digest"))
+    .bind(migration.get::<String, _>("chunker_contract_digest"))
+    .bind(migration.get::<String, _>("metadata_contract_digest"))
+    .bind(migration.get::<String, _>("citation_contract_digest"))
+    .bind(migration.get::<String, _>("acl_normalization_contract_digest"))
+    .bind(migration.get::<String, _>("lexical_contract_digest"))
+    .bind(contract_set_digest)
+    .bind(migration.get::<String, _>("query_input_transform_version"))
+    .bind(migration.get::<i64, _>("snapshot_watermark"))
+    .bind(&manifest_digest)
+    .bind(migration_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO knowledge_index_segment_t(
+           index_segment_id,knowledge_base_id,index_generation_id,segment_kind,state,
+           snapshot_watermark,parser_contract_digest,chunker_contract_digest,
+           lexical_contract_digest,embedding_contract_digest,acl_contract_digest,
+           physical_locator,manifest_digest,document_count,chunk_count,vector_count,acl_count)
+         SELECT $1,$2,$3,'BASE','BUILDING',$4,$5,$6,$7,$8,$9,$10,$11,
+                count(DISTINCT resolved.document_id),count(resolved.chunk_id),0,
+                count(DISTINCT resolved.document_id)
+           FROM knowledge_resolved_generation_chunk(
+             (SELECT source_generation_id FROM knowledge_embedding_migration_t
+               WHERE migration_id=$12)) resolved
+         ON CONFLICT(index_segment_id) DO NOTHING",
+    )
+    .bind(segment_id)
+    .bind(config.knowledge_base_id)
+    .bind(candidate_generation_id)
+    .bind(migration.get::<i64, _>("snapshot_watermark"))
+    .bind(migration.get::<String, _>("parser_contract_digest"))
+    .bind(migration.get::<String, _>("chunker_contract_digest"))
+    .bind(migration.get::<String, _>("lexical_contract_digest"))
+    .bind(embedding_contract_digest)
+    .bind(migration.get::<String, _>("acl_normalization_contract_digest"))
+    .bind(format!(
+        "object://light-knowledge/migrations/{migration_id}/manifest.json"
+    ))
+    .bind(&manifest_digest)
+    .bind(migration_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO knowledge_generation_segment_t(
+           index_generation_id,ordinal,index_segment_id)
+         VALUES($1,0,$2) ON CONFLICT DO NOTHING",
+    )
+    .bind(candidate_generation_id)
+    .bind(segment_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO knowledge_embedding_migration_chunk_t(
+           migration_id,chunk_id,knowledge_base_id,transformed_input_digest,token_count)
+         SELECT $1,chunk.chunk_id,$2,
+                encode(digest(chunk.chunk_text || ':' || $3,'sha256'),'hex'),
+                chunk.token_count
+           FROM knowledge_resolved_generation_chunk(
+             (SELECT source_generation_id FROM knowledge_embedding_migration_t
+               WHERE migration_id=$1)) resolved
+           JOIN knowledge_chunk_t chunk ON chunk.chunk_id=resolved.chunk_id
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(migration_id)
+    .bind(config.knowledge_base_id)
+    .bind(migration.get::<String, _>("document_input_transform_version"))
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO knowledge_segment_document_t(
+           index_segment_id,document_id,knowledge_base_id,document_version_id,acl_revision_id)
+         SELECT DISTINCT ON(resolved.document_id) $1,resolved.document_id,$2,
+                resolved.document_version_id,resolved.acl_revision_id
+           FROM knowledge_resolved_generation_chunk(
+             (SELECT source_generation_id FROM knowledge_embedding_migration_t
+               WHERE migration_id=$3)) resolved
+         ON CONFLICT(index_segment_id,document_id) DO UPDATE SET
+           document_version_id=EXCLUDED.document_version_id,
+           acl_revision_id=EXCLUDED.acl_revision_id",
+    )
+    .bind(segment_id)
+    .bind(config.knowledge_base_id)
+    .bind(migration_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO knowledge_segment_chunk_t(
+           index_segment_id,chunk_id,knowledge_base_id,acl_revision_id)
+         SELECT $1,resolved.chunk_id,$2,resolved.acl_revision_id
+           FROM knowledge_resolved_generation_chunk(
+             (SELECT source_generation_id FROM knowledge_embedding_migration_t
+               WHERE migration_id=$3)) resolved
+         ON CONFLICT(index_segment_id,chunk_id) DO UPDATE SET
+           acl_revision_id=EXCLUDED.acl_revision_id",
+    )
+    .bind(segment_id)
+    .bind(config.knowledge_base_id)
+    .bind(migration_id)
+    .execute(&mut *tx)
+    .await?;
+    if state != "BACKFILLING" {
+        sqlx::query(
+            "UPDATE knowledge_embedding_migration_t
+                SET state='BACKFILLING',version=version+1,pause_reason=NULL,update_ts=now()
+              WHERE migration_id=$1",
+        )
+        .bind(migration_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(segment_id)
+}
+
+struct MigrationEmbeddingTarget {
+    alias: String,
+    space_id: String,
+    space_revision: i64,
+    dimension: i32,
+}
+
+struct MigrationEmbeddingBatch {
+    vectors: Vec<Vec<f32>>,
+    billed_cost_micros: i64,
+}
+
+fn allocate_exact(total: i64, weights: &[i64]) -> Vec<i64> {
+    if weights.is_empty() {
+        return Vec::new();
+    }
+    let weight_total = weights.iter().copied().sum::<i64>().max(1);
+    let mut prefix = 0i64;
+    let mut allocated = 0i64;
+    weights
+        .iter()
+        .map(|weight| {
+            prefix = prefix.saturating_add((*weight).max(0));
+            let next = i64::try_from(
+                i128::from(total).saturating_mul(i128::from(prefix)) / i128::from(weight_total),
+            )
+            .unwrap_or(total);
+            let value = next.saturating_sub(allocated);
+            allocated = next;
+            value
+        })
+        .collect()
+}
+
+async fn embed_migration_texts(
+    config: &WorkerConfig,
+    migration_id: Uuid,
+    target: &MigrationEmbeddingTarget,
+    texts: &[String],
+    cost_ceilings: &[i64],
+    maximum_billed_cost_micros: i64,
+) -> Result<MigrationEmbeddingBatch> {
+    if texts.len() != cost_ceilings.len()
+        || cost_ceilings.iter().any(|cost| *cost < 0)
+        || cost_ceilings.iter().copied().sum::<i64>() != maximum_billed_cost_micros
+    {
+        bail!("KNOWLEDGE_MIGRATION_COST_RESERVATION_INVALID");
+    }
+    if config.migration_deterministic_pilot {
+        let vectors = texts
+            .iter()
+            .map(|text| knowledge_core::fake_embedding(text))
+            .collect::<Vec<_>>();
+        if vectors
+            .iter()
+            .any(|vector| vector.len() != usize::try_from(target.dimension).unwrap_or_default())
+        {
+            bail!("KNOWLEDGE_MIGRATION_EMBEDDING_DIMENSION_MISMATCH");
+        }
+        return Ok(MigrationEmbeddingBatch {
+            vectors,
+            billed_cost_micros: maximum_billed_cost_micros,
+        });
+    }
+    let endpoint = config
+        .embedding_gateway_url
+        .as_deref()
+        .context("migration embedding requires embeddingGatewayUrl")?;
+    let token = fs::read_to_string(
+        config
+            .embedding_authorization_file
+            .as_ref()
+            .context("migration embedding requires embeddingAuthorizationFile")?,
+    )?;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30))
+        .build()?;
+    let mut pending = vec![(0usize, texts.len())];
+    let mut vectors = vec![None; texts.len()];
+    let mut billed_cost_micros = 0i64;
+    while let Some((start, end)) = pending.pop() {
+        let slice_cost_ceiling = cost_ceilings[start..end].iter().copied().sum::<i64>();
+        let input_digest = sha256_hex(texts[start..end].join("\n").as_bytes());
+        let response = client
+            .post(endpoint)
+            .bearer_auth(token.trim())
+            .header(
+                "x-request-id",
+                format!("kb-migration:{migration_id}:{input_digest}"),
+            )
+            .header("x-light-expected-embedding-space-id", &target.space_id)
+            .header(
+                "x-light-expected-embedding-space-revision",
+                target.space_revision.to_string(),
+            )
+            .header(
+                "x-light-maximum-billed-cost-micros",
+                slice_cost_ceiling.to_string(),
+            )
+            .json(&json!({
+                "model": target.alias,
+                "input": &texts[start..end],
+                "dimensions": target.dimension
+            }))
+            .send()
+            .await;
+        let parsed = match response {
+            Ok(response)
+                if response.status().is_success()
+                    && response
+                        .headers()
+                        .get("x-light-embedding-space-id")
+                        .and_then(|value| value.to_str().ok())
+                        == Some(target.space_id.as_str())
+                    && response
+                        .headers()
+                        .get("x-light-embedding-space-revision")
+                        .and_then(|value| value.to_str().ok())
+                        == Some(target.space_revision.to_string().as_str()) =>
+            {
+                let billed = response
+                    .headers()
+                    .get("x-light-billed-cost-micros")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<i64>().ok())
+                    .filter(|value| *value >= 0 && *value <= slice_cost_ceiling)
+                    .context("embedding gateway omitted bounded billed-cost evidence")?;
+                Some((response.json::<serde_json::Value>().await?, billed))
+            }
+            _ => None,
+        };
+        let batch = parsed
+            .as_ref()
+            .and_then(|(body, _)| body.get("data"))
+            .and_then(serde_json::Value::as_array)
+            .filter(|data| data.len() == end - start)
+            .and_then(|data| {
+                data.iter()
+                    .enumerate()
+                    .map(|(expected, item)| {
+                        let index = item.get("index")?.as_u64()? as usize;
+                        let values = item
+                            .get("embedding")?
+                            .as_array()?
+                            .iter()
+                            .map(|value| value.as_f64().map(|value| value as f32))
+                            .collect::<Option<Vec<_>>>()?;
+                        (index == expected
+                            && values.len()
+                                == usize::try_from(target.dimension).unwrap_or_default()
+                            && values.iter().all(|value| value.is_finite()))
+                        .then_some(values)
+                    })
+                    .collect::<Option<Vec<_>>>()
+            });
+        if let Some(batch) = batch {
+            billed_cost_micros = billed_cost_micros.saturating_add(
+                parsed
+                    .as_ref()
+                    .map(|(_, billed)| *billed)
+                    .unwrap_or_default(),
+            );
+            for (offset, vector) in batch.into_iter().enumerate() {
+                vectors[start + offset] = Some(vector);
+            }
+        } else if end - start > 1 {
+            let middle = start + (end - start) / 2;
+            pending.push((middle, end));
+            pending.push((start, middle));
+        } else {
+            bail!("KNOWLEDGE_MIGRATION_EMBEDDING_FAILED");
+        }
+    }
+    let vectors = vectors
+        .into_iter()
+        .map(|vector| vector.context("migration embedding response omitted a chunk"))
+        .collect::<Result<Vec<_>>>()?;
+    if billed_cost_micros > maximum_billed_cost_micros {
+        bail!("KNOWLEDGE_MIGRATION_PROVIDER_COST_CEILING_EXCEEDED");
+    }
+    Ok(MigrationEmbeddingBatch {
+        vectors,
+        billed_cost_micros,
+    })
+}
+
+async fn migration_backfill(
+    pool: &PgPool,
+    config: &WorkerConfig,
+    payload: &serde_json::Value,
+) -> Result<()> {
+    let migration_id = uuid_value(payload, "migrationId")?;
+    if let Some(expected_version) = payload
+        .get("expectedMigrationVersion")
+        .and_then(serde_json::Value::as_i64)
+    {
+        let resumed = sqlx::query(
+            "UPDATE knowledge_embedding_migration_t
+                SET state='BACKFILLING',pause_reason=NULL,version=version+1,update_ts=now()
+              WHERE migration_id=$1 AND knowledge_base_id=$2
+                AND state='PAUSED' AND version=$3",
+        )
+        .bind(migration_id)
+        .bind(config.knowledge_base_id)
+        .bind(expected_version)
+        .execute(pool)
+        .await?;
+        if resumed.rows_affected() != 1 {
+            bail!("KNOWLEDGE_MIGRATION_VERSION_OR_STATE_CONFLICT");
+        }
+    }
+    let segment_id = initialize_migration_candidate(pool, config, migration_id).await?;
+    let mut claim_tx = pool.begin().await?;
+    let migration = sqlx::query(
+        "SELECT migration.state,migration.target_profile_id,
+                migration.target_profile_revision,migration.target_space_id,
+                target_space_revision,target_dimension,estimated_token_count,
+                estimated_cost_micros,completed_chunk_count,consumed_cost_micros,
+                reserved_cost_micros,accepted_cost_ceiling_micros,
+                profile.document_input_transform_version,profile.alias_name
+           FROM knowledge_embedding_migration_t migration
+           JOIN knowledge_embedding_profile_runtime_v profile
+             ON profile.profile_id=migration.target_profile_id
+            AND profile.profile_revision=migration.target_profile_revision
+          WHERE migration_id=$1 FOR UPDATE OF migration",
+    )
+    .bind(migration_id)
+    .fetch_one(&mut *claim_tx)
+    .await?;
+    if migration.get::<String, _>("state") == "PAUSED" {
+        claim_tx.rollback().await?;
+        return Ok(());
+    }
+    let rows = sqlx::query(
+        "SELECT item.chunk_id,item.transformed_input_digest,item.token_count,
+                item.state,item.reserved_cost_micros,chunk.chunk_text
+           FROM knowledge_embedding_migration_chunk_t item
+           JOIN knowledge_chunk_t chunk ON chunk.chunk_id=item.chunk_id
+          WHERE item.migration_id=$1
+            AND (item.state='PENDING'
+                 OR (item.state='CLAIMED' AND item.claim_expires_ts<=now()))
+          ORDER BY item.chunk_id LIMIT $2 FOR UPDATE OF item SKIP LOCKED",
+    )
+    .bind(migration_id)
+    .bind(i64::try_from(config.embedding_batch_size).unwrap_or(32))
+    .fetch_all(&mut *claim_tx)
+    .await?;
+    if rows.is_empty() {
+        let next_claim_expiry: Option<chrono::DateTime<Utc>> = sqlx::query_scalar(
+            "SELECT min(claim_expires_ts) FROM knowledge_embedding_migration_chunk_t
+              WHERE migration_id=$1 AND state='CLAIMED'",
+        )
+        .bind(migration_id)
+        .fetch_one(&mut *claim_tx)
+        .await?;
+        if let Some(next_claim_expiry) = next_claim_expiry {
+            claim_tx.rollback().await?;
+            sqlx::query(
+                "INSERT INTO knowledge_job_t(
+                   job_id,knowledge_base_id,job_type,idempotency_key,requested_by,
+                   payload,next_attempt_ts)
+                 VALUES($1,$2,'MIGRATION_BACKFILL',$3,'light-knowledge-migration',$4,$5)
+                 ON CONFLICT(knowledge_base_id,idempotency_key) DO NOTHING",
+            )
+            .bind(Uuid::now_v7())
+            .bind(config.knowledge_base_id)
+            .bind(format!(
+                "migration:{migration_id}:claim-expiry:{}",
+                next_claim_expiry.timestamp()
+            ))
+            .bind(json!({"migrationId": migration_id}))
+            .bind(next_claim_expiry)
+            .execute(pool)
+            .await?;
+            return Ok(());
+        }
+        sqlx::query(
+            "UPDATE knowledge_index_generation_t SET state='CATCHING_UP'
+              WHERE index_generation_id=(SELECT candidate_generation_id
+                FROM knowledge_embedding_migration_t WHERE migration_id=$1)
+                AND state='BUILDING'",
+        )
+        .bind(migration_id)
+        .execute(&mut *claim_tx)
+        .await?;
+        let changed = sqlx::query(
+            "UPDATE knowledge_embedding_migration_t
+                SET state='CATCHING_UP',version=version+1,update_ts=now()
+              WHERE migration_id=$1 AND state='BACKFILLING'",
+        )
+        .bind(migration_id)
+        .execute(&mut *claim_tx)
+        .await?;
+        claim_tx.commit().await?;
+        if changed.rows_affected() == 1 {
+            enqueue_migration_job(pool, config, migration_id, "MIGRATION_CATCHUP", "initial")
+                .await?;
+        }
+        return Ok(());
+    }
+    let claim_token = Uuid::now_v7();
+    let pending_tokens = rows
+        .iter()
+        .filter(|row| row.get::<String, _>("state") == "PENDING")
+        .map(|row| i64::from(row.get::<i32, _>("token_count")))
+        .sum::<i64>();
+    let estimated_tokens = migration.get::<i64, _>("estimated_token_count").max(1);
+    let estimated_cost = migration.get::<i64, _>("estimated_cost_micros");
+    let new_reservation = i64::try_from(
+        i128::from(pending_tokens)
+            .saturating_mul(i128::from(estimated_cost))
+            .saturating_add(i128::from(estimated_tokens - 1))
+            / i128::from(estimated_tokens),
+    )
+    .unwrap_or(i64::MAX);
+    let pending_weights = rows
+        .iter()
+        .filter(|row| row.get::<String, _>("state") == "PENDING")
+        .map(|row| i64::from(row.get::<i32, _>("token_count")))
+        .collect::<Vec<_>>();
+    let pending_allocations = allocate_exact(new_reservation, &pending_weights);
+    let mut pending_index = 0usize;
+    let mut claim_reservation = 0i64;
+    let mut row_reservations = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let chunk_id: Uuid = row.get("chunk_id");
+        let reservation = if row.get::<String, _>("state") == "PENDING" {
+            let value = pending_allocations[pending_index];
+            pending_index += 1;
+            value
+        } else {
+            row.get("reserved_cost_micros")
+        };
+        row_reservations.push(reservation);
+        claim_reservation = claim_reservation.saturating_add(reservation);
+        let affected = sqlx::query(
+            "UPDATE knowledge_embedding_migration_chunk_t
+                SET state='CLAIMED',claim_token=$3,
+                    claim_expires_ts=now()+interval '2 minutes',
+                    reserved_cost_micros=$4,attempt_count=attempt_count+1,update_ts=now()
+              WHERE migration_id=$1 AND chunk_id=$2
+                AND (state='PENDING' OR (state='CLAIMED' AND claim_expires_ts<=now()))",
+        )
+        .bind(migration_id)
+        .bind(chunk_id)
+        .bind(claim_token)
+        .bind(reservation)
+        .execute(&mut *claim_tx)
+        .await?;
+        if affected.rows_affected() != 1 {
+            bail!("KNOWLEDGE_MIGRATION_CHUNK_CLAIM_CONFLICT");
+        }
+    }
+    let reserved = sqlx::query(
+        "UPDATE knowledge_embedding_migration_t
+            SET reserved_cost_micros=reserved_cost_micros+$2,update_ts=now()
+          WHERE migration_id=$1 AND state='BACKFILLING'
+            AND consumed_cost_micros+reserved_cost_micros+$2
+                <=accepted_cost_ceiling_micros",
+    )
+    .bind(migration_id)
+    .bind(new_reservation)
+    .execute(&mut *claim_tx)
+    .await?;
+    if reserved.rows_affected() != 1 {
+        claim_tx.rollback().await?;
+        bail!("KNOWLEDGE_MIGRATION_COST_CEILING_EXCEEDED");
+    }
+    claim_tx.commit().await?;
+    let texts = rows
+        .iter()
+        .map(|row| row.get::<String, _>("chunk_text"))
+        .collect::<Vec<_>>();
+    let embedding_target = MigrationEmbeddingTarget {
+        alias: migration.get("alias_name"),
+        space_id: migration.get("target_space_id"),
+        space_revision: migration.get("target_space_revision"),
+        dimension: migration.get("target_dimension"),
+    };
+    let embedded = embed_migration_texts(
+        config,
+        migration_id,
+        &embedding_target,
+        &texts,
+        &row_reservations,
+        claim_reservation,
+    )
+    .await?;
+    let total_tokens = rows
+        .iter()
+        .map(|row| i64::from(row.get::<i32, _>("token_count")))
+        .sum::<i64>();
+    let per_chunk_cost = allocate_exact(
+        embedded.billed_cost_micros,
+        &rows
+            .iter()
+            .map(|row| i64::from(row.get::<i32, _>("token_count")))
+            .collect::<Vec<_>>(),
+    );
+    let mut tx = pool.begin().await?;
+    for ((row, vector), chunk_cost) in rows.iter().zip(embedded.vectors).zip(per_chunk_cost) {
+        let chunk_id: Uuid = row.get("chunk_id");
+        let input_digest: String = row.get("transformed_input_digest");
+        let artifact_id = derived_uuid_text(&format!(
+            "migration-artifact:{}:{}:{}:{}",
+            config.knowledge_base_id,
+            migration.get::<String, _>("target_space_id"),
+            migration.get::<i64, _>("target_space_revision"),
+            input_digest
+        ));
+        sqlx::query(
+            "INSERT INTO knowledge_embedding_artifact_t(
+               embedding_artifact_id,knowledge_base_id,transformed_input_digest,
+               space_id,space_revision,dimension,document_input_transform_version,embedding)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8::vector)
+             ON CONFLICT(embedding_artifact_id) DO NOTHING",
+        )
+        .bind(artifact_id)
+        .bind(config.knowledge_base_id)
+        .bind(&input_digest)
+        .bind(migration.get::<String, _>("target_space_id"))
+        .bind(migration.get::<i64, _>("target_space_revision"))
+        .bind(migration.get::<i32, _>("target_dimension"))
+        .bind(migration.get::<String, _>("document_input_transform_version"))
+        .bind(vector_literal(&vector))
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO knowledge_chunk_embedding_t(
+               chunk_id,embedding_artifact_id,knowledge_base_id,
+               embedding_profile_id,embedding_profile_revision,request_id,reused)
+             VALUES($1,$2,$3,$4,$5,$6,FALSE) ON CONFLICT DO NOTHING",
+        )
+        .bind(chunk_id)
+        .bind(artifact_id)
+        .bind(config.knowledge_base_id)
+        .bind(migration.get::<Uuid, _>("target_profile_id"))
+        .bind(migration.get::<i64, _>("target_profile_revision"))
+        .bind(format!("migration:{migration_id}:{chunk_id}"))
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO knowledge_segment_vector_t(
+               index_segment_id,chunk_id,embedding_artifact_id,
+               knowledge_base_id,projection,dimension)
+             VALUES($1,$2,$3,$4,$5::vector,$6)
+             ON CONFLICT(index_segment_id,chunk_id) DO UPDATE SET
+               embedding_artifact_id=EXCLUDED.embedding_artifact_id,
+               projection=EXCLUDED.projection,dimension=EXCLUDED.dimension",
+        )
+        .bind(segment_id)
+        .bind(chunk_id)
+        .bind(artifact_id)
+        .bind(config.knowledge_base_id)
+        .bind(vector_literal(&vector))
+        .bind(migration.get::<i32, _>("target_dimension"))
+        .execute(&mut *tx)
+        .await?;
+        let affected = sqlx::query(
+            "UPDATE knowledge_embedding_migration_chunk_t
+                SET embedding_artifact_id=$3,state='EMBEDDED',
+                    cost_micros=$4,reserved_cost_micros=0,
+                    claim_token=NULL,claim_expires_ts=NULL,update_ts=now()
+              WHERE migration_id=$1 AND chunk_id=$2 AND state='CLAIMED'
+                AND claim_token=$5",
+        )
+        .bind(migration_id)
+        .bind(chunk_id)
+        .bind(artifact_id)
+        .bind(chunk_cost)
+        .bind(claim_token)
+        .execute(&mut *tx)
+        .await?;
+        if affected.rows_affected() != 1 {
+            tx.rollback().await?;
+            bail!("KNOWLEDGE_MIGRATION_CHUNK_CLAIM_LOST");
+        }
+    }
+    let updated = sqlx::query(
+        "UPDATE knowledge_embedding_migration_t
+            SET completed_chunk_count=completed_chunk_count+$2,
+                reused_canonical_chunk_count=reused_canonical_chunk_count+$2,
+                consumed_token_count=consumed_token_count+$3,
+                consumed_cost_micros=consumed_cost_micros+$4,
+                reserved_cost_micros=reserved_cost_micros-$5,
+                version=version+1,update_ts=now()
+          WHERE migration_id=$1 AND state='BACKFILLING'
+            AND reserved_cost_micros>=$5
+            AND consumed_cost_micros+reserved_cost_micros-$5+$4
+                <=accepted_cost_ceiling_micros",
+    )
+    .bind(migration_id)
+    .bind(i64::try_from(rows.len()).unwrap_or(i64::MAX))
+    .bind(total_tokens)
+    .bind(embedded.billed_cost_micros)
+    .bind(claim_reservation)
+    .execute(&mut *tx)
+    .await?;
+    if updated.rows_affected() != 1 {
+        tx.rollback().await?;
+        bail!("KNOWLEDGE_MIGRATION_COST_CEILING_EXCEEDED");
+    }
+    sqlx::query(
+        "UPDATE knowledge_index_segment_t SET vector_count=(
+           SELECT count(*) FROM knowledge_segment_vector_t WHERE index_segment_id=$1)
+          WHERE index_segment_id=$1",
+    )
+    .bind(segment_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let completed =
+        migration.get::<i64, _>("completed_chunk_count") + i64::try_from(rows.len()).unwrap_or(0);
+    enqueue_migration_job(
+        pool,
+        config,
+        migration_id,
+        "MIGRATION_BACKFILL",
+        &completed.to_string(),
+    )
+    .await
+}
+
+async fn migration_catchup(
+    pool: &PgPool,
+    config: &WorkerConfig,
+    payload: &serde_json::Value,
+) -> Result<()> {
+    let migration_id = uuid_value(payload, "migrationId")?;
+    let mut tx = pool.begin().await?;
+    let migration = sqlx::query(
+        "SELECT migration.state,migration.candidate_generation_id,
+                migration.completed_chunk_count,
+                pointer.index_generation_id AS active_generation_id,
+                active.final_watermark AS active_watermark
+           FROM knowledge_embedding_migration_t migration
+           JOIN knowledge_index_pointer_t pointer
+             ON pointer.knowledge_base_id=migration.knowledge_base_id
+            AND pointer.environment=migration.environment
+           JOIN knowledge_index_generation_t active
+             ON active.index_generation_id=pointer.index_generation_id
+          WHERE migration.migration_id=$1 AND migration.knowledge_base_id=$2
+          FOR UPDATE OF migration,pointer",
+    )
+    .bind(migration_id)
+    .bind(config.knowledge_base_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if migration.get::<String, _>("state") != "CATCHING_UP" {
+        tx.rollback().await?;
+        return Ok(());
+    }
+    let candidate_generation_id: Uuid = migration.get("candidate_generation_id");
+    let active_generation_id: Uuid = migration.get("active_generation_id");
+    let segment_id = derived_uuid("migration-base", candidate_generation_id);
+    let removed: i64 = sqlx::query_scalar(
+        "WITH removed AS (
+           DELETE FROM knowledge_embedding_migration_chunk_t item
+            WHERE item.migration_id=$1 AND NOT EXISTS (
+              SELECT 1 FROM knowledge_resolved_generation_chunk($2) resolved
+               WHERE resolved.chunk_id=item.chunk_id)
+            RETURNING chunk_id)
+         SELECT count(*)::bigint FROM removed",
+    )
+    .bind(migration_id)
+    .bind(active_generation_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM knowledge_segment_vector_t vector
+          WHERE vector.index_segment_id=$1 AND NOT EXISTS (
+            SELECT 1 FROM knowledge_embedding_migration_chunk_t item
+             WHERE item.migration_id=$2 AND item.chunk_id=vector.chunk_id)",
+    )
+    .bind(segment_id)
+    .bind(migration_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM knowledge_segment_chunk_t member
+          WHERE member.index_segment_id=$1 AND NOT EXISTS (
+            SELECT 1 FROM knowledge_embedding_migration_chunk_t item
+             WHERE item.migration_id=$2 AND item.chunk_id=member.chunk_id)",
+    )
+    .bind(segment_id)
+    .bind(migration_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM knowledge_segment_document_t member
+          WHERE member.index_segment_id=$1 AND NOT EXISTS (
+            SELECT 1 FROM knowledge_resolved_generation_chunk($2) resolved
+             WHERE resolved.document_id=member.document_id)",
+    )
+    .bind(segment_id)
+    .bind(active_generation_id)
+    .execute(&mut *tx)
+    .await?;
+    let added = sqlx::query(
+        "WITH inserted AS (
+           INSERT INTO knowledge_embedding_migration_chunk_t(
+             migration_id,chunk_id,knowledge_base_id,transformed_input_digest,token_count)
+           SELECT $1,chunk.chunk_id,$2,
+                  encode(digest(chunk.chunk_text || ':' || profile.document_input_transform_version,
+                                'sha256'),'hex'),chunk.token_count
+             FROM knowledge_resolved_generation_chunk($3) resolved
+             JOIN knowledge_chunk_t chunk ON chunk.chunk_id=resolved.chunk_id
+             JOIN knowledge_embedding_migration_t migration ON migration.migration_id=$1
+             JOIN knowledge_embedding_profile_t profile
+               ON profile.profile_id=migration.target_profile_id
+              AND profile.profile_revision=migration.target_profile_revision
+           ON CONFLICT DO NOTHING RETURNING chunk_id)
+         SELECT count(*)::bigint AS count FROM inserted",
+    )
+    .bind(migration_id)
+    .bind(config.knowledge_base_id)
+    .bind(active_generation_id)
+    .fetch_one(&mut *tx)
+    .await?
+    .get::<i64, _>("count");
+    sqlx::query(
+        "INSERT INTO knowledge_segment_document_t(
+           index_segment_id,document_id,knowledge_base_id,document_version_id,acl_revision_id)
+         SELECT DISTINCT ON(resolved.document_id) $1,resolved.document_id,$2,
+                resolved.document_version_id,resolved.acl_revision_id
+           FROM knowledge_resolved_generation_chunk($3) resolved
+         ON CONFLICT(index_segment_id,document_id) DO UPDATE SET
+           document_version_id=EXCLUDED.document_version_id,
+           acl_revision_id=EXCLUDED.acl_revision_id",
+    )
+    .bind(segment_id)
+    .bind(config.knowledge_base_id)
+    .bind(active_generation_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO knowledge_segment_chunk_t(
+           index_segment_id,chunk_id,knowledge_base_id,acl_revision_id)
+         SELECT $1,resolved.chunk_id,$2,resolved.acl_revision_id
+           FROM knowledge_resolved_generation_chunk($3) resolved
+         ON CONFLICT(index_segment_id,chunk_id) DO UPDATE SET
+           acl_revision_id=EXCLUDED.acl_revision_id",
+    )
+    .bind(segment_id)
+    .bind(config.knowledge_base_id)
+    .bind(active_generation_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE knowledge_index_segment_t SET
+           document_count=(SELECT count(*) FROM knowledge_segment_document_t
+                            WHERE index_segment_id=$1),
+           chunk_count=(SELECT count(*) FROM knowledge_segment_chunk_t
+                         WHERE index_segment_id=$1),
+           vector_count=(SELECT count(*) FROM knowledge_segment_vector_t
+                          WHERE index_segment_id=$1),
+           acl_count=(SELECT count(DISTINCT acl_revision_id)
+                       FROM knowledge_segment_document_t
+                       WHERE index_segment_id=$1)
+          WHERE index_segment_id=$1",
+    )
+    .bind(segment_id)
+    .execute(&mut *tx)
+    .await?;
+    let active_watermark = migration
+        .get::<Option<i64>, _>("active_watermark")
+        .unwrap_or(0);
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM knowledge_embedding_migration_chunk_t
+          WHERE migration_id=$1 AND state='PENDING'",
+    )
+    .bind(migration_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let completed = migration
+        .get::<i64, _>("completed_chunk_count")
+        .saturating_sub(removed);
+    if remaining > 0 {
+        sqlx::query(
+            "UPDATE knowledge_embedding_migration_t
+                SET state='BACKFILLING',completed_chunk_count=$2,
+                    reused_canonical_chunk_count=LEAST(reused_canonical_chunk_count,$2),
+                    catchup_chunk_count=catchup_chunk_count+$3,
+                    version=version+1,update_ts=now()
+              WHERE migration_id=$1",
+        )
+        .bind(migration_id)
+        .bind(completed)
+        .bind(added)
+        .execute(&mut *tx)
+        .await?;
+    } else {
+        sqlx::query(
+            "UPDATE knowledge_embedding_migration_t
+                SET state='VALIDATING',final_watermark=$2,
+                    completed_chunk_count=$3,
+                    reused_canonical_chunk_count=LEAST(reused_canonical_chunk_count,$3),
+                    version=version+1,update_ts=now()
+              WHERE migration_id=$1",
+        )
+        .bind(migration_id)
+        .bind(active_watermark)
+        .bind(completed)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE knowledge_index_generation_t
+                SET final_watermark=$2,state='VALIDATING'
+              WHERE index_generation_id=$1 AND state='CATCHING_UP'",
+        )
+        .bind(candidate_generation_id)
+        .bind(active_watermark)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    if remaining > 0 {
+        enqueue_migration_job(
+            pool,
+            config,
+            migration_id,
+            "MIGRATION_BACKFILL",
+            &format!("catchup-{active_watermark}"),
+        )
+        .await
+    } else {
+        enqueue_migration_job(
+            pool,
+            config,
+            migration_id,
+            "MIGRATION_VALIDATE",
+            &active_watermark.to_string(),
+        )
+        .await
+    }
+}
+
+async fn migration_validate(
+    pool: &PgPool,
+    config: &WorkerConfig,
+    payload: &serde_json::Value,
+) -> Result<()> {
+    let migration_id = uuid_value(payload, "migrationId")?;
+    let mut tx = pool.begin().await?;
+    let row = sqlx::query(
+        "SELECT migration.candidate_generation_id,migration.final_watermark,
+                pointer.index_generation_id AS active_generation_id,
+                active.final_watermark AS active_watermark
+           FROM knowledge_embedding_migration_t migration
+           JOIN knowledge_index_pointer_t pointer
+             ON pointer.knowledge_base_id=migration.knowledge_base_id
+            AND pointer.environment=migration.environment
+           JOIN knowledge_index_generation_t active
+             ON active.index_generation_id=pointer.index_generation_id
+          WHERE migration.migration_id=$1 AND migration.knowledge_base_id=$2
+            AND migration.state='VALIDATING'
+          FOR UPDATE OF migration,pointer",
+    )
+    .bind(migration_id)
+    .bind(config.knowledge_base_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(row) = row else {
+        tx.rollback().await?;
+        return Ok(());
+    };
+    let active_watermark = row.get::<Option<i64>, _>("active_watermark").unwrap_or(0);
+    if row.get::<Option<i64>, _>("final_watermark") != Some(active_watermark) {
+        sqlx::query(
+            "UPDATE knowledge_embedding_migration_t
+                SET state='CATCHING_UP',version=version+1,update_ts=now()
+              WHERE migration_id=$1",
+        )
+        .bind(migration_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        return enqueue_migration_job(
+            pool,
+            config,
+            migration_id,
+            "MIGRATION_CATCHUP",
+            &format!("refence-{active_watermark}"),
+        )
+        .await;
+    }
+    let candidate_generation_id: Uuid = row.get("candidate_generation_id");
+    let segment_id = derived_uuid("migration-base", candidate_generation_id);
+    let counts = sqlx::query(
+        "SELECT (SELECT count(*) FROM knowledge_segment_chunk_t
+                  WHERE index_segment_id=$1)::bigint AS chunks,
+                (SELECT count(*) FROM knowledge_segment_vector_t
+                  WHERE index_segment_id=$1)::bigint AS vectors,
+                (SELECT count(*) FROM knowledge_embedding_migration_chunk_t
+                  WHERE migration_id=$2 AND state='EMBEDDED')::bigint AS embedded",
+    )
+    .bind(segment_id)
+    .bind(migration_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let chunks: i64 = counts.get("chunks");
+    let vectors: i64 = counts.get("vectors");
+    let embedded: i64 = counts.get("embedded");
+    if chunks != vectors || chunks != embedded {
+        bail!("KNOWLEDGE_MIGRATION_CANDIDATE_INCOMPLETE");
+    }
+    let (
+        evidence_id,
+        evaluation_contract_version,
+        metrics,
+        evidence_digest,
+        expires_ts,
+        authorized_by,
+    ) = if config.migration_deterministic_pilot {
+        let metrics = json!({
+            "candidateOnly": true,
+            "rawCrossSpaceScoresCompared": false,
+            "canonicalChunkCount": chunks,
+            "vectorCount": vectors,
+            "watermark": active_watermark,
+            "deterministicPilot": true
+        });
+        (
+            derived_uuid("migration-evaluation", migration_id),
+            "phase3-deterministic-v1".to_string(),
+            metrics.clone(),
+            sha256_hex(serde_json::to_string(&metrics)?.as_bytes()),
+            Utc::now() + chrono::Duration::hours(1),
+            "light-knowledge-deterministic-pilot".to_string(),
+        )
+    } else {
+        let evidence_id = uuid_value(payload, "evaluationEvidenceId")
+            .context("authorized candidate evaluation evidence is required")?;
+        if uuid_value(payload, "candidateGenerationId")? != candidate_generation_id {
+            bail!("KNOWLEDGE_MIGRATION_EVALUATION_GENERATION_MISMATCH");
+        }
+        if payload
+            .get("corpusWatermark")
+            .and_then(serde_json::Value::as_i64)
+            != Some(active_watermark)
+        {
+            bail!("KNOWLEDGE_MIGRATION_EVALUATION_WATERMARK_MISMATCH");
+        }
+        let metrics = payload
+            .get("metrics")
+            .filter(|value| value.is_object())
+            .cloned()
+            .context("candidate evaluation metrics are required")?;
+        if metrics
+            .get("rawCrossSpaceScoresCompared")
+            .and_then(serde_json::Value::as_bool)
+            != Some(false)
+            || metrics
+                .get("candidateOnly")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+        {
+            bail!("KNOWLEDGE_MIGRATION_EVALUATION_CONTRACT_INVALID");
+        }
+        if payload.get("passed").and_then(serde_json::Value::as_bool) != Some(true) {
+            bail!("KNOWLEDGE_MIGRATION_EVALUATION_FAILED");
+        }
+        let computed_digest = sha256_hex(serde_json::to_string(&metrics)?.as_bytes());
+        if payload
+            .get("evidenceDigest")
+            .and_then(serde_json::Value::as_str)
+            != Some(computed_digest.as_str())
+        {
+            bail!("KNOWLEDGE_MIGRATION_EVALUATION_DIGEST_MISMATCH");
+        }
+        let expires_ts = chrono::DateTime::parse_from_rfc3339(text_value(payload, "expiresAt")?)
+            .context("candidate evaluation expiresAt must be RFC3339")?
+            .with_timezone(&Utc);
+        if expires_ts <= Utc::now() || expires_ts > Utc::now() + chrono::Duration::hours(24) {
+            bail!("KNOWLEDGE_MIGRATION_EVALUATION_EXPIRY_INVALID");
+        }
+        (
+            evidence_id,
+            "phase3-candidate-evaluation-v1".to_string(),
+            metrics,
+            computed_digest,
+            expires_ts,
+            payload
+                .get("authorizedBy")
+                .and_then(serde_json::Value::as_str)
+                .context("authorized candidate evaluation requires authorizedBy")?
+                .to_string(),
+        )
+    };
+    let manifest_row = sqlx::query(
+        "SELECT generation.snapshot_watermark,generation.parser_contract_digest,
+                generation.chunker_contract_digest,generation.lexical_contract_digest,
+                generation.citation_contract_digest,generation.space_id,
+                generation.space_revision,generation.dimension,
+                segment.physical_locator,segment.manifest_digest,
+                segment.document_count,segment.chunk_count,segment.vector_count
+           FROM knowledge_index_generation_t generation
+           JOIN knowledge_index_segment_t segment
+             ON segment.index_generation_id=generation.index_generation_id
+          WHERE generation.index_generation_id=$1 AND segment.index_segment_id=$2",
+    )
+    .bind(candidate_generation_id)
+    .bind(segment_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let manifest = BaseManifest {
+        generation_id: candidate_generation_id,
+        segment_id,
+        knowledge_base_id: config.knowledge_base_id,
+        snapshot_watermark: u64::try_from(manifest_row.get::<i64, _>("snapshot_watermark"))
+            .unwrap_or_default(),
+        document_count: usize::try_from(manifest_row.get::<i64, _>("document_count"))
+            .unwrap_or_default(),
+        chunk_count: usize::try_from(manifest_row.get::<i64, _>("chunk_count")).unwrap_or_default(),
+        vector_count: usize::try_from(manifest_row.get::<i64, _>("vector_count"))
+            .unwrap_or_default(),
+        parser_digest: manifest_row.get("parser_contract_digest"),
+        chunker_digest: manifest_row.get("chunker_contract_digest"),
+        lexical_digest: manifest_row.get("lexical_contract_digest"),
+        citation_digest: manifest_row.get("citation_contract_digest"),
+        space_id: manifest_row.get("space_id"),
+        space_revision: u64::try_from(manifest_row.get::<i64, _>("space_revision"))
+            .unwrap_or_default(),
+        dimension: usize::try_from(manifest_row.get::<i32, _>("dimension")).unwrap_or_default(),
+        manifest_digest: manifest_row
+            .get::<String, _>("manifest_digest")
+            .trim()
+            .into(),
+        segment_kind: "BASE".into(),
+    };
+    let manifest_path = object_locator_path(
+        &config.object_store_root,
+        &manifest_row.get::<String, _>("physical_locator"),
+    )?;
+    if let Some(parent) = manifest_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    write_immutable(&manifest_path, &serde_json::to_vec_pretty(&manifest)?)?;
+    sqlx::query(
+        "INSERT INTO knowledge_migration_evaluation_t(
+           evaluation_evidence_id,migration_id,knowledge_base_id,
+           candidate_generation_id,evaluation_contract_version,corpus_watermark,
+           metrics,evidence_digest,passed,expires_ts,authorized_by)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,TRUE,$9,$10)",
+    )
+    .bind(evidence_id)
+    .bind(migration_id)
+    .bind(config.knowledge_base_id)
+    .bind(candidate_generation_id)
+    .bind(&evaluation_contract_version)
+    .bind(active_watermark)
+    .bind(&metrics)
+    .bind(&evidence_digest)
+    .bind(expires_ts)
+    .bind(authorized_by)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE knowledge_index_segment_t SET state='READY'
+          WHERE index_segment_id=$1 AND state='BUILDING'",
+    )
+    .bind(segment_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE knowledge_index_generation_t
+            SET state='READY',evidence=evidence || $2
+          WHERE index_generation_id=$1 AND state='VALIDATING'",
+    )
+    .bind(candidate_generation_id)
+    .bind(json!({"migrationEvaluationEvidenceId": evidence_id,
+                 "migrationEvaluationDigest": evidence_digest}))
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE knowledge_embedding_migration_t
+            SET state='READY',evaluation_evidence_id=$2,
+                evaluation_evidence_digest=$3,version=version+1,update_ts=now()
+          WHERE migration_id=$1 AND state='VALIDATING'",
+    )
+    .bind(migration_id)
+    .bind(evidence_id)
+    .bind(&evidence_digest)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn migration_promote(
+    pool: &PgPool,
+    config: &WorkerConfig,
+    payload: &serde_json::Value,
+) -> Result<()> {
+    let migration_id = uuid_value(payload, "migrationId")?;
+    let expected_pointer_version = payload
+        .get("expectedPointerVersion")
+        .and_then(serde_json::Value::as_i64)
+        .context("migration promotion requires expectedPointerVersion")?;
+    let expected_active_generation_id = uuid_value(payload, "expectedActiveGenerationId")?;
+    let mut tx = pool.begin().await?;
+    let migration = sqlx::query(
+        "SELECT migration.*,evaluation.passed,evaluation.expires_ts,
+                evaluation.evidence_digest,evaluation.evaluation_contract_version,
+                pointer.index_generation_id,
+                pointer.pointer_version,active.final_watermark AS active_watermark
+           FROM knowledge_embedding_migration_t migration
+           JOIN knowledge_migration_evaluation_t evaluation
+             ON evaluation.evaluation_evidence_id=migration.evaluation_evidence_id
+            AND evaluation.migration_id=migration.migration_id
+            AND evaluation.candidate_generation_id=migration.candidate_generation_id
+            AND evaluation.corpus_watermark=migration.final_watermark
+            AND evaluation.evidence_digest=migration.evaluation_evidence_digest
+           JOIN knowledge_embedding_profile_runtime_v profile
+             ON profile.profile_id=migration.target_profile_id
+            AND profile.profile_revision=migration.target_profile_revision
+           JOIN knowledge_index_pointer_t pointer
+             ON pointer.knowledge_base_id=migration.knowledge_base_id
+            AND pointer.environment=migration.environment
+           JOIN knowledge_index_generation_t active
+             ON active.index_generation_id=pointer.index_generation_id
+          WHERE migration.migration_id=$1 AND migration.knowledge_base_id=$2
+          FOR UPDATE OF migration,pointer",
+    )
+    .bind(migration_id)
+    .bind(config.knowledge_base_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if migration.get::<String, _>("state") != "READY"
+        || !migration.get::<bool, _>("passed")
+        || migration.get::<chrono::DateTime<Utc>, _>("expires_ts") <= Utc::now()
+        || migration.get::<Uuid, _>("index_generation_id") != expected_active_generation_id
+        || migration.get::<i64, _>("pointer_version") != expected_pointer_version
+        || migration.get::<Option<i64>, _>("final_watermark")
+            != migration.get::<Option<i64>, _>("active_watermark")
+        || (migration.get::<String, _>("evaluation_contract_version") == "phase3-deterministic-v1"
+            && !config.migration_deterministic_pilot)
+    {
+        bail!("KNOWLEDGE_MIGRATION_PROMOTION_FENCE_FAILED");
+    }
+    let candidate_generation_id: Uuid = migration.get("candidate_generation_id");
+    let rollback_window_seconds: i64 = migration.get("rollback_window_seconds");
+    let rollback_deadline = Utc::now() + chrono::Duration::seconds(rollback_window_seconds);
+    let evidence_digest: String = migration.get::<String, _>("evidence_digest").trim().into();
+    let promotion_payload = json!({
+        "promotionId": derived_uuid("migration-promotion", migration_id),
+        "indexGenerationId": candidate_generation_id,
+        "expectedPointerVersion": expected_pointer_version,
+        "evidence": {
+            "migrationId": migration_id,
+            "evaluationEvidenceId": migration.get::<Uuid, _>("evaluation_evidence_id"),
+            "finalWatermark": migration.get::<Option<i64>, _>("final_watermark"),
+            "candidateOnly": true,
+            "rawCrossSpaceScoresCompared": false
+        },
+        "evidenceDigest": evidence_digest,
+        "reason": payload.get("reason").and_then(serde_json::Value::as_str)
+            .unwrap_or("Portal-authorized embedding migration"),
+        "rollbackDeadline": rollback_deadline.to_rfc3339()
+    });
+    promote_generation_transaction(&mut tx, config, &promotion_payload).await?;
+    sqlx::query(
+        "UPDATE knowledge_embedding_migration_t
+            SET state='SOAKING',promotion_watermark=final_watermark,
+                rollback_deadline=$2,authorized_by=$3,version=version+1,update_ts=now()
+          WHERE migration_id=$1 AND state='READY'",
+    )
+    .bind(migration_id)
+    .bind(rollback_deadline)
+    .bind(
+        payload
+            .get("authorizedBy")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("portal-operator"),
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO knowledge_generation_retention_t(
+           index_generation_id,knowledge_base_id,retention_state,retain_until_ts,
+           migration_reference_count,last_reference_check_ts)
+         VALUES($1,$3,'ROLLBACK_ELIGIBLE',$4,1,now()),
+               ($2,$3,'ACTIVE',NULL,1,now())
+         ON CONFLICT(index_generation_id) DO UPDATE SET
+           retention_state=EXCLUDED.retention_state,
+           retain_until_ts=EXCLUDED.retain_until_ts,
+           migration_reference_count=EXCLUDED.migration_reference_count,
+           last_reference_check_ts=now(),update_ts=now()",
+    )
+    .bind(expected_active_generation_id)
+    .bind(candidate_generation_id)
+    .bind(config.knowledge_base_id)
+    .bind(rollback_deadline)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn migration_rollback(
+    pool: &PgPool,
+    config: &WorkerConfig,
+    payload: &serde_json::Value,
+) -> Result<()> {
+    let migration_id = uuid_value(payload, "migrationId")?;
+    let expected_pointer_version = payload
+        .get("expectedPointerVersion")
+        .and_then(serde_json::Value::as_i64)
+        .context("migration rollback requires expectedPointerVersion")?;
+    let mut tx = pool.begin().await?;
+    let migration = sqlx::query(
+        "SELECT migration.*,pointer.index_generation_id,pointer.pointer_version,
+                active.final_watermark AS current_source_watermark
+           FROM knowledge_embedding_migration_t migration
+           JOIN knowledge_index_pointer_t pointer
+             ON pointer.knowledge_base_id=migration.knowledge_base_id
+            AND pointer.environment=migration.environment
+           JOIN knowledge_index_generation_t active
+             ON active.index_generation_id=pointer.index_generation_id
+          WHERE migration.migration_id=$1 AND migration.knowledge_base_id=$2
+          FOR UPDATE OF migration,pointer",
+    )
+    .bind(migration_id)
+    .bind(config.knowledge_base_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if migration.get::<String, _>("state") != "SOAKING"
+        || migration
+            .get::<Option<chrono::DateTime<Utc>>, _>("rollback_deadline")
+            .is_none_or(|deadline| deadline <= Utc::now())
+        || migration.get::<Uuid, _>("index_generation_id")
+            != migration.get::<Uuid, _>("candidate_generation_id")
+        || migration.get::<i64, _>("pointer_version") != expected_pointer_version
+        || migration
+            .get::<Option<i64>, _>("current_source_watermark")
+            .unwrap_or(0)
+            > migration.get::<i64, _>("predecessor_reconciled_watermark")
+    {
+        bail!("KNOWLEDGE_MIGRATION_ROLLBACK_FENCE_FAILED");
+    }
+    let predecessor: Uuid = migration.get("source_generation_id");
+    sqlx::query(
+        "UPDATE knowledge_index_generation_t SET state='READY'
+          WHERE index_generation_id=$1 AND state='SUPERSEDED'",
+    )
+    .bind(predecessor)
+    .execute(&mut *tx)
+    .await?;
+    let evidence = json!({
+        "migrationId": migration_id,
+        "rollback": true,
+        "predecessorReconciledWatermark": migration
+            .get::<i64, _>("predecessor_reconciled_watermark")
+    });
+    let rollback_payload = json!({
+        "promotionId": derived_uuid("migration-rollback", migration_id),
+        "indexGenerationId": predecessor,
+        "expectedPointerVersion": expected_pointer_version,
+        "evidence": evidence,
+        "evidenceDigest": sha256_hex(serde_json::to_string(&evidence)?.as_bytes()),
+        "reason": payload.get("reason").and_then(serde_json::Value::as_str)
+            .unwrap_or("Portal-authorized embedding migration rollback"),
+        "rollbackDeadline": Utc::now().to_rfc3339()
+    });
+    promote_generation_transaction(&mut tx, config, &rollback_payload).await?;
+    sqlx::query(
+        "UPDATE knowledge_embedding_migration_t
+            SET state='ROLLED_BACK',version=version+1,finished_ts=now(),update_ts=now()
+          WHERE migration_id=$1 AND state='SOAKING'",
+    )
+    .bind(migration_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE knowledge_generation_retention_t SET
+           retention_state=CASE WHEN index_generation_id=$1 THEN 'ACTIVE' ELSE 'RETAINED' END,
+           retain_until_ts=CASE WHEN index_generation_id=$2 THEN now()
+                                ELSE retain_until_ts END,
+           migration_reference_count=0,last_reference_check_ts=now(),update_ts=now()
+          WHERE index_generation_id IN ($1,$2)",
+    )
+    .bind(predecessor)
+    .bind(migration.get::<Uuid, _>("candidate_generation_id"))
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn migration_retire(
+    pool: &PgPool,
+    config: &WorkerConfig,
+    payload: &serde_json::Value,
+) -> Result<()> {
+    let migration_id = uuid_value(payload, "migrationId")?;
+    expire_backup_references(pool, config.knowledge_base_id).await?;
+    let mut tx = pool.begin().await?;
+    let updated = sqlx::query(
+        "UPDATE knowledge_embedding_migration_t migration
+            SET state='RETIRED',version=version+1,finished_ts=now(),update_ts=now()
+          WHERE migration.migration_id=$1 AND migration.knowledge_base_id=$2
+            AND ((migration.state='SOAKING' AND migration.rollback_deadline<=now())
+                 OR migration.state='ROLLED_BACK')
+            AND NOT EXISTS (SELECT 1 FROM knowledge_index_pointer_t pointer
+                             WHERE pointer.index_generation_id=CASE
+                               WHEN EXISTS (SELECT 1 FROM knowledge_index_pointer_t current
+                                             WHERE current.index_generation_id=
+                                               migration.source_generation_id)
+                                 THEN migration.candidate_generation_id
+                               ELSE migration.source_generation_id END)
+            AND EXISTS (SELECT 1 FROM knowledge_generation_retention_t retention
+                         WHERE retention.index_generation_id=CASE
+                           WHEN EXISTS (SELECT 1 FROM knowledge_index_pointer_t current
+                                         WHERE current.index_generation_id=
+                                           migration.source_generation_id)
+                             THEN migration.candidate_generation_id
+                           ELSE migration.source_generation_id END
+                           AND retention.legal_hold=FALSE
+                           AND retention.backup_reference_count=0
+                           AND NOT EXISTS (
+                             SELECT 1 FROM knowledge_backup_checkpoint_t checkpoint
+                              WHERE checkpoint.index_generation_id=retention.index_generation_id
+                                AND checkpoint.state IN ('VERIFIED','RESTORED')
+                                AND (checkpoint.retain_until_ts IS NULL
+                                     OR checkpoint.retain_until_ts>now()))
+                           AND (retention.retain_until_ts IS NULL
+                                OR retention.retain_until_ts<=now()))
+          RETURNING CASE
+            WHEN EXISTS (SELECT 1 FROM knowledge_index_pointer_t current
+                          WHERE current.index_generation_id=migration.source_generation_id)
+              THEN migration.candidate_generation_id
+            ELSE migration.source_generation_id END AS retired_generation_id",
+    )
+    .bind(migration_id)
+    .bind(config.knowledge_base_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(updated) = updated else {
+        bail!("KNOWLEDGE_MIGRATION_RETIREMENT_BLOCKED");
+    };
+    let retired_generation: Uuid = updated.get("retired_generation_id");
+    let approved = sqlx::query(
+        "UPDATE knowledge_generation_retention_t
+            SET retention_state='PURGE_APPROVED',migration_reference_count=0,
+                last_reference_check_ts=now(),update_ts=now()
+          WHERE index_generation_id=$1 AND legal_hold=FALSE
+            AND backup_reference_count=0
+            AND (retain_until_ts IS NULL OR retain_until_ts<=now())",
+    )
+    .bind(retired_generation)
+    .execute(&mut *tx)
+    .await?;
+    if approved.rows_affected() != 1 {
+        tx.rollback().await?;
+        bail!("KNOWLEDGE_MIGRATION_RETENTION_TRANSITION_CONFLICT");
+    }
+    tx.commit().await?;
+    enqueue_migration_job(
+        pool,
+        config,
+        migration_id,
+        "SEGMENT_PURGE",
+        &retired_generation.to_string(),
+    )
+    .await
+}
+
+async fn expire_backup_references(pool: &PgPool, knowledge_base_id: Uuid) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "UPDATE knowledge_backup_checkpoint_t
+            SET state='EXPIRED'
+          WHERE knowledge_base_id=$1 AND state IN ('VERIFIED','RESTORED')
+            AND retain_until_ts IS NOT NULL AND retain_until_ts<=now()",
+    )
+    .bind(knowledge_base_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE knowledge_generation_retention_t retention
+            SET backup_reference_count=(
+                  SELECT count(*) FROM knowledge_backup_checkpoint_t checkpoint
+                   WHERE checkpoint.index_generation_id=retention.index_generation_id
+                     AND checkpoint.state IN ('VERIFIED','RESTORED')
+                     AND (checkpoint.retain_until_ts IS NULL
+                          OR checkpoint.retain_until_ts>now())),
+                last_reference_check_ts=now(),update_ts=now()
+          WHERE retention.knowledge_base_id=$1",
+    )
+    .bind(knowledge_base_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn create_backup_checkpoint(
+    pool: &PgPool,
+    config: &WorkerConfig,
+    payload: &serde_json::Value,
+) -> Result<()> {
+    let checkpoint_id = payload
+        .get("checkpointId")
+        .and_then(serde_json::Value::as_str)
+        .map(Uuid::parse_str)
+        .transpose()?
+        .unwrap_or_else(Uuid::now_v7);
+    let pointer = sqlx::query(
+        "SELECT pointer.index_generation_id,pointer.pointer_version,
+                generation.ordered_segment_manifest_digest
+           FROM knowledge_index_pointer_t pointer
+           JOIN knowledge_index_generation_t generation
+             ON generation.index_generation_id=pointer.index_generation_id
+          WHERE pointer.knowledge_base_id=$1 AND pointer.environment=$2",
+    )
+    .bind(config.knowledge_base_id)
+    .bind(&config.environment)
+    .fetch_one(pool)
+    .await?;
+    let generation_id: Uuid = pointer.get("index_generation_id");
+    let manifest_digest = pointer
+        .get::<Option<String>, _>("ordered_segment_manifest_digest")
+        .context("active generation has no ordered segment manifest")?;
+    let directory = config.object_store_root.join("checkpoints");
+    fs::create_dir_all(&directory)?;
+    let path = directory.join(format!("{checkpoint_id}.json"));
+    let checkpoint = json!({
+        "checkpointId": checkpoint_id,
+        "knowledgeBaseId": config.knowledge_base_id,
+        "environment": config.environment,
+        "indexGenerationId": generation_id,
+        "pointerVersion": pointer.get::<i64, _>("pointer_version"),
+        "objectManifestDigest": manifest_digest
+    });
+    write_immutable(&path, serde_json::to_vec_pretty(&checkpoint)?.as_slice())?;
+    sqlx::query(
+        "INSERT INTO knowledge_backup_checkpoint_t(
+           checkpoint_id,knowledge_base_id,index_generation_id,environment,
+           pointer_version,object_manifest_digest,database_checkpoint_reference,
+           encrypted_object_checkpoint_reference,state,retain_until_ts)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,'REQUESTED',now()+interval '30 days')
+         ON CONFLICT(checkpoint_id) DO NOTHING",
+    )
+    .bind(checkpoint_id)
+    .bind(config.knowledge_base_id)
+    .bind(generation_id)
+    .bind(&config.environment)
+    .bind(pointer.get::<i64, _>("pointer_version"))
+    .bind(manifest_digest.trim())
+    .bind(format!("external-checkpoint://postgres/{checkpoint_id}"))
+    .bind(format!(
+        "object://light-knowledge/checkpoints/{checkpoint_id}.json"
+    ))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn verify_restore_checkpoint(
+    pool: &PgPool,
+    config: &WorkerConfig,
+    payload: &serde_json::Value,
+) -> Result<()> {
+    let checkpoint_id = uuid_value(payload, "checkpointId")?;
+    let physical_restore_evidence_digest = text_value(payload, "physicalRestoreEvidenceDigest")?;
+    if physical_restore_evidence_digest.len() != 64
+        || !physical_restore_evidence_digest
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        bail!("KNOWLEDGE_PHYSICAL_RESTORE_EVIDENCE_INVALID");
+    }
+    let isolated_environment = text_value(payload, "isolatedEnvironment")?;
+    if isolated_environment == config.environment {
+        bail!("KNOWLEDGE_PHYSICAL_RESTORE_NOT_ISOLATED");
+    }
+    let restored_database_reference = text_value(payload, "restoredDatabaseReference")?;
+    let restored_object_reference = text_value(payload, "restoredObjectReference")?;
+    let row = sqlx::query(
+        "SELECT checkpoint.*,generation.ordered_segment_manifest_digest
+           FROM knowledge_backup_checkpoint_t checkpoint
+           JOIN knowledge_index_generation_t generation
+             ON generation.index_generation_id=checkpoint.index_generation_id
+          WHERE checkpoint.checkpoint_id=$1 AND checkpoint.knowledge_base_id=$2",
+    )
+    .bind(checkpoint_id)
+    .bind(config.knowledge_base_id)
+    .fetch_one(pool)
+    .await?;
+    let path = config
+        .object_store_root
+        .join("checkpoints")
+        .join(format!("{checkpoint_id}.json"));
+    let bytes = fs::read(&path)?;
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let expected = row.get::<String, _>("object_manifest_digest");
+    let actual = manifest
+        .get("objectManifestDigest")
+        .and_then(serde_json::Value::as_str)
+        .context("checkpoint manifest omits objectManifestDigest")?;
+    if actual != expected.trim()
+        || row
+            .get::<Option<String>, _>("ordered_segment_manifest_digest")
+            .is_none_or(|digest| digest.trim() != actual)
+    {
+        bail!("KNOWLEDGE_RESTORE_CHECKPOINT_MISMATCH");
+    }
+    if row.get::<String, _>("state") == "RESTORED" {
+        return Ok(());
+    }
+    let updated = sqlx::query(
+        "UPDATE knowledge_backup_checkpoint_t
+            SET state='RESTORED',verified_ts=now(),
+                verification_evidence=jsonb_build_object(
+                  'manifestRoundTrip',true,'physicalRestoreExecuted',true,
+                  'physicalRestoreEvidenceDigest',$2,
+                  'isolatedEnvironment',$3,
+                  'restoredDatabaseReference',$4,
+                  'restoredObjectReference',$5)
+          WHERE checkpoint_id=$1 AND state='REQUESTED'",
+    )
+    .bind(checkpoint_id)
+    .bind(physical_restore_evidence_digest)
+    .bind(isolated_environment)
+    .bind(restored_database_reference)
+    .bind(restored_object_reference)
+    .execute(pool)
+    .await?;
+    if updated.rows_affected() != 1 {
+        bail!("KNOWLEDGE_PHYSICAL_RESTORE_STATE_CONFLICT");
+    }
+    let generation_id = row.get::<Uuid, _>("index_generation_id");
+    sqlx::query(
+        "INSERT INTO knowledge_generation_retention_t(
+           index_generation_id,knowledge_base_id,retention_state,
+           backup_reference_count,last_reference_check_ts)
+         SELECT $1,$2,'RETAINED',count(*),now()
+           FROM knowledge_backup_checkpoint_t
+          WHERE index_generation_id=$1 AND state IN ('VERIFIED','RESTORED')
+            AND (retain_until_ts IS NULL OR retain_until_ts>now())
+         ON CONFLICT(index_generation_id) DO UPDATE SET
+           backup_reference_count=EXCLUDED.backup_reference_count,
+           last_reference_check_ts=now(),update_ts=now()",
+    )
+    .bind(generation_id)
+    .bind(config.knowledge_base_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn purge_retired_generation(
+    pool: &PgPool,
+    config: &WorkerConfig,
+    payload: &serde_json::Value,
+) -> Result<()> {
+    let migration_id = uuid_value(payload, "migrationId")?;
+    expire_backup_references(pool, config.knowledge_base_id).await?;
+    let mut tx = pool.begin().await?;
+    let generation_id = sqlx::query_scalar::<_, Uuid>(
+        "SELECT retention.index_generation_id
+           FROM knowledge_embedding_migration_t migration
+           JOIN knowledge_generation_retention_t retention
+             ON retention.index_generation_id=CASE
+               WHEN EXISTS (SELECT 1 FROM knowledge_index_pointer_t current
+                             WHERE current.index_generation_id=
+                               migration.source_generation_id)
+                 THEN migration.candidate_generation_id
+               ELSE migration.source_generation_id END
+          WHERE migration.migration_id=$1 AND migration.knowledge_base_id=$2
+            AND migration.state='RETIRED'
+            AND retention.retention_state='PURGE_APPROVED'
+            AND retention.legal_hold=FALSE
+            AND retention.backup_reference_count=0
+            AND retention.migration_reference_count=0
+            AND NOT EXISTS (SELECT 1 FROM knowledge_index_pointer_t pointer
+                             WHERE pointer.index_generation_id=
+                               retention.index_generation_id)
+          FOR UPDATE OF retention",
+    )
+    .bind(migration_id)
+    .bind(config.knowledge_base_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let locator_rows = sqlx::query(
+        "SELECT DISTINCT segment.physical_locator
+           FROM knowledge_generation_segment_t member
+           JOIN knowledge_index_segment_t segment
+             ON segment.index_segment_id=member.index_segment_id
+          WHERE member.index_generation_id=$1",
+    )
+    .bind(generation_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let manifest_paths = locator_rows
+        .iter()
+        .map(|row| {
+            object_locator_path(
+                &config.object_store_root,
+                &row.get::<String, _>("physical_locator"),
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    sqlx::query(
+        "CREATE TEMP TABLE phase3_purge_artifact_candidate
+           ON COMMIT DROP AS
+         SELECT DISTINCT vector.embedding_artifact_id
+           FROM knowledge_generation_segment_t member
+           JOIN knowledge_segment_vector_t vector
+             ON vector.index_segment_id=member.index_segment_id
+          WHERE member.index_generation_id=$1",
+    )
+    .bind(generation_id)
+    .execute(&mut *tx)
+    .await?;
+    let counts = sqlx::query(
+        "SELECT (SELECT count(*) FROM knowledge_generation_segment_t
+                  WHERE index_generation_id=$1)::bigint AS segments,
+                (SELECT count(*) FROM phase3_purge_artifact_candidate)::bigint
+                  AS artifacts",
+    )
+    .bind(generation_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query(
+        "WITH segments AS (
+           SELECT index_segment_id FROM knowledge_generation_segment_t
+            WHERE index_generation_id=$1)
+         DELETE FROM knowledge_segment_vector_t
+          WHERE index_segment_id IN (SELECT index_segment_id FROM segments)",
+    )
+    .bind(generation_id)
+    .execute(&mut *tx)
+    .await?;
+    let deleted_migration_chunks = sqlx::query(
+        "DELETE FROM knowledge_embedding_migration_chunk_t item
+          USING phase3_purge_artifact_candidate candidate
+          WHERE item.migration_id=$1
+            AND item.embedding_artifact_id=candidate.embedding_artifact_id
+            AND NOT EXISTS (
+              SELECT 1 FROM knowledge_segment_vector_t remaining
+               WHERE remaining.embedding_artifact_id=item.embedding_artifact_id)",
+    )
+    .bind(migration_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    let deleted_mappings = sqlx::query(
+        "DELETE FROM knowledge_chunk_embedding_t mapping
+          USING phase3_purge_artifact_candidate candidate
+          WHERE mapping.embedding_artifact_id=candidate.embedding_artifact_id
+            AND NOT EXISTS (
+              SELECT 1 FROM knowledge_segment_vector_t remaining
+               WHERE remaining.embedding_artifact_id=mapping.embedding_artifact_id)",
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    let deleted_references = sqlx::query(
+        "DELETE FROM knowledge_embedding_reference_t reference
+          USING phase3_purge_artifact_candidate candidate
+          WHERE reference.embedding_artifact_id=candidate.embedding_artifact_id
+            AND NOT EXISTS (
+              SELECT 1 FROM knowledge_segment_vector_t remaining
+               WHERE remaining.embedding_artifact_id=reference.embedding_artifact_id)",
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    let deleted_artifacts = sqlx::query(
+        "DELETE FROM knowledge_embedding_artifact_t artifact
+          USING phase3_purge_artifact_candidate candidate
+          WHERE artifact.embedding_artifact_id=candidate.embedding_artifact_id
+            AND NOT EXISTS (
+              SELECT 1 FROM knowledge_segment_vector_t remaining
+               WHERE remaining.embedding_artifact_id=artifact.embedding_artifact_id)
+            AND NOT EXISTS (
+              SELECT 1 FROM knowledge_chunk_embedding_t mapping
+               WHERE mapping.embedding_artifact_id=artifact.embedding_artifact_id)",
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    sqlx::query(
+        "WITH segments AS (
+           SELECT index_segment_id FROM knowledge_generation_segment_t
+            WHERE index_generation_id=$1)
+         DELETE FROM knowledge_segment_operation_t
+          WHERE index_segment_id IN (SELECT index_segment_id FROM segments)",
+    )
+    .bind(generation_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "WITH segments AS (
+           SELECT index_segment_id FROM knowledge_generation_segment_t
+            WHERE index_generation_id=$1)
+         DELETE FROM knowledge_segment_chunk_t
+          WHERE index_segment_id IN (SELECT index_segment_id FROM segments)",
+    )
+    .bind(generation_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "WITH segments AS (
+           SELECT index_segment_id FROM knowledge_generation_segment_t
+            WHERE index_generation_id=$1)
+         DELETE FROM knowledge_segment_document_t
+          WHERE index_segment_id IN (SELECT index_segment_id FROM segments)",
+    )
+    .bind(generation_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE knowledge_index_segment_t SET state='PURGED'
+          WHERE index_generation_id=$1",
+    )
+    .bind(generation_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE knowledge_index_generation_t SET state='PURGED'
+          WHERE index_generation_id=$1 AND state='SUPERSEDED'",
+    )
+    .bind(generation_id)
+    .execute(&mut *tx)
+    .await?;
+    let purge_evidence_id = derived_uuid("purge-evidence", migration_id);
+    let requested_evidence = json!({
+        "generationId": generation_id,
+        "segmentsPurged": counts.get::<i64, _>("segments"),
+        "candidateArtifactsConsidered": counts.get::<i64, _>("artifacts"),
+        "migrationChunkLedgerRowsDeleted": deleted_migration_chunks,
+        "embeddingMappingsDeleted": deleted_mappings,
+        "embeddingReferenceRowsDeleted": deleted_references,
+        "embeddingArtifactsDeleted": deleted_artifacts,
+        "manifestObjectsPending": manifest_paths.len(),
+        "lastReferenceFencePassed": true
+    });
+    sqlx::query(
+        "INSERT INTO knowledge_purge_evidence_t(
+           purge_evidence_id,knowledge_base_id,index_generation_id,purge_scope,
+           state,reference_counts,deletion_counts,evidence_digest,authorized_by,finished_ts)
+         VALUES($1,$2,$3,'GENERATION','REQUESTED',$4,$5,$6,
+                'light-knowledge-worker',NULL)
+         ON CONFLICT(purge_evidence_id) DO UPDATE SET
+           state='REQUESTED',deletion_counts=EXCLUDED.deletion_counts,
+           evidence_digest=EXCLUDED.evidence_digest,finished_ts=NULL",
+    )
+    .bind(purge_evidence_id)
+    .bind(config.knowledge_base_id)
+    .bind(generation_id)
+    .bind(json!({"activePointer": 0, "backup": 0, "migration": 0, "legalHold": 0}))
+    .bind(&requested_evidence)
+    .bind(sha256_hex(
+        serde_json::to_string(&requested_evidence)?.as_bytes(),
+    ))
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let mut manifest_objects_deleted = 0usize;
+    for path in &manifest_paths {
+        match fs::remove_file(path) {
+            Ok(()) => manifest_objects_deleted += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                sqlx::query(
+                    "UPDATE knowledge_purge_evidence_t
+                        SET state='FAILED',finished_ts=now()
+                      WHERE purge_evidence_id=$1",
+                )
+                .bind(purge_evidence_id)
+                .execute(pool)
+                .await?;
+                return Err(error.into());
+            }
+        }
+    }
+    let verified_evidence = json!({
+        "generationId": generation_id,
+        "segmentsPurged": counts.get::<i64, _>("segments"),
+        "candidateArtifactsConsidered": counts.get::<i64, _>("artifacts"),
+        "migrationChunkLedgerRowsDeleted": deleted_migration_chunks,
+        "embeddingMappingsDeleted": deleted_mappings,
+        "embeddingReferenceRowsDeleted": deleted_references,
+        "embeddingArtifactsDeleted": deleted_artifacts,
+        "manifestObjectsDeleted": manifest_objects_deleted,
+        "manifestObjectsVerifiedAbsent": manifest_paths.len(),
+        "lastReferenceFencePassed": true
+    });
+    let mut finish = pool.begin().await?;
+    sqlx::query(
+        "UPDATE knowledge_generation_retention_t
+            SET retention_state='PURGED',update_ts=now()
+          WHERE index_generation_id=$1 AND retention_state='PURGE_APPROVED'",
+    )
+    .bind(generation_id)
+    .execute(&mut *finish)
+    .await?;
+    sqlx::query(
+        "UPDATE knowledge_purge_evidence_t
+            SET state='VERIFIED',deletion_counts=$2,evidence_digest=$3,
+                finished_ts=now()
+          WHERE purge_evidence_id=$1 AND state='REQUESTED'",
+    )
+    .bind(purge_evidence_id)
+    .bind(&verified_evidence)
+    .bind(sha256_hex(
+        serde_json::to_string(&verified_evidence)?.as_bytes(),
+    ))
+    .execute(&mut *finish)
+    .await?;
+    finish.commit().await?;
+    Ok(())
 }
 
 async fn schedule_due_acl_reconciliation(pool: &PgPool, config: &WorkerConfig) -> Result<()> {
@@ -410,6 +2681,73 @@ async fn schedule_due_acl_reconciliation(pool: &PgPool, config: &WorkerConfig) -
     )
     .bind(config.knowledge_base_id)
     .bind(config.source_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn schedule_production_maintenance(pool: &PgPool, config: &WorkerConfig) -> Result<()> {
+    if !config.production_operations_enabled {
+        return Ok(());
+    }
+    let phase3_ready = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT to_regclass('knowledge_operational_policy_t')::text",
+    )
+    .fetch_one(pool)
+    .await?
+    .is_some();
+    if !phase3_ready {
+        return Ok(());
+    }
+    sqlx::query(
+        "INSERT INTO knowledge_operational_policy_t(knowledge_base_id)
+         VALUES($1) ON CONFLICT(knowledge_base_id) DO NOTHING",
+    )
+    .bind(config.knowledge_base_id)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO knowledge_job_t(
+           job_id,knowledge_base_id,job_type,idempotency_key,requested_by,payload)
+         SELECT gen_random_uuid(),pointer.knowledge_base_id,'ANTI_ENTROPY',
+                'scheduled-anti-entropy:'||floor(extract(epoch FROM now())/
+                  policy.anti_entropy_interval_seconds)::bigint,
+                'light-knowledge-scheduler',
+                jsonb_build_object('indexGenerationId',pointer.index_generation_id)
+           FROM knowledge_index_pointer_t pointer
+           JOIN knowledge_operational_policy_t policy
+             ON policy.knowledge_base_id=pointer.knowledge_base_id
+          WHERE pointer.knowledge_base_id=$1
+            AND NOT EXISTS (
+              SELECT 1 FROM knowledge_anti_entropy_run_t run
+               WHERE run.knowledge_base_id=pointer.knowledge_base_id
+                 AND run.started_ts>now()-
+                     make_interval(secs=>policy.anti_entropy_interval_seconds::int))
+         ON CONFLICT(knowledge_base_id,idempotency_key) DO NOTHING",
+    )
+    .bind(config.knowledge_base_id)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO knowledge_job_t(
+           job_id,knowledge_base_id,job_type,idempotency_key,requested_by,payload)
+         SELECT gen_random_uuid(),pointer.knowledge_base_id,'BACKUP_CHECKPOINT',
+                'scheduled-backup:'||floor(extract(epoch FROM now())/
+                  policy.backup_interval_seconds)::bigint,
+                'light-knowledge-scheduler',
+                jsonb_build_object('checkpointId',gen_random_uuid())
+           FROM knowledge_index_pointer_t pointer
+           JOIN knowledge_operational_policy_t policy
+             ON policy.knowledge_base_id=pointer.knowledge_base_id
+          WHERE pointer.knowledge_base_id=$1
+            AND NOT EXISTS (
+              SELECT 1 FROM knowledge_backup_checkpoint_t checkpoint
+               WHERE checkpoint.knowledge_base_id=pointer.knowledge_base_id
+                 AND checkpoint.created_ts>now()-
+                     make_interval(secs=>policy.backup_interval_seconds::int))
+         ON CONFLICT(knowledge_base_id,idempotency_key) DO NOTHING",
+    )
+    .bind(config.knowledge_base_id)
     .execute(pool)
     .await?;
     Ok(())
@@ -3167,7 +5505,15 @@ async fn apply_desired_state(
         | "KnowledgeBaseCompactionRequestedEvent"
         | "KnowledgeBaseIndexGenerationPromotionRequestedEvent"
         | "KnowledgeBasePurgeRequestedEvent"
-        | "KnowledgeBaseRetrievalTestRequestedEvent" => {
+        | "KnowledgeBaseRetrievalTestRequestedEvent"
+        | "KnowledgeBaseEmbeddingMigrationRequestedEvent"
+        | "KnowledgeBaseEmbeddingMigrationPausedEvent"
+        | "KnowledgeBaseEmbeddingMigrationResumedEvent"
+        | "KnowledgeBaseEmbeddingMigrationCancelledEvent"
+        | "KnowledgeBaseIndexGenerationRollbackRequestedEvent"
+        | "KnowledgeBaseIndexGenerationRetirementRequestedEvent"
+        | "KnowledgeBaseBackupCheckpointRequestedEvent"
+        | "KnowledgeBasePhysicalRestoreVerificationRequestedEvent" => {
             let enterprise_source = if event.event_type == "KnowledgeSourceSyncRequestedEvent" {
                 let source_type = sqlx::query_scalar::<_, String>(
                     "SELECT source_type FROM knowledge_source_t WHERE source_id=$1",
@@ -3179,8 +5525,19 @@ async fn apply_desired_state(
             } else {
                 false
             };
-            let job_type = projected_job_type(&event.event_type, enterprise_source)
-                .context("projected Knowledge event has no job route")?;
+            let job_type = if event.event_type
+                == "KnowledgeBaseIndexGenerationPromotionRequestedEvent"
+                && payload.get("migrationId").is_some()
+            {
+                "MIGRATION_PROMOTE"
+            } else if event.event_type == "KnowledgeBaseRetrievalTestRequestedEvent"
+                && payload.get("migrationId").is_some()
+            {
+                "MIGRATION_VALIDATE"
+            } else {
+                projected_job_type(&event.event_type, enterprise_source)
+                    .context("projected Knowledge event has no job route")?
+            };
             sqlx::query("INSERT INTO knowledge_job_t(job_id,knowledge_base_id,source_id,job_type,idempotency_key,requested_by,payload) VALUES($1,$2,$3,$4,$5,'portal-event',$6) ON CONFLICT(knowledge_base_id,idempotency_key) DO NOTHING")
                 .bind(event.event_id)
                 .bind(uuid_value(payload, "knowledgeBaseId")?)
@@ -3372,6 +5729,20 @@ mod tests {
             ("KnowledgeBaseIndexGenerationPromotionRequestedEvent", false),
             ("KnowledgeBaseRetrievalTestRequestedEvent", false),
             ("KnowledgeBasePurgeRequestedEvent", false),
+            ("KnowledgeBaseEmbeddingMigrationRequestedEvent", false),
+            ("KnowledgeBaseEmbeddingMigrationPausedEvent", false),
+            ("KnowledgeBaseEmbeddingMigrationResumedEvent", false),
+            ("KnowledgeBaseEmbeddingMigrationCancelledEvent", false),
+            ("KnowledgeBaseIndexGenerationRollbackRequestedEvent", false),
+            (
+                "KnowledgeBaseIndexGenerationRetirementRequestedEvent",
+                false,
+            ),
+            ("KnowledgeBaseBackupCheckpointRequestedEvent", false),
+            (
+                "KnowledgeBasePhysicalRestoreVerificationRequestedEvent",
+                false,
+            ),
         ];
         let claimed = PRIORITY_JOB_TYPES
             .iter()
@@ -3394,6 +5765,27 @@ mod tests {
         assert_eq!(
             worker_error_code(&anyhow::anyhow!("connection failed")),
             "KNOWLEDGE_BUILD_FAILED"
+        );
+    }
+
+    #[test]
+    fn migration_cost_allocation_reconciles_exactly() {
+        let allocations = allocate_exact(10, &[1, 1, 1]);
+        assert_eq!(allocations.iter().sum::<i64>(), 10);
+        assert_eq!(allocations, vec![3, 3, 4]);
+    }
+
+    #[test]
+    fn migration_failure_code_prefers_structured_chain_code() {
+        let error = anyhow::anyhow!("error returned from database: unavailable")
+            .context("KNOWLEDGE_MIGRATION_CURSOR_CONFLICT: retry required");
+        assert_eq!(
+            migration_failure_code(&error),
+            "KNOWLEDGE_MIGRATION_CURSOR_CONFLICT"
+        );
+        assert_eq!(
+            migration_failure_code(&anyhow::anyhow!("error returned from database: timeout")),
+            "KNOWLEDGE_MIGRATION_DEPENDENCY_FAILURE"
         );
     }
 

@@ -94,6 +94,10 @@ pub struct FeatureFlags {
     pub graph_assisted: bool,
     #[serde(default)]
     pub enterprise_source_acls: bool,
+    #[serde(default)]
+    pub embedding_migration: bool,
+    #[serde(default)]
+    pub production_operations: bool,
 }
 
 impl KnowledgeConfig {
@@ -2209,6 +2213,8 @@ mod tests {
                 multi_knowledge_base: false,
                 graph_assisted: false,
                 enterprise_source_acls: false,
+                embedding_migration: false,
+                production_operations: false,
             },
         };
         assert!(config.validate().is_ok());
@@ -2319,6 +2325,8 @@ mod tests {
                 multi_knowledge_base: false,
                 graph_assisted: false,
                 enterprise_source_acls: false,
+                embedding_migration: false,
+                production_operations: false,
             },
         };
         let secret = b"01234567890123456789012345678901";
