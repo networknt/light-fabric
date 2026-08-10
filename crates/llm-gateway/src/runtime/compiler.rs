@@ -817,16 +817,10 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
                     result.pii_preservation.as_ref(),
                     now,
                 )?,
-                None => {
-                    if alias.pii.enabled
-                        && candidate.pii_placeholder_preservation_percent
-                            < alias.pii.minimum_placeholder_preservation_percent
-                    {
-                        return Err(LlmGatewayError::Config(format!(
-                            "alias `{name}` requires PII placeholder preservation not proven by development deployment `{deployment}`"
-                        )));
-                    }
-                }
+                // Request-scoped PII is a gateway transform. Portal projection
+                // does not require provider conformance evidence before the
+                // operator can publish and validate the live configuration.
+                None => {}
             }
         }
         for operation in &alias.operations {
@@ -870,7 +864,7 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
                 || deployment.concurrency > capacity.max_parallel_requests
             {
                 return Err(LlmGatewayError::Config(format!(
-                    "deployment `{id}` has invalid runtime capacity or exceeds qualified parallelism"
+                    "deployment `{id}` has invalid runtime capacity or exceeds declared parallelism"
                 )));
             }
             let registration = (
@@ -947,12 +941,9 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
                 "deployment `{id}` has invalid, mismatched, or expired conformance evidence"
             )));
         }
-        if !config.development_fixtures && provider.endpoint_auth.is_some() {
-            let result = deployment.conformance_result.as_ref().ok_or_else(|| {
-                LlmGatewayError::Config(format!(
-                    "deployment `{id}` requires signed live conformance evidence"
-                ))
-            })?;
+        if !config.development_fixtures
+            && let Some(result) = deployment.conformance_result.as_ref()
+        {
             validate_live_evidence(id, provider, deployment, result, evidence_keys.as_ref())?;
         }
     }
@@ -1279,6 +1270,9 @@ fn validate_embedding_space(
 }
 
 fn capabilities_for_deployment(config: &crate::config::DeploymentConfig) -> ProviderCapabilities {
+    if let Some(capabilities) = &config.declared_capabilities {
+        return capabilities.clone();
+    }
     if let Some(result) = &config.conformance_result {
         return result.capabilities.clone();
     }

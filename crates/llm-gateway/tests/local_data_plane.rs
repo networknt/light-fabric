@@ -1181,6 +1181,7 @@ fn compiler_config() -> LlmRouterConfig {
                         output_micros_per_million: 2,
                     }),
                 )]),
+                declared_capabilities: None,
                 embedding_capabilities: None,
                 conformance_digest: "a".repeat(64),
                 conformance_result: None,
@@ -1553,6 +1554,7 @@ fn compiler_accepts_alias_with_separate_generate_and_embed_deployments() {
                     input_micros_per_million: 1,
                 }),
             )]),
+            declared_capabilities: None,
             embedding_capabilities: Some(EmbeddingCapabilities {
                 max_batch_items: 2,
                 max_input_tokens_per_item: 128,
@@ -3637,7 +3639,7 @@ fn request_pii_profile(unresolved: UnresolvedPiiBehavior) -> PiiProfile {
 }
 
 #[test]
-fn pii_alias_requires_placeholder_preservation_evidence_from_every_deployment() {
+fn request_scoped_pii_does_not_require_provider_conformance_evidence() {
     let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
         "secret".to_string(),
         "value".to_string(),
@@ -3649,15 +3651,15 @@ fn pii_alias_requires_placeholder_preservation_evidence_from_every_deployment() 
         .deployments
         .get_mut("d")
         .unwrap()
-        .pii_placeholder_preservation_percent = 99;
-    assert!(compiler.compile(&config, 1, None).is_err());
+        .pii_placeholder_preservation_percent = 0;
+    assert!(compiler.compile(&config, 1, None).is_ok());
 
     config
         .deployments
         .get_mut("d")
         .unwrap()
-        .pii_placeholder_preservation_percent = 100;
-    assert!(compiler.compile(&config, 1, None).is_ok());
+        .pii_placeholder_preservation_percent = 101;
+    assert!(compiler.compile(&config, 1, None).is_err());
 }
 
 #[tokio::test]

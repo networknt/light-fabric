@@ -1,7 +1,9 @@
 use crate::pii::PiiProfile;
 use crate::usage::OperationPrice;
 use model_provider::conformance::{ConformanceResult, FixtureProvenance};
-use model_provider::inference::{EmbeddingCapabilities, EmbeddingSpaceContract};
+use model_provider::inference::{
+    EmbeddingCapabilities, EmbeddingSpaceContract, ProviderCapabilities,
+};
 use model_provider::inference::{Operation, ProviderProtocol};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -504,13 +506,17 @@ pub struct DeploymentConfig {
     #[serde(default)]
     pub pricing_basis: PricingBasis,
     pub prices: BTreeMap<Operation, OperationPrice>,
+    /// Complete static provider contract supplied by the control plane.
+    /// Projection V2/V3 populate this without flattening capability fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_capabilities: Option<ProviderCapabilities>,
     #[serde(default)]
     pub embedding_capabilities: Option<EmbeddingCapabilities>,
     #[serde(default)]
     pub conformance_digest: String,
-    /// Complete, self-digested deployment evidence. It is mandatory outside
-    /// development fixtures and is rechecked on every eligibility decision so
-    /// an expired result cannot remain active in a stale snapshot.
+    /// Legacy complete, self-digested deployment evidence. New control-plane
+    /// projections use `declaredCapabilities`; this remains readable for
+    /// compatibility with manually supplied or older configuration.
     #[serde(default)]
     pub conformance_result: Option<ConformanceResult>,
     #[serde(default = "default_true")]
@@ -521,13 +527,11 @@ pub struct DeploymentConfig {
     pub tools: bool,
     #[serde(default)]
     pub structured_json: bool,
-    /// Development-fixture streaming capability. Defaults to true so local
-    /// fixtures keep SSE parity with production deployments, whose streaming
-    /// capability always comes from conformance evidence instead.
+    /// Legacy flattened streaming capability. Defaults to true so local
+    /// fixtures retain SSE parity when no complete declared contract exists.
     #[serde(default = "default_true")]
     pub streaming: bool,
-    /// Exact placeholder-preservation percentage from the versioned
-    /// deployment conformance corpus. Zero means no reversible-PII evidence.
+    /// Legacy development-fixture placeholder-preservation percentage.
     #[serde(default)]
     pub pii_placeholder_preservation_percent: u8,
 }

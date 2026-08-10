@@ -62,7 +62,7 @@ use sqlx::postgres::PgPoolOptions;
 use std::collections::BTreeMap;
 use std::io::BufReader;
 use std::path::{Component, Path};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
@@ -73,6 +73,11 @@ use url::form_urlencoded;
 mod projection_ack;
 use projection_ack::{
     ProjectionAcknowledgementForwarderConfig, start_projection_acknowledgement_forwarder,
+};
+
+mod live_validation;
+use live_validation::{
+    LiveValidationOptions, live_validation_usage, parse_live_validation_options,
 };
 
 mod embedded_config {
@@ -4585,10 +4590,12 @@ struct AccessControlExchange {
     request_data: JsonValue,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum GatewayCommand {
     Start,
     ValidateConfig { local_only: bool },
+    ShowLlmLiveHelp,
+    ValidateLlmLive(LiveValidationOptions),
 }
 
 fn parse_gateway_command<I, S>(args: I) -> Result<GatewayCommand>
@@ -4611,8 +4618,16 @@ where
         [command, option] if command == "validate-config" && option == "--with-remote" => {
             Ok(GatewayCommand::ValidateConfig { local_only: false })
         }
+        [command, option]
+            if command == "validate-llm-live" && matches!(option.as_str(), "--help" | "-h") =>
+        {
+            Ok(GatewayCommand::ShowLlmLiveHelp)
+        }
+        [command, options @ ..] if command == "validate-llm-live" => {
+            parse_live_validation_options(options).map(GatewayCommand::ValidateLlmLive)
+        }
         _ => anyhow::bail!(
-            "unknown light-gateway arguments; expected no arguments or `validate-config [--local-only|--with-remote]`"
+            "unknown light-gateway arguments; expected no arguments, `validate-config [--local-only|--with-remote]`, or `validate-llm-live --help`"
         ),
     }
 }
@@ -4627,6 +4642,18 @@ async fn main() -> Result<()> {
     }
 
     let command = parse_gateway_command(std::env::args().skip(1))?;
+    if command == GatewayCommand::ShowLlmLiveHelp {
+        println!("{}", live_validation_usage());
+        return Ok(());
+    }
+    if let GatewayCommand::ValidateLlmLive(options) = command {
+        let outcome = live_validation::validate_live(options).await;
+        println!("{}", outcome.render()?);
+        if outcome.exit_code != 0 {
+            std::process::exit(outcome.exit_code);
+        }
+        return Ok(());
+    }
     let cache_registry = Arc::new(CacheRegistry::new());
     let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp))
         .with_embedded_config(embedded_config::FILES)
@@ -5693,6 +5720,7 @@ mod tests {
     use serde_json::{Value as JsonValue, json};
     use std::collections::HashMap;
     use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
     use tempfile::TempDir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
@@ -5722,8 +5750,28 @@ mod tests {
                 .expect("remote validation command"),
             GatewayCommand::ValidateConfig { local_only: false }
         );
+        let live = parse_gateway_command([
+            "validate-llm-live",
+            "--gateway-url",
+            "https://gateway.example.com",
+            "--operation",
+            "responses",
+            "--alias",
+            "public-model",
+            "--header-file",
+            "/protected/gateway-header",
+            "--timeout-seconds",
+            "30",
+        ])
+        .expect("live validation command");
+        assert!(matches!(live, GatewayCommand::ValidateLlmLive(_)));
+        assert_eq!(
+            parse_gateway_command(["validate-llm-live", "--help"]).expect("live help command"),
+            GatewayCommand::ShowLlmLiveHelp
+        );
         assert!(parse_gateway_command(["validate-cfg"]).is_err());
         assert!(parse_gateway_command(["validate-config", "--unknown"]).is_err());
+        assert!(parse_gateway_command(["validate-llm-live", "--input", "secret"]).is_err());
     }
 
     #[test]

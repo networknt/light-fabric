@@ -14,8 +14,7 @@ use crate::error::LlmGatewayError;
 use crate::runtime::{LlmCompiler, LlmSnapshotStore, PublishOutcome};
 use crate::usage::{EmbeddingPrice, GenerationPrice, OperationPrice};
 use chrono::{SecondsFormat, Utc};
-use model_provider::conformance::ConformanceResult;
-use model_provider::inference::{Operation, ProviderProtocol};
+use model_provider::inference::{Operation, ProviderCapabilities, ProviderProtocol};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -701,8 +700,13 @@ struct DeploymentPayload {
     model: String,
     #[serde(default = "default_deployment_concurrency")]
     concurrency: usize,
-    conformance_digest: String,
-    conformance_result: ConformanceResult,
+    #[serde(default)]
+    declared_capabilities: Option<ProviderCapabilities>,
+    /// One-release read bridge for stored V2 publication resources.
+    #[serde(default, rename = "conformanceDigest")]
+    _legacy_conformance_digest: Option<Value>,
+    #[serde(default, rename = "conformanceResult")]
+    legacy_conformance_result: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -733,8 +737,30 @@ struct DeploymentPayloadV3 {
     #[serde(default)]
     sidecar: Option<SidecarExpectation>,
     pricing_basis: PricingBasis,
-    conformance_digest: String,
-    conformance_result: ConformanceResult,
+    #[serde(default)]
+    declared_capabilities: Option<ProviderCapabilities>,
+    /// One-release read bridge for stored V3 publication resources.
+    #[serde(default, rename = "conformanceDigest")]
+    _legacy_conformance_digest: Option<Value>,
+    #[serde(default, rename = "conformanceResult")]
+    legacy_conformance_result: Option<Value>,
+}
+
+fn projected_capabilities(
+    declared: Option<ProviderCapabilities>,
+    legacy_conformance_result: Option<Value>,
+) -> Result<ProviderCapabilities, ProjectionError> {
+    if let Some(capabilities) = declared {
+        return Ok(capabilities);
+    }
+    legacy_conformance_result
+        .and_then(|result| result.get("capabilities").cloned())
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(contract_json)?
+        .ok_or_else(|| {
+            ProjectionError::Contract("deployment has no declared capabilities".to_string())
+        })
 }
 
 #[derive(Debug, Deserialize)]
@@ -864,7 +890,10 @@ fn assemble_config_v2(
                         .providers
                         .insert(payload.provider_id.clone(), provider);
                 }
-                let capabilities = payload.conformance_result.capabilities.clone();
+                let capabilities = projected_capabilities(
+                    payload.declared_capabilities,
+                    payload.legacy_conformance_result,
+                )?;
                 config.deployments.insert(
                     payload.deployment_id,
                     DeploymentConfig {
@@ -876,9 +905,10 @@ fn assemble_config_v2(
                         sidecar: None,
                         pricing_basis: Default::default(),
                         prices: BTreeMap::new(),
+                        declared_capabilities: Some(capabilities.clone()),
                         embedding_capabilities: capabilities.embedding.clone(),
-                        conformance_digest: payload.conformance_digest,
-                        conformance_result: Some(payload.conformance_result),
+                        conformance_digest: String::new(),
+                        conformance_result: None,
                         text: capabilities
                             .generation
                             .as_ref()
@@ -1099,7 +1129,10 @@ fn assemble_config_v3(
                         "v3 deployment payload/resource/endpoint mismatch".to_string(),
                     ));
                 }
-                let capabilities = payload.conformance_result.capabilities.clone();
+                let capabilities = projected_capabilities(
+                    payload.declared_capabilities,
+                    payload.legacy_conformance_result,
+                )?;
                 config.deployments.insert(
                     payload.deployment_id,
                     DeploymentConfig {
@@ -1111,9 +1144,10 @@ fn assemble_config_v3(
                         sidecar: payload.sidecar,
                         pricing_basis: payload.pricing_basis,
                         prices: BTreeMap::new(),
+                        declared_capabilities: Some(capabilities.clone()),
                         embedding_capabilities: capabilities.embedding.clone(),
-                        conformance_digest: payload.conformance_digest,
-                        conformance_result: Some(payload.conformance_result),
+                        conformance_digest: String::new(),
+                        conformance_result: None,
                         text: capabilities
                             .generation
                             .as_ref()
@@ -1435,24 +1469,8 @@ fn default_attempts() -> usize {
 mod tests {
     use super::*;
     use crate::credentials::SecretResolver;
-    use model_provider::conformance::{ConformanceResult, FixtureProvenance};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Mutex, RwLock};
-
-    fn captured_conformance_result() -> ConformanceResult {
-        let mut result: ConformanceResult = serde_json::from_str(include_str!(
-            "../../model-provider/conformance/results/openai-chat.json"
-        ))
-        .expect("checked-in OpenAI conformance result");
-        result.physical_model = "gpt-governed".to_string();
-        result.tested_at = "2026-07-19T00:00:00Z".parse().unwrap();
-        result.valid_until = "2999-01-01T00:00:00Z".parse().unwrap();
-        for evidence in result.capability_evidence.values_mut() {
-            evidence.provenances = BTreeSet::from([FixtureProvenance::CapturedSanitized]);
-        }
-        result.refresh_digest();
-        result
-    }
 
     #[derive(Clone)]
     struct MemorySource(Arc<Mutex<ProjectionBundle>>);
@@ -1535,8 +1553,14 @@ mod tests {
     }
 
     fn bundle(sequence: u64) -> ProjectionBundle {
-        let conformance = captured_conformance_result();
-        let conformance_digest = conformance.digest.clone();
+        let declared_capabilities: ProviderCapabilities =
+            serde_json::from_value(serde_json::json!({
+                "operations":["generate"],
+                "generation":{"content":{"text":true,"images":false,"tools":false,
+                    "parallelTools":false,"structuredJson":false,"reasoningUsage":false},
+                    "streaming":true}
+            }))
+            .unwrap();
         let resources = [
             resource(
                 "llm-deployment",
@@ -1551,8 +1575,7 @@ mod tests {
                     "quotaGroupId":"openai-capacity",
                     "model":"gpt-governed",
                     "concurrency":8,
-                    "conformanceDigest":conformance_digest,
-                    "conformanceResult":conformance
+                    "declaredCapabilities":declared_capabilities
                 }),
             ),
             resource(
@@ -1637,15 +1660,6 @@ mod tests {
         let mut value = serde_json::to_value(&bundle.manifest).unwrap();
         remove_field(&mut value, "rootDigest").unwrap();
         bundle.manifest.root_digest = canonical_digest(&value).unwrap();
-    }
-
-    fn refresh_resource(bundle: &mut ProjectionBundle, key: &str) {
-        let resource = bundle.resources.get_mut(key).unwrap();
-        resource.digest.clear();
-        let mut value = serde_json::to_value(&*resource).unwrap();
-        remove_field(&mut value, "digest").unwrap();
-        resource.digest = canonical_digest(&value).unwrap();
-        refresh_manifest(bundle);
     }
 
     fn initial_store(
@@ -1767,44 +1781,208 @@ mod tests {
     }
 
     #[test]
-    fn production_projection_rejects_missing_or_synthetic_only_conformance_evidence() {
-        let mut missing = bundle(1);
-        missing
-            .resources
-            .get_mut("llm-deployment/openai-primary")
-            .unwrap()
-            .payload
-            .as_object_mut()
-            .unwrap()
-            .remove("conformanceResult");
-        refresh_resource(&mut missing, "llm-deployment/openai-primary");
-        assert!(assemble_config(&LlmRouterConfig::default(), &missing).is_err());
-
-        let mut synthetic = bundle(1);
-        let deployment = synthetic
-            .resources
-            .get_mut("llm-deployment/openai-primary")
-            .unwrap();
-        let mut result: ConformanceResult =
-            serde_json::from_value(deployment.payload["conformanceResult"].clone()).unwrap();
-        for evidence in result.capability_evidence.values_mut() {
-            evidence.provenances = BTreeSet::from([FixtureProvenance::SyntheticSpecDerived]);
-        }
-        result.refresh_digest();
-        deployment.payload["conformanceDigest"] = Value::String(result.digest.clone());
-        deployment.payload["conformanceResult"] = serde_json::to_value(result).unwrap();
-        refresh_resource(&mut synthetic, "llm-deployment/openai-primary");
-        let config = assemble_config(&LlmRouterConfig::default(), &synthetic).unwrap();
+    fn production_projection_accepts_declared_capabilities_without_conformance() {
+        let config = assemble_config(&LlmRouterConfig::default(), &bundle(1)).unwrap();
         let resolver = Arc::new(RotatingResolver::default());
         resolver.0.write().unwrap().insert(
             "credential://host-a/openai".to_string(),
             "secret".to_string(),
         );
-        let error = LlmCompiler::new(resolver)
+        LlmCompiler::new(resolver)
             .compile(&config, 1, None)
-            .err()
-            .expect("synthetic-only evidence must not enable production routing");
-        assert!(error.to_string().contains("not proven"));
+            .expect("declared capabilities must be sufficient for production routing");
+    }
+
+    #[test]
+    fn production_projection_preserves_complete_generation_capabilities() {
+        let mut candidate = bundle(1);
+        let deployment = candidate
+            .resources
+            .get_mut("llm-deployment/openai-primary")
+            .unwrap();
+        deployment.payload["providerProtocol"] = serde_json::json!("openai_responses");
+        deployment.payload["declaredCapabilities"]["generation"]["content"]["parallelTools"] =
+            serde_json::json!(false);
+        deployment.payload["declaredCapabilities"]["generation"]["content"]["reasoningUsage"] =
+            serde_json::json!(true);
+
+        let config = assemble_config(&LlmRouterConfig::default(), &candidate).unwrap();
+        let declared = config.deployments["openai-primary"]
+            .declared_capabilities
+            .as_ref()
+            .unwrap();
+        let generation = declared.generation.as_ref().unwrap();
+        assert!(!generation.content.parallel_tools);
+        assert!(generation.content.reasoning_usage);
+
+        let resolver = Arc::new(RotatingResolver::default());
+        resolver.0.write().unwrap().insert(
+            "credential://host-a/openai".to_string(),
+            "secret".to_string(),
+        );
+        let snapshot = LlmCompiler::new(resolver)
+            .compile(&config, 1, None)
+            .unwrap();
+        let runtime_generation = snapshot.deployments["openai-primary"]
+            .capabilities
+            .generation
+            .as_ref()
+            .unwrap();
+        assert!(!runtime_generation.content.parallel_tools);
+        assert!(runtime_generation.content.reasoning_usage);
+    }
+
+    #[test]
+    fn production_projection_compiles_request_scoped_pii_without_endpoint_evidence() {
+        let mut candidate = bundle(1);
+        candidate
+            .resources
+            .get_mut("llm-route/governed-chat")
+            .unwrap()
+            .payload["pii"] = serde_json::json!({"enabled":true,"kinds":["email"]});
+
+        let config = assemble_config(&LlmRouterConfig::default(), &candidate).unwrap();
+        let resolver = Arc::new(RotatingResolver::default());
+        resolver.0.write().unwrap().insert(
+            "credential://host-a/openai".to_string(),
+            "secret".to_string(),
+        );
+        LlmCompiler::new(resolver)
+            .compile(&config, 1, None)
+            .expect("request-scoped PII must not require Portal endpoint conformance");
+    }
+
+    #[test]
+    fn legacy_publication_capabilities_bridge_into_the_declared_contract() {
+        let mut candidate = bundle(1);
+        let deployment = candidate
+            .resources
+            .get_mut("llm-deployment/openai-primary")
+            .unwrap();
+        let capabilities = deployment.payload["declaredCapabilities"].take();
+        deployment
+            .payload
+            .as_object_mut()
+            .unwrap()
+            .remove("declaredCapabilities");
+        deployment.payload["conformanceDigest"] = serde_json::json!("sha256:legacy");
+        deployment.payload["conformanceResult"] = serde_json::json!({
+            "capabilities": capabilities,
+            "legacyFieldThatIsNoLongerTrusted": true
+        });
+
+        let config = assemble_config(&LlmRouterConfig::default(), &candidate).unwrap();
+        assert!(
+            config.deployments["openai-primary"]
+                .declared_capabilities
+                .as_ref()
+                .unwrap()
+                .supports(Operation::Generate)
+        );
+        assert!(
+            config.deployments["openai-primary"]
+                .conformance_result
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn v3_nvidia_embeddings_compile_from_declared_catalog_contract() {
+        let sequence = 1;
+        let embedding_space = serde_json::json!({
+            "spaceId":"nvidia-nemotron-3-embed-1b-float-v1",
+            "revision":1,
+            "dimension":2048,
+            "normalization":"l2",
+            "distanceMetric":"cosine",
+            "documentInputTransformVersion":"document-v1"
+        });
+        let resources = [
+            resource(
+                "llm-provider-endpoint",
+                "nvidia-free-embedding-demo",
+                sequence,
+                serde_json::json!({
+                    "providerEndpointId":"nvidia-free-embedding-demo",
+                    "providerAccountId":"nvidia-free",
+                    "providerProtocol":"openai_embeddings",
+                    "baseUrl":"https://integrate.api.nvidia.com/v1",
+                    "endpointAuth":{"mode":"bearer","credential_ref":"credential://host-a/nvidia"},
+                    "networkProfile":{"mode":"public_tls","termination":"native","connection":{}},
+                    "quotaGroupId":"nvidia-free"
+                }),
+            ),
+            resource(
+                "llm-deployment",
+                "nvidia-nemotron-embed",
+                sequence,
+                serde_json::json!({
+                    "deploymentId":"nvidia-nemotron-embed",
+                    "deploymentRevisionId":"nvidia-nemotron-embed/r1",
+                    "providerEndpointId":"nvidia-free-embedding-demo",
+                    "model":"nvidia/nemotron-3-embed-1b",
+                    "concurrency":4,
+                    "runtimeCapacity":{
+                        "physicalRuntimeId":"nvidia-hosted/nemotron-3-embed-1b",
+                        "capacityDomainId":"nvidia-free",
+                        "maxParallelRequests":4,"maxQueuedRequests":8,
+                        "readinessPolicy":"immediate","coldStartTimeoutMs":30000,
+                        "streamSetupTimeoutMs":10000,"requestTimeoutMs":30000
+                    },
+                    "pricingBasis":"external_provider",
+                    "declaredCapabilities":{
+                        "operations":["embed"],
+                        "embedding":{
+                            "maxBatchItems":1,"maxInputTokensPerItem":4096,
+                            "maxAggregateInputTokens":4096,"supportedDimensions":[2048],
+                            "supportedEncodings":["float"],"maxResponseBytes":16777216,
+                            "space":embedding_space
+                        }
+                    }
+                }),
+            ),
+            resource(
+                "llm-pricing",
+                "nvidia-nemotron-embed-price",
+                sequence,
+                serde_json::json!({
+                    "deploymentId":"nvidia-nemotron-embed","operation":"embed",
+                    "priceVersion":1,"inputMicrosPerMillion":0
+                }),
+            ),
+            resource(
+                "llm-route",
+                "kb-index",
+                sequence,
+                serde_json::json!({
+                    "aliasName":"kb-index","operations":["embed"],
+                    "deployments":["nvidia-nemotron-embed"],"internal":true,
+                    "boundPrincipal":"light-knowledge","requireExpectedEmbeddingSpace":true,
+                    "embeddingWorkloadLane":"kb_index",
+                    "requiredCapabilities":{"embeddingSpace":embedding_space}
+                }),
+            ),
+        ]
+        .into_iter()
+        .map(|item| (resource_key(&item.resource_type, &item.resource_id), item))
+        .collect();
+        let mut candidate = bundle(sequence);
+        candidate.manifest.schema_version = PROJECTION_SCHEMA_VERSION_V3.to_string();
+        candidate.resources = resources;
+
+        let config = assemble_config_v3(&LlmRouterConfig::default(), &candidate).unwrap();
+        let resolver = Arc::new(RotatingResolver::default());
+        resolver.0.write().unwrap().insert(
+            "credential://host-a/nvidia".to_string(),
+            "demo-key".to_string(),
+        );
+        let snapshot = LlmCompiler::new(resolver)
+            .compile(&config, sequence, None)
+            .expect("NVIDIA embeddings must compile without lifecycle or conformance state");
+        assert_eq!(
+            snapshot.aliases["kb-index"].deployments[0].model,
+            "nvidia/nemotron-3-embed-1b"
+        );
     }
 
     #[test]
