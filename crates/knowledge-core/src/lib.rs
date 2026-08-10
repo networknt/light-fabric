@@ -175,6 +175,8 @@ pub struct RetrievalHit {
     pub fused_score: f64,
     pub lexical_rank: Option<usize>,
     pub vector_rank: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_retrieval_score: Option<f64>,
     pub citation: Citation,
 }
 
@@ -855,6 +857,7 @@ pub fn retrieve_with_lexical_gate(
             fused_score,
             lexical_rank,
             vector_rank,
+            path_retrieval_score: None,
             citation: Citation {
                 chunk_id: chunk.chunk_id,
                 document_id: chunk.document_id,

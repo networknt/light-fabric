@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -61,7 +61,43 @@ pub struct KnowledgeConfig {
     pub query_cache_maximum_bytes: usize,
     #[serde(default = "default_query_cache_ttl_seconds")]
     pub query_cache_ttl_seconds: u64,
+    #[serde(default)]
+    pub graph_limits: GraphLimits,
     pub features: FeatureFlags,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GraphLimits {
+    pub maximum_seeds: usize,
+    pub maximum_pairs: usize,
+    pub maximum_fan_out: usize,
+    pub maximum_hops: usize,
+    pub maximum_visited_nodes: usize,
+    pub maximum_visited_edges: usize,
+    pub maximum_paths: usize,
+    pub maximum_evidence_chunks: usize,
+    pub maximum_token_budget: usize,
+    pub maximum_memory_bytes: usize,
+    pub timeout_ms: u64,
+}
+
+impl Default for GraphLimits {
+    fn default() -> Self {
+        Self {
+            maximum_seeds: 8,
+            maximum_pairs: 64,
+            maximum_fan_out: 16,
+            maximum_hops: 3,
+            maximum_visited_nodes: 128,
+            maximum_visited_edges: 256,
+            maximum_paths: 32,
+            maximum_evidence_chunks: 20,
+            maximum_token_budget: 4_096,
+            maximum_memory_bytes: 1_048_576,
+            timeout_ms: 100,
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -155,8 +191,30 @@ impl KnowledgeConfig {
         {
             return Err("invalid Phase 1a limits, lease, or embedding-space contract".into());
         }
-        if self.features.graph_assisted {
-            return Err("graph-assisted retrieval remains disabled before Phase 4".into());
+        if self.features.graph_assisted
+            && (self.graph_limits.maximum_seeds == 0
+                || self.graph_limits.maximum_seeds > 16
+                || self.graph_limits.maximum_pairs == 0
+                || self.graph_limits.maximum_pairs > 256
+                || self.graph_limits.maximum_fan_out == 0
+                || self.graph_limits.maximum_fan_out > 32
+                || self.graph_limits.maximum_hops == 0
+                || self.graph_limits.maximum_hops > 4
+                || self.graph_limits.maximum_visited_nodes == 0
+                || self.graph_limits.maximum_visited_nodes > 512
+                || self.graph_limits.maximum_visited_edges == 0
+                || self.graph_limits.maximum_visited_edges > 1_024
+                || self.graph_limits.maximum_paths == 0
+                || self.graph_limits.maximum_paths > 128
+                || self.graph_limits.maximum_evidence_chunks == 0
+                || self.graph_limits.maximum_evidence_chunks > 20
+                || self.graph_limits.maximum_token_budget == 0
+                || self.graph_limits.maximum_memory_bytes == 0
+                || self.graph_limits.maximum_memory_bytes > 4 * 1_024 * 1_024
+                || self.graph_limits.timeout_ms == 0
+                || self.graph_limits.timeout_ms > 500)
+        {
+            return Err("invalid Phase 4 server-owned graph limits".into());
         }
         if (self.features.uploads || self.features.context_expansion)
             && !self.features.delta_segments
@@ -1137,9 +1195,15 @@ async fn retrieve_snapshot(
         lexical_candidates,
         vector_candidates,
         lexical_evidence_required,
-    ): (Uuid, i32, i32, i32, i32, bool) = sqlx::query_as(
+        preferred_strategy,
+        graph_failure_policy,
+        qualified_strategies,
+    ): (Uuid, i32, i32, i32, i32, bool, String, String, Value) = sqlx::query_as(
         "SELECT p.profile_id,p.top_k,p.token_budget,
-                p.lexical_candidates,p.vector_candidates,p.lexical_evidence_required
+                p.lexical_candidates,p.vector_candidates,p.lexical_evidence_required,
+                p.strategy,
+                COALESCE(p.graph_policy->>'failurePolicy','FALLBACK_HYBRID'),
+                a.qualified_strategies
            FROM knowledge_retrieval_profile_t p
           JOIN knowledge_runtime_authorization_t a
             ON a.retrieval_profile_id=p.profile_id
@@ -1178,13 +1242,48 @@ async fn retrieve_snapshot(
     )
     .await?;
     let started = std::time::Instant::now();
-    let response = retrieve_resolved_generation_with_gate(
+    let mut response = retrieve_resolved_generation_with_gate(
         &generation,
         &authorization,
         &effective_request,
         Utc::now(),
         lexical_evidence_required,
     )?;
+    let graph_requested = state.config.features.graph_assisted
+        && preferred_strategy == "GRAPH_ASSISTED"
+        && qualified_strategies
+            .as_array()
+            .is_some_and(|values| values.iter().any(|value| value == "GRAPH_ASSISTED"));
+    let mut graph_generation_id = None;
+    let mut fallback_reason: Option<String> = None;
+    if graph_requested {
+        let fallback_to_hybrid = match graph_failure_policy.as_str() {
+            "FALLBACK_HYBRID" => true,
+            "FAIL_CLOSED" => false,
+            _ => {
+                return Err(ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "KNOWLEDGE_GRAPH_POLICY_INVALID",
+                ));
+            }
+        };
+        match apply_graph_assist_scoped(
+            &mut transaction,
+            authenticated,
+            &generation,
+            &mut response,
+            &state.config.graph_limits,
+        )
+        .await
+        {
+            Ok(id) => graph_generation_id = Some(id),
+            Err(error) if fallback_to_hybrid => {
+                response.strategy = "HYBRID_FALLBACK".into();
+                fallback_reason = Some(error.code.to_string());
+            }
+            Err(error) => return Err(error),
+        }
+    }
     let result_identities = response
         .results
         .iter()
@@ -1192,7 +1291,7 @@ async fn retrieve_snapshot(
         .collect::<Vec<_>>();
     let query_digest = sha256_hex(request.query.as_bytes());
     sqlx::query(
-        "INSERT INTO knowledge_query_audit_t(query_audit_id,request_id,knowledge_base_id,consumer_host_id,index_generation_id,retrieval_profile_id,strategy,segment_manifest_digest,query_digest,result_identities,latency_ms) VALUES($1,$2,$3,$4,$5,$6,'HYBRID',$7,$8,$9,$10) ON CONFLICT(knowledge_base_id,consumer_host_id,request_id) DO NOTHING",
+        "INSERT INTO knowledge_query_audit_t(query_audit_id,request_id,knowledge_base_id,consumer_host_id,index_generation_id,retrieval_profile_id,strategy,segment_manifest_digest,query_digest,result_identities,fallback_reason,latency_ms,graph_generation_id,planner_diagnostics) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT(knowledge_base_id,consumer_host_id,request_id) DO NOTHING",
     )
     .bind(Uuid::now_v7())
     .bind(request_id)
@@ -1200,15 +1299,341 @@ async fn retrieve_snapshot(
     .bind(authenticated.host_id)
     .bind(generation.manifest.generation_id)
     .bind(retrieval_profile_id)
+    .bind(match response.strategy.as_str() {
+        "GRAPH_ASSISTED_PATH_V1" => "GRAPH_ASSISTED",
+        "HYBRID_FALLBACK" => "HYBRID_FALLBACK",
+        _ => "HYBRID",
+    })
     .bind(&generation.manifest.manifest_digest)
     .bind(query_digest)
     .bind(Value::Array(result_identities))
+    .bind(&fallback_reason)
     .bind(i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX))
+    .bind(graph_generation_id)
+    .bind(json!({
+        "contractVersion": "phase4-path-v1",
+        "serverOwnedLimits": graph_requested,
+        "fallback": fallback_reason.is_some()
+    }))
     .execute(&mut *transaction)
     .await
     .map_err(ApiError::database)?;
     transaction.commit().await.map_err(ApiError::database)?;
     Ok(response)
+}
+
+async fn apply_graph_assist_scoped(
+    transaction: &mut Transaction<'_, Postgres>,
+    principal: &AuthenticatedKnowledgeRequest,
+    generation: &FullBaseGeneration,
+    response: &mut RetrievalResponse,
+    limits: &GraphLimits,
+) -> Result<Uuid, ApiError> {
+    sqlx::query("SAVEPOINT knowledge_graph_assist")
+        .execute(&mut **transaction)
+        .await
+        .map_err(ApiError::database)?;
+    let result = apply_graph_assist(transaction, principal, generation, response, limits).await;
+    match result {
+        Ok(graph_generation_id) => {
+            sqlx::query("SET LOCAL statement_timeout = 0")
+                .execute(&mut **transaction)
+                .await
+                .map_err(ApiError::database)?;
+            sqlx::query("RELEASE SAVEPOINT knowledge_graph_assist")
+                .execute(&mut **transaction)
+                .await
+                .map_err(ApiError::database)?;
+            Ok(graph_generation_id)
+        }
+        Err(error) => {
+            sqlx::query("ROLLBACK TO SAVEPOINT knowledge_graph_assist")
+                .execute(&mut **transaction)
+                .await
+                .map_err(ApiError::database)?;
+            sqlx::query("SET LOCAL statement_timeout = 0")
+                .execute(&mut **transaction)
+                .await
+                .map_err(ApiError::database)?;
+            sqlx::query("RELEASE SAVEPOINT knowledge_graph_assist")
+                .execute(&mut **transaction)
+                .await
+                .map_err(ApiError::database)?;
+            Err(error)
+        }
+    }
+}
+
+async fn apply_graph_assist(
+    transaction: &mut Transaction<'_, Postgres>,
+    principal: &AuthenticatedKnowledgeRequest,
+    generation: &FullBaseGeneration,
+    response: &mut RetrievalResponse,
+    limits: &GraphLimits,
+) -> Result<Uuid, ApiError> {
+    let estimated_bytes = response
+        .results
+        .iter()
+        .map(|hit| hit.text.len() + hit.citation.canonical_uri.len())
+        .sum::<usize>();
+    let estimated_tokens = response
+        .results
+        .iter()
+        .map(|hit| hit.text.split_whitespace().count())
+        .sum::<usize>();
+    if estimated_bytes > limits.maximum_memory_bytes
+        || estimated_tokens > limits.maximum_token_budget
+    {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "KNOWLEDGE_GRAPH_MEMORY_LIMIT_EXCEEDED",
+        ));
+    }
+    sqlx::query(&format!(
+        "SET LOCAL statement_timeout = '{}'",
+        limits.timeout_ms
+    ))
+    .execute(&mut **transaction)
+    .await
+    .map_err(ApiError::database)?;
+    let graph_generation_id: Uuid = sqlx::query_scalar(
+        "SELECT graph.graph_generation_id
+           FROM knowledge_graph_generation_t graph
+          WHERE graph.index_generation_id=$1 AND graph.state='READY'
+            AND graph.visibility_mode='UNIFORM_SCOPE'
+            AND NOT EXISTS(SELECT 1 FROM knowledge_source_t source
+                            WHERE source.knowledge_base_id=graph.knowledge_base_id
+                              AND source.acl_mode<>'UNIFORM_SCOPE')
+          ORDER BY graph.completed_ts DESC LIMIT 1",
+    )
+    .bind(generation.manifest.generation_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(ApiError::database)?
+    .ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "KNOWLEDGE_GRAPH_ARTIFACT_UNAVAILABLE",
+        )
+    })?;
+    let seed_ids = response
+        .results
+        .iter()
+        .take(limits.maximum_seeds)
+        .map(|hit| hit.chunk_id)
+        .collect::<Vec<_>>();
+    if seed_ids.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "KNOWLEDGE_GRAPH_SEED_UNAVAILABLE",
+        ));
+    }
+    let result_ids = response
+        .results
+        .iter()
+        .take(limits.maximum_evidence_chunks)
+        .map(|hit| hit.chunk_id)
+        .collect::<Vec<_>>();
+    let rows = sqlx::query(
+        "WITH eligible AS (
+           SELECT member.chunk_id
+             FROM knowledge_resolved_generation_chunk($2) member
+             JOIN knowledge_document_t document ON document.document_id=member.document_id
+            WHERE knowledge_document_acl_authorized(
+                    document.document_id,$3,$6,$4::text[],$5::text[])
+         ), entity_status AS (
+           SELECT entity.graph_entity_id,entity.entity_type,entity.normalized_key,
+                  bool_and(EXISTS(SELECT 1 FROM eligible
+                                   WHERE eligible.chunk_id=contribution.chunk_id)) AS authorized,
+                  COALESCE(array_agg(DISTINCT contribution.chunk_id)
+                    FILTER(WHERE contribution.chunk_id=ANY($7::uuid[])),
+                    '{}'::uuid[]) AS seed_chunks,
+                  COALESCE(array_agg(DISTINCT contribution.chunk_id)
+                    FILTER(WHERE contribution.chunk_id=ANY($8::uuid[])),
+                    '{}'::uuid[]) AS result_chunks
+             FROM knowledge_graph_entity_t entity
+             JOIN knowledge_graph_entity_contribution_t contribution
+               ON contribution.graph_entity_id=entity.graph_entity_id
+              AND contribution.graph_generation_id=$1
+            WHERE entity.graph_generation_id=$1
+            GROUP BY entity.graph_entity_id,entity.entity_type,entity.normalized_key
+         ), authorized_entity AS (
+           SELECT * FROM entity_status WHERE authorized
+         ), authorized_relation AS (
+           SELECT relation.graph_relation_id,relation.relation_type,
+                  subject.graph_entity_id AS subject_entity_id,
+                  object.graph_entity_id AS object_entity_id,
+                  subject.normalized_key AS subject_key,
+                  object.normalized_key AS object_key,
+                  subject.seed_chunks AS subject_seed_chunks,
+                  object.seed_chunks AS object_seed_chunks,
+                  subject.result_chunks AS subject_result_chunks,
+                  object.result_chunks AS object_result_chunks
+             FROM knowledge_graph_relation_t relation
+             JOIN knowledge_graph_relation_contribution_t contribution
+               ON contribution.graph_relation_id=relation.graph_relation_id
+              AND contribution.graph_generation_id=$1
+             JOIN authorized_entity subject
+               ON subject.graph_entity_id=relation.subject_entity_id
+             JOIN authorized_entity object
+               ON object.graph_entity_id=relation.object_entity_id
+            WHERE relation.graph_generation_id=$1
+              AND subject.entity_type<>'REPOSITORY'
+              AND object.entity_type<>'REPOSITORY'
+            GROUP BY relation.graph_relation_id,relation.relation_type,
+                     subject.graph_entity_id,object.graph_entity_id,
+                     subject.normalized_key,object.normalized_key,
+                     subject.seed_chunks,object.seed_chunks,
+                     subject.result_chunks,object.result_chunks
+           HAVING bool_and(EXISTS(SELECT 1 FROM eligible
+                                   WHERE eligible.chunk_id=contribution.chunk_id))
+         )
+         SELECT graph_relation_id,relation_type,subject_entity_id,object_entity_id,
+                subject_key,object_key,
+                subject_seed_chunks,object_seed_chunks,
+                subject_result_chunks,object_result_chunks
+           FROM authorized_relation
+          ORDER BY relation_type,subject_key,object_key,graph_relation_id
+          LIMIT $9",
+    )
+    .bind(graph_generation_id)
+    .bind(generation.manifest.generation_id)
+    .bind(&principal.subject_id)
+    .bind(&principal.groups)
+    .bind(&principal.organizations)
+    .bind(&principal.subject_type)
+    .bind(seed_ids)
+    .bind(result_ids)
+    .bind(i64::try_from(limits.maximum_pairs).unwrap_or(256))
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(ApiError::database)?;
+    let deadline = Instant::now() + StdDuration::from_millis(limits.timeout_ms);
+    let mut adjacency = BTreeMap::<Uuid, Vec<Uuid>>::new();
+    let mut seed_entities = BTreeMap::<String, Uuid>::new();
+    let mut result_chunks = HashMap::<Uuid, BTreeSet<Uuid>>::new();
+    for row in rows {
+        let subject: Uuid = row.get("subject_entity_id");
+        let object: Uuid = row.get("object_entity_id");
+        adjacency.entry(subject).or_default().push(object);
+        adjacency.entry(object).or_default().push(subject);
+        if !row.get::<Vec<Uuid>, _>("subject_seed_chunks").is_empty() {
+            seed_entities.insert(row.get("subject_key"), subject);
+        }
+        if !row.get::<Vec<Uuid>, _>("object_seed_chunks").is_empty() {
+            seed_entities.insert(row.get("object_key"), object);
+        }
+        result_chunks
+            .entry(subject)
+            .or_default()
+            .extend(row.get::<Vec<Uuid>, _>("subject_result_chunks"));
+        result_chunks
+            .entry(object)
+            .or_default()
+            .extend(row.get::<Vec<Uuid>, _>("object_result_chunks"));
+    }
+    let scores = bounded_graph_scores(
+        adjacency,
+        seed_entities.into_values().collect(),
+        result_chunks,
+        limits,
+        deadline,
+    )
+    .map_err(|code| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, code))?;
+    for hit in &mut response.results {
+        hit.path_retrieval_score = scores.get(&hit.chunk_id).copied();
+    }
+    response.results.sort_by(|left, right| {
+        right
+            .path_retrieval_score
+            .unwrap_or(0.0)
+            .partial_cmp(&left.path_retrieval_score.unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                right
+                    .fused_score
+                    .partial_cmp(&left.fused_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| left.chunk_id.cmp(&right.chunk_id))
+    });
+    response.strategy = "GRAPH_ASSISTED_PATH_V1".into();
+    Ok(graph_generation_id)
+}
+
+fn bounded_graph_scores(
+    mut adjacency: BTreeMap<Uuid, Vec<Uuid>>,
+    seed_entities: Vec<Uuid>,
+    result_chunks: HashMap<Uuid, BTreeSet<Uuid>>,
+    limits: &GraphLimits,
+    deadline: Instant,
+) -> Result<HashMap<Uuid, f64>, &'static str> {
+    if seed_entities.is_empty() {
+        return Err("KNOWLEDGE_GRAPH_SEED_UNAVAILABLE");
+    }
+    for neighbours in adjacency.values_mut() {
+        let mut seen = HashSet::new();
+        neighbours.retain(|entity_id| seen.insert(*entity_id));
+    }
+    let mut queue = VecDeque::new();
+    let mut visited = BTreeMap::<Uuid, usize>::new();
+    for seed in seed_entities.into_iter().take(limits.maximum_seeds) {
+        if visited.len() >= limits.maximum_visited_nodes {
+            break;
+        }
+        visited.insert(seed, 0);
+        queue.push_back(seed);
+    }
+    let mut edge_visits = 0_usize;
+    let mut path_count = 0_usize;
+    let mut traversal_exhausted = false;
+    while let Some(entity_id) = queue.pop_front() {
+        if Instant::now() >= deadline || edge_visits >= limits.maximum_visited_edges {
+            traversal_exhausted = true;
+            break;
+        }
+        let depth = visited[&entity_id];
+        if depth >= limits.maximum_hops {
+            continue;
+        }
+        for neighbour in adjacency
+            .get(&entity_id)
+            .into_iter()
+            .flatten()
+            .take(limits.maximum_fan_out)
+        {
+            if edge_visits >= limits.maximum_visited_edges || Instant::now() >= deadline {
+                traversal_exhausted = true;
+                break;
+            }
+            edge_visits += 1;
+            if !visited.contains_key(neighbour) {
+                if visited.len() >= limits.maximum_visited_nodes
+                    || path_count >= limits.maximum_paths
+                {
+                    traversal_exhausted = true;
+                    break;
+                }
+                path_count += 1;
+                visited.insert(*neighbour, depth + 1);
+                queue.push_back(*neighbour);
+            }
+        }
+    }
+    if traversal_exhausted {
+        return Err("KNOWLEDGE_GRAPH_TRAVERSAL_LIMIT_EXCEEDED");
+    }
+    let mut scores = HashMap::<Uuid, f64>::new();
+    for (entity_id, depth) in visited {
+        let score = 1.0 / (depth as f64 + 1.0);
+        for chunk_id in result_chunks.get(&entity_id).into_iter().flatten() {
+            scores
+                .entry(*chunk_id)
+                .and_modify(|current| *current = current.max(score))
+                .or_insert(score);
+        }
+    }
+    Ok(scores)
 }
 
 async fn admit(
@@ -2175,7 +2600,7 @@ mod tests {
     }
 
     #[test]
-    fn config_accepts_phase1b_features_but_rejects_invalid_dependencies_and_graph() {
+    fn config_accepts_phase4_graph_with_bounded_server_owned_limits() {
         let directory = tempfile::tempdir().unwrap();
         let database = directory.path().join("database-url");
         let delegation = directory.path().join("delegation-secret");
@@ -2206,6 +2631,7 @@ mod tests {
             query_cache_maximum_entries: 2048,
             query_cache_maximum_bytes: 64 * 1024 * 1024,
             query_cache_ttl_seconds: 300,
+            graph_limits: GraphLimits::default(),
             features: FeatureFlags {
                 delta_segments: false,
                 uploads: false,
@@ -2258,6 +2684,8 @@ mod tests {
         );
         config.features.uploads = false;
         config.features.graph_assisted = true;
+        assert!(config.validate().is_ok());
+        config.graph_limits.maximum_hops = 5;
         assert!(config.validate().unwrap_err().contains("Phase 4"));
     }
 
@@ -2266,6 +2694,59 @@ mod tests {
         let good = format!("[{}]", vec!["0"; 32].join(","));
         assert_eq!(parse_vector(&good, 32).unwrap().len(), 32);
         assert!(parse_vector("[0,1]", 32).is_err());
+    }
+
+    #[test]
+    fn graph_traversal_enforces_node_edge_and_path_work_limits() {
+        let first = Uuid::from_u128(1);
+        let second = Uuid::from_u128(2);
+        let third = Uuid::from_u128(3);
+        let chunk = Uuid::from_u128(10);
+        let adjacency = BTreeMap::from([
+            (first, vec![second]),
+            (second, vec![first, third]),
+            (third, vec![second]),
+        ]);
+        let result_chunks = HashMap::from([(second, BTreeSet::from([chunk]))]);
+        let scores = bounded_graph_scores(
+            adjacency.clone(),
+            vec![first],
+            result_chunks.clone(),
+            &GraphLimits::default(),
+            Instant::now() + StdDuration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(scores.get(&chunk), Some(&0.5));
+
+        let mut limits = GraphLimits::default();
+        limits.maximum_visited_nodes = 2;
+        limits.maximum_visited_edges = 10;
+        limits.maximum_paths = 10;
+        let error = bounded_graph_scores(
+            adjacency,
+            vec![first],
+            result_chunks,
+            &limits,
+            Instant::now() + StdDuration::from_secs(1),
+        )
+        .unwrap_err();
+        assert_eq!(error, "KNOWLEDGE_GRAPH_TRAVERSAL_LIMIT_EXCEEDED");
+
+        let mut edge_limits = GraphLimits::default();
+        edge_limits.maximum_visited_edges = 1;
+        let error = bounded_graph_scores(
+            BTreeMap::from([
+                (first, vec![second]),
+                (second, vec![first, third]),
+                (third, vec![second]),
+            ]),
+            vec![first],
+            HashMap::new(),
+            &edge_limits,
+            Instant::now() + StdDuration::from_secs(1),
+        )
+        .unwrap_err();
+        assert_eq!(error, "KNOWLEDGE_GRAPH_TRAVERSAL_LIMIT_EXCEEDED");
     }
 
     #[tokio::test]
@@ -2318,6 +2799,7 @@ mod tests {
             query_cache_maximum_entries: 8,
             query_cache_maximum_bytes: 1024,
             query_cache_ttl_seconds: 30,
+            graph_limits: GraphLimits::default(),
             features: FeatureFlags {
                 delta_segments: false,
                 uploads: false,

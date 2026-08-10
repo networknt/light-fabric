@@ -24,6 +24,7 @@ embeddingSpaceRevision: 1
 embeddingDimension: 32
 embeddingMigrationEnabled: false
 productionOperationsEnabled: false
+graphAssistedEnabled: false
 snapshotWatermark: 1
 # Phase 2 connector workers use one of the following mutually exclusive inputs.
 # enterpriseConnectorFixtureFile: /config/sharepoint-page-v1.json

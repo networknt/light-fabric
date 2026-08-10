@@ -181,6 +181,7 @@ mod tests {
                 fused_score: 1.0,
                 lexical_rank: Some(1),
                 vector_rank: Some(1),
+                path_retrieval_score: None,
                 citation: Citation {
                     chunk_id: id,
                     document_id: id,
@@ -214,6 +215,7 @@ mod tests {
                 fused_score: 1.0,
                 lexical_rank: Some(1),
                 vector_rank: None,
+                path_retrieval_score: None,
                 citation: Citation {
                     chunk_id: id,
                     document_id: id,

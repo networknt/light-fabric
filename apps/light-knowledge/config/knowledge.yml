@@ -17,6 +17,18 @@ embeddingDimension: 32
 queryCacheMaximumEntries: 2048
 queryCacheMaximumBytes: 67108864
 queryCacheTtlSeconds: 300
+graphLimits:
+  maximumSeeds: 8
+  maximumPairs: 64
+  maximumFanOut: 16
+  maximumHops: 3
+  maximumVisitedNodes: 128
+  maximumVisitedEdges: 256
+  maximumPaths: 32
+  maximumEvidenceChunks: 20
+  maximumTokenBudget: 4096
+  maximumMemoryBytes: 1048576
+  timeoutMs: 100
 features:
   deltaSegments: false
   uploads: false

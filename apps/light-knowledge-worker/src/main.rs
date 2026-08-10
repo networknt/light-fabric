@@ -78,6 +78,8 @@ struct WorkerConfig {
     embedding_migration_enabled: bool,
     #[serde(default)]
     production_operations_enabled: bool,
+    #[serde(default)]
+    graph_assisted_enabled: bool,
 }
 
 impl WorkerConfig {
@@ -213,6 +215,7 @@ async fn main() -> Result<()> {
         }
         "project-loop" => project_loop(&pool, &config).await,
         "heartbeat" => heartbeat(&pool, &config).await,
+        "graph-build-once" => build_active_graph(&pool, &config).await,
         other => bail!("unknown worker command {other}"),
     }
 }
@@ -256,6 +259,7 @@ const BULK_JOB_TYPES: &[&str] = &[
     "BACKUP_CHECKPOINT",
     "RESTORE_VERIFY",
     "SEGMENT_PURGE",
+    "GRAPH_BUILD",
 ];
 
 fn projected_job_type(event_type: &str, enterprise_source: bool) -> Option<&'static str> {
@@ -322,6 +326,7 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
             } else {
                 publish_promotion_acknowledgements(pool, config).await?;
                 schedule_production_maintenance(pool, config).await?;
+                schedule_graph_build(pool, config).await?;
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
             continue;
@@ -413,6 +418,8 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
             verify_restore_checkpoint(pool, config, &payload).await
         } else if job_type == "SEGMENT_PURGE" {
             purge_retired_generation(pool, config, &payload).await
+        } else if job_type == "GRAPH_BUILD" {
+            build_graph_artifact(pool, config, &payload).await
         } else if matches!(job_type.as_str(), "PURGE" | "RETRIEVAL_TEST") {
             Err(anyhow::anyhow!(
                 "KNOWLEDGE_JOB_TYPE_NOT_IMPLEMENTED:{job_type}"
@@ -2683,6 +2690,443 @@ async fn schedule_due_acl_reconciliation(pool: &PgPool, config: &WorkerConfig) -
     .bind(config.source_id)
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+const GRAPH_CONTRACT_VERSION: &str = "phase4-structural-v1";
+
+async fn build_active_graph(pool: &PgPool, config: &WorkerConfig) -> Result<()> {
+    let generation_id: Uuid = sqlx::query_scalar(
+        "SELECT index_generation_id FROM knowledge_index_pointer_t
+          WHERE knowledge_base_id=$1 AND environment=$2",
+    )
+    .bind(config.knowledge_base_id)
+    .bind(&config.environment)
+    .fetch_one(pool)
+    .await?;
+    build_graph_artifact(pool, config, &json!({"indexGenerationId": generation_id})).await
+}
+
+async fn schedule_graph_build(pool: &PgPool, config: &WorkerConfig) -> Result<()> {
+    if !config.graph_assisted_enabled {
+        return Ok(());
+    }
+    let ready = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT to_regclass('knowledge_graph_generation_t')::text",
+    )
+    .fetch_one(pool)
+    .await?
+    .is_some();
+    if !ready {
+        return Ok(());
+    }
+    sqlx::query(
+        "INSERT INTO knowledge_job_t(
+           job_id,knowledge_base_id,job_type,idempotency_key,requested_by,payload)
+         SELECT gen_random_uuid(),pointer.knowledge_base_id,'GRAPH_BUILD',
+                'graph-build:'||pointer.index_generation_id::text||':phase4-structural-v1',
+                'light-knowledge-scheduler',
+                jsonb_build_object('indexGenerationId',pointer.index_generation_id)
+           FROM knowledge_index_pointer_t pointer
+          WHERE pointer.knowledge_base_id=$1 AND pointer.environment=$2
+            AND NOT EXISTS(
+              SELECT 1 FROM knowledge_source_t source
+               WHERE source.knowledge_base_id=pointer.knowledge_base_id
+                 AND source.acl_mode<>'UNIFORM_SCOPE')
+            AND NOT EXISTS (
+              SELECT 1 FROM knowledge_graph_generation_t graph
+               WHERE graph.index_generation_id=pointer.index_generation_id
+                 AND graph.contract_version='phase4-structural-v1'
+                 AND graph.state='READY')
+         ON CONFLICT(knowledge_base_id,idempotency_key) DO UPDATE
+           SET state='QUEUED',
+               next_attempt_ts=now()+make_interval(secs=>LEAST(
+                 3600,(60*power(2,LEAST(knowledge_job_t.attempt_count,6)))::int)),
+               lease_expires_ts=NULL,update_ts=now()
+         WHERE knowledge_job_t.state='FAILED'
+           AND knowledge_job_t.attempt_count<5",
+    )
+    .bind(config.knowledge_base_id)
+    .bind(&config.environment)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn build_graph_artifact(
+    pool: &PgPool,
+    config: &WorkerConfig,
+    payload: &serde_json::Value,
+) -> Result<()> {
+    if !config.graph_assisted_enabled {
+        bail!("KNOWLEDGE_GRAPH_ASSISTED_DISABLED");
+    }
+    let generation_id = uuid_value(payload, "indexGenerationId")?;
+    let contract_digest = sha256_hex(GRAPH_CONTRACT_VERSION.as_bytes());
+    let graph_generation_id = Uuid::now_v7();
+    let mut tx = pool.begin().await?;
+    let uniform: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM knowledge_index_pointer_t
+                        WHERE knowledge_base_id=$1 AND index_generation_id=$2
+                          AND environment=$3)
+             AND NOT EXISTS(SELECT 1 FROM knowledge_source_t
+                             WHERE knowledge_base_id=$1
+                               AND acl_mode<>'UNIFORM_SCOPE')",
+    )
+    .bind(config.knowledge_base_id)
+    .bind(generation_id)
+    .bind(&config.environment)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !uniform {
+        bail!("KNOWLEDGE_GRAPH_UNIFORM_SCOPE_REQUIRED");
+    }
+    sqlx::query(
+        "INSERT INTO knowledge_graph_generation_t(
+           graph_generation_id,knowledge_base_id,index_generation_id,state,
+           contract_version,contract_digest)
+         VALUES($1,$2,$3,'BUILDING',$4,$5)
+         ON CONFLICT(index_generation_id,contract_digest) DO NOTHING",
+    )
+    .bind(graph_generation_id)
+    .bind(config.knowledge_base_id)
+    .bind(generation_id)
+    .bind(GRAPH_CONTRACT_VERSION)
+    .bind(&contract_digest)
+    .execute(&mut *tx)
+    .await?;
+    let graph_generation_id: Uuid = sqlx::query_scalar(
+        "SELECT graph_generation_id FROM knowledge_graph_generation_t
+          WHERE index_generation_id=$1 AND contract_digest=$2 FOR UPDATE",
+    )
+    .bind(generation_id)
+    .bind(&contract_digest)
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query(
+        "WITH resolved AS (
+           SELECT member.chunk_id,member.document_id,member.document_version_id,
+                  chunk.section_path,chunk.chunk_text
+             FROM knowledge_resolved_generation_chunk($3) member
+             JOIN knowledge_chunk_t chunk ON chunk.chunk_id=member.chunk_id
+         )
+         INSERT INTO knowledge_graph_entity_t(
+           graph_entity_id,graph_generation_id,knowledge_base_id,entity_type,
+           normalized_key,display_name,origin,contract_version)
+         SELECT gen_random_uuid(),$1,$2,'DOCUMENT','document:'||document_id::text,
+                'document:'||document_id::text,'STRUCTURAL',$4
+           FROM resolved GROUP BY document_id
+         ON CONFLICT(graph_generation_id,entity_type,normalized_key) DO NOTHING",
+    )
+    .bind(graph_generation_id)
+    .bind(config.knowledge_base_id)
+    .bind(generation_id)
+    .bind(GRAPH_CONTRACT_VERSION)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "WITH resolved AS (
+           SELECT member.chunk_id,member.document_id,member.document_version_id,
+                  chunk.section_path
+             FROM knowledge_resolved_generation_chunk($3) member
+             JOIN knowledge_chunk_t chunk ON chunk.chunk_id=member.chunk_id
+            WHERE jsonb_array_length(chunk.section_path)>0
+         ), headings AS (
+           SELECT DISTINCT document_id,document_version_id,chunk_id,
+                  section_path::text AS path_key,
+                  section_path->>-1 AS display_name FROM resolved
+         )
+         INSERT INTO knowledge_graph_entity_t(
+           graph_entity_id,graph_generation_id,knowledge_base_id,entity_type,
+           normalized_key,display_name,origin,contract_version)
+         SELECT gen_random_uuid(),$1,$2,'HEADING',
+                'heading:'||document_id::text||':'||path_key,display_name,
+                'STRUCTURAL',$4 FROM headings
+         ON CONFLICT(graph_generation_id,entity_type,normalized_key) DO NOTHING",
+    )
+    .bind(graph_generation_id)
+    .bind(config.knowledge_base_id)
+    .bind(generation_id)
+    .bind(GRAPH_CONTRACT_VERSION)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "WITH resolved AS (
+           SELECT member.chunk_id,member.document_id,member.document_version_id,
+                  chunk.chunk_text
+             FROM knowledge_resolved_generation_chunk($3) member
+             JOIN knowledge_chunk_t chunk ON chunk.chunk_id=member.chunk_id
+         ), facts AS (
+           SELECT chunk_id,document_id,document_version_id,'REPOSITORY'::text AS entity_type,
+                  'repository:'||$2::text AS normalized_key,
+                  'Knowledge Base '||$2::text AS display_name,'STRUCTURAL'::text AS origin
+             FROM resolved
+           UNION ALL
+           SELECT chunk_id,document_id,document_version_id,'LINK_TARGET',
+                  'link:'||lower(match[1]),match[1],'EXPLICIT'
+             FROM resolved CROSS JOIN LATERAL
+                  regexp_matches(chunk_text,'\\[[^]]+\\]\\(([^)[:space:]]+)\\)','g') match
+           UNION ALL
+           SELECT chunk_id,document_id,document_version_id,'API_OPERATION',
+                  'api:'||upper(match[1])||' '||match[2],
+                  upper(match[1])||' '||match[2],'EXPLICIT'
+             FROM resolved CROSS JOIN LATERAL
+                  regexp_matches(chunk_text,'\\m(GET|POST|PUT|PATCH|DELETE)[[:space:]]+(/[A-Za-z0-9_./:{}-]+)','g') match
+           UNION ALL
+           SELECT chunk_id,document_id,document_version_id,'CONFIGURATION_KEY',
+                  'config:'||lower(match[1]),match[1],'EXPLICIT'
+             FROM resolved CROSS JOIN LATERAL
+                  regexp_matches(chunk_text,'`([A-Za-z][A-Za-z0-9_.-]{2,})`','g') match
+            WHERE match[1] LIKE '%.%' OR match[1] ~ '[A-Z]'
+           UNION ALL
+           SELECT chunk_id,document_id,document_version_id,'SERVICE',
+                  'service:'||lower(match[1]),match[1],'EXPLICIT'
+             FROM resolved CROSS JOIN LATERAL
+                  regexp_matches(chunk_text,'\\m(light-[a-z0-9-]+)\\M','g') match
+           UNION ALL
+           SELECT chunk_id,document_id,document_version_id,'COMPONENT',
+                  'component:'||lower(match[1]),match[1],'EXPLICIT'
+             FROM resolved CROSS JOIN LATERAL
+                  regexp_matches(chunk_text,'\\m([A-Za-z][A-Za-z0-9_-]*(Component|component))\\M','g') match
+           UNION ALL
+           SELECT chunk_id,document_id,document_version_id,'DESIGN_REFERENCE',
+                  'design:'||lower(regexp_replace(match[1],'[[:space:]]+',' ','g')),
+                  match[1],'EXPLICIT'
+             FROM resolved CROSS JOIN LATERAL
+                  regexp_matches(chunk_text,'\\m(Phase[[:space:]]+[0-9]+[a-z]?)\\M','gi') match
+         )
+         INSERT INTO knowledge_graph_entity_t(
+           graph_entity_id,graph_generation_id,knowledge_base_id,entity_type,
+           normalized_key,display_name,origin,contract_version)
+         SELECT gen_random_uuid(),$1,$2,entity_type,normalized_key,
+                min(display_name),min(origin),$4 FROM facts
+          GROUP BY entity_type,normalized_key
+         ON CONFLICT(graph_generation_id,entity_type,normalized_key) DO NOTHING",
+    )
+    .bind(graph_generation_id)
+    .bind(config.knowledge_base_id)
+    .bind(generation_id)
+    .bind(GRAPH_CONTRACT_VERSION)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "WITH resolved AS (
+           SELECT member.chunk_id,member.document_id,member.document_version_id,
+                  chunk.section_path
+             FROM knowledge_resolved_generation_chunk($3) member
+             JOIN knowledge_chunk_t chunk ON chunk.chunk_id=member.chunk_id
+         ), structural AS (
+           SELECT chunk_id,document_version_id,'DOCUMENT'::text AS entity_type,
+                  'document:'||document_id::text AS normalized_key FROM resolved
+           UNION ALL
+           SELECT chunk_id,document_version_id,'HEADING',
+                  'heading:'||document_id::text||':'||section_path::text
+             FROM resolved WHERE jsonb_array_length(section_path)>0
+         )
+         INSERT INTO knowledge_graph_entity_contribution_t(
+           graph_entity_id,graph_generation_id,knowledge_base_id,chunk_id,document_version_id)
+         SELECT entity.graph_entity_id,$1,$2,structural.chunk_id,
+                structural.document_version_id
+           FROM structural JOIN knowledge_graph_entity_t entity
+             ON entity.graph_generation_id=$1
+            AND entity.entity_type=structural.entity_type
+            AND entity.normalized_key=structural.normalized_key
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(graph_generation_id)
+    .bind(config.knowledge_base_id)
+    .bind(generation_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "WITH resolved AS (
+           SELECT member.chunk_id,member.document_version_id,chunk.chunk_text
+             FROM knowledge_resolved_generation_chunk($3) member
+             JOIN knowledge_chunk_t chunk ON chunk.chunk_id=member.chunk_id
+         ), facts AS (
+           SELECT chunk_id,document_version_id,'REPOSITORY'::text AS entity_type,
+                  'repository:'||$2::text AS normalized_key FROM resolved
+           UNION ALL
+           SELECT chunk_id,document_version_id,'LINK_TARGET','link:'||lower(match[1])
+             FROM resolved CROSS JOIN LATERAL
+                  regexp_matches(chunk_text,'\\[[^]]+\\]\\(([^)[:space:]]+)\\)','g') match
+           UNION ALL
+           SELECT chunk_id,document_version_id,'API_OPERATION',
+                  'api:'||upper(match[1])||' '||match[2]
+             FROM resolved CROSS JOIN LATERAL
+                  regexp_matches(chunk_text,'\\m(GET|POST|PUT|PATCH|DELETE)[[:space:]]+(/[A-Za-z0-9_./:{}-]+)','g') match
+           UNION ALL
+           SELECT chunk_id,document_version_id,'CONFIGURATION_KEY',
+                  'config:'||lower(match[1])
+             FROM resolved CROSS JOIN LATERAL
+                  regexp_matches(chunk_text,'`([A-Za-z][A-Za-z0-9_.-]{2,})`','g') match
+            WHERE match[1] LIKE '%.%' OR match[1] ~ '[A-Z]'
+           UNION ALL
+           SELECT chunk_id,document_version_id,'SERVICE','service:'||lower(match[1])
+             FROM resolved CROSS JOIN LATERAL
+                  regexp_matches(chunk_text,'\\m(light-[a-z0-9-]+)\\M','g') match
+           UNION ALL
+           SELECT chunk_id,document_version_id,'COMPONENT','component:'||lower(match[1])
+             FROM resolved CROSS JOIN LATERAL
+                  regexp_matches(chunk_text,'\\m([A-Za-z][A-Za-z0-9_-]*(Component|component))\\M','g') match
+           UNION ALL
+           SELECT chunk_id,document_version_id,'DESIGN_REFERENCE',
+                  'design:'||lower(regexp_replace(match[1],'[[:space:]]+',' ','g'))
+             FROM resolved CROSS JOIN LATERAL
+                  regexp_matches(chunk_text,'\\m(Phase[[:space:]]+[0-9]+[a-z]?)\\M','gi') match
+         )
+         INSERT INTO knowledge_graph_entity_contribution_t(
+           graph_entity_id,graph_generation_id,knowledge_base_id,chunk_id,document_version_id)
+         SELECT entity.graph_entity_id,$1,$2,fact.chunk_id,fact.document_version_id
+           FROM facts fact JOIN knowledge_graph_entity_t entity
+             ON entity.graph_generation_id=$1
+            AND entity.entity_type=fact.entity_type
+            AND entity.normalized_key=fact.normalized_key
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(graph_generation_id)
+    .bind(config.knowledge_base_id)
+    .bind(generation_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "WITH pairs AS (
+           SELECT DISTINCT document.graph_entity_id AS subject_id,
+                  heading.graph_entity_id AS object_id,
+                  contribution.chunk_id,contribution.document_version_id
+             FROM knowledge_graph_entity_t heading
+             JOIN knowledge_graph_entity_contribution_t contribution
+               ON contribution.graph_entity_id=heading.graph_entity_id
+             JOIN knowledge_document_version_t version
+               ON version.document_version_id=contribution.document_version_id
+             JOIN knowledge_graph_entity_t document
+               ON document.graph_generation_id=heading.graph_generation_id
+              AND document.entity_type='DOCUMENT'
+              AND document.normalized_key='document:'||version.document_id::text
+            WHERE heading.graph_generation_id=$1 AND heading.entity_type='HEADING'
+         )
+         INSERT INTO knowledge_graph_relation_t(
+           graph_relation_id,graph_generation_id,knowledge_base_id,
+           subject_entity_id,object_entity_id,relation_type,origin,contract_version)
+         SELECT gen_random_uuid(),$1,$2,subject_id,object_id,
+                'CONTAINS_HEADING','STRUCTURAL',$3 FROM pairs
+         ON CONFLICT(graph_generation_id,subject_entity_id,relation_type,object_entity_id)
+         DO NOTHING",
+    )
+    .bind(graph_generation_id)
+    .bind(config.knowledge_base_id)
+    .bind(GRAPH_CONTRACT_VERSION)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "WITH fact AS (
+           SELECT entity.graph_entity_id AS object_id,
+                  contribution.chunk_id,contribution.document_version_id,
+                  CASE entity.entity_type
+                    WHEN 'LINK_TARGET' THEN 'LINKS_TO'
+                    WHEN 'API_OPERATION' THEN 'REFERENCES_API_OPERATION'
+                    WHEN 'CONFIGURATION_KEY' THEN 'REFERENCES_CONFIGURATION_KEY'
+                    WHEN 'SERVICE' THEN 'REFERENCES_SERVICE'
+                    WHEN 'COMPONENT' THEN 'REFERENCES_COMPONENT'
+                    WHEN 'DESIGN_REFERENCE' THEN 'REFERENCES_DESIGN'
+                    ELSE 'REFERENCES' END AS relation_type
+             FROM knowledge_graph_entity_t entity
+             JOIN knowledge_graph_entity_contribution_t contribution
+               ON contribution.graph_entity_id=entity.graph_entity_id
+            WHERE entity.graph_generation_id=$1
+              AND entity.entity_type IN ('LINK_TARGET','API_OPERATION',
+                  'CONFIGURATION_KEY','SERVICE','COMPONENT','DESIGN_REFERENCE')
+         ), pairs AS (
+           SELECT document.graph_entity_id AS subject_id,fact.*
+             FROM fact
+             JOIN knowledge_document_version_t version
+               ON version.document_version_id=fact.document_version_id
+             JOIN knowledge_graph_entity_t document
+               ON document.graph_generation_id=$1
+              AND document.entity_type='DOCUMENT'
+              AND document.normalized_key='document:'||version.document_id::text
+         )
+         INSERT INTO knowledge_graph_relation_t(
+           graph_relation_id,graph_generation_id,knowledge_base_id,
+           subject_entity_id,object_entity_id,relation_type,origin,contract_version)
+         SELECT gen_random_uuid(),$1,$2,subject_id,object_id,relation_type,'EXPLICIT',$3
+           FROM pairs GROUP BY subject_id,object_id,relation_type
+         ON CONFLICT(graph_generation_id,subject_entity_id,relation_type,object_entity_id)
+         DO NOTHING",
+    )
+    .bind(graph_generation_id)
+    .bind(config.knowledge_base_id)
+    .bind(GRAPH_CONTRACT_VERSION)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "WITH pairs AS (
+           SELECT repository.graph_entity_id AS subject_id,
+                  document.graph_entity_id AS object_id,
+                  contribution.chunk_id,contribution.document_version_id
+             FROM knowledge_graph_entity_t repository
+             JOIN knowledge_graph_entity_t document
+               ON document.graph_generation_id=repository.graph_generation_id
+              AND document.entity_type='DOCUMENT'
+             JOIN knowledge_graph_entity_contribution_t contribution
+               ON contribution.graph_entity_id=document.graph_entity_id
+            WHERE repository.graph_generation_id=$1
+              AND repository.entity_type='REPOSITORY'
+         )
+         INSERT INTO knowledge_graph_relation_t(
+           graph_relation_id,graph_generation_id,knowledge_base_id,
+           subject_entity_id,object_entity_id,relation_type,origin,contract_version)
+         SELECT gen_random_uuid(),$1,$2,subject_id,object_id,
+                'CONTAINS_DOCUMENT','STRUCTURAL',$3 FROM pairs
+          GROUP BY subject_id,object_id
+         ON CONFLICT(graph_generation_id,subject_entity_id,relation_type,object_entity_id)
+         DO NOTHING",
+    )
+    .bind(graph_generation_id)
+    .bind(config.knowledge_base_id)
+    .bind(GRAPH_CONTRACT_VERSION)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO knowledge_graph_relation_contribution_t(
+           graph_relation_id,graph_generation_id,knowledge_base_id,chunk_id,document_version_id)
+         SELECT relation.graph_relation_id,relation.graph_generation_id,
+                relation.knowledge_base_id,contribution.chunk_id,
+                contribution.document_version_id
+           FROM knowledge_graph_relation_t relation
+           JOIN knowledge_graph_entity_contribution_t contribution
+             ON contribution.graph_entity_id=relation.object_entity_id
+            AND contribution.graph_generation_id=relation.graph_generation_id
+            AND contribution.knowledge_base_id=relation.knowledge_base_id
+          WHERE relation.graph_generation_id=$1
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(graph_generation_id)
+    .execute(&mut *tx)
+    .await?;
+    let (entity_count, relation_count): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM knowledge_graph_entity_t WHERE graph_generation_id=$1),
+                (SELECT count(*) FROM knowledge_graph_relation_t WHERE graph_generation_id=$1)",
+    )
+    .bind(graph_generation_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let manifest_digest = sha256_hex(
+        format!("{GRAPH_CONTRACT_VERSION}\0{generation_id}\0{entity_count}\0{relation_count}")
+            .as_bytes(),
+    );
+    sqlx::query(
+        "UPDATE knowledge_graph_generation_t SET state='READY',manifest_digest=$2,
+                entity_count=$3,relation_count=$4,completed_ts=now()
+          WHERE graph_generation_id=$1",
+    )
+    .bind(graph_generation_id)
+    .bind(manifest_digest)
+    .bind(entity_count)
+    .bind(relation_count)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(())
 }
 
