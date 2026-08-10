@@ -747,6 +747,39 @@ fn load_llm_gateway_module(
     })))
 }
 
+fn load_llm_gateway_module_at_startup(
+    runtime_config: &RuntimeConfig,
+    active: bool,
+) -> Option<Arc<LlmGatewayModule>> {
+    match load_llm_gateway_module(runtime_config, active, 1, None) {
+        Ok(module) => module,
+        Err(error) => {
+            runtime_config.module_registry.register_config(
+                LLM_ROUTER_MODULE_ID,
+                "llm-router",
+                ModuleKind::Framework,
+                json!({
+                    "status": "unavailable",
+                    "reasonCode": "LLM_CONFIG_INVALID"
+                }),
+                [],
+                false,
+                None,
+                true,
+            );
+            tracing::error!(
+                target: "light_gateway::llm",
+                component = "llm-router",
+                state = "unavailable",
+                reasonCode = "LLM_CONFIG_INVALID",
+                error = %error,
+                "LLM configuration is invalid; starting gateway with LLM routing unavailable"
+            );
+            None
+        }
+    }
+}
+
 fn stop_llm_background_tasks(previous: Option<&Arc<LlmGatewayModule>>) {
     if let Some(module) = previous {
         if let Some(task) = module.projection_task.as_ref() {
@@ -1015,7 +1048,7 @@ impl GatewayProxy {
             access_control.clone().map(Arc::new),
         )?;
         let llm_gateway =
-            load_llm_gateway_module(config, active_handlers.is_handler_active("llm"), 1, None)?;
+            load_llm_gateway_module_at_startup(config, active_handlers.is_handler_active("llm"));
         let router_route = load_router_route(config, active_handlers.is_handler_active("router"))?;
         let proxy_route = load_proxy_route(config)?;
         let static_resources = load_static_resources(config)?;
@@ -3450,7 +3483,15 @@ impl ProxyHttp for GatewayProxy {
                 "llm" => {
                     let Some(module) = self.llm_gateway.load_full() else {
                         ctx.record_handler_duration(&handler_id, started.elapsed());
-                        continue;
+                        return self
+                            .write_llm_error_response(
+                                session,
+                                ctx,
+                                503,
+                                "service_unavailable",
+                                "LLM routing is unavailable",
+                            )
+                            .await;
                     };
                     let preceding = &handler_ids[..handler_index];
                     let ordered_security = preceding.iter().any(|id| id == "correlation")
@@ -6627,6 +6668,82 @@ endpointRules:
         .expect("test HTTP response timeout")
         .expect("read test HTTP response");
         response
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn invalid_llm_config_starts_degraded_and_returns_503_for_llm_routes() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        let gateway_port = free_tcp_port();
+        let gateway_address = format!("127.0.0.1:{gateway_port}")
+            .parse::<std::net::SocketAddr>()
+            .expect("gateway address");
+        std::fs::write(
+            config_dir.path().join("server.yml"),
+            format!(
+                "ip: 127.0.0.1\nadvertisedAddress: 127.0.0.1\nhttpPort: {gateway_port}\nenableHttp: true\nhttpsPort: 8443\nenableHttps: false\nserviceId: com.networknt.light-gateway-1.0.0\nenableRegistry: false\nstartOnRegistryFailure: true\ndynamicPort: false\nenvironment: dev\nshutdownGracefulPeriod: 100\n"
+            ),
+        )
+        .expect("write server config");
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            r#"
+handlers: [llm]
+paths:
+  - path: /v1/chat/completions
+    method: POST
+    exec: [llm]
+defaultHandlers: []
+"#,
+        )
+        .expect("write handler config");
+        std::fs::write(
+            config_dir.path().join(LLM_ROUTER_FILE),
+            r#"
+enabled: true
+providers:
+  broken:
+    format: openai
+    baseUrl: https://example.invalid/v1
+deployments: {}
+aliases: {}
+"#,
+        )
+        .expect("write invalid LLM config");
+
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp))
+            .with_config_dir(config_dir.path())
+            .with_external_config_dir(external_dir.path())
+            .build();
+        let running = runtime
+            .start()
+            .await
+            .expect("invalid LLM config must not abort gateway startup");
+        wait_for_tcp(gateway_address).await;
+
+        let health = raw_http_exchange(
+            gateway_address,
+            &format!(
+                "GET /health HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nConnection: close\r\n\r\n"
+            ),
+        )
+        .await;
+        let health = String::from_utf8_lossy(&health);
+        assert!(health.starts_with("HTTP/1.1 200"), "response: {health}");
+
+        let response = raw_http_exchange(
+            gateway_address,
+            &format!(
+                "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+            ),
+        )
+        .await;
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.starts_with("HTTP/1.1 503"), "response: {response}");
+        assert!(response.contains("\"code\":\"service_unavailable\""));
+        assert!(response.contains("LLM routing is unavailable"));
+
+        running.shutdown().await.expect("shutdown gateway");
     }
 
     async fn read_complete_http_request(socket: &mut TcpStream) -> Vec<u8> {
