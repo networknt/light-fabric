@@ -8,7 +8,7 @@ use axum::{
     },
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use futures_util::{SinkExt, StreamExt};
 use hindsight_client::{HindsightMemory, PgHindsightClient};
@@ -1461,6 +1461,10 @@ fn agent_router(state: Arc<AgentState>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/diagnostics/tools", get(tool_diagnostics))
+        .route(
+            "/knowledge/upload-delegation",
+            post(knowledge_upload_delegation),
+        )
         .route("/chat", get(ws_handler))
         .fallback_service(ServeDir::new("public").append_index_html_on_directories(true))
         .with_state(state)
@@ -1468,6 +1472,65 @@ fn agent_router(state: Arc<AgentState>) -> Router {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KnowledgeUploadDelegationResponse {
+    token: String,
+    expires_at: i64,
+}
+
+async fn knowledge_upload_delegation(
+    headers: HeaderMap,
+    State(state): State<Arc<AgentState>>,
+) -> Response {
+    let authenticated = match authenticate_request(&headers, &state).await {
+        Ok(authenticated) => authenticated,
+        Err(rejection) => return rejection_response(rejection),
+    };
+    let session_id = Uuid::now_v7();
+    let turn_id = Uuid::now_v7();
+    let boundary = sha256_digest(
+        format!(
+            "knowledge-upload|{}|{}|{}",
+            state.host_id, authenticated.owner.agent_def_id, authenticated.owner.principal_id
+        )
+        .as_bytes(),
+    );
+    match knowledge_authorization(
+        &state,
+        &authenticated,
+        DelegationKind::KnowledgeUpload,
+        session_id,
+        turn_id,
+        &state.policy_digest,
+        &boundary,
+    ) {
+        Ok(authorization) => {
+            let now = chrono::Utc::now().timestamp();
+            let token = authorization
+                .strip_prefix("Bearer ")
+                .unwrap_or(&authorization)
+                .to_string();
+            (
+                StatusCode::OK,
+                Json(KnowledgeUploadDelegationResponse {
+                    token,
+                    expires_at: now + 60,
+                }),
+            )
+                .into_response()
+        }
+        Err(error) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "code": "KNOWLEDGE_DELEGATION_UNAVAILABLE",
+                "message": error.to_string()
+            })),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -4048,6 +4111,7 @@ fn gateway_authorization(
 fn knowledge_authorization(
     state: &AgentState,
     authenticated: &AuthenticatedRequest,
+    kind: DelegationKind,
     session_id: Uuid,
     turn_id: Uuid,
     policy_digest: &str,
@@ -4056,11 +4120,11 @@ fn knowledge_authorization(
     let signer = state
         .delegation_signer
         .as_ref()
-        .context("Knowledge retrieval requires the delegated workload signer")?;
+        .context("Knowledge access requires the delegated workload signer")?;
     let now = chrono::Utc::now().timestamp();
     let token = signer.mint(DelegationClaims {
         token_id: Uuid::now_v7(),
-        kind: DelegationKind::KnowledgeRetrieve,
+        kind,
         issuer: String::new(),
         audience: "light-knowledge".into(),
         caller_subject: authenticated.caller_subject.clone(),
@@ -4195,6 +4259,7 @@ async fn run_agent_loop(
             let delegated = knowledge_authorization(
                 state,
                 authenticated,
+                DelegationKind::KnowledgeRetrieve,
                 Uuid::parse_str(session_id)?,
                 turn_id,
                 policy_digest,

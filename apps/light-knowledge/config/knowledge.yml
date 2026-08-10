@@ -1,6 +1,7 @@
 version: 1
 databaseUrlFile: /run/secrets/knowledge-database-url
 delegationSecretFile: /run/secrets/agent-delegation-secret
+queryCacheKeyFile: /run/secrets/knowledge-query-cache-key
 heartbeatSecretFile: /run/secrets/knowledge-heartbeat-secret
 delegationIssuer: light-agent
 objectStoreRoot: /var/lib/light-knowledge/objects

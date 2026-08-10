@@ -3,6 +3,8 @@ use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -286,8 +288,19 @@ fn projected_job_type(event_type: &str, enterprise_source: bool) -> Option<&'sta
     })
 }
 
+fn worker_owns_job(
+    configured_knowledge_base_id: Uuid,
+    configured_source_id: Uuid,
+    knowledge_base_id: Uuid,
+    source_id: Option<Uuid>,
+) -> bool {
+    knowledge_base_id == configured_knowledge_base_id
+        && source_id.is_none_or(|value| value == configured_source_id)
+}
+
 async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Result<()> {
     loop {
+        reclaim_expired_jobs(pool, config).await?;
         let mut tx = pool.begin().await?;
         let lane_types = match lane {
             WorkerLane::Priority => PRIORITY_JOB_TYPES,
@@ -302,9 +315,11 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
                 .join(",")
         );
         let job = sqlx::query(&format!(
-            "SELECT job_id,knowledge_base_id,source_id,job_type,payload
+            "SELECT job_id,job_type,payload
                FROM knowledge_job_t
               WHERE state='QUEUED' AND {lane_predicate}
+                AND knowledge_base_id=$1
+                AND (source_id IS NULL OR source_id=$2)
                 AND (next_attempt_ts IS NULL OR next_attempt_ts<=now())
               ORDER BY CASE
                 WHEN job_type IN ('SYNC','DELTA_SYNC','CONNECTOR_SYNC','ACL_RECONCILE',
@@ -316,6 +331,8 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
                 ELSE 4 END,
                 created_ts FOR UPDATE SKIP LOCKED LIMIT 1"
         ))
+        .bind(config.knowledge_base_id)
+        .bind(config.source_id)
         .fetch_optional(&mut *tx)
         .await?;
         let Some(job) = job else {
@@ -332,20 +349,16 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
             continue;
         };
         let job_id: Uuid = job.get("job_id");
-        let knowledge_base_id: Uuid = job.get("knowledge_base_id");
-        let source_id: Option<Uuid> = job.get("source_id");
         let job_type: String = job.get("job_type");
         let payload: serde_json::Value = job.get("payload");
-        sqlx::query("UPDATE knowledge_job_t SET state='RUNNING',claim_token=$2,lease_expires_ts=now()+interval '5 minutes',attempt_count=attempt_count+1,update_ts=now() WHERE job_id=$1")
-            .bind(job_id).bind(Uuid::now_v7()).execute(&mut *tx).await?;
+        let claim_token = Uuid::now_v7();
+        sqlx::query("UPDATE knowledge_job_t SET state='RUNNING',claim_token=$2,lease_expires_ts=now()+interval '5 minutes',attempt_count=attempt_count+1,update_ts=now() WHERE job_id=$1 AND state='QUEUED'")
+            .bind(job_id).bind(claim_token).execute(&mut *tx).await?;
         tx.commit().await?;
-        let result = if knowledge_base_id != config.knowledge_base_id
-            || source_id.is_some_and(|value| value != config.source_id)
-        {
-            Err(anyhow::anyhow!(
-                "job does not match this bounded pilot worker identity"
-            ))
-        } else if job_type == "PROMOTE" {
+        let lease_done = Arc::new(AtomicBool::new(false));
+        let lease_task =
+            spawn_job_lease_renewal(pool.clone(), job_id, claim_token, Arc::clone(&lease_done));
+        let result = if job_type == "PROMOTE" {
             promote_generation(pool, config, &payload).await
         } else if job_type == "PROVIDER_NOTIFICATION" {
             match record_connector_notification(pool, config, &payload).await {
@@ -379,7 +392,13 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
         {
             connector_build(pool, config, true).await
         } else if job_type == "CONNECTIVITY_TEST" {
-            prepare_checkout(config).await.map(|_| ())
+            if config.enterprise_connector_fixture_file.is_some()
+                || config.enterprise_connector_page_url.is_some()
+            {
+                test_connector_connection(config).await
+            } else {
+                prepare_checkout(config).await.map(|_| ())
+            }
         } else if job_type == "UPLOAD" {
             process_upload(pool, config, &payload).await
         } else if job_type == "DELTA_SYNC" {
@@ -427,14 +446,32 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
         } else {
             build(pool, config).await
         };
+        lease_done.store(true, Ordering::Release);
+        lease_task.abort();
+        let _ = lease_task.await;
         match result {
             Ok(()) => {
-                sqlx::query("UPDATE knowledge_job_t SET state='SUCCEEDED',result=jsonb_build_object('completed',true),lease_expires_ts=NULL,update_ts=now() WHERE job_id=$1")
-                    .bind(job_id).execute(pool).await?;
+                let updated = sqlx::query("UPDATE knowledge_job_t SET state='SUCCEEDED',result=jsonb_build_object('completed',true),claim_token=NULL,lease_expires_ts=NULL,update_ts=now() WHERE job_id=$1 AND state='RUNNING' AND claim_token=$2")
+                    .bind(job_id).bind(claim_token).execute(pool).await?;
+                if updated.rows_affected() != 1 {
+                    tracing::warn!(%job_id, %claim_token,
+                        "Knowledge job completed after its claim was lost; terminal update skipped");
+                    continue;
+                }
                 publish_promotion_acknowledgements(pool, config).await?;
             }
             Err(error) => {
                 tracing::error!(job_id=%job_id, %error, "bounded Knowledge build failed");
+                let updated = sqlx::query("UPDATE knowledge_job_t SET state='FAILED',result=jsonb_build_object('code',$2),claim_token=NULL,lease_expires_ts=NULL,update_ts=now() WHERE job_id=$1 AND state='RUNNING' AND claim_token=$3")
+                    .bind(job_id)
+                    .bind(worker_error_code(&error))
+                    .bind(claim_token)
+                    .execute(pool).await?;
+                if updated.rows_affected() != 1 {
+                    tracing::warn!(%job_id, %claim_token,
+                        "Knowledge job failed after its claim was lost; terminal update skipped");
+                    continue;
+                }
                 if matches!(
                     job_type.as_str(),
                     "MIGRATION_PREFLIGHT"
@@ -444,13 +481,78 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
                 ) {
                     record_migration_job_failure(pool, &payload, &error).await?;
                 }
-                sqlx::query("UPDATE knowledge_job_t SET state='FAILED',result=jsonb_build_object('code',$2),lease_expires_ts=NULL,update_ts=now() WHERE job_id=$1")
-                    .bind(job_id)
-                    .bind(worker_error_code(&error))
-                    .execute(pool).await?;
             }
         }
     }
+}
+
+async fn reclaim_expired_jobs(pool: &PgPool, config: &WorkerConfig) -> Result<()> {
+    sqlx::query(
+        "UPDATE knowledge_job_t
+            SET state='FAILED',claim_token=NULL,lease_expires_ts=NULL,
+                result=COALESCE(result,'{}'::jsonb) || jsonb_build_object(
+                  'code','KNOWLEDGE_JOB_LEASE_RETRY_EXHAUSTED',
+                  'leaseExpiryCode','KNOWLEDGE_JOB_LEASE_EXPIRED',
+                  'previousFailureCode',result->>'code'),
+                update_ts=now()
+          WHERE state='RUNNING'
+            AND (lease_expires_ts IS NULL OR lease_expires_ts<=now())
+            AND attempt_count>=5
+            AND knowledge_base_id=$1 AND (source_id IS NULL OR source_id=$2)",
+    )
+    .bind(config.knowledge_base_id)
+    .bind(config.source_id)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "UPDATE knowledge_job_t
+            SET state='QUEUED',claim_token=NULL,lease_expires_ts=NULL,
+                next_attempt_ts=now()+make_interval(secs =>
+                  LEAST(3600,60*power(2,LEAST(attempt_count,6)))::int),
+                result=COALESCE(result,'{}'::jsonb) || jsonb_build_object(
+                  'leaseExpiryCode','KNOWLEDGE_JOB_LEASE_EXPIRED'),
+                update_ts=now()
+          WHERE state='RUNNING'
+            AND (lease_expires_ts IS NULL OR lease_expires_ts<=now())
+            AND attempt_count<5
+            AND knowledge_base_id=$1 AND (source_id IS NULL OR source_id=$2)",
+    )
+    .bind(config.knowledge_base_id)
+    .bind(config.source_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+fn spawn_job_lease_renewal(
+    pool: PgPool,
+    job_id: Uuid,
+    claim_token: Uuid,
+    done: Arc<AtomicBool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while !done.load(Ordering::Acquire) {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            if done.load(Ordering::Acquire) {
+                break;
+            }
+            let renewed = sqlx::query(
+                "UPDATE knowledge_job_t
+                    SET lease_expires_ts=now()+interval '5 minutes',update_ts=now()
+                  WHERE job_id=$1 AND state='RUNNING' AND claim_token=$2",
+            )
+            .bind(job_id)
+            .bind(claim_token)
+            .execute(&pool)
+            .await;
+            match renewed {
+                Ok(result) if result.rows_affected() == 0 => break,
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%job_id, %error,
+                    "Knowledge job lease renewal failed transiently; retrying"),
+            }
+        }
+    })
 }
 
 async fn record_migration_job_failure(
@@ -3789,6 +3891,56 @@ async fn connector_build(pool: &PgPool, config: &WorkerConfig, apply_content: bo
     Ok(())
 }
 
+async fn test_connector_connection(config: &WorkerConfig) -> Result<()> {
+    let approved_origin = config
+        .enterprise_connector_approved_origin
+        .as_deref()
+        .context("KNOWLEDGE_ENTERPRISE_CONNECTOR_ORIGIN_REQUIRED")?;
+    if let Some(fixture) = &config.enterprise_connector_fixture_file {
+        let page: ConnectorPage = serde_json::from_slice(&fs::read(fixture)?)?;
+        page.validate(approved_origin)?;
+        return Ok(());
+    }
+    let endpoint = config
+        .enterprise_connector_page_url
+        .as_deref()
+        .context("KNOWLEDGE_ENTERPRISE_CONNECTOR_NOT_CONFIGURED")?;
+    let token_file = config
+        .enterprise_connector_authorization_file
+        .as_ref()
+        .context("KNOWLEDGE_ENTERPRISE_CONNECTOR_AUTHORIZATION_REQUIRED")?;
+    let token = fs::read_to_string(token_file)?;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(60))
+        .build()?;
+    let mut response = client
+        .post(endpoint)
+        .bearer_auth(token.trim())
+        .header("x-knowledge-base-id", config.knowledge_base_id.to_string())
+        .header("x-knowledge-source-id", config.source_id.to_string())
+        .json(&json!({"cursor": null, "fullPermissionReconciliation": false}))
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        bail!(
+            "KNOWLEDGE_CONNECTOR_HTTP_STATUS:{}",
+            response.status().as_u16()
+        );
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len().saturating_add(chunk.len()) > 16 * 1024 * 1024 {
+            bail!("KNOWLEDGE_CONNECTOR_PROBE_RESPONSE_TOO_LARGE");
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let page: ConnectorPage = serde_json::from_slice(&bytes)?;
+    page.validate(approved_origin)?;
+    Ok(())
+}
+
 async fn load_current_acl_digests(
     pool: &PgPool,
     config: &WorkerConfig,
@@ -5982,11 +6134,33 @@ async fn apply_desired_state(
                 projected_job_type(&event.event_type, enterprise_source)
                     .context("projected Knowledge event has no job route")?
             };
-            sqlx::query("INSERT INTO knowledge_job_t(job_id,knowledge_base_id,source_id,job_type,idempotency_key,requested_by,payload) VALUES($1,$2,$3,$4,$5,'portal-event',$6) ON CONFLICT(knowledge_base_id,idempotency_key) DO NOTHING")
+            let knowledge_base_id = uuid_value(payload, "knowledgeBaseId")?;
+            let source_id = optional_uuid_value(payload, "sourceId")?;
+            let owned_by_config = worker_owns_job(
+                config.knowledge_base_id,
+                config.source_id,
+                knowledge_base_id,
+                source_id,
+            );
+            if !owned_by_config {
+                tracing::warn!(
+                    %knowledge_base_id,
+                    ?source_id,
+                    configured_knowledge_base_id=%config.knowledge_base_id,
+                    configured_source_id=%config.source_id,
+                    "Projected Knowledge job awaits its owning worker shard"
+                );
+            }
+            sqlx::query("INSERT INTO knowledge_job_t(job_id,knowledge_base_id,source_id,job_type,idempotency_key,requested_by,payload,state,result) VALUES($1,$2,$3,$4,$5,'portal-event',$6,'QUEUED',$7) ON CONFLICT(knowledge_base_id,idempotency_key) DO NOTHING")
                 .bind(event.event_id)
-                .bind(uuid_value(payload, "knowledgeBaseId")?)
-                .bind(optional_uuid_value(payload, "sourceId")?)
+                .bind(knowledge_base_id)
+                .bind(source_id)
                 .bind(job_type).bind(event.event_id.to_string()).bind(payload)
+                .bind((!owned_by_config).then(|| json!({
+                    "routingStatus": "KNOWLEDGE_JOB_AWAITING_OWNING_SHARD",
+                    "configuredKnowledgeBaseId": config.knowledge_base_id,
+                    "configuredSourceId": config.source_id
+                })))
                 .execute(&mut **tx).await?;
         }
         _ => {}
@@ -6197,6 +6371,36 @@ mod tests {
             let produced = projected_job_type(event, enterprise_source).unwrap();
             assert!(claimed.contains(produced), "{produced} is never claimed");
         }
+    }
+
+    #[test]
+    fn projected_jobs_outside_the_configured_shard_are_not_owned() {
+        let configured_kb = Uuid::from_u128(1);
+        let configured_source = Uuid::from_u128(2);
+        assert!(worker_owns_job(
+            configured_kb,
+            configured_source,
+            configured_kb,
+            None
+        ));
+        assert!(worker_owns_job(
+            configured_kb,
+            configured_source,
+            configured_kb,
+            Some(configured_source)
+        ));
+        assert!(!worker_owns_job(
+            configured_kb,
+            configured_source,
+            Uuid::from_u128(3),
+            None
+        ));
+        assert!(!worker_owns_job(
+            configured_kb,
+            configured_source,
+            configured_kb,
+            Some(Uuid::from_u128(4))
+        ));
     }
 
     #[test]

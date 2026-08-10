@@ -34,6 +34,7 @@ pub struct KnowledgeConfig {
     pub version: u16,
     pub database_url_file: PathBuf,
     pub delegation_secret_file: PathBuf,
+    pub query_cache_key_file: PathBuf,
     pub heartbeat_secret_file: PathBuf,
     pub delegation_issuer: String,
     pub object_store_root: PathBuf,
@@ -160,6 +161,7 @@ impl KnowledgeConfig {
             || self.maximum_query_bytes > self.maximum_request_bytes
             || self.request_timeout_ms == 0
             || self.maximum_database_connections == 0
+            || !self.query_cache_key_file.is_file()
             || self.projection_lease_seconds != 30
             || self
                 .legacy_delegation_acceptance_deadline
@@ -245,6 +247,7 @@ pub struct KnowledgeState {
     heartbeat_secret: Vec<u8>,
     query_cache_key: Vec<u8>,
     query_cache: Mutex<QueryEmbeddingCache>,
+    metrics_cache: Mutex<Option<MetricsCacheEntry>>,
     embedding_client: reqwest::Client,
     config: KnowledgeConfig,
 }
@@ -259,6 +262,11 @@ struct QueryEmbeddingCacheEntry {
 struct QueryEmbeddingCache {
     entries: HashMap<String, QueryEmbeddingCacheEntry>,
     stored_bytes: usize,
+}
+
+struct MetricsCacheEntry {
+    body: String,
+    expires_at: Instant,
 }
 
 impl KnowledgeState {
@@ -287,6 +295,13 @@ impl KnowledgeState {
         if heartbeat_secret.is_empty() {
             return Err(RuntimeError::Config("heartbeat secret is empty".into()));
         }
+        let query_cache_key = fs::read(&config.query_cache_key_file)
+            .map_err(|error| RuntimeError::Config(format!("query cache key: {error}")))?;
+        if query_cache_key.len() < 32 {
+            return Err(RuntimeError::Config(
+                "query cache key must contain at least 32 bytes".into(),
+            ));
+        }
         let embedding_client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(StdDuration::from_millis(config.request_timeout_ms))
@@ -300,8 +315,9 @@ impl KnowledgeState {
             pool,
             delegation_verifier,
             heartbeat_secret,
-            query_cache_key: delegation_secret.into_bytes(),
+            query_cache_key,
             query_cache: Mutex::new(QueryEmbeddingCache::default()),
+            metrics_cache: Mutex::new(None),
             embedding_client,
             config,
         })
@@ -365,9 +381,17 @@ async fn upload_handler(
             "KNOWLEDGE_INVALID_REQUEST",
         ));
     }
-    let authenticated = authenticated_context(&headers, &state).await?;
+    let authenticated =
+        authenticated_context(&headers, &state, DelegationKind::KnowledgeUpload).await?;
     let knowledge_base_id = required_uuid_header(&headers, "x-knowledge-base-id")?;
     let source_id = required_uuid_header(&headers, "x-knowledge-source-id")?;
+    preauthorize_request(
+        &state,
+        knowledge_base_id,
+        &authenticated,
+        &authenticated.environment,
+    )
+    .await?;
     let filename = required_text_header(&headers, "x-upload-filename")?;
     let media_type = required_text_header(&headers, "content-type")?
         .split(';')
@@ -386,25 +410,20 @@ async fn upload_handler(
             "KNOWLEDGE_UNSUPPORTED_CONTRACT",
         ));
     }
-    let authorized = sqlx::query_scalar::<_, bool>(
+    let authorized_source = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(
            SELECT 1 FROM knowledge_source_t source
            JOIN knowledge_base_t kb ON kb.knowledge_base_id=source.knowledge_base_id
-           JOIN knowledge_runtime_authorization_t auth
-             ON auth.knowledge_base_id=kb.knowledge_base_id
           WHERE source.source_id=$1 AND source.knowledge_base_id=$2
-            AND auth.consumer_host_id=$3 AND auth.agent_id=$4
-            AND auth.environment=$5 AND auth.active=TRUE)",
+            AND upper(source.source_type)='UPLOAD'
+            AND source.status='ACTIVE')",
     )
     .bind(source_id)
     .bind(knowledge_base_id)
-    .bind(authenticated.host_id)
-    .bind(authenticated.agent_def_id)
-    .bind(&authenticated.environment)
     .fetch_one(&state.pool)
     .await
     .map_err(ApiError::database)?;
-    if !authorized {
+    if !authorized_source {
         return Err(ApiError::new(StatusCode::FORBIDDEN, "KNOWLEDGE_FORBIDDEN"));
     }
     let upload_id = Uuid::now_v7();
@@ -586,7 +605,8 @@ async fn mcp_handler(
             }
         ]}),
         "tools/call" => {
-            let authenticated = authenticated_context(&headers, &state).await?;
+            let authenticated =
+                authenticated_context(&headers, &state, DelegationKind::KnowledgeRetrieve).await?;
             let name = message
                 .params
                 .get("name")
@@ -699,15 +719,42 @@ async fn ready(State(state): State<Arc<KnowledgeState>>) -> Response {
 }
 
 async fn metrics(State(state): State<Arc<KnowledgeState>>) -> Response {
-    let pending = sqlx::query_scalar::<_, i64>(
-        "SELECT count(*) FROM knowledge_projection_inbox_t WHERE state IN ('RECEIVED','GAP')",
-    )
-    .fetch_one(&state.pool)
-    .await
-    .unwrap_or(-1);
-    let body = format!(
-        "# TYPE light_knowledge_projection_pending gauge\nlight_knowledge_projection_pending {pending}\n"
-    );
+    // Prometheus endpoints are intentionally unauthenticated. Serialize refreshes and cache the
+    // result so one scrape cannot amplify into repeated database scans.
+    let mut cache = state.metrics_cache.lock().await;
+    if let Some(cached) = cache
+        .as_ref()
+        .filter(|cached| cached.expires_at > Instant::now())
+    {
+        return prometheus_response(cached.body.clone());
+    }
+    let stale = cache.as_ref().map(|cached| cached.body.clone());
+    let refresh = tokio::time::timeout(StdDuration::from_secs(5), load_metrics(&state.pool)).await;
+    let (body, ttl) = match refresh {
+        Ok(Ok(body)) => (body, StdDuration::from_secs(15)),
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "Knowledge metrics refresh failed; serving stale metrics");
+            (
+                stale.unwrap_or_else(|| render_metrics([-1; 11])),
+                StdDuration::from_secs(5),
+            )
+        }
+        Err(_) => {
+            tracing::warn!("Knowledge metrics refresh timed out; serving stale metrics");
+            (
+                stale.unwrap_or_else(|| render_metrics([-1; 11])),
+                StdDuration::from_secs(5),
+            )
+        }
+    };
+    *cache = Some(MetricsCacheEntry {
+        body: body.clone(),
+        expires_at: Instant::now() + ttl,
+    });
+    prometheus_response(body)
+}
+
+fn prometheus_response(body: String) -> Response {
     (
         [(
             &axum::http::header::CONTENT_TYPE,
@@ -716,6 +763,153 @@ async fn metrics(State(state): State<Arc<KnowledgeState>>) -> Response {
         body,
     )
         .into_response()
+}
+
+async fn load_metrics(pool: &PgPool) -> Result<String, sqlx::Error> {
+    let readiness = sqlx::query(
+        "WITH requested(metric_group,table_name,required_columns) AS (VALUES
+           ('projection','knowledge_projection_inbox_t',ARRAY['state']::text[]),
+           ('job','knowledge_job_t',ARRAY['state','lease_expires_ts']::text[]),
+           ('promotion','knowledge_promotion_outbox_t',ARRAY['state']::text[]),
+           ('authorization','knowledge_runtime_authorization_t',ARRAY['active','lease_expires_ts']::text[]),
+           ('source_acl','knowledge_source_acl_state_t',ARRAY['state','fresh_until_ts']::text[]),
+           ('migration','knowledge_embedding_migration_t',ARRAY['state']::text[]),
+           ('audit','knowledge_query_audit_t',ARRAY['fallback_reason','created_ts']::text[])
+         )
+         SELECT metric_group,to_regclass(table_name) IS NOT NULL AS table_exists,
+           COALESCE(
+             has_table_privilege(to_regclass(table_name),'SELECT')
+             AND NOT EXISTS(
+               SELECT 1 FROM unnest(required_columns) required(column_name)
+                WHERE NOT EXISTS(
+                  SELECT 1 FROM pg_attribute attribute
+                   WHERE attribute.attrelid=to_regclass(table_name)
+                     AND attribute.attname=required.column_name
+                     AND attribute.attnum>0 AND NOT attribute.attisdropped)),
+             FALSE) AS ready
+           FROM requested",
+    )
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|row| {
+        (
+            row.get::<String, _>("metric_group"),
+            (
+                row.get::<bool, _>("table_exists"),
+                row.get::<bool, _>("ready"),
+            ),
+        )
+    })
+    .collect::<HashMap<_, _>>();
+    let scalar = |group: &str, query: &str| match readiness.get(group).copied() {
+        Some((true, true)) => format!("({query})"),
+        Some((true, false)) => "-1::bigint".to_string(),
+        _ => "0::bigint".to_string(),
+    };
+    let query = format!(
+        "SELECT {} AS pending, {} AS gaps, {} AS queued, {} AS running,
+           {} AS failed, {} AS expired, {} AS promotion_pending,
+           {} AS stale_authorizations, {} AS stale_acl_sources,
+           {} AS migration_attention, {} AS graph_fallbacks",
+        scalar(
+            "projection",
+            "SELECT count(*) FROM knowledge_projection_inbox_t WHERE state IN ('RECEIVED','GAP')"
+        ),
+        scalar(
+            "projection",
+            "SELECT count(*) FROM knowledge_projection_inbox_t WHERE state='GAP'"
+        ),
+        scalar(
+            "job",
+            "SELECT count(*) FROM knowledge_job_t WHERE state='QUEUED'"
+        ),
+        scalar(
+            "job",
+            "SELECT count(*) FROM knowledge_job_t WHERE state='RUNNING'"
+        ),
+        scalar(
+            "job",
+            "SELECT count(*) FROM knowledge_job_t WHERE state='FAILED'"
+        ),
+        scalar(
+            "job",
+            "SELECT count(*) FROM knowledge_job_t WHERE state='RUNNING' AND (lease_expires_ts IS NULL OR lease_expires_ts<=now())"
+        ),
+        scalar(
+            "promotion",
+            "SELECT count(*) FROM knowledge_promotion_outbox_t WHERE state IN ('PENDING','FAILED')"
+        ),
+        scalar(
+            "authorization",
+            "SELECT count(*) FROM knowledge_runtime_authorization_t WHERE active=TRUE AND lease_expires_ts<=now()"
+        ),
+        scalar(
+            "source_acl",
+            "SELECT count(*) FROM knowledge_source_acl_state_t WHERE state<>'COMPLETE' OR fresh_until_ts<=now()"
+        ),
+        scalar(
+            "migration",
+            "SELECT count(*) FROM knowledge_embedding_migration_t WHERE state IN ('PAUSED','FAILED')"
+        ),
+        scalar(
+            "audit",
+            "SELECT count(*) FROM knowledge_query_audit_t WHERE fallback_reason IS NOT NULL AND created_ts>=now()-interval '5 minutes'"
+        ),
+    );
+    let row = sqlx::query(&query).fetch_one(pool).await?;
+    Ok(render_metrics([
+        row.try_get("pending").unwrap_or(-1),
+        row.try_get("gaps").unwrap_or(-1),
+        row.try_get("queued").unwrap_or(-1),
+        row.try_get("running").unwrap_or(-1),
+        row.try_get("failed").unwrap_or(-1),
+        row.try_get("expired").unwrap_or(-1),
+        row.try_get("promotion_pending").unwrap_or(-1),
+        row.try_get("stale_authorizations").unwrap_or(-1),
+        row.try_get("stale_acl_sources").unwrap_or(-1),
+        row.try_get("migration_attention").unwrap_or(-1),
+        row.try_get("graph_fallbacks").unwrap_or(-1),
+    ]))
+}
+
+fn render_metrics(values: [i64; 11]) -> String {
+    let [
+        pending,
+        gaps,
+        queued,
+        running,
+        failed,
+        expired,
+        promotion_pending,
+        stale_authorizations,
+        stale_acl_sources,
+        migration_attention,
+        graph_fallbacks,
+    ] = values;
+    let body = format!(
+        "# TYPE light_knowledge_projection_pending gauge\n\
+         light_knowledge_projection_pending {pending}\n\
+         # TYPE light_knowledge_projection_gap gauge\n\
+         light_knowledge_projection_gap {gaps}\n\
+         # TYPE light_knowledge_jobs gauge\n\
+         light_knowledge_jobs{{state=\"queued\"}} {queued}\n\
+         light_knowledge_jobs{{state=\"running\"}} {running}\n\
+         light_knowledge_jobs{{state=\"failed\"}} {failed}\n\
+         # TYPE light_knowledge_job_lease_expired gauge\n\
+         light_knowledge_job_lease_expired {expired}\n\
+         # TYPE light_knowledge_promotion_pending gauge\n\
+         light_knowledge_promotion_pending {promotion_pending}\n\
+         # TYPE light_knowledge_authorization_stale gauge\n\
+         light_knowledge_authorization_stale {stale_authorizations}\n\
+         # TYPE light_knowledge_acl_source_stale gauge\n\
+         light_knowledge_acl_source_stale {stale_acl_sources}\n\
+         # TYPE light_knowledge_migration_attention gauge\n\
+         light_knowledge_migration_attention {migration_attention}\n\
+         # TYPE light_knowledge_graph_fallbacks_5m gauge\n\
+         light_knowledge_graph_fallbacks_5m {graph_fallbacks}\n"
+    );
+    body
 }
 
 struct AuthenticatedKnowledgeRequest {
@@ -734,6 +928,7 @@ struct AuthenticatedKnowledgeRequest {
 async fn authenticated_context(
     headers: &HeaderMap,
     state: &KnowledgeState,
+    expected_kind: DelegationKind,
 ) -> Result<AuthenticatedKnowledgeRequest, ApiError> {
     let authorization = headers
         .get(axum::http::header::AUTHORIZATION)
@@ -758,7 +953,9 @@ async fn authenticated_context(
         .config
         .legacy_delegation_acceptance_deadline
         .is_some_and(|deadline| deadline > Utc::now());
-    if !normalized_claims_present && !legacy_window_open {
+    if !normalized_claims_present
+        && (expected_kind == DelegationKind::KnowledgeUpload || !legacy_window_open)
+    {
         return Err(ApiError::new(
             StatusCode::FORBIDDEN,
             "KNOWLEDGE_DELEGATION_BINDING_INVALID",
@@ -769,7 +966,10 @@ async fn authenticated_context(
             "Accepted legacy Knowledge delegation during bounded rolling-upgrade window"
         );
     }
-    if principal.kind != DelegationKind::KnowledgeRetrieve
+    if principal.kind != expected_kind
+        || principal.action_attempt_id.is_some()
+        || principal.tool_ref.is_some()
+        || principal.tool_alias.is_some()
         || principal.destination.as_deref() != Some("knowledge")
         || principal.policy_digest.trim().is_empty()
         || principal.data_boundary_digest.trim().is_empty()
@@ -801,7 +1001,8 @@ async fn retrieve_handler(
     headers: HeaderMap,
     Json(mut request): Json<RetrieveRequest>,
 ) -> Result<Json<KnowledgeSearchResponse>, ApiError> {
-    let authenticated = authenticated_context(&headers, &state).await?;
+    let authenticated =
+        authenticated_context(&headers, &state, DelegationKind::KnowledgeRetrieve).await?;
     validate_retrieve_request(&state.config, &request)?;
     request.environment = authenticated.environment.clone();
     let request_id = required_text_header(&headers, "x-request-id")?;
@@ -846,6 +1047,16 @@ struct SelectedKnowledgeBase {
     failure_policy: String,
     embedding_group_key: String,
     requires_normalized_claims: bool,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedQueryEmbedding {
+    generation_id: Uuid,
+    pointer_version: i64,
+    space_id: String,
+    space_revision: u64,
+    dimension: usize,
+    vector: Vec<f32>,
 }
 
 fn enforce_normalized_claims_for_selection(
@@ -1090,6 +1301,13 @@ async fn retrieve_transaction(
         request,
     )
     .await?;
+    preauthorize_request(
+        state,
+        knowledge_base_id,
+        authenticated,
+        &request.environment,
+    )
+    .await?;
     admit_request(
         &state.pool,
         knowledge_base_id,
@@ -1097,8 +1315,46 @@ async fn retrieve_transaction(
         request_id,
     )
     .await?;
-    let result =
-        retrieve_snapshot(state, request_id, knowledge_base_id, authenticated, request).await;
+    let mut pointer_retry_available = true;
+    let result = loop {
+        let prepared_embedding = match prepare_query_embedding(
+            state,
+            knowledge_base_id,
+            &request.environment,
+            &request.query,
+            &authenticated.policy_digest,
+            &authenticated.data_boundary_digest,
+        )
+        .await
+        {
+            Ok(prepared) => prepared,
+            Err(error) => break Err(error),
+        };
+        match retrieve_snapshot(
+            state,
+            request_id,
+            knowledge_base_id,
+            authenticated,
+            request,
+            &prepared_embedding,
+        )
+        .await
+        {
+            Err(error)
+                if error.code == "KNOWLEDGE_RETRIEVAL_POINTER_CHANGED"
+                    && pointer_retry_available =>
+            {
+                pointer_retry_available = false;
+            }
+            Err(error) if error.code == "KNOWLEDGE_RETRIEVAL_POINTER_CHANGED" => {
+                break Err(ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "KNOWLEDGE_ACTIVE_GENERATION_UNAVAILABLE",
+                ));
+            }
+            result => break result,
+        }
+    };
     let terminal_state = if result.is_ok() {
         "COMPLETED"
     } else {
@@ -1117,6 +1373,26 @@ async fn retrieve_transaction(
     .await
     .map_err(ApiError::database)?;
     result
+}
+
+async fn preauthorize_request(
+    state: &KnowledgeState,
+    knowledge_base_id: Uuid,
+    authenticated: &AuthenticatedKnowledgeRequest,
+    environment: &str,
+) -> Result<(), ApiError> {
+    let mut transaction = state.pool.begin().await.map_err(ApiError::database)?;
+    let authorization = load_authorization(
+        &mut transaction,
+        knowledge_base_id,
+        authenticated.host_id,
+        authenticated.agent_def_id,
+        environment,
+        &state.heartbeat_secret,
+    )
+    .await?;
+    authorization.validate_fresh_active(Utc::now())?;
+    transaction.rollback().await.map_err(ApiError::database)
 }
 
 async fn resolve_knowledge_base_id(
@@ -1173,6 +1449,7 @@ async fn retrieve_snapshot(
     knowledge_base_id: Uuid,
     authenticated: &AuthenticatedKnowledgeRequest,
     request: &RetrieveRequest,
+    prepared_embedding: &PreparedQueryEmbedding,
 ) -> Result<RetrievalResponse, ApiError> {
     let mut transaction = state.pool.begin().await.map_err(ApiError::database)?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
@@ -1229,16 +1506,15 @@ async fn retrieve_snapshot(
     .min(20);
     effective_request.token_budget = usize::try_from(profile_token_budget).unwrap_or(1);
     let generation = load_generation(
-        state,
         &mut transaction,
         knowledge_base_id,
         &request.environment,
         &effective_request,
         lexical_candidates,
         vector_candidates,
-        &authenticated.policy_digest,
-        &authenticated.data_boundary_digest,
         authenticated,
+        prepared_embedding,
+        state.config.features.delta_segments,
     )
     .await?;
     let started = std::time::Instant::now();
@@ -1786,6 +2062,70 @@ fn query_cache_key(
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn prepare_query_embedding(
+    state: &KnowledgeState,
+    knowledge_base_id: Uuid,
+    environment: &str,
+    query: &str,
+    policy_digest: &str,
+    data_boundary_digest: &str,
+) -> Result<PreparedQueryEmbedding, ApiError> {
+    let row = sqlx::query(
+        "SELECT pointer.index_generation_id,pointer.pointer_version,
+                generation.space_id,generation.space_revision,generation.dimension
+           FROM knowledge_index_pointer_t pointer
+           JOIN knowledge_index_generation_t generation
+             ON generation.index_generation_id=pointer.index_generation_id
+          WHERE pointer.knowledge_base_id=$1 AND pointer.environment=$2
+            AND generation.state='PROMOTED'",
+    )
+    .bind(knowledge_base_id)
+    .bind(environment)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(ApiError::database)?
+    .ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "KNOWLEDGE_ACTIVE_GENERATION_UNAVAILABLE",
+        )
+    })?;
+    let generation_id = row
+        .try_get("index_generation_id")
+        .map_err(ApiError::database)?;
+    let pointer_version = row.try_get("pointer_version").map_err(ApiError::database)?;
+    let space_id: String = row.try_get("space_id").map_err(ApiError::database)?;
+    let space_revision = u64::try_from(
+        row.try_get::<i64, _>("space_revision")
+            .map_err(ApiError::database)?,
+    )
+    .unwrap_or(0);
+    let dimension = usize::try_from(
+        row.try_get::<i32, _>("dimension")
+            .map_err(ApiError::database)?,
+    )
+    .unwrap_or(0);
+    let vector = query_embedding(
+        state,
+        query,
+        policy_digest,
+        data_boundary_digest,
+        &space_id,
+        space_revision,
+        dimension,
+    )
+    .await?;
+    Ok(PreparedQueryEmbedding {
+        generation_id,
+        pointer_version,
+        space_id,
+        space_revision,
+        dimension,
+        vector,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn query_embedding(
     state: &KnowledgeState,
     query: &str,
@@ -1971,18 +2311,17 @@ async fn query_embedding(
 }
 
 async fn load_generation(
-    state: &KnowledgeState,
     transaction: &mut Transaction<'_, Postgres>,
     knowledge_base_id: Uuid,
     environment: &str,
     request: &RetrieveRequest,
     lexical_candidates: i32,
     vector_candidates: i32,
-    policy_digest: &str,
-    data_boundary_digest: &str,
     principal: &AuthenticatedKnowledgeRequest,
+    prepared_embedding: &PreparedQueryEmbedding,
+    delta_segments_enabled: bool,
 ) -> Result<FullBaseGeneration, ApiError> {
-    let row = sqlx::query("SELECT g.index_generation_id,s.index_segment_id,g.snapshot_watermark,g.parser_contract_digest,g.chunker_contract_digest,g.lexical_contract_digest,g.citation_contract_digest,g.space_id,g.space_revision,g.dimension,COALESCE(g.ordered_segment_manifest_digest,s.manifest_digest) AS manifest_digest FROM knowledge_index_pointer_t p JOIN knowledge_index_generation_t g ON g.index_generation_id=p.index_generation_id JOIN knowledge_generation_segment_t m ON m.index_generation_id=g.index_generation_id AND m.ordinal=0 JOIN knowledge_index_segment_t s ON s.index_segment_id=m.index_segment_id AND s.segment_kind='BASE' AND s.state='READY' WHERE p.knowledge_base_id=$1 AND p.environment=$2 AND g.state='PROMOTED'")
+    let row = sqlx::query("SELECT g.index_generation_id,p.pointer_version,s.index_segment_id,g.snapshot_watermark,g.parser_contract_digest,g.chunker_contract_digest,g.lexical_contract_digest,g.citation_contract_digest,g.space_id,g.space_revision,g.dimension,COALESCE(g.ordered_segment_manifest_digest,s.manifest_digest) AS manifest_digest FROM knowledge_index_pointer_t p JOIN knowledge_index_generation_t g ON g.index_generation_id=p.index_generation_id JOIN knowledge_generation_segment_t m ON m.index_generation_id=g.index_generation_id AND m.ordinal=0 JOIN knowledge_index_segment_t s ON s.index_segment_id=m.index_segment_id AND s.segment_kind='BASE' AND s.state='READY' WHERE p.knowledge_base_id=$1 AND p.environment=$2 AND g.state='PROMOTED'")
         .bind(knowledge_base_id).bind(environment)
         .fetch_optional(&mut **transaction).await.map_err(ApiError::database)?
         .ok_or_else(|| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "KNOWLEDGE_ACTIVE_GENERATION_UNAVAILABLE"))?;
@@ -2003,19 +2342,22 @@ async fn load_generation(
             .map_err(ApiError::database)?,
     )
     .unwrap_or(0);
-    let query_embedding = query_embedding(
-        state,
-        &request.query,
-        policy_digest,
-        data_boundary_digest,
-        &space_id,
-        space_revision,
-        dimension,
-    )
-    .await?;
+    let pointer_version: i64 = row.try_get("pointer_version").map_err(ApiError::database)?;
+    if generation_id != prepared_embedding.generation_id
+        || pointer_version != prepared_embedding.pointer_version
+        || space_id != prepared_embedding.space_id
+        || space_revision != prepared_embedding.space_revision
+        || dimension != prepared_embedding.dimension
+    {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "KNOWLEDGE_RETRIEVAL_POINTER_CHANGED",
+        ));
+    }
     let query_vector = format!(
         "[{}]",
-        query_embedding
+        prepared_embedding
+            .vector
             .iter()
             .map(f32::to_string)
             .collect::<Vec<_>>()
@@ -2248,7 +2590,7 @@ async fn load_generation(
                 .map_err(ApiError::database)?
                 .trim()
                 .to_string(),
-            segment_kind: if state.config.features.delta_segments {
+            segment_kind: if delta_segments_enabled {
                 "BASE+DELTA".into()
             } else {
                 "BASE".into()
@@ -2303,7 +2645,8 @@ async fn passage_anchor_handler(
     Path((document_id, passage_anchor_id)): Path<(Uuid, Uuid)>,
     headers: HeaderMap,
 ) -> Result<Json<PassageAnchorResponse>, ApiError> {
-    let authenticated = authenticated_context(&headers, &state).await?;
+    let authenticated =
+        authenticated_context(&headers, &state, DelegationKind::KnowledgeRetrieve).await?;
     let knowledge_base_id = required_uuid_header(&headers, "x-knowledge-base-id")?;
     let mut transaction = state.pool.begin().await.map_err(ApiError::database)?;
     load_authorization(
@@ -2378,7 +2721,8 @@ async fn document_version_handler(
     Path((document_id, document_version_id)): Path<(Uuid, Uuid)>,
     headers: HeaderMap,
 ) -> Result<Json<DocumentVersionResponse>, ApiError> {
-    let authenticated = authenticated_context(&headers, &state).await?;
+    let authenticated =
+        authenticated_context(&headers, &state, DelegationKind::KnowledgeRetrieve).await?;
     let knowledge_base_id = required_uuid_header(&headers, "x-knowledge-base-id")?;
     Ok(Json(
         load_document_version(
@@ -2600,18 +2944,29 @@ mod tests {
     }
 
     #[test]
+    fn metrics_render_all_operational_gauges_from_one_snapshot() {
+        let body = render_metrics([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert!(body.contains("light_knowledge_projection_pending 1"));
+        assert!(body.contains("light_knowledge_jobs{state=\"failed\"} 5"));
+        assert!(body.contains("light_knowledge_graph_fallbacks_5m 11"));
+    }
+
+    #[test]
     fn config_accepts_phase4_graph_with_bounded_server_owned_limits() {
         let directory = tempfile::tempdir().unwrap();
         let database = directory.path().join("database-url");
         let delegation = directory.path().join("delegation-secret");
+        let query_cache_key = directory.path().join("query-cache-key");
         let heartbeat = directory.path().join("heartbeat-secret");
         fs::write(&database, "postgresql://localhost/test").unwrap();
         fs::write(&delegation, "01234567890123456789012345678901").unwrap();
+        fs::write(&query_cache_key, "abcdefghijklmnopqrstuvwxyz012345").unwrap();
         fs::write(&heartbeat, "01234567890123456789012345678901").unwrap();
         let mut config = KnowledgeConfig {
             version: 1,
             database_url_file: database,
             delegation_secret_file: delegation,
+            query_cache_key_file: query_cache_key,
             heartbeat_secret_file: heartbeat,
             delegation_issuer: "light-agent".into(),
             object_store_root: directory.path().join("objects"),
@@ -2780,6 +3135,7 @@ mod tests {
             version: 1,
             database_url_file: directory.path().join("unused-db"),
             delegation_secret_file: directory.path().join("unused-delegation"),
+            query_cache_key_file: directory.path().join("unused-query-cache-key"),
             heartbeat_secret_file: directory.path().join("unused-heartbeat"),
             delegation_issuer: "light-agent".into(),
             object_store_root: directory.path().join("objects"),
@@ -2821,6 +3177,7 @@ mod tests {
             heartbeat_secret: secret.to_vec(),
             query_cache_key: secret.to_vec(),
             query_cache: Mutex::new(QueryEmbeddingCache::default()),
+            metrics_cache: Mutex::new(None),
             embedding_client: reqwest::Client::new(),
             config,
         };

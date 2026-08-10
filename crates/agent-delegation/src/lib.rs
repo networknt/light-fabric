@@ -16,6 +16,7 @@ pub enum DelegationKind {
     ToolsList,
     ToolCall,
     KnowledgeRetrieve,
+    KnowledgeUpload,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -89,7 +90,7 @@ impl DelegationClaims {
             {
                 return Err(DelegationError::Binding);
             }
-            DelegationKind::KnowledgeRetrieve
+            DelegationKind::KnowledgeRetrieve | DelegationKind::KnowledgeUpload
                 if self.action_attempt_id.is_some()
                     || self.tool_ref.is_some()
                     || self.tool_alias.is_some()
@@ -103,12 +104,14 @@ impl DelegationClaims {
         if self.policy_digest.is_empty() || self.data_boundary_digest.is_empty() {
             return Err(DelegationError::Binding);
         }
-        if kind == DelegationKind::KnowledgeRetrieve
-            && (self.subject_id.is_empty()
-                || self.subject_type.is_empty()
-                || self.groups.is_none()
-                || self.organizations.is_none()
-                || self.agent_policy_version <= 0)
+        if matches!(
+            kind,
+            DelegationKind::KnowledgeRetrieve | DelegationKind::KnowledgeUpload
+        ) && (self.subject_id.is_empty()
+            || self.subject_type.is_empty()
+            || self.groups.is_none()
+            || self.organizations.is_none()
+            || self.agent_policy_version <= 0)
         {
             return Err(DelegationError::Binding);
         }
@@ -295,5 +298,35 @@ mod tests {
             verifier.verify(&(token + "x"), DelegationKind::ToolCall, Some("read")),
             Err(DelegationError::Signature)
         ));
+    }
+
+    #[test]
+    fn retrieval_token_cannot_authorize_upload() {
+        let now = Utc::now().timestamp();
+        let mut retrieval = claims(DelegationKind::KnowledgeRetrieve);
+        retrieval.destination = Some("knowledge".into());
+        assert!(
+            retrieval
+                .validate_binding(
+                    "light-gateway",
+                    DelegationKind::KnowledgeRetrieve,
+                    None,
+                    now,
+                )
+                .is_ok()
+        );
+        assert!(matches!(
+            retrieval
+                .validate_binding("light-gateway", DelegationKind::KnowledgeUpload, None, now,),
+            Err(DelegationError::Kind)
+        ));
+
+        let mut upload = retrieval;
+        upload.kind = DelegationKind::KnowledgeUpload;
+        assert!(
+            upload
+                .validate_binding("light-gateway", DelegationKind::KnowledgeUpload, None, now,)
+                .is_ok()
+        );
     }
 }

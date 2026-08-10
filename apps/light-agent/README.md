@@ -12,6 +12,12 @@ the caller's broad bearer token in this mode.
 `LIGHT_AGENT_ALLOW_BROAD_GATEWAY_TOKEN=true` enables the legacy bearer-forwarding
 path for local compatibility only. It is disabled by default.
 
+Authenticated upload clients obtain a dedicated 60-second Knowledge delegation
+with `POST /knowledge/upload-delegation`. The returned token is valid only for
+`light-knowledge`, carries the server-owned host, Agent, policy, and environment
+binding, and cannot be used for retrieval. `light-knowledge` still authorizes
+the requested Knowledge Base and active `UPLOAD` source before accepting bytes.
+
 Memory writes use `portal-command` by default so authorization, events, and
 auditing remain in the command boundary. `LIGHT_AGENT_MEMORY_WRITE_MODE=direct-pg`
 is a development compatibility mode and is rejected unless
