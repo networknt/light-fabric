@@ -33,7 +33,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: runner
-          image: ghcr.io/networknt/light-workflow-runner:replace-with-digest
+          image: networknt/light-workflow-runner:replace-with-digest
           imagePullPolicy: IfNotPresent
           env:
             - name: LIGHT_WORKFLOW_RUNNER_CONFIG_FILE

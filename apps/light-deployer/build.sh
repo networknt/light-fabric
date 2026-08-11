@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${1:-latest}"
-IMAGE="${IMAGE:-networknt/light-deployer:${VERSION}}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-cd "$(dirname "$0")/../.."
-docker build -f apps/light-deployer/Dockerfile -t "${IMAGE}" .
+exec "${REPO_ROOT}/build.sh" "$@" --app light-deployer

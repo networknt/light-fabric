@@ -20,7 +20,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: light-knowledge
-          image: lightapi/light-knowledge:phase1a
+          image: networknt/light-knowledge:phase1a
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

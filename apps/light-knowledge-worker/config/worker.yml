@@ -5,34 +5,29 @@ heartbeatSecretFile: /run/secrets/knowledge-heartbeat-secret
 portalCommandUrl: https://light-portal-command:8443/portal/command
 portalAuthorizationFile: /run/secrets/knowledge-portal-authorization
 checkoutRoot: /var/lib/light-knowledge/checkouts
-approvedRepositoryUri: https://github.com/networknt/light-portal-doc.git
-immutableCommit: 0000000000000000000000000000000000000000
-maximumCheckoutSeconds: 120
 objectStoreRoot: /var/lib/light-knowledge/objects
 projectorId: light-knowledge-worker-dev
-knowledgeBaseId: 00000000-0000-7000-8000-000000000101
-sourceId: 00000000-0000-7000-8000-000000000102
-environment: dev
-embeddingProfileId: 00000000-0000-7000-8000-000000000103
-embeddingProfileRevision: 1
 deterministicPilot: true
 migrationDeterministicPilot: false
 embeddingAlias: kb-index
 embeddingBatchSize: 32
-embeddingSpaceId: light-knowledge-fake-v1
-embeddingSpaceRevision: 1
-embeddingDimension: 32
 embeddingMigrationEnabled: false
 productionOperationsEnabled: false
 graphAssistedEnabled: false
-snapshotWatermark: 1
+# Config-server may lower these operational hard caps. Source-selected policy
+# values remain authoritative below these ceilings.
+platformCaps:
+  maximumDocuments: ${knowledgeWorker.platformCaps.maximumDocuments:10000}
+  maximumChunks: ${knowledgeWorker.platformCaps.maximumChunks:100000}
+  maximumSourceBytes: ${knowledgeWorker.platformCaps.maximumSourceBytes:268435456}
+  maximumStoredBytes: ${knowledgeWorker.platformCaps.maximumStoredBytes:1073741824}
+  maximumEmbeddingTokens: ${knowledgeWorker.platformCaps.maximumEmbeddingTokens:20000000}
+  maximumSpendMicros: ${knowledgeWorker.platformCaps.maximumSpendMicros:10000000}
+  maximumWallTimeSeconds: ${knowledgeWorker.platformCaps.maximumWallTimeSeconds:900}
+  maximumConcurrency: ${knowledgeWorker.platformCaps.maximumConcurrency:8}
+  maximumProviderCalls: ${knowledgeWorker.platformCaps.maximumProviderCalls:1024}
 # Phase 2 connector workers use one of the following mutually exclusive inputs.
 # enterpriseConnectorFixtureFile: /config/sharepoint-page-v1.json
 # enterpriseConnectorPageUrl: https://connector.internal/v1/pages
 # enterpriseConnectorAuthorizationFile: /run/secrets/knowledge-connector-authorization
 # enterpriseConnectorApprovedOrigin: https://graph.microsoft.com
-limits:
-  maximumDocuments: 10000
-  maximumSourceBytes: 268435456
-  maximumChunks: 100000
-  maximumEmbeddingTokens: 20000000

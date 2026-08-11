@@ -1,0 +1,8 @@
+host: ${startup.host:dev.lightapi.net}
+serviceId: ${server.serviceId:com.networknt.light-knowledge-worker-1.0.0}
+envTag: ${server.environment:dev}
+acceptHeader: application/yaml
+timeout: ${startup.timeout:3000}
+connectTimeout: ${startup.connectTimeout:3000}
+authorization: ${light_portal_authorization:}
+externalConfigDir: ${startup.externalConfigDir:/tmp/light-knowledge-config-cache}

@@ -20,7 +20,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: builder
-          image: lightapi/light-knowledge-worker:phase1a
+          image: networknt/light-knowledge-worker:phase1a
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -28,8 +28,8 @@ spec:
               drop: ["ALL"]
           args: ["build-loop"]
           env:
-            - name: LIGHT_KNOWLEDGE_WORKER_CONFIG_FILE
-              value: /config/worker.yml
+            - name: LIGHT_KNOWLEDGE_CONFIG_DIR
+              value: /config
           volumeMounts:
             - name: config
               mountPath: /config
@@ -37,6 +37,8 @@ spec:
             - name: secrets
               mountPath: /run/secrets
               readOnly: true
+            - name: config-cache
+              mountPath: /tmp/light-knowledge-config-cache
             - name: checkouts
               mountPath: /var/lib/light-knowledge/checkouts
             - name: objects
@@ -55,6 +57,8 @@ spec:
         - name: secrets
           secret:
             secretName: light-knowledge-secrets
+        - name: config-cache
+          emptyDir: {}
         - name: checkouts
           emptyDir:
             sizeLimit: 4Gi

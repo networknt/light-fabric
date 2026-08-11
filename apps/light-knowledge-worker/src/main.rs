@@ -8,7 +8,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use chrono::Utc;
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
 use knowledge_connectors::{
     ConnectorKind, ConnectorPage, ConnectorSyncMode, ValidatedConnectorPage, normalize_permission,
@@ -16,13 +17,17 @@ use knowledge_connectors::{
 };
 use knowledge_core::{
     BaseManifest, ChangeKind, CorpusDocumentState, DocumentInput, FullBaseGeneration,
-    ProcessingContract, SourceLimits, build_full_base, classify_corpus_changes,
-    compact_resolved_generation, ingest_markdown_repository, sha256_hex,
+    KnowledgeError, ProcessingContract, SourceLimits, build_full_base,
+    build_full_base_with_context, classify_corpus_changes, compact_resolved_generation,
+    ingest_markdown_repository, sha256_hex,
+};
+use light_runtime::{
+    BoundTransport, LightRuntimeBuilder, RuntimeConfig, RuntimeError, TransportRuntime,
 };
 use serde::Deserialize;
 use serde_json::json;
 use sha2::Sha256;
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
@@ -30,23 +35,35 @@ use uuid::Uuid;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WorkerConfig {
     version: u16,
+    #[serde(default)]
     worker_database_url_file: PathBuf,
+    #[serde(default)]
     projector_database_url_file: PathBuf,
     heartbeat_secret_file: PathBuf,
     #[serde(default)]
     portal_command_url: Option<String>,
     #[serde(default)]
     portal_authorization_file: Option<PathBuf>,
+    #[serde(default)]
     checkout_root: PathBuf,
+    #[serde(default)]
     approved_repository_uri: String,
+    #[serde(default)]
     immutable_commit: String,
+    #[serde(default = "default_checkout_seconds")]
     maximum_checkout_seconds: u64,
+    #[serde(default)]
     object_store_root: PathBuf,
     projector_id: String,
+    #[serde(default)]
     knowledge_base_id: Uuid,
+    #[serde(default)]
     source_id: Uuid,
+    #[serde(default)]
     environment: String,
+    #[serde(default)]
     embedding_profile_id: Uuid,
+    #[serde(default)]
     embedding_profile_revision: i64,
     #[serde(default = "default_true")]
     deterministic_pilot: bool,
@@ -66,7 +83,39 @@ struct WorkerConfig {
     embedding_space_revision: u64,
     #[serde(default = "default_embedding_dimension")]
     embedding_dimension: usize,
+    #[serde(default = "default_snapshot_watermark")]
     snapshot_watermark: u64,
+    #[serde(default)]
+    ingestion_policy_id: Uuid,
+    #[serde(default)]
+    ingestion_policy_version: i64,
+    #[serde(default)]
+    maximum_stored_bytes: u64,
+    #[serde(default)]
+    maximum_spend_micros: u64,
+    #[serde(default)]
+    maximum_concurrency: u32,
+    #[serde(default = "default_maximum_provider_calls")]
+    maximum_provider_calls: usize,
+    #[serde(default)]
+    platform_caps: PlatformCaps,
+    #[serde(skip)]
+    resolved_sources: Vec<ResolvedSourceConfig>,
+    #[serde(default)]
+    source_snapshot: serde_json::Value,
+    #[serde(default)]
+    source_include_prefixes: Vec<String>,
+    #[serde(default)]
+    source_exclude_prefixes: Vec<String>,
+    #[serde(default)]
+    current_job_id: Option<Uuid>,
+    #[serde(default)]
+    sync_run_id: Option<Uuid>,
+    #[serde(default)]
+    coalesce_queued_syncs: bool,
+    #[serde(skip)]
+    coalesce_created_before: Option<DateTime<Utc>>,
+    #[serde(default)]
     limits: SourceLimits,
     #[serde(default)]
     enterprise_connector_fixture_file: Option<PathBuf>,
@@ -84,72 +133,200 @@ struct WorkerConfig {
     graph_assisted_enabled: bool,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PlatformCaps {
+    maximum_documents: Option<usize>,
+    maximum_chunks: Option<usize>,
+    maximum_source_bytes: Option<u64>,
+    maximum_stored_bytes: Option<u64>,
+    maximum_embedding_tokens: Option<usize>,
+    maximum_spend_micros: Option<u64>,
+    maximum_wall_time_seconds: Option<u64>,
+    maximum_concurrency: Option<u32>,
+    maximum_provider_calls: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedSourceConfig {
+    source_id: Uuid,
+    source_type: String,
+    approved_repository_uri: String,
+    immutable_commit: String,
+    source_include_prefixes: Vec<String>,
+    source_exclude_prefixes: Vec<String>,
+    ingestion_policy_id: Uuid,
+    ingestion_policy_version: i64,
+    limits: SourceLimits,
+    maximum_stored_bytes: u64,
+    maximum_spend_micros: u64,
+    maximum_wall_time_seconds: u64,
+    maximum_concurrency: u32,
+    maximum_provider_calls: usize,
+}
+
+const DEFAULT_MAXIMUM_PROVIDER_CALLS: usize = 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourcePathPolicy {
+    include_prefixes: Vec<String>,
+    exclude_prefixes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HeadlessTransport;
+
+#[async_trait]
+impl TransportRuntime for HeadlessTransport {
+    type Handle = ();
+
+    async fn bind(
+        &self,
+        _config: &RuntimeConfig,
+    ) -> std::result::Result<BoundTransport<Self::Handle>, RuntimeError> {
+        Err(RuntimeError::Unsupported(
+            "headless Knowledge worker does not bind a listener".into(),
+        ))
+    }
+
+    async fn stop(&self, _handle: &mut Self::Handle) -> std::result::Result<(), RuntimeError> {
+        Ok(())
+    }
+}
+
 impl WorkerConfig {
-    fn load() -> Result<Self> {
-        let path = env::var("LIGHT_KNOWLEDGE_WORKER_CONFIG_FILE")
-            .unwrap_or_else(|_| "config/worker.yml".to_string());
-        let content =
-            fs::read_to_string(&path).with_context(|| format!("read worker config {path}"))?;
-        let config: Self = serde_yaml::from_str(&content)
-            .with_context(|| format!("parse worker config {path}"))?;
-        let enterprise_connector_configured = config.enterprise_connector_fixture_file.is_some()
-            || config.enterprise_connector_page_url.is_some();
-        if config.version != 1
-            || config.embedding_profile_revision < 1
-            || config.snapshot_watermark == 0
-            || config.environment.trim().is_empty()
-            || config.projector_id.trim().is_empty()
-            || !config.worker_database_url_file.is_file()
-            || !config.projector_database_url_file.is_file()
-            || !config.heartbeat_secret_file.is_file()
-            || config.maximum_checkout_seconds == 0
-            || !config.checkout_root.is_dir()
-            || !valid_repository_uri(&config.approved_repository_uri)
-            || !valid_commit(&config.immutable_commit)
-            || config.embedding_batch_size == 0
-            || config.embedding_batch_size > 128
-            || config.embedding_dimension == 0
-            || config.embedding_space_revision == 0
-            || config.embedding_space_id.trim().is_empty()
-            || config.embedding_alias.trim().is_empty()
-            || (config.deterministic_pilot && config.embedding_gateway_url.is_some())
-            || (config.migration_deterministic_pilot && !config.deterministic_pilot)
-            || (!config.deterministic_pilot
-                && (config
+    async fn load(command: &str) -> Result<Self> {
+        let (config_dir, config_file) = if let Ok(path) =
+            env::var("LIGHT_KNOWLEDGE_WORKER_CONFIG_FILE")
+        {
+            let path = PathBuf::from(path);
+            let parent = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            let file_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .context("LIGHT_KNOWLEDGE_WORKER_CONFIG_FILE must name a UTF-8 YAML file")?;
+            (parent.to_path_buf(), file_name.to_string())
+        } else {
+            (
+                PathBuf::from(
+                    env::var("LIGHT_KNOWLEDGE_CONFIG_DIR").unwrap_or_else(|_| "config".to_string()),
+                ),
+                "worker.yml".to_string(),
+            )
+        };
+        let runtime = LightRuntimeBuilder::new(HeadlessTransport)
+            .with_config_dir(&config_dir)
+            .build()
+            .prepare_config()
+            .await
+            .context("bootstrap Knowledge worker configuration")?;
+        let config = runtime
+            .module_registry
+            .load_config::<Self>(&runtime, &config_file)
+            .with_context(|| {
+                format!(
+                    "load effective Knowledge worker configuration {}",
+                    config_dir.join(config_file).display()
+                )
+            })?;
+        config.validate(command)
+    }
+
+    fn validate(self, command: &str) -> Result<Self> {
+        let projector_mode = matches!(command, "project-once" | "project-loop" | "heartbeat");
+        let enterprise_connector_configured = self.enterprise_connector_fixture_file.is_some()
+            || self.enterprise_connector_page_url.is_some();
+        if self.version != 1
+            || self.projector_id.trim().is_empty()
+            || !self.heartbeat_secret_file.is_file()
+            || (projector_mode && !self.projector_database_url_file.is_file())
+            || (!projector_mode
+                && (!self.worker_database_url_file.is_file()
+                    || !self.checkout_root.is_dir()
+                    || self.object_store_root.as_os_str().is_empty()
+                    || self.embedding_batch_size == 0
+                    || self.embedding_batch_size > 128
+                    || self.embedding_dimension == 0
+                    || self.embedding_space_revision == 0
+                    || self.embedding_space_id.trim().is_empty()
+                    || self.embedding_alias.trim().is_empty()
+                    || (self.deterministic_pilot && self.embedding_gateway_url.is_some())
+                    || (self.migration_deterministic_pilot && !self.deterministic_pilot)))
+            || (!projector_mode
+                && !self.deterministic_pilot
+                && (self
                     .embedding_gateway_url
                     .as_deref()
                     .is_none_or(|url| !url.starts_with("https://"))
-                    || config
+                    || self
                         .embedding_authorization_file
                         .as_ref()
                         .is_none_or(|path| !path.is_file())))
             || (enterprise_connector_configured
-                != config.enterprise_connector_approved_origin.is_some())
-            || (config.enterprise_connector_page_url.is_some()
-                != config.enterprise_connector_authorization_file.is_some())
-            || config
+                != self.enterprise_connector_approved_origin.is_some())
+            || (self.enterprise_connector_page_url.is_some()
+                != self.enterprise_connector_authorization_file.is_some())
+            || self
                 .enterprise_connector_page_url
                 .as_deref()
                 .is_some_and(|url| !url.starts_with("https://"))
-            || (config.enterprise_connector_fixture_file.is_some()
-                && config.enterprise_connector_page_url.is_some())
-            || config
+            || (self.enterprise_connector_fixture_file.is_some()
+                && self.enterprise_connector_page_url.is_some())
+            || self
                 .enterprise_connector_fixture_file
                 .as_ref()
                 .is_some_and(|path| !path.is_file())
-            || config
+            || self
                 .enterprise_connector_authorization_file
                 .as_ref()
                 .is_some_and(|path| !path.is_file())
         {
             bail!("invalid Phase 1a worker configuration");
         }
-        Ok(config)
+        self.platform_caps.validate()?;
+        Ok(self)
+    }
+}
+
+impl PlatformCaps {
+    fn validate(&self) -> Result<()> {
+        if self.maximum_documents == Some(0)
+            || self.maximum_chunks == Some(0)
+            || self.maximum_source_bytes == Some(0)
+            || self.maximum_stored_bytes == Some(0)
+            || self.maximum_embedding_tokens == Some(0)
+            || self.maximum_spend_micros == Some(0)
+            || self.maximum_wall_time_seconds == Some(0)
+            || self.maximum_concurrency == Some(0)
+            || self.maximum_provider_calls == Some(0)
+        {
+            bail!("Knowledge platform caps must be positive when configured");
+        }
+        Ok(())
     }
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_checkout_seconds() -> u64 {
+    120
+}
+
+fn default_maximum_provider_calls() -> usize {
+    DEFAULT_MAXIMUM_PROVIDER_CALLS
+}
+
+fn default_snapshot_watermark() -> u64 {
+    1
+}
+
+fn initial_sync_start_watermark() -> i64 {
+    0
 }
 
 fn default_embedding_alias() -> String {
@@ -189,9 +366,14 @@ enum ProjectionApplyOutcome {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
-    let config = WorkerConfig::load()?;
-    fs::create_dir_all(&config.object_store_root)?;
-    let command = env::args().nth(1).unwrap_or_else(|| "build".into());
+    let command = env::args().nth(1).unwrap_or_else(|| "build-loop".into());
+    let config = WorkerConfig::load(&command).await?;
+    if !matches!(
+        command.as_str(),
+        "project-once" | "project-loop" | "heartbeat"
+    ) {
+        fs::create_dir_all(&config.object_store_root)?;
+    }
     let database_url_file = if matches!(
         command.as_str(),
         "project-once" | "project-loop" | "heartbeat"
@@ -207,7 +389,6 @@ async fn main() -> Result<()> {
         .await
         .context("connect to Knowledge database")?;
     match command.as_str() {
-        "build" => build(&pool, &config).await,
         "build-loop" => build_loop(&pool, &config).await,
         "project-once" => {
             let projection = project_once(&pool, &config).await;
@@ -217,7 +398,6 @@ async fn main() -> Result<()> {
         }
         "project-loop" => project_loop(&pool, &config).await,
         "heartbeat" => heartbeat(&pool, &config).await,
-        "graph-build-once" => build_active_graph(&pool, &config).await,
         other => bail!("unknown worker command {other}"),
     }
 }
@@ -264,6 +444,14 @@ const BULK_JOB_TYPES: &[&str] = &[
     "GRAPH_BUILD",
 ];
 
+fn job_fetches_full_base_sources(job_type: &str) -> bool {
+    matches!(job_type, "SYNC" | "FULL_REINDEX")
+}
+
+fn job_coalesces_queued_syncs(job_type: &str) -> bool {
+    job_type == "SYNC"
+}
+
 fn projected_job_type(event_type: &str, enterprise_source: bool) -> Option<&'static str> {
     Some(match event_type {
         "KnowledgeSourceSyncRequestedEvent" if enterprise_source => "CONNECTOR_SYNC",
@@ -288,14 +476,439 @@ fn projected_job_type(event_type: &str, enterprise_source: bool) -> Option<&'sta
     })
 }
 
-fn worker_owns_job(
-    configured_knowledge_base_id: Uuid,
-    configured_source_id: Uuid,
+async fn resolve_job_config(
+    pool: &PgPool,
+    infrastructure: &WorkerConfig,
     knowledge_base_id: Uuid,
     source_id: Option<Uuid>,
+) -> Result<WorkerConfig> {
+    let base = sqlx::query(
+        "SELECT base.environment,base.version,
+                base.desired_embedding_profile_id,
+                base.desired_embedding_profile_revision,
+                profile.expected_space_id,profile.expected_space_revision,
+                profile.dimension,profile.alias_name
+           FROM knowledge_base_t base
+           JOIN knowledge_embedding_profile_runtime_v profile
+             ON profile.profile_id=base.desired_embedding_profile_id
+            AND profile.profile_revision=base.desired_embedding_profile_revision
+          WHERE base.knowledge_base_id=$1
+            AND base.status IN ('DRAFT','ACTIVE','DEPRECATED')",
+    )
+    .bind(knowledge_base_id)
+    .fetch_optional(pool)
+    .await?
+    .context("KNOWLEDGE_JOB_EMBEDDING_PROFILE_UNAVAILABLE")?;
+
+    let mut resolved = infrastructure.clone();
+    resolved.knowledge_base_id = knowledge_base_id;
+    resolved.environment = base.get("environment");
+    resolved.snapshot_watermark = u64::try_from(base.get::<i64, _>("version"))
+        .context("Knowledge Base version is outside the worker range")?;
+    resolved.embedding_profile_id = base.get("desired_embedding_profile_id");
+    resolved.embedding_profile_revision = base.get("desired_embedding_profile_revision");
+    resolved.embedding_space_id = base.get("expected_space_id");
+    resolved.embedding_space_revision =
+        u64::try_from(base.get::<i64, _>("expected_space_revision"))
+            .context("Embedding space revision is outside the worker range")?;
+    resolved.embedding_dimension = usize::try_from(base.get::<i32, _>("dimension"))
+        .context("Embedding dimension is outside the worker range")?;
+    resolved.embedding_alias = base.get("alias_name");
+
+    if let Some(source_id) = source_id {
+        let source = sqlx::query(
+            "SELECT source.source_id,source.source_type,source.config_json,source.ingestion_policy_id,
+                    base.host_id AS base_host_id,policy.host_id AS policy_host_id,
+                    policy.active AS policy_active,
+                    policy.version AS policy_version,policy.max_documents,
+                    policy.max_chunks,policy.max_source_bytes,
+                    policy.max_stored_bytes,policy.max_embedding_tokens,
+                    policy.max_spend_micros,policy.max_wall_time_seconds,
+                    policy.max_concurrency
+               FROM knowledge_source_t source
+               JOIN knowledge_base_t base
+                 ON base.knowledge_base_id=source.knowledge_base_id
+               LEFT JOIN knowledge_ingestion_policy_t policy
+                 ON policy.ingestion_policy_id=source.ingestion_policy_id
+              WHERE source.source_id=$1 AND source.knowledge_base_id=$2
+                AND source.status IN ('DRAFT','ACTIVE')",
+        )
+        .bind(source_id)
+        .bind(knowledge_base_id)
+        .fetch_optional(pool)
+        .await?
+        .context("KNOWLEDGE_JOB_SOURCE_OR_POLICY_UNAVAILABLE")?;
+        let source = resolved_job_source_from_row(&source, &resolved.platform_caps)?;
+        apply_resolved_source(&mut resolved, &source);
+        resolved.resolved_sources = vec![source];
+    }
+    Ok(resolved)
+}
+
+fn cap<T: Ord + Copy>(selected: T, platform: Option<T>) -> T {
+    platform.map_or(selected, |platform| selected.min(platform))
+}
+
+fn aggregate_wall_time_seconds(
+    sources: &[ResolvedSourceConfig],
+    platform_cap: Option<u64>,
+) -> Result<u64> {
+    let selected = sources.iter().try_fold(0_u64, |total, source| {
+        total
+            .checked_add(source.maximum_wall_time_seconds)
+            .context("aggregate maximumWallTimeSeconds overflow")
+    })?;
+    Ok(cap(selected, platform_cap))
+}
+
+fn policy_owner_allowed(
+    active: bool,
+    policy_host_id: Option<Uuid>,
+    knowledge_base_host_id: Option<Uuid>,
 ) -> bool {
-    knowledge_base_id == configured_knowledge_base_id
-        && source_id.is_none_or(|value| value == configured_source_id)
+    active
+        && policy_host_id
+            .map(|policy_host_id| Some(policy_host_id) == knowledge_base_host_id)
+            .unwrap_or(true)
+}
+
+fn resolved_source_from_row(row: &PgRow, caps: &PlatformCaps) -> Result<ResolvedSourceConfig> {
+    let mut resolved = resolved_policy_source_from_row(row, caps)?;
+    let source_config: serde_json::Value = row.get("config_json");
+    resolved.approved_repository_uri = text_value(&source_config, "repositoryUri")
+        .context("KNOWLEDGE_SOURCE_IMMUTABLE_GIT_CONFIG_INVALID")?
+        .to_string();
+    resolved.immutable_commit = text_value(&source_config, "commit")
+        .context("KNOWLEDGE_SOURCE_IMMUTABLE_GIT_CONFIG_INVALID")?
+        .to_string();
+    if !valid_repository_uri(&resolved.approved_repository_uri)
+        || !valid_commit(&resolved.immutable_commit)
+    {
+        bail!("KNOWLEDGE_SOURCE_IMMUTABLE_GIT_CONFIG_INVALID");
+    }
+    let path_policy = source_path_policy(&source_config)?;
+    resolved.source_include_prefixes = path_policy.include_prefixes;
+    resolved.source_exclude_prefixes = path_policy.exclude_prefixes;
+    Ok(resolved)
+}
+
+fn resolved_job_source_from_row(row: &PgRow, caps: &PlatformCaps) -> Result<ResolvedSourceConfig> {
+    if row.get::<String, _>("source_type") == "GIT_MARKDOWN" {
+        resolved_source_from_row(row, caps)
+    } else {
+        resolved_policy_source_from_row(row, caps)
+    }
+}
+
+fn resolved_policy_source_from_row(
+    row: &PgRow,
+    caps: &PlatformCaps,
+) -> Result<ResolvedSourceConfig> {
+    if !policy_owner_allowed(
+        row.get::<Option<bool>, _>("policy_active").unwrap_or(false),
+        row.get("policy_host_id"),
+        row.get("base_host_id"),
+    ) {
+        bail!("KNOWLEDGE_JOB_SOURCE_OR_POLICY_UNAVAILABLE");
+    }
+    let ingestion_policy_version = row
+        .get::<Option<i64>, _>("policy_version")
+        .context("KNOWLEDGE_JOB_POLICY_VERSION_UNAVAILABLE")?;
+    if ingestion_policy_version < 1 {
+        bail!("KNOWLEDGE_JOB_POLICY_VERSION_UNAVAILABLE");
+    }
+    Ok(ResolvedSourceConfig {
+        source_id: row.get("source_id"),
+        source_type: row.get("source_type"),
+        approved_repository_uri: String::new(),
+        immutable_commit: String::new(),
+        source_include_prefixes: Vec::new(),
+        source_exclude_prefixes: Vec::new(),
+        ingestion_policy_id: row.get("ingestion_policy_id"),
+        ingestion_policy_version,
+        limits: SourceLimits {
+            maximum_documents: cap(
+                usize::try_from(row.get::<i64, _>("max_documents"))?,
+                caps.maximum_documents,
+            ),
+            maximum_source_bytes: cap(
+                u64::try_from(row.get::<i64, _>("max_source_bytes"))?,
+                caps.maximum_source_bytes,
+            ),
+            maximum_chunks: cap(
+                usize::try_from(row.get::<i64, _>("max_chunks"))?,
+                caps.maximum_chunks,
+            ),
+            maximum_embedding_tokens: cap(
+                usize::try_from(row.get::<i64, _>("max_embedding_tokens"))?,
+                caps.maximum_embedding_tokens,
+            ),
+        },
+        maximum_stored_bytes: cap(
+            u64::try_from(row.get::<i64, _>("max_stored_bytes"))?,
+            caps.maximum_stored_bytes,
+        ),
+        maximum_spend_micros: cap(
+            u64::try_from(row.get::<i64, _>("max_spend_micros"))?,
+            caps.maximum_spend_micros,
+        ),
+        maximum_wall_time_seconds: cap(
+            u64::try_from(row.get::<i64, _>("max_wall_time_seconds"))?,
+            caps.maximum_wall_time_seconds,
+        ),
+        maximum_concurrency: cap(
+            u32::try_from(row.get::<i32, _>("max_concurrency"))?,
+            caps.maximum_concurrency,
+        ),
+        maximum_provider_calls: caps
+            .maximum_provider_calls
+            .unwrap_or(DEFAULT_MAXIMUM_PROVIDER_CALLS),
+    })
+}
+
+fn apply_resolved_source(config: &mut WorkerConfig, source: &ResolvedSourceConfig) {
+    config.source_id = source.source_id;
+    config.approved_repository_uri = source.approved_repository_uri.clone();
+    config.immutable_commit = source.immutable_commit.clone();
+    config.source_include_prefixes = source.source_include_prefixes.clone();
+    config.source_exclude_prefixes = source.source_exclude_prefixes.clone();
+    config.ingestion_policy_id = source.ingestion_policy_id;
+    config.ingestion_policy_version = source.ingestion_policy_version;
+    config.limits = source.limits.clone();
+    config.maximum_stored_bytes = source.maximum_stored_bytes;
+    config.maximum_spend_micros = source.maximum_spend_micros;
+    config.maximum_checkout_seconds = source.maximum_wall_time_seconds;
+    config.maximum_concurrency = source.maximum_concurrency;
+    config.maximum_provider_calls = source.maximum_provider_calls;
+}
+
+async fn resolve_build_sources(pool: &PgPool, config: &mut WorkerConfig) -> Result<()> {
+    let rows = sqlx::query(
+        "SELECT source.source_id,source.source_type,source.config_json,source.ingestion_policy_id,
+                base.host_id AS base_host_id,policy.host_id AS policy_host_id,
+                policy.active AS policy_active,
+                policy.version AS policy_version,policy.max_documents,
+                policy.max_chunks,policy.max_source_bytes,policy.max_stored_bytes,
+                policy.max_embedding_tokens,policy.max_spend_micros,
+                policy.max_wall_time_seconds,policy.max_concurrency
+           FROM knowledge_source_t source
+           JOIN knowledge_base_t base ON base.knowledge_base_id=source.knowledge_base_id
+           LEFT JOIN knowledge_ingestion_policy_t policy
+             ON policy.ingestion_policy_id=source.ingestion_policy_id
+          WHERE source.knowledge_base_id=$1
+            AND source.status IN ('DRAFT','ACTIVE')
+          ORDER BY source.source_id",
+    )
+    .bind(config.knowledge_base_id)
+    .fetch_all(pool)
+    .await?;
+    if rows.is_empty() {
+        bail!("KNOWLEDGE_JOB_SOURCE_OR_POLICY_UNAVAILABLE");
+    }
+    let sources = rows
+        .iter()
+        .map(|row| resolved_job_source_from_row(row, &config.platform_caps))
+        .collect::<Result<Vec<_>>>()?;
+    if !config.source_id.is_nil()
+        && !sources
+            .iter()
+            .any(|source| source.source_id == config.source_id)
+    {
+        bail!("KNOWLEDGE_JOB_SOURCE_OR_POLICY_UNAVAILABLE");
+    }
+    apply_aggregate_source_limits(config, sources)
+}
+
+async fn resolve_compaction_sources(pool: &PgPool, config: &mut WorkerConfig) -> Result<()> {
+    let rows = sqlx::query(
+        "SELECT source.source_id,source.source_type,source.ingestion_policy_id,
+                base.host_id AS base_host_id,policy.host_id AS policy_host_id,
+                policy.active AS policy_active,policy.version AS policy_version,
+                policy.max_documents,policy.max_chunks,policy.max_source_bytes,
+                policy.max_stored_bytes,policy.max_embedding_tokens,
+                policy.max_spend_micros,policy.max_wall_time_seconds,
+                policy.max_concurrency
+           FROM knowledge_source_t source
+           JOIN knowledge_base_t base ON base.knowledge_base_id=source.knowledge_base_id
+           LEFT JOIN knowledge_ingestion_policy_t policy
+             ON policy.ingestion_policy_id=source.ingestion_policy_id
+          WHERE source.knowledge_base_id=$1
+            AND source.status IN ('DRAFT','ACTIVE')
+          ORDER BY source.source_id",
+    )
+    .bind(config.knowledge_base_id)
+    .fetch_all(pool)
+    .await?;
+    if rows.is_empty() {
+        bail!("KNOWLEDGE_JOB_SOURCE_OR_POLICY_UNAVAILABLE");
+    }
+    let sources = rows
+        .iter()
+        .map(|row| resolved_policy_source_from_row(row, &config.platform_caps))
+        .collect::<Result<Vec<_>>>()?;
+    apply_aggregate_source_limits(config, sources)
+}
+
+fn apply_aggregate_source_limits(
+    config: &mut WorkerConfig,
+    sources: Vec<ResolvedSourceConfig>,
+) -> Result<()> {
+    let mut aggregate_limits = SourceLimits {
+        maximum_documents: 0,
+        maximum_source_bytes: 0,
+        maximum_chunks: 0,
+        maximum_embedding_tokens: 0,
+    };
+    let mut aggregate_stored_bytes = 0_u64;
+    let mut aggregate_spend_micros = 0_u64;
+    for source in &sources {
+        aggregate_limits.maximum_documents = aggregate_limits
+            .maximum_documents
+            .checked_add(source.limits.maximum_documents)
+            .context("aggregate maximumDocuments overflow")?;
+        aggregate_limits.maximum_source_bytes = aggregate_limits
+            .maximum_source_bytes
+            .checked_add(source.limits.maximum_source_bytes)
+            .context("aggregate maximumSourceBytes overflow")?;
+        aggregate_limits.maximum_chunks = aggregate_limits
+            .maximum_chunks
+            .checked_add(source.limits.maximum_chunks)
+            .context("aggregate maximumChunks overflow")?;
+        aggregate_limits.maximum_embedding_tokens = aggregate_limits
+            .maximum_embedding_tokens
+            .checked_add(source.limits.maximum_embedding_tokens)
+            .context("aggregate maximumEmbeddingTokens overflow")?;
+        aggregate_stored_bytes = aggregate_stored_bytes
+            .checked_add(source.maximum_stored_bytes)
+            .context("aggregate maximumStoredBytes overflow")?;
+        aggregate_spend_micros = aggregate_spend_micros
+            .checked_add(source.maximum_spend_micros)
+            .context("aggregate maximumSpendMicros overflow")?;
+    }
+    config.limits = aggregate_limits;
+    config.maximum_stored_bytes = aggregate_stored_bytes;
+    config.maximum_spend_micros = aggregate_spend_micros;
+    config.maximum_checkout_seconds =
+        aggregate_wall_time_seconds(&sources, config.platform_caps.maximum_wall_time_seconds)?;
+    config.maximum_concurrency = sources
+        .iter()
+        .map(|source| source.maximum_concurrency)
+        .min()
+        .context("KNOWLEDGE_JOB_SOURCE_OR_POLICY_UNAVAILABLE")?;
+    config.resolved_sources = sources;
+    Ok(())
+}
+
+async fn record_job_config_snapshot(
+    pool: &PgPool,
+    job_id: Uuid,
+    config: &WorkerConfig,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE knowledge_job_t SET payload=payload || jsonb_build_object(
+             'resolvedConfig',jsonb_build_object(
+               'knowledgeBaseId',$2,'sourceId',NULLIF($3,$4),
+               'embeddingProfileId',$5,'embeddingProfileRevision',$6,
+               'embeddingSpaceId',$7,'embeddingSpaceRevision',$8,
+               'ingestionPolicyId',NULLIF($9,$4),'ingestionPolicyVersion',$10,
+               'maxDocuments',$11,'maxChunks',$12,'maxSourceBytes',$13,
+               'maxStoredBytes',$14,'maxEmbeddingTokens',$15,
+               'maxSpendMicros',$16,'maxWallTimeSeconds',$17,
+               'maxConcurrency',$18,'snapshotWatermark',$19,
+               'sources',$20)),update_ts=now()
+          WHERE job_id=$1",
+    )
+    .bind(job_id)
+    .bind(config.knowledge_base_id)
+    .bind(config.source_id)
+    .bind(Uuid::nil())
+    .bind(config.embedding_profile_id)
+    .bind(config.embedding_profile_revision)
+    .bind(&config.embedding_space_id)
+    .bind(as_i64(config.embedding_space_revision as usize))
+    .bind(config.ingestion_policy_id)
+    .bind(config.ingestion_policy_version)
+    .bind(as_i64(config.limits.maximum_documents))
+    .bind(as_i64(config.limits.maximum_chunks))
+    .bind(i64::try_from(config.limits.maximum_source_bytes)?)
+    .bind(i64::try_from(config.maximum_stored_bytes)?)
+    .bind(as_i64(config.limits.maximum_embedding_tokens))
+    .bind(i64::try_from(config.maximum_spend_micros)?)
+    .bind(i64::try_from(config.maximum_checkout_seconds)?)
+    .bind(i32::try_from(config.maximum_concurrency)?)
+    .bind(i64::try_from(config.snapshot_watermark)?)
+    .bind(resolved_sources_snapshot(config))
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "UPDATE knowledge_sync_run_t SET ingestion_policy_id=NULLIF($2,$3),
+           ingestion_policy_version=NULLIF($4,0),snapshot_watermark=$5,
+           phase='CONFIG_RESOLVED',progress=jsonb_build_object(
+             'maxDocuments',$6,'maxChunks',$7,'maxSourceBytes',$8,
+             'maxStoredBytes',$9,'maxEmbeddingTokens',$10,
+             'maxSpendMicros',$11,'maxWallTimeSeconds',$12,
+             'maxConcurrency',$13,'sources',$14),update_ts=now()
+         WHERE job_id=$1",
+    )
+    .bind(job_id)
+    .bind(config.ingestion_policy_id)
+    .bind(Uuid::nil())
+    .bind(config.ingestion_policy_version)
+    .bind(i64::try_from(config.snapshot_watermark)?)
+    .bind(as_i64(config.limits.maximum_documents))
+    .bind(as_i64(config.limits.maximum_chunks))
+    .bind(i64::try_from(config.limits.maximum_source_bytes)?)
+    .bind(i64::try_from(config.maximum_stored_bytes)?)
+    .bind(as_i64(config.limits.maximum_embedding_tokens))
+    .bind(i64::try_from(config.maximum_spend_micros)?)
+    .bind(i64::try_from(config.maximum_checkout_seconds)?)
+    .bind(i32::try_from(config.maximum_concurrency)?)
+    .bind(resolved_sources_snapshot(config))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+fn resolved_sources_snapshot(config: &WorkerConfig) -> serde_json::Value {
+    source_snapshots(&config.resolved_sources)
+}
+
+fn source_snapshots(sources: &[ResolvedSourceConfig]) -> serde_json::Value {
+    serde_json::Value::Array(
+        sources
+            .iter()
+            .map(|source| {
+                json!({
+                    "sourceId": source.source_id,
+                    "sourceType": source.source_type,
+                    "repositoryUri": (!source.approved_repository_uri.is_empty())
+                        .then_some(source.approved_repository_uri.as_str()),
+                    "immutableCommit": (!source.immutable_commit.is_empty())
+                        .then_some(source.immutable_commit.as_str()),
+                    "ingestionPolicyId": source.ingestion_policy_id,
+                    "ingestionPolicyVersion": source.ingestion_policy_version,
+                    "effectiveCeilings": {
+                        "maxDocuments": source.limits.maximum_documents,
+                        "maxProviderCalls": source.maximum_provider_calls,
+                        "maxChunks": source.limits.maximum_chunks,
+                        "maxSourceBytes": source.limits.maximum_source_bytes,
+                        "maxStoredBytes": source.maximum_stored_bytes,
+                        "maxEmbeddingTokens": source.limits.maximum_embedding_tokens,
+                        "maxSpendMicros": source.maximum_spend_micros,
+                        "maxWallTimeSeconds": source.maximum_wall_time_seconds,
+                        "maxConcurrency": source.maximum_concurrency
+                    }
+                })
+            })
+            .collect(),
+    )
+}
+
+fn full_base_source_snapshot(sources: Vec<serde_json::Value>) -> serde_json::Value {
+    json!({
+        "contract": "knowledge-full-base-source-snapshot-v1",
+        "sources": sources
+    })
 }
 
 async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Result<()> {
@@ -315,11 +928,9 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
                 .join(",")
         );
         let job = sqlx::query(&format!(
-            "SELECT job_id,job_type,payload
+            "SELECT job_id,knowledge_base_id,source_id,job_type,payload
                FROM knowledge_job_t
               WHERE state='QUEUED' AND {lane_predicate}
-                AND knowledge_base_id=$1
-                AND (source_id IS NULL OR source_id=$2)
                 AND (next_attempt_ts IS NULL OR next_attempt_ts<=now())
               ORDER BY CASE
                 WHEN job_type IN ('SYNC','DELTA_SYNC','CONNECTOR_SYNC','ACL_RECONCILE',
@@ -331,8 +942,6 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
                 ELSE 4 END,
                 created_ts FOR UPDATE SKIP LOCKED LIMIT 1"
         ))
-        .bind(config.knowledge_base_id)
-        .bind(config.source_id)
         .fetch_optional(&mut *tx)
         .await?;
         let Some(job) = job else {
@@ -349,102 +958,110 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
             continue;
         };
         let job_id: Uuid = job.get("job_id");
+        let knowledge_base_id: Uuid = job.get("knowledge_base_id");
+        let source_id: Option<Uuid> = job.get("source_id");
         let job_type: String = job.get("job_type");
         let payload: serde_json::Value = job.get("payload");
+        if matches!(job_type.as_str(), "SYNC" | "DELTA_SYNC" | "FULL_REINDEX") {
+            sqlx::query("SELECT 1 FROM knowledge_base_t WHERE knowledge_base_id=$1 FOR UPDATE")
+                .bind(knowledge_base_id)
+                .fetch_one(&mut *tx)
+                .await?;
+            let build_running: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM knowledge_job_t
+                  WHERE knowledge_base_id=$1 AND state='RUNNING'
+                    AND job_type IN ('SYNC','DELTA_SYNC','FULL_REINDEX'))",
+            )
+            .bind(knowledge_base_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if build_running {
+                defer_queued_job(&mut tx, job_id).await?;
+                tx.commit().await?;
+                continue;
+            }
+        }
+        if !job_policy_concurrency_available(
+            &mut tx,
+            config,
+            knowledge_base_id,
+            source_id,
+            &job_type,
+        )
+        .await?
+        {
+            defer_queued_job(&mut tx, job_id).await?;
+            tx.commit().await?;
+            continue;
+        }
         let claim_token = Uuid::now_v7();
         sqlx::query("UPDATE knowledge_job_t SET state='RUNNING',claim_token=$2,lease_expires_ts=now()+interval '5 minutes',attempt_count=attempt_count+1,update_ts=now() WHERE job_id=$1 AND state='QUEUED'")
             .bind(job_id).bind(claim_token).execute(&mut *tx).await?;
+        sqlx::query("UPDATE knowledge_sync_run_t SET state='RUNNING',phase='CLAIMED',attempt_count=attempt_count+1,next_attempt_ts=NULL,update_ts=now() WHERE job_id=$1 AND state IN ('ACCEPTED','QUEUED','FAILED','PAUSED_BUDGET')")
+            .bind(job_id).execute(&mut *tx).await?;
         tx.commit().await?;
+        let config_resolution_started_at =
+            sqlx::query_scalar::<_, DateTime<Utc>>("SELECT CURRENT_TIMESTAMP")
+                .fetch_one(pool)
+                .await?;
         let lease_done = Arc::new(AtomicBool::new(false));
         let lease_task =
             spawn_job_lease_renewal(pool.clone(), job_id, claim_token, Arc::clone(&lease_done));
-        let result = if job_type == "PROMOTE" {
-            promote_generation(pool, config, &payload).await
-        } else if job_type == "PROVIDER_NOTIFICATION" {
-            match record_connector_notification(pool, config, &payload).await {
-                Err(error) => Err(error),
-                Ok(()) => match enqueue_connector_job(
-                    pool,
-                    config,
-                    "ACL_RECONCILE",
-                    "provider-notification-acl",
-                )
-                .await
-                {
-                    Err(error) => Err(error),
-                    Ok(()) => {
-                        enqueue_connector_job(
-                            pool,
-                            config,
-                            "CONNECTOR_SYNC",
-                            "provider-notification-content",
-                        )
-                        .await
-                    }
-                },
-            }
-        } else if job_type == "ACL_RECONCILE" {
-            connector_build(pool, config, false).await
-        } else if job_type == "CONNECTOR_SYNC"
-            || (job_type == "SYNC"
-                && (config.enterprise_connector_fixture_file.is_some()
-                    || config.enterprise_connector_page_url.is_some()))
+        let mut resolved_config =
+            resolve_job_config(pool, config, knowledge_base_id, source_id).await;
+        if job_fetches_full_base_sources(&job_type)
+            && let Ok(job_config) = &mut resolved_config
+            && let Err(error) = resolve_build_sources(pool, job_config).await
         {
-            connector_build(pool, config, true).await
-        } else if job_type == "CONNECTIVITY_TEST" {
-            if config.enterprise_connector_fixture_file.is_some()
-                || config.enterprise_connector_page_url.is_some()
+            resolved_config = Err(error);
+        } else if job_type == "COMPACTION"
+            && let Ok(job_config) = &mut resolved_config
+            && let Err(error) = resolve_compaction_sources(pool, job_config).await
+        {
+            resolved_config = Err(error);
+        }
+        if let Ok(job_config) = &mut resolved_config {
+            if job_type == "SYNC"
+                && !job_config.source_id.is_nil()
+                && let Some(trigger_source) = job_config
+                    .resolved_sources
+                    .iter()
+                    .find(|source| source.source_id == job_config.source_id)
+                    .cloned()
             {
-                test_connector_connection(config).await
-            } else {
-                prepare_checkout(config).await.map(|_| ())
+                apply_resolved_source(job_config, &trigger_source);
             }
-        } else if job_type == "UPLOAD" {
-            process_upload(pool, config, &payload).await
-        } else if job_type == "DELTA_SYNC" {
-            incremental_build(pool, config).await
-        } else if job_type == "SYNC" {
-            match phase1b_schema_ready(pool).await {
-                Ok(true) => incremental_build(pool, config).await,
-                Ok(false) => build(pool, config).await,
-                Err(error) => Err(error),
+            job_config.current_job_id = Some(job_id);
+            job_config.sync_run_id = sqlx::query_scalar::<_, Uuid>(
+                "SELECT sync_run_id FROM knowledge_sync_run_t WHERE job_id=$1",
+            )
+            .bind(job_id)
+            .fetch_optional(pool)
+            .await?;
+            job_config.coalesce_queued_syncs = job_coalesces_queued_syncs(&job_type);
+            job_config.coalesce_created_before = Some(config_resolution_started_at);
+        }
+        let result = match &resolved_config {
+            Ok(job_config) => {
+                if let Err(error) = record_job_config_snapshot(pool, job_id, job_config).await {
+                    Err(error)
+                } else if job_config.resolved_sources.is_empty() {
+                    execute_job(pool, job_config, &job_type, &payload).await
+                } else {
+                    match tokio::time::timeout(
+                        Duration::from_secs(job_config.maximum_checkout_seconds),
+                        execute_job(pool, job_config, &job_type, &payload),
+                    )
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => Err(anyhow::anyhow!(
+                            "KNOWLEDGE_INGESTION_MAX_WALL_TIME_EXCEEDED"
+                        )),
+                    }
+                }
             }
-        } else if job_type == "COMPACTION" {
-            compact_generation(pool, config).await
-        } else if job_type == "ANTI_ENTROPY" {
-            run_anti_entropy(pool, config, &payload).await
-        } else if job_type == "MIGRATION_PREFLIGHT" {
-            migration_preflight(pool, config, &payload).await
-        } else if job_type == "MIGRATION_BACKFILL" {
-            migration_backfill(pool, config, &payload).await
-        } else if job_type == "MIGRATION_CATCHUP" {
-            migration_catchup(pool, config, &payload).await
-        } else if job_type == "MIGRATION_VALIDATE" {
-            migration_validate(pool, config, &payload).await
-        } else if job_type == "MIGRATION_PAUSE" {
-            migration_pause(pool, config, &payload).await
-        } else if job_type == "MIGRATION_CANCEL" {
-            migration_cancel(pool, config, &payload).await
-        } else if job_type == "MIGRATION_PROMOTE" {
-            migration_promote(pool, config, &payload).await
-        } else if job_type == "MIGRATION_ROLLBACK" {
-            migration_rollback(pool, config, &payload).await
-        } else if job_type == "MIGRATION_RETIRE" {
-            migration_retire(pool, config, &payload).await
-        } else if job_type == "BACKUP_CHECKPOINT" {
-            create_backup_checkpoint(pool, config, &payload).await
-        } else if job_type == "RESTORE_VERIFY" {
-            verify_restore_checkpoint(pool, config, &payload).await
-        } else if job_type == "SEGMENT_PURGE" {
-            purge_retired_generation(pool, config, &payload).await
-        } else if job_type == "GRAPH_BUILD" {
-            build_graph_artifact(pool, config, &payload).await
-        } else if matches!(job_type.as_str(), "PURGE" | "RETRIEVAL_TEST") {
-            Err(anyhow::anyhow!(
-                "KNOWLEDGE_JOB_TYPE_NOT_IMPLEMENTED:{job_type}"
-            ))
-        } else {
-            build(pool, config).await
+            Err(error) => Err(anyhow::anyhow!(error.to_string())),
         };
         lease_done.store(true, Ordering::Release);
         lease_task.abort();
@@ -458,13 +1075,22 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
                         "Knowledge job completed after its claim was lost; terminal update skipped");
                     continue;
                 }
+                sqlx::query(
+                    "UPDATE knowledge_sync_run_t SET state='SUCCEEDED',phase='COMPLETE',
+                       error_summary=NULL,finished_ts=now(),update_ts=now()
+                     WHERE job_id=$1 AND state='RUNNING'",
+                )
+                .bind(job_id)
+                .execute(pool)
+                .await?;
                 publish_promotion_acknowledgements(pool, config).await?;
             }
             Err(error) => {
                 tracing::error!(job_id=%job_id, %error, "bounded Knowledge build failed");
+                let error_code = worker_error_code(&error);
                 let updated = sqlx::query("UPDATE knowledge_job_t SET state='FAILED',result=jsonb_build_object('code',$2),claim_token=NULL,lease_expires_ts=NULL,update_ts=now() WHERE job_id=$1 AND state='RUNNING' AND claim_token=$3")
                     .bind(job_id)
-                    .bind(worker_error_code(&error))
+                    .bind(error_code)
                     .bind(claim_token)
                     .execute(pool).await?;
                 if updated.rows_affected() != 1 {
@@ -472,6 +1098,9 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
                         "Knowledge job failed after its claim was lost; terminal update skipped");
                     continue;
                 }
+                let sync_state = budget_terminal_state(error_code);
+                sqlx::query("UPDATE knowledge_sync_run_t SET state=$2,phase='TERMINAL',error_summary=jsonb_build_object('code',$3),finished_ts=now(),update_ts=now() WHERE job_id=$1 AND state='RUNNING'")
+                    .bind(job_id).bind(sync_state).bind(error_code).execute(pool).await?;
                 if matches!(
                     job_type.as_str(),
                     "MIGRATION_PREFLIGHT"
@@ -486,7 +1115,188 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
     }
 }
 
-async fn reclaim_expired_jobs(pool: &PgPool, config: &WorkerConfig) -> Result<()> {
+async fn defer_queued_job(tx: &mut Transaction<'_, Postgres>, job_id: Uuid) -> Result<()> {
+    sqlx::query(
+        "UPDATE knowledge_job_t SET next_attempt_ts=now()+interval '1 second',update_ts=now()
+          WHERE job_id=$1 AND state='QUEUED'",
+    )
+    .bind(job_id)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "UPDATE knowledge_sync_run_t SET next_attempt_ts=now()+interval '1 second',update_ts=now()
+          WHERE job_id=$1 AND state IN ('ACCEPTED','QUEUED')",
+    )
+    .bind(job_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn job_policy_concurrency_available(
+    tx: &mut Transaction<'_, Postgres>,
+    config: &WorkerConfig,
+    knowledge_base_id: Uuid,
+    source_id: Option<Uuid>,
+    job_type: &str,
+) -> Result<bool> {
+    let policy_wide = matches!(
+        job_type,
+        "SYNC" | "DELTA_SYNC" | "FULL_REINDEX" | "COMPACTION"
+    );
+    let policies = if policy_wide {
+        sqlx::query(
+            "SELECT policy.ingestion_policy_id,policy.max_concurrency
+               FROM knowledge_ingestion_policy_t policy
+              WHERE policy.active AND EXISTS(
+                    SELECT 1 FROM knowledge_source_t source
+                     WHERE source.knowledge_base_id=$1
+                       AND source.ingestion_policy_id=policy.ingestion_policy_id
+                       AND source.status IN ('DRAFT','ACTIVE'))
+              ORDER BY policy.ingestion_policy_id FOR UPDATE",
+        )
+        .bind(knowledge_base_id)
+        .fetch_all(&mut **tx)
+        .await?
+    } else if let Some(source_id) = source_id {
+        sqlx::query(
+            "SELECT policy.ingestion_policy_id,policy.max_concurrency
+               FROM knowledge_ingestion_policy_t policy
+               JOIN knowledge_source_t source
+                 ON source.ingestion_policy_id=policy.ingestion_policy_id
+              WHERE source.source_id=$1 AND policy.active
+              ORDER BY policy.ingestion_policy_id FOR UPDATE OF policy",
+        )
+        .bind(source_id)
+        .fetch_all(&mut **tx)
+        .await?
+    } else {
+        Vec::new()
+    };
+    for policy in policies {
+        let ingestion_policy_id: Uuid = policy.get("ingestion_policy_id");
+        let maximum_concurrency = cap(
+            u32::try_from(policy.get::<i32, _>("max_concurrency"))?,
+            config.platform_caps.maximum_concurrency,
+        );
+        let running: i64 = sqlx::query_scalar(
+            "SELECT count(DISTINCT job.job_id)
+               FROM knowledge_job_t job
+              WHERE job.state='RUNNING' AND (
+                    EXISTS(SELECT 1 FROM knowledge_source_t trigger_source
+                            WHERE trigger_source.source_id=job.source_id
+                              AND trigger_source.ingestion_policy_id=$1)
+                 OR (job.job_type IN ('SYNC','DELTA_SYNC','FULL_REINDEX','COMPACTION')
+                     AND EXISTS(SELECT 1 FROM knowledge_source_t build_source
+                                 WHERE build_source.knowledge_base_id=job.knowledge_base_id
+                                   AND build_source.ingestion_policy_id=$1
+                                   AND build_source.status IN ('DRAFT','ACTIVE'))))",
+        )
+        .bind(ingestion_policy_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        if running >= i64::from(maximum_concurrency) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+async fn execute_job(
+    pool: &PgPool,
+    config: &WorkerConfig,
+    job_type: &str,
+    payload: &serde_json::Value,
+) -> Result<()> {
+    if job_type == "PROMOTE" {
+        promote_generation(pool, config, payload).await
+    } else if job_type == "PROVIDER_NOTIFICATION" {
+        match record_connector_notification(pool, config, payload).await {
+            Err(error) => Err(error),
+            Ok(()) => match enqueue_connector_job(
+                pool,
+                config,
+                "ACL_RECONCILE",
+                "provider-notification-acl",
+            )
+            .await
+            {
+                Err(error) => Err(error),
+                Ok(()) => {
+                    enqueue_connector_job(
+                        pool,
+                        config,
+                        "CONNECTOR_SYNC",
+                        "provider-notification-content",
+                    )
+                    .await
+                }
+            },
+        }
+    } else if job_type == "ACL_RECONCILE" {
+        connector_build(pool, config, false).await
+    } else if job_type == "CONNECTOR_SYNC"
+        || (job_type == "SYNC"
+            && (config.enterprise_connector_fixture_file.is_some()
+                || config.enterprise_connector_page_url.is_some()))
+    {
+        connector_build(pool, config, true).await
+    } else if job_type == "CONNECTIVITY_TEST" {
+        if config.enterprise_connector_fixture_file.is_some()
+            || config.enterprise_connector_page_url.is_some()
+        {
+            test_connector_connection(config).await
+        } else {
+            prepare_checkout(config).await.map(|_| ())
+        }
+    } else if job_type == "UPLOAD" {
+        process_upload(pool, config, payload).await
+    } else if job_type == "DELTA_SYNC" {
+        incremental_build(pool, config).await
+    } else if job_type == "SYNC" && phase1b_schema_ready(pool).await? {
+        let mut incremental_config = config.clone();
+        incremental_config.coalesce_queued_syncs = false;
+        incremental_build(pool, &incremental_config).await
+    } else if matches!(job_type, "SYNC" | "FULL_REINDEX") {
+        build(pool, config).await
+    } else if job_type == "COMPACTION" {
+        compact_generation(pool, config).await
+    } else if job_type == "ANTI_ENTROPY" {
+        run_anti_entropy(pool, config, payload).await
+    } else if job_type == "MIGRATION_PREFLIGHT" {
+        migration_preflight(pool, config, payload).await
+    } else if job_type == "MIGRATION_BACKFILL" {
+        migration_backfill(pool, config, payload).await
+    } else if job_type == "MIGRATION_CATCHUP" {
+        migration_catchup(pool, config, payload).await
+    } else if job_type == "MIGRATION_VALIDATE" {
+        migration_validate(pool, config, payload).await
+    } else if job_type == "MIGRATION_PAUSE" {
+        migration_pause(pool, config, payload).await
+    } else if job_type == "MIGRATION_CANCEL" {
+        migration_cancel(pool, config, payload).await
+    } else if job_type == "MIGRATION_PROMOTE" {
+        migration_promote(pool, config, payload).await
+    } else if job_type == "MIGRATION_ROLLBACK" {
+        migration_rollback(pool, config, payload).await
+    } else if job_type == "MIGRATION_RETIRE" {
+        migration_retire(pool, config, payload).await
+    } else if job_type == "BACKUP_CHECKPOINT" {
+        create_backup_checkpoint(pool, config, payload).await
+    } else if job_type == "RESTORE_VERIFY" {
+        verify_restore_checkpoint(pool, config, payload).await
+    } else if job_type == "SEGMENT_PURGE" {
+        purge_retired_generation(pool, config, payload).await
+    } else if job_type == "GRAPH_BUILD" {
+        build_graph_artifact(pool, config, payload).await
+    } else {
+        Err(anyhow::anyhow!(
+            "KNOWLEDGE_JOB_TYPE_NOT_IMPLEMENTED:{job_type}"
+        ))
+    }
+}
+
+async fn reclaim_expired_jobs(pool: &PgPool, _config: &WorkerConfig) -> Result<()> {
     sqlx::query(
         "UPDATE knowledge_job_t
             SET state='FAILED',claim_token=NULL,lease_expires_ts=NULL,
@@ -497,11 +1307,18 @@ async fn reclaim_expired_jobs(pool: &PgPool, config: &WorkerConfig) -> Result<()
                 update_ts=now()
           WHERE state='RUNNING'
             AND (lease_expires_ts IS NULL OR lease_expires_ts<=now())
-            AND attempt_count>=5
-            AND knowledge_base_id=$1 AND (source_id IS NULL OR source_id=$2)",
+            AND attempt_count>=5",
     )
-    .bind(config.knowledge_base_id)
-    .bind(config.source_id)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "UPDATE knowledge_sync_run_t run SET state='FAILED',phase='TERMINAL',
+           error_summary=jsonb_build_object('code','KNOWLEDGE_JOB_LEASE_RETRY_EXHAUSTED'),
+           finished_ts=now(),update_ts=now()
+         FROM knowledge_job_t job WHERE run.job_id=job.job_id
+           AND job.state='FAILED' AND job.result->>'code'='KNOWLEDGE_JOB_LEASE_RETRY_EXHAUSTED'
+           AND run.state='RUNNING'",
+    )
     .execute(pool)
     .await?;
     sqlx::query(
@@ -514,11 +1331,18 @@ async fn reclaim_expired_jobs(pool: &PgPool, config: &WorkerConfig) -> Result<()
                 update_ts=now()
           WHERE state='RUNNING'
             AND (lease_expires_ts IS NULL OR lease_expires_ts<=now())
-            AND attempt_count<5
-            AND knowledge_base_id=$1 AND (source_id IS NULL OR source_id=$2)",
+            AND attempt_count<5",
     )
-    .bind(config.knowledge_base_id)
-    .bind(config.source_id)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "UPDATE knowledge_sync_run_t run SET state='QUEUED',phase='RETRY_WAIT',
+           next_attempt_ts=job.next_attempt_ts,attempt_count=job.attempt_count,
+           progress=run.progress || jsonb_build_object(
+             'lastFailureCode','KNOWLEDGE_JOB_LEASE_EXPIRED'),update_ts=now()
+         FROM knowledge_job_t job WHERE run.job_id=job.job_id
+           AND job.state='QUEUED' AND run.state='RUNNING'",
+    )
     .execute(pool)
     .await?;
     Ok(())
@@ -604,13 +1428,63 @@ fn migration_failure_code(error: &anyhow::Error) -> String {
 }
 
 fn worker_error_code(error: &anyhow::Error) -> &'static str {
+    let detail = error.to_string();
     if error
         .to_string()
         .starts_with("KNOWLEDGE_JOB_TYPE_NOT_IMPLEMENTED:")
     {
         "KNOWLEDGE_JOB_TYPE_NOT_IMPLEMENTED"
+    } else if detail.contains("SOURCE_SPEND_BUDGET_UNAVAILABLE") {
+        "KNOWLEDGE_INGESTION_SOURCE_SPEND_BUDGET_UNAVAILABLE"
+    } else if detail.contains("SPEND_BUDGET_REQUIRED") {
+        "KNOWLEDGE_INGESTION_SPEND_BUDGET_REQUIRED"
+    } else if detail.contains("spend budget")
+        || detail.contains("billed-cost")
+        || detail.contains("SPEND_BUDGET_EXCEEDED")
+    {
+        "KNOWLEDGE_INGESTION_SPEND_BUDGET_EXCEEDED"
+    } else if detail.contains("maximum_documents") {
+        "KNOWLEDGE_INGESTION_MAX_DOCUMENTS_EXCEEDED"
+    } else if detail.contains("maximum_chunks") {
+        "KNOWLEDGE_INGESTION_MAX_CHUNKS_EXCEEDED"
+    } else if detail.contains("maximum_source_bytes") {
+        "KNOWLEDGE_INGESTION_MAX_SOURCE_BYTES_EXCEEDED"
+    } else if detail.contains("maximum_embedding_tokens") {
+        "KNOWLEDGE_INGESTION_MAX_EMBEDDING_TOKENS_EXCEEDED"
+    } else if detail.contains("PROVIDER_CALL_LIMIT") {
+        "KNOWLEDGE_INGESTION_MAX_PROVIDER_CALLS_EXCEEDED"
+    } else if detail.contains("MAX_STORED_BYTES") {
+        "KNOWLEDGE_INGESTION_MAX_STORED_BYTES_EXCEEDED"
+    } else if detail.contains("MAX_WALL_TIME") {
+        "KNOWLEDGE_INGESTION_MAX_WALL_TIME_EXCEEDED"
+    } else if detail.contains("SOURCE_OR_POLICY_UNAVAILABLE") {
+        "KNOWLEDGE_JOB_SOURCE_OR_POLICY_UNAVAILABLE"
+    } else if detail.contains("EMBEDDING_PROFILE_UNAVAILABLE") {
+        "KNOWLEDGE_JOB_EMBEDDING_PROFILE_UNAVAILABLE"
+    } else if detail.contains("IMMUTABLE_GIT_CONFIG_INVALID") {
+        "KNOWLEDGE_SOURCE_IMMUTABLE_GIT_CONFIG_INVALID"
+    } else if detail.contains("SOURCE_INCLUDE_POLICY_UNSUPPORTED") {
+        "KNOWLEDGE_SOURCE_INCLUDE_POLICY_UNSUPPORTED"
+    } else if detail.contains("SOURCE_EXCLUDE_POLICY_INVALID") {
+        "KNOWLEDGE_SOURCE_EXCLUDE_POLICY_INVALID"
     } else {
         "KNOWLEDGE_BUILD_FAILED"
+    }
+}
+
+fn is_budget_error_code(error_code: &str) -> bool {
+    error_code.starts_with("KNOWLEDGE_INGESTION_MAX_")
+        || error_code == "KNOWLEDGE_INGESTION_SPEND_BUDGET_EXCEEDED"
+        || error_code == "KNOWLEDGE_INGESTION_SPEND_BUDGET_REQUIRED"
+}
+
+fn budget_terminal_state(error_code: &str) -> &'static str {
+    if error_code == "KNOWLEDGE_INGESTION_SPEND_BUDGET_EXCEEDED" {
+        "PAUSED_BUDGET"
+    } else if is_budget_error_code(error_code) {
+        "FAILED_BUDGET"
+    } else {
+        "FAILED"
     }
 }
 
@@ -2797,18 +3671,6 @@ async fn schedule_due_acl_reconciliation(pool: &PgPool, config: &WorkerConfig) -
 
 const GRAPH_CONTRACT_VERSION: &str = "phase4-structural-v1";
 
-async fn build_active_graph(pool: &PgPool, config: &WorkerConfig) -> Result<()> {
-    let generation_id: Uuid = sqlx::query_scalar(
-        "SELECT index_generation_id FROM knowledge_index_pointer_t
-          WHERE knowledge_base_id=$1 AND environment=$2",
-    )
-    .bind(config.knowledge_base_id)
-    .bind(&config.environment)
-    .fetch_one(pool)
-    .await?;
-    build_graph_artifact(pool, config, &json!({"indexGenerationId": generation_id})).await
-}
-
 async fn schedule_graph_build(pool: &PgPool, config: &WorkerConfig) -> Result<()> {
     if !config.graph_assisted_enabled {
         return Ok(());
@@ -3471,19 +4333,177 @@ async fn promote_generation_transaction(
 }
 
 async fn build(pool: &PgPool, config: &WorkerConfig) -> Result<()> {
-    let checkout = prepare_checkout(config).await?;
-    let documents = ingest_markdown_repository(checkout.path(), &config.limits)?;
-    let mut generation = build_full_base(
-        config.knowledge_base_id,
-        config.snapshot_watermark,
+    if let Some(job_id) = config.current_job_id {
+        sqlx::query("UPDATE knowledge_sync_run_t SET phase='FETCHING_SOURCES',update_ts=now() WHERE job_id=$1 AND state='RUNNING'")
+            .bind(job_id).execute(pool).await?;
+    }
+    if config.resolved_sources.is_empty() {
+        bail!("KNOWLEDGE_JOB_RESOLVED_SOURCE_SNAPSHOT_REQUIRED");
+    }
+    let mut build_config = config.clone();
+    apply_aggregate_source_limits(&mut build_config, config.resolved_sources.clone())?;
+    let mut documents = Vec::new();
+    let mut snapshots = Vec::new();
+    let (preserved_generation_id, preserved_corpus) = if config
+        .resolved_sources
+        .iter()
+        .any(|source| source.source_type != "GIT_MARKDOWN")
+    {
+        let mut corpus_config = config.clone();
+        corpus_config.source_id = Uuid::nil();
+        let generation_id = sqlx::query_scalar::<_, Uuid>(
+            "SELECT index_generation_id FROM knowledge_index_pointer_t
+              WHERE knowledge_base_id=$1 AND environment=$2",
+        )
+        .bind(config.knowledge_base_id)
+        .bind(&config.environment)
+        .fetch_optional(pool)
+        .await?;
+        let corpus = if let Some(generation_id) = generation_id {
+            load_generation_corpus_state(pool, &corpus_config, generation_id).await?
+        } else {
+            Vec::new()
+        };
+        (generation_id, corpus)
+    } else {
+        (None, Vec::new())
+    };
+    for source in &config.resolved_sources {
+        let source_documents = if source.source_type == "GIT_MARKDOWN" {
+            let mut source_config = config.clone();
+            apply_resolved_source(&mut source_config, source);
+            source_config.resolved_sources = vec![source.clone()];
+            let checkout = prepare_checkout(&source_config).await?;
+            let mut source_documents = ingest_markdown_repository(checkout.path(), &source.limits)?;
+            normalize_source_documents(
+                &mut source_documents,
+                source.source_id,
+                &source.approved_repository_uri,
+                &source.immutable_commit,
+                &source.source_include_prefixes,
+                &source.source_exclude_prefixes,
+            );
+            source_documents
+        } else {
+            preserved_corpus
+                .iter()
+                .filter(|document| {
+                    source_id_from_object_id(&document.source_object_id) == Some(source.source_id)
+                })
+                .map(|document| DocumentInput {
+                    source_object_id: document.source_object_id.clone(),
+                    canonical_uri: document.canonical_uri.clone(),
+                    source_version: document.source_version.clone(),
+                    markdown: document.markdown.clone(),
+                })
+                .collect()
+        };
+        let source_stored_bytes = source_documents.iter().try_fold(0_u64, |total, document| {
+            total
+                .checked_add(u64::try_from(document.markdown.len()).unwrap_or(u64::MAX))
+                .context("source stored byte count overflow")
+        })?;
+        if source_documents.len() > source.limits.maximum_documents {
+            return Err(KnowledgeError::SourceLimit("maximum_documents").into());
+        }
+        if source_stored_bytes > source.limits.maximum_source_bytes {
+            return Err(KnowledgeError::SourceLimit("maximum_source_bytes").into());
+        }
+        if source_stored_bytes > source.maximum_stored_bytes {
+            bail!("KNOWLEDGE_INGESTION_MAX_STORED_BYTES_EXCEEDED");
+        }
+        snapshots.push(json!({
+            "sourceId": source.source_id,
+            "sourceType": source.source_type,
+            "repositoryUri": (!source.approved_repository_uri.is_empty())
+                .then_some(source.approved_repository_uri.as_str()),
+            "immutableCommit": (!source.immutable_commit.is_empty())
+                .then_some(source.immutable_commit.as_str()),
+            "ingestionPolicyId": source.ingestion_policy_id,
+            "ingestionPolicyVersion": source.ingestion_policy_version,
+            "preservedFromGenerationId": (source.source_type != "GIT_MARKDOWN")
+                .then_some(preserved_generation_id).flatten(),
+            "documentCount": source_documents.len()
+        }));
+        documents.extend(source_documents);
+    }
+    let normalized_bytes = documents.iter().try_fold(0_u64, |total, document| {
+        total
+            .checked_add(u64::try_from(document.markdown.len()).unwrap_or(u64::MAX))
+            .context("normalized source byte count overflow")
+    })?;
+    if normalized_bytes > build_config.maximum_stored_bytes {
+        bail!("KNOWLEDGE_INGESTION_MAX_STORED_BYTES_EXCEEDED");
+    }
+    build_config.source_snapshot = full_base_source_snapshot(snapshots.clone());
+    let source_snapshot_digest = sha256_hex(&serde_json::to_vec(&build_config.source_snapshot)?);
+    let mut generation = build_full_base_with_context(
+        build_config.knowledge_base_id,
+        build_config.snapshot_watermark,
         &documents,
         &ProcessingContract::default(),
-        &config.limits,
+        &build_config.limits,
+        &source_snapshot_digest,
     )?;
-    apply_configured_embeddings(config, &mut generation).await?;
-    let objects = write_objects(&config.object_store_root, &generation, &documents)?;
-    persist_full_base(pool, config, &generation, &objects).await?;
+    enforce_source_chunk_limits(&generation, &build_config.resolved_sources)?;
+    let observed_embedding_tokens = generation
+        .chunks
+        .iter()
+        .map(|chunk| chunk.token_count)
+        .sum::<usize>();
+    if let Some(job_id) = config.current_job_id {
+        sqlx::query("UPDATE knowledge_sync_run_t SET phase='CHUNKING',document_count=$3,chunk_count=$4,source_bytes=$5,embedding_tokens=$6,progress=progress || jsonb_build_object('sourceCount',$2,'documentCount',$3,'chunkCount',$4,'sourceBytes',$5,'embeddingTokens',$6),update_ts=now() WHERE job_id=$1 AND state='RUNNING'")
+            .bind(job_id)
+            .bind(snapshots.len() as i64)
+            .bind(as_i64(documents.len()))
+            .bind(as_i64(generation.chunks.len()))
+            .bind(i64::try_from(normalized_bytes)?)
+            .bind(as_i64(observed_embedding_tokens))
+            .execute(pool).await?;
+    }
+    if let Some(job_id) = config.current_job_id {
+        sqlx::query("UPDATE knowledge_sync_run_t SET phase='EMBEDDING',progress=progress || jsonb_build_object('chunkCount',$2),update_ts=now() WHERE job_id=$1 AND state='RUNNING'")
+            .bind(job_id).bind(generation.manifest.chunk_count as i64)
+            .execute(pool).await?;
+    }
+    apply_configured_embeddings(&build_config, &mut generation).await?;
+    let objects = write_objects(&build_config.object_store_root, &generation, &documents)?;
+    let source_manifest_path = build_config
+        .object_store_root
+        .join("generations")
+        .join(generation.manifest.generation_id.to_string())
+        .join("sources.json");
+    write_immutable(
+        &source_manifest_path,
+        &serde_json::to_vec(&build_config.source_snapshot)?,
+    )?;
+    persist_full_base(pool, &build_config, &generation, &objects).await?;
     println!("{}", serde_json::to_string_pretty(&generation.manifest)?);
+    Ok(())
+}
+
+fn enforce_source_chunk_limits(
+    generation: &FullBaseGeneration,
+    sources: &[ResolvedSourceConfig],
+) -> Result<()> {
+    let mut observed = HashMap::<Uuid, (usize, usize)>::new();
+    for chunk in &generation.chunks {
+        let source_id = source_id_from_object_id(&chunk.source_object_id)
+            .context("KNOWLEDGE_DOCUMENT_SOURCE_ID_UNRESOLVED")?;
+        let entry = observed.entry(source_id).or_default();
+        entry.0 = entry.0.saturating_add(1);
+        entry.1 = entry.1.saturating_add(chunk.token_count);
+    }
+    for source in sources {
+        let (chunks, embedding_tokens) =
+            observed.get(&source.source_id).copied().unwrap_or_default();
+        if chunks > source.limits.maximum_chunks {
+            return Err(KnowledgeError::SourceLimit("maximum_chunks").into());
+        }
+        if embedding_tokens > source.limits.maximum_embedding_tokens {
+            return Err(KnowledgeError::SourceLimit("maximum_embedding_tokens").into());
+        }
+    }
     Ok(())
 }
 
@@ -3677,14 +4697,18 @@ async fn process_upload(
         bail!("upload is not verified for indexing");
     }
     let locator: String = row.get("staged_locator");
+    if fs::metadata(&locator)?.len() > config.limits.maximum_source_bytes {
+        return Err(KnowledgeError::SourceLimit("maximum_source_bytes").into());
+    }
     let bytes = fs::read(&locator)?;
     let expected_digest: String = row.get::<String, _>("staged_digest").trim().into();
     if sha256_hex(&bytes) != expected_digest {
         bail!("verified upload digest changed before indexing");
     }
     let markdown = String::from_utf8(bytes).context("verified upload is not UTF-8 text")?;
+    let source_object_id: String = row.get("source_object_id");
     let input = DocumentInput {
-        source_object_id: row.get("source_object_id"),
+        source_object_id: format!("{}/{source_object_id}", config.source_id),
         canonical_uri: format!(
             "upload://{upload_id}/{}",
             row.get::<String, _>("original_filename")
@@ -3709,7 +4733,16 @@ async fn process_upload(
 
 async fn incremental_build(pool: &PgPool, config: &WorkerConfig) -> Result<()> {
     let checkout = prepare_checkout(config).await?;
-    let current = ingest_markdown_repository(checkout.path(), &config.limits)?
+    let mut documents = ingest_markdown_repository(checkout.path(), &config.limits)?;
+    normalize_source_documents(
+        &mut documents,
+        config.source_id,
+        &config.approved_repository_uri,
+        &config.immutable_commit,
+        &config.source_include_prefixes,
+        &config.source_exclude_prefixes,
+    );
+    let current = documents
         .into_iter()
         .map(CorpusDocumentState::from)
         .collect::<Vec<_>>();
@@ -3931,8 +4964,10 @@ async fn test_connector_connection(config: &WorkerConfig) -> Result<()> {
     }
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await? {
-        if bytes.len().saturating_add(chunk.len()) > 16 * 1024 * 1024 {
-            bail!("KNOWLEDGE_CONNECTOR_PROBE_RESPONSE_TOO_LARGE");
+        if u64::try_from(bytes.len().saturating_add(chunk.len()))?
+            > config.limits.maximum_source_bytes
+        {
+            return Err(KnowledgeError::SourceLimit("maximum_source_bytes").into());
         }
         bytes.extend_from_slice(&chunk);
     }
@@ -3995,7 +5030,15 @@ async fn load_connector_page(
     approved_origin: &str,
 ) -> Result<ConnectorPage> {
     if let Some(fixture) = &config.enterprise_connector_fixture_file {
-        return Ok(serde_json::from_slice(&fs::read(fixture)?)?);
+        let bytes = fs::read(fixture)?;
+        if u64::try_from(bytes.len())? > config.limits.maximum_source_bytes {
+            return Err(KnowledgeError::SourceLimit("maximum_source_bytes").into());
+        }
+        let page: ConnectorPage = serde_json::from_slice(&bytes)?;
+        if page.objects.len() > config.limits.maximum_documents {
+            return Err(KnowledgeError::SourceLimit("maximum_documents").into());
+        }
+        return Ok(page);
     }
     let endpoint = config
         .enterprise_connector_page_url
@@ -4020,8 +5063,8 @@ async fn load_connector_page(
         .build()?;
     let mut combined: Option<ConnectorPage> = None;
     let mut identities = std::collections::BTreeSet::new();
-    let mut total_bytes = 0_usize;
-    for _ in 0..1024 {
+    let mut total_bytes = 0_u64;
+    for _ in 0..config.maximum_provider_calls {
         let response = client
             .post(endpoint)
             .bearer_auth(token.trim())
@@ -4037,23 +5080,26 @@ async fn load_connector_page(
             );
         }
         let bytes = response.bytes().await?;
-        total_bytes = total_bytes.saturating_add(bytes.len());
-        if bytes.len() > 16 * 1024 * 1024 || total_bytes > 256 * 1024 * 1024 {
-            bail!("KNOWLEDGE_CONNECTOR_PAGE_TOO_LARGE");
+        total_bytes = total_bytes.saturating_add(u64::try_from(bytes.len())?);
+        if total_bytes > config.limits.maximum_source_bytes {
+            return Err(KnowledgeError::SourceLimit("maximum_source_bytes").into());
         }
         let page: ConnectorPage = serde_json::from_slice(&bytes)?;
         page.clone().validate(approved_origin)?;
         if page.requested_cursor != cursor {
             bail!("KNOWLEDGE_CONNECTOR_CURSOR_CHAIN_MISMATCH");
         }
-        if let Some(first) = &combined {
-            if first.provider != page.provider || first.sync_mode != page.sync_mode {
-                bail!("KNOWLEDGE_CONNECTOR_PAGE_CONTRACT_CHANGED");
-            }
+        if let Some(first) = &combined
+            && (first.provider != page.provider || first.sync_mode != page.sync_mode)
+        {
+            bail!("KNOWLEDGE_CONNECTOR_PAGE_CONTRACT_CHANGED");
         }
         for object in &page.objects {
             if !identities.insert(object.external_id.clone()) {
                 bail!("KNOWLEDGE_CONNECTOR_DUPLICATE_OBJECT_ACROSS_PAGES");
+            }
+            if identities.len() > config.limits.maximum_documents {
+                return Err(KnowledgeError::SourceLimit("maximum_documents").into());
             }
         }
         let complete = page.reconciliation_complete;
@@ -4071,7 +5117,7 @@ async fn load_connector_page(
         }
         cursor = Some(next_cursor);
     }
-    bail!("KNOWLEDGE_CONNECTOR_PAGE_LIMIT_EXCEEDED")
+    bail!("KNOWLEDGE_CONNECTOR_PROVIDER_CALL_LIMIT_EXCEEDED")
 }
 
 async fn record_connector_notification(
@@ -4544,18 +5590,19 @@ async fn load_generation_corpus_state(
                  'SUPERSEDE_DOCUMENT','TOMBSTONE_DOCUMENT'))
          )
          SELECT DISTINCT ON (d.document_id)
-                d.source_object_id,d.canonical_uri,v.source_version,
+                d.source_id,d.source_object_id,d.canonical_uri,v.source_version,
                 v.content_digest,v.object_locator
            FROM eligible_documents eligible
            JOIN knowledge_document_t d ON d.document_id=eligible.document_id
            JOIN knowledge_document_version_t v
              ON v.document_version_id=eligible.document_version_id
-          WHERE d.knowledge_base_id=$2 AND d.source_id=$3
+          WHERE d.knowledge_base_id=$2 AND ($3=$4 OR d.source_id=$3)
           ORDER BY d.document_id,eligible.ordinal DESC",
     )
     .bind(generation_id)
     .bind(config.knowledge_base_id)
     .bind(config.source_id)
+    .bind(Uuid::nil())
     .fetch_all(pool)
     .await?;
     rows.into_iter()
@@ -4563,8 +5610,13 @@ async fn load_generation_corpus_state(
             let locator: String = row.get("object_locator");
             let markdown =
                 fs::read_to_string(object_locator_path(&config.object_store_root, &locator)?)?;
+            let source_id: Uuid = row.get("source_id");
+            let mut source_object_id: String = row.get("source_object_id");
+            if source_id_from_object_id(&source_object_id).is_none() {
+                source_object_id = format!("{source_id}/{source_object_id}");
+            }
             Ok(CorpusDocumentState {
-                source_object_id: row.get("source_object_id"),
+                source_object_id,
                 canonical_uri: row.get("canonical_uri"),
                 source_version: row.get("source_version"),
                 content_digest: row.get::<String, _>("content_digest").trim().into(),
@@ -4625,6 +5677,14 @@ async fn incremental_from_states(
             ChangeKind::Delete | ChangeKind::AclOnly => None,
         })
         .collect::<Vec<_>>();
+    let stored_bytes = changed_inputs.iter().try_fold(0_u64, |total, document| {
+        total
+            .checked_add(u64::try_from(document.markdown.len()).unwrap_or(u64::MAX))
+            .context("incremental stored byte count overflow")
+    })?;
+    if stored_bytes > config.maximum_stored_bytes {
+        bail!("KNOWLEDGE_INGESTION_MAX_STORED_BYTES_EXCEEDED");
+    }
     let watermark = sqlx::query_scalar::<_, i64>(
         "SELECT COALESCE(max(snapshot_watermark),0)+1
            FROM knowledge_index_generation_t WHERE knowledge_base_id=$1",
@@ -5122,17 +6182,31 @@ async fn apply_configured_embeddings(
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(30))
         .build()?;
-    let mut pending = (0..generation.chunks.len())
-        .step_by(config.embedding_batch_size)
-        .map(|start| {
-            (
-                start,
-                (start + config.embedding_batch_size).min(generation.chunks.len()),
-            )
-        })
-        .collect::<Vec<_>>();
+    let mut pending = embedding_batches(
+        &generation.chunks,
+        config.embedding_batch_size,
+        config.source_id,
+    )?;
     let mut vectors = vec![None; generation.chunks.len()];
-    while let Some((start, end)) = pending.pop() {
+    let mut remaining_cost_by_source = config
+        .resolved_sources
+        .iter()
+        .map(|source| (source.source_id, source.maximum_spend_micros))
+        .collect::<HashMap<_, _>>();
+    if remaining_cost_by_source.is_empty() && !config.source_id.is_nil() {
+        remaining_cost_by_source.insert(config.source_id, config.maximum_spend_micros);
+    }
+    if remaining_cost_by_source
+        .values()
+        .any(|remaining| *remaining == 0)
+        && !generation.chunks.is_empty()
+    {
+        bail!("KNOWLEDGE_INGESTION_SPEND_BUDGET_REQUIRED");
+    }
+    while let Some((start, end, source_id)) = pending.pop() {
+        let remaining_cost_micros = remaining_cost_by_source
+            .get_mut(&source_id)
+            .context("KNOWLEDGE_INGESTION_SOURCE_SPEND_BUDGET_UNAVAILABLE")?;
         let texts = generation.chunks[start..end]
             .iter()
             .map(|chunk| chunk.text.clone())
@@ -5157,6 +6231,10 @@ async fn apply_configured_embeddings(
                 "x-light-expected-embedding-space-revision",
                 config.embedding_space_revision.to_string(),
             )
+            .header(
+                "x-light-maximum-billed-cost-micros",
+                remaining_cost_micros.to_string(),
+            )
             .json(&json!({
                 "model": config.embedding_alias,
                 "input": texts,
@@ -5178,6 +6256,15 @@ async fn apply_configured_embeddings(
                         .and_then(|value| value.to_str().ok())
                         == Some(config.embedding_space_revision.to_string().as_str()) =>
             {
+                let billed_cost_micros = response
+                    .headers()
+                    .get("x-light-billed-cost-micros")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .context("embedding gateway omitted bounded billed-cost evidence")?;
+                *remaining_cost_micros = remaining_cost_micros
+                    .checked_sub(billed_cost_micros)
+                    .context("embedding gateway exceeded the ingestion spend budget")?;
                 response.json::<serde_json::Value>().await.ok()
             }
             _ => None,
@@ -5211,8 +6298,8 @@ async fn apply_configured_embeddings(
             }
         } else if end - start > 1 {
             let middle = start + (end - start) / 2;
-            pending.push((middle, end));
-            pending.push((start, middle));
+            pending.push((middle, end, source_id));
+            pending.push((start, middle, source_id));
         } else {
             bail!("protected kb_index embedding failed after bounded batch bisection");
         }
@@ -5250,13 +6337,133 @@ async fn apply_configured_embeddings(
     Ok(())
 }
 
+fn embedding_batches(
+    chunks: &[knowledge_core::Chunk],
+    batch_size: usize,
+    fallback_source_id: Uuid,
+) -> Result<Vec<(usize, usize, Uuid)>> {
+    let mut batches = Vec::new();
+    let mut start = 0;
+    while start < chunks.len() {
+        let source_id =
+            source_id_from_object_id(&chunks[start].source_object_id).unwrap_or(fallback_source_id);
+        if source_id.is_nil() {
+            bail!("KNOWLEDGE_DOCUMENT_SOURCE_ID_UNRESOLVED");
+        }
+        let mut end = (start + batch_size).min(chunks.len());
+        while end > start + 1
+            && source_id_from_object_id(&chunks[end - 1].source_object_id)
+                .unwrap_or(fallback_source_id)
+                != source_id
+        {
+            end -= 1;
+        }
+        batches.push((start, end, source_id));
+        start = end;
+    }
+    Ok(batches)
+}
+
 fn valid_repository_uri(uri: &str) -> bool {
     uri.starts_with("https://") && !uri.contains('@') && !uri.contains('\n') && !uri.contains('\r')
+}
+
+fn source_path_policy(config: &serde_json::Value) -> Result<SourcePathPolicy> {
+    let includes = config
+        .get("include")
+        .and_then(serde_json::Value::as_array)
+        .context("Knowledge source include policy is required")?;
+    if includes.is_empty() {
+        bail!("KNOWLEDGE_SOURCE_INCLUDE_POLICY_UNSUPPORTED");
+    }
+    let include_prefixes = includes
+        .iter()
+        .map(|value| {
+            let pattern = value
+                .as_str()
+                .context("KNOWLEDGE_SOURCE_INCLUDE_POLICY_UNSUPPORTED")?;
+            if pattern == "**/*.md" {
+                return Ok(String::new());
+            }
+            let prefix = pattern
+                .strip_suffix("/**/*.md")
+                .context("KNOWLEDGE_SOURCE_INCLUDE_POLICY_UNSUPPORTED")?;
+            validate_source_prefix(prefix, "KNOWLEDGE_SOURCE_INCLUDE_POLICY_UNSUPPORTED")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let exclude_prefixes = config
+        .get("exclude")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .map(|value| {
+            let pattern = value
+                .as_str()
+                .context("Knowledge source exclude entry must be text")?;
+            let prefix = pattern.strip_suffix("/**").unwrap_or(pattern);
+            validate_source_prefix(prefix, "KNOWLEDGE_SOURCE_EXCLUDE_POLICY_INVALID")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(SourcePathPolicy {
+        include_prefixes,
+        exclude_prefixes,
+    })
+}
+
+fn validate_source_prefix(prefix: &str, error_code: &str) -> Result<String> {
+    let prefix = prefix.trim_end_matches('/');
+    if prefix.is_empty()
+        || prefix.starts_with('/')
+        || prefix
+            .split('/')
+            .any(|part| part == ".." || part.is_empty() || part == ".")
+    {
+        bail!("{error_code}");
+    }
+    Ok(prefix.to_string())
+}
+
+fn source_path_matches(path: &str, prefix: &str) -> bool {
+    prefix.is_empty()
+        || path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn normalize_source_documents(
+    documents: &mut Vec<DocumentInput>,
+    source_id: Uuid,
+    repository_uri: &str,
+    immutable_commit: &str,
+    include_prefixes: &[String],
+    exclude_prefixes: &[String],
+) {
+    documents.retain(|document| {
+        include_prefixes
+            .iter()
+            .any(|prefix| source_path_matches(&document.source_object_id, prefix))
+            && !exclude_prefixes
+                .iter()
+                .any(|prefix| source_path_matches(&document.source_object_id, prefix))
+    });
+    for document in documents {
+        let relative = document.source_object_id.clone();
+        document.source_object_id = format!("{source_id}/{relative}");
+        document.canonical_uri = format!("git+{repository_uri}@{immutable_commit}#{relative}");
+    }
 }
 
 fn valid_commit(commit: &str) -> bool {
     (commit.len() == 40 || commit.len() == 64)
         && commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn source_id_from_object_id(source_object_id: &str) -> Option<Uuid> {
+    source_object_id
+        .split_once('/')
+        .and_then(|(source_id, _)| Uuid::parse_str(source_id).ok())
 }
 
 async fn prepare_checkout(config: &WorkerConfig) -> Result<tempfile::TempDir> {
@@ -5424,30 +6631,32 @@ async fn persist_full_base(
     objects: &GenerationObjects,
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
-    let sync_run_id = Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO knowledge_sync_run_t(
-           sync_run_id,knowledge_base_id,source_id,requested_by,start_watermark,
-           snapshot_watermark,state,document_count,chunk_count,embedding_tokens,
-           finished_ts
-         ) VALUES($1,$2,$3,'light-knowledge-worker',$4,$4,'SUCCEEDED',
-           $5,$6,$7,now())",
-    )
-    .bind(sync_run_id)
-    .bind(config.knowledge_base_id)
-    .bind(config.source_id)
-    .bind(as_i64(config.snapshot_watermark as usize))
-    .bind(as_i64(generation.manifest.document_count))
-    .bind(as_i64(generation.manifest.chunk_count))
-    .bind(as_i64(
-        generation
-            .chunks
-            .iter()
-            .map(|chunk| chunk.token_count)
-            .sum(),
-    ))
-    .execute(&mut *tx)
-    .await?;
+    let persistence_id = config
+        .sync_run_id
+        .or(config.current_job_id)
+        .unwrap_or_else(Uuid::now_v7);
+    let track_sync_run = config.sync_run_id.is_some() || !config.source_id.is_nil();
+    if track_sync_run && config.sync_run_id.is_none() {
+        sqlx::query(
+            "INSERT INTO knowledge_sync_run_t(
+               sync_run_id,job_id,knowledge_base_id,source_id,requested_by,
+               start_watermark,snapshot_watermark,state,phase
+             ) VALUES($1,$2,$3,$4,'light-knowledge-worker',$5,$5,'RUNNING','PERSISTING')",
+        )
+        .bind(persistence_id)
+        .bind(config.current_job_id)
+        .bind(config.knowledge_base_id)
+        .bind(config.source_id)
+        .bind(as_i64(config.snapshot_watermark as usize))
+        .execute(&mut *tx)
+        .await?;
+    } else if track_sync_run {
+        sqlx::query("UPDATE knowledge_sync_run_t SET phase='PERSISTING',progress=progress || jsonb_build_object('documentCount',$2,'chunkCount',$3),update_ts=now() WHERE sync_run_id=$1 AND state='RUNNING'")
+            .bind(persistence_id)
+            .bind(as_i64(generation.manifest.document_count))
+            .bind(as_i64(generation.manifest.chunk_count))
+            .execute(&mut *tx).await?;
+    }
 
     let metadata = sha256_hex(b"metadata-v1");
     let acl = sha256_hex(b"uniform-scope-acl-v1");
@@ -5458,6 +6667,19 @@ async fn persist_full_base(
     .fetch_one(&mut *tx)
     .await?
     .is_some();
+    let mut generation_evidence = json!({
+        "fullBase": true,
+        "sourceSnapshot": config.source_snapshot,
+        "sourceManifestLocator": format!(
+            "object://light-knowledge/generations/{}/sources.json",
+            generation.manifest.generation_id
+        )
+    });
+    if track_sync_run {
+        generation_evidence["syncRunId"] = json!(persistence_id);
+    } else {
+        generation_evidence["buildOperationId"] = json!(persistence_id);
+    }
     sqlx::query(
         "INSERT INTO knowledge_index_generation_t(
            index_generation_id,knowledge_base_id,embedding_profile_id,
@@ -5488,7 +6710,7 @@ async fn persist_full_base(
     .bind(&contract_set)
     .bind(as_i64(generation.manifest.snapshot_watermark as usize))
     .bind(&generation.manifest.manifest_digest)
-    .bind(json!({"syncRunId": sync_run_id, "fullBase": true}))
+    .bind(generation_evidence)
     .execute(&mut *tx)
     .await?;
 
@@ -5528,11 +6750,15 @@ async fn persist_full_base(
     .await?;
 
     for chunk in &generation.chunks {
+        let document_source_id =
+            source_id_from_object_id(&chunk.source_object_id).unwrap_or(config.source_id);
+        if document_source_id.is_nil() {
+            bail!("KNOWLEDGE_DOCUMENT_SOURCE_ID_UNRESOLVED");
+        }
         let document_object = objects
             .documents
             .get(&chunk.document_version_id)
             .context("verified document object is missing")?;
-        let acl_id = derived_uuid("acl", chunk.document_id);
         let artifact_id = embedding_artifact_id(config, generation, &chunk.content_digest);
         let artifact_reused = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM knowledge_embedding_artifact_t
@@ -5555,7 +6781,7 @@ async fn persist_full_base(
         )
         .bind(chunk.document_id)
         .bind(config.knowledge_base_id)
-        .bind(config.source_id)
+        .bind(document_source_id)
         .bind(&chunk.source_object_id)
         .bind(&chunk.canonical_uri)
         .execute(&mut *tx)
@@ -5586,23 +6812,33 @@ async fn persist_full_base(
         .bind(chunk.document_id)
         .execute(&mut *tx)
         .await?;
-        sqlx::query(
-            "INSERT INTO knowledge_document_acl_t(
+        let existing_acl_id = sqlx::query_scalar::<_, Uuid>(
+            "SELECT acl_revision_id FROM knowledge_document_acl_t
+              WHERE document_id=$1 ORDER BY acl_sequence DESC LIMIT 1",
+        )
+        .bind(chunk.document_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let acl_id = existing_acl_id.unwrap_or_else(|| derived_uuid("acl", chunk.document_id));
+        if existing_acl_id.is_none() {
+            sqlx::query(
+                "INSERT INTO knowledge_document_acl_t(
                acl_revision_id,document_id,knowledge_base_id,acl_sequence,
                visibility_mode,normalized_acl,normalization_contract_digest,
                completeness_state,observed_ts,fresh_until_ts,evidence_digest
              ) VALUES($1,$2,$3,1,'UNIFORM_SCOPE',$4,$5,'COMPLETE',
                now(),now()+interval '365 days',$6)
              ON CONFLICT(acl_revision_id) DO NOTHING",
-        )
-        .bind(acl_id)
-        .bind(chunk.document_id)
-        .bind(config.knowledge_base_id)
-        .bind(json!({"uniform": true}))
-        .bind(&acl)
-        .bind(sha256_hex(chunk.source_object_id.as_bytes()))
-        .execute(&mut *tx)
-        .await?;
+            )
+            .bind(acl_id)
+            .bind(chunk.document_id)
+            .bind(config.knowledge_base_id)
+            .bind(json!({"uniform": true}))
+            .bind(&acl)
+            .bind(sha256_hex(chunk.source_object_id.as_bytes()))
+            .execute(&mut *tx)
+            .await?;
+        }
         sqlx::query(
             "INSERT INTO knowledge_chunk_t(
                chunk_id,knowledge_base_id,document_version_id,ordinal,
@@ -5657,7 +6893,7 @@ async fn persist_full_base(
         .bind(config.knowledge_base_id)
         .bind(config.embedding_profile_id)
         .bind(config.embedding_profile_revision)
-        .bind(format!("sync:{sync_run_id}:{}", chunk.chunk_id))
+        .bind(format!("build:{persistence_id}:{}", chunk.chunk_id))
         .bind(artifact_reused)
         .execute(&mut *tx)
         .await?;
@@ -5746,6 +6982,88 @@ async fn persist_full_base(
     .bind(generation.manifest.generation_id)
     .execute(&mut *tx)
     .await?;
+    let stored_bytes = objects
+        .documents
+        .values()
+        .try_fold(0_i64, |total, document| {
+            total.checked_add(i64::try_from(document.2).ok()?)
+        })
+        .context("stored byte count overflow")?;
+    let embedding_tokens = as_i64(
+        generation
+            .chunks
+            .iter()
+            .map(|chunk| chunk.token_count)
+            .sum(),
+    );
+    if track_sync_run {
+        sqlx::query(
+            "UPDATE knowledge_sync_run_t SET phase='PERSISTED',
+           index_generation_id=$2,document_count=$3,chunk_count=$4,
+           source_bytes=$5,embedding_tokens=$6,stored_bytes=$5,
+           progress=progress || jsonb_build_object(
+             'generationState','READY','indexGenerationId',$2),
+           error_summary=NULL,update_ts=now()
+         WHERE sync_run_id=$1 AND state='RUNNING'",
+        )
+        .bind(persistence_id)
+        .bind(generation.manifest.generation_id)
+        .bind(as_i64(generation.manifest.document_count))
+        .bind(as_i64(generation.manifest.chunk_count))
+        .bind(stored_bytes)
+        .bind(embedding_tokens)
+        .execute(&mut *tx)
+        .await?;
+    }
+    if config.coalesce_queued_syncs
+        && let Some(current_job_id) = config.current_job_id
+        && let Some(created_before) = config.coalesce_created_before
+    {
+        // A source sync builds a complete BASE. Only requests already queued when
+        // configuration resolution began can share its immutable source snapshot;
+        // later requests must remain queued for a fresh resolution and build.
+        sqlx::query(
+            "UPDATE knowledge_job_t SET state='SUCCEEDED',claim_token=NULL,
+               lease_expires_ts=NULL,result=jsonb_build_object(
+                 'coalescedIntoJobId',$2,'indexGenerationId',$3),update_ts=now()
+             WHERE knowledge_base_id=$1 AND job_id<>$2 AND job_type='SYNC'
+               AND state='QUEUED' AND created_ts<=$4
+               AND EXISTS (
+                 SELECT 1 FROM knowledge_sync_run_t run
+                  WHERE run.job_id=knowledge_job_t.job_id AND run.state='QUEUED')",
+        )
+        .bind(config.knowledge_base_id)
+        .bind(current_job_id)
+        .bind(generation.manifest.generation_id)
+        .bind(created_before)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE knowledge_sync_run_t run SET state='SUCCEEDED',phase='COALESCED',
+               index_generation_id=$3,document_count=$4,chunk_count=$5,
+               source_bytes=$6,embedding_tokens=$7,stored_bytes=$6,
+               progress=run.progress || jsonb_build_object(
+                 'coalescedIntoJobId',$2,'generationState','READY',
+                 'indexGenerationId',$3),
+               error_summary=NULL,finished_ts=now(),update_ts=now()
+              FROM knowledge_job_t job
+             WHERE run.job_id=job.job_id AND job.knowledge_base_id=$1
+               AND job.job_id<>$2 AND job.job_type='SYNC'
+               AND job.state='SUCCEEDED' AND job.created_ts<=$8
+               AND job.result->>'coalescedIntoJobId'=$2::text
+               AND run.state='QUEUED'",
+        )
+        .bind(config.knowledge_base_id)
+        .bind(current_job_id)
+        .bind(generation.manifest.generation_id)
+        .bind(as_i64(generation.manifest.document_count))
+        .bind(as_i64(generation.manifest.chunk_count))
+        .bind(stored_bytes)
+        .bind(embedding_tokens)
+        .bind(created_before)
+        .execute(&mut *tx)
+        .await?;
+    }
     tx.commit().await?;
     Ok(())
 }
@@ -5974,6 +7292,98 @@ async fn apply_desired_state(
 ) -> Result<()> {
     let payload = &event.payload;
     match event.event_type.as_str() {
+        "KnowledgeIngestionPolicyCreatedEvent" | "KnowledgeIngestionPolicyUpdatedEvent" => {
+            sqlx::query(
+                "INSERT INTO knowledge_ingestion_policy_t(
+                   ingestion_policy_id,host_id,policy_name,max_documents,
+                   max_chunks,max_source_bytes,max_stored_bytes,
+                   max_embedding_tokens,max_spend_micros,max_wall_time_seconds,
+                   max_concurrency,version,active,update_user
+                 ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,TRUE,
+                   'light-knowledge-projector')
+                 ON CONFLICT(ingestion_policy_id) DO UPDATE SET
+                   policy_name=EXCLUDED.policy_name,
+                   max_documents=EXCLUDED.max_documents,
+                   max_chunks=EXCLUDED.max_chunks,
+                   max_source_bytes=EXCLUDED.max_source_bytes,
+                   max_stored_bytes=EXCLUDED.max_stored_bytes,
+                   max_embedding_tokens=EXCLUDED.max_embedding_tokens,
+                   max_spend_micros=EXCLUDED.max_spend_micros,
+                   max_wall_time_seconds=EXCLUDED.max_wall_time_seconds,
+                   max_concurrency=EXCLUDED.max_concurrency,
+                   version=EXCLUDED.version,active=TRUE,update_ts=now(),
+                   update_user=EXCLUDED.update_user
+                 WHERE knowledge_ingestion_policy_t.host_id IS NOT DISTINCT FROM
+                       EXCLUDED.host_id
+                   AND knowledge_ingestion_policy_t.version<EXCLUDED.version",
+            )
+            .bind(uuid_value(payload, "ingestionPolicyId")?)
+            .bind(optional_uuid_value(payload, "hostId")?)
+            .bind(text_value(payload, "policyName")?)
+            .bind(i64_value(payload, "maxDocuments")?)
+            .bind(i64_value(payload, "maxChunks")?)
+            .bind(i64_value(payload, "maxSourceBytes")?)
+            .bind(i64_value(payload, "maxStoredBytes")?)
+            .bind(i64_value(payload, "maxEmbeddingTokens")?)
+            .bind(i64_value(payload, "maxSpendMicros")?)
+            .bind(i64_value(payload, "maxWallTimeSeconds")?)
+            .bind(i32::try_from(i64_value(payload, "maxConcurrency")?)?)
+            .bind(event.aggregate_sequence)
+            .execute(&mut **tx)
+            .await?;
+        }
+        "KnowledgeIngestionPolicyDeactivatedEvent" => {
+            sqlx::query(
+                "UPDATE knowledge_ingestion_policy_t SET active=FALSE,version=$2,
+                   update_ts=now(),update_user='light-knowledge-projector'
+                 WHERE ingestion_policy_id=$1 AND host_id IS NOT DISTINCT FROM $3
+                   AND version<$2",
+            )
+            .bind(uuid_value(payload, "ingestionPolicyId")?)
+            .bind(event.aggregate_sequence)
+            .bind(optional_uuid_value(payload, "hostId")?)
+            .execute(&mut **tx)
+            .await?;
+        }
+        "KnowledgeEmbeddingProfileCreatedEvent" => {
+            sqlx::query(
+                "INSERT INTO knowledge_embedding_profile_t(
+                   profile_id,profile_revision,host_id,alias_owner_host_id,
+                   public_alias_id,expected_space_id,expected_space_revision,
+                   dimension,normalization,distance_metric,
+                   document_input_transform_version,
+                   query_input_transform_version,qualification_digest,
+                   active,update_user)
+                 VALUES($1,$2,NULL,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,TRUE,
+                   'light-knowledge-projector')
+                 ON CONFLICT(profile_id,profile_revision) DO NOTHING",
+            )
+            .bind(uuid_value(payload, "profileId")?)
+            .bind(i64_value(payload, "profileRevision")?)
+            .bind(uuid_value(payload, "aliasOwnerHostId")?)
+            .bind(uuid_value(payload, "publicAliasId")?)
+            .bind(text_value(payload, "expectedSpaceId")?)
+            .bind(i64_value(payload, "expectedSpaceRevision")?)
+            .bind(i32::try_from(i64_value(payload, "dimension")?)?)
+            .bind(text_value(payload, "normalization")?)
+            .bind(text_value(payload, "distanceMetric")?)
+            .bind(text_value(payload, "documentInputTransformVersion")?)
+            .bind(text_value(payload, "queryInputTransformVersion")?)
+            .bind(text_value(payload, "qualificationDigest")?)
+            .execute(&mut **tx)
+            .await?;
+        }
+        "KnowledgeEmbeddingProfileDeactivatedEvent" => {
+            sqlx::query(
+                "UPDATE knowledge_embedding_profile_t SET active=FALSE,
+                   update_ts=now(),update_user='light-knowledge-projector'
+                 WHERE profile_id=$1 AND profile_revision=$2 AND active",
+            )
+            .bind(uuid_value(payload, "profileId")?)
+            .bind(i64_value(payload, "profileRevision")?)
+            .execute(&mut **tx)
+            .await?;
+        }
         "KnowledgeBaseCreatedEvent" | "KnowledgeBaseUpdatedEvent" => {
             sqlx::query(
                 "INSERT INTO knowledge_base_t(
@@ -6136,32 +7546,33 @@ async fn apply_desired_state(
             };
             let knowledge_base_id = uuid_value(payload, "knowledgeBaseId")?;
             let source_id = optional_uuid_value(payload, "sourceId")?;
-            let owned_by_config = worker_owns_job(
-                config.knowledge_base_id,
-                config.source_id,
-                knowledge_base_id,
-                source_id,
-            );
-            if !owned_by_config {
-                tracing::warn!(
-                    %knowledge_base_id,
-                    ?source_id,
-                    configured_knowledge_base_id=%config.knowledge_base_id,
-                    configured_source_id=%config.source_id,
-                    "Projected Knowledge job awaits its owning worker shard"
-                );
-            }
             sqlx::query("INSERT INTO knowledge_job_t(job_id,knowledge_base_id,source_id,job_type,idempotency_key,requested_by,payload,state,result) VALUES($1,$2,$3,$4,$5,'portal-event',$6,'QUEUED',$7) ON CONFLICT(knowledge_base_id,idempotency_key) DO NOTHING")
                 .bind(event.event_id)
                 .bind(knowledge_base_id)
                 .bind(source_id)
                 .bind(job_type).bind(event.event_id.to_string()).bind(payload)
-                .bind((!owned_by_config).then(|| json!({
-                    "routingStatus": "KNOWLEDGE_JOB_AWAITING_OWNING_SHARD",
-                    "configuredKnowledgeBaseId": config.knowledge_base_id,
-                    "configuredSourceId": config.source_id
-                })))
+                .bind(Option::<serde_json::Value>::None)
                 .execute(&mut **tx).await?;
+            if event.event_type == "KnowledgeSourceSyncRequestedEvent" {
+                let source_id = source_id.context("source sync event requires sourceId")?;
+                sqlx::query(
+                    "INSERT INTO knowledge_sync_run_t(
+                       sync_run_id,job_id,request_event_id,knowledge_base_id,
+                       source_id,requested_by,start_watermark,state,phase,progress)
+                     VALUES($1,$1,$1,$2,$3,'portal-event',$4,'QUEUED','QUEUED',
+                       jsonb_build_object('requestEventType',$5))
+                     ON CONFLICT(sync_run_id) DO NOTHING",
+                )
+                .bind(event.event_id)
+                .bind(knowledge_base_id)
+                .bind(source_id)
+                // The portal event sequence is not a corpus watermark. The worker
+                // resolves the base snapshot independently when it claims the job.
+                .bind(initial_sync_start_watermark())
+                .bind(&event.event_type)
+                .execute(&mut **tx)
+                .await?;
+            }
         }
         _ => {}
     }
@@ -6182,13 +7593,13 @@ async fn apply_binding(
     if active {
         let profile_id = uuid_value(payload, "retrievalProfileId")?;
         sqlx::query("INSERT INTO agent_knowledge_base_t(host_id,agent_id,knowledge_base_id,environment,retrieval_profile_id,priority,evidence_required,allowed_source_trust_tiers,version,active,update_user) VALUES($1,$2,$3,$4,$5,COALESCE($6,50),COALESCE($7,FALSE),COALESCE($8,'[]'::jsonb),$9,TRUE,'light-knowledge-projector') ON CONFLICT(host_id,agent_id,knowledge_base_id,environment) DO UPDATE SET retrieval_profile_id=EXCLUDED.retrieval_profile_id,priority=EXCLUDED.priority,evidence_required=EXCLUDED.evidence_required,allowed_source_trust_tiers=EXCLUDED.allowed_source_trust_tiers,version=EXCLUDED.version,active=TRUE,update_ts=now(),update_user=EXCLUDED.update_user WHERE agent_knowledge_base_t.version<EXCLUDED.version")
-            .bind(host_id).bind(agent_id).bind(knowledge_base_id).bind(&environment)
+            .bind(host_id).bind(agent_id).bind(knowledge_base_id).bind(environment)
             .bind(profile_id).bind(payload.get("priority").and_then(|value| value.as_i64()))
             .bind(payload.get("evidenceRequired").and_then(|value| value.as_bool()))
             .bind(payload.get("allowedSourceTrustTiers"))
             .bind(event.aggregate_sequence).execute(&mut **tx).await?;
         sqlx::query("INSERT INTO knowledge_runtime_authorization_t(knowledge_base_id,consumer_host_id,environment,agent_id,retrieval_profile_id,active,desired_event_sequence,applied_event_sequence,projector_id,lease_expires_ts,authorization_digest) VALUES($1,$2,$3,$4,$5,TRUE,$6,$6,$7,now()+interval '30 seconds',$8) ON CONFLICT(knowledge_base_id,consumer_host_id,environment,agent_id) DO UPDATE SET retrieval_profile_id=EXCLUDED.retrieval_profile_id,active=TRUE,desired_event_sequence=EXCLUDED.desired_event_sequence,applied_event_sequence=EXCLUDED.applied_event_sequence,projector_id=EXCLUDED.projector_id,lease_expires_ts=EXCLUDED.lease_expires_ts,authorization_digest=EXCLUDED.authorization_digest,update_ts=now() WHERE knowledge_runtime_authorization_t.applied_event_sequence<EXCLUDED.applied_event_sequence")
-            .bind(knowledge_base_id).bind(host_id).bind(&environment).bind(agent_id)
+            .bind(knowledge_base_id).bind(host_id).bind(environment).bind(agent_id)
             .bind(profile_id).bind(event.aggregate_sequence).bind(&config.projector_id)
             .bind(&event.payload_digest).execute(&mut **tx).await?;
         sqlx::query(
@@ -6205,10 +7616,10 @@ async fn apply_binding(
         .await?;
     } else {
         sqlx::query("UPDATE agent_knowledge_base_t SET active=FALSE,version=$5,update_ts=now(),update_user='light-knowledge-projector' WHERE host_id=$1 AND agent_id=$2 AND knowledge_base_id=$3 AND environment=$4 AND version<$5")
-            .bind(host_id).bind(agent_id).bind(knowledge_base_id).bind(&environment)
+            .bind(host_id).bind(agent_id).bind(knowledge_base_id).bind(environment)
             .bind(event.aggregate_sequence).execute(&mut **tx).await?;
         sqlx::query("UPDATE knowledge_runtime_authorization_t SET active=FALSE,desired_event_sequence=$5,applied_event_sequence=$5,lease_expires_ts=now()+interval '30 seconds',authorization_digest=$6,update_ts=now() WHERE knowledge_base_id=$1 AND consumer_host_id=$2 AND environment=$3 AND agent_id=$4 AND applied_event_sequence<$5")
-            .bind(knowledge_base_id).bind(host_id).bind(&environment).bind(agent_id)
+            .bind(knowledge_base_id).bind(host_id).bind(environment).bind(agent_id)
             .bind(event.aggregate_sequence).bind(&event.payload_digest)
             .execute(&mut **tx).await?;
     }
@@ -6221,6 +7632,13 @@ fn text_value<'a>(value: &'a serde_json::Value, field: &str) -> Result<&'a str> 
         .and_then(|value| value.as_str())
         .filter(|value| !value.trim().is_empty())
         .with_context(|| format!("projection payload requires {field}"))
+}
+
+fn i64_value(value: &serde_json::Value, field: &str) -> Result<i64> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_i64)
+        .with_context(|| format!("{field} is required"))
 }
 
 fn uuid_value(value: &serde_json::Value, field: &str) -> Result<Uuid> {
@@ -6293,6 +7711,34 @@ async fn heartbeat(pool: &PgPool, config: &WorkerConfig) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn resolved_source(
+        source_id: Uuid,
+        policy_id: Uuid,
+        maximum_chunks: usize,
+    ) -> ResolvedSourceConfig {
+        ResolvedSourceConfig {
+            source_id,
+            source_type: "GIT_MARKDOWN".into(),
+            approved_repository_uri: "https://github.com/networknt/light-fabric.git".into(),
+            immutable_commit: "a".repeat(40),
+            source_include_prefixes: vec![String::new()],
+            source_exclude_prefixes: vec!["target".into()],
+            ingestion_policy_id: policy_id,
+            ingestion_policy_version: 3,
+            limits: SourceLimits {
+                maximum_documents: 10,
+                maximum_source_bytes: 1024,
+                maximum_chunks,
+                maximum_embedding_tokens: 1000,
+            },
+            maximum_stored_bytes: 2048,
+            maximum_spend_micros: 5000,
+            maximum_wall_time_seconds: 60,
+            maximum_concurrency: 2,
+            maximum_provider_calls: DEFAULT_MAXIMUM_PROVIDER_CALLS,
+        }
+    }
 
     #[test]
     fn immutable_object_rejects_collision() {
@@ -6374,33 +7820,232 @@ mod tests {
     }
 
     #[test]
-    fn projected_jobs_outside_the_configured_shard_are_not_owned() {
-        let configured_kb = Uuid::from_u128(1);
-        let configured_source = Uuid::from_u128(2);
-        assert!(worker_owns_job(
-            configured_kb,
-            configured_source,
-            configured_kb,
-            None
-        ));
-        assert!(worker_owns_job(
-            configured_kb,
-            configured_source,
-            configured_kb,
-            Some(configured_source)
-        ));
-        assert!(!worker_owns_job(
-            configured_kb,
-            configured_source,
-            Uuid::from_u128(3),
-            None
-        ));
-        assert!(!worker_owns_job(
-            configured_kb,
-            configured_source,
-            configured_kb,
-            Some(Uuid::from_u128(4))
-        ));
+    fn full_reindex_fetches_sources_while_compaction_only_resolves_policy_budgets() {
+        assert!(job_fetches_full_base_sources("FULL_REINDEX"));
+        assert!(job_fetches_full_base_sources("SYNC"));
+        assert!(!job_fetches_full_base_sources("COMPACTION"));
+        assert!(!job_fetches_full_base_sources("UPLOAD"));
+        assert!(job_coalesces_queued_syncs("SYNC"));
+        assert!(!job_coalesces_queued_syncs("FULL_REINDEX"));
+        assert!(!job_coalesces_queued_syncs("COMPACTION"));
+        assert!(!job_coalesces_queued_syncs("UPLOAD"));
+    }
+
+    #[test]
+    fn sync_start_watermark_is_independent_of_portal_event_sequence() {
+        assert_eq!(initial_sync_start_watermark(), 0);
+    }
+
+    #[test]
+    fn source_path_policy_is_bounded_and_source_identity_is_namespaced() {
+        assert_eq!(
+            source_path_policy(&json!({
+                "include": ["**/*.md"],
+                "exclude": ["target/**", "private.md"]
+            }))
+            .unwrap(),
+            SourcePathPolicy {
+                include_prefixes: vec![String::new()],
+                exclude_prefixes: vec!["target".into(), "private.md".into()]
+            }
+        );
+        assert_eq!(
+            source_path_policy(&json!({"include": ["src/**/*.md"]})).unwrap(),
+            SourcePathPolicy {
+                include_prefixes: vec!["src".into()],
+                exclude_prefixes: Vec::new()
+            }
+        );
+        assert!(
+            source_path_policy(&json!({
+                "include": ["**/*"], "exclude": []
+            }))
+            .is_err()
+        );
+        let source_id = Uuid::from_u128(2);
+        assert_eq!(
+            source_id_from_object_id(&format!("{source_id}/docs/index.md")),
+            Some(source_id)
+        );
+
+        let mut documents = vec![
+            DocumentInput {
+                source_object_id: "src/guide.md".into(),
+                canonical_uri: "repo://src/guide.md".into(),
+                source_version: "1".into(),
+                markdown: "# Guide".into(),
+            },
+            DocumentInput {
+                source_object_id: "docs/ignored.md".into(),
+                canonical_uri: "repo://docs/ignored.md".into(),
+                source_version: "1".into(),
+                markdown: "# Ignored".into(),
+            },
+        ];
+        normalize_source_documents(
+            &mut documents,
+            source_id,
+            "https://example.invalid/repo.git",
+            &"a".repeat(40),
+            &["src".into()],
+            &[],
+        );
+        assert_eq!(documents.len(), 1);
+        assert_eq!(
+            documents[0].source_object_id,
+            format!("{source_id}/src/guide.md")
+        );
+    }
+
+    #[test]
+    fn platform_caps_only_tighten_selected_policy_limits() {
+        assert_eq!(cap(100_usize, Some(25)), 25);
+        assert_eq!(cap(10_usize, Some(25)), 10);
+        assert_eq!(cap(10_u64, None), 10);
+        assert!(
+            PlatformCaps {
+                maximum_concurrency: Some(0),
+                ..PlatformCaps::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            PlatformCaps {
+                maximum_provider_calls: Some(0),
+                ..PlatformCaps::default()
+            }
+            .validate()
+            .is_err()
+        );
+        let first = resolved_source(Uuid::from_u128(1), Uuid::from_u128(11), 12);
+        let second = resolved_source(Uuid::from_u128(2), Uuid::from_u128(22), 34);
+        assert_eq!(
+            aggregate_wall_time_seconds(&[first.clone(), second.clone()], None).unwrap(),
+            120
+        );
+        assert_eq!(
+            aggregate_wall_time_seconds(&[first, second], Some(90)).unwrap(),
+            90
+        );
+    }
+
+    #[tokio::test]
+    async fn headless_runtime_values_override_platform_cap_template() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("startup.yml"),
+            "serviceId: com.networknt.light-knowledge-worker-1.0.0\nenvTag: test\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("server.yml"),
+            "ip: 127.0.0.1\nhttpPort: 0\nenableHttp: false\nhttpsPort: 0\nenableHttps: false\nserviceId: com.networknt.light-knowledge-worker-1.0.0\nenableRegistry: false\nenvironment: test\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("values.yml"),
+            "knowledgeWorker.platformCaps.maximumDocuments: 7\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("worker.yml"),
+            "version: 1\nheartbeatSecretFile: /tmp/heartbeat\nprojectorId: test\nplatformCaps:\n  maximumDocuments: ${knowledgeWorker.platformCaps.maximumDocuments:100}\n",
+        )
+        .unwrap();
+        let runtime = LightRuntimeBuilder::new(HeadlessTransport)
+            .with_config_dir(directory.path())
+            .with_external_config_dir(directory.path())
+            .build()
+            .prepare_local_config()
+            .await
+            .unwrap();
+        let config = runtime
+            .module_registry
+            .load_config::<WorkerConfig>(&runtime, "worker.yml")
+            .unwrap();
+        assert_eq!(config.platform_caps.maximum_documents, Some(7));
+    }
+
+    #[test]
+    fn global_and_same_tenant_policies_are_visible_but_other_owners_fail_closed() {
+        let tenant = Uuid::from_u128(1);
+        let other = Uuid::from_u128(2);
+        assert!(policy_owner_allowed(true, None, Some(tenant)));
+        assert!(policy_owner_allowed(true, Some(tenant), Some(tenant)));
+        assert!(!policy_owner_allowed(true, Some(other), Some(tenant)));
+        assert!(!policy_owner_allowed(false, None, Some(tenant)));
+    }
+
+    #[test]
+    fn all_source_policy_versions_and_effective_ceilings_are_snapshotted() {
+        let first = resolved_source(Uuid::from_u128(1), Uuid::from_u128(11), 12);
+        let second = resolved_source(Uuid::from_u128(2), Uuid::from_u128(22), 34);
+        let snapshot = source_snapshots(&[first, second]);
+        let sources = snapshot.as_array().unwrap();
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0]["ingestionPolicyVersion"], 3);
+        assert_eq!(sources[0]["effectiveCeilings"]["maxChunks"], 12);
+        assert_eq!(sources[0]["sourceType"], "GIT_MARKDOWN");
+        assert_eq!(
+            sources[0]["effectiveCeilings"]["maxProviderCalls"],
+            DEFAULT_MAXIMUM_PROVIDER_CALLS
+        );
+        assert_eq!(sources[1]["effectiveCeilings"]["maxChunks"], 34);
+
+        let mut connector = resolved_source(Uuid::from_u128(3), Uuid::from_u128(33), 56);
+        connector.source_type = "SHAREPOINT".into();
+        connector.approved_repository_uri.clear();
+        connector.immutable_commit.clear();
+        let connector_snapshot = source_snapshots(&[connector]);
+        assert!(connector_snapshot[0]["repositoryUri"].is_null());
+        assert!(connector_snapshot[0]["immutableCommit"].is_null());
+        assert_eq!(connector_snapshot[0]["effectiveCeilings"]["maxChunks"], 56);
+    }
+
+    #[test]
+    fn immutable_full_base_source_snapshot_does_not_include_trigger_identity() {
+        let snapshot = full_base_source_snapshot(vec![json!({
+            "sourceId": Uuid::from_u128(1),
+            "documentCount": 2
+        })]);
+        assert!(snapshot.get("triggerSourceId").is_none());
+        assert_eq!(snapshot["sources"][0]["documentCount"], 2);
+    }
+
+    #[test]
+    fn embedding_batches_never_mix_source_spend_budgets() {
+        let first = Uuid::from_u128(1);
+        let second = Uuid::from_u128(2);
+        let documents = vec![
+            DocumentInput {
+                source_object_id: format!("{first}/one.md"),
+                canonical_uri: "repo://one.md".into(),
+                source_version: "1".into(),
+                markdown: "# One\nalpha beta gamma".into(),
+            },
+            DocumentInput {
+                source_object_id: format!("{second}/two.md"),
+                canonical_uri: "repo://two.md".into(),
+                source_version: "1".into(),
+                markdown: "# Two\ndelta epsilon zeta".into(),
+            },
+        ];
+        let generation = build_full_base(
+            Uuid::from_u128(9),
+            1,
+            &documents,
+            &ProcessingContract::default(),
+            &SourceLimits::default(),
+        )
+        .unwrap();
+        let batches = embedding_batches(&generation.chunks, 128, Uuid::nil()).unwrap();
+        assert_eq!(batches.len(), 2);
+        for (start, end, source_id) in batches {
+            assert!(generation.chunks[start..end].iter().all(|chunk| {
+                source_id_from_object_id(&chunk.source_object_id) == Some(source_id)
+            }));
+        }
     }
 
     #[test]
@@ -6414,6 +8059,63 @@ mod tests {
             worker_error_code(&anyhow::anyhow!("connection failed")),
             "KNOWLEDGE_BUILD_FAILED"
         );
+        assert_eq!(
+            worker_error_code(&anyhow::anyhow!(
+                "KNOWLEDGE_SOURCE_IMMUTABLE_GIT_CONFIG_INVALID"
+            )),
+            "KNOWLEDGE_SOURCE_IMMUTABLE_GIT_CONFIG_INVALID"
+        );
+        assert_eq!(
+            worker_error_code(&anyhow::anyhow!(
+                "KNOWLEDGE_JOB_SOURCE_OR_POLICY_UNAVAILABLE"
+            )),
+            "KNOWLEDGE_JOB_SOURCE_OR_POLICY_UNAVAILABLE"
+        );
+        assert_eq!(
+            worker_error_code(&anyhow::anyhow!(
+                "KNOWLEDGE_JOB_EMBEDDING_PROFILE_UNAVAILABLE"
+            )),
+            "KNOWLEDGE_JOB_EMBEDDING_PROFILE_UNAVAILABLE"
+        );
+        assert_eq!(
+            worker_error_code(&anyhow::anyhow!(
+                "KNOWLEDGE_SOURCE_LIMIT_EXCEEDED: maximum_chunks"
+            )),
+            "KNOWLEDGE_INGESTION_MAX_CHUNKS_EXCEEDED"
+        );
+        assert!(is_budget_error_code(
+            "KNOWLEDGE_INGESTION_MAX_WALL_TIME_EXCEEDED"
+        ));
+        assert!(!is_budget_error_code("KNOWLEDGE_BUILD_FAILED"));
+        assert_eq!(
+            budget_terminal_state("KNOWLEDGE_INGESTION_SPEND_BUDGET_EXCEEDED"),
+            "PAUSED_BUDGET"
+        );
+        assert_eq!(
+            budget_terminal_state("KNOWLEDGE_INGESTION_MAX_CHUNKS_EXCEEDED"),
+            "FAILED_BUDGET"
+        );
+        assert_eq!(
+            worker_error_code(&anyhow::anyhow!(
+                "KNOWLEDGE_INGESTION_SPEND_BUDGET_REQUIRED"
+            )),
+            "KNOWLEDGE_INGESTION_SPEND_BUDGET_REQUIRED"
+        );
+        assert_eq!(
+            budget_terminal_state("KNOWLEDGE_INGESTION_SPEND_BUDGET_REQUIRED"),
+            "FAILED_BUDGET"
+        );
+        assert_eq!(
+            worker_error_code(&anyhow::anyhow!(
+                "KNOWLEDGE_INGESTION_SOURCE_SPEND_BUDGET_UNAVAILABLE"
+            )),
+            "KNOWLEDGE_INGESTION_SOURCE_SPEND_BUDGET_UNAVAILABLE"
+        );
+        assert_eq!(
+            budget_terminal_state("KNOWLEDGE_INGESTION_SOURCE_SPEND_BUDGET_UNAVAILABLE"),
+            "FAILED"
+        );
+        assert_eq!(budget_terminal_state("KNOWLEDGE_BUILD_FAILED"), "FAILED");
     }
 
     #[test]

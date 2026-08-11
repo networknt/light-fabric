@@ -1,7 +1,7 @@
-FROM rust:1.88-bookworm AS build
+FROM rust:1.94.1-bookworm AS build
 WORKDIR /src
 COPY . .
-RUN cargo build --release -p light-knowledge
+RUN cargo build --locked --release -p light-knowledge
 
 FROM debian:bookworm-slim
 RUN apt-get update \

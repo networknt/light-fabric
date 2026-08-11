@@ -10,9 +10,9 @@ RUN apt-get update && \
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
 COPY frameworks frameworks
-COPY apps/light-deployer apps/light-deployer
+COPY apps apps
 
-RUN cargo build --release -p light-deployer
+RUN cargo build --locked --release -p light-deployer
 
 FROM debian:bookworm-slim
 RUN apt-get update && \

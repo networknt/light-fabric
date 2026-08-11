@@ -24,8 +24,8 @@ the same release version.
   opening GitHub.
 - Preserve the current `release.sh VERSION [-l|--local] [--skip-build]`
   operator workflow.
-- Release Linux binary archives and Docker images with the same version tag and
-  the same compiled Linux binaries.
+- Keep binary and Docker release commands independent initially, while allowing
+  them to converge on the same version tag and compiled Linux binaries later.
 - Support Apple Silicon and Windows binary artifacts through CI runners that
   match those operating systems.
 - Add one repo-root `build.sh` for all Docker images while preserving app-level
@@ -54,8 +54,9 @@ the same release version.
 `release.sh` currently performs these steps:
 
 1. Parse release options and target version.
-2. Build `light-agent`, `light-deployer`, `light-gateway`, and
-   `light-workflow` for Linux GNU and Linux musl targets.
+2. Build `light-agent`, `light-deployer`, `light-gateway`, `light-workflow`,
+   `light-workflow-runner`, `light-knowledge`, and `light-knowledge-worker` for
+   Linux GNU and Linux musl targets.
 3. Package the binaries into `dist/light-fabric-${VERSION}-${TARGET}.tar.gz`.
 4. If `--local` is not set, create a GitHub release or upload artifacts to an
    existing release.
@@ -69,16 +70,20 @@ Light-Fabric Linux release binaries
 When the release already exists, the script uploads artifacts but does not
 update the release notes.
 
-Docker image builds are currently handled by app-level scripts:
+Docker image builds are handled by the repo-root `build.sh`. App-level scripts
+remain as compatibility wrappers:
 
 ```text
 apps/light-agent/build.sh
 apps/light-deployer/build.sh
 apps/light-gateway/build.sh
 apps/light-workflow/build.sh
+apps/light-workflow-runner/build.sh
+apps/light-knowledge/build.sh
+apps/light-knowledge-worker/build.sh
 ```
 
-Most app scripts use this shape:
+The root script uses this shape:
 
 ```bash
 ./build.sh 0.3.0
@@ -86,13 +91,13 @@ Most app scripts use this shape:
 ./build.sh 0.3.0 --no-cache
 ```
 
-Those scripts build and optionally push `networknt/<app>:${VERSION}` and
-`networknt/<app>:latest`. `light-deployer` has a simpler custom script, so the
-app-level workflow is not completely consistent.
+It builds and optionally pushes `networknt/<app>:${VERSION}` and
+`networknt/<app>:latest` for an explicit release-app allowlist. All app-level
+entrypoints delegate to the same implementation.
 
-`release.sh` does not currently build or push Docker images. As a result,
-binary archives and Docker images can drift if they are released in separate
-manual steps or with different version strings.
+`release.sh` intentionally remains binary-only. Its version and the Docker image
+version may differ during the current transition; the future orchestrated flow
+can pass the same version to both commands.
 
 ## Options
 
@@ -200,7 +205,8 @@ all Light-Fabric app images:
 ./build.sh 0.3.0
 ./build.sh 0.3.0 --local
 ./build.sh 0.3.0 --app light-agent
-./build.sh 0.3.0 --image-org networknt --no-cache
+./build.sh 0.3.0 --app light-agent --no-cache
+./build.sh 0.3.0 --skip-latest
 ```
 
 The script should build these images by default:
@@ -210,6 +216,9 @@ networknt/light-agent:0.3.0
 networknt/light-deployer:0.3.0
 networknt/light-gateway:0.3.0
 networknt/light-workflow:0.3.0
+networknt/light-workflow-runner:0.3.0
+networknt/light-knowledge:0.3.0
+networknt/light-knowledge-worker:0.3.0
 ```
 
 Unless `--skip-latest` is set, it should also tag and push:
@@ -219,6 +228,9 @@ networknt/light-agent:latest
 networknt/light-deployer:latest
 networknt/light-gateway:latest
 networknt/light-workflow:latest
+networknt/light-workflow-runner:latest
+networknt/light-knowledge:latest
+networknt/light-knowledge-worker:latest
 ```
 
 Existing app-level build scripts should remain, but they should become thin
@@ -286,6 +298,9 @@ The generated release notes file should contain the same section body:
 - `networknt/light-deployer:0.3.0`
 - `networknt/light-gateway:0.3.0`
 - `networknt/light-workflow:0.3.0`
+- `networknt/light-workflow-runner:0.3.0`
+- `networknt/light-knowledge:0.3.0`
+- `networknt/light-knowledge-worker:0.3.0`
 ```
 
 The release notes file can include artifact names because it is used directly
@@ -303,6 +318,9 @@ networknt/light-agent:0.3.0       linux/amd64, linux/arm64
 networknt/light-deployer:0.3.0    linux/amd64, linux/arm64
 networknt/light-gateway:0.3.0     linux/amd64, linux/arm64
 networknt/light-workflow:0.3.0    linux/amd64, linux/arm64
+networknt/light-workflow-runner:0.3.0 linux/amd64, linux/arm64
+networknt/light-knowledge:0.3.0   linux/amd64, linux/arm64
+networknt/light-knowledge-worker:0.3.0 linux/amd64, linux/arm64
 ```
 
 ## Tag Range Selection
@@ -340,24 +358,21 @@ If merge commits are important for the team, the script can add a
 
 ## Release Script Flow
 
-The updated `release.sh` flow should be:
+The binary-only `release.sh` flow is:
 
 1. Parse release options.
 2. Validate build and publish dependencies.
 3. Generate release notes into `dist/release-notes-${VERSION}.md`.
-4. Build Linux binaries with the Docker release builder unless `--skip-build`
-   or `--host-build` is set.
-5. Package release archives.
-6. Build Docker images unless `--skip-docker` is set.
-7. Print generated archive names, Docker image names, and release notes path.
-8. If `--local` is set, stop before GitHub and Docker Hub publishing.
-9. If the GitHub release exists:
-   - update the release body from the generated notes file
-   - upload archives with `--clobber`
-10. If the GitHub release does not exist:
-   - create it with `--notes-file`
-   - upload archives during creation
-11. Push Docker images unless `--skip-docker` or `--local` is set.
+4. Build Linux GNU and musl binaries unless `--skip-build` is set.
+5. Package binary release archives.
+6. Print generated archive names and the release-notes path.
+7. If `--local` is set, stop before GitHub publishing.
+8. Create or update the GitHub release and upload archives with `--clobber`.
+
+Docker images are a separate operation. The repo-root `build.sh` builds all
+selected images before publishing, pushes versioned tags, and only then pushes
+`latest` tags. The binary version passed to `release.sh` and the image version
+passed to `build.sh` may differ for now.
 
 The release notes should be generated before publishing, but the changelog
 update should be explicit. A release engineer may want to review and commit
@@ -371,24 +386,12 @@ Recommended flags:
 --from TAG               override previous tag selection
 --target REF             override release notes target ref
 --include-merges         include merge commits in generated commit list
---skip-docker            release binary archives only
---docker-only            build and publish Docker images only
---skip-latest            publish VERSION image tags without updating latest
---host-build             use local cargo builds for Linux binaries instead of the Docker release builder
---app APP                restrict Docker image work to one app
---image-org ORG          Docker image namespace, default networknt
---platform PLATFORM      restrict Docker image platform, default linux/amd64,linux/arm64
---skip-macos             skip macOS binary artifacts in CI release mode
---skip-windows           skip Windows binary artifacts in CI release mode
+--skip-build             package existing binary outputs without rebuilding
+--no-target-add          do not install Rust targets automatically
+--dist DIR               write release output to a different directory
 ```
 
-`--local` should still build and package locally. It may generate release notes,
-but it should not call `gh` or push Docker images.
-
-`--docker-only` should skip binary archive packaging and GitHub release asset
-upload. It should still generate release notes by default so the same version
-context is visible in the command output. If `--local` is also set, it should
-build images locally without pushing them.
+`--local` still builds and packages locally, but it does not call `gh`.
 
 ## Automated Polyrepo Release Workflow
 
@@ -434,6 +437,9 @@ Recommended app metadata:
 | `light-deployer` | `networknt/light-deployer` | `apps/light-deployer/Dockerfile` |
 | `light-gateway` | `networknt/light-gateway` | `apps/light-gateway/docker/Dockerfile` |
 | `light-workflow` | `networknt/light-workflow` | `apps/light-workflow/docker/Dockerfile` |
+| `light-workflow-runner` | `networknt/light-workflow-runner` | `apps/light-workflow-runner/docker/Dockerfile` |
+| `light-knowledge` | `networknt/light-knowledge` | `apps/light-knowledge/docker/Dockerfile` |
+| `light-knowledge-worker` | `networknt/light-knowledge-worker` | `apps/light-knowledge-worker/docker/Dockerfile` |
 
 The Docker build context should remain the workspace root because the
 Dockerfiles copy workspace-level `Cargo.toml`, `Cargo.lock`, crates,
@@ -442,19 +448,18 @@ frameworks, and app directories.
 The script should support:
 
 ```text
-build.sh [VERSION] [-l|--local] [--no-cache] [--app APP] [--image-org ORG] [--platform PLATFORM] [--skip-latest]
+build.sh [VERSION] [-l|--local] [--no-cache] [--app APP] [--skip-latest]
 ```
 
 Default behavior:
 
-1. Build all app images for `linux/amd64` and `linux/arm64`.
-2. Tag each image as `${IMAGE_ORG}/${APP}:${VERSION}`.
-3. Tag each image as `${IMAGE_ORG}/${APP}:latest` unless `--skip-latest` is
+1. Build all explicitly configured release-app images.
+2. Tag each image as `networknt/${APP}:${VERSION}`.
+3. Tag each image as `networknt/${APP}:latest` unless `--skip-latest` is
    set.
-4. Use the Linux binaries produced by the release Docker builder instead of
-   compiling Rust again inside each runtime image build.
+4. Complete every local build before pushing any image.
 5. If `--local` is set, stop after local image builds.
-6. Otherwise push all generated tags and multi-platform manifests.
+6. Otherwise push every versioned tag, followed by every `latest` tag.
 
 The script should print the full list of image tags it built and pushed. This
 list should be available to `release.sh` so the GitHub release notes can include

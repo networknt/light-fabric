@@ -6,14 +6,15 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 chrono.workspace = true
 hmac = "0.12"
 knowledge-core = { path = "../../crates/knowledge-core" }
 knowledge-connectors = { path = "../../crates/knowledge-connectors" }
+light-runtime = { path = "../../crates/light-runtime" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde_yaml.workspace = true
 sha2.workspace = true
 sqlx = { version = "0.8", features = ["chrono", "json", "postgres", "runtime-tokio-rustls", "uuid"] }
 tokio.workspace = true

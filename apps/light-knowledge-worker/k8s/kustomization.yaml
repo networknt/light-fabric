@@ -6,3 +6,6 @@ configMapGenerator:
   - name: light-knowledge-worker-config
     files:
       - ../config/worker.yml
+      - ../config/projector.yml
+      - ../config/startup.yml
+      - ../config/server.yml

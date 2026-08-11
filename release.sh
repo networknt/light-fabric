@@ -27,6 +27,9 @@ APPS=(
   "light-deployer"
   "light-gateway"
   "light-workflow"
+  "light-workflow-runner"
+  "light-knowledge"
+  "light-knowledge-worker"
 )
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

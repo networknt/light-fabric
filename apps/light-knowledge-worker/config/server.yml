@@ -1,0 +1,12 @@
+ip: 127.0.0.1
+advertisedAddress: 127.0.0.1
+httpPort: 0
+enableHttp: false
+httpsPort: 0
+enableHttps: false
+serviceId: ${server.serviceId:com.networknt.light-knowledge-worker-1.0.0}
+enableRegistry: false
+startOnRegistryFailure: false
+dynamicPort: false
+environment: ${server.environment:dev}
+shutdownGracefulPeriod: 2000

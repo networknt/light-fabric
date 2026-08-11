@@ -48,14 +48,17 @@ To get started with the Light-Fabric, refer to the [Getting Started](docs/src/ge
 
 ## Release Binaries
 
-GitHub releases should publish the Light-Fabric app binaries for each supported
-platform target:
+`release.sh` publishes these Light-Fabric app binaries for its supported Linux
+targets. It does not build or publish Docker images:
 
 ```text
 light-agent
 light-deployer
 light-gateway
 light-workflow
+light-workflow-runner
+light-knowledge
+light-knowledge-worker
 ```
 
 Install the release targets before building:
@@ -131,6 +134,41 @@ To build and package locally without uploading to GitHub:
 ./release.sh v0.1.0 --local
 ```
 
+## Docker Images
+
+Docker images have an independent version input and are released with the
+repo-root `build.sh`. All release images use the `networknt` Docker Hub
+namespace:
+
+```text
+networknt/light-agent
+networknt/light-deployer
+networknt/light-gateway
+networknt/light-workflow
+networknt/light-workflow-runner
+networknt/light-knowledge
+networknt/light-knowledge-worker
+```
+
+Build and publish every image with one Docker tag:
+
+```bash
+./build.sh 0.3.0
+```
+
+Every image is built before publishing begins. Versioned tags are pushed first;
+`latest` tags are pushed only after all versioned tags have succeeded. For local
+validation or a single-image build:
+
+```bash
+./build.sh 0.3.0 --local
+./build.sh 0.3.0 --app light-gateway --local --no-cache
+./build.sh 0.3.0 --skip-latest
+```
+
+The app-level `build.sh` entrypoints remain available and delegate to the root
+script with their app selected.
+
 Build one target from the workspace root:
 
 ```bash
@@ -140,7 +178,10 @@ cargo build --locked --release --target "${TARGET}" \
   --bin light-agent \
   --bin light-deployer \
   --bin light-gateway \
-  --bin light-workflow
+  --bin light-workflow \
+  --bin light-workflow-runner \
+  --bin light-knowledge \
+  --bin light-knowledge-worker
 ```
 
 The binaries are written to `target/${TARGET}/release/`. Windows builds produce
@@ -158,6 +199,9 @@ cp "target/${TARGET}/release/light-agent" "dist/${ARTIFACT}/"
 cp "target/${TARGET}/release/light-deployer" "dist/${ARTIFACT}/"
 cp "target/${TARGET}/release/light-gateway" "dist/${ARTIFACT}/"
 cp "target/${TARGET}/release/light-workflow" "dist/${ARTIFACT}/"
+cp "target/${TARGET}/release/light-workflow-runner" "dist/${ARTIFACT}/"
+cp "target/${TARGET}/release/light-knowledge" "dist/${ARTIFACT}/"
+cp "target/${TARGET}/release/light-knowledge-worker" "dist/${ARTIFACT}/"
 tar -C dist -czf "dist/${ARTIFACT}.tar.gz" "${ARTIFACT}"
 ```
 
@@ -171,6 +215,9 @@ cp "target/${TARGET}/release/light-agent" "dist/${ARTIFACT}/"
 cp "target/${TARGET}/release/light-deployer" "dist/${ARTIFACT}/"
 cp "target/${TARGET}/release/light-gateway" "dist/${ARTIFACT}/"
 cp "target/${TARGET}/release/light-workflow" "dist/${ARTIFACT}/"
+cp "target/${TARGET}/release/light-workflow-runner" "dist/${ARTIFACT}/"
+cp "target/${TARGET}/release/light-knowledge" "dist/${ARTIFACT}/"
+cp "target/${TARGET}/release/light-knowledge-worker" "dist/${ARTIFACT}/"
 tar -C dist -czf "dist/${ARTIFACT}.tar.gz" "${ARTIFACT}"
 ```
 

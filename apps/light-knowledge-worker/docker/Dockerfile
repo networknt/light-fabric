@@ -1,7 +1,7 @@
-FROM rust:1.88-bookworm AS build
+FROM rust:1.94.1-bookworm AS build
 WORKDIR /src
 COPY . .
-RUN cargo build --release -p light-knowledge-worker
+RUN cargo build --locked --release -p light-knowledge-worker
 
 FROM debian:bookworm-slim
 RUN apt-get update \
@@ -16,5 +16,5 @@ COPY --from=build /src/target/release/light-knowledge-worker \
   /usr/local/bin/light-knowledge-worker
 COPY apps/light-knowledge-worker/config /etc/light-knowledge-worker
 USER 10002
-ENV LIGHT_KNOWLEDGE_WORKER_CONFIG_FILE=/etc/light-knowledge-worker/worker.yml
+ENV LIGHT_KNOWLEDGE_CONFIG_DIR=/etc/light-knowledge-worker
 ENTRYPOINT ["/usr/local/bin/light-knowledge-worker"]

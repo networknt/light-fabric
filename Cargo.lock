@@ -3949,14 +3949,15 @@ name = "light-knowledge-worker"
 version = "0.2.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "hmac",
  "knowledge-connectors",
  "knowledge-core",
+ "light-runtime",
  "reqwest",
  "serde",
  "serde_json",
- "serde_yaml",
  "sha2",
  "sqlx",
  "tempfile",

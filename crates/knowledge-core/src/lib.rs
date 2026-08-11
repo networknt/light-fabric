@@ -545,6 +545,27 @@ pub fn build_full_base(
     contract: &ProcessingContract,
     limits: &SourceLimits,
 ) -> Result<FullBaseGeneration, KnowledgeError> {
+    build_full_base_with_context(
+        knowledge_base_id,
+        snapshot_watermark,
+        documents,
+        contract,
+        limits,
+        "",
+    )
+}
+
+/// Builds a deterministic BASE generation whose identity also incorporates an
+/// immutable caller-owned context, such as the resolved source and policy
+/// snapshot. The context does not alter document or chunk identities.
+pub fn build_full_base_with_context(
+    knowledge_base_id: Uuid,
+    snapshot_watermark: u64,
+    documents: &[DocumentInput],
+    contract: &ProcessingContract,
+    limits: &SourceLimits,
+    generation_context: &str,
+) -> Result<FullBaseGeneration, KnowledgeError> {
     if documents.len() > limits.maximum_documents {
         return Err(KnowledgeError::SourceLimit("maximum_documents"));
     }
@@ -603,8 +624,13 @@ pub fn build_full_base(
         .map(|chunk| chunk.document_id)
         .collect::<BTreeSet<_>>()
         .len();
-    let generation_seed =
-        canonical_generation_seed(knowledge_base_id, snapshot_watermark, &chunks, contract);
+    let generation_seed = canonical_generation_seed(
+        knowledge_base_id,
+        snapshot_watermark,
+        &chunks,
+        contract,
+        generation_context,
+    );
     let generation_id = stable_uuid(&[b"generation", generation_seed.as_bytes()]);
     let segment_id = stable_uuid(&[b"base", generation_id.as_bytes()]);
     let manifest_digest = sha256_hex(generation_seed.as_bytes());
@@ -636,6 +662,7 @@ fn canonical_generation_seed(
     snapshot_watermark: u64,
     chunks: &[Chunk],
     contract: &ProcessingContract,
+    generation_context: &str,
 ) -> String {
     let identities = chunks
         .iter()
@@ -643,7 +670,7 @@ fn canonical_generation_seed(
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "{knowledge_base_id}\n{snapshot_watermark}\n{}\n{}\n{}\n{}\n{identities}",
+        "{knowledge_base_id}\n{snapshot_watermark}\n{}\n{}\n{}\n{}\n{generation_context}\n{identities}",
         contract.parser_digest,
         contract.chunker_digest,
         contract.lexical_digest,
@@ -1727,6 +1754,36 @@ mod tests {
         assert_eq!(first.manifest.segment_kind, "BASE");
         assert_eq!(first.manifest.vector_count, first.manifest.chunk_count);
         assert!(first.chunks.iter().all(|chunk| chunk.vector.len() == 32));
+    }
+
+    #[test]
+    fn immutable_generation_context_changes_only_generation_identity() {
+        let knowledge_base_id = Uuid::from_u128(1);
+        let first = build_full_base_with_context(
+            knowledge_base_id,
+            7,
+            &documents(),
+            &ProcessingContract::default(),
+            &SourceLimits::default(),
+            "commit-a-policy-1",
+        )
+        .unwrap();
+        let second = build_full_base_with_context(
+            knowledge_base_id,
+            7,
+            &documents(),
+            &ProcessingContract::default(),
+            &SourceLimits::default(),
+            "commit-b-policy-2",
+        )
+        .unwrap();
+        assert_ne!(first.manifest.generation_id, second.manifest.generation_id);
+        assert_ne!(first.manifest.segment_id, second.manifest.segment_id);
+        assert_ne!(
+            first.manifest.manifest_digest,
+            second.manifest.manifest_digest
+        );
+        assert_eq!(first.chunks, second.chunks);
     }
 
     #[test]

@@ -24,7 +24,7 @@ spec:
           volumeMounts:
             - {name: model-data, mountPath: /root/.ollama}
         - name: light-gateway-sidecar
-          image: ghcr.io/networknt/light-gateway:0.2.1
+          image: networknt/light-gateway:0.2.1
           ports:
             - {name: provider-tls, containerPort: 8443, protocol: TCP}
           env:
