@@ -1335,6 +1335,110 @@ fn embedding_memory_uses_admission_slots_not_deployment_concurrency() {
 }
 
 #[test]
+fn compiled_embedding_response_bound_covers_worst_case_f32_json_widening() {
+    let dimension = 2048;
+    let mut config = compiler_config();
+    configure_compiler_embedding_alias(&mut config);
+    let alias = config.aliases.get_mut("public-model").unwrap();
+    alias.required_capabilities.embedding_space = Some(embedding_space(dimension));
+    let embedding = config
+        .deployments
+        .get_mut("d")
+        .unwrap()
+        .embedding_capabilities
+        .as_mut()
+        .unwrap();
+    embedding.max_batch_items = 1;
+    embedding.max_aggregate_input_tokens = embedding.max_input_tokens_per_item;
+    embedding.supported_dimensions = BTreeSet::from([dimension]);
+    embedding.max_response_bytes = 16 * 1024 * 1024;
+    embedding.space = Some(embedding_space(dimension));
+
+    let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
+        "secret".to_string(),
+        "value".to_string(),
+    )]))));
+    let snapshot = compiler.compile(&config, 1, None).unwrap();
+
+    // Match the HTTP response path: f32 values are first stored in Value and
+    // then the complete response Value is serialized. This value widens to the
+    // proven maximum 24 rendered bytes, plus a comma between array elements.
+    let worst_case = -1.0000006e-5_f32;
+    assert_eq!(
+        serde_json::to_string(&serde_json::Value::from(worst_case as f64))
+            .unwrap()
+            .len(),
+        24
+    );
+    let embedding = serde_json::json!(vec![worst_case; dimension as usize]);
+    let data = vec![serde_json::json!({
+        "object": "embedding",
+        "embedding": embedding,
+        "index": 0
+    })];
+    let body = serde_json::to_vec(&serde_json::json!({
+        "object": "list",
+        "data": data,
+        "model": "public-model",
+        "usage": {"prompt_tokens": 1, "total_tokens": 1}
+    }))
+    .unwrap();
+    let former_bound = dimension as usize * 17 + 128 + 4096;
+
+    assert!(
+        body.len() > former_bound,
+        "fixture must reproduce the former undercount: {} <= {former_bound}",
+        body.len()
+    );
+    assert!(
+        body.len() <= snapshot.embedding_memory.max_rendered_response_bytes,
+        "rendered response {} exceeds compiled bound {}",
+        body.len(),
+        snapshot.embedding_memory.max_rendered_response_bytes
+    );
+}
+
+#[test]
+fn compiled_embedding_response_bound_covers_rendered_alias_name() {
+    let alias_name = "alias".repeat(1024);
+    let mut config = compiler_config();
+    configure_compiler_embedding_alias(&mut config);
+    let alias = config.aliases.remove("public-model").unwrap();
+    config.aliases.insert(alias_name.clone(), alias);
+
+    let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
+        "secret".to_string(),
+        "value".to_string(),
+    )]))));
+    let snapshot = compiler.compile(&config, 1, None).unwrap();
+
+    let data = vec![serde_json::json!({
+        "object": "embedding",
+        "embedding": [0.1_f32, 0.2_f32],
+        "index": 0
+    })];
+    let body = serde_json::to_vec(&serde_json::json!({
+        "object": "list",
+        "data": data,
+        "model": alias_name,
+        "usage": {"prompt_tokens": 1, "total_tokens": 1}
+    }))
+    .unwrap();
+
+    let fixed_envelope_bound = 2 * 25 + 128 + 4096;
+    assert!(
+        body.len() > fixed_envelope_bound,
+        "fixture must exceed the fixed envelope"
+    );
+    assert!(
+        body.len() <= snapshot.embedding_memory.max_rendered_response_bytes,
+        "rendered response {} exceeds compiled bound {}",
+        body.len(),
+        snapshot.embedding_memory.max_rendered_response_bytes
+    );
+}
+
+#[test]
 fn compiler_rejects_embedding_batch_weight_above_deployment_capacity() {
     let mut config = compiler_config();
     config.providers.get_mut("p").unwrap().provider_protocol = ProviderProtocol::OpenAiEmbeddings;

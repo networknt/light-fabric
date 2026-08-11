@@ -36,6 +36,11 @@ use tokio::sync::Semaphore;
 // per-attempt clone, and serialization scratch while dispatch is prepared.
 const EMBEDDING_REPLAY_RESIDENT_COPIES: usize = 3;
 
+// Embedding vectors are first converted to serde_json::Value and then rendered.
+// With the pinned serde_json renderer, an f32 widened to f64 needs at most 24
+// bytes, plus one byte for its comma delimiter.
+const EMBEDDING_RENDERED_F32_JSON_BYTES: usize = 25;
+
 #[derive(Debug, Default)]
 pub struct CompileProbe {
     pub secret_resolutions: AtomicU64,
@@ -1145,10 +1150,27 @@ fn compile_embedding_memory_bounds(
     let vector_overhead = checked_mul(max_batch_items, 64, "canonical vector overhead")?;
     let max_canonical_vector_bytes =
         checked_add(vector_values, vector_overhead, "canonical vector bound")?;
-    let rendered_values = checked_mul(vector_items, 17, "rendered float JSON bytes")?;
+    let rendered_values = checked_mul(
+        vector_items,
+        EMBEDDING_RENDERED_F32_JSON_BYTES,
+        "rendered float JSON bytes",
+    )?;
+    let max_rendered_alias_bytes = config
+        .aliases
+        .iter()
+        .filter(|(_, alias)| alias.operations.contains(&Operation::Embed))
+        .try_fold(0_usize, |current, (name, _)| {
+            serde_json::to_vec(name)
+                .map(|rendered| current.max(rendered.len()))
+                .map_err(|_| {
+                    LlmGatewayError::Config(
+                        "embedding alias JSON length calculation failed".to_string(),
+                    )
+                })
+        })?;
     let rendered_overhead = checked_add(
         checked_mul(max_batch_items, 128, "rendered item overhead")?,
-        4096,
+        checked_add(4096, max_rendered_alias_bytes, "rendered alias name")?,
         "rendered envelope",
     )?;
     let max_rendered_response_bytes = checked_add(
