@@ -1,0 +1,731 @@
+openapi: 3.0.3
+info:
+  title: Light Knowledge API
+  version: 0.2.1
+  description: >-
+    Retrieval, citation resolution, upload, and MCP API for authorized Knowledge
+    Bases. Protected operations require a short-lived light-knowledge delegation
+    token whose host, agent, environment, policy, and data-boundary claims are
+    validated by the service.
+servers:
+  - url: http://localhost:8092
+    description: Repository default HTTP listener
+tags:
+  - name: Operations
+  - name: Knowledge
+  - name: Uploads
+  - name: MCP
+paths:
+  /health:
+    get:
+      tags: [Operations]
+      operationId: getKnowledgeHealth
+      summary: Check process health
+      security: []
+      responses:
+        "200":
+          description: The process is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /ready:
+    get:
+      tags: [Operations]
+      operationId: getKnowledgeReadiness
+      summary: Check service readiness
+      description: >-
+        Reports whether the database is reachable and an unexpired projection
+        lease exists.
+      security: []
+      responses:
+        "200":
+          description: The service is ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+        "503":
+          description: The database or projection lease is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+  /metrics:
+    get:
+      tags: [Operations]
+      operationId: getKnowledgeMetrics
+      summary: Get Prometheus metrics
+      security: []
+      responses:
+        "200":
+          description: Prometheus text exposition data.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /v1/knowledge/retrieve:
+    post:
+      tags: [Knowledge]
+      operationId: retrieveKnowledge
+      summary: Search authorized Knowledge Bases
+      description: >-
+        Searches the Knowledge Bases assigned to the delegated agent. Explicit
+        knowledgeBaseIds and filters can only narrow the trusted authorization
+        projection; they cannot broaden access.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetrieveRequest"
+      responses:
+        "200":
+          description: A single- or multi-Knowledge-Base search result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeSearchResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/UnsupportedContract"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+  /v1/knowledge/uploads:
+    post:
+      tags: [Uploads]
+      operationId: uploadKnowledgeDocument
+      summary: Stage a Knowledge document upload
+      description: >-
+        Stages an authorized UTF-8 plain-text, Markdown, or HTML document and
+        queues it for ingestion. The configured feature flag must enable uploads.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/KnowledgeBaseId"
+        - $ref: "#/components/parameters/KnowledgeSourceId"
+        - $ref: "#/components/parameters/UploadFilename"
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema:
+              type: string
+          text/markdown:
+            schema:
+              type: string
+          text/html:
+            schema:
+              type: string
+      responses:
+        "202":
+          description: >-
+            The upload was accepted. lifecycleState indicates whether it was
+            verified for ingestion or rejected by content validation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadAcceptedResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/UnsupportedContract"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/knowledge/documents/{document_id}/versions/{document_version_id}:
+    get:
+      tags: [Knowledge]
+      operationId: getKnowledgeDocumentVersion
+      summary: Get an authorized document version
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/DocumentId"
+        - $ref: "#/components/parameters/DocumentVersionId"
+        - $ref: "#/components/parameters/KnowledgeBaseId"
+      responses:
+        "200":
+          description: The requested document version and its ordered chunks.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentVersionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/knowledge/documents/{document_id}/passages/{passage_anchor_id}:
+    get:
+      tags: [Knowledge]
+      operationId: resolveKnowledgePassageAnchor
+      summary: Resolve an authorized passage anchor
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/DocumentId"
+        - $ref: "#/components/parameters/PassageAnchorId"
+        - $ref: "#/components/parameters/KnowledgeBaseId"
+      responses:
+        "200":
+          description: The current document version and chunk for the passage.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PassageAnchorResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /mcp:
+    post:
+      tags: [MCP]
+      operationId: invokeKnowledgeMcp
+      summary: Send an MCP JSON-RPC message
+      description: >-
+        Handles initialize, tools/list, and tools/call for knowledge.search and
+        knowledge.get_document. Tool calls also require x-request-id where the
+        selected tool performs a search.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OptionalRequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/McpRequest"
+      responses:
+        "200":
+          description: MCP JSON-RPC result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/McpResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/UnsupportedContract"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Short-lived delegation token issued for light-knowledge. The token is
+        bound to the consumer host, agent, environment, policy digest, data
+        boundary, destination, and operation kind.
+  parameters:
+    RequestId:
+      name: x-request-id
+      in: header
+      required: true
+      description: Non-empty request identifier used for admission and audit.
+      schema:
+        type: string
+    OptionalRequestId:
+      name: x-request-id
+      in: header
+      required: false
+      description: Required by knowledge.search tool calls.
+      schema:
+        type: string
+    KnowledgeBaseId:
+      name: x-knowledge-base-id
+      in: header
+      required: true
+      description: Authorized Knowledge Base UUID.
+      schema:
+        type: string
+        format: uuid
+    KnowledgeSourceId:
+      name: x-knowledge-source-id
+      in: header
+      required: true
+      description: Active UPLOAD source UUID belonging to the Knowledge Base.
+      schema:
+        type: string
+        format: uuid
+    UploadFilename:
+      name: x-upload-filename
+      in: header
+      required: true
+      description: Original filename, limited to 512 characters.
+      schema:
+        type: string
+        maxLength: 512
+    DocumentId:
+      name: document_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    DocumentVersionId:
+      name: document_version_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    PassageAnchorId:
+      name: passage_anchor_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status]
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [healthy]
+    ReadinessResponse:
+      type: object
+      required: [ready, database, projectionLease]
+      additionalProperties: false
+      properties:
+        ready:
+          type: boolean
+        database:
+          type: boolean
+        projectionLease:
+          type: boolean
+    RetrieveRequest:
+      type: object
+      required: [query]
+      additionalProperties: false
+      properties:
+        knowledgeBaseIds:
+          type: array
+          maxItems: 4
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+          default: []
+        query:
+          type: string
+          minLength: 1
+          maxLength: 8192
+        topK:
+          type: integer
+          minimum: 0
+          maximum: 20
+          default: 0
+          description: Zero selects the configured retrieval-profile value.
+        filters:
+          $ref: "#/components/schemas/RetrievalFilters"
+    RetrievalFilters:
+      type: object
+      additionalProperties: false
+      properties:
+        sourceIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          default: []
+        languages:
+          type: array
+          items:
+            type: string
+          default: []
+    KnowledgeSearchResponse:
+      oneOf:
+        - $ref: "#/components/schemas/RetrievalResponse"
+        - $ref: "#/components/schemas/MultiKnowledgeBaseResponse"
+    RetrievalResponse:
+      type: object
+      required: [knowledgeBaseId, generationId, strategy, noAnswer, results]
+      additionalProperties: false
+      properties:
+        knowledgeBaseId:
+          type: string
+          format: uuid
+        generationId:
+          type: string
+          format: uuid
+        strategy:
+          type: string
+        noAnswer:
+          type: boolean
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/RetrievalHit"
+    RetrievalHit:
+      type: object
+      required:
+        - chunkId
+        - text
+        - fusedScore
+        - lexicalRank
+        - vectorRank
+        - citation
+      additionalProperties: false
+      properties:
+        chunkId:
+          type: string
+          format: uuid
+        text:
+          type: string
+        fusedScore:
+          type: number
+          format: double
+        lexicalRank:
+          type: integer
+          minimum: 0
+          nullable: true
+        vectorRank:
+          type: integer
+          minimum: 0
+          nullable: true
+        pathRetrievalScore:
+          type: number
+          format: double
+        citation:
+          $ref: "#/components/schemas/Citation"
+    Citation:
+      type: object
+      required:
+        - chunkId
+        - documentId
+        - documentVersionId
+        - canonicalUri
+        - sourceVersion
+        - sectionPath
+        - startOffset
+        - endOffset
+        - contentDigest
+      additionalProperties: false
+      properties:
+        chunkId:
+          type: string
+          format: uuid
+        documentId:
+          type: string
+          format: uuid
+        documentVersionId:
+          type: string
+          format: uuid
+        canonicalUri:
+          type: string
+          format: uri
+        sourceVersion:
+          type: string
+        sectionPath:
+          type: array
+          items:
+            type: string
+        startOffset:
+          type: integer
+          format: int64
+          minimum: 0
+        endOffset:
+          type: integer
+          format: int64
+          minimum: 0
+        contentDigest:
+          type: string
+    MultiKnowledgeBaseResponse:
+      type: object
+      required:
+        - status
+        - disposition
+        - knowledgeBaseIds
+        - embeddingGroupCount
+        - warnings
+        - exclusions
+        - results
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [COMPLETE, PARTIAL]
+        disposition:
+          type: string
+        knowledgeBaseIds:
+          type: array
+          maxItems: 4
+          items:
+            type: string
+            format: uuid
+        embeddingGroupCount:
+          type: integer
+          minimum: 0
+        warnings:
+          type: array
+          items:
+            type: string
+        exclusions:
+          type: array
+          items:
+            type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/MultiKnowledgeBaseHit"
+    MultiKnowledgeBaseHit:
+      type: object
+      required:
+        - knowledgeBaseId
+        - generationId
+        - localRank
+        - crossKnowledgeBaseScore
+        - hit
+      additionalProperties: false
+      properties:
+        knowledgeBaseId:
+          type: string
+          format: uuid
+        generationId:
+          type: string
+          format: uuid
+        localRank:
+          type: integer
+          minimum: 0
+        crossKnowledgeBaseScore:
+          type: number
+          format: double
+        hit:
+          $ref: "#/components/schemas/RetrievalHit"
+    UploadAcceptedResponse:
+      type: object
+      required: [uploadId, lifecycleState, stagedDigest]
+      additionalProperties: false
+      properties:
+        uploadId:
+          type: string
+          format: uuid
+        lifecycleState:
+          type: string
+          enum: [VERIFIED, REJECTED]
+        stagedDigest:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+    DocumentVersionResponse:
+      type: object
+      required: [documentVersionId, chunks]
+      additionalProperties: false
+      properties:
+        documentVersionId:
+          type: string
+          format: uuid
+        chunks:
+          type: array
+          items:
+            $ref: "#/components/schemas/DocumentChunk"
+    DocumentChunk:
+      type: object
+      required:
+        - chunkId
+        - ordinal
+        - sectionPath
+        - startOffset
+        - endOffset
+        - text
+        - contentDigest
+      additionalProperties: false
+      properties:
+        chunkId:
+          type: string
+          format: uuid
+        ordinal:
+          type: integer
+          format: int32
+          minimum: 0
+        sectionPath:
+          type: array
+          items:
+            type: string
+        startOffset:
+          type: integer
+          format: int64
+          minimum: 0
+        endOffset:
+          type: integer
+          format: int64
+          minimum: 0
+        text:
+          type: string
+        contentDigest:
+          type: string
+    PassageAnchorResponse:
+      type: object
+      required:
+        - passageAnchorId
+        - documentVersionId
+        - chunkId
+        - continuityState
+      additionalProperties: false
+      properties:
+        passageAnchorId:
+          type: string
+          format: uuid
+        documentVersionId:
+          type: string
+          format: uuid
+        chunkId:
+          type: string
+          format: uuid
+        continuityState:
+          type: string
+    McpRequest:
+      type: object
+      required: [jsonrpc, method]
+      additionalProperties: false
+      properties:
+        jsonrpc:
+          type: string
+          enum: ["2.0"]
+        id:
+          nullable: true
+        method:
+          type: string
+          enum: [initialize, tools/list, tools/call]
+        params:
+          type: object
+          additionalProperties: true
+    McpResponse:
+      type: object
+      required: [jsonrpc, id, result]
+      additionalProperties: false
+      properties:
+        jsonrpc:
+          type: string
+          enum: ["2.0"]
+        id:
+          nullable: true
+        result:
+          type: object
+          additionalProperties: true
+    ErrorResponse:
+      type: object
+      required: [code]
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          example: KNOWLEDGE_INVALID_REQUEST
+  responses:
+    BadRequest:
+      description: The request body, path value, or required header is invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: The delegation bearer token is missing or invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: The delegation binding or Knowledge authorization denies access.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: The requested tool, document, version, or passage was not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Conflict:
+      description: The passage anchor cannot be resolved unambiguously.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    PayloadTooLarge:
+      description: The request exceeds the configured service body limit.
+    UnsupportedContract:
+      description: The requested feature or media type is not supported.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    TooManyRequests:
+      description: The Knowledge query quota is exhausted.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalServerError:
+      description: The service could not produce a valid response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ServiceUnavailable:
+      description: A dependency, projection, or active generation is unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    GatewayTimeout:
+      description: Knowledge retrieval exceeded the configured deadline.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
