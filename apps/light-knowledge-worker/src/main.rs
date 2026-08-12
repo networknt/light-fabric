@@ -21,6 +21,7 @@ use knowledge_core::{
     build_full_base_with_context, classify_corpus_changes, compact_resolved_generation,
     ingest_markdown_repository, sha256_hex,
 };
+use light_client::load_ca_cert_bundle;
 use light_runtime::{
     BoundTransport, LightRuntimeBuilder, RuntimeConfig, RuntimeError, TransportRuntime,
 };
@@ -73,6 +74,10 @@ struct WorkerConfig {
     embedding_gateway_url: Option<String>,
     #[serde(default)]
     embedding_authorization_file: Option<PathBuf>,
+    #[serde(default)]
+    embedding_gateway_ca_cert_file: Option<PathBuf>,
+    #[serde(default = "default_true")]
+    embedding_gateway_verify_hostname: bool,
     #[serde(default = "default_embedding_alias")]
     embedding_alias: String,
     #[serde(default = "default_embedding_batch_size")]
@@ -254,6 +259,10 @@ impl WorkerConfig {
                     || self.embedding_space_id.trim().is_empty()
                     || self.embedding_alias.trim().is_empty()
                     || (self.deterministic_pilot && self.embedding_gateway_url.is_some())
+                    || self
+                        .embedding_gateway_ca_cert_file
+                        .as_ref()
+                        .is_some_and(|path| !path.is_file())
                     || (self.migration_deterministic_pilot && !self.deterministic_pilot)))
             || (!projector_mode
                 && !self.deterministic_pilot
@@ -343,6 +352,29 @@ fn default_embedding_space_revision() -> u64 {
 }
 fn default_embedding_dimension() -> usize {
     knowledge_core::FAKE_DIMENSION
+}
+
+fn embedding_http_client(config: &WorkerConfig) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30));
+    if let Some(path) = &config.embedding_gateway_ca_cert_file {
+        for certificate in load_ca_cert_bundle(path)
+            .with_context(|| format!("load embedding gateway CA bundle {}", path.display()))?
+        {
+            builder = builder.add_root_certificate(certificate);
+        }
+    }
+    if !config.embedding_gateway_verify_hostname {
+        tracing::warn!(
+            "embedding gateway hostname verification is disabled by local runtime configuration"
+        );
+        builder = builder.danger_accept_invalid_hostnames(true);
+    }
+    builder
+        .build()
+        .context("build embedding gateway HTTP client")
 }
 
 #[derive(Debug, Deserialize)]
@@ -1997,11 +2029,7 @@ async fn embed_migration_texts(
             .as_ref()
             .context("migration embedding requires embeddingAuthorizationFile")?,
     )?;
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(30))
-        .build()?;
+    let client = embedding_http_client(config)?;
     let mut pending = vec![(0usize, texts.len())];
     let mut vectors = vec![None; texts.len()];
     let mut billed_cost_micros = 0i64;
@@ -6177,11 +6205,7 @@ async fn apply_configured_embeddings(
             .as_ref()
             .context("protected embedding mode requires embeddingAuthorizationFile")?,
     )?;
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(30))
-        .build()?;
+    let client = embedding_http_client(config)?;
     let mut pending = embedding_batches(
         &generation.chunks,
         config.embedding_batch_size,
@@ -7898,6 +7922,26 @@ mod tests {
         )
         .unwrap();
         (directory, config, generation)
+    }
+
+    #[test]
+    fn embedding_tls_is_secure_by_default_and_rejects_an_unreadable_ca_bundle() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = serde_json::from_value::<WorkerConfig>(json!({
+            "version": 1,
+            "heartbeatSecretFile": directory.path().join("heartbeat"),
+            "projectorId": "test"
+        }))
+        .unwrap();
+        assert!(config.embedding_gateway_verify_hostname);
+
+        let missing_ca = directory.path().join("missing-ca.pem");
+        config.embedding_gateway_ca_cert_file = Some(missing_ca.clone());
+        let error = embedding_http_client(&config).unwrap_err();
+        assert!(error.to_string().contains(&format!(
+            "load embedding gateway CA bundle {}",
+            missing_ca.display()
+        )));
     }
 
     fn resolved_source(

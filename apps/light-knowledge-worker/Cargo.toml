@@ -11,6 +11,7 @@ chrono.workspace = true
 hmac = "0.12"
 knowledge-core = { path = "../../crates/knowledge-core" }
 knowledge-connectors = { path = "../../crates/knowledge-connectors" }
+light-client = { path = "../../crates/light-client" }
 light-runtime = { path = "../../crates/light-runtime" }
 reqwest.workspace = true
 serde.workspace = true

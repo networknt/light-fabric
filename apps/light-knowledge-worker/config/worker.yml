@@ -11,6 +11,10 @@ deterministicPilot: true
 migrationDeterministicPilot: false
 embeddingAlias: kb-index
 embeddingBatchSize: 32
+# Production deployments may add their private CA bundle here. Hostname
+# verification remains enabled by default and requires a matching DNS SAN.
+# embeddingGatewayCaCertFile: /keystore/ca.pem
+# embeddingGatewayVerifyHostname: true
 embeddingMigrationEnabled: false
 productionOperationsEnabled: false
 graphAssistedEnabled: false

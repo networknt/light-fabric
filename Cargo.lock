@@ -3954,6 +3954,7 @@ dependencies = [
  "hmac",
  "knowledge-connectors",
  "knowledge-core",
+ "light-client",
  "light-runtime",
  "reqwest",
  "serde",
