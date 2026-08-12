@@ -129,44 +129,44 @@ impl MultiThreadRuleExecutor {
         };
 
         let crate::models::EndpointConfig::Map(map) = endpoint_config;
-        if let Some(rule_ids_val) = map.get(rule_type) {
-            if let Some(rule_ids_arr) = rule_ids_val.as_array() {
-                let rule_ids: Vec<String> = rule_ids_arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect();
+        if let Some(rule_ids_val) = map.get(rule_type)
+            && let Some(rule_ids_arr) = rule_ids_val.as_array()
+        {
+            let rule_ids: Vec<String> = rule_ids_arr
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect();
 
-                // Apply permissions if present
-                let perm_val = match map.get("permission") {
-                    Some(perm) => perm.clone(),
-                    None => Value::Object(serde_json::Map::new()),
-                };
-                if let Value::Object(perm_map) = &perm_val {
-                    if let Value::Object(input_map) = input {
-                        for (k, v) in perm_map {
-                            if is_reserved_rule_context_key(k) {
-                                warn!(
-                                    permission_key = k.as_str(),
-                                    "Skipping permission key that collides with a reserved rule-context field"
-                                );
-                                continue;
-                            }
-                            input_map.insert(k.clone(), v.clone());
-                        }
+            // Apply permissions if present
+            let perm_val = match map.get("permission") {
+                Some(perm) => perm.clone(),
+                None => Value::Object(serde_json::Map::new()),
+            };
+            if let Value::Object(perm_map) = &perm_val
+                && let Value::Object(input_map) = input
+            {
+                for (k, v) in perm_map {
+                    if is_reserved_rule_context_key(k) {
+                        warn!(
+                            permission_key = k.as_str(),
+                            "Skipping permission key that collides with a reserved rule-context field"
+                        );
+                        continue;
                     }
+                    input_map.insert(k.clone(), v.clone());
                 }
-                if let Value::Object(input_map) = input {
-                    input_map.insert("permission".to_string(), perm_val);
-                }
-
-                let logic = if rule_type == "req-tra" || rule_type == "res-tra" {
-                    "all"
-                } else {
-                    "parallel"
-                };
-
-                return self.execute_rules(&rule_ids, logic, input).await;
             }
+            if let Value::Object(input_map) = input {
+                input_map.insert("permission".to_string(), perm_val);
+            }
+
+            let logic = if rule_type == "req-tra" || rule_type == "res-tra" {
+                "all"
+            } else {
+                "parallel"
+            };
+
+            return self.execute_rules(&rule_ids, logic, input).await;
         }
 
         Ok(true)

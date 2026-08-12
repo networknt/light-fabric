@@ -6,6 +6,10 @@ maxRequestBodyBytes: ${mcp-router.maxRequestBodyBytes:1048576}
 maxResponseBodyBytes: ${mcp-router.maxResponseBodyBytes:4194304}
 maxJsonDepth: ${mcp-router.maxJsonDepth:128}
 originAllowlist: ${mcp-router.originAllowlist:[]}
+workflow:
+  invocationUrl: ${mcp-router.workflow.invocationUrl:}
+  bearerTokenEnv: ${mcp-router.workflow.bearerTokenEnv:WORKFLOW_INVOCATION_BEARER_TOKEN}
+  permitPools: ${mcp-router.workflow.permitPools:[64, 32]}
 schema:
   defaultDialect: ${mcp-router.schema.defaultDialect:https://json-schema.org/draft/2020-12/schema}
   allowExternalRefs: ${mcp-router.schema.allowExternalRefs:false}

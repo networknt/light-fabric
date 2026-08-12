@@ -1637,6 +1637,8 @@ mod tests {
             method: Default::default(),
             endpoint: None,
             api_type: Default::default(),
+            execution_placement: Default::default(),
+            workflow_binding: None,
             backend_mcp_protocol: None,
             session_independent: false,
             backend_credential_mode: None,

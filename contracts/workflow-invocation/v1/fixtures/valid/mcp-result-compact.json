@@ -1,0 +1,13 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"offerId\":\"offer-7\",\"score\":91}"
+    }
+  ],
+  "structuredContent": {
+    "offerId": "offer-7",
+    "score": 91
+  },
+  "isError": false
+}

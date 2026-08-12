@@ -50,6 +50,16 @@ pub struct DelegationClaims {
     pub tool_ref: Option<Uuid>,
     pub tool_alias: Option<String>,
     pub destination: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_invocation_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_permit_depth: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_execution_class: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_budget_ledger_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_budget_generation: Option<u64>,
     pub data_boundary_digest: String,
     pub policy_digest: String,
     pub replay_id: Uuid,
@@ -270,6 +280,11 @@ mod tests {
             tool_ref: (kind == DelegationKind::ToolCall).then(Uuid::now_v7),
             tool_alias: (kind == DelegationKind::ToolCall).then(|| "read".into()),
             destination: None,
+            workflow_invocation_id: None,
+            workflow_permit_depth: None,
+            workflow_execution_class: None,
+            workflow_budget_ledger_id: None,
+            workflow_budget_generation: None,
             data_boundary_digest: "sha256:boundary".into(),
             policy_digest: "sha256:policy".into(),
             replay_id: Uuid::now_v7(),

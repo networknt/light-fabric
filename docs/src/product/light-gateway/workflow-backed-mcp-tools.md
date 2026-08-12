@@ -1,6 +1,30 @@
 # Workflow-Backed MCP Tools
 
-Status: Proposed
+Status: Development implementation; runtime qualification incomplete
+
+This repository is still in development. The workflow-backed MCP path has not
+been exercised against a live workflow deployment, so none of the phase gate
+scripts or unit-test results constitute production qualification. The current
+implementation intentionally targets one clean contract; migration adapters,
+legacy binding formats, and backward-compatibility rollout procedures are out
+of scope until the runtime behavior is proven.
+
+## Implementation And Qualification Status
+
+| Area | Implementation | Qualification |
+|------|----------------|---------------|
+| Phase 0 contracts, canonicalization, and threat-model fixtures | Implemented | Unit/fixture and disposable PostgreSQL contract checks pass; latency evidence not run. |
+| Phase 1 synchronous gateway/workflow path | Implemented | Rust tests pass; no deployed end-to-end workflow or concurrency/fairness evidence. |
+| Phase 2 asynchronous, effect, cancellation, and compensation path | Implemented | Component tests pass; no live side-effect or recovery exercise. |
+| Phase 3 AI-assisted draft authoring | Implemented | Java/UI checks pass; no production model or reviewer workflow qualification. |
+| Phase 4 optional skill binding | Implemented | Component and disposable PostgreSQL constraint checks pass; no live agent/catalog exercise. |
+| Runtime promotion | Disabled | Remains disabled until the numeric Phase 0/1 qualification evidence is recorded. |
+
+Requirements are indexed by their owning sections: binding and runtime fields
+under **Tool Contract** and **Invocation Contract**; error classes under
+**Failure Mapping**; security controls under **Authorization**, **Delegation**,
+and **Destination Safety**; and verification requirements under each phase's
+**Exit gates**.
 
 This document defines how `light-gateway` should expose an orchestration as an
 ordinary MCP tool while `light-workflow` owns the durable multi-step execution.
@@ -481,9 +505,13 @@ distinct event type, or make its handler explicitly recognize a pre-created
 instance, so it cannot start a duplicate workflow.
 
 Event consumers still require poison-event isolation for non-start
-projections. After a bounded retry policy, a permanently invalid event is
-recorded in a tenant/partition-scoped quarantine with its offset, error, and
-payload digest in the same transaction that advances the consumer offset. The
+projections. Deterministic parse, schema, and contract failures are poison and
+are quarantined without immediate same-transaction retries. Retryable database
+and transport failures roll back the claimed batch and use the consumer's
+outer reconnect backoff; they must never consume poison attempts or block an
+aggregate in quarantine. A permanently invalid event is recorded in a
+tenant/partition-scoped quarantine with its offset, error, and payload digest
+in the same transaction that advances the consumer offset. The
 quarantine or deferred-event store also retains the encrypted replayable
 payload, or a durable immutable payload reference, plus every source offset and
 aggregate version needed to reconstruct order. If replay depends on
@@ -521,6 +549,11 @@ must not change its state. The effective server wait is the minimum of the
 published `sync_wait_ms`, the service-side long-poll cap, and the remaining
 workflow deadline. A timeout returns the latest state and instance ID; it does
 not imply cancellation or failed acceptance.
+
+The invocation service bounds dedicated PostgreSQL `LISTEN` connections with
+`WORKFLOW_WAIT_LISTENER_CONNECTIONS` (default 8). Additional waiters use short
+durable status polling, so synchronous permit capacity cannot translate into
+an unbounded database-connection count.
 
 ### Public Result
 
@@ -619,7 +652,10 @@ usage reconciles a bounded reservation by idempotent, fenced updates so a
 crash or duplicate completion cannot release or consume it twice. Fork/join
 may instead pre-split non-overlapping child reservations, but copied tokens
 must never create additional budget. Retries consume the same invocation
-ledger rather than resetting the envelope.
+ledger rather than resetting the envelope. Request, intermediate, and result
+byte ceilings remain distinct: both
+gateway and invocation service enforce request bytes, the executor consumes
+intermediate bytes, and public-result construction enforces result bytes.
 
 The first profile should allow deterministic API/MCP/rule calls, `set`,
 `switch`, and `assert`. It should reject human `ask` tasks, unbounded model
@@ -774,6 +810,12 @@ authorization policy. Result rendering applies the more restrictive
 intersection of that current decision and the stored classification/filter
 snapshot. A user who has lost access is denied; a later policy change cannot
 broaden what the accepted instance was allowed to disclose.
+
+Token refresh must not revoke an otherwise unchanged lifecycle identity. The
+gateway therefore hashes stable authorization and data-boundary claims while
+excluding volatile JWT lifecycle fields such as `exp`, `iat`, `nbf`, `jti`,
+and `nonce`. A change to roles, scopes, tenant, subject, or any other retained
+boundary claim changes the digest and fails closed.
 
 Expose the three lifecycle tools when the authenticated caller's tenant has at
 least one active asynchronous composite tool or the caller can access an
@@ -1031,6 +1073,7 @@ schema-valid tool results. Technical failures produce `isError: true` and a
 stable machine-readable class such as:
 
 ```text
+WORKFLOW_INPUT_INVALID
 WORKFLOW_START_REJECTED
 WORKFLOW_DEFINITION_MISMATCH
 WORKFLOW_TIMEOUT
@@ -1673,17 +1716,49 @@ Exit gates:
 
 Run `scripts/run-workflow-mcp-phase3-gates.sh` from `light-fabric` to execute
 the existing Phase 2 runtime gates plus the authoring-service tests, Portal
-review tests, lint checks for the Phase 3 UI, and a production Portal build.
+review tests, lint checks for the Phase 3 UI, and a release-mode Portal build.
+This is an implementation check, not production qualification.
 
 ### Phase 4: Optional Skill Integration
 
 Owners: Portal skill registry and agent catalog.
 
-- Link workflow-backed tools to skills for richer guidance and progressive
-  disclosure.
-- Keep direct MCP discovery available for customers that do not use skills.
-- Ensure skill and tool references resolve to the same workflow version and
-  contract digest.
+- `skill_workflow_t` may carry `workflow_binding_id` and the binding-derived
+  `workflow_tool_id`. Both are nullable so ordinary skill/workflow links remain
+  valid, but they must either both be absent or both be present.
+- A composite foreign key binds the skill link to the exact
+  `(host, binding, workflow, tool)` tuple. A second foreign key requires that
+  exact tool to be present in `skill_tool_t`, so progressive disclosure cannot
+  advertise a capability the skill was not granted.
+- Portal lists only active workflow-backed bindings whose workflow matches the
+  selected definition and whose current tool schema digest matches the pinned
+  binding digest. The command service derives `workflow_tool_id` from the
+  trusted binding; browsers cannot supply it.
+- Query and effective-agent-catalog responses include the tool name, bound
+  workflow version, definition digest, and schema digest. The Skill Workspace
+  validates these invariants and renders the resolved contract for reviewers.
+- Direct MCP discovery remains independent: `workflow_tool_binding_t` has no
+  foreign key to a skill, and a published binding with no skill link continues
+  to be projected and invoked normally.
+
+Exit gates:
+
+- a linked skill, tool, binding, and workflow resolve to one exact pinned
+  contract;
+- a mismatched workflow or a tool absent from `skill_tool_t` is rejected by
+  database constraints and command validation;
+- a workflow-backed MCP tool without a skill link remains valid and directly
+  discoverable;
+- create/update and validation RPC schemas expose the optional binding without
+  accepting a caller-selected tool id; and
+- Portal exposes the optional selector and the resolved version/digests.
+
+Run `scripts/run-workflow-mcp-phase4-gates.sh` from `light-fabric` to execute
+the prior runtime/authoring gates, the Portal database schema/constraint gate
+when a disposable PostgreSQL URL is supplied, Portal persistence and GenAI
+command/query tests, and the Portal UI lint/build checks. The development
+contract does not include legacy-data migration or backward-compatibility
+validation.
 
 ## Acceptance Criteria
 

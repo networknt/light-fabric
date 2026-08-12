@@ -1,0 +1,39 @@
+{
+  "eventVersion": 1,
+  "eventId": "0198a536-36d8-7a31-a7bd-42b3ee7f0101",
+  "occurredAt": "2099-08-12T20:00:00Z",
+  "binding": {
+    "contractVersion": 1,
+    "bindingId": "0198a536-36d8-7a31-a7bd-42b3ee7f0102",
+    "hostId": "0198a536-36d8-7a31-a7bd-42b3ee7f0103",
+    "stableToolRef": "0198a536-36d8-7a31-a7bd-42b3ee7f0104",
+    "logicalToolName": "recommend_customer_offer",
+    "authorizationEndpointKey": "recommend_customer_offer@call",
+    "workflowDefinitionId": "0198a536-36d8-7a31-a7bd-42b3ee7f0105",
+    "workflowVersion": "1.0.0",
+    "definitionDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "inputSchemaDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "outputSchemaDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "policyDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "responsePolicyDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "mode": "sync",
+    "rootExecutionClass": "interactive",
+    "resultTextMode": "compact-json",
+    "cancellationPolicy": "BEFORE_EFFECTS_ONLY",
+    "resultReplayMs": 5000,
+    "maximumDelegationDepth": 1,
+    "lifecycle": "ACTIVE"
+  },
+  "dependencies": [
+    {
+      "contractVersion": 1,
+      "hostId": "0198a536-36d8-7a31-a7bd-42b3ee7f0103",
+      "outerBindingId": "0198a536-36d8-7a31-a7bd-42b3ee7f0102",
+      "nestedStableToolRef": "0198a536-36d8-7a31-a7bd-42b3ee7f0106",
+      "nestedVersionTargetId": "0198a536-36d8-7a31-a7bd-42b3ee7f0107",
+      "nestedContractDigest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "compatibility": "BACKWARD_COMPATIBLE",
+      "logicalAuthorizationEndpointKey": "customer_profile@call"
+    }
+  ]
+}

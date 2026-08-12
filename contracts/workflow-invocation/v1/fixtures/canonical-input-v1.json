@@ -1,0 +1,37 @@
+{
+  "profile": "rfc8785-safe-json-v1",
+  "vectors": [
+    {
+      "name": "object-order",
+      "inputs": ["{\"b\":2,\"a\":1}", "{\"a\":1,\"b\":2}"],
+      "canonical": "{\"a\":1,\"b\":2}",
+      "digest": "sha256:43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777"
+    },
+    {
+      "name": "absent-versus-null",
+      "inputs": ["{}", "{\"a\":null}"],
+      "differentDigests": true
+    },
+    {
+      "name": "unicode-not-normalized",
+      "inputs": ["{\"value\":\"é\"}", "{\"value\":\"é\"}"],
+      "differentDigests": true
+    },
+    {
+      "name": "duplicate-key-rejected",
+      "inputs": ["{\"a\":1,\"a\":2}"],
+      "error": "duplicate-key"
+    },
+    {
+      "name": "unsafe-integer-rejected",
+      "inputs": ["{\"id\":9007199254740992}"],
+      "error": "unsupported-number"
+    },
+    {
+      "name": "decimal-rejected-in-v1",
+      "inputs": ["{\"amount\":1.25}"],
+      "error": "unsupported-number"
+    }
+  ]
+}
+

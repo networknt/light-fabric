@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": 1,
+  "profile": "workflow-mcp-interactive-v1",
+  "promotionAllowed": false,
+  "promotionBlockers": [
+    "qualified CEL value evaluator with schema checking and deterministic cost enforcement",
+    "end-to-end runtime report for the exact scheduler, database, and executor topology"
+  ],
+  "latencyThresholdsMs": {
+    "durableAcceptance": { "p95": 100, "p99": 250 },
+    "controlledOneTaskResult": { "p95": 2000, "p99": 4000 },
+    "controlledMaximumTaskResult": { "p95": 12000, "p99": 18000 },
+    "wakeAfterTaskInsert": { "p99": 100 },
+    "crashRecoveryAfterClaim": { "p99": 5000 }
+  },
+  "loadProfile": {
+    "warmupSeconds": 30,
+    "measurementSeconds": 300,
+    "minimumSamplesPerScenario": 1000,
+    "interactiveConcurrency": 200,
+    "tenants": 8,
+    "maximumWorkflowTasks": 8,
+    "requiredScenarios": [
+      "controlled-one-task",
+      "controlled-maximum-task",
+      "cross-tenant-batch-backlog",
+      "unrelated-outbox-traffic",
+      "poison-event-injection",
+      "executor-crash-after-claim",
+      "nested-depth-one-saturation"
+    ]
+  },
+  "fairness": {
+    "maximumInteractiveTenantDispatchLagRounds": 2,
+    "starvationAllowed": false
+  },
+  "requiredStageMeasurements": [
+    "gateway-admission",
+    "transactional-acceptance",
+    "task-ready-to-claim",
+    "backend-execution",
+    "task-transition",
+    "result-visibility",
+    "gateway-rendering"
+  ],
+  "celDecision": {
+    "currentCel014QualifiedForValueEvaluation": false,
+    "requiredBeforePromotion": [
+      "schema-aware-checking",
+      "deterministic-cost-enforcement",
+      "pinned-cel-to-json-conformance"
+    ]
+  }
+}

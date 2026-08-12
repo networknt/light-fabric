@@ -3,6 +3,7 @@ use crate::repositories::{NewProcess, NewTask, WorkflowRepository};
 use execution_runner_protocol::canonical_sha256;
 use serde_json::{Value, from_str, json};
 use serde_yaml;
+use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction, postgres::PgListener};
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -30,6 +31,25 @@ pub struct EventConsumer {
     total_partitions: i32,
     batch_size: i64,
     execution_profiles: BTreeMap<String, ExecutionProfile>,
+}
+
+fn retryable_event_infrastructure_error(
+    error: &(dyn std::error::Error + Send + Sync + 'static),
+) -> bool {
+    let Some(error) = error.downcast_ref::<sqlx::Error>() else {
+        return false;
+    };
+    match error {
+        sqlx::Error::Io(_)
+        | sqlx::Error::Tls(_)
+        | sqlx::Error::PoolTimedOut
+        | sqlx::Error::PoolClosed
+        | sqlx::Error::WorkerCrashed => true,
+        sqlx::Error::Database(database) => database
+            .code()
+            .is_none_or(|code| matches!(code.as_ref(), "40001" | "40P01" | "55P03" | "57014")),
+        _ => false,
+    }
 }
 
 impl EventConsumer {
@@ -130,7 +150,10 @@ impl EventConsumer {
     }
 
     async fn run_listen_loop(&self) -> Result<(), sqlx::Error> {
-        let mut listener = PgListener::connect_with(&self.pool).await?;
+        // Keep the permanent LISTEN connection out of the transaction pool.
+        let database_url = std::env::var("DATABASE_URL")
+            .map_err(|error| sqlx::Error::Configuration(Box::new(error)))?;
+        let mut listener = PgListener::connect(&database_url).await?;
         listener.listen("event_channel").await?;
         info!("Listening to 'event_channel' on PG connection");
 
@@ -151,6 +174,10 @@ impl EventConsumer {
 
     async fn process_batch(&self) -> Result<bool, sqlx::Error> {
         let mut tx = self.pool.begin().await?;
+        if self.process_repaired_event(&mut tx).await? {
+            tx.commit().await?;
+            return Ok(true);
+        }
 
         // Simplified gapless claim process
         let claim_sql = r#"
@@ -219,19 +246,205 @@ impl EventConsumer {
         if !events.is_empty() {
             debug!("Fetched {} events", events.len());
             for event in events {
-                if let Err(e) = self.handle_event(&mut tx, &event).await {
-                    error!("Error handling event at offset {}: {}", event.c_offset, e);
-                    tx.rollback().await?;
-                    return Err(sqlx::Error::Protocol(format!(
-                        "failed to handle event at offset {}: {}",
-                        event.c_offset, e
-                    )));
+                if self.aggregate_is_quarantined(&mut tx, &event).await? {
+                    self.quarantine_event(
+                        &mut tx,
+                        &event,
+                        "WORKFLOW_EVENT_DEFERRED_BY_AGGREGATE",
+                        "an earlier event for this aggregate remains quarantined",
+                    )
+                    .await?;
+                    continue;
+                }
+                sqlx::query("SAVEPOINT workflow_event_v1")
+                    .execute(&mut *tx)
+                    .await?;
+                match self.handle_event(&mut tx, &event).await {
+                    Ok(()) => {
+                        sqlx::query("RELEASE SAVEPOINT workflow_event_v1")
+                            .execute(&mut *tx)
+                            .await?;
+                    }
+                    Err(error) => {
+                        error!(
+                            offset = event.c_offset,
+                            "Workflow event handler failed: {error}"
+                        );
+                        sqlx::query("ROLLBACK TO SAVEPOINT workflow_event_v1")
+                            .execute(&mut *tx)
+                            .await?;
+                        sqlx::query("RELEASE SAVEPOINT workflow_event_v1")
+                            .execute(&mut *tx)
+                            .await?;
+                        if retryable_event_infrastructure_error(error.as_ref()) {
+                            // Roll back the offset claim and let the outer listener loop
+                            // retry after its reconnect backoff. Infrastructure failures
+                            // must never become aggregate poison records.
+                            return Err(sqlx::Error::Protocol(format!(
+                                "retryable workflow event infrastructure failure: {error}"
+                            )));
+                        }
+                        self.quarantine_event(
+                            &mut tx,
+                            &event,
+                            "WORKFLOW_EVENT_HANDLER_FAILED",
+                            &error.to_string(),
+                        )
+                        .await?;
+                    }
                 }
             }
         }
 
         tx.commit().await?;
         Ok(true)
+    }
+
+    async fn process_repaired_event(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+    ) -> Result<bool, sqlx::Error> {
+        let repaired: Option<(Uuid, String, String, String, i64)> = sqlx::query_as(
+            "SELECT quarantine.quarantine_id,quarantine.aggregate_id,
+                    outbox.payload::text AS payload,outbox.host_id::text AS host_id,
+                    outbox.c_offset
+               FROM workflow_invocation_event_quarantine_t quarantine
+               JOIN outbox_message_t outbox ON outbox.c_offset=quarantine.source_offset
+              WHERE quarantine.consumer_group=$1 AND quarantine.partition_id=$2
+                AND quarantine.replay_state='REPAIRED'
+              ORDER BY quarantine.source_offset
+              LIMIT 1 FOR UPDATE OF quarantine SKIP LOCKED",
+        )
+        .bind(&self.group_id)
+        .bind(self.partition_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let Some((quarantine_id, aggregate_id, payload, host_id, c_offset)) = repaired else {
+            return Ok(false);
+        };
+        let event = RawEvent {
+            payload,
+            host_id,
+            c_offset,
+        };
+        sqlx::query("SAVEPOINT workflow_quarantine_replay_v1")
+            .execute(&mut **tx)
+            .await?;
+        match self.handle_event(tx, &event).await {
+            Ok(()) => {
+                sqlx::query("RELEASE SAVEPOINT workflow_quarantine_replay_v1")
+                    .execute(&mut **tx)
+                    .await?;
+                sqlx::query(
+                    "UPDATE workflow_invocation_event_quarantine_t
+                        SET replay_state='REPLAYED',resolved_ts=CURRENT_TIMESTAMP
+                      WHERE quarantine_id=$1",
+                )
+                .bind(quarantine_id)
+                .execute(&mut **tx)
+                .await?;
+                // Release exactly the next event for this aggregate so replay
+                // preserves source ordering rather than creating a second log.
+                sqlx::query(
+                    "UPDATE workflow_invocation_event_quarantine_t candidate
+                        SET replay_state='REPAIRED',repaired_by='workflow-consumer',
+                            repair_reason='ordered replay after predecessor'
+                      WHERE candidate.quarantine_id=(
+                        SELECT next.quarantine_id
+                          FROM workflow_invocation_event_quarantine_t next
+                         WHERE next.host_id=$1
+                           AND next.aggregate_id=$2
+                           AND next.replay_state='BLOCKED'
+                           AND next.failure_code='WORKFLOW_EVENT_DEFERRED_BY_AGGREGATE'
+                         ORDER BY next.source_offset LIMIT 1)",
+                )
+                .bind(Uuid::parse_str(&event.host_id).map_err(|error| {
+                    sqlx::Error::Protocol(format!("invalid replay event host UUID: {error}"))
+                })?)
+                .bind(aggregate_id)
+                .execute(&mut **tx)
+                .await?;
+            }
+            Err(error) => {
+                sqlx::query("ROLLBACK TO SAVEPOINT workflow_quarantine_replay_v1")
+                    .execute(&mut **tx)
+                    .await?;
+                sqlx::query("RELEASE SAVEPOINT workflow_quarantine_replay_v1")
+                    .execute(&mut **tx)
+                    .await?;
+                sqlx::query(
+                    "UPDATE workflow_invocation_event_quarantine_t
+                        SET replay_state='BLOCKED',attempt_count=attempt_count+1,
+                            failure_detail=$2
+                      WHERE quarantine_id=$1",
+                )
+                .bind(quarantine_id)
+                .bind(error.to_string().chars().take(4096).collect::<String>())
+                .execute(&mut **tx)
+                .await?;
+            }
+        }
+        Ok(true)
+    }
+
+    async fn quarantine_event(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        event: &RawEvent,
+        failure_code: &str,
+        failure: &str,
+    ) -> Result<(), sqlx::Error> {
+        let host_id: Uuid = event
+            .host_id
+            .parse()
+            .map_err(|error| sqlx::Error::Protocol(format!("invalid event host UUID: {error}")))?;
+        let payload_digest = format!("sha256:{:x}", Sha256::digest(event.payload.as_bytes()));
+        let (aggregate_id, aggregate_version) = event_aggregate_identity(event);
+        sqlx::query(
+            "INSERT INTO workflow_invocation_event_quarantine_t(
+                host_id,quarantine_id,consumer_group,partition_id,source_offset,
+                aggregate_id,aggregate_version,payload_digest,immutable_payload_reference,
+                failure_code,failure_detail,attempt_count)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+             ON CONFLICT(consumer_group,partition_id,source_offset) DO NOTHING",
+        )
+        .bind(host_id)
+        .bind(Uuid::now_v7())
+        .bind(&self.group_id)
+        .bind(self.partition_id)
+        .bind(event.c_offset)
+        .bind(aggregate_id)
+        .bind(aggregate_version)
+        .bind(payload_digest)
+        .bind(format!("outbox_message_t:c_offset={}", event.c_offset))
+        .bind(failure_code)
+        .bind(failure.chars().take(4096).collect::<String>())
+        .bind(i32::from(failure_code == "WORKFLOW_EVENT_HANDLER_FAILED"))
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn aggregate_is_quarantined(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        event: &RawEvent,
+    ) -> Result<bool, sqlx::Error> {
+        let host_id: Uuid = event
+            .host_id
+            .parse()
+            .map_err(|error| sqlx::Error::Protocol(format!("invalid event host UUID: {error}")))?;
+        let (aggregate_id, _) = event_aggregate_identity(event);
+        sqlx::query_scalar(
+            "SELECT EXISTS(
+               SELECT 1 FROM workflow_invocation_event_quarantine_t
+                WHERE host_id=$1 AND aggregate_id=$2 AND replay_state='BLOCKED'
+            )",
+        )
+        .bind(host_id)
+        .bind(aggregate_id)
+        .fetch_one(&mut **tx)
+        .await
     }
 
     async fn handle_event(
@@ -244,26 +457,16 @@ impl EventConsumer {
             event.c_offset, event.host_id
         );
 
-        let ce: CloudEventEnvelope = match from_str(&event.payload) {
-            Ok(ce) => ce,
-            Err(e) => {
-                error!(
-                    "Failed to parse CloudEvent payload: {}. Payload: {}",
-                    e, event.payload
-                );
-                return Ok(()); // Skip invalid events
-            }
-        };
+        let ce: CloudEventEnvelope = from_str(&event.payload).map_err(|error| {
+            sqlx::Error::Protocol(format!("invalid CloudEvent payload: {error}"))
+        })?;
 
         if ce.r#type == "WorkflowStartedEvent" {
             if let Some(data) = ce.data.clone() {
-                let payload: WorkflowStartedPayload = match serde_json::from_value(data) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        error!("Failed to parse WorkflowStartedPayload: {}", e);
-                        return Ok(());
-                    }
-                };
+                let payload: WorkflowStartedPayload =
+                    serde_json::from_value(data).map_err(|error| {
+                        sqlx::Error::Protocol(format!("invalid WorkflowStartedPayload: {error}"))
+                    })?;
 
                 // 1. Generate ids
                 let wf_instance_id = payload.wf_instance_id.unwrap_or_else(Uuid::new_v4);
@@ -276,7 +479,10 @@ impl EventConsumer {
                         "WorkflowStartedEvent host_id mismatch: payload={}, envelope={}",
                         payload.host_id, host_id
                     );
-                    return Ok(());
+                    return Err(sqlx::Error::Protocol(
+                        "WorkflowStartedEvent host_id mismatch".to_string(),
+                    )
+                    .into());
                 }
 
                 if let Some(existing_process_id) = WorkflowRepository::find_process_by_source_event(
@@ -492,5 +698,34 @@ impl EventConsumer {
             },
         )
         .await
+    }
+}
+
+fn event_aggregate_identity(event: &RawEvent) -> (String, i64) {
+    let envelope = from_str::<CloudEventEnvelope>(&event.payload).ok();
+    let aggregate_id = envelope
+        .as_ref()
+        .and_then(|value| value.subject.clone())
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| envelope.as_ref().map(|value| value.id.clone()))
+        .unwrap_or_else(|| format!("offset:{}", event.c_offset));
+    let aggregate_version = envelope
+        .and_then(|value| value.eventaggregateversion)
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or_default();
+    (aggregate_id, aggregate_version)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_retry_classification_separates_infrastructure_from_poison() {
+        let infrastructure = sqlx::Error::PoolTimedOut;
+        assert!(retryable_event_infrastructure_error(&infrastructure));
+
+        let poison = sqlx::Error::Protocol("invalid CloudEvent payload".to_string());
+        assert!(!retryable_event_infrastructure_error(&poison));
     }
 }

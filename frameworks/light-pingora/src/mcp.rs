@@ -44,8 +44,15 @@ use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{Mutex as AsyncMutex, mpsc};
+use tokio::sync::{Mutex as AsyncMutex, Semaphore, mpsc};
 use url::{Url, form_urlencoded};
+use uuid::Uuid;
+use workflow_invocation_contract::{
+    CANONICAL_INPUT_PROFILE, CONTRACT_VERSION as WORKFLOW_CONTRACT_VERSION, ErrorCode,
+    ExecutionClass, IdempotencyBinding, IdempotencyKind, InvocationBudget, InvocationMode,
+    InvocationState, InvocationStatus, ResultTextMode, StartInvocationRequest,
+    canonical_json_bytes, canonical_sha256, stable_subject_claims, validate_digest,
+};
 
 pub const MCP_ROUTER_FILE: &str = "mcp-router.yml";
 pub const MCP_ROUTER_LEGACY_FILE: &str = "mcp-router.yaml";
@@ -120,6 +127,8 @@ pub struct McpRouterConfig {
     pub protocols: McpProtocolsConfig,
     #[serde(default)]
     pub schema: McpSchemaConfig,
+    #[serde(default)]
+    pub workflow: McpWorkflowRuntimeConfig,
     #[serde(default, deserialize_with = "deserialize_typed_list")]
     pub tools: Vec<McpToolConfig>,
 }
@@ -137,9 +146,39 @@ impl Default for McpRouterConfig {
             origin_allowlist: Vec::new(),
             protocols: McpProtocolsConfig::default(),
             schema: McpSchemaConfig::default(),
+            workflow: McpWorkflowRuntimeConfig::default(),
             tools: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpWorkflowRuntimeConfig {
+    #[serde(default)]
+    pub invocation_url: String,
+    #[serde(default = "default_workflow_bearer_token_env")]
+    pub bearer_token_env: String,
+    #[serde(default = "default_workflow_permit_pools")]
+    pub permit_pools: Vec<usize>,
+}
+
+impl Default for McpWorkflowRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            invocation_url: String::new(),
+            bearer_token_env: default_workflow_bearer_token_env(),
+            permit_pools: default_workflow_permit_pools(),
+        }
+    }
+}
+
+fn default_workflow_bearer_token_env() -> String {
+    "WORKFLOW_INVOCATION_BEARER_TOKEN".to_string()
+}
+
+fn default_workflow_permit_pools() -> Vec<usize> {
+    vec![64, 32]
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -259,6 +298,67 @@ impl Default for McpStatelessProtocolConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpExecutionPlacement {
+    #[default]
+    Backend,
+    Workflow,
+    #[serde(rename = "workflow-lifecycle")]
+    WorkflowLifecycle,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpWorkflowBindingConfig {
+    pub stable_tool_ref: Uuid,
+    pub workflow_definition_id: Uuid,
+    pub workflow_version: String,
+    pub definition_digest: String,
+    pub schema_digest: String,
+    pub policy_digest: String,
+    pub response_policy_digest: String,
+    #[serde(default)]
+    pub mode: InvocationMode,
+    #[serde(default = "default_workflow_execution_class")]
+    pub execution_class: ExecutionClass,
+    #[serde(default)]
+    pub cancellation_policy: workflow_invocation_contract::CancellationPolicy,
+    #[serde(default = "default_workflow_wait_ms")]
+    pub wait_timeout_ms: u64,
+    #[serde(default = "default_workflow_deadline_ms")]
+    pub total_deadline_ms: u64,
+    #[serde(default)]
+    pub result_replay_ms: u64,
+    #[serde(default = "default_workflow_idempotency_kind")]
+    pub idempotency_kind: IdempotencyKind,
+    #[serde(default)]
+    pub idempotency_input: Option<String>,
+    #[serde(default = "default_result_text_mode")]
+    pub result_text_mode: ResultTextMode,
+    pub budget: InvocationBudget,
+}
+
+fn default_workflow_execution_class() -> ExecutionClass {
+    ExecutionClass::Interactive
+}
+
+fn default_workflow_idempotency_kind() -> IdempotencyKind {
+    IdempotencyKind::Derived
+}
+
+fn default_workflow_wait_ms() -> u64 {
+    20_000
+}
+
+fn default_workflow_deadline_ms() -> u64 {
+    30_000
+}
+
+fn default_result_text_mode() -> ResultTextMode {
+    ResultTextMode::CompactJson
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpToolConfig {
@@ -286,6 +386,10 @@ pub struct McpToolConfig {
     pub endpoint: Option<String>,
     #[serde(default, alias = "apiType")]
     pub api_type: McpToolType,
+    #[serde(default, alias = "executionPlacement")]
+    pub execution_placement: McpExecutionPlacement,
+    #[serde(default, alias = "workflowBinding")]
+    pub workflow_binding: Option<McpWorkflowBindingConfig>,
     /// Explicit backend MCP profile. Existing MCP tools default to legacy;
     /// newly configured stateless targets must opt in explicitly.
     #[serde(default, alias = "backendMcpProtocol")]
@@ -339,6 +443,10 @@ impl<'de> Deserialize<'de> for McpToolConfig {
             endpoint: Option<String>,
             #[serde(default, alias = "apiType")]
             api_type: McpToolType,
+            #[serde(default, alias = "executionPlacement")]
+            execution_placement: McpExecutionPlacement,
+            #[serde(default, alias = "workflowBinding")]
+            workflow_binding: Option<McpWorkflowBindingConfig>,
             #[serde(default, alias = "backendMcpProtocol")]
             backend_mcp_protocol: Option<McpBackendProtocol>,
             #[serde(default, alias = "sessionIndependent")]
@@ -381,6 +489,8 @@ impl<'de> Deserialize<'de> for McpToolConfig {
             method: raw.method,
             endpoint: raw.endpoint,
             api_type: raw.api_type,
+            execution_placement: raw.execution_placement,
+            workflow_binding: raw.workflow_binding,
             backend_mcp_protocol: raw.backend_mcp_protocol,
             session_independent: raw.session_independent,
             backend_credential_mode: raw.backend_credential_mode,
@@ -1307,6 +1417,7 @@ pub struct McpRouterRuntime {
     stateless_resources: Arc<StatelessResourceBudgets>,
     public_target_client: reqwest::Client,
     private_target_client: reqwest::Client,
+    workflow_dispatch: Option<Arc<WorkflowDispatchRuntime>>,
     direct_registry: DirectRegistryConfig,
     discovery: Option<Arc<dyn McpDiscoveryResolver>>,
     policy: Option<Arc<AccessControlRuntime>>,
@@ -1327,6 +1438,12 @@ pub struct McpRouterRuntime {
     /// Shared security/light-client credential boundary. MCP never inspects or
     /// persists its token cache.
     backend_credentials: Option<Arc<TokenRuntime>>,
+}
+
+struct WorkflowDispatchRuntime {
+    invocation_url: String,
+    bearer_token_env: String,
+    permit_pools: Vec<Arc<Semaphore>>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -1521,6 +1638,7 @@ impl McpRouterRuntime {
         direct_registry: DirectRegistryConfig,
         client_config: ClientConfig,
     ) -> Result<Self, RuntimeError> {
+        ensure_workflow_lifecycle_tools(&mut config)?;
         validate_config(&config)?;
         config.origin_allowlist = config
             .origin_allowlist
@@ -1583,6 +1701,26 @@ impl McpRouterRuntime {
                     "invalid MCP HTTP client for approved private targets: {error}"
                 ))
             })?;
+        let workflow_dispatch = config
+            .tools
+            .iter()
+            .any(|tool| tool.execution_placement == McpExecutionPlacement::Workflow)
+            .then(|| {
+                Arc::new(WorkflowDispatchRuntime {
+                    invocation_url: config
+                        .workflow
+                        .invocation_url
+                        .trim_end_matches('/')
+                        .to_string(),
+                    bearer_token_env: config.workflow.bearer_token_env.clone(),
+                    permit_pools: config
+                        .workflow
+                        .permit_pools
+                        .iter()
+                        .map(|capacity| Arc::new(Semaphore::new(*capacity)))
+                        .collect(),
+                })
+            });
         let tools_list_cache_entries = policy
             .as_ref()
             .map(|policy| policy.tools_list_access_control().max_cache_entries)
@@ -1607,6 +1745,7 @@ impl McpRouterRuntime {
             stateless_resources: Arc::new(stateless_resources),
             public_target_client,
             private_target_client,
+            workflow_dispatch,
             direct_registry,
             discovery,
             policy,
@@ -2500,6 +2639,9 @@ impl McpRouterRuntime {
         );
         let mut visible_names = Vec::new();
         for (index, tool) in self.tools.values().enumerate() {
+            if tool_metadata_bool(tool, &["privateVersionTarget"]).unwrap_or(false) {
+                continue;
+            }
             if self
                 .tool_visible_for_list(
                     tool,
@@ -3145,9 +3287,10 @@ impl McpRouterRuntime {
             .tools
             .values()
             .filter(|tool| {
-                query
-                    .as_deref()
-                    .is_none_or(|query| tool_matches_tools_list_query(tool, query))
+                !tool_metadata_bool(tool, &["privateVersionTarget"]).unwrap_or(false)
+                    && query
+                        .as_deref()
+                        .is_none_or(|query| tool_matches_tools_list_query(tool, query))
             })
             .collect::<Vec<_>>();
         let mut visible_tools = Vec::new();
@@ -3274,7 +3417,7 @@ impl McpRouterRuntime {
                 matches!(
                     policy
                         .authorize_tool(
-                            tool.name.as_str(),
+                            authorization_tool_name(tool),
                             endpoint.as_str(),
                             agent_headers,
                             context.auth.as_ref(),
@@ -3335,13 +3478,33 @@ impl McpRouterRuntime {
             code: -32601,
             message: format!("tool `{name}` not found"),
         })?;
+        let private_version_target =
+            tool_metadata_bool(tool, &["privateVersionTarget"]).unwrap_or(false);
+        if private_version_target {
+            let expected_tool_ref = tool
+                .tool_metadata
+                .get("stableToolRef")
+                .and_then(JsonValue::as_str)
+                .and_then(|value| Uuid::parse_str(value).ok());
+            let delegated_tool_ref = context
+                .delegation
+                .as_ref()
+                .filter(|claims| claims.workflow_invocation_id.is_some())
+                .and_then(|claims| claims.tool_ref);
+            if expected_tool_ref.is_none() || expected_tool_ref != delegated_tool_ref {
+                return Err(McpExecutionError {
+                    code: -32601,
+                    message: format!("tool `{name}` not found"),
+                });
+            }
+        }
         let endpoint = tool_endpoint(tool);
         let started = Instant::now();
         let mut policy_outcome = "not_configured";
 
         if let Some(policy) = self.policy.as_ref()
             && let AccessDecision::Denied(message) = policy.authorize_tool_by_claims(
-                tool.name.as_str(),
+                authorization_tool_name(tool),
                 endpoint.as_str(),
                 context.auth.as_ref(),
             )
@@ -3407,7 +3570,7 @@ impl McpRouterRuntime {
         if let Some(policy) = self.policy.as_ref() {
             match policy
                 .authorize_tool(
-                    tool.name.as_str(),
+                    authorization_tool_name(tool),
                     endpoint.as_str(),
                     policy_headers,
                     context.auth.as_ref(),
@@ -3440,9 +3603,10 @@ impl McpRouterRuntime {
 
         let masked_arguments = mask_tool_arguments(tool, &arguments);
 
-        let _backend_permit = if effective.frontend_profile == FrontendProfile::Stateless
-            || (tool.api_type == McpToolType::Mcp
-                && tool_backend_protocol(tool) == McpBackendProtocol::Stateless)
+        let _backend_permit = if tool.execution_placement == McpExecutionPlacement::Backend
+            && (effective.frontend_profile == FrontendProfile::Stateless
+                || (tool.api_type == McpToolType::Mcp
+                    && tool_backend_protocol(tool) == McpBackendProtocol::Stateless))
         {
             Some(
                 self.stateless_resources
@@ -3463,41 +3627,49 @@ impl McpRouterRuntime {
             None
         };
 
-        let execution = match tool.api_type {
-            McpToolType::Http => {
-                self.execute_http_tool(tool, &masked_arguments, backend_headers)
-                    .await
+        let execution = if tool.execution_placement == McpExecutionPlacement::Workflow {
+            self.execute_workflow_tool(tool, &masked_arguments, context)
+                .await
+        } else if tool.execution_placement == McpExecutionPlacement::WorkflowLifecycle {
+            self.execute_workflow_lifecycle_tool(tool, &masked_arguments, context)
+                .await
+        } else {
+            match tool.api_type {
+                McpToolType::Http => {
+                    self.execute_http_tool(tool, &masked_arguments, backend_headers)
+                        .await
+                }
+                McpToolType::Mcp => match tool_backend_protocol(tool) {
+                    McpBackendProtocol::Legacy
+                        if effective.frontend_profile == FrontendProfile::Stateless =>
+                    {
+                        Ok(mcp_tool_error_result(
+                            "Gateway does not support stateless calls to this MCP backend profile",
+                        ))
+                    }
+                    McpBackendProtocol::Legacy => {
+                        let backend_profile = effective.legacy_backend_profile()?;
+                        self.execute_mcp_proxy_tool(
+                            tool,
+                            &masked_arguments,
+                            backend_headers,
+                            backend_profile,
+                            effective,
+                        )
+                        .await
+                    }
+                    McpBackendProtocol::Stateless => {
+                        self.execute_stateless_mcp_tool(
+                            tool,
+                            &masked_arguments,
+                            params.get("_meta"),
+                            effective,
+                            effective.stateless_backend_profile(),
+                        )
+                        .await
+                    }
+                },
             }
-            McpToolType::Mcp => match tool_backend_protocol(tool) {
-                McpBackendProtocol::Legacy
-                    if effective.frontend_profile == FrontendProfile::Stateless =>
-                {
-                    Ok(mcp_tool_error_result(
-                        "Gateway does not support stateless calls to this MCP backend profile",
-                    ))
-                }
-                McpBackendProtocol::Legacy => {
-                    let backend_profile = effective.legacy_backend_profile()?;
-                    self.execute_mcp_proxy_tool(
-                        tool,
-                        &masked_arguments,
-                        backend_headers,
-                        backend_profile,
-                        effective,
-                    )
-                    .await
-                }
-                McpBackendProtocol::Stateless => {
-                    self.execute_stateless_mcp_tool(
-                        tool,
-                        &masked_arguments,
-                        params.get("_meta"),
-                        effective,
-                        effective.stateless_backend_profile(),
-                    )
-                    .await
-                }
-            },
         };
         let result = match execution {
             Ok(result) => result,
@@ -3519,7 +3691,7 @@ impl McpRouterRuntime {
         let (mut result, status) = if let Some(policy) = self.policy.as_ref() {
             let filtered = policy
                 .filter_mcp_response(
-                    tool.name.as_str(),
+                    authorization_tool_name(tool),
                     endpoint.as_str(),
                     policy_headers,
                     context.auth.as_ref(),
@@ -3660,6 +3832,641 @@ impl McpRouterRuntime {
             context,
         );
         Ok(result)
+    }
+
+    async fn execute_workflow_tool(
+        &self,
+        tool: &McpToolConfig,
+        arguments: &JsonValue,
+        context: &McpRequestContext,
+    ) -> Result<JsonValue, McpExecutionError> {
+        let workflow_started = Instant::now();
+        let workflow_error = |code: ErrorCode, message: String| {
+            workflow_mcp_error_result(code, message, context.correlation_id.as_deref())
+        };
+        let Some(runtime) = self.workflow_dispatch.as_ref() else {
+            return Ok(workflow_error(
+                ErrorCode::WorkflowInvocationUnavailable,
+                "Workflow invocation capacity is unavailable".to_string(),
+            ));
+        };
+        let Some(binding) = tool.workflow_binding.as_ref() else {
+            return Ok(workflow_error(
+                ErrorCode::WorkflowDefinitionMismatch,
+                "Workflow binding is unavailable".to_string(),
+            ));
+        };
+        let permit_depth = match context
+            .delegation
+            .as_ref()
+            .and_then(|claims| claims.workflow_permit_depth)
+        {
+            Some(depth) => match depth.checked_add(1) {
+                Some(depth) => depth,
+                None => {
+                    return Ok(workflow_error(
+                        ErrorCode::WorkflowCapacityExhausted,
+                        "WORKFLOW_CAPACITY_EXHAUSTED: delegation depth overflow".to_string(),
+                    ));
+                }
+            },
+            None => 0,
+        };
+        if permit_depth > binding.budget.maximum_delegation_depth {
+            return Ok(workflow_error(
+                ErrorCode::WorkflowPolicyDenied,
+                "WORKFLOW_POLICY_DENIED: maximum delegation depth exceeded".to_string(),
+            ));
+        }
+        let execution_class = match context
+            .delegation
+            .as_ref()
+            .and_then(|claims| claims.workflow_execution_class.as_deref())
+        {
+            Some("interactive") => ExecutionClass::Interactive,
+            Some("standard") => ExecutionClass::Standard,
+            Some("batch") => ExecutionClass::Batch,
+            Some(_) => {
+                return Ok(workflow_error(
+                    ErrorCode::WorkflowPolicyDenied,
+                    "WORKFLOW_POLICY_DENIED: delegated execution class is invalid".to_string(),
+                ));
+            }
+            None => binding.execution_class,
+        };
+        let _permit = if binding.mode == InvocationMode::Sync {
+            let Some(pool) = runtime.permit_pools.get(usize::from(permit_depth)) else {
+                return Ok(workflow_error(
+                    ErrorCode::WorkflowCapacityExhausted,
+                    "Workflow delegation depth is not configured".to_string(),
+                ));
+            };
+            let Ok(permit) = Arc::clone(pool).try_acquire_owned() else {
+                return Ok(workflow_error(
+                    ErrorCode::WorkflowCapacityExhausted,
+                    "WORKFLOW_CAPACITY_EXHAUSTED: synchronous workflow capacity is temporarily exhausted".to_string(),
+                ));
+            };
+            Some(permit)
+        } else {
+            None
+        };
+
+        let Some(auth) = context.auth.as_ref() else {
+            return Ok(workflow_error(
+                ErrorCode::WorkflowPolicyDenied,
+                "WORKFLOW_POLICY_DENIED: authenticated workflow identity is required".to_string(),
+            ));
+        };
+        let host = auth
+            .host
+            .as_deref()
+            .or_else(|| auth.claims.get("hostId").and_then(JsonValue::as_str))
+            .or_else(|| auth.claims.get("host_id").and_then(JsonValue::as_str));
+        let Some(host_id) = host.and_then(|value| Uuid::parse_str(value).ok()) else {
+            return Ok(workflow_error(
+                ErrorCode::WorkflowPolicyDenied,
+                "WORKFLOW_POLICY_DENIED: a UUID tenant identity is required".to_string(),
+            ));
+        };
+        let principal_subject = auth
+            .client_id
+            .as_deref()
+            .or_else(|| auth.claims.get("client_id").and_then(JsonValue::as_str))
+            .or_else(|| auth.claims.get("sub").and_then(JsonValue::as_str));
+        let Some(principal_subject) = principal_subject.filter(|value| !value.trim().is_empty())
+        else {
+            return Ok(workflow_error(
+                ErrorCode::WorkflowPolicyDenied,
+                "WORKFLOW_POLICY_DENIED: principal subject is required".to_string(),
+            ));
+        };
+        let end_user_subject = auth
+            .user_id
+            .as_deref()
+            .or_else(|| auth.claims.get("user_id").and_then(JsonValue::as_str))
+            .or_else(|| auth.claims.get("userId").and_then(JsonValue::as_str))
+            .or_else(|| auth.claims.get("sub").and_then(JsonValue::as_str))
+            .unwrap_or(principal_subject);
+        let bearer_token = match std::env::var(&runtime.bearer_token_env) {
+            Ok(token) if token.len() >= 32 => token,
+            _ => {
+                return Ok(workflow_error(
+                    ErrorCode::WorkflowInvocationUnavailable,
+                    "Workflow invocation authentication is unavailable".to_string(),
+                ));
+            }
+        };
+        let canonical_input = match canonical_json_bytes(arguments) {
+            Ok(input) => input,
+            Err(error) => {
+                return Ok(workflow_error(
+                    ErrorCode::WorkflowDefinitionMismatch,
+                    format!("Workflow input cannot be canonicalized: {error}"),
+                ));
+            }
+        };
+        if u64::try_from(canonical_input.len()).unwrap_or(u64::MAX)
+            > binding.budget.maximum_request_bytes
+        {
+            return Ok(workflow_error(
+                ErrorCode::WorkflowDefinitionMismatch,
+                "Workflow input exceeds the declared byte limit".to_string(),
+            ));
+        }
+        let input_digest = match canonical_sha256(arguments) {
+            Ok(digest) => digest,
+            Err(error) => {
+                return Ok(workflow_error(
+                    ErrorCode::WorkflowDefinitionMismatch,
+                    format!("Workflow input cannot be canonicalized: {error}"),
+                ));
+            }
+        };
+        let caller_claims_digest = canonical_sha256(&stable_subject_claims(&auth.claims))
+            .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
+        let configured_idempotency_key = match binding.idempotency_kind {
+            IdempotencyKind::Derived => None,
+            IdempotencyKind::Explicit | IdempotencyKind::Business => {
+                let Some(field) = binding
+                    .idempotency_input
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                else {
+                    return Ok(workflow_error(
+                        ErrorCode::WorkflowInputInvalid,
+                        "WORKFLOW_INPUT_INVALID: idempotencyInput is required by the published binding"
+                            .to_string(),
+                    ));
+                };
+                let Some(value) = arguments
+                    .get(field)
+                    .and_then(JsonValue::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                else {
+                    return Ok(workflow_error(
+                        ErrorCode::WorkflowInputInvalid,
+                        format!(
+                            "WORKFLOW_INPUT_INVALID: {field} must be a non-empty idempotency string"
+                        ),
+                    ));
+                };
+                Some(value)
+            }
+        };
+        let scoped_key_digest = canonical_sha256(&json!({
+            "hostId": host_id,
+            "principalSubject": principal_subject,
+            "endUserSubject": end_user_subject,
+            "stableToolRef": binding.stable_tool_ref,
+            "definitionDigest": binding.definition_digest,
+            "idempotencyKey": configured_idempotency_key,
+            "inputDigest": if binding.idempotency_kind == IdempotencyKind::Derived {
+                Some(input_digest.as_str())
+            } else {
+                None
+            },
+        }))
+        .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
+        let now = chrono::Utc::now();
+        let deadline_ts = now
+            + chrono::Duration::milliseconds(
+                i64::try_from(binding.total_deadline_ms).unwrap_or(i64::MAX),
+            );
+        let workflow_instance_id = Uuid::now_v7();
+        let request = StartInvocationRequest {
+            contract_version: WORKFLOW_CONTRACT_VERSION,
+            workflow_instance_id,
+            stable_tool_ref: binding.stable_tool_ref,
+            workflow_definition_id: binding.workflow_definition_id,
+            workflow_version: binding.workflow_version.clone(),
+            definition_digest: binding.definition_digest.clone(),
+            schema_digest: binding.schema_digest.clone(),
+            policy_digest: binding.policy_digest.clone(),
+            response_policy_digest: binding.response_policy_digest.clone(),
+            mode: binding.mode,
+            cancellation_policy: binding.cancellation_policy,
+            execution_class,
+            permit_depth,
+            deadline_ts,
+            canonical_input_profile: CANONICAL_INPUT_PROFILE.to_string(),
+            normalized_input_digest: input_digest.clone(),
+            input: arguments.clone(),
+            caller_claims: stable_subject_claims(&auth.claims),
+            idempotency: IdempotencyBinding {
+                kind: binding.idempotency_kind,
+                scoped_key_digest,
+                input_digest,
+                in_flight_until: deadline_ts + chrono::Duration::seconds(30),
+                result_replay_until: deadline_ts
+                    + chrono::Duration::milliseconds(
+                        i64::try_from(binding.result_replay_ms).unwrap_or(i64::MAX),
+                    )
+                    + chrono::Duration::seconds(30),
+            },
+            budget: binding.budget.clone(),
+            correlation_id: context
+                .correlation_id
+                .clone()
+                .unwrap_or_else(|| workflow_instance_id.to_string()),
+        };
+        let start_url = format!("{}/v1/workflow-invocations", runtime.invocation_url);
+        let start_response = self
+            .private_target_client
+            .post(start_url)
+            .bearer_auth(&bearer_token)
+            .header("x-host-id", host_id.to_string())
+            .header("x-principal-subject", principal_subject)
+            .header("x-end-user-subject", end_user_subject)
+            .header("x-caller-claims-digest", &caller_claims_digest)
+            .json(&request)
+            .send()
+            .await;
+        let mut status: InvocationStatus = match start_response {
+            Ok(response) if response.status().is_success() => match response.json().await {
+                Ok(status) => status,
+                Err(error) => {
+                    if let Some(status) = self
+                        .recover_workflow_start_status(
+                            runtime,
+                            &bearer_token,
+                            host_id,
+                            principal_subject,
+                            end_user_subject,
+                            &caller_claims_digest,
+                            workflow_instance_id,
+                        )
+                        .await
+                    {
+                        status
+                    } else {
+                        return Ok(workflow_mcp_error_result_with_instance(
+                            ErrorCode::WorkflowInvocationUnavailable,
+                            format!(
+                                "Workflow start response was invalid and acceptance could not be confirmed: {error}"
+                            ),
+                            context.correlation_id.as_deref(),
+                            workflow_instance_id,
+                        ));
+                    }
+                }
+            },
+            Ok(response) => {
+                let http_status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Ok(workflow_error(
+                    ErrorCode::WorkflowStartRejected,
+                    format!(
+                        "WORKFLOW_START_REJECTED: HTTP {}: {}",
+                        http_status.as_u16(),
+                        truncate_error_message(&body)
+                    ),
+                ));
+            }
+            Err(error) => {
+                if let Some(status) = self
+                    .recover_workflow_start_status(
+                        runtime,
+                        &bearer_token,
+                        host_id,
+                        principal_subject,
+                        end_user_subject,
+                        &caller_claims_digest,
+                        workflow_instance_id,
+                    )
+                    .await
+                {
+                    status
+                } else {
+                    return Ok(workflow_mcp_error_result_with_instance(
+                        ErrorCode::WorkflowInvocationUnavailable,
+                        format!(
+                            "Workflow start outcome could not be resolved after recovery: {error}"
+                        ),
+                        context.correlation_id.as_deref(),
+                        workflow_instance_id,
+                    ));
+                }
+            }
+        };
+        // An idempotent replay returns the already accepted invocation, which
+        // can differ from the candidate UUID allocated for this start attempt.
+        let accepted_instance_id = status.workflow_instance_id;
+        tracing::info!(
+            target: "light_pingora::mcp::workflow",
+            toolName = %tool.name,
+            workflowInstanceId = %accepted_instance_id,
+            workflowDefinitionId = %binding.workflow_definition_id,
+            workflowVersion = %binding.workflow_version,
+            executionClass = ?execution_class,
+            permitDepth = permit_depth,
+            acceptanceDurationMs = workflow_started.elapsed().as_millis(),
+            correlationId = ?context.correlation_id,
+            "workflow MCP invocation durably accepted"
+        );
+        if binding.mode == InvocationMode::Async {
+            let handle = json!({
+                "workflowInstanceId": status.workflow_instance_id,
+                "status": status.state,
+                "submittedAt": status.accepted_ts
+            });
+            return Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": format!("Workflow accepted: {}", status.workflow_instance_id)
+                }],
+                "structuredContent": handle,
+                "isError": false
+            }));
+        }
+        while !status.state.is_terminal() {
+            let remaining_ms = (deadline_ts - chrono::Utc::now()).num_milliseconds();
+            if remaining_ms <= 0 {
+                return Ok(workflow_error(
+                    ErrorCode::WorkflowTimeout,
+                    format!(
+                        "WORKFLOW_TIMEOUT: workflow instance {accepted_instance_id} exceeded its synchronous deadline after durable acceptance"
+                    ),
+                ));
+            }
+            let wait_ms = binding
+                .wait_timeout_ms
+                .min(u64::try_from(remaining_ms).unwrap_or_default())
+                .max(1);
+            let wait_url = format!(
+                "{}/v1/workflow-invocations/{accepted_instance_id}/wait",
+                runtime.invocation_url
+            );
+            let response = self
+                .private_target_client
+                .post(wait_url)
+                .bearer_auth(&bearer_token)
+                .header("x-host-id", host_id.to_string())
+                .header("x-principal-subject", principal_subject)
+                .header("x-end-user-subject", end_user_subject)
+                .header("x-caller-claims-digest", &caller_claims_digest)
+                .json(&json!({"waitMs": wait_ms, "observedVersion": status.state_version}))
+                .send()
+                .await;
+            let response = match response {
+                Ok(response) => response,
+                Err(error) => {
+                    return Ok(workflow_error(
+                        ErrorCode::WorkflowInvocationUnavailable,
+                        format!(
+                            "Workflow instance {accepted_instance_id} wait request failed: {error}"
+                        ),
+                    ));
+                }
+            };
+            if !response.status().is_success() {
+                return Ok(workflow_error(
+                    ErrorCode::WorkflowInvocationUnavailable,
+                    format!(
+                        "WORKFLOW_INVOCATION_UNAVAILABLE: workflow instance {accepted_instance_id} could not be resumed"
+                    ),
+                ));
+            }
+            status = response
+                .json()
+                .await
+                .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
+            if !status.state.is_terminal() {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
+        if status.state != InvocationState::Completed {
+            let (code, message) = status.error.map_or_else(
+                || {
+                    (
+                        ErrorCode::WorkflowTaskFailed,
+                        format!("workflow ended in state {:?}", status.state),
+                    )
+                },
+                |error| (error.code, error.message),
+            );
+            tracing::warn!(
+                target: "light_pingora::mcp::workflow",
+                toolName = %tool.name,
+                workflowInstanceId = %accepted_instance_id,
+                terminalState = ?status.state,
+                totalDurationMs = workflow_started.elapsed().as_millis(),
+                correlationId = ?context.correlation_id,
+                "workflow MCP invocation ended without a result"
+            );
+            return Ok(workflow_error(
+                code,
+                format!("{message} (workflow instance {accepted_instance_id})"),
+            ));
+        }
+        let result = status.public_result.unwrap_or_else(|| json!({}));
+        if !result.is_object() {
+            return Ok(workflow_error(
+                ErrorCode::WorkflowOutputInvalid,
+                format!(
+                    "WORKFLOW_OUTPUT_INVALID: workflow instance {accepted_instance_id} returned a non-object result"
+                ),
+            ));
+        }
+        let compact = serde_json::to_string(&result)
+            .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
+        let text = match binding.result_text_mode {
+            ResultTextMode::CompactJson => compact,
+            ResultTextMode::Summary => format!("Workflow completed successfully: {compact}"),
+        };
+        tracing::info!(
+            target: "light_pingora::mcp::workflow",
+            toolName = %tool.name,
+            workflowInstanceId = %accepted_instance_id,
+            terminalState = ?status.state,
+            totalDurationMs = workflow_started.elapsed().as_millis(),
+            correlationId = ?context.correlation_id,
+            "workflow MCP invocation completed"
+        );
+        Ok(json!({
+            "content": [{"type": "text", "text": text}],
+            "structuredContent": result,
+            "isError": false
+        }))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn recover_workflow_start_status(
+        &self,
+        runtime: &WorkflowDispatchRuntime,
+        bearer_token: &str,
+        host_id: Uuid,
+        principal_subject: &str,
+        end_user_subject: &str,
+        caller_claims_digest: &str,
+        workflow_instance_id: Uuid,
+    ) -> Option<InvocationStatus> {
+        let url = format!(
+            "{}/v1/workflow-invocations/{workflow_instance_id}",
+            runtime.invocation_url
+        );
+        let response = self
+            .private_target_client
+            .get(url)
+            .bearer_auth(bearer_token)
+            .header("x-host-id", host_id.to_string())
+            .header("x-principal-subject", principal_subject)
+            .header("x-end-user-subject", end_user_subject)
+            .header("x-caller-claims-digest", caller_claims_digest)
+            .send()
+            .await
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        response.json().await.ok()
+    }
+
+    async fn execute_workflow_lifecycle_tool(
+        &self,
+        tool: &McpToolConfig,
+        arguments: &JsonValue,
+        context: &McpRequestContext,
+    ) -> Result<JsonValue, McpExecutionError> {
+        let error_result = |code: ErrorCode, message: String| {
+            workflow_mcp_error_result(code, message, context.correlation_id.as_deref())
+        };
+        let Some(runtime) = self.workflow_dispatch.as_ref() else {
+            return Ok(error_result(
+                ErrorCode::WorkflowInvocationUnavailable,
+                "WORKFLOW_INVOCATION_UNAVAILABLE: workflow invocation service is unavailable"
+                    .to_string(),
+            ));
+        };
+        let workflow_instance_id = arguments
+            .get("workflowInstanceId")
+            .and_then(JsonValue::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok());
+        let Some(workflow_instance_id) = workflow_instance_id else {
+            return Ok(error_result(
+                ErrorCode::WorkflowInputInvalid,
+                "WORKFLOW_INPUT_INVALID: workflowInstanceId must be a UUID".to_string(),
+            ));
+        };
+        let Some(auth) = context.auth.as_ref() else {
+            return Ok(error_result(
+                ErrorCode::WorkflowPolicyDenied,
+                "WORKFLOW_POLICY_DENIED: authenticated workflow identity is required".to_string(),
+            ));
+        };
+        let host_id = auth
+            .host
+            .as_deref()
+            .or_else(|| auth.claims.get("hostId").and_then(JsonValue::as_str))
+            .or_else(|| auth.claims.get("host_id").and_then(JsonValue::as_str))
+            .and_then(|value| Uuid::parse_str(value).ok());
+        let Some(host_id) = host_id else {
+            return Ok(error_result(
+                ErrorCode::WorkflowPolicyDenied,
+                "WORKFLOW_POLICY_DENIED: a UUID tenant identity is required".to_string(),
+            ));
+        };
+        let principal_subject = auth
+            .client_id
+            .as_deref()
+            .or_else(|| auth.claims.get("client_id").and_then(JsonValue::as_str))
+            .or_else(|| auth.claims.get("sub").and_then(JsonValue::as_str));
+        let Some(principal_subject) = principal_subject.filter(|value| !value.trim().is_empty())
+        else {
+            return Ok(error_result(
+                ErrorCode::WorkflowPolicyDenied,
+                "WORKFLOW_POLICY_DENIED: principal subject is required".to_string(),
+            ));
+        };
+        let end_user_subject = auth
+            .user_id
+            .as_deref()
+            .or_else(|| auth.claims.get("user_id").and_then(JsonValue::as_str))
+            .or_else(|| auth.claims.get("userId").and_then(JsonValue::as_str))
+            .or_else(|| auth.claims.get("sub").and_then(JsonValue::as_str))
+            .unwrap_or(principal_subject);
+        let bearer_token = match std::env::var(&runtime.bearer_token_env) {
+            Ok(token) if token.len() >= 32 => token,
+            _ => {
+                return Ok(error_result(
+                    ErrorCode::WorkflowInvocationUnavailable,
+                    "WORKFLOW_INVOCATION_UNAVAILABLE: workflow invocation authentication is unavailable"
+                        .to_string(),
+                ));
+            }
+        };
+        let caller_claims_digest = canonical_sha256(&stable_subject_claims(&auth.claims))
+            .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
+        let base_url = format!(
+            "{}/v1/workflow-invocations/{workflow_instance_id}",
+            runtime.invocation_url
+        );
+        let request = match tool.name.as_str() {
+            "workflow_get_status" => self.private_target_client.get(&base_url),
+            "workflow_get_result" => self.private_target_client.get(format!("{base_url}/result")),
+            "workflow_cancel" => self.private_target_client.delete(&base_url),
+            _ => {
+                return Ok(error_result(
+                    ErrorCode::WorkflowInputInvalid,
+                    "WORKFLOW_INPUT_INVALID: unknown workflow lifecycle operation".to_string(),
+                ));
+            }
+        };
+        let response = request
+            .bearer_auth(bearer_token)
+            .header("x-host-id", host_id.to_string())
+            .header("x-principal-subject", principal_subject)
+            .header("x-end-user-subject", end_user_subject)
+            .header("x-caller-claims-digest", caller_claims_digest)
+            .send()
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                return Ok(error_result(
+                    ErrorCode::WorkflowInvocationUnavailable,
+                    format!("Workflow lifecycle request failed: {error}"),
+                ));
+            }
+        };
+        let http_status = response.status();
+        let payload: JsonValue = match response.json().await {
+            Ok(payload) => payload,
+            Err(error) => {
+                return Ok(error_result(
+                    ErrorCode::WorkflowInvocationUnavailable,
+                    format!("Workflow lifecycle response was not JSON: {error}"),
+                ));
+            }
+        };
+        if !http_status.is_success() {
+            let message = payload
+                .get("message")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("workflow lifecycle request was rejected");
+            let code = if matches!(http_status.as_u16(), 401 | 403) {
+                ErrorCode::WorkflowPolicyDenied
+            } else {
+                ErrorCode::WorkflowInvocationUnavailable
+            };
+            return Ok(error_result(
+                code,
+                format!(
+                    "Workflow lifecycle request was rejected with HTTP {}: {}",
+                    http_status.as_u16(),
+                    truncate_error_message(message)
+                ),
+            ));
+        }
+        let compact = serde_json::to_string(&payload)
+            .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
+        Ok(json!({
+            "content":[{"type":"text","text":compact}],
+            "structuredContent":payload,
+            "isError":false
+        }))
     }
 
     async fn execute_http_tool(
@@ -4882,6 +5689,53 @@ fn mcp_tool_error_result(message: impl Into<String>) -> JsonValue {
     })
 }
 
+fn workflow_mcp_error_result(
+    code: ErrorCode,
+    message: impl Into<String>,
+    correlation_id: Option<&str>,
+) -> JsonValue {
+    let message = message.into();
+    let retryable = matches!(
+        code,
+        ErrorCode::WorkflowCapacityExhausted | ErrorCode::WorkflowInvocationUnavailable
+    );
+    let code = serde_json::to_value(code)
+        .unwrap_or_else(|_| JsonValue::String("WORKFLOW_TASK_FAILED".to_string()));
+    let correlation_id = correlation_id.unwrap_or("unavailable");
+    json!({
+        "content": [{"type": "text", "text": message}],
+        "structuredContent": {
+            "error": {
+                "code": code,
+                "message": message,
+                "retryable": retryable,
+                "correlationId": correlation_id
+            }
+        },
+        "isError": true
+    })
+}
+
+fn workflow_mcp_error_result_with_instance(
+    code: ErrorCode,
+    message: impl Into<String>,
+    correlation_id: Option<&str>,
+    workflow_instance_id: Uuid,
+) -> JsonValue {
+    let mut result = workflow_mcp_error_result(code, message, correlation_id);
+    if let Some(error) = result
+        .get_mut("structuredContent")
+        .and_then(|value| value.get_mut("error"))
+        .and_then(JsonValue::as_object_mut)
+    {
+        error.insert(
+            "workflowInstanceId".to_string(),
+            JsonValue::String(workflow_instance_id.to_string()),
+        );
+    }
+    result
+}
+
 fn stateless_tool_result(mut result: JsonValue) -> JsonValue {
     let Some(result) = result.as_object_mut() else {
         return mcp_tool_error_result("Tool returned an invalid result envelope");
@@ -5330,8 +6184,11 @@ pub fn validate_mcp_router_runtime_config(
 pub fn validate_mcp_router_config_for_deployment(
     config: &McpRouterConfig,
 ) -> McpConfigValidationReport {
+    let mut effective_config = config.clone();
     let mut errors = Vec::new();
-    if let Err(error) = validate_config(config) {
+    if let Err(error) = ensure_workflow_lifecycle_tools(&mut effective_config)
+        .and_then(|()| validate_config(&effective_config))
+    {
         errors.push(McpConfigValidationError {
             tool_name: "<configuration>".to_string(),
             schema_kind: "configuration".to_string(),
@@ -5340,11 +6197,11 @@ pub fn validate_mcp_router_config_for_deployment(
             reason: error.to_string(),
         });
     } else {
-        for tool in &config.tools {
+        for tool in &effective_config.tools {
             match prepare_tools(
                 std::slice::from_ref(tool),
-                &config.schema,
-                config.protocols.stateless.enabled,
+                &effective_config.schema,
+                effective_config.protocols.stateless.enabled,
             ) {
                 Err(error) => {
                     let configuration_wide = error.tool_name == "<configuration>";
@@ -5371,9 +6228,9 @@ pub fn validate_mcp_router_config_for_deployment(
         // catalogs still report every independently bad tool.
         if errors.is_empty()
             && let Err(error) = prepare_tools(
-                &config.tools,
-                &config.schema,
-                config.protocols.stateless.enabled,
+                &effective_config.tools,
+                &effective_config.schema,
+                effective_config.protocols.stateless.enabled,
             )
         {
             errors.push(schema_preparation_validation_error(error));
@@ -5381,7 +6238,7 @@ pub fn validate_mcp_router_config_for_deployment(
     }
     McpConfigValidationReport {
         valid: errors.is_empty(),
-        tools_checked: config.tools.len(),
+        tools_checked: effective_config.tools.len(),
         errors,
     }
 }
@@ -5585,6 +6442,122 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
                 "duplicate mcp-router tool `{name}`"
             )));
         }
+        let private_version_target =
+            tool_metadata_bool(tool, &["privateVersionTarget"]).unwrap_or(false);
+        if !private_version_target && tool.tool_metadata.get("authorizationToolName").is_some() {
+            return Err(RuntimeError::Unsupported(format!(
+                "mcp-router tool `{name}` may set authorizationToolName only for a private version target"
+            )));
+        }
+        if private_version_target {
+            let stable_ref_valid = tool
+                .tool_metadata
+                .get("stableToolRef")
+                .and_then(JsonValue::as_str)
+                .and_then(|value| Uuid::parse_str(value).ok())
+                .is_some_and(|value| !value.is_nil());
+            let logical_name_valid = tool
+                .tool_metadata
+                .get("authorizationToolName")
+                .and_then(JsonValue::as_str)
+                .is_some_and(|value| !value.trim().is_empty());
+            if !stable_ref_valid
+                || !logical_name_valid
+                || tool.endpoint.as_deref().is_none_or(str::is_empty)
+            {
+                return Err(RuntimeError::Unsupported(format!(
+                    "private MCP version target `{name}` requires stableToolRef, authorizationToolName, and an explicit logical endpoint key"
+                )));
+            }
+        }
+        if tool.execution_placement == McpExecutionPlacement::WorkflowLifecycle {
+            if !WORKFLOW_LIFECYCLE_TOOLS
+                .iter()
+                .any(|(reserved, _, _)| *reserved == name)
+                || tool.workflow_binding.is_some()
+                || tool.endpoint.as_deref() != Some(&format!("{name}@call"))
+                || !tool.input_schema_configured
+            {
+                return Err(RuntimeError::Unsupported(format!(
+                    "mcp-router workflow lifecycle tool `{name}` is not a valid generated lifecycle contract"
+                )));
+            }
+            continue;
+        }
+        if tool.execution_placement == McpExecutionPlacement::Workflow {
+            let binding = tool.workflow_binding.as_ref().ok_or_else(|| {
+                RuntimeError::Unsupported(format!(
+                    "mcp-router workflow tool `{name}` requires workflowBinding"
+                ))
+            })?;
+            if binding.mode == InvocationMode::Sync
+                && (tool_metadata_bool(tool, &["readOnly"]) != Some(true)
+                    || tool_metadata_bool(tool, &["destructive"]).unwrap_or(false)
+                    || tool_metadata_bool(tool, &["humanApprovalRequired"]).unwrap_or(false))
+            {
+                return Err(RuntimeError::Unsupported(format!(
+                    "mcp-router workflow tool `{name}` must be read-only and headless"
+                )));
+            }
+            if binding.stable_tool_ref.is_nil()
+                || binding.workflow_definition_id.is_nil()
+                || binding.workflow_version.trim().is_empty()
+                || (binding.mode == InvocationMode::Sync
+                    && (binding.wait_timeout_ms == 0
+                        || binding.wait_timeout_ms > 20_000
+                        || binding.total_deadline_ms < binding.wait_timeout_ms
+                        || binding.total_deadline_ms > 30_000))
+                || (binding.mode == InvocationMode::Async
+                    && (binding.total_deadline_ms == 0 || binding.total_deadline_ms > 604_800_000))
+                || (binding.mode == InvocationMode::Sync
+                    && binding.execution_class != ExecutionClass::Interactive)
+                || (binding.idempotency_kind != IdempotencyKind::Derived
+                    && binding
+                        .idempotency_input
+                        .as_deref()
+                        .map(str::trim)
+                        .is_none_or(str::is_empty))
+                || binding.budget.validate().is_err()
+            {
+                return Err(RuntimeError::Unsupported(format!(
+                    "mcp-router workflow tool `{name}` has an invalid synchronous binding"
+                )));
+            }
+            for digest in [
+                &binding.definition_digest,
+                &binding.schema_digest,
+                &binding.policy_digest,
+                &binding.response_policy_digest,
+            ] {
+                validate_digest(digest).map_err(|error| {
+                    RuntimeError::Unsupported(format!(
+                        "mcp-router workflow tool `{name}` has an invalid digest: {error}"
+                    ))
+                })?;
+            }
+            if config.workflow.invocation_url.trim().is_empty()
+                || config.workflow.bearer_token_env.trim().is_empty()
+                || (binding.mode == InvocationMode::Sync
+                    && (config.workflow.permit_pools.len()
+                        <= usize::from(binding.budget.maximum_delegation_depth)
+                        || config.workflow.permit_pools.contains(&0)))
+            {
+                return Err(RuntimeError::Unsupported(format!(
+                    "mcp-router workflow runtime cannot admit tool `{name}` at its declared delegation depth"
+                )));
+            }
+            let invocation_url = Url::parse(&config.workflow.invocation_url).map_err(|error| {
+                RuntimeError::Unsupported(format!(
+                    "mcp-router.workflow.invocationUrl is invalid: {error}"
+                ))
+            })?;
+            if !matches!(invocation_url.scheme(), "http" | "https") {
+                return Err(RuntimeError::Unsupported(
+                    "mcp-router.workflow.invocationUrl must use http or https".to_string(),
+                ));
+            }
+            continue;
+        }
         if tool.path.trim().is_empty() || !tool.path.starts_with('/') {
             return Err(RuntimeError::Unsupported(format!(
                 "mcp-router tool `{name}` path must start with `/`"
@@ -5599,6 +6572,11 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
             })?;
         validate_path_placeholder_mapping(tool, tool_parameter_mapping(tool), &path_placeholders)
             .map_err(|error| RuntimeError::Unsupported(error.message))?;
+        if tool.workflow_binding.is_some() {
+            return Err(RuntimeError::Unsupported(format!(
+                "mcp-router backend tool `{name}` cannot configure workflowBinding"
+            )));
+        }
         let has_target_host = tool
             .target_host
             .as_deref()
@@ -5683,6 +6661,15 @@ fn tool_endpoint(tool: &McpToolConfig) -> String {
                 tool.method.as_str().to_ascii_lowercase()
             )
         })
+}
+
+fn authorization_tool_name(tool: &McpToolConfig) -> &str {
+    tool.tool_metadata
+        .get("authorizationToolName")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(tool.name.as_str())
 }
 
 fn effective_http_method(tool: &McpToolConfig) -> McpHttpMethod {
@@ -7707,6 +8694,78 @@ fn default_object() -> JsonValue {
     json!({})
 }
 
+const WORKFLOW_LIFECYCLE_TOOLS: [(&str, &str, bool); 3] = [
+    (
+        "workflow_get_status",
+        "Get the current status of an asynchronous workflow invocation",
+        true,
+    ),
+    (
+        "workflow_get_result",
+        "Get the completed result of an asynchronous workflow invocation",
+        true,
+    ),
+    (
+        "workflow_cancel",
+        "Request cancellation of an asynchronous workflow invocation",
+        false,
+    ),
+];
+
+fn ensure_workflow_lifecycle_tools(config: &mut McpRouterConfig) -> Result<(), RuntimeError> {
+    let has_async = config.tools.iter().any(|tool| {
+        tool.execution_placement == McpExecutionPlacement::Workflow
+            && tool
+                .workflow_binding
+                .as_ref()
+                .is_some_and(|binding| binding.mode == InvocationMode::Async)
+    });
+    if !has_async {
+        return Ok(());
+    }
+    for (name, description, read_only) in WORKFLOW_LIFECYCLE_TOOLS {
+        if config.tools.iter().any(|tool| tool.name == name) {
+            return Err(RuntimeError::Unsupported(format!(
+                "mcp-router tool name `{name}` is reserved for asynchronous workflow lifecycle access"
+            )));
+        }
+        config.tools.push(McpToolConfig {
+            name: name.to_string(),
+            endpoint_name: None,
+            description: description.to_string(),
+            protocol: None,
+            service_id: None,
+            env_tag: None,
+            target_host: None,
+            path: String::new(),
+            method: McpHttpMethod::Call,
+            endpoint: Some(format!("{name}@call")),
+            api_type: McpToolType::Http,
+            execution_placement: McpExecutionPlacement::WorkflowLifecycle,
+            workflow_binding: None,
+            backend_mcp_protocol: None,
+            session_independent: true,
+            backend_credential_mode: None,
+            backend_resource: None,
+            input_schema: json!({
+                "type":"object",
+                "properties":{"workflowInstanceId":{"type":"string","format":"uuid"}},
+                "required":["workflowInstanceId"],
+                "additionalProperties":false
+            }),
+            output_schema: None,
+            input_schema_configured: true,
+            tool_metadata: json!({
+                "readOnly":read_only,
+                "destructive":!read_only,
+                "idempotent":true,
+                "workflowLifecycle":true
+            }),
+        });
+    }
+    Ok(())
+}
+
 impl fmt::Display for McpHttpMethod {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
@@ -9293,6 +10352,8 @@ endpointRules:
                     method: McpHttpMethod::Get,
                     endpoint: None,
                     api_type: McpToolType::Http,
+                    execution_placement: McpExecutionPlacement::Backend,
+                    workflow_binding: None,
                     backend_mcp_protocol: None,
                     session_independent: false,
                     backend_credential_mode: None,
@@ -9358,6 +10419,8 @@ endpointRules:
                     method: McpHttpMethod::Get,
                     endpoint: None,
                     api_type: McpToolType::Http,
+                    execution_placement: McpExecutionPlacement::Backend,
+                    workflow_binding: None,
                     backend_mcp_protocol: None,
                     session_independent: false,
                     backend_credential_mode: None,
@@ -9422,6 +10485,8 @@ endpointRules:
                     method: McpHttpMethod::Call,
                     endpoint: Some("get_sh_vers@call".to_string()),
                     api_type: McpToolType::Http,
+                    execution_placement: McpExecutionPlacement::Backend,
+                    workflow_binding: None,
                     backend_mcp_protocol: None,
                     session_independent: false,
                     backend_credential_mode: None,
@@ -9508,6 +10573,8 @@ endpointRules:
                 method: McpHttpMethod::Post,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                execution_placement: McpExecutionPlacement::Backend,
+                workflow_binding: None,
                 backend_mcp_protocol: None,
                 session_independent: false,
                 backend_credential_mode: None,
@@ -9613,6 +10680,8 @@ endpointRules:
                 method: McpHttpMethod::Post,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                execution_placement: McpExecutionPlacement::Backend,
+                workflow_binding: None,
                 backend_mcp_protocol: None,
                 session_independent: false,
                 backend_credential_mode: None,
@@ -9688,6 +10757,8 @@ endpointRules:
                 method: McpHttpMethod::Post,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                execution_placement: McpExecutionPlacement::Backend,
+                workflow_binding: None,
                 backend_mcp_protocol: None,
                 session_independent: false,
                 backend_credential_mode: None,
@@ -9755,6 +10826,8 @@ endpointRules:
                 method: McpHttpMethod::Post,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                execution_placement: McpExecutionPlacement::Backend,
+                workflow_binding: None,
                 backend_mcp_protocol: None,
                 session_independent: false,
                 backend_credential_mode: None,
@@ -9825,6 +10898,8 @@ endpointRules:
                 method: McpHttpMethod::Post,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                execution_placement: McpExecutionPlacement::Backend,
+                workflow_binding: None,
                 backend_mcp_protocol: None,
                 session_independent: false,
                 backend_credential_mode: None,
@@ -9908,6 +10983,8 @@ endpointRules:
                 method: McpHttpMethod::Call,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                execution_placement: McpExecutionPlacement::Backend,
+                workflow_binding: None,
                 backend_mcp_protocol: None,
                 session_independent: false,
                 backend_credential_mode: None,
@@ -9982,6 +11059,8 @@ endpointRules:
                 method: McpHttpMethod::Call,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                execution_placement: McpExecutionPlacement::Backend,
+                workflow_binding: None,
                 backend_mcp_protocol: None,
                 session_independent: false,
                 backend_credential_mode: None,
@@ -10107,6 +11186,8 @@ endpointRules:
                 method: McpHttpMethod::Post,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                execution_placement: McpExecutionPlacement::Backend,
+                workflow_binding: None,
                 backend_mcp_protocol: None,
                 session_independent: false,
                 backend_credential_mode: None,
@@ -10189,6 +11270,8 @@ endpointRules:
                 method: McpHttpMethod::Post,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                execution_placement: McpExecutionPlacement::Backend,
+                workflow_binding: None,
                 backend_mcp_protocol: None,
                 session_independent: false,
                 backend_credential_mode: None,
@@ -10452,6 +11535,8 @@ endpointRules:
                 method: McpHttpMethod::Call,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                execution_placement: McpExecutionPlacement::Backend,
+                workflow_binding: None,
                 backend_mcp_protocol: None,
                 session_independent: false,
                 backend_credential_mode: None,
@@ -11427,6 +12512,8 @@ endpointRules:
             method,
             endpoint: endpoint.map(str::to_string),
             api_type: McpToolType::Http,
+            execution_placement: McpExecutionPlacement::Backend,
+            workflow_binding: None,
             backend_mcp_protocol: None,
             session_independent: false,
             backend_credential_mode: None,
@@ -12102,6 +13189,8 @@ endpointRules:
                 method: McpHttpMethod::Call,
                 endpoint: None,
                 api_type: McpToolType::Mcp,
+                execution_placement: McpExecutionPlacement::Backend,
+                workflow_binding: None,
                 backend_mcp_protocol: None,
                 session_independent: false,
                 backend_credential_mode: None,
@@ -15315,5 +16404,189 @@ endpointRules:
             result["content"][0]["text"],
             r#"{"items":[{"accountType":"C"}]}"#
         );
+    }
+
+    #[test]
+    fn workflow_tool_configuration_is_read_only_and_depth_admitted() {
+        let yaml = r#"
+enabled: true
+workflow:
+  invocationUrl: http://light-workflow:8436
+  permitPools: [8, 4]
+tools:
+  - name: customer_summary
+    description: Read a composed customer summary
+    executionPlacement: workflow
+    inputSchema: {type: object}
+    outputSchema: {type: object}
+    toolMetadata: {readOnly: true, destructive: false}
+    workflowBinding:
+      stableToolRef: 15000000-0000-0000-0000-000000000001
+      workflowDefinitionId: 15000000-0000-0000-0000-000000000002
+      workflowVersion: 1.0.0
+      definitionDigest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      schemaDigest: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      policyDigest: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+      responsePolicyDigest: sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+      waitTimeoutMs: 20000
+      totalDeadlineMs: 30000
+      resultTextMode: compact-json
+      budget:
+        maximumTaskAttempts: 8
+        maximumNestedCalls: 4
+        maximumDelegationDepth: 1
+        maximumParallelism: 1
+        maximumRequestBytes: 65536
+        maximumIntermediateBytes: 262144
+        maximumResultBytes: 131072
+        maximumCostUnits: 0
+"#;
+        let config: McpRouterConfig = serde_yaml::from_str(yaml).expect("workflow config");
+        validate_config(&config).expect("valid workflow-backed tool");
+
+        let mut write_capable = config.clone();
+        write_capable.tools[0].tool_metadata["destructive"] = JsonValue::Bool(true);
+        assert!(validate_config(&write_capable).is_err());
+
+        let mut missing_depth_pool = config;
+        missing_depth_pool.workflow.permit_pools.truncate(1);
+        assert!(validate_config(&missing_depth_pool).is_err());
+    }
+
+    #[test]
+    fn async_workflow_configuration_generates_lifecycle_tools_only_when_needed() {
+        let yaml = r#"
+enabled: true
+workflow:
+  invocationUrl: http://light-workflow:8436
+tools:
+  - name: update_customer
+    executionPlacement: workflow
+    inputSchema: {type: object}
+    toolMetadata: {readOnly: false, destructive: true, humanApprovalRequired: true}
+    workflowBinding:
+      stableToolRef: 15000000-0000-0000-0000-000000000011
+      workflowDefinitionId: 15000000-0000-0000-0000-000000000012
+      workflowVersion: 2.0.0
+      definitionDigest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      schemaDigest: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      policyDigest: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+      responsePolicyDigest: sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+      mode: async
+      cancellationPolicy: COOPERATIVE
+      totalDeadlineMs: 3600000
+      budget:
+        maximumTaskAttempts: 16
+        maximumNestedCalls: 8
+        maximumDelegationDepth: 1
+        maximumParallelism: 4
+        maximumRequestBytes: 65536
+        maximumIntermediateBytes: 262144
+        maximumResultBytes: 131072
+        maximumCostUnits: 100
+"#;
+        let mut config: McpRouterConfig = serde_yaml::from_str(yaml).expect("async config");
+        ensure_workflow_lifecycle_tools(&mut config).expect("generated lifecycle tools");
+        validate_config(&config).expect("valid async workflow configuration");
+        let lifecycle: Vec<_> = config
+            .tools
+            .iter()
+            .filter(|tool| tool.execution_placement == McpExecutionPlacement::WorkflowLifecycle)
+            .map(|tool| tool.name.as_str())
+            .collect();
+        assert_eq!(
+            lifecycle,
+            vec![
+                "workflow_get_status",
+                "workflow_get_result",
+                "workflow_cancel"
+            ]
+        );
+        assert!(config.tools.iter().all(|tool| {
+            tool.execution_placement != McpExecutionPlacement::WorkflowLifecycle
+                || tool.endpoint.as_deref() == Some(&format!("{}@call", tool.name))
+        }));
+    }
+
+    #[test]
+    fn private_version_target_keeps_logical_authorization_identity() {
+        let tool: McpToolConfig = serde_yaml::from_str(
+            r#"
+name: customer_summary__v1_0_0
+path: /mcp
+method: CALL
+targetHost: http://backend.example
+apiType: mcp
+endpoint: customer_summary@call
+toolMetadata:
+  privateVersionTarget: true
+  stableToolRef: 15000000-0000-0000-0000-000000000003
+  authorizationToolName: customer_summary
+"#,
+        )
+        .expect("private target");
+
+        assert_eq!(authorization_tool_name(&tool), "customer_summary");
+        assert!(tool_metadata_bool(&tool, &["privateVersionTarget"]).unwrap());
+
+        let mut public_tool = tool;
+        public_tool.tool_metadata["privateVersionTarget"] = JsonValue::Bool(false);
+        let mut config = McpRouterConfig::default();
+        config.tools.push(public_tool);
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn workflow_errors_use_the_structured_mcp_contract() {
+        let result = workflow_mcp_error_result(
+            ErrorCode::WorkflowCapacityExhausted,
+            "WORKFLOW_CAPACITY_EXHAUSTED: retry later",
+            Some("corr-1"),
+        );
+
+        assert_eq!(result["isError"], true);
+        assert_eq!(
+            result["structuredContent"]["error"]["code"],
+            "WORKFLOW_CAPACITY_EXHAUSTED"
+        );
+        assert_eq!(result["structuredContent"]["error"]["retryable"], true);
+        assert_eq!(
+            result["structuredContent"]["error"]["correlationId"],
+            "corr-1"
+        );
+    }
+
+    #[test]
+    fn workflow_disclosure_digest_ignores_volatile_token_claims() {
+        let first = json!({
+            "sub": "user-1",
+            "role": ["reader"],
+            "tenant": "tenant-1",
+            "exp": 100,
+            "iat": 50,
+            "jti": "token-1",
+            "nonce": "nonce-1"
+        });
+        let refreshed = json!({
+            "sub": "user-1",
+            "role": ["reader"],
+            "tenant": "tenant-1",
+            "exp": 200,
+            "iat": 150,
+            "jti": "token-2",
+            "nonce": "nonce-2"
+        });
+        let revoked_role = json!({
+            "sub": "user-1",
+            "role": [],
+            "tenant": "tenant-1",
+            "exp": 200
+        });
+
+        let first_digest = canonical_sha256(&stable_subject_claims(&first)).unwrap();
+        let refreshed_digest = canonical_sha256(&stable_subject_claims(&refreshed)).unwrap();
+        let revoked_digest = canonical_sha256(&stable_subject_claims(&revoked_role)).unwrap();
+        assert_eq!(first_digest, refreshed_digest);
+        assert_ne!(first_digest, revoked_digest);
     }
 }

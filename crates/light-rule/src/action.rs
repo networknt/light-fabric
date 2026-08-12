@@ -20,6 +20,12 @@ pub struct ActionRegistry {
     plugins: HashMap<String, Arc<dyn RuleActionPlugin>>,
 }
 
+impl Default for ActionRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ActionRegistry {
     /// Create a new Action Registry
     pub fn new() -> Self {

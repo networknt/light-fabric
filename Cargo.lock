@@ -4019,6 +4019,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "workflow-invocation-contract",
 ]
 
 [[package]]
@@ -4026,6 +4027,7 @@ name = "light-rule"
 version = "0.2.1"
 dependencies = [
  "async-trait",
+ "base64",
  "cel",
  "evalexpr",
  "futures",
@@ -4086,6 +4088,7 @@ dependencies = [
 name = "light-workflow"
 version = "0.2.1"
 dependencies = [
+ "agent-delegation",
  "async-trait",
  "axum",
  "chrono",
@@ -4094,6 +4097,7 @@ dependencies = [
  "execution-security",
  "futures-util",
  "hex",
+ "jsonschema",
  "light-rule",
  "light-runtime",
  "model-provider",
@@ -4105,11 +4109,13 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "sqlx",
+ "subtle",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "uuid",
  "workflow-core",
+ "workflow-invocation-contract",
  "workflow-policy",
 ]
 
@@ -7964,6 +7970,20 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+]
+
+[[package]]
+name = "workflow-invocation-contract"
+version = "0.2.1"
+dependencies = [
+ "chrono",
+ "hex",
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "uuid",
 ]
 
 [[package]]

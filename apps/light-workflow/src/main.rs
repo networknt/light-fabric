@@ -37,8 +37,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             "DATABASE_URL environment variable must be set",
         )
     })?;
+    let database_max_connections = env::var("WORKFLOW_DATABASE_MAX_CONNECTIONS")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(32)
+        .clamp(8, 512);
     let pool = PgPoolOptions::new()
-        .max_connections(5)
+        .max_connections(database_max_connections)
         .connect(&db_url)
         .await?;
 
@@ -73,7 +78,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let executor_handle = tokio::spawn(async move { host_executor.run().await });
     let agent_job_reconciler = AgentJobReconciler::new(pool.clone(), Arc::clone(&executor));
     let agent_job_handle = tokio::spawn(async move { agent_job_reconciler.run().await });
-    let rule_api_handle = tokio::spawn(async move { run_rule_api().await });
+    let invocation_pool = pool.clone();
+    let rule_api_handle = tokio::spawn(async move { run_rule_api(invocation_pool).await });
     let runner_runtime = if runner_config.enabled {
         let scheduler = RunnerScheduler::new(pool.clone(), runner_config.clone());
         let reconciler = ResultReconciler::new(

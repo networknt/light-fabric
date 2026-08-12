@@ -1,0 +1,17 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Workflow result is unavailable. Correlation ID: corr-1"
+    }
+  ],
+  "structuredContent": {
+    "error": {
+      "code": "WORKFLOW_OUTPUT_INVALID",
+      "message": "Workflow result is unavailable.",
+      "retryable": false,
+      "correlationId": "corr-1"
+    }
+  },
+  "isError": true
+}

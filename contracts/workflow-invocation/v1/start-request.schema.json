@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lightapi.net/contracts/workflow-invocation/v1/start-request.schema.json",
+  "title": "Workflow invocation start request V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contractVersion", "workflowInstanceId", "stableToolRef",
+    "workflowDefinitionId", "workflowVersion", "definitionDigest",
+    "schemaDigest", "policyDigest", "responsePolicyDigest", "mode", "cancellationPolicy",
+    "executionClass", "permitDepth", "deadlineTs",
+    "canonicalInputProfile", "normalizedInputDigest", "input", "callerClaims",
+    "idempotency", "budget", "correlationId"
+  ],
+  "properties": {
+    "contractVersion": { "const": 1 },
+    "workflowInstanceId": { "$ref": "#/$defs/uuid" },
+    "stableToolRef": { "$ref": "#/$defs/uuid" },
+    "workflowDefinitionId": { "$ref": "#/$defs/uuid" },
+    "workflowVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "definitionDigest": { "$ref": "#/$defs/digest" },
+    "schemaDigest": { "$ref": "#/$defs/digest" },
+    "policyDigest": { "$ref": "#/$defs/digest" },
+    "responsePolicyDigest": { "$ref": "#/$defs/digest" },
+    "mode": { "enum": ["sync", "async"] },
+    "cancellationPolicy": { "enum": ["BEFORE_EFFECTS_ONLY", "COOPERATIVE", "DISABLED"] },
+    "executionClass": { "enum": ["interactive", "standard", "batch"] },
+    "permitDepth": { "type": "integer", "minimum": 0, "maximum": 16 },
+    "deadlineTs": { "type": "string", "format": "date-time" },
+    "canonicalInputProfile": { "const": "rfc8785-safe-json-v1" },
+    "normalizedInputDigest": { "$ref": "#/$defs/digest" },
+    "input": { "type": "object" },
+    "callerClaims": { "type": "object" },
+    "idempotency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "scopedKeyDigest", "inputDigest", "inFlightUntil", "resultReplayUntil"],
+      "properties": {
+        "kind": { "enum": ["DERIVED", "EXPLICIT", "BUSINESS"] },
+        "scopedKeyDigest": { "$ref": "#/$defs/digest" },
+        "inputDigest": { "$ref": "#/$defs/digest" },
+        "inFlightUntil": { "type": "string", "format": "date-time" },
+        "resultReplayUntil": { "type": "string", "format": "date-time" }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maximumTaskAttempts", "maximumNestedCalls",
+        "maximumDelegationDepth", "maximumParallelism",
+        "maximumRequestBytes", "maximumIntermediateBytes",
+        "maximumResultBytes", "maximumCostUnits"
+      ],
+      "properties": {
+        "maximumTaskAttempts": { "type": "integer", "minimum": 1 },
+        "maximumNestedCalls": { "type": "integer", "minimum": 0 },
+        "maximumDelegationDepth": { "type": "integer", "minimum": 0, "maximum": 16 },
+        "maximumParallelism": { "type": "integer", "minimum": 1 },
+        "maximumRequestBytes": { "type": "integer", "minimum": 1 },
+        "maximumIntermediateBytes": { "type": "integer", "minimum": 1 },
+        "maximumResultBytes": { "type": "integer", "minimum": 1 },
+        "maximumCostUnits": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "correlationId": { "type": "string", "minLength": 1, "maxLength": 255 }
+  },
+  "$defs": {
+    "uuid": { "type": "string", "format": "uuid" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

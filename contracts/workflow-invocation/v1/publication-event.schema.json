@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lightapi.net/contracts/workflow-invocation/v1/publication-event.schema.json",
+  "title": "Workflow tool binding publication event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["eventVersion", "eventId", "occurredAt", "binding", "dependencies"],
+  "properties": {
+    "eventVersion": { "const": 1 },
+    "eventId": { "type": "string", "format": "uuid" },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "binding": { "$ref": "#/$defs/binding" },
+    "dependencies": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/dependency" }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "bindingId", "hostId", "stableToolRef", "logicalToolName", "authorizationEndpointKey", "workflowDefinitionId", "workflowVersion", "definitionDigest", "inputSchemaDigest", "outputSchemaDigest", "policyDigest", "responsePolicyDigest", "mode", "rootExecutionClass", "resultTextMode", "cancellationPolicy", "resultReplayMs", "maximumDelegationDepth", "lifecycle"],
+      "properties": {
+        "contractVersion": { "const": 1 },
+        "bindingId": { "type": "string", "format": "uuid" },
+        "hostId": { "type": "string", "format": "uuid" },
+        "stableToolRef": { "type": "string", "format": "uuid" },
+        "logicalToolName": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "authorizationEndpointKey": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "workflowDefinitionId": { "type": "string", "format": "uuid" },
+        "workflowVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "definitionDigest": { "$ref": "#/$defs/digest" },
+        "inputSchemaDigest": { "$ref": "#/$defs/digest" },
+        "outputSchemaDigest": { "$ref": "#/$defs/digest" },
+        "policyDigest": { "$ref": "#/$defs/digest" },
+        "responsePolicyDigest": { "$ref": "#/$defs/digest" },
+        "mode": { "enum": ["sync", "async"] },
+        "rootExecutionClass": { "enum": ["interactive", "standard", "batch"] },
+        "resultTextMode": { "enum": ["compact-json", "summary"] },
+        "cancellationPolicy": { "enum": ["BEFORE_EFFECTS_ONLY", "COOPERATIVE", "DISABLED"] },
+        "resultReplayMs": { "type": "integer", "minimum": 0 },
+        "maximumDelegationDepth": { "type": "integer", "minimum": 0 },
+        "lifecycle": { "enum": ["DRAFT", "ACTIVE", "RETIRED", "REVOKED"] }
+      }
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "hostId", "outerBindingId", "nestedStableToolRef", "nestedVersionTargetId", "nestedContractDigest", "compatibility", "logicalAuthorizationEndpointKey"],
+      "properties": {
+        "contractVersion": { "const": 1 },
+        "hostId": { "type": "string", "format": "uuid" },
+        "outerBindingId": { "type": "string", "format": "uuid" },
+        "nestedStableToolRef": { "type": "string", "format": "uuid" },
+        "nestedVersionTargetId": { "type": "string", "format": "uuid" },
+        "nestedContractDigest": { "$ref": "#/$defs/digest" },
+        "compatibility": { "enum": ["EXACT", "BACKWARD_COMPATIBLE"] },
+        "logicalAuthorizationEndpointKey": { "type": "string", "minLength": 1, "maxLength": 255 }
+      }
+    }
+  }
+}

@@ -1,0 +1,147 @@
+openapi: 3.1.0
+info:
+  title: Light Workflow Invocation API
+  version: 1.0.0
+  description: Internal durable invocation boundary for workflow-backed MCP tools.
+servers:
+  - url: https://light-workflow.internal
+paths:
+  /v1/workflow-invocations:
+    post:
+      operationId: startWorkflowInvocation
+      security: [{ workflowDelegation: [] }]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./start-request.schema.json
+      responses:
+        '202':
+          description: Durably accepted or idempotently replayed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InvocationStatus' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
+        '429': { $ref: '#/components/responses/CapacityExhausted' }
+  /v1/workflow-invocations/{workflowInstanceId}:
+    parameters:
+      - $ref: '#/components/parameters/WorkflowInstanceId'
+    get:
+      operationId: getWorkflowInvocation
+      security: [{ workflowDelegation: [] }]
+      responses:
+        '200':
+          description: Current durable state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InvocationStatus' }
+        '404': { description: No caller-authorized invocation with this ID. }
+    delete:
+      operationId: cancelWorkflowInvocation
+      security: [{ workflowDelegation: [] }]
+      responses:
+        '200':
+          description: Current or cancelled state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InvocationStatus' }
+        '409': { description: Invocation is terminal or not cancellable. }
+  /v1/workflow-invocations/{workflowInstanceId}/wait:
+    parameters:
+      - $ref: '#/components/parameters/WorkflowInstanceId'
+    post:
+      operationId: waitForWorkflowInvocation
+      description: Bounded resumable long poll over durable state.
+      security: [{ workflowDelegation: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [waitMs]
+              properties:
+                waitMs: { type: integer, minimum: 1, maximum: 20000 }
+                observedVersion: { type: integer, minimum: 0 }
+      responses:
+        '200':
+          description: Terminal state or latest state when the bounded wait expires.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InvocationStatus' }
+  /v1/workflow-invocations/{workflowInstanceId}/result:
+    parameters:
+      - $ref: '#/components/parameters/WorkflowInstanceId'
+    get:
+      operationId: getWorkflowInvocationResult
+      security: [{ workflowDelegation: [] }]
+      responses:
+        '200':
+          description: Filterable public result for a completed invocation.
+          content:
+            application/json:
+              schema: { type: object }
+        '409': { description: Invocation is not completed. }
+components:
+  securitySchemes:
+    workflowDelegation:
+      type: http
+      scheme: bearer
+      bearerFormat: signed-workflow-delegation-v1
+  parameters:
+    WorkflowInstanceId:
+      name: workflowInstanceId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 512 }
+  schemas:
+    InvocationStatus:
+      type: object
+      additionalProperties: false
+      required: [contractVersion, workflowInstanceId, stableToolRef, definitionDigest, state, stateVersion, acceptedTs, updatedTs, deadlineTs, retryable, effectState]
+      properties:
+        contractVersion: { const: 1 }
+        workflowInstanceId: { type: string, format: uuid }
+        stableToolRef: { type: string, format: uuid }
+        definitionDigest: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        state: { enum: [ACCEPTED, RUNNING, WAITING, COMPENSATING, COMPLETED, FAILED, CANCELLED] }
+        stateVersion: { type: integer, minimum: 1 }
+        acceptedTs: { type: string, format: date-time }
+        updatedTs: { type: string, format: date-time }
+        deadlineTs: { type: string, format: date-time }
+        retryable: { type: boolean }
+        effectState: { enum: [none, possible, confirmed] }
+        nonCancellableReason: { type: string, maxLength: 1024 }
+        publicResult: { type: object }
+        error: { $ref: '#/components/schemas/InvocationError' }
+    InvocationError:
+      type: object
+      additionalProperties: false
+      required: [code, message, retryable, correlationId]
+      properties:
+        code:
+          enum: [WORKFLOW_INPUT_INVALID, WORKFLOW_START_REJECTED, WORKFLOW_DEFINITION_MISMATCH, WORKFLOW_TIMEOUT, WORKFLOW_CANCELLED, WORKFLOW_TASK_FAILED, WORKFLOW_OUTPUT_INVALID, WORKFLOW_OUTPUT_INVALID_AFTER_EFFECT, WORKFLOW_POLICY_DENIED, WORKFLOW_CAPACITY_EXHAUSTED, WORKFLOW_INVOCATION_UNAVAILABLE, WORKFLOW_IDEMPOTENCY_CONFLICT, WORKFLOW_BUDGET_EXHAUSTED, WORKFLOW_BUDGET_EXHAUSTED_AFTER_EFFECT]
+        message: { type: string, maxLength: 1024 }
+        retryable: { type: boolean }
+        workflowInstanceId: { type: string, format: uuid }
+        correlationId: { type: string, minLength: 1, maxLength: 255 }
+  responses:
+    IdempotencyConflict:
+      description: Explicit idempotency key is already bound to different immutable input.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/InvocationError' }
+    CapacityExhausted:
+      description: Required synchronous permit depth or executor capacity is unavailable before acceptance.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/InvocationError' }

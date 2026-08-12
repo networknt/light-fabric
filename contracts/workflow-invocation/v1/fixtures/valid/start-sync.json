@@ -1,0 +1,38 @@
+{
+  "contractVersion": 1,
+  "workflowInstanceId": "12000000-0000-7000-8000-000000000001",
+  "stableToolRef": "12000000-0000-7000-8000-000000000002",
+  "workflowDefinitionId": "12000000-0000-7000-8000-000000000003",
+  "workflowVersion": "1.0.0",
+  "definitionDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "schemaDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "policyDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "responsePolicyDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "mode": "sync",
+  "cancellationPolicy": "BEFORE_EFFECTS_ONLY",
+  "executionClass": "interactive",
+  "permitDepth": 0,
+  "deadlineTs": "2099-08-12T20:00:30Z",
+  "canonicalInputProfile": "rfc8785-safe-json-v1",
+  "normalizedInputDigest": "sha256:7d2b996d9fc831733d771921d5e1f419af737f21ca388ab08ee0782702ff2d43",
+  "input": { "customerId": "C-1", "count": 1 },
+  "callerClaims": { "sub": "user-1", "roles": ["reader"] },
+  "idempotency": {
+    "kind": "DERIVED",
+    "scopedKeyDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "inputDigest": "sha256:7d2b996d9fc831733d771921d5e1f419af737f21ca388ab08ee0782702ff2d43",
+    "inFlightUntil": "2099-08-12T20:01:00Z",
+    "resultReplayUntil": "2099-08-12T20:02:00Z"
+  },
+  "budget": {
+    "maximumTaskAttempts": 8,
+    "maximumNestedCalls": 8,
+    "maximumDelegationDepth": 1,
+    "maximumParallelism": 1,
+    "maximumRequestBytes": 65536,
+    "maximumIntermediateBytes": 262144,
+    "maximumResultBytes": 131072,
+    "maximumCostUnits": 0
+  },
+  "correlationId": "phase0-fixture-1"
+}

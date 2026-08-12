@@ -9,6 +9,7 @@ pub mod consumer;
 pub mod events;
 pub mod executor;
 pub mod fixed_action;
+pub mod invocation;
 pub mod lease_reaper;
 pub mod provenance;
 pub mod repositories;

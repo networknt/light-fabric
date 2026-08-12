@@ -1,0 +1,20 @@
+{
+  "contractVersion": 1,
+  "cases": [
+    { "name": "safe-integer", "celType": "int", "input": "42", "json": 42, "outcome": "accept" },
+    { "name": "large-integer", "celType": "int", "input": "9007199254740992", "outcome": "reject" },
+    { "name": "finite-double", "celType": "double", "input": "1.25", "outcome": "reject-v1" },
+    { "name": "nan", "celType": "double", "input": "NaN", "outcome": "reject" },
+    { "name": "infinity", "celType": "double", "input": "Infinity", "outcome": "reject" },
+    { "name": "timestamp", "celType": "timestamp", "input": "2099-08-12T20:00:00Z", "json": "2099-08-12T20:00:00Z", "outcome": "accept-string" },
+    { "name": "duration", "celType": "duration", "input": "1.250s", "json": "1.250s", "outcome": "accept-string" },
+    { "name": "bytes", "celType": "bytes", "input": "AQID", "json": "AQID", "outcome": "accept-base64-string" },
+    { "name": "null", "celType": "null_type", "input": "null", "json": null, "outcome": "accept" },
+    { "name": "missing", "celType": "missing", "input": "missing", "outcome": "omit" },
+    { "name": "non-string-map-key", "celType": "map(int,string)", "input": "{1: 'one'}", "outcome": "reject" },
+    { "name": "opaque", "celType": "opaque", "input": "opaque()", "outcome": "reject" },
+    { "name": "wrong-root-type", "celType": "string", "input": "'text'", "outcome": "reject-schema" },
+    { "name": "checker-error", "celType": "unknown", "input": "customer.missingField", "outcome": "reject-publication" },
+    { "name": "cost-exhaustion", "celType": "list", "input": "large.exists(x, expensive(x))", "outcome": "reject-cost" }
+  ]
+}

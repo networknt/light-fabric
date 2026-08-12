@@ -1,4 +1,5 @@
 use crate::repositories::{NewTask, TerminalAttempt, WorkflowRepository};
+use agent_delegation::{DelegationClaims, DelegationKind, DelegationSigner};
 use chrono::Utc;
 use execution_runner_protocol::canonical_sha256;
 use light_rule::{ActionRegistry, MultiThreadRuleExecutor, RuleConfig, RuleEngine};
@@ -9,7 +10,7 @@ use model_provider::{
 use regex::Regex;
 use serde_json::{Map as JsonMap, Number, Value, json};
 use serde_yaml::Value as YamlValue;
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::{PgPool, Postgres, Row, Transaction, postgres::PgListener};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::io;
@@ -31,36 +32,11 @@ static TEMPLATE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\$\{\{\s*([^}]*(?:}[^}]+)*)\s*\}\}|\$\{\s*([^}]*)\s*\}")
         .expect("valid template regex")
 });
-const TASK_LOCK_TIMEOUT_MINUTES: i64 = 5;
+const DEFAULT_HOST_EXECUTOR_CONCURRENCY: usize = 8;
+const DEFAULT_HOST_TASK_LEASE_MS: i32 = 30_000;
 const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_AGENT_OUTPUT_BYTES: usize = 128 * 1024;
 const AGENT_PROMPT_VERSION: u32 = 1;
-const CLAIM_NEXT_HOST_TASK_SQL: &str = r#"
-            UPDATE task_info_t
-            SET locked = 'Y', update_ts = CURRENT_TIMESTAMP
-            WHERE (host_id, task_id) IN (
-                SELECT host_id, task_id FROM task_info_t
-                WHERE (
-                    (status_code = 'A' AND task_type IN ('ask', 'assert', 'call', 'set', 'switch'))
-                    OR (
-                        status_code = 'C'
-                        AND task_type = 'ask'
-                        AND completed_ts IS NOT NULL
-                        AND (task_output IS NULL OR task_output->>'status' = 'waiting_for_input')
-                    )
-                  )
-                  AND execution_placement = 'host'
-                  AND (
-                    locked = 'N'
-                    OR (locked = 'Y' AND update_ts < CURRENT_TIMESTAMP - make_interval(mins => $1::int))
-                  )
-                ORDER BY priority DESC, started_ts ASC
-                LIMIT 1
-                FOR UPDATE SKIP LOCKED
-            )
-            RETURNING host_id, task_id, task_type, process_id, wf_instance_id, wf_task_id, status_code, result_code
-            "#;
-
 #[derive(sqlx::FromRow)]
 pub struct ActiveTask {
     pub host_id: Uuid,
@@ -78,6 +54,27 @@ struct ClaimedTask {
     context_data: Value,
     definition: WorkflowDefinition,
     raw_definition: YamlValue,
+    host_lease: Option<HostTaskLease>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HostTaskLease {
+    owner: Uuid,
+    fencing_token: i64,
+}
+
+#[derive(sqlx::FromRow)]
+struct ClaimedHostTask {
+    host_id: Uuid,
+    task_id: Uuid,
+    task_type: String,
+    process_id: Uuid,
+    wf_instance_id: String,
+    wf_task_id: String,
+    status_code: String,
+    result_code: Option<String>,
+    lease_owner: Uuid,
+    lease_fencing_token: i64,
 }
 
 struct TaskExecutionResult {
@@ -85,6 +82,20 @@ struct TaskExecutionResult {
     task_output: Value,
     next_task: Option<String>,
     context_data: Option<Value>,
+}
+
+struct EffectClaim {
+    idempotency_key: String,
+    request_digest: String,
+    replayed_result: Option<Value>,
+}
+
+#[derive(sqlx::FromRow)]
+struct RetryTaskState {
+    attempt_no: i32,
+    effect_state: String,
+    downstream_idempotency_key: Option<String>,
+    deadline_ts: Option<chrono::DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -131,6 +142,8 @@ pub struct TaskExecutor {
     pool: PgPool,
     http_client: reqwest::Client,
     rule_executor: Arc<MultiThreadRuleExecutor>,
+    value_engine: Arc<RuleEngine>,
+    workflow_delegation_signer: Option<Arc<DelegationSigner>>,
     execution_profiles: BTreeMap<String, ExecutionProfile>,
 }
 
@@ -205,6 +218,7 @@ impl TaskExecutor {
             context_data,
             definition,
             raw_definition,
+            host_lease: None,
         };
         self.finish_task(&mut tx, &claimed, result).await?;
         tx.commit().await?;
@@ -215,6 +229,7 @@ impl TaskExecutor {
             TaskDefinition::Ask(_) => Some("ask"),
             TaskDefinition::Assert(_) => Some("assert"),
             TaskDefinition::Call(_) => Some("call"),
+            TaskDefinition::Fork(_) => Some("fork"),
             TaskDefinition::Set(_) => Some("set"),
             TaskDefinition::Switch(_) => Some("switch"),
             TaskDefinition::Run(_) => Some("run"),
@@ -248,18 +263,33 @@ impl TaskExecutor {
     pub fn new(pool: PgPool) -> Self {
         let registry = ActionRegistry::new();
         let engine = Arc::new(RuleEngine::new(Arc::new(registry)));
-        let rule_executor = Arc::new(MultiThreadRuleExecutor::new(RuleConfig::default(), engine));
+        let rule_executor = Arc::new(MultiThreadRuleExecutor::new(
+            RuleConfig::default(),
+            engine.clone(),
+        ));
         let http_client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("failed to build reqwest HTTP client with timeouts and redirects disabled");
+        let workflow_delegation_signer = env::var("WORKFLOW_DELEGATION_SECRET")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .and_then(|secret| match DelegationSigner::new(secret.as_bytes(), "light-workflow") {
+                Ok(signer) => Some(Arc::new(signer)),
+                Err(error) => {
+                    error!(%error, "WORKFLOW_DELEGATION_SECRET is invalid; nested MCP delegation is disabled");
+                    None
+                }
+            });
 
         Self {
             pool,
             http_client,
             rule_executor,
+            value_engine: engine,
+            workflow_delegation_signer,
             execution_profiles: BTreeMap::new(),
         }
     }
@@ -273,25 +303,159 @@ impl TaskExecutor {
     }
 
     pub async fn run(&self) -> Result<(), DynError> {
-        info!("Starting TaskExecutor loop");
+        let concurrency = env::var("WORKFLOW_HOST_EXECUTOR_CONCURRENCY")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_HOST_EXECUTOR_CONCURRENCY)
+            .clamp(1, 128);
+        info!(concurrency, "Starting TaskExecutor workers");
+        futures_util::future::try_join_all(
+            (0..concurrency).map(|_| self.run_worker(Uuid::now_v7())),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn run_worker(&self, worker_id: Uuid) -> Result<(), DynError> {
+        // LISTEN connections are intentionally kept outside the query pool. A
+        // worker retains this connection for its lifetime and must still be
+        // able to acquire a pooled connection to claim and commit work.
+        let database_url = env::var("DATABASE_URL")?;
+        let mut listener = PgListener::connect(&database_url).await?;
+        listener.listen("workflow_task_ready_v1").await?;
         loop {
-            match self.process_next_task().await {
+            match self.process_next_task(worker_id).await {
                 Ok(true) => {}
                 Ok(false) => {
-                    sleep(Duration::from_millis(500)).await;
+                    if let Err(error) = self.expire_interactive_deadlines().await {
+                        error!(
+                            worker_id = %worker_id,
+                            "Error expiring interactive workflow deadlines: {error}"
+                        );
+                        sleep(Duration::from_millis(250)).await;
+                        continue;
+                    }
+                    let _ = tokio::time::timeout(Duration::from_millis(500), listener.recv()).await;
                 }
                 Err(e) => {
-                    error!("Error in TaskExecutor: {}", e);
-                    sleep(Duration::from_secs(5)).await;
+                    error!(worker_id = %worker_id, "Error in TaskExecutor: {}", e);
+                    sleep(Duration::from_millis(250)).await;
                 }
             }
         }
     }
 
-    async fn process_next_task(&self) -> Result<bool, DynError> {
-        let claimed = match self.claim_next_task().await? {
+    async fn expire_interactive_deadlines(&self) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        let expired: Vec<(Uuid, Uuid)> = sqlx::query_as(
+            "UPDATE workflow_invocation_t SET state='FAILED',terminal_ts=CURRENT_TIMESTAMP,
+                    updated_ts=CURRENT_TIMESTAMP,state_version=state_version+1,
+                    normalized_error=jsonb_build_object(
+                      'code','WORKFLOW_TIMEOUT','message','workflow deadline expired',
+                      'retryable',false)
+              WHERE execution_class='interactive' AND deadline_ts<=CURRENT_TIMESTAMP
+                AND state IN ('ACCEPTED','RUNNING','WAITING')
+              RETURNING host_id,process_id",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        for (host_id, process_id) in expired {
+            sqlx::query(
+                "UPDATE process_info_t SET status_code='F',custom_status_code='WORKFLOW_TIMEOUT',
+                        completed_ts=CURRENT_TIMESTAMP
+                  WHERE host_id=$1 AND process_id=$2 AND status_code IN ('A','W')",
+            )
+            .bind(host_id)
+            .bind(process_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "UPDATE task_info_t SET status_code='F',result_code='WORKFLOW_TIMEOUT',
+                        locked='N',lease_owner=NULL,lease_expires_ts=NULL,
+                        completed_ts=CURRENT_TIMESTAMP
+                  WHERE host_id=$1 AND process_id=$2 AND status_code IN ('A','W')",
+            )
+            .bind(host_id)
+            .bind(process_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn process_next_task(&self, worker_id: Uuid) -> Result<bool, DynError> {
+        let claimed = match self.claim_next_task(worker_id).await? {
             Some(claimed) => claimed,
             None => return Ok(false),
+        };
+        let attempt_bytes =
+            i64::try_from(serde_json::to_vec(&claimed.context_data)?.len()).unwrap_or(i64::MAX);
+        let attempt_cost = self
+            .find_task_definition(&claimed.definition, &claimed.task.wf_task_id)
+            .and_then(|task| self.common_fields(task).metadata.as_ref())
+            .and_then(|metadata| metadata.get("costUnits"))
+            .and_then(Value::as_u64)
+            .map(|value| i64::try_from(value).unwrap_or(i64::MAX))
+            .unwrap_or(0);
+        let attempt_budget = if let Some(lease) = claimed.host_lease {
+            let ledger: Option<(Uuid, i64)> = sqlx::query_as(
+                "SELECT budget.ledger_id,budget.generation
+                   FROM workflow_invocation_t invocation
+                   JOIN workflow_invocation_budget_t budget
+                     ON budget.host_id=invocation.host_id
+                    AND budget.workflow_instance_id=invocation.workflow_instance_id
+                  WHERE invocation.host_id=$1 AND invocation.process_id=$2",
+            )
+            .bind(claimed.task.host_id)
+            .bind(claimed.task.process_id)
+            .fetch_optional(&self.pool)
+            .await?;
+            if let Some((ledger_id, generation)) = ledger {
+                let reservation_id = Uuid::now_v7();
+                let reserved: bool = sqlx::query_scalar(
+                    "SELECT workflow_reserve_budget_v1($1,$2,$3,$4,$5,1,0,$6,$7)",
+                )
+                .bind(claimed.task.host_id)
+                .bind(ledger_id)
+                .bind(reservation_id)
+                .bind(generation)
+                .bind(lease.fencing_token)
+                .bind(attempt_bytes)
+                .bind(attempt_cost)
+                .fetch_one(&self.pool)
+                .await?;
+                if !reserved {
+                    self.fail_invocation_budget(&claimed, lease).await?;
+                    return Ok(true);
+                }
+                Some((
+                    claimed.task.host_id,
+                    reservation_id,
+                    lease.fencing_token,
+                    attempt_bytes,
+                    attempt_cost,
+                    ledger_id,
+                    generation,
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let (heartbeat_stop, heartbeat_handle) = if let Some(lease) = claimed.host_lease {
+            let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+            let pool = self.pool.clone();
+            let host_id = claimed.task.host_id;
+            let task_id = claimed.task.task_id;
+            let handle = tokio::spawn(async move {
+                Self::renew_host_task_lease(pool, host_id, task_id, lease, stop_rx).await
+            });
+            (Some(stop_tx), Some(handle))
+        } else {
+            (None, None)
         };
 
         info!(
@@ -299,10 +463,28 @@ impl TaskExecutor {
             claimed.task.wf_task_id, claimed.task.task_type
         );
 
-        let result = if claimed.task.status_code == "C" && claimed.task.task_type == "ask" {
+        let mut result = if claimed.task.status_code == "C" && claimed.task.task_type == "ask" {
             self.completed_ask_result(&claimed)
         } else {
-            match self.execute_task(&claimed).await {
+            let execution = async {
+                if let Some(limit) = self.task_execution_timeout(&claimed).await? {
+                    match tokio::time::timeout(limit, self.execute_task(&claimed)).await {
+                        Ok(result) => result,
+                        Err(_) => Ok(TaskExecutionResult {
+                            status_code: "F",
+                            task_output: json!({
+                                "code":"WORKFLOW_TASK_TIMEOUT",
+                                "message":"workflow task exceeded its task or workflow deadline"
+                            }),
+                            next_task: None,
+                            context_data: None,
+                        }),
+                    }
+                } else {
+                    self.execute_task(&claimed).await
+                }
+            };
+            match execution.await {
                 Ok(result) => result,
                 Err(e) => TaskExecutionResult {
                     status_code: "F",
@@ -313,11 +495,179 @@ impl TaskExecutor {
             }
         };
 
+        if let Some((host_id, reservation_id, fencing_token, bytes, cost, ledger_id, generation)) =
+            attempt_budget
+        {
+            let output_bytes =
+                i64::try_from(serde_json::to_vec(&result.task_output)?.len()).unwrap_or(i64::MAX);
+            let output_reservation_id = Uuid::now_v7();
+            let output_reserved: bool =
+                sqlx::query_scalar("SELECT workflow_reserve_budget_v1($1,$2,$3,$4,$5,0,0,$6,0)")
+                    .bind(host_id)
+                    .bind(ledger_id)
+                    .bind(output_reservation_id)
+                    .bind(generation)
+                    .bind(fencing_token)
+                    .bind(output_bytes)
+                    .fetch_one(&self.pool)
+                    .await?;
+            if output_reserved {
+                let reconciled: bool =
+                    sqlx::query_scalar("SELECT workflow_reconcile_budget_v1($1,$2,$3,$4,0)")
+                        .bind(host_id)
+                        .bind(output_reservation_id)
+                        .bind(fencing_token)
+                        .bind(output_bytes)
+                        .fetch_one(&self.pool)
+                        .await?;
+                if !reconciled {
+                    return Err(io::Error::other(
+                        "WORKFLOW_BUDGET_EXHAUSTED: output reconciliation failed",
+                    )
+                    .into());
+                }
+            } else {
+                let effect_state: Option<String> = sqlx::query_scalar(
+                    "SELECT effect_state FROM workflow_invocation_t WHERE host_id=$1 AND process_id=$2",
+                )
+                .bind(host_id)
+                .bind(claimed.task.process_id)
+                .fetch_optional(&self.pool)
+                .await?;
+                let code = if effect_state.as_deref() == Some("confirmed") {
+                    "WORKFLOW_BUDGET_EXHAUSTED_AFTER_EFFECT"
+                } else {
+                    "WORKFLOW_BUDGET_EXHAUSTED"
+                };
+                result = TaskExecutionResult {
+                    status_code: "F",
+                    task_output: json!({
+                        "code":code,
+                        "message":"workflow intermediate byte budget is exhausted",
+                        "retryable":false
+                    }),
+                    next_task: None,
+                    context_data: None,
+                };
+            }
+            let reconciled: bool =
+                sqlx::query_scalar("SELECT workflow_reconcile_budget_v1($1,$2,$3,$4,$5)")
+                    .bind(host_id)
+                    .bind(reservation_id)
+                    .bind(fencing_token)
+                    .bind(bytes)
+                    .bind(cost)
+                    .fetch_one(&self.pool)
+                    .await?;
+            if !reconciled {
+                return Err(io::Error::other(
+                    "WORKFLOW_BUDGET_EXHAUSTED: task-attempt reconciliation failed",
+                )
+                .into());
+            }
+        }
+
+        if let Some(stop) = heartbeat_stop {
+            let _ = stop.send(());
+        }
+        if let Some(handle) = heartbeat_handle {
+            handle.await.map_err(|error| {
+                io::Error::other(format!("host task lease heartbeat failed to join: {error}"))
+            })??;
+        }
+
         let mut tx = self.pool.begin().await?;
         self.finish_task(&mut tx, &claimed, result).await?;
         tx.commit().await?;
 
         Ok(true)
+    }
+
+    async fn fail_invocation_budget(
+        &self,
+        claimed: &ClaimedTask,
+        lease: HostTaskLease,
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        let updated = sqlx::query(
+            "UPDATE task_info_t SET status_code='F',locked='N',completed_ts=CURRENT_TIMESTAMP,
+                    result_code='WORKFLOW_BUDGET_EXHAUSTED',lease_owner=NULL,lease_expires_ts=NULL
+              WHERE host_id=$1 AND task_id=$2 AND lease_owner=$3
+                AND lease_fencing_token=$4 AND lease_expires_ts>CURRENT_TIMESTAMP",
+        )
+        .bind(claimed.task.host_id)
+        .bind(claimed.task.task_id)
+        .bind(lease.owner)
+        .bind(lease.fencing_token)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err(sqlx::Error::Protocol(
+                "WORKFLOW_STALE_HOST_TASK_FENCE".to_string(),
+            ));
+        }
+        sqlx::query(
+            "UPDATE process_info_t SET status_code='F',completed_ts=CURRENT_TIMESTAMP,
+                    custom_status_code='WORKFLOW_BUDGET_EXHAUSTED'
+              WHERE host_id=$1 AND process_id=$2 AND status_code IN ('A','W')",
+        )
+        .bind(claimed.task.host_id)
+        .bind(claimed.task.process_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE workflow_invocation_t SET state='FAILED',terminal_ts=CURRENT_TIMESTAMP,
+                    updated_ts=CURRENT_TIMESTAMP,state_version=state_version+1,
+                    normalized_error=jsonb_build_object(
+                      'code',CASE WHEN effect_state='confirmed'
+                        THEN 'WORKFLOW_BUDGET_EXHAUSTED_AFTER_EFFECT'
+                        ELSE 'WORKFLOW_BUDGET_EXHAUSTED' END,
+                      'message','workflow task-attempt budget is exhausted','retryable',false)
+              WHERE host_id=$1 AND process_id=$2
+                AND state NOT IN ('CANCELLED','COMPLETED','FAILED')",
+        )
+        .bind(claimed.task.host_id)
+        .bind(claimed.task.process_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn renew_host_task_lease(
+        pool: PgPool,
+        host_id: Uuid,
+        task_id: Uuid,
+        lease: HostTaskLease,
+        mut stop: tokio::sync::oneshot::Receiver<()>,
+    ) -> Result<(), sqlx::Error> {
+        let heartbeat = Duration::from_millis((DEFAULT_HOST_TASK_LEASE_MS as u64) / 3);
+        loop {
+            tokio::select! {
+                _ = &mut stop => return Ok(()),
+                _ = sleep(heartbeat) => {
+                    let renewed = sqlx::query(
+                        "UPDATE task_info_t SET
+                            lease_expires_ts=LEAST(COALESCE(deadline_ts,'infinity'::timestamptz),
+                                CURRENT_TIMESTAMP+make_interval(secs=>$1::double precision/1000.0)),
+                            update_ts=CURRENT_TIMESTAMP
+                          WHERE host_id=$2 AND task_id=$3 AND locked='Y'
+                            AND lease_owner=$4 AND lease_fencing_token=$5
+                            AND lease_expires_ts>CURRENT_TIMESTAMP",
+                    )
+                    .bind(DEFAULT_HOST_TASK_LEASE_MS)
+                    .bind(host_id)
+                    .bind(task_id)
+                    .bind(lease.owner)
+                    .bind(lease.fencing_token)
+                    .execute(&pool)
+                    .await?;
+                    if renewed.rows_affected()!=1 {
+                        return Err(sqlx::Error::Protocol("WORKFLOW_STALE_HOST_TASK_FENCE".into()));
+                    }
+                }
+            }
+        }
     }
 
     pub async fn reconcile_runner_attempt(
@@ -646,24 +996,53 @@ impl TaskExecutor {
             context_data,
             definition,
             raw_definition,
+            host_lease: None,
         })
     }
 
-    async fn claim_next_task(&self) -> Result<Option<ClaimedTask>, DynError> {
+    async fn claim_next_task(&self, worker_id: Uuid) -> Result<Option<ClaimedTask>, DynError> {
         let mut tx = self.pool.begin().await?;
 
-        let task_res = sqlx::query_as::<_, ActiveTask>(CLAIM_NEXT_HOST_TASK_SQL)
-            .bind(TASK_LOCK_TIMEOUT_MINUTES)
-            .fetch_optional(&mut *tx)
-            .await?;
+        let task_res = sqlx::query_as::<_, ClaimedHostTask>(
+            "SELECT host_id,task_id,task_type,process_id,wf_instance_id,wf_task_id,
+                    status_code,result_code,lease_owner,lease_fencing_token
+               FROM workflow_claim_host_task_v1($1,$2)",
+        )
+        .bind(worker_id)
+        .bind(DEFAULT_HOST_TASK_LEASE_MS)
+        .fetch_optional(&mut *tx)
+        .await?;
 
-        let task = match task_res {
+        let claimed_task = match task_res {
             Some(task) => task,
             None => {
                 tx.commit().await?;
                 return Ok(None);
             }
         };
+        let lease = HostTaskLease {
+            owner: claimed_task.lease_owner,
+            fencing_token: claimed_task.lease_fencing_token,
+        };
+        let task = ActiveTask {
+            host_id: claimed_task.host_id,
+            task_id: claimed_task.task_id,
+            task_type: claimed_task.task_type,
+            process_id: claimed_task.process_id,
+            wf_instance_id: claimed_task.wf_instance_id,
+            wf_task_id: claimed_task.wf_task_id,
+            status_code: claimed_task.status_code,
+            result_code: claimed_task.result_code,
+        };
+        sqlx::query(
+            "UPDATE workflow_invocation_t SET state='RUNNING',updated_ts=CURRENT_TIMESTAMP,
+                    state_version=state_version+1
+              WHERE host_id=$1 AND process_id=$2 AND state='ACCEPTED'",
+        )
+        .bind(task.host_id)
+        .bind(task.process_id)
+        .execute(&mut *tx)
+        .await?;
 
         let (context_data, wf_def_id, definition_snapshot) = self
             .get_context_data(&mut tx, &task.host_id, &task.process_id)
@@ -693,6 +1072,7 @@ impl TaskExecutor {
             context_data,
             definition,
             raw_definition,
+            host_lease: Some(lease),
         }))
     }
 
@@ -720,8 +1100,14 @@ impl TaskExecutor {
             TaskDefinition::Assert(assert_task) => {
                 self.execute_assert_task(&assert_task.assert, &claimed.context_data)
             }
+            TaskDefinition::Fork(_) => Ok(TaskExecutionResult {
+                status_code: "C",
+                task_output: json!({"status":"branches_scheduled"}),
+                next_task: None,
+                context_data: None,
+            }),
             TaskDefinition::Call(CallTaskDefinition::Http(http_call)) => {
-                let configured_uri = match &http_call.with.endpoint {
+                let inline_uri = match &http_call.with.endpoint {
                     workflow_core::models::resource::OneOfEndpointDefinitionOrUri::Uri(uri) => {
                         uri.clone()
                     }
@@ -729,6 +1115,48 @@ impl TaskExecutor {
                         endpoint,
                     ) => endpoint.uri.clone(),
                 };
+                let endpoint_ref = http_call
+                    .common
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("endpointRef"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let registered_uri: Option<String> = if let Some(endpoint_ref) = endpoint_ref {
+                    sqlx::query_scalar(
+                        "SELECT target.endpoint_uri
+                           FROM workflow_invocation_t invocation
+                           JOIN workflow_endpoint_target_t target ON target.host_id=invocation.host_id
+                          WHERE invocation.host_id=$1 AND invocation.process_id=$2
+                            AND target.endpoint_ref=$3 AND target.active
+                            AND $4=ANY(target.allowed_methods)",
+                    )
+                    .bind(claimed.task.host_id)
+                    .bind(claimed.task.process_id)
+                    .bind(endpoint_ref)
+                    .bind(http_call.with.method.to_ascii_uppercase())
+                    .fetch_optional(&self.pool)
+                    .await?
+                } else {
+                    None
+                };
+                let workflow_backed: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM workflow_invocation_t
+                      WHERE host_id=$1 AND process_id=$2)",
+                )
+                .bind(claimed.task.host_id)
+                .bind(claimed.task.process_id)
+                .fetch_one(&self.pool)
+                .await?;
+                if workflow_backed && registered_uri.is_none() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "workflow-backed HTTP call requires an active registered endpointRef and allowed method",
+                    )
+                    .into());
+                }
+                let configured_uri = registered_uri.unwrap_or(inline_uri);
                 let resolved_uri =
                     self.resolve_template_to_string(&configured_uri, &claimed.context_data);
                 let validated_uri = self.validate_resolved_uri(&configured_uri, &resolved_uri)?;
@@ -740,11 +1168,52 @@ impl TaskExecutor {
                             format!("invalid HTTP method '{}': {}", http_call.with.method, err),
                         )
                     })?;
+                let read_only = matches!(method, reqwest::Method::GET | reqwest::Method::HEAD);
+                let resolved_body = http_call
+                    .with
+                    .body
+                    .as_ref()
+                    .map(|body| self.resolve_json_value(body, &claimed.context_data));
+                let effect_claim = if read_only {
+                    None
+                } else {
+                    let key_template =
+                        http_call.common.idempotency_key.as_deref().ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "write-capable HTTP workflow task requires idempotencyKey",
+                            )
+                        })?;
+                    let idempotency_key =
+                        self.resolve_template_to_string(key_template, &claimed.context_data);
+                    let request_digest = format!(
+                        "sha256:{}",
+                        canonical_sha256(&json!({
+                            "method":method.as_str(),
+                            "uri":validated_uri.as_str(),
+                            "body":resolved_body.clone()
+                        }))?
+                    );
+                    let claim = self
+                        .claim_task_effect(claimed, idempotency_key, request_digest)
+                        .await?;
+                    if let Some(result) = claim.replayed_result.clone() {
+                        return Ok(TaskExecutionResult {
+                            status_code: "C",
+                            task_output: result,
+                            next_task: None,
+                            context_data: None,
+                        });
+                    }
+                    Some(claim)
+                };
                 let mut req_builder = self.http_client.request(method, validated_uri.clone());
 
-                if let Some(body) = &http_call.with.body {
-                    req_builder =
-                        req_builder.json(&self.resolve_json_value(body, &claimed.context_data));
+                if let Some(body) = &resolved_body {
+                    req_builder = req_builder.json(body);
+                }
+                if let Some(claim) = &effect_claim {
+                    req_builder = req_builder.header("Idempotency-Key", &claim.idempotency_key);
                 }
 
                 info!(">>> Making HTTP request to: {}", validated_uri);
@@ -796,6 +1265,12 @@ impl TaskExecutor {
                     })
                 };
 
+                if status.is_success()
+                    && let Some(claim) = effect_claim
+                {
+                    self.confirm_task_effect(claimed, &claim, &task_output)
+                        .await?;
+                }
                 Ok(TaskExecutionResult {
                     status_code: if status.is_success() { "C" } else { "F" },
                     task_output,
@@ -812,7 +1287,7 @@ impl TaskExecutor {
                     .await
             }
             TaskDefinition::Call(CallTaskDefinition::Mcp(mcp_call)) => {
-                self.execute_mcp_call(&mcp_call.with, &claimed.definition, &claimed.context_data)
+                self.execute_mcp_call(&mcp_call.with, &mcp_call.common, claimed)
                     .await
             }
             TaskDefinition::Call(CallTaskDefinition::Agent(agent_call)) => {
@@ -991,9 +1466,11 @@ impl TaskExecutor {
     async fn execute_mcp_call(
         &self,
         args: &McpArguments,
-        definition: &WorkflowDefinition,
-        context: &Value,
+        common: &TaskDefinitionFields,
+        claimed: &ClaimedTask,
     ) -> Result<TaskExecutionResult, DynError> {
+        let definition = &claimed.definition;
+        let context = &claimed.context_data;
         let server = self.resolve_mcp_server(args, definition)?;
         if let Some(transport) = server.transport.as_deref() {
             if !matches!(transport, "http" | "streamable-http") {
@@ -1011,7 +1488,7 @@ impl TaskExecutor {
                 "MCP call requires an endpoint from with.server, with.session, or with.serverRef",
             )
         })?;
-        let configured_uri = self.endpoint_to_uri(endpoint);
+        let mut configured_uri = self.endpoint_to_uri(endpoint);
         let arguments = args
             .arguments
             .as_ref()
@@ -1025,7 +1502,7 @@ impl TaskExecutor {
             })
             .unwrap_or_else(|| json!({}));
 
-        let (method, params) = if let Some(tool) = &args.tool {
+        let (method, mut params) = if let Some(tool) = &args.tool {
             (
                 "tools/call".to_string(),
                 json!({
@@ -1056,18 +1533,291 @@ impl TaskExecutor {
             .into());
         };
 
-        self.execute_jsonrpc_request(
-            &configured_uri,
-            &method,
-            Some(&params),
-            None,
-            false,
-            None,
-            args.output.as_deref().or(Some("result")),
-            None,
-            context,
-        )
-        .await
+        let mut delegation_headers = None;
+        let mut budget_reservation = None;
+        if let Some(tool_alias) = args.tool.as_deref() {
+            #[allow(clippy::type_complexity)]
+            let invocation: Option<(
+                Uuid,
+                String,
+                String,
+                Value,
+                Uuid,
+                String,
+                String,
+                String,
+                i32,
+                chrono::DateTime<Utc>,
+                Uuid,
+                i64,
+                Uuid,
+                String,
+                Value,
+            )> = sqlx::query_as(
+                "SELECT i.workflow_instance_id,i.principal_subject,i.end_user_subject,
+                        i.subject_claims,i.stable_tool_ref,i.policy_digest,
+                        i.response_policy_digest,i.execution_class,i.permit_depth,i.deadline_ts,
+                        budget.ledger_id,budget.generation,dependency.nested_tool_id,
+                        dependency.contract_digest,
+                        dependency.dispatch_target
+                   FROM workflow_invocation_t i
+                   JOIN workflow_invocation_budget_t budget
+                     ON budget.host_id=i.host_id AND budget.workflow_instance_id=i.workflow_instance_id
+                   JOIN workflow_tool_dependency_t dependency
+                     ON dependency.host_id=i.host_id AND dependency.outer_binding_id=i.binding_id
+                    AND dependency.authorization_tool_name=$3 AND dependency.active
+                    AND dependency.lifecycle_status<>'revoked'
+                  WHERE i.host_id=$1 AND i.process_id=$2",
+            )
+            .bind(claimed.task.host_id)
+            .bind(claimed.task.process_id)
+            .bind(tool_alias)
+            .fetch_optional(&self.pool)
+            .await?;
+            let workflow_backed: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM workflow_invocation_t
+                  WHERE host_id=$1 AND process_id=$2)",
+            )
+            .bind(claimed.task.host_id)
+            .bind(claimed.task.process_id)
+            .fetch_one(&self.pool)
+            .await?;
+            if workflow_backed && invocation.is_none() {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "workflow-backed MCP call is not present in the published dependency registry",
+                )
+                .into());
+            }
+            if let Some((
+                invocation_id,
+                principal_subject,
+                end_user_subject,
+                caller_claims,
+                _outer_tool_ref,
+                policy_digest,
+                response_policy_digest,
+                execution_class,
+                permit_depth,
+                deadline_ts,
+                ledger_id,
+                budget_generation,
+                nested_tool_ref,
+                nested_contract_digest,
+                dispatch_target,
+            )) = invocation
+            {
+                if dispatch_target
+                    .get("contractDigest")
+                    .and_then(Value::as_str)
+                    .is_some_and(|digest| digest != nested_contract_digest)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "pinned MCP dependency contract digest drifted before dispatch",
+                    )
+                    .into());
+                }
+                configured_uri = dispatch_target
+                    .get("endpoint")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "pinned MCP dependency has no registered endpoint",
+                        )
+                    })?
+                    .to_string();
+                let dispatch_tool_name = dispatch_target
+                    .get("toolName")
+                    .or_else(|| dispatch_target.get("targetName"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "pinned MCP dependency has no private version target name",
+                        )
+                    })?;
+                if let Some(object) = params.as_object_mut() {
+                    object.insert(
+                        "name".to_string(),
+                        Value::String(dispatch_tool_name.to_string()),
+                    );
+                }
+                let signer = self.workflow_delegation_signer.as_ref().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "nested workflow MCP call requires WORKFLOW_DELEGATION_SECRET",
+                    )
+                })?;
+                let lease = claimed.host_lease.ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "nested workflow MCP call requires a fenced host-task lease",
+                    )
+                })?;
+                let nested_reservation_id = Uuid::now_v7();
+                let nested_request_bytes =
+                    i64::try_from(serde_json::to_vec(&params)?.len()).unwrap_or(i64::MAX);
+                let reserved: bool = sqlx::query_scalar(
+                    "SELECT workflow_reserve_budget_v1($1,$2,$3,$4,$5,0,1,$6,0)",
+                )
+                .bind(claimed.task.host_id)
+                .bind(ledger_id)
+                .bind(nested_reservation_id)
+                .bind(budget_generation)
+                .bind(lease.fencing_token)
+                .bind(nested_request_bytes)
+                .fetch_one(&self.pool)
+                .await?;
+                if !reserved {
+                    return Err(io::Error::other(
+                        "WORKFLOW_BUDGET_EXHAUSTED: nested call budget is unavailable",
+                    )
+                    .into());
+                }
+                let now = Utc::now().timestamp();
+                let token = signer.mint(DelegationClaims {
+                    token_id: Uuid::now_v7(),
+                    kind: DelegationKind::ToolCall,
+                    issuer: String::new(),
+                    audience: "light-gateway".to_string(),
+                    caller_subject: end_user_subject.clone(),
+                    caller_claims,
+                    subject_id: end_user_subject,
+                    subject_type: "USER".to_string(),
+                    groups: None,
+                    organizations: None,
+                    agent_actor: principal_subject,
+                    agent_def_id: None,
+                    agent_policy_version: 0,
+                    host_id: claimed.task.host_id,
+                    environment: None,
+                    session_id: invocation_id,
+                    turn_id: claimed.task.process_id,
+                    action_attempt_id: Some(claimed.task.task_id),
+                    tool_ref: Some(nested_tool_ref),
+                    tool_alias: Some(dispatch_tool_name.to_string()),
+                    destination: Some("mcp".to_string()),
+                    workflow_invocation_id: Some(invocation_id),
+                    workflow_permit_depth: Some(u16::try_from(permit_depth).unwrap_or(u16::MAX)),
+                    workflow_execution_class: Some(execution_class),
+                    workflow_budget_ledger_id: Some(ledger_id),
+                    workflow_budget_generation: Some(
+                        u64::try_from(budget_generation).unwrap_or_default(),
+                    ),
+                    data_boundary_digest: response_policy_digest,
+                    policy_digest,
+                    replay_id: Uuid::now_v7(),
+                    issued_at: now,
+                    expires_at: deadline_ts.timestamp().min(now + 300),
+                })?;
+                delegation_headers = Some(json!({"authorization": format!("Bearer {token}")}));
+                budget_reservation = Some((
+                    claimed.task.host_id,
+                    nested_reservation_id,
+                    lease.fencing_token,
+                    nested_request_bytes,
+                ));
+            }
+        }
+
+        let write_capable = common
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("readOnly"))
+            .and_then(Value::as_bool)
+            == Some(false);
+        let effect_claim = if write_capable {
+            let key_template = common.idempotency_key.as_deref().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "write-capable MCP workflow task requires idempotencyKey",
+                )
+            })?;
+            let idempotency_key =
+                self.resolve_template_to_string(key_template, &claimed.context_data);
+            let request_digest = format!(
+                "sha256:{}",
+                canonical_sha256(&json!({
+                    "endpoint":configured_uri,
+                    "method":method,
+                    "params":params
+                }))?
+            );
+            let claim = self
+                .claim_task_effect(claimed, idempotency_key, request_digest)
+                .await?;
+            if let Some(result) = claim.replayed_result.clone() {
+                if let Some((host_id, reservation_id, fencing_token, bytes)) = budget_reservation {
+                    let _: bool =
+                        sqlx::query_scalar("SELECT workflow_reconcile_budget_v1($1,$2,$3,$4,0)")
+                            .bind(host_id)
+                            .bind(reservation_id)
+                            .bind(fencing_token)
+                            .bind(bytes)
+                            .fetch_one(&self.pool)
+                            .await?;
+                }
+                return Ok(TaskExecutionResult {
+                    status_code: "C",
+                    task_output: result,
+                    next_task: None,
+                    context_data: None,
+                });
+            }
+            if let Some(object) = params.as_object_mut() {
+                object.insert(
+                    "_meta".to_string(),
+                    json!({"idempotencyKey":claim.idempotency_key}),
+                );
+            }
+            Some(claim)
+        } else {
+            None
+        };
+
+        let execution = self
+            .execute_jsonrpc_request(
+                &configured_uri,
+                &method,
+                Some(&params),
+                delegation_headers.as_ref(),
+                false,
+                None,
+                args.output.as_deref().or(Some("result")),
+                None,
+                context,
+            )
+            .await;
+        if let Some((host_id, reservation_id, fencing_token, bytes)) = budget_reservation {
+            let reconciled: bool =
+                sqlx::query_scalar("SELECT workflow_reconcile_budget_v1($1,$2,$3,$4,0)")
+                    .bind(host_id)
+                    .bind(reservation_id)
+                    .bind(fencing_token)
+                    .bind(bytes)
+                    .fetch_one(&self.pool)
+                    .await?;
+            if !reconciled {
+                return Err(io::Error::other(
+                    "WORKFLOW_BUDGET_EXHAUSTED: nested call reconciliation failed",
+                )
+                .into());
+            }
+        }
+        let result = execution?;
+        if result.status_code == "C"
+            && let Some(claim) = effect_claim
+        {
+            self.confirm_task_effect(claimed, &claim, &result.task_output)
+                .await?;
+        }
+        Ok(result)
     }
 
     async fn execute_agent_call(
@@ -2562,32 +3312,80 @@ impl TaskExecutor {
         claimed: &ClaimedTask,
         result: TaskExecutionResult,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            r#"
-            UPDATE task_info_t
-            SET status_code = $1, locked = 'N', completed_ts = CURRENT_TIMESTAMP, task_output = $2
-            WHERE host_id = $3 AND task_id = $4
-            "#,
-        )
-        .bind(result.status_code)
-        .bind(&result.task_output)
-        .bind(claimed.task.host_id)
-        .bind(claimed.task.task_id)
-        .execute(&mut **tx)
-        .await?;
+        if result.status_code == "F"
+            && self
+                .schedule_retry_if_allowed(tx, claimed, &result.task_output)
+                .await?
+        {
+            return Ok(());
+        }
+        let updated = if let Some(lease) = claimed.host_lease {
+            sqlx::query(
+                "UPDATE task_info_t SET status_code=$1,locked='N',completed_ts=CURRENT_TIMESTAMP,
+                        task_output=$2,lease_owner=NULL,lease_expires_ts=NULL
+                  WHERE host_id=$3 AND task_id=$4 AND lease_owner=$5
+                    AND lease_fencing_token=$6 AND lease_expires_ts>CURRENT_TIMESTAMP",
+            )
+            .bind(result.status_code)
+            .bind(&result.task_output)
+            .bind(claimed.task.host_id)
+            .bind(claimed.task.task_id)
+            .bind(lease.owner)
+            .bind(lease.fencing_token)
+            .execute(&mut **tx)
+            .await?
+        } else {
+            sqlx::query(
+                "UPDATE task_info_t SET status_code=$1,locked='N',completed_ts=CURRENT_TIMESTAMP,
+                        task_output=$2,lease_owner=NULL,lease_expires_ts=NULL
+                  WHERE host_id=$3 AND task_id=$4",
+            )
+            .bind(result.status_code)
+            .bind(&result.task_output)
+            .bind(claimed.task.host_id)
+            .bind(claimed.task.task_id)
+            .execute(&mut **tx)
+            .await?
+        };
+        if updated.rows_affected() != 1 {
+            return Err(sqlx::Error::Protocol(
+                "WORKFLOW_STALE_HOST_TASK_FENCE".to_string(),
+            ));
+        }
 
-        if result.status_code == "C" {
-            self.handle_transition(
+        let invocation_output = result.task_output.clone();
+        if self.is_compensation_task(tx, claimed).await? {
+            self.reconcile_compensation_task(
                 tx,
-                &claimed.task,
-                &claimed.definition,
-                &claimed.raw_definition,
-                claimed.context_data.clone(),
-                result.task_output,
-                result.next_task,
-                result.context_data,
+                claimed,
+                result.status_code == "C",
+                &result.task_output,
             )
             .await?;
+            return Ok(());
+        }
+        if result.status_code == "C" {
+            if self.is_fork_branch(tx, claimed).await? {
+                self.reconcile_fork_branch(tx, claimed, true, result.task_output)
+                    .await?;
+            } else if matches!(
+                self.find_task_definition(&claimed.definition, &claimed.task.wf_task_id),
+                Some(TaskDefinition::Fork(_))
+            ) {
+                self.start_fork(tx, claimed).await?;
+            } else {
+                self.handle_transition(
+                    tx,
+                    &claimed.task,
+                    &claimed.definition,
+                    &claimed.raw_definition,
+                    claimed.context_data.clone(),
+                    result.task_output,
+                    result.next_task,
+                    result.context_data,
+                )
+                .await?;
+            }
         } else if result.status_code == "W" {
             if let Some(TaskDefinition::Ask(ask_task)) =
                 self.find_task_definition(&claimed.definition, &claimed.task.wf_task_id)
@@ -2600,19 +3398,665 @@ impl TaskExecutor {
                 claimed.task.wf_task_id, claimed.task.wf_instance_id
             );
         } else {
-            sqlx::query(
-                "UPDATE process_info_t
+            if self.is_fork_branch(tx, claimed).await? {
+                self.reconcile_fork_branch(tx, claimed, false, result.task_output)
+                    .await?;
+            } else {
+                sqlx::query(
+                    "UPDATE process_info_t
                  SET status_code = 'F', completed_ts = CURRENT_TIMESTAMP,
                      error_info = $1
                  WHERE host_id = $2 AND process_id = $3",
+                )
+                .bind(result.task_output.to_string())
+                .bind(claimed.task.host_id)
+                .bind(claimed.task.process_id)
+                .execute(&mut **tx)
+                .await?;
+            }
+        }
+
+        self.sync_invocation_state(tx, claimed, &invocation_output)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn schedule_retry_if_allowed(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        claimed: &ClaimedTask,
+        failure: &Value,
+    ) -> Result<bool, sqlx::Error> {
+        use workflow_core::models::retry::OneOfRetryPolicyDefinitionOrReference;
+
+        if failure
+            .get("code")
+            .and_then(Value::as_str)
+            .is_some_and(|code| {
+                code.starts_with("WORKFLOW_BUDGET_EXHAUSTED")
+                    || code == "WORKFLOW_TASK_TIMEOUT"
+                    || code == "WORKFLOW_OUTPUT_INVALID_AFTER_EFFECT"
+            })
+        {
+            return Ok(false);
+        }
+
+        let Some(task_def) =
+            self.find_task_definition(&claimed.definition, &claimed.task.wf_task_id)
+        else {
+            return Ok(false);
+        };
+        let Some(retry) = self.common_fields(task_def).retry.as_ref() else {
+            return Ok(false);
+        };
+        let policy = match retry {
+            OneOfRetryPolicyDefinitionOrReference::Retry(policy) => Some(policy),
+            OneOfRetryPolicyDefinitionOrReference::Reference(reference) => claimed
+                .definition
+                .use_
+                .as_ref()
+                .and_then(|components| components.retries.as_ref())
+                .and_then(|policies| policies.get(reference)),
+        };
+        let Some(policy) = policy else {
+            return Ok(false);
+        };
+        let maximum_attempts = policy
+            .limit
+            .as_ref()
+            .and_then(|limit| limit.attempt.as_ref())
+            .and_then(|attempt| attempt.count)
+            .unwrap_or(1)
+            .max(1);
+        let delay_ms = policy
+            .delay
+            .as_ref()
+            .map(|duration| duration.total_milliseconds())
+            .or_else(|| {
+                policy
+                    .limit
+                    .as_ref()
+                    .and_then(|limit| limit.duration.as_ref())
+                    .map(|duration| duration.total_milliseconds())
+            })
+            .unwrap_or(0);
+        let current: Option<RetryTaskState> = sqlx::query_as(
+            "SELECT attempt_no,effect_state,downstream_idempotency_key,deadline_ts
+                   FROM task_info_t WHERE host_id=$1 AND task_id=$2 FOR UPDATE",
+        )
+        .bind(claimed.task.host_id)
+        .bind(claimed.task.task_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let Some(current) = current else {
+            return Ok(false);
+        };
+        if current.attempt_no >= i32::from(maximum_attempts)
+            || (current.effect_state != "none" && current.downstream_idempotency_key.is_none())
+            || current.deadline_ts.is_some_and(|deadline| {
+                deadline
+                    <= Utc::now()
+                        + chrono::Duration::milliseconds(
+                            i64::try_from(delay_ms).unwrap_or(i64::MAX),
+                        )
+            })
+        {
+            return Ok(false);
+        }
+        let Some(lease) = claimed.host_lease else {
+            return Ok(false);
+        };
+        let updated = sqlx::query(
+            "UPDATE task_info_t SET status_code='A',locked='N',completed_ts=NULL,
+                    task_output=$1,result_code='RETRY_SCHEDULED',attempt_no=attempt_no+1,
+                    maximum_attempts=$2,next_attempt_ts=CURRENT_TIMESTAMP+
+                      make_interval(secs=>$3::double precision/1000.0),
+                    lease_owner=NULL,lease_expires_ts=NULL,update_ts=CURRENT_TIMESTAMP
+              WHERE host_id=$4 AND task_id=$5 AND lease_owner=$6
+                AND lease_fencing_token=$7 AND lease_expires_ts>CURRENT_TIMESTAMP",
+        )
+        .bind(failure)
+        .bind(i32::from(maximum_attempts))
+        .bind(i64::try_from(delay_ms).unwrap_or(i64::MAX))
+        .bind(claimed.task.host_id)
+        .bind(claimed.task.task_id)
+        .bind(lease.owner)
+        .bind(lease.fencing_token)
+        .execute(&mut **tx)
+        .await?;
+        if updated.rows_affected() == 1 {
+            sqlx::query(
+                "UPDATE workflow_invocation_t SET state='RUNNING',updated_ts=CURRENT_TIMESTAMP,
+                        state_version=state_version+1
+                  WHERE host_id=$1 AND process_id=$2
+                    AND state NOT IN ('CANCELLED','COMPLETED','FAILED')",
             )
-            .bind(result.task_output.to_string())
+            .bind(claimed.task.host_id)
+            .bind(claimed.task.process_id)
+            .execute(&mut **tx)
+            .await?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    async fn is_fork_branch(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        claimed: &ClaimedTask,
+    ) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM workflow_fork_branch_t WHERE host_id=$1 AND task_id=$2)",
+        )
+        .bind(claimed.task.host_id)
+        .bind(claimed.task.task_id)
+        .fetch_one(&mut **tx)
+        .await
+    }
+
+    async fn is_compensation_task(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        claimed: &ClaimedTask,
+    ) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT is_compensation FROM task_info_t WHERE host_id=$1 AND task_id=$2",
+        )
+        .bind(claimed.task.host_id)
+        .bind(claimed.task.task_id)
+        .fetch_one(&mut **tx)
+        .await
+    }
+
+    async fn reconcile_compensation_task(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        claimed: &ClaimedTask,
+        succeeded: bool,
+        result: &Value,
+    ) -> Result<(), sqlx::Error> {
+        if !succeeded {
+            sqlx::query(
+                "UPDATE workflow_invocation_t SET state='FAILED',terminal_ts=CURRENT_TIMESTAMP,
+                        updated_ts=CURRENT_TIMESTAMP,state_version=state_version+1,
+                        normalized_error=jsonb_build_object(
+                          'code','WORKFLOW_TASK_FAILED','message','workflow compensation failed',
+                          'retryable',false,'detail',$1::jsonb)
+                  WHERE host_id=$2 AND process_id=$3 AND state='COMPENSATING'",
+            )
+            .bind(result)
+            .bind(claimed.task.host_id)
+            .bind(claimed.task.process_id)
+            .execute(&mut **tx)
+            .await?;
+            sqlx::query(
+                "UPDATE process_info_t SET status_code='F',completed_ts=CURRENT_TIMESTAMP,
+                        custom_status_code='WORKFLOW_COMPENSATION_FAILED'
+                  WHERE host_id=$1 AND process_id=$2",
+            )
+            .bind(claimed.task.host_id)
+            .bind(claimed.task.process_id)
+            .execute(&mut **tx)
+            .await?;
+            return Ok(());
+        }
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM task_info_t WHERE host_id=$1 AND process_id=$2
+                AND is_compensation AND status_code IN ('A','W')",
+        )
+        .bind(claimed.task.host_id)
+        .bind(claimed.task.process_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        if remaining == 0 {
+            sqlx::query(
+                "UPDATE workflow_invocation_t SET state='CANCELLED',terminal_ts=CURRENT_TIMESTAMP,
+                        updated_ts=CURRENT_TIMESTAMP,state_version=state_version+1,
+                        non_cancellable_reason=NULL
+                  WHERE host_id=$1 AND process_id=$2 AND state='COMPENSATING'",
+            )
+            .bind(claimed.task.host_id)
+            .bind(claimed.task.process_id)
+            .execute(&mut **tx)
+            .await?;
+            sqlx::query(
+                "UPDATE process_info_t SET status_code='F',completed_ts=CURRENT_TIMESTAMP,
+                        custom_status_code='CANCELLED_AFTER_COMPENSATION'
+                  WHERE host_id=$1 AND process_id=$2",
+            )
             .bind(claimed.task.host_id)
             .bind(claimed.task.process_id)
             .execute(&mut **tx)
             .await?;
         }
+        Ok(())
+    }
 
+    async fn start_fork(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        claimed: &ClaimedTask,
+    ) -> Result<(), sqlx::Error> {
+        let Some(TaskDefinition::Fork(fork)) =
+            self.find_task_definition(&claimed.definition, &claimed.task.wf_task_id)
+        else {
+            return Err(sqlx::Error::Protocol(
+                "fork definition is unavailable".into(),
+            ));
+        };
+        let workflow_instance_id = Uuid::parse_str(&claimed.task.wf_instance_id)
+            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+        let continuation = fork.common.then.clone().or_else(|| {
+            self.get_next_sequential_task(&claimed.definition, &claimed.task.wf_task_id)
+        });
+        let join_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO workflow_fork_join_t(
+                host_id,join_id,workflow_instance_id,process_id,fork_task_id,fork_task_name,
+                continuation_task,compete,expected_branches)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+        )
+        .bind(claimed.task.host_id)
+        .bind(join_id)
+        .bind(workflow_instance_id)
+        .bind(claimed.task.process_id)
+        .bind(claimed.task.task_id)
+        .bind(&claimed.task.wf_task_id)
+        .bind(&continuation)
+        .bind(fork.fork.compete)
+        .bind(i32::try_from(fork.fork.branches.entries.len()).unwrap_or(i32::MAX))
+        .execute(&mut **tx)
+        .await?;
+        let policy_digest: String = sqlx::query_scalar(
+            "SELECT task_policy_digest FROM task_info_t WHERE host_id=$1 AND task_id=$2",
+        )
+        .bind(claimed.task.host_id)
+        .bind(claimed.task.task_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        for branch in &fork.fork.branches.entries {
+            let Some((branch_name, branch_task)) = branch.iter().next() else {
+                return Err(sqlx::Error::Protocol("fork branch is empty".into()));
+            };
+            let Some(task_type) = Self::supported_task_type_name(branch_task) else {
+                return Err(sqlx::Error::Protocol(format!(
+                    "fork branch `{branch_name}` uses an unsupported task type"
+                )));
+            };
+            let task_id = Uuid::now_v7();
+            let synthetic_name = format!("{}::{branch_name}", claimed.task.wf_task_id);
+            WorkflowRepository::insert_task(
+                tx,
+                &NewTask {
+                    host_id: claimed.task.host_id,
+                    task_id,
+                    task_type,
+                    process_id: claimed.task.process_id,
+                    wf_instance_id: claimed.task.wf_instance_id.clone(),
+                    wf_task_id: &synthetic_name,
+                    task_input: &claimed.context_data,
+                    placement: workflow_policy::ExecutionPlacement::Host,
+                    policy_digest: &policy_digest,
+                },
+            )
+            .await?;
+            sqlx::query(
+                "UPDATE task_info_t SET fork_join_id=$1,branch_name=$2,
+                        deadline_ts=(SELECT deadline_ts FROM workflow_invocation_t
+                                      WHERE host_id=$3 AND process_id=$4)
+                  WHERE host_id=$3 AND task_id=$5",
+            )
+            .bind(join_id)
+            .bind(branch_name)
+            .bind(claimed.task.host_id)
+            .bind(claimed.task.process_id)
+            .bind(task_id)
+            .execute(&mut **tx)
+            .await?;
+            sqlx::query(
+                "INSERT INTO workflow_fork_branch_t(host_id,join_id,branch_name,task_id)
+                 VALUES($1,$2,$3,$4)",
+            )
+            .bind(claimed.task.host_id)
+            .bind(join_id)
+            .bind(branch_name)
+            .bind(task_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn reconcile_fork_branch(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        claimed: &ClaimedTask,
+        succeeded: bool,
+        result: Value,
+    ) -> Result<(), sqlx::Error> {
+        let branch: (Uuid, String) = sqlx::query_as(
+            "SELECT join_id,branch_name FROM workflow_fork_branch_t
+              WHERE host_id=$1 AND task_id=$2 FOR UPDATE",
+        )
+        .bind(claimed.task.host_id)
+        .bind(claimed.task.task_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        sqlx::query(
+            "UPDATE workflow_fork_branch_t SET state=$1,result=$2,completed_ts=CURRENT_TIMESTAMP
+              WHERE host_id=$3 AND join_id=$4 AND branch_name=$5 AND state='RUNNING'",
+        )
+        .bind(if succeeded { "COMPLETED" } else { "FAILED" })
+        .bind(&result)
+        .bind(claimed.task.host_id)
+        .bind(branch.0)
+        .bind(&branch.1)
+        .execute(&mut **tx)
+        .await?;
+        let join: (i32, bool, Uuid, Option<String>, String) = sqlx::query_as(
+            "SELECT expected_branches,compete,fork_task_id,continuation_task,state
+               FROM workflow_fork_join_t WHERE host_id=$1 AND join_id=$2 FOR UPDATE",
+        )
+        .bind(claimed.task.host_id)
+        .bind(branch.0)
+        .fetch_one(&mut **tx)
+        .await?;
+        if join.4 != "RUNNING" {
+            return Ok(());
+        }
+        let rows: Vec<(String, String, Option<Value>)> = sqlx::query_as(
+            "SELECT branch_name,state,result FROM workflow_fork_branch_t
+              WHERE host_id=$1 AND join_id=$2 ORDER BY branch_name",
+        )
+        .bind(claimed.task.host_id)
+        .bind(branch.0)
+        .fetch_all(&mut **tx)
+        .await?;
+        let completed = rows
+            .iter()
+            .filter(|(_, state, _)| state != "RUNNING")
+            .count();
+        let failed = rows
+            .iter()
+            .filter(|(_, state, _)| state == "FAILED")
+            .count();
+        let winner = rows.iter().find(|(_, state, _)| state == "COMPLETED");
+        let terminal = if join.1 {
+            winner.is_some() || completed == usize::try_from(join.0).unwrap_or(usize::MAX)
+        } else {
+            completed == usize::try_from(join.0).unwrap_or(usize::MAX)
+        };
+        let mut results = serde_json::Map::new();
+        for (name, state, output) in &rows {
+            if state != "RUNNING" {
+                results.insert(name.clone(), output.clone().unwrap_or(Value::Null));
+            }
+        }
+        sqlx::query(
+            "UPDATE workflow_fork_join_t SET completed_branches=$1,failed_branches=$2,
+                    branch_results=$3 WHERE host_id=$4 AND join_id=$5",
+        )
+        .bind(i32::try_from(completed).unwrap_or(i32::MAX))
+        .bind(i32::try_from(failed).unwrap_or(i32::MAX))
+        .bind(Value::Object(results.clone()))
+        .bind(claimed.task.host_id)
+        .bind(branch.0)
+        .execute(&mut **tx)
+        .await?;
+        if !terminal {
+            return Ok(());
+        }
+        let success = if join.1 {
+            winner.is_some()
+        } else {
+            failed == 0
+        };
+        if join.1 && success {
+            sqlx::query(
+                "UPDATE workflow_fork_branch_t SET state='CANCELLED',completed_ts=CURRENT_TIMESTAMP
+                  WHERE host_id=$1 AND join_id=$2 AND state='RUNNING'",
+            )
+            .bind(claimed.task.host_id)
+            .bind(branch.0)
+            .execute(&mut **tx)
+            .await?;
+            sqlx::query(
+                "UPDATE task_info_t SET status_code='F',result_code='FORK_COMPETE_CANCELLED',
+                        completed_ts=CURRENT_TIMESTAMP,locked='N',lease_owner=NULL,lease_expires_ts=NULL
+                  WHERE host_id=$1 AND fork_join_id=$2 AND status_code='A'",
+            )
+            .bind(claimed.task.host_id)
+            .bind(branch.0)
+            .execute(&mut **tx)
+            .await?;
+        }
+        sqlx::query(
+            "UPDATE workflow_fork_join_t SET state=$1,completed_ts=CURRENT_TIMESTAMP
+              WHERE host_id=$2 AND join_id=$3",
+        )
+        .bind(if success { "COMPLETED" } else { "FAILED" })
+        .bind(claimed.task.host_id)
+        .bind(branch.0)
+        .execute(&mut **tx)
+        .await?;
+        if !success {
+            sqlx::query(
+                "UPDATE process_info_t SET status_code='F',completed_ts=CURRENT_TIMESTAMP,
+                        error_info='WORKFLOW_FORK_FAILED'
+                  WHERE host_id=$1 AND process_id=$2",
+            )
+            .bind(claimed.task.host_id)
+            .bind(claimed.task.process_id)
+            .execute(&mut **tx)
+            .await?;
+            return Ok(());
+        }
+        let parent = sqlx::query_as::<_, ActiveTask>(
+            "SELECT host_id,task_id,task_type,process_id,wf_instance_id,wf_task_id,
+                    status_code,result_code FROM task_info_t WHERE host_id=$1 AND task_id=$2",
+        )
+        .bind(claimed.task.host_id)
+        .bind(join.2)
+        .fetch_one(&mut **tx)
+        .await?;
+        let output = if join.1 {
+            winner
+                .and_then(|(_, _, output)| output.clone())
+                .unwrap_or(Value::Object(results))
+        } else {
+            Value::Object(results)
+        };
+        self.handle_transition(
+            tx,
+            &parent,
+            &claimed.definition,
+            &claimed.raw_definition,
+            claimed.context_data.clone(),
+            output,
+            join.3,
+            None,
+        )
+        .await
+    }
+
+    async fn sync_invocation_state(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        claimed: &ClaimedTask,
+        task_output: &Value,
+    ) -> Result<(), sqlx::Error> {
+        let process_status: Option<(String, Option<String>)> = sqlx::query_as(
+            "SELECT status_code::text,error_info FROM process_info_t
+              WHERE host_id=$1 AND process_id=$2",
+        )
+        .bind(claimed.task.host_id)
+        .bind(claimed.task.process_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let Some((status, error_info)) = process_status else {
+            return Ok(());
+        };
+        let state = match status.as_str() {
+            "C" => "COMPLETED",
+            "F" => "FAILED",
+            "W" => "WAITING",
+            _ => "RUNNING",
+        };
+        let mut public_result = match task_output {
+            Value::Object(_) => task_output.clone(),
+            value => json!({"value":value}),
+        };
+        let mut normalized_error = error_info.map(|message| {
+            let code = if message.contains("WORKFLOW_BUDGET_EXHAUSTED_AFTER_EFFECT") {
+                "WORKFLOW_BUDGET_EXHAUSTED_AFTER_EFFECT"
+            } else if message.contains("WORKFLOW_BUDGET_EXHAUSTED") {
+                "WORKFLOW_BUDGET_EXHAUSTED"
+            } else {
+                "WORKFLOW_TASK_FAILED"
+            };
+            json!({
+                "code":code,
+                "message":message,
+                "retryable":false
+            })
+        });
+        let mut state = state;
+        if state == "COMPLETED" {
+            let context: Value = sqlx::query_scalar(
+                "SELECT context_data FROM process_info_t WHERE host_id=$1 AND process_id=$2",
+            )
+            .bind(claimed.task.host_id)
+            .bind(claimed.task.process_id)
+            .fetch_one(&mut **tx)
+            .await?;
+            if let Some(output) = claimed
+                .definition
+                .output
+                .as_ref()
+                .and_then(|value| value.as_.as_ref())
+            {
+                public_result = if let Some(expression) = output.as_str() {
+                    match self.value_engine.evaluate_cel_value(
+                        "workflow-public-output",
+                        expression,
+                        &context,
+                    ) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            state = "FAILED";
+                            normalized_error = Some(json!({
+                                "code":"WORKFLOW_OUTPUT_INVALID",
+                                "message":error.to_string(),
+                                "retryable":false
+                            }));
+                            json!({})
+                        }
+                    }
+                } else {
+                    self.resolve_json_value(output, &context)
+                };
+            }
+            if !public_result.is_object() {
+                state = "FAILED";
+                normalized_error = Some(json!({
+                    "code":"WORKFLOW_OUTPUT_INVALID",
+                    "message":"workflow public output must be an object",
+                    "retryable":false
+                }));
+            }
+            let output_schema: Option<Value> = sqlx::query_scalar(
+                "SELECT response_policy_snapshot->'publicOutputSchema'
+                   FROM workflow_invocation_t WHERE host_id=$1 AND process_id=$2",
+            )
+            .bind(claimed.task.host_id)
+            .bind(claimed.task.process_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .flatten();
+            if let Some(schema) = output_schema {
+                match jsonschema::Validator::new(&schema) {
+                    Ok(validator) if validator.is_valid(&public_result) => {}
+                    Ok(_) => {
+                        state = "FAILED";
+                        normalized_error = Some(json!({
+                            "code":"WORKFLOW_OUTPUT_INVALID",
+                            "message":"workflow public output does not match the published schema",
+                            "retryable":false
+                        }));
+                    }
+                    Err(error) => {
+                        state = "FAILED";
+                        normalized_error = Some(json!({
+                            "code":"WORKFLOW_OUTPUT_INVALID",
+                            "message":format!("published output schema is invalid: {error}"),
+                            "retryable":false
+                        }));
+                    }
+                }
+            }
+            let result_byte_limit: Option<i64> = sqlx::query_scalar(
+                "SELECT budget.result_byte_limit
+                   FROM workflow_invocation_t invocation
+                   JOIN workflow_invocation_budget_t budget
+                     ON budget.host_id=invocation.host_id
+                    AND budget.workflow_instance_id=invocation.workflow_instance_id
+                  WHERE invocation.host_id=$1 AND invocation.process_id=$2",
+            )
+            .bind(claimed.task.host_id)
+            .bind(claimed.task.process_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+            let result_bytes = serde_json::to_vec(&public_result)
+                .map(|value| i64::try_from(value.len()).unwrap_or(i64::MAX))
+                .unwrap_or(i64::MAX);
+            if result_byte_limit.is_some_and(|limit| result_bytes > limit) {
+                state = "FAILED";
+                normalized_error = Some(json!({
+                    "code":"WORKFLOW_OUTPUT_INVALID",
+                    "message":"workflow public output exceeds the declared byte limit",
+                    "retryable":false
+                }));
+            }
+        }
+        if state == "FAILED"
+            && normalized_error
+                .as_ref()
+                .and_then(|error| error.get("code"))
+                .and_then(Value::as_str)
+                == Some("WORKFLOW_OUTPUT_INVALID")
+        {
+            let effect_state: Option<String> = sqlx::query_scalar(
+                "SELECT effect_state FROM workflow_invocation_t WHERE host_id=$1 AND process_id=$2",
+            )
+            .bind(claimed.task.host_id)
+            .bind(claimed.task.process_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+            if effect_state.as_deref() == Some("confirmed")
+                && let Some(error) = normalized_error.as_mut()
+            {
+                error["code"] = Value::String("WORKFLOW_OUTPUT_INVALID_AFTER_EFFECT".to_string());
+                error["retryable"] = Value::Bool(false);
+            }
+        }
+        let terminal = matches!(state, "COMPLETED" | "FAILED");
+        sqlx::query(
+            "UPDATE workflow_invocation_t SET state=$1,updated_ts=CURRENT_TIMESTAMP,
+                    state_version=state_version+1,
+                    terminal_ts=CASE WHEN $2 THEN CURRENT_TIMESTAMP ELSE NULL END,
+                    public_result=CASE WHEN $1='COMPLETED' THEN $3 ELSE public_result END,
+                    normalized_error=CASE WHEN $1='FAILED' THEN $4 ELSE normalized_error END
+              WHERE host_id=$5 AND process_id=$6 AND state NOT IN ('CANCELLED','COMPLETED','FAILED')",
+        )
+        .bind(state)
+        .bind(terminal)
+        .bind(public_result)
+        .bind(normalized_error)
+        .bind(claimed.task.host_id)
+        .bind(claimed.task.process_id)
+        .execute(&mut **tx)
+        .await?;
         Ok(())
     }
 
@@ -2720,6 +4164,21 @@ impl TaskExecutor {
         def: &'a WorkflowDefinition,
         name: &str,
     ) -> Option<&'a TaskDefinition> {
+        if let Some((fork_name, branch_name)) = name.split_once("::") {
+            let fork = def
+                .do_
+                .entries
+                .iter()
+                .find_map(|entry| entry.get(fork_name));
+            if let Some(TaskDefinition::Fork(fork)) = fork {
+                return fork
+                    .fork
+                    .branches
+                    .entries
+                    .iter()
+                    .find_map(|entry| entry.get(branch_name));
+            }
+        }
         for entry in &def.do_.entries {
             if let Some(task_def) = entry.get(name) {
                 return Some(task_def);
@@ -2969,6 +4428,162 @@ impl TaskExecutor {
         }
     }
 
+    async fn task_execution_timeout(
+        &self,
+        claimed: &ClaimedTask,
+    ) -> Result<Option<Duration>, DynError> {
+        use workflow_core::models::duration::OneOfDurationOrIso8601Expression;
+        use workflow_core::models::timeout::OneOfTimeoutDefinitionOrReference;
+
+        let task_def = self
+            .find_task_definition(&claimed.definition, &claimed.task.wf_task_id)
+            .ok_or_else(|| io::Error::other("workflow task definition is unavailable"))?;
+        let task_timeout = self.common_fields(task_def).timeout.as_ref();
+        let timeout = task_timeout.or(claimed.definition.timeout.as_ref());
+        let configured = match timeout {
+            Some(OneOfTimeoutDefinitionOrReference::Timeout(timeout)) => Some(&timeout.after),
+            Some(OneOfTimeoutDefinitionOrReference::Reference(reference)) => claimed
+                .definition
+                .use_
+                .as_ref()
+                .and_then(|components| components.timeouts.as_ref())
+                .and_then(|timeouts| timeouts.get(reference))
+                .map(|timeout| &timeout.after),
+            None => None,
+        };
+        let configured_ms = configured.and_then(|duration| match duration {
+            OneOfDurationOrIso8601Expression::Duration(duration) => {
+                Some(duration.total_milliseconds())
+            }
+            OneOfDurationOrIso8601Expression::Iso8601Expression(value) => {
+                parse_iso8601_duration_ms(value)
+            }
+        });
+        let deadline: Option<chrono::DateTime<Utc>> = sqlx::query_scalar(
+            "SELECT deadline_ts FROM workflow_invocation_t WHERE host_id=$1 AND process_id=$2",
+        )
+        .bind(claimed.task.host_id)
+        .bind(claimed.task.process_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten();
+        let deadline_ms = deadline.map(|deadline| {
+            u64::try_from((deadline - Utc::now()).num_milliseconds().max(1)).unwrap_or(1)
+        });
+        Ok(match (configured_ms, deadline_ms) {
+            (Some(configured), Some(deadline)) => {
+                Some(Duration::from_millis(configured.min(deadline).max(1)))
+            }
+            (Some(configured), None) => Some(Duration::from_millis(configured.max(1))),
+            (None, Some(deadline)) => Some(Duration::from_millis(deadline.max(1))),
+            (None, None) => None,
+        })
+    }
+
+    async fn claim_task_effect(
+        &self,
+        claimed: &ClaimedTask,
+        idempotency_key: String,
+        request_digest: String,
+    ) -> Result<EffectClaim, DynError> {
+        if idempotency_key.trim().is_empty() || idempotency_key.len() > 255 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "resolved task idempotency key must contain between 1 and 255 bytes",
+            )
+            .into());
+        }
+        let workflow_instance_id = Uuid::parse_str(&claimed.task.wf_instance_id).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "workflow-backed task instance ID must be a UUID",
+            )
+        })?;
+        let (_, replayed, result, _): (bool, bool, Option<Value>, String) = sqlx::query_as(
+            "SELECT claimed,replayed,result,effect_state FROM workflow_claim_task_effect_v1($1,$2,$3,$4,$5)",
+        )
+        .bind(claimed.task.host_id)
+        .bind(workflow_instance_id)
+        .bind(&claimed.task.wf_task_id)
+        .bind(&idempotency_key)
+        .bind(&request_digest)
+        .fetch_one(&self.pool)
+        .await?;
+        let compensation_task = self
+            .find_task_definition(&claimed.definition, &claimed.task.wf_task_id)
+            .and_then(|task| self.common_fields(task).metadata.as_ref())
+            .and_then(|metadata| metadata.get("compensationTask"))
+            .and_then(Value::as_str);
+        sqlx::query(
+            "UPDATE task_info_t SET effect_state=CASE WHEN $1 THEN 'confirmed' ELSE 'possible' END,
+                    downstream_idempotency_key=$2,compensation_task=$5,update_ts=CURRENT_TIMESTAMP
+              WHERE host_id=$3 AND task_id=$4",
+        )
+        .bind(replayed)
+        .bind(&idempotency_key)
+        .bind(claimed.task.host_id)
+        .bind(claimed.task.task_id)
+        .bind(compensation_task)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE workflow_invocation_t SET
+                    effect_state=CASE WHEN $1 THEN 'confirmed' ELSE
+                      CASE WHEN effect_state='none' THEN 'possible' ELSE effect_state END END,
+                    updated_ts=CURRENT_TIMESTAMP,state_version=state_version+1
+              WHERE host_id=$2 AND process_id=$3",
+        )
+        .bind(replayed)
+        .bind(claimed.task.host_id)
+        .bind(claimed.task.process_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(EffectClaim {
+            idempotency_key,
+            request_digest,
+            replayed_result: replayed.then(|| result.unwrap_or_else(|| json!({}))),
+        })
+    }
+
+    async fn confirm_task_effect(
+        &self,
+        claimed: &ClaimedTask,
+        claim: &EffectClaim,
+        result: &Value,
+    ) -> Result<(), DynError> {
+        let workflow_instance_id = Uuid::parse_str(&claimed.task.wf_instance_id)?;
+        let confirmed: bool =
+            sqlx::query_scalar("SELECT workflow_confirm_task_effect_v1($1,$2,$3,$4,$5,$6)")
+                .bind(claimed.task.host_id)
+                .bind(workflow_instance_id)
+                .bind(&claimed.task.wf_task_id)
+                .bind(&claim.idempotency_key)
+                .bind(&claim.request_digest)
+                .bind(result)
+                .fetch_one(&self.pool)
+                .await?;
+        if !confirmed {
+            return Err(io::Error::other("WORKFLOW_TASK_EFFECT_CONFIRMATION_FAILED").into());
+        }
+        sqlx::query(
+            "UPDATE task_info_t SET effect_state='confirmed',update_ts=CURRENT_TIMESTAMP
+              WHERE host_id=$1 AND task_id=$2",
+        )
+        .bind(claimed.task.host_id)
+        .bind(claimed.task.task_id)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE workflow_invocation_t SET effect_state='confirmed',updated_ts=CURRENT_TIMESTAMP,
+                    state_version=state_version+1 WHERE host_id=$1 AND process_id=$2",
+        )
+        .bind(claimed.task.host_id)
+        .bind(claimed.task.process_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     fn get_then_directive<'a>(&self, task_def: &'a TaskDefinition) -> &'a Option<String> {
         &self.common_fields(task_def).then
     }
@@ -3172,6 +4787,14 @@ impl TaskExecutor {
     fn evaluate_expression_to_value(&self, expression: &str, context: &Value) -> Option<Value> {
         let expression = expression.trim();
 
+        if !expression.starts_with('.')
+            && let Ok(value) =
+                self.value_engine
+                    .evaluate_cel_value("workflow-runtime-value", expression, context)
+        {
+            return Some(value);
+        }
+
         if self.has_comparison_operator(expression) {
             return self
                 .evaluate_condition(expression, context)
@@ -3208,6 +4831,18 @@ impl TaskExecutor {
             .trim_start_matches("${{")
             .trim_end_matches("}}")
             .trim();
+
+        if !expression.starts_with('.')
+            && let Ok(result) = self.value_engine.evaluate_cel_predicate(
+                "workflow-runtime-predicate",
+                expression,
+                Some("standard"),
+                "workflow",
+                context,
+            )
+        {
+            return Ok(result);
+        }
 
         for operator in ["<=", ">=", "==", "!=", "<", ">"] {
             if let Some((lhs, rhs)) = expression.split_once(operator) {
@@ -3344,6 +4979,31 @@ impl TaskExecutor {
     }
 }
 
+fn parse_iso8601_duration_ms(value: &str) -> Option<u64> {
+    let value = value.strip_prefix("PT")?;
+    if value.is_empty() {
+        return None;
+    }
+    let mut total = 0_u64;
+    let mut digits = String::new();
+    for character in value.chars() {
+        if character.is_ascii_digit() {
+            digits.push(character);
+            continue;
+        }
+        let amount = digits.parse::<u64>().ok()?;
+        digits.clear();
+        let multiplier = match character {
+            'H' => 3_600_000,
+            'M' => 60_000,
+            'S' => 1_000,
+            _ => return None,
+        };
+        total = total.saturating_add(amount.saturating_mul(multiplier));
+    }
+    (digits.is_empty() && total > 0).then_some(total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3371,6 +5031,7 @@ mod tests {
             context_data: json!({"requestId": "REQ-1", "summary": "review"}),
             definition: serde_yaml::from_str(yaml).expect("fixture must be a workflow"),
             raw_definition: serde_yaml::from_str(yaml).expect("fixture must be YAML"),
+            host_lease: None,
         }
     }
 
@@ -3427,12 +5088,19 @@ mod tests {
     }
 
     #[test]
-    fn host_claim_is_placement_scoped_and_characterizes_five_minute_reclaim() {
-        assert_eq!(TASK_LOCK_TIMEOUT_MINUTES, 5);
-        assert!(CLAIM_NEXT_HOST_TASK_SQL.contains("execution_placement = 'host'"));
-        assert!(CLAIM_NEXT_HOST_TASK_SQL.contains("make_interval(mins => $1::int)"));
-        assert!(CLAIM_NEXT_HOST_TASK_SQL.contains("FOR UPDATE SKIP LOCKED"));
-        assert!(!CLAIM_NEXT_HOST_TASK_SQL.contains("task_type IN ('run'"));
+    fn interactive_host_execution_uses_bounded_concurrency_and_short_leases() {
+        let concurrency = DEFAULT_HOST_EXECUTOR_CONCURRENCY;
+        let lease_ms = DEFAULT_HOST_TASK_LEASE_MS;
+        assert!(concurrency > 1);
+        assert!(lease_ms <= 30_000);
+    }
+
+    #[test]
+    fn phase2_iso8601_deadlines_are_bounded_and_deterministic() {
+        assert_eq!(parse_iso8601_duration_ms("PT2M5S"), Some(125_000));
+        assert_eq!(parse_iso8601_duration_ms("PT1H"), Some(3_600_000));
+        assert_eq!(parse_iso8601_duration_ms("P1D"), None);
+        assert_eq!(parse_iso8601_duration_ms("PT0S"), None);
     }
 
     #[tokio::test]

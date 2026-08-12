@@ -262,6 +262,7 @@ impl PingoraApp for GatewayApp {
 
 struct GatewayProxy {
     agent_delegation: Option<Arc<DelegationVerifier>>,
+    workflow_delegation: Option<Arc<DelegationVerifier>>,
     agent_delegation_replay: Option<Arc<dyn DelegationReplayStore>>,
     active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
     correlation_config: Arc<ConfigManager<Option<CorrelationConfig>>>,
@@ -925,14 +926,23 @@ impl GatewayProxy {
         {
             return None;
         }
-        let Some(verifier) = self.agent_delegation.as_ref() else {
+        if self.agent_delegation.is_none() && self.workflow_delegation.is_none() {
             return Some(Err(HandlerRejection::unauthorized(
                 "agent delegation is not configured",
             )));
-        };
-        let claims = match verifier.verify_token(token) {
-            Ok(claims) => claims,
-            Err(_) => {
+        }
+        let claims = self
+            .agent_delegation
+            .as_ref()
+            .and_then(|verifier| verifier.verify_token(token).ok())
+            .or_else(|| {
+                self.workflow_delegation
+                    .as_ref()
+                    .and_then(|verifier| verifier.verify_token(token).ok())
+            });
+        let claims = match claims {
+            Some(claims) => claims,
+            None => {
                 return Some(Err(HandlerRejection::unauthorized(
                     "invalid agent delegation",
                 )));
@@ -1314,7 +1324,21 @@ impl GatewayProxy {
                     })
             })
             .transpose()?;
-        let agent_delegation_replay = if agent_delegation.is_some() {
+        let workflow_delegation = std::env::var("LIGHT_GATEWAY_WORKFLOW_DELEGATION_SECRET")
+            .ok()
+            .filter(|secret| !secret.trim().is_empty())
+            .map(|secret| {
+                DelegationVerifier::new(secret.as_bytes(), "light-workflow", "light-gateway")
+                    .map(Arc::new)
+                    .map_err(|error| {
+                        RuntimeError::Config(format!(
+                            "invalid workflow delegation configuration: {error}"
+                        ))
+                    })
+            })
+            .transpose()?;
+        let agent_delegation_replay = if agent_delegation.is_some() || workflow_delegation.is_some()
+        {
             let database_url = std::env::var("LIGHT_GATEWAY_DELEGATION_DATABASE_URL")
                 .or_else(|_| std::env::var("DATABASE_URL"))
                 .map_err(|_| RuntimeError::Config(
@@ -1340,6 +1364,7 @@ impl GatewayProxy {
 
         Ok(Self {
             agent_delegation,
+            workflow_delegation,
             agent_delegation_replay,
             active_handlers,
             correlation_config,

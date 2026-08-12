@@ -210,9 +210,12 @@ impl WorkflowRepository {
             "INSERT INTO task_info_t (
                 host_id, task_id, task_type, process_id, wf_instance_id,
                 wf_task_id, status_code, started_ts, locked, priority,
-                task_input, execution_placement, task_policy_digest
+                task_input, execution_placement, task_policy_digest,execution_class
              ) VALUES ($1, $2, $3, $4, $5, $6, 'A', CURRENT_TIMESTAMP,
-                       'N', 1, $7, $8, $9)",
+                       'N',COALESCE((SELECT CASE execution_class WHEN 'interactive' THEN 100 ELSE 1 END
+                                      FROM workflow_invocation_t WHERE host_id=$1 AND process_id=$4),1),
+                       $7,$8,$9,COALESCE((SELECT execution_class FROM workflow_invocation_t
+                                          WHERE host_id=$1 AND process_id=$4),'standard'))",
         )
         .bind(task.host_id)
         .bind(task.task_id)

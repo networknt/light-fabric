@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lightapi.net/contracts/workflow-invocation/v1/delegation-claims.schema.json",
+  "title": "Workflow delegation claims V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contractVersion", "tokenId", "invocationId", "hostId",
+    "principalSubject", "endUserSubject", "outerStableToolRef",
+    "allowedNestedToolRefs", "audiences", "operations",
+    "dataBoundaryDigest", "policyDigest", "executionClass", "permitDepth",
+    "remainingDelegationDepth", "budgetLedgerId", "budgetGeneration",
+    "deadlineTs"
+  ],
+  "properties": {
+    "contractVersion": { "const": 1 },
+    "tokenId": { "$ref": "#/$defs/uuid" },
+    "invocationId": { "$ref": "#/$defs/uuid" },
+    "hostId": { "$ref": "#/$defs/uuid" },
+    "principalSubject": { "type": "string", "minLength": 1 },
+    "endUserSubject": { "type": "string", "minLength": 1 },
+    "outerStableToolRef": { "$ref": "#/$defs/uuid" },
+    "allowedNestedToolRefs": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/uuid" } },
+    "audiences": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "operations": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "dataBoundaryDigest": { "$ref": "#/$defs/digest" },
+    "policyDigest": { "$ref": "#/$defs/digest" },
+    "executionClass": { "enum": ["interactive", "standard", "batch"] },
+    "permitDepth": { "type": "integer", "minimum": 0, "maximum": 16 },
+    "remainingDelegationDepth": { "type": "integer", "minimum": 0, "maximum": 16 },
+    "budgetLedgerId": { "$ref": "#/$defs/uuid" },
+    "budgetGeneration": { "type": "integer", "minimum": 1 },
+    "deadlineTs": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "uuid": { "type": "string", "format": "uuid" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}
+

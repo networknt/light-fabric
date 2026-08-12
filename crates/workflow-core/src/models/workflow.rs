@@ -36,6 +36,8 @@ fn default_runtime_expression_language() -> String {
 /// Enumerates all supported runtime expression languages
 pub struct RuntimeExpressionLanguage;
 impl RuntimeExpressionLanguage {
+    /// Gets the CEL runtime expression language used by workflow-backed MCP tools.
+    pub const CEL: &'static str = "cel";
     /// Gets the 'jq' runtime expression language
     pub const JQ: &'static str = "jq";
     /// Gets the 'js' runtime expression language

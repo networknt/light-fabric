@@ -235,6 +235,10 @@ pub struct TaskDefinitionFields {
     #[serde(rename = "idempotencyKey", skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
 
+    /// Gets/sets the retry policy for this task.
+    #[serde(rename = "retry", skip_serializing_if = "Option::is_none")]
+    pub retry: Option<OneOfRetryPolicyDefinitionOrReference>,
+
     /// Gets/sets the task's timeout, if any
     #[serde(rename = "timeout", skip_serializing_if = "Option::is_none")]
     pub timeout: Option<OneOfTimeoutDefinitionOrReference>,
@@ -262,6 +266,7 @@ impl TaskDefinitionFields {
             export: None,
             explain: None,
             idempotency_key: None,
+            retry: None,
             timeout: None,
             then: None,
             metadata: None,

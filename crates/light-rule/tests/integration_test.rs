@@ -17,12 +17,11 @@ impl RuleActionPlugin for MockAction {
         rule_context: &mut Value,
         action_values: &Option<Value>,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(vals) = action_values {
-            if let Some(msg) = vals.get("message") {
-                if let Value::Object(map) = rule_context {
-                    map.insert("last_message".to_string(), msg.clone());
-                }
-            }
+        if let Some(vals) = action_values
+            && let Some(msg) = vals.get("message")
+            && let Value::Object(map) = rule_context
+        {
+            map.insert("last_message".to_string(), msg.clone());
         }
         Ok(true)
     }

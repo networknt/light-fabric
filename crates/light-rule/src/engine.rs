@@ -2,9 +2,11 @@ use crate::action::ActionRegistry;
 use crate::models::Rule;
 // Reference projection is coupled to the public `cel 0.14` AST and operator
 // names. Revalidate this walker whenever the pinned CEL crate is upgraded.
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use cel::common::ast::operators::{INDEX, OPT_INDEX, OPT_SELECT};
 use cel::common::ast::{EntryExpr, Expr, IdedExpr, LiteralValue};
 use cel::extractors::This;
+use cel::objects::Key as CelKey;
 use cel::{Context as CelContext, ExecutionError as CelExecutionError};
 use cel::{Program as CelProgram, Value as CelValue};
 use serde_json::Value as JsonValue;
@@ -47,6 +49,7 @@ const MAX_DIAGNOSTIC_CONTEXT_NODES: usize = 128;
 const MAX_DIAGNOSTIC_CONTEXT_COLLECTION_ITEMS: usize = 10;
 const MAX_DIAGNOSTIC_CONTEXT_STRING_CHARS: usize = 256;
 const MAX_DIAGNOSTIC_CONTEXT_KEY_CHARS: usize = 128;
+const MAX_WORKFLOW_CEL_AST_NODES: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CelSecurityProfile {
@@ -99,6 +102,10 @@ enum RuleEngineError {
     CelEvaluate(String),
     #[error("CEL expression must return a boolean, got {0}")]
     CelNonBoolean(String),
+    #[error("CEL expression cost {actual} exceeds maximum {maximum}")]
+    CelCostExceeded { actual: usize, maximum: usize },
+    #[error("CEL result cannot be represented by the workflow JSON profile: {0}")]
+    CelValueConversion(String),
 }
 
 impl RuleEngine {
@@ -412,6 +419,82 @@ impl RuleEngine {
                 ))))
             }
         }
+    }
+
+    /// Evaluates a workflow CEL expression and converts it through the pinned
+    /// workflow-backed MCP V1 JSON profile. This deliberately rejects doubles,
+    /// unsafe integers, non-string map keys, functions, and opaque values.
+    pub fn evaluate_cel_value(
+        &self,
+        expression_id: &str,
+        expression: &str,
+        context: &JsonValue,
+    ) -> Result<JsonValue, Box<dyn StdError + Send + Sync>> {
+        let expression = expression.trim();
+        if expression.is_empty() {
+            return Err(Box::new(RuleEngineError::MissingCelExpression));
+        }
+        let program =
+            self.compile_cel_program(expression_id, expression, CelSecurityProfile::Standard)?;
+        if cel_ast_has_comprehension(program.expression()) {
+            return Err(Box::new(RuleEngineError::CelSecurityPolicy(
+                "comprehensions are not allowed in the workflow value profile".to_string(),
+            )));
+        }
+        let cost = cel_ast_node_count(program.expression());
+        if cost > MAX_WORKFLOW_CEL_AST_NODES {
+            return Err(Box::new(RuleEngineError::CelCostExceeded {
+                actual: cost,
+                maximum: MAX_WORKFLOW_CEL_AST_NODES,
+            }));
+        }
+        self.validate_cel_program(&program, CelSecurityProfile::Standard)?;
+        let cel_context = build_cel_context(CelSecurityProfile::Standard, context)?;
+        let value = execute_cel_safely(
+            expression_id,
+            expression,
+            false,
+            || program.execute(&cel_context),
+            || {
+                collect_referenced_diagnostics(
+                    &program,
+                    CelSecurityProfile::Standard,
+                    context,
+                    None,
+                    self.log_full_cel_context,
+                )
+            },
+        )?;
+        cel_value_to_json(value).map_err(|error| Box::new(error) as _)
+    }
+
+    /// Compiles and security-validates a workflow value expression without
+    /// executing it. The pinned CEL crate has no static type checker, so this
+    /// is deliberately parse plus allowlist validation.
+    pub fn validate_cel_value_expression(
+        &self,
+        expression_id: &str,
+        expression: &str,
+    ) -> Result<(), Box<dyn StdError + Send + Sync>> {
+        let expression = expression.trim();
+        if expression.is_empty() {
+            return Err(Box::new(RuleEngineError::MissingCelExpression));
+        }
+        let program =
+            self.compile_cel_program(expression_id, expression, CelSecurityProfile::Standard)?;
+        if cel_ast_has_comprehension(program.expression()) {
+            return Err(Box::new(RuleEngineError::CelSecurityPolicy(
+                "comprehensions are not allowed in the workflow value profile".to_string(),
+            )));
+        }
+        let cost = cel_ast_node_count(program.expression());
+        if cost > MAX_WORKFLOW_CEL_AST_NODES {
+            return Err(Box::new(RuleEngineError::CelCostExceeded {
+                actual: cost,
+                maximum: MAX_WORKFLOW_CEL_AST_NODES,
+            }));
+        }
+        self.validate_cel_program(&program, CelSecurityProfile::Standard)
     }
 
     fn compile_cel_program(
@@ -1048,11 +1131,191 @@ fn cel_contains_ignore_case(
     ))
 }
 
+fn cel_ast_node_count(expression: &IdedExpr) -> usize {
+    let descendants = match &expression.expr {
+        Expr::Unspecified | Expr::Ident(_) | Expr::Literal(_) => 0,
+        Expr::Call(call) => {
+            call.target
+                .as_deref()
+                .map(cel_ast_node_count)
+                .unwrap_or_default()
+                + call.args.iter().map(cel_ast_node_count).sum::<usize>()
+        }
+        Expr::Comprehension(comprehension) => {
+            cel_ast_node_count(&comprehension.iter_range)
+                + cel_ast_node_count(&comprehension.accu_init)
+                + cel_ast_node_count(&comprehension.loop_cond)
+                + cel_ast_node_count(&comprehension.loop_step)
+                + cel_ast_node_count(&comprehension.result)
+        }
+        Expr::List(list) => list.elements.iter().map(cel_ast_node_count).sum(),
+        Expr::Map(map) => map
+            .entries
+            .iter()
+            .map(|entry| match &entry.expr {
+                EntryExpr::MapEntry(entry) => {
+                    cel_ast_node_count(&entry.key) + cel_ast_node_count(&entry.value)
+                }
+                EntryExpr::StructField(entry) => cel_ast_node_count(&entry.value),
+            })
+            .sum(),
+        Expr::Select(select) => cel_ast_node_count(&select.operand),
+        Expr::Struct(structure) => structure
+            .entries
+            .iter()
+            .map(|entry| match &entry.expr {
+                EntryExpr::StructField(entry) => cel_ast_node_count(&entry.value),
+                EntryExpr::MapEntry(entry) => {
+                    cel_ast_node_count(&entry.key) + cel_ast_node_count(&entry.value)
+                }
+            })
+            .sum(),
+    };
+    descendants.saturating_add(1)
+}
+
+fn cel_ast_has_comprehension(expression: &IdedExpr) -> bool {
+    match &expression.expr {
+        Expr::Comprehension(_) => true,
+        Expr::Call(call) => {
+            call.target
+                .as_deref()
+                .is_some_and(cel_ast_has_comprehension)
+                || call.args.iter().any(cel_ast_has_comprehension)
+        }
+        Expr::List(list) => list.elements.iter().any(cel_ast_has_comprehension),
+        Expr::Map(map) => map.entries.iter().any(|entry| match &entry.expr {
+            EntryExpr::MapEntry(entry) => {
+                cel_ast_has_comprehension(&entry.key) || cel_ast_has_comprehension(&entry.value)
+            }
+            EntryExpr::StructField(entry) => cel_ast_has_comprehension(&entry.value),
+        }),
+        Expr::Select(select) => cel_ast_has_comprehension(&select.operand),
+        Expr::Struct(structure) => structure.entries.iter().any(|entry| match &entry.expr {
+            EntryExpr::StructField(entry) => cel_ast_has_comprehension(&entry.value),
+            EntryExpr::MapEntry(entry) => {
+                cel_ast_has_comprehension(&entry.key) || cel_ast_has_comprehension(&entry.value)
+            }
+        }),
+        Expr::Unspecified | Expr::Ident(_) | Expr::Literal(_) => false,
+    }
+}
+
+fn cel_value_to_json(value: CelValue) -> Result<JsonValue, RuleEngineError> {
+    const MAX_SAFE_JSON_INTEGER: i64 = 9_007_199_254_740_991;
+    const MAX_SAFE_JSON_UNSIGNED_INTEGER: u64 = MAX_SAFE_JSON_INTEGER as u64;
+
+    match value {
+        CelValue::Null => Ok(JsonValue::Null),
+        CelValue::Bool(value) => Ok(JsonValue::Bool(value)),
+        CelValue::String(value) => Ok(JsonValue::String((*value).clone())),
+        CelValue::Bytes(value) => Ok(JsonValue::String(BASE64_STANDARD.encode(value.as_ref()))),
+        CelValue::Int(value)
+            if (-MAX_SAFE_JSON_INTEGER..=MAX_SAFE_JSON_INTEGER).contains(&value) =>
+        {
+            Ok(JsonValue::Number(value.into()))
+        }
+        CelValue::Int(value) => Err(RuleEngineError::CelValueConversion(format!(
+            "int {value} is outside the safe JSON integer range"
+        ))),
+        CelValue::UInt(value) if value <= MAX_SAFE_JSON_UNSIGNED_INTEGER => {
+            Ok(JsonValue::Number(value.into()))
+        }
+        CelValue::UInt(value) => Err(RuleEngineError::CelValueConversion(format!(
+            "uint {value} is outside the safe JSON integer range"
+        ))),
+        CelValue::Float(_) => Err(RuleEngineError::CelValueConversion(
+            "double values are not allowed".to_string(),
+        )),
+        CelValue::List(values) => values
+            .iter()
+            .cloned()
+            .map(cel_value_to_json)
+            .collect::<Result<Vec<_>, _>>()
+            .map(JsonValue::Array),
+        CelValue::Map(map) => {
+            let mut output = serde_json::Map::with_capacity(map.map.len());
+            for (key, value) in map.map.iter() {
+                let CelKey::String(key) = key else {
+                    return Err(RuleEngineError::CelValueConversion(
+                        "map keys must be strings".to_string(),
+                    ));
+                };
+                output.insert((**key).clone(), cel_value_to_json(value.clone())?);
+            }
+            Ok(JsonValue::Object(output))
+        }
+        CelValue::Function(_, _) => Err(RuleEngineError::CelValueConversion(
+            "function values are not allowed".to_string(),
+        )),
+        CelValue::Opaque(value) => Err(RuleEngineError::CelValueConversion(format!(
+            "opaque value {} is not allowed",
+            value.runtime_type_name()
+        ))),
+        #[allow(unreachable_patterns)]
+        _ => Err(RuleEngineError::CelValueConversion(
+            "the CEL value type is not enabled by the pinned runtime profile".to_string(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
     use std::cell::Cell;
+
+    fn test_rule_engine() -> RuleEngine {
+        RuleEngine::new(Arc::new(ActionRegistry::new()))
+    }
+
+    #[test]
+    fn workflow_cel_value_returns_structured_json() {
+        let result = test_rule_engine()
+            .evaluate_cel_value(
+                "workflow-output",
+                r#"{"answer": input.value, "items": [1, 2]}"#,
+                &json!({"input": {"value": "ok"}}),
+            )
+            .expect("evaluate workflow value");
+
+        assert_eq!(result, json!({"answer": "ok", "items": [1, 2]}));
+    }
+
+    #[test]
+    fn workflow_cel_value_rejects_lossy_json_values() {
+        let engine = test_rule_engine();
+        let unsafe_integer = engine
+            .evaluate_cel_value("unsafe-int", "9007199254740992", &json!({}))
+            .expect_err("reject unsafe integer")
+            .to_string();
+        let double = engine
+            .evaluate_cel_value("double", "1.5", &json!({}))
+            .expect_err("reject double")
+            .to_string();
+        let map_key = engine
+            .evaluate_cel_value("map-key", "{1: 'value'}", &json!({}))
+            .expect_err("reject non-string map key")
+            .to_string();
+
+        assert!(unsafe_integer.contains("safe JSON integer range"));
+        assert!(double.contains("double values are not allowed"));
+        assert!(map_key.contains("map keys must be strings"));
+    }
+
+    #[test]
+    fn workflow_cel_value_rejects_unbounded_comprehensions() {
+        let error = test_rule_engine()
+            .evaluate_cel_value(
+                "comprehension",
+                "items.map(i, i + 1)",
+                &json!({"items": [1]}),
+            )
+            .expect_err("reject comprehension")
+            .to_string();
+
+        assert!(error.contains("comprehensions are not allowed"));
+    }
 
     #[test]
     fn extracts_static_context_paths_and_ignores_comprehension_locals() {
