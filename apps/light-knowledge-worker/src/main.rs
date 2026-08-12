@@ -6196,13 +6196,6 @@ async fn apply_configured_embeddings(
     if remaining_cost_by_source.is_empty() && !config.source_id.is_nil() {
         remaining_cost_by_source.insert(config.source_id, config.maximum_spend_micros);
     }
-    if remaining_cost_by_source
-        .values()
-        .any(|remaining| *remaining == 0)
-        && !generation.chunks.is_empty()
-    {
-        bail!("KNOWLEDGE_INGESTION_SPEND_BUDGET_REQUIRED");
-    }
     while let Some((start, end, source_id)) = pending.pop() {
         let remaining_cost_micros = remaining_cost_by_source
             .get_mut(&source_id)
@@ -6243,6 +6236,27 @@ async fn apply_configured_embeddings(
             .send()
             .await;
         let parsed = match response {
+            Ok(response) if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
+                let body = response
+                    .json::<serde_json::Value>()
+                    .await
+                    .context("embedding gateway returned an invalid 429 error envelope")?;
+                let error = body.get("error");
+                let error_code = error
+                    .and_then(|error| error.get("code"))
+                    .and_then(serde_json::Value::as_str)
+                    .or_else(|| {
+                        error
+                            .and_then(|error| error.get("type"))
+                            .and_then(serde_json::Value::as_str)
+                    });
+                if error_code == Some("budget_exhausted") {
+                    bail!(
+                        "KNOWLEDGE_INGESTION_SPEND_BUDGET_EXCEEDED: embedding gateway rejected the request budget"
+                    );
+                }
+                None
+            }
             Ok(response)
                 if response.status().is_success()
                     && response
@@ -7712,6 +7726,180 @@ async fn heartbeat(pool: &PgPool, config: &WorkerConfig) -> Result<()> {
 mod tests {
     use super::*;
 
+    async fn embedding_gateway_response(
+        billed_cost_micros: u64,
+        vector_count: usize,
+        dimension: usize,
+    ) -> (String, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let response_body = serde_json::to_vec(&json!({
+            "data": (0..vector_count)
+                .map(|index| json!({
+                    "index": index,
+                    "embedding": vec![0.0_f32; dimension]
+                }))
+                .collect::<Vec<_>>()
+        }))
+        .unwrap();
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let (header_end, content_length) = loop {
+                let read = stream.read(&mut buffer).await.unwrap();
+                assert!(read > 0, "embedding request ended before its headers");
+                request.extend_from_slice(&buffer[..read]);
+                let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n")
+                else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                break (header_end, content_length);
+            };
+            while request.len() < header_end + 4 + content_length {
+                let read = stream.read(&mut buffer).await.unwrap();
+                assert!(read > 0, "embedding request ended before its body");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let ceiling = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("x-light-maximum-billed-cost-micros")
+                        .then(|| value.trim().to_string())
+                })
+                .expect("embedding request must carry its cost ceiling");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nx-light-embedding-space-id: free-space\r\nx-light-embedding-space-revision: 1\r\nx-light-billed-cost-micros: {billed_cost_micros}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                response_body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(&response_body).await.unwrap();
+            ceiling
+        });
+        (format!("http://{address}/v1/embeddings"), task)
+    }
+
+    async fn embedding_gateway_error_response(
+        status: u16,
+        code: &'static str,
+    ) -> (String, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let (header_end, content_length) = loop {
+                let read = stream.read(&mut buffer).await.unwrap();
+                assert!(read > 0, "embedding request ended before its headers");
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    break (header_end, content_length);
+                }
+            };
+            while request.len() < header_end + 4 + content_length {
+                let read = stream.read(&mut buffer).await.unwrap();
+                assert!(read > 0, "embedding request ended before its body");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let ceiling = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("x-light-maximum-billed-cost-micros")
+                        .then(|| value.trim().to_string())
+                })
+                .expect("embedding request must carry its cost ceiling");
+            let response_body = serde_json::to_vec(&json!({
+                "error": {
+                    "message": "The request budget is exhausted",
+                    "type": code,
+                    "code": code
+                }
+            }))
+            .unwrap();
+            let response = format!(
+                "HTTP/1.1 {status} Too Many Requests\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                response_body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(&response_body).await.unwrap();
+            ceiling
+        });
+        (format!("http://{address}/v1/embeddings"), task)
+    }
+
+    fn free_embedding_config_and_generation(
+        endpoint: String,
+    ) -> (tempfile::TempDir, WorkerConfig, FullBaseGeneration) {
+        let source_id = Uuid::from_u128(1);
+        let policy_id = Uuid::from_u128(2);
+        let directory = tempfile::tempdir().unwrap();
+        let authorization_file = directory.path().join("authorization");
+        fs::write(&authorization_file, "free-model-token").unwrap();
+        let mut source = resolved_source(source_id, policy_id, 10);
+        source.maximum_spend_micros = 0;
+        let mut config = serde_json::from_value::<WorkerConfig>(json!({
+            "version": 1,
+            "heartbeatSecretFile": directory.path().join("heartbeat"),
+            "projectorId": "test",
+            "deterministicPilot": false
+        }))
+        .unwrap();
+        config.embedding_gateway_url = Some(endpoint);
+        config.embedding_authorization_file = Some(authorization_file);
+        config.embedding_alias = "kb-index".into();
+        config.embedding_batch_size = 128;
+        config.embedding_space_id = "free-space".into();
+        config.embedding_space_revision = 1;
+        config.embedding_dimension = 2;
+        config.source_id = source_id;
+        config.maximum_spend_micros = 0;
+        config.resolved_sources = vec![source];
+        let documents = vec![DocumentInput {
+            source_object_id: format!("{source_id}/free.md"),
+            canonical_uri: "repo://free.md".into(),
+            source_version: "1".into(),
+            markdown: "# Free model\nA zero-cost embedding.".into(),
+        }];
+        let generation = build_full_base(
+            Uuid::from_u128(3),
+            1,
+            &documents,
+            &ProcessingContract::default(),
+            &SourceLimits::default(),
+        )
+        .unwrap();
+        (directory, config, generation)
+    }
+
     fn resolved_source(
         source_id: Uuid,
         policy_id: Uuid,
@@ -8046,6 +8234,63 @@ mod tests {
                 source_id_from_object_id(&chunk.source_object_id) == Some(source_id)
             }));
         }
+    }
+
+    #[tokio::test]
+    async fn zero_spend_ceiling_is_forwarded_for_a_free_embedding_route() {
+        let (endpoint, request) = embedding_gateway_response(0, 1, 2).await;
+        let (_directory, config, mut generation) = free_embedding_config_and_generation(endpoint);
+        assert_eq!(generation.chunks.len(), 1);
+
+        apply_configured_embeddings(&config, &mut generation)
+            .await
+            .unwrap();
+
+        assert_eq!(request.await.unwrap(), "0");
+        assert_eq!(generation.chunks[0].vector, vec![0.0, 0.0]);
+    }
+
+    #[tokio::test]
+    async fn zero_spend_ceiling_rejects_positive_billed_cost_evidence() {
+        let (endpoint, request) = embedding_gateway_response(1, 1, 2).await;
+        let (_directory, config, mut generation) = free_embedding_config_and_generation(endpoint);
+
+        let error = apply_configured_embeddings(&config, &mut generation)
+            .await
+            .unwrap_err();
+
+        assert_eq!(request.await.unwrap(), "0");
+        assert!(
+            error
+                .to_string()
+                .contains("embedding gateway exceeded the ingestion spend budget")
+        );
+        assert_eq!(
+            worker_error_code(&error),
+            "KNOWLEDGE_INGESTION_SPEND_BUDGET_EXCEEDED",
+            "{error:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn gateway_budget_rejection_preserves_spend_budget_classification() {
+        let (endpoint, request) = embedding_gateway_error_response(429, "budget_exhausted").await;
+        let (_directory, config, mut generation) = free_embedding_config_and_generation(endpoint);
+
+        let error = apply_configured_embeddings(&config, &mut generation)
+            .await
+            .unwrap_err();
+
+        assert_eq!(request.await.unwrap(), "0");
+        assert_eq!(
+            worker_error_code(&error),
+            "KNOWLEDGE_INGESTION_SPEND_BUDGET_EXCEEDED",
+            "{error:#}"
+        );
+        assert_eq!(
+            budget_terminal_state(worker_error_code(&error)),
+            "PAUSED_BUDGET"
+        );
     }
 
     #[test]
