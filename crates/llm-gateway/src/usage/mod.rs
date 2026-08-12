@@ -179,6 +179,21 @@ impl Drop for UsageReservation {
     }
 }
 
+/// Returns a fail-closed reservation envelope for at most `max_attempts`
+/// distinct candidates. Dispatch may skip unavailable candidates, so route
+/// order alone cannot determine which prices will actually be attempted.
+pub fn maximum_attempt_envelope(
+    costs: impl IntoIterator<Item = u64>,
+    max_attempts: usize,
+) -> Option<u64> {
+    let mut costs = costs.into_iter().collect::<Vec<_>>();
+    costs.sort_unstable_by(|left, right| right.cmp(left));
+    costs
+        .into_iter()
+        .take(max_attempts)
+        .try_fold(0_u64, u64::checked_add)
+}
+
 pub fn cost(price: GenerationPrice, input_tokens: u64, output_tokens: u64) -> u64 {
     input_tokens
         .saturating_mul(price.input_micros_per_million)
@@ -218,6 +233,14 @@ pub fn worst_case_cost(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maximum_attempt_envelope_covers_later_expensive_candidates() {
+        assert_eq!(maximum_attempt_envelope([2, 11, 5], 1), Some(11));
+        assert_eq!(maximum_attempt_envelope([2, 11, 5], 2), Some(16));
+        assert_eq!(maximum_attempt_envelope([2, 11, 5], 5), Some(18));
+        assert_eq!(maximum_attempt_envelope([u64::MAX, 1], 2), None);
+    }
 
     #[test]
     fn zero_price_ambiguous_generation_never_charges_without_a_reservation() {

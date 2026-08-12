@@ -13,7 +13,7 @@ use llm_gateway::config::{
 use llm_gateway::credentials::MapSecretResolver;
 use llm_gateway::http::{BodyAccessControl, BufferedHttpRequest, LlmBufferedHttp, LlmHttpResponse};
 use llm_gateway::pii::{PiiKind, PiiProfile, UnresolvedPiiBehavior};
-use llm_gateway::routing::PassiveCircuit;
+use llm_gateway::routing::{OwnedCircuitPermit, PassiveCircuit};
 use llm_gateway::runtime::{
     AliasPlan, CompileProbe, DeploymentReadiness, DeploymentReadinessState, DeploymentRuntime,
     LlmCompiler, LlmPublishedSnapshot, LlmSnapshotStore, PrincipalPermitStripes,
@@ -702,6 +702,18 @@ fn deployment(id: &str, provider: Arc<dyn GenerationProvider>) -> Arc<Deployment
     })
 }
 
+fn occupy_half_open_probe(circuit: &Arc<PassiveCircuit>) -> OwnedCircuitPermit {
+    for _ in 0..3 {
+        circuit.failure(
+            &InferenceError::from_status(503, None, "down"),
+            Instant::now(),
+        );
+    }
+    circuit
+        .acquire_owned(Instant::now() + Duration::from_millis(2))
+        .expect("test owns the single half-open probe")
+}
+
 fn conformance_result(provenance: FixtureProvenance, valid_until: &str) -> ConformanceResult {
     let mut result: ConformanceResult = serde_json::from_str(include_str!(
         "../../model-provider/conformance/results/openai-chat.json"
@@ -1007,6 +1019,39 @@ async fn lf5_single_attempt_never_uses_fallback_and_finalizes_audit() {
 }
 
 #[tokio::test]
+async fn circuit_blocked_candidate_does_not_consume_the_generation_attempt_budget() {
+    let first = Arc::new(ScriptedProvider::new(
+        ProviderProtocol::OpenAiChat,
+        vec![Ok(success_response())],
+    ));
+    let second = Arc::new(ScriptedProvider::new(
+        ProviderProtocol::AnthropicMessages,
+        vec![Ok(success_response())],
+    ));
+    let runtime = runtime_with(
+        vec![first.clone(), second.clone()],
+        1,
+        4096,
+        Arc::new(RecordingAudit::default()),
+    );
+    let root = runtime.snapshot();
+    let _half_open = occupy_half_open_probe(&root.deployments["d0"].circuit);
+
+    let execution = runtime
+        .execute_with_snapshot(
+            LlmRequestContext::with_timeout("user", Duration::from_secs(1)),
+            root,
+            InferenceRequest::text("public-model", "hello"),
+        )
+        .await
+        .expect("the healthy fallback receives the one real attempt");
+
+    assert_eq!(execution.attempts, 1);
+    assert_eq!(first.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(second.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn lf5b_safe_failure_falls_back_once_and_reconciles_exact_usage() {
     let first = Arc::new(ScriptedProvider::new(
         ProviderProtocol::OpenAiChat,
@@ -1110,6 +1155,23 @@ fn passive_circuit_allows_only_one_half_open_probe() {
     assert!(circuit.acquire(after_cooldown).is_err());
     probe.success();
     assert!(circuit.acquire(Instant::now()).is_ok());
+}
+
+#[test]
+fn dispatch_health_rechecks_readiness_before_acquiring_the_circuit() {
+    let provider: Arc<dyn GenerationProvider> = Arc::new(ScriptedProvider::new(
+        ProviderProtocol::OpenAiChat,
+        vec![Ok(success_response())],
+    ));
+    let deployment = deployment("readiness-race", provider);
+    assert!(deployment.supports(&CapabilityRequirements::generation()));
+
+    deployment.readiness.mark_not_ready();
+
+    assert!(matches!(
+        deployment.acquire_dispatch_health(Instant::now()),
+        Err(LlmGatewayError::NoReadyDeployment)
+    ));
 }
 
 #[test]
@@ -2881,6 +2943,64 @@ async fn embeddings_reserve_each_fallback_price_and_reconcile_input_only_usage()
 }
 
 #[tokio::test]
+async fn embedding_fallback_reserves_an_expensive_later_candidate_before_dispatch() {
+    let first = scripted_embedding_provider(vec![Ok(embedding_response(2, 2, 4, 0))]);
+    let second = scripted_embedding_provider(vec![Ok(embedding_response(2, 2, 4, 0))]);
+    let prices = vec![
+        (
+            Arc::clone(&first),
+            EmbeddingPrice {
+                version: 1,
+                input_micros_per_million: 1_000_000,
+            },
+        ),
+        (
+            Arc::clone(&second),
+            EmbeddingPrice {
+                version: 2,
+                input_micros_per_million: 3_000_000,
+            },
+        ),
+    ];
+    let request = EmbeddingRequest {
+        model: "embedding-default".to_string(),
+        inputs: vec!["a".to_string(), "b".to_string()],
+        dimensions: Some(2),
+    };
+
+    let (under_budget, _) = embedding_runtime(prices.clone(), 1, Some(59));
+    let error = under_budget
+        .execute_embedding_with_snapshot(
+            LlmRequestContext::with_timeout("user", Duration::from_secs(1)),
+            under_budget.snapshot(),
+            request.clone(),
+        )
+        .await
+        .expect_err("the later candidate must be covered before any dispatch");
+    assert_eq!(error, LlmGatewayError::Budget);
+    assert_eq!(first.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(second.calls.load(Ordering::SeqCst), 0);
+
+    let (runtime, ledger) = embedding_runtime(prices, 1, Some(60));
+    let root = runtime.snapshot();
+    let _half_open = occupy_half_open_probe(&root.deployments["embed-0"].circuit);
+    let execution = runtime
+        .execute_embedding_with_snapshot(
+            LlmRequestContext::with_timeout("user", Duration::from_secs(1)),
+            root,
+            request,
+        )
+        .await
+        .expect("the expensive healthy fallback is fully reserved");
+
+    assert_eq!(execution.attempts, 1);
+    assert_eq!(first.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(second.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(ledger.reserved(), 0);
+    assert_eq!(ledger.charged(), 12);
+}
+
+#[tokio::test]
 async fn embeddings_reject_output_usage_and_preserve_ambiguous_charge() {
     let invalid = scripted_embedding_provider(vec![Ok(embedding_response(1, 2, 2, 1))]);
     let (runtime, ledger) = embedding_runtime(
@@ -3278,6 +3398,33 @@ async fn full_sse_slow_consumer_is_bounded_and_releases_stream_permits() {
         .expect("slow consumer must release the single stream permit");
     drop(first);
     drop(second);
+}
+
+#[tokio::test]
+async fn circuit_blocked_candidate_does_not_consume_the_streaming_attempt_budget() {
+    let first = Arc::new(SseProvider::success());
+    let second = Arc::new(SseProvider::success());
+    let runtime = runtime_with(
+        vec![first.clone(), second.clone()],
+        1,
+        4096,
+        Arc::new(RecordingAudit::default()),
+    );
+    let root = runtime.snapshot();
+    let _half_open = occupy_half_open_probe(&root.deployments["d0"].circuit);
+
+    let execution = runtime
+        .execute_stream_with_snapshot(
+            LlmRequestContext::with_timeout("user", Duration::from_secs(1)),
+            root,
+            InferenceRequest::text("public-model", "hello"),
+        )
+        .await
+        .expect("the healthy streaming fallback receives the one real attempt");
+
+    assert_eq!(first.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(second.calls.load(Ordering::SeqCst), 1);
+    drop(execution);
 }
 
 #[tokio::test]

@@ -3,8 +3,9 @@ use crate::audit::AuditTransportContext;
 use crate::config::{
     AliasCapabilityRequirements, AuditMode, EmbeddingWorkloadLane, ReadinessPolicy,
 };
+use crate::error::LlmGatewayError;
 use crate::pii::PiiProfile;
-use crate::routing::PassiveCircuit;
+use crate::routing::{OwnedCircuitPermit, PassiveCircuit};
 use crate::usage::{EmbeddingPrice, GenerationPrice, OperationPrice, UsageLedger};
 use chrono::Utc;
 use model_provider::conformance::{CapabilityRequirements, ConformanceResult, FixtureProvenance};
@@ -65,6 +66,20 @@ impl DeploymentRuntime {
             _ => None,
         }
     }
+
+    /// Rechecks the selection-time readiness decision and atomically acquires
+    /// the dispatch-time circuit permit. Callers must not count an attempt
+    /// until this permit and the required capacity permits have been acquired.
+    pub fn acquire_dispatch_health(
+        self: &Arc<Self>,
+        now: Instant,
+    ) -> Result<OwnedCircuitPermit, LlmGatewayError> {
+        if !self.readiness.is_ready() {
+            return Err(LlmGatewayError::NoReadyDeployment);
+        }
+        self.circuit.acquire_owned(now)
+    }
+
     pub fn supports(&self, required: &CapabilityRequirements) -> bool {
         if !self.readiness.is_ready() {
             return false;

@@ -21,7 +21,7 @@ use crate::audit::{AuditAttemptFinish, AuditAttemptStart, AuditFinish, AuditStar
 use crate::error::LlmGatewayError;
 use crate::pii::{RequestPiiSession, UnresolvedPiiBehavior};
 use crate::routing::{request_capabilities, retryable};
-use crate::usage::{UsageReservation, cost};
+use crate::usage::{UsageReservation, cost, maximum_attempt_envelope};
 
 #[async_trait]
 pub trait StreamStartBarrier: Send + Sync {
@@ -288,10 +288,8 @@ impl LlmRuntime {
             finish_audit(audit, rejected_finish(), 404, "model_not_found").await?;
             return Err(LlmGatewayError::NoReadyDeployment);
         };
-        let envelope = candidates
-            .iter()
-            .take(alias.max_attempts)
-            .map(|deployment| {
+        let envelope = maximum_attempt_envelope(
+            candidates.iter().map(|deployment| {
                 cost(
                     deployment
                         .generation_price()
@@ -299,8 +297,10 @@ impl LlmRuntime {
                     estimated_input,
                     max_output,
                 )
-            })
-            .fold(0_u64, u64::saturating_add);
+            }),
+            alias.max_attempts,
+        )
+        .unwrap_or(u64::MAX);
         let reservation = match UsageReservation::reserve(
             Arc::clone(&alias.ledger),
             envelope,
@@ -328,12 +328,15 @@ impl LlmRuntime {
         let mut last_error = None;
         let mut selected = None;
 
-        for deployment in candidates.into_iter().take(alias.max_attempts) {
+        for deployment in candidates {
+            if attempts >= alias.max_attempts {
+                break;
+            }
             if context.deadline <= Instant::now() {
                 last_error = Some(InferenceError::timeout_before_acceptance());
                 break;
             }
-            let circuit_permit = match deployment.circuit.acquire_owned(Instant::now()) {
+            let circuit_permit = match deployment.acquire_dispatch_health(Instant::now()) {
                 Ok(permit) => permit,
                 Err(_) => continue,
             };

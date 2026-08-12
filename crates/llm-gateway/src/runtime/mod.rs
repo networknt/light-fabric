@@ -26,7 +26,9 @@ use crate::audit::{
 use crate::error::LlmGatewayError;
 use crate::pii::RequestPiiSession;
 use crate::routing::{request_capabilities, retryable};
-use crate::usage::{ReconciledUsage, UsageReservation, cost, cost_embedding};
+use crate::usage::{
+    ReconciledUsage, UsageReservation, cost, cost_embedding, maximum_attempt_envelope,
+};
 use model_provider::inference::{
     AcceptanceEvidence, EmbeddingEncoding, EmbeddingRequest, EmbeddingResponse, InferenceRequest,
     InferenceResponse, Operation, ProviderProtocol, ProviderRequestContext,
@@ -438,10 +440,8 @@ impl LlmRuntime {
             .await?;
             return Err(error);
         };
-        let envelope = candidates
-            .iter()
-            .take(alias.max_attempts)
-            .map(|candidate| {
+        let envelope = maximum_attempt_envelope(
+            candidates.iter().map(|candidate| {
                 cost(
                     candidate
                         .generation_price()
@@ -449,8 +449,10 @@ impl LlmRuntime {
                     estimated_input,
                     max_output,
                 )
-            })
-            .fold(0_u64, u64::saturating_add);
+            }),
+            alias.max_attempts,
+        )
+        .unwrap_or(u64::MAX);
         let reservation = match UsageReservation::reserve(
             Arc::clone(&alias.ledger),
             envelope,
@@ -477,13 +479,16 @@ impl LlmRuntime {
         let mut attempts = 0;
         let mut last_error = None;
         let mut attempted_envelope = 0_u64;
-        for deployment in candidates.into_iter().take(alias.max_attempts) {
+        for deployment in candidates {
+            if attempts >= alias.max_attempts {
+                break;
+            }
             if context.deadline <= Instant::now() {
                 last_error =
                     Some(model_provider::inference::InferenceError::timeout_before_acceptance());
                 break;
             }
-            let circuit_permit = match deployment.circuit.acquire(Instant::now()) {
+            let circuit_permit = match deployment.acquire_dispatch_health(Instant::now()) {
                 Ok(permit) => permit,
                 Err(_) => continue,
             };
@@ -910,19 +915,17 @@ impl LlmRuntime {
                 0,
             )
         };
-        let envelope_result =
-            candidates
-                .iter()
-                .take(alias.max_attempts)
-                .try_fold(0_u64, |total, candidate| {
-                    candidate_envelope(candidate).and_then(|cost| {
-                        total.checked_add(cost).ok_or_else(|| {
-                            LlmGatewayError::Invariant(
-                                "embedding reservation envelope overflow".to_string(),
-                            )
-                        })
-                    })
-                });
+        let envelope_result = candidates
+            .iter()
+            .map(|candidate| candidate_envelope(candidate))
+            .collect::<Result<Vec<_>, _>>()
+            .and_then(|costs| {
+                maximum_attempt_envelope(costs, alias.max_attempts).ok_or_else(|| {
+                    LlmGatewayError::Invariant(
+                        "embedding reservation envelope overflow".to_string(),
+                    )
+                })
+            });
         let envelope = match envelope_result {
             Ok(envelope) => envelope,
             Err(error) => {
@@ -967,13 +970,16 @@ impl LlmRuntime {
         let mut attempts = 0;
         let mut last_error = None;
         let mut attempted_envelope = 0_u64;
-        for deployment in candidates.into_iter().take(alias.max_attempts) {
+        for deployment in candidates {
+            if attempts >= alias.max_attempts {
+                break;
+            }
             if context.deadline <= Instant::now() {
                 last_error =
                     Some(model_provider::inference::InferenceError::timeout_before_acceptance());
                 break;
             }
-            let circuit_permit = match deployment.circuit.acquire(Instant::now()) {
+            let circuit_permit = match deployment.acquire_dispatch_health(Instant::now()) {
                 Ok(permit) => permit,
                 Err(_) => continue,
             };
