@@ -170,9 +170,13 @@ The integration is not turnkey yet:
   status is read from workflow query projections;
 - `light-workflow` does not yet expose a stable start/wait/status/result/cancel
   service boundary for gateway use;
-- the current runtime expression evaluator supports a limited path,
-  interpolation, literal, and comparison subset rather than general jq
-  transformations; and
+- the current runtime expression evaluator supports only a limited path,
+  interpolation, literal, and comparison subset rather than the production CEL
+  expression contract defined below;
+- each `light-workflow` service instance currently runs one serial host-task
+  executor over a global cross-tenant claim ordered by priority and age, sleeps
+  for 500 ms after an empty claim, and reclaims stale Boolean locks after five
+  minutes without a fencing token; and
 - generic fork/join and retry behavior must be completed before advertising
   broad production orchestration semantics.
 
@@ -261,9 +265,11 @@ Add a dedicated workflow-to-tool binding rather than requiring
 | `invocation_mode` | `sync` or `async`. |
 | `sync_wait_ms` | Maximum gateway wait for a synchronous result. |
 | `total_deadline_ms` | Maximum end-to-end workflow deadline. |
-| `result_expression` | Approved public-result mapping when not declared in the workflow output. |
+| `execution_class` | Default scheduler class for direct/root invocation; the initial synchronous profile uses `interactive`, while nested invocation inherits its outer class. |
+| `result_text_mode` | Non-executable MCP text rendering mode: `compact-json` or schema-backed `summary`. |
 | `idempotency_policy` | Required key, derived business key, or read-only handling. |
 | `delegation_policy` | Allowed nested tool references, audiences, and maximum depth. |
+| `response_policy_digest` | Classification and filtering policy snapshot used for later result reads. |
 | `aggregate_version` | Optimistic concurrency and event projection version. |
 | `active` | Publication lifecycle state. |
 
@@ -285,27 +291,43 @@ tool_t
 The two paths may point to the same workflow, but neither path copies the
 workflow DSL.
 
+Store each resolved nested dependency in a separate
+`workflow_tool_dependency_t` projection keyed by the outer binding and nested
+stable tool reference. It records the nested version, contract digest,
+compatibility policy, logical authorization tool name, endpoint key, and
+authorization-policy reference. A reverse index on the nested stable reference
+is required so publication can report every affected composite tool and
+require revalidation or reapproval before an incompatible nested contract is
+promoted or the nested tool is retired.
+
 ## Projected Gateway Configuration
 
-The existing runtime uses `apiType` to select HTTP or MCP execution. The
-minimal additive runtime change is `apiType: workflow`, while
-`executionPlacement: workflow` remains the canonical catalog concept.
+Keep `apiType` as the backend transport dimension (`http` or `mcp`). Select a
+workflow-backed tool through the existing catalog concept
+`executionPlacement: workflow`; do not add `workflow` as a third transport.
+The gateway runtime therefore dispatches by execution placement first and uses
+`apiType` only for gateway-executed backend calls.
 
-Example projected tool:
+Example projected tool for the later write-capable profile; the Phase 1 variant
+must be read-only:
 
 ```yaml
 - name: recommend_customer_offer
   description: Recommend and record the best eligible customer offer.
   method: call
-  apiType: workflow
+  executionPlacement: workflow
   endpoint: recommend_customer_offer@call
   inputSchema:
     type: object
     additionalProperties: false
     required:
+      - requestId
       - customerId
       - channel
     properties:
+      requestId:
+        type: string
+        description: Stable business request identifier used for idempotency.
       customerId:
         type: string
       channel:
@@ -335,11 +357,17 @@ Example projected tool:
     version: 1.0.0
     definitionDigest: sha256:0123456789abcdef
     mode: sync
+    executionClass: interactive
     waitTimeoutMs: 20000
     totalDeadlineMs: 30000
-    maximumSteps: 8
-    maximumParallelism: 4
+    maximumDefinitionTasks: 8
+    maximumExecutionAttempts: 8
+    maximumNestedCalls: 8
+    maximumParallelism: 1
     maximumDelegationDepth: 1
+    idempotencyInput: requestId
+    resultReplayMs: 300000
+    resultTextMode: compact-json
   toolMetadata:
     routing:
       domain: Offers
@@ -349,7 +377,6 @@ Example projected tool:
         - recommend offer
         - personalized offer
         - customer eligibility
-      sourceProtocol: workflow
       sensitivityTier: confidential
     safety:
       read_only: false
@@ -366,9 +393,16 @@ Example projected tool:
 
 The configuration contains only an approved reference, contract, and bounds.
 It does not contain executable scripts or caller-selectable destinations.
+The five-minute `resultReplayMs` in this later write-capable example is an
+illustrative business-idempotency policy, not a platform or read-only default.
+Read-only tools normally publish a much shorter completed-result freshness
+window, including zero when only in-flight deduplication is wanted.
 
 The metadata ownership and compact `tools/list` rules in
 [MCP Tool Metadata Usage](mcp-tool-metadata-usage.md) continue to apply.
+The existing metadata contract intentionally uses `read_only`, `idempotent`,
+and `destructive` together with `humanApprovalRequired`; projection must retain
+those canonical spellings rather than normalize them ad hoc.
 
 ## Workflow Invocation API
 
@@ -394,7 +428,7 @@ but those details remain behind the workflow service boundary described in
 ```http
 POST /v1/workflow-invocations
 Authorization: Bearer <workflow-delegation-token>
-Idempotency-Key: <approved-key>
+Idempotency-Key: <gateway-derived-key>
 X-Correlation-Id: <correlation-id>
 Content-Type: application/json
 ```
@@ -410,6 +444,7 @@ Content-Type: application/json
   "mode": "sync",
   "deadlineTs": "2026-08-12T20:00:30Z",
   "input": {
+    "requestId": "OFFER-REQUEST-9001",
     "customerId": "CUST-1001",
     "channel": "portal"
   }
@@ -419,6 +454,47 @@ Content-Type: application/json
 Tenant and caller identity come from the authenticated delegation token. If a
 tenant identifier is also carried in the body or transport metadata, it must
 match the authenticated identity and fail closed on disagreement.
+
+### Durable Start Path
+
+The invocation service allocates `workflowInstanceId` before durable
+acceptance. In one database transaction it must:
+
+1. reserve the idempotency key under its unique scope;
+2. store the normalized input digest, caller binding, definition, policy, and
+   response-filter snapshots;
+3. create the process and initial task rows; and
+4. append an invocation-accepted audit/projection event to the outbox.
+
+`POST /v1/workflow-invocations` returns the allocated instance ID only after
+that transaction commits. `GET /v1/workflow-invocations/{id}` must immediately
+return at least `ACCEPTED`; it must never return `404` merely because an
+asynchronous projection has not caught up.
+
+Gateway-initiated synchronous starts must not depend on consuming the shared,
+ordered Portal event log. The current consumer claims global offset ranges and
+rolls back a complete batch when event handling fails, so unrelated backlog or
+a poison event could otherwise consume the interactive wait budget or block a
+tenant partition indefinitely. The acceptance event emitted above is for
+audit and projections; it is not the command that creates the process. Use a
+distinct event type, or make its handler explicitly recognize a pre-created
+instance, so it cannot start a duplicate workflow.
+
+Event consumers still require poison-event isolation for non-start
+projections. After a bounded retry policy, a permanently invalid event is
+recorded in a tenant/partition-scoped quarantine with its offset, error, and
+payload digest in the same transaction that advances the consumer offset. The
+quarantine or deferred-event store also retains the encrypted replayable
+payload, or a durable immutable payload reference, plus every source offset and
+aggregate version needed to reconstruct order. If replay depends on
+`outbox_message_t`, outbox retention must exceed the maximum quarantine dwell
+and unresolved holds must block purging those offsets.
+
+The affected aggregate is marked blocked so later events for that aggregate
+are deferred or quarantined in order, while unrelated aggregates continue. The
+consumer raises an operational alert and supports an audited, ordered repair-
+and-replay operation. A malformed unrelated event must not block workflow
+start, status, wait, or result retrieval.
 
 ### Invocation State
 
@@ -438,16 +514,52 @@ digest, timestamps, retryability, and a public result or normalized error when
 terminal. It never returns the full internal context, credentials, or
 unfiltered intermediate task outputs.
 
+`POST /{id}/wait` is a bounded, resumable long poll over durable instance
+state, not an in-memory gateway subscription. Any authorized gateway node can
+resume it after a restart. Multiple waiters may observe the same instance and
+must not change its state. The effective server wait is the minimum of the
+published `sync_wait_ms`, the service-side long-poll cap, and the remaining
+workflow deadline. A timeout returns the latest state and instance ID; it does
+not imply cancellation or failed acceptance.
+
 ### Public Result
 
-`light-workflow` must produce an explicit public result from the workflow
-`output` definition or the approved binding result expression. The public
-result is validated against the workflow output schema before the instance is
-reported as `COMPLETED`.
+`light-workflow` must produce the public result only from the canonical
+workflow `output` definition. Executable result expressions do not belong in a
+binding row. The public result is validated against the workflow output schema
+before the instance is reported as `COMPLETED`.
 
 The gateway then applies its current response-filter and output-validation
 pipeline. A workflow must not return raw backend transport envelopes directly
 to the agent.
+
+### MCP Result Envelope
+
+For Phase 1, workflow-backed tools must publish an object-root output schema.
+After workflow validation and gateway response filtering, the gateway emits
+the filtered object unchanged as `structuredContent`; this is the authoritative
+machine-readable result and the value validated against `outputSchema`.
+Array or scalar public outputs must be modeled explicitly inside an object,
+such as `{ "items": [...] }`, rather than receiving an implicit runtime wrapper.
+
+The published contract selects one non-executable text rendering mode:
+
+- `compact-json` is the compatibility default and emits one text content block
+  containing a compact serialization of the filtered `structuredContent`.
+- `summary` requires a schema-declared, required `summary` string in the same
+  public result and emits exactly that field as the text content block.
+
+The `summary` mode is preferred for large structured results because it avoids
+duplicating the entire result in the model-visible text channel. Rendering can
+never read hidden workflow context or introduce data absent from the filtered
+`structuredContent`. Text and structured output limits are publication-time
+and runtime gates.
+
+A technical failure sets `isError: true`, omits success
+`structuredContent`, and returns a concise sanitized text block containing the
+stable error code and workflow instance ID when allocated. The same code,
+instance ID, state, and retryability are carried in bounded gateway `_meta` for
+programmatic clients. Business outcomes remain successful structured results.
 
 ## Gateway Execution Flow
 
@@ -457,13 +569,16 @@ For `tools/call`, the gateway performs:
 2. Apply tools-call authorization using the composite tool endpoint key.
 3. Validate arguments against the published input schema.
 4. Mask or transform arguments according to approved request policy.
-5. Construct correlation, deadline, idempotency, and delegation context.
-6. Start the workflow using the pinned definition version and digest.
-7. Wait only when the tool is published as synchronous.
-8. Map workflow state and public output into an MCP tool result.
-9. Apply response filtering for the initiating caller.
-10. Validate successful structured content against `outputSchema`.
-11. Emit gateway and workflow correlation/audit attributes.
+5. Acquire a synchronous-wait permit from depth zero or the signed delegated
+   depth pool when required.
+6. Derive the idempotency key and construct correlation, deadline, invocation-
+   budget, effective execution-class, and delegation context.
+7. Start the workflow using the pinned definition version and digest.
+8. Wait only when the tool is published as synchronous.
+9. Map workflow state and public output into an MCP tool result.
+10. Apply response filtering for the initiating caller.
+11. Validate successful structured content against `outputSchema`.
+12. Emit gateway and workflow correlation/audit attributes.
 
 If the invocation service reports a different workflow digest, tenant, stable
 tool reference, or schema binding, the gateway fails closed.
@@ -478,8 +593,10 @@ Recommended starting limits are:
 
 | Limit | Initial value |
 |-------|--------------:|
-| Total tasks | 8 |
-| Parallel branches | 4 |
+| Static definition tasks | 8 |
+| Runtime task attempts, including retries | 8 in Phase 1 |
+| Nested tool/API calls | 8 |
+| Parallel branches | 1 until fork/join is qualified |
 | Nested workflow-tool depth | 1 |
 | Gateway wait | 20 seconds |
 | Total workflow deadline | 30 seconds |
@@ -487,15 +604,129 @@ Recommended starting limits are:
 These are starting defaults, not protocol constants. They should be
 environment-configurable and publication-validated.
 
+Static definition size and runtime execution consumption are separate
+budgets. Publication counts all reachable tasks, including nested composite
+dependencies. At invocation time the gateway creates one structured budget
+covering remaining task attempts, nested calls, delegation depth, parallel
+branches, request/intermediate/result bytes, wall-clock deadline, and optional
+cost. The signed delegation token identifies the invocation and carries the
+immutable budget ceilings, but it is not the mutable counter. The invocation
+service maintains one durable, atomic budget ledger shared by every task,
+retry, and parallel branch. Before dispatch, a worker conditionally reserves
+attempts, calls, bytes, and cost from that ledger in one transaction; dispatch
+is refused if any remaining counter is insufficient. Actual byte and cost
+usage reconciles a bounded reservation by idempotent, fenced updates so a
+crash or duplicate completion cannot release or consume it twice. Fork/join
+may instead pre-split non-overlapping child reservations, but copied tokens
+must never create additional budget. Retries consume the same invocation
+ledger rather than resetting the envelope.
+
 The first profile should allow deterministic API/MCP/rule calls, `set`,
 `switch`, and `assert`. It should reject human `ask` tasks, unbounded model
 calls, runner tasks, schedules, and unbounded loops.
+
+Synchronous eligibility is transitive. Portal validation walks the complete
+dependency graph and rejects a synchronous tool if any reachable composite is
+asynchronous, contains a human or unbounded task, exceeds the aggregate
+invocation budget, or can outlive the outer deadline.
 
 When the gateway wait expires, it returns an MCP error result containing a
 machine-readable workflow instance ID, state, and retryability. The workflow
 may continue durably unless its published cancellation policy says otherwise.
 The gateway must never silently start a second instance when the caller retries
-with the same idempotency key.
+and resolves to the same gateway-derived idempotency key.
+
+Each active synchronous wait consumes a gateway workflow-concurrency permit.
+When the global, tenant, or tool-specific permit pool is exhausted, the
+gateway returns a retryable `WORKFLOW_CAPACITY_EXHAUSTED` response before
+starting an instance; it does not queue the call behind an unbounded wait.
+
+Nested synchronous calls must not reacquire from the same pool held by their
+outer waits. This design reserves a separate, non-borrowable permit pool for
+each allowed delegation depth. A root call acquires from depth zero; a valid
+internal call to another synchronous workflow-backed tool increments the
+signed call depth and acquires from the corresponding inner pool. Ordinary
+HTTP or non-composite MCP backend calls do not consume workflow-wait permits.
+Depth-zero calls cannot consume inner reserves, and ordinary callers cannot
+claim an inner depth. Global, tenant, and tool limits still apply within each
+pool.
+
+Every enabled synchronous delegation depth must have explicit non-zero
+capacity. Portal publication rejects a synchronous dependency graph whose
+maximum depth has no configured pool, and gateway admission fails the outer
+call before durable start if a required depth pool is absent, disabled, or
+unhealthy in the active capacity profile. Separate pools prevent a saturated
+set of outer waits from holding every permit needed by their own nested calls;
+they do not pre-reserve one inner permit per outer call. Exhaustion within an
+inner pool therefore remains a bounded overload failure, not a circular wait.
+
+### Interactive Execution Class And Scheduling
+
+Fast durable acceptance is necessary but does not satisfy the synchronous SLO.
+The result deadline includes durable start, every task queue delay, backend
+execution, state transitions, final-result construction, gateway filtering,
+and response rendering.
+
+At outer admission, select one immutable effective execution class for the
+complete invocation chain. The initial agent-facing synchronous profile uses
+`interactive`. For a root invocation, the binding supplies the default. For an
+internal invocation, the signed delegation context supplies the effective
+class and the nested binding's value is only its direct-root default. All
+descendant tasks and nested workflow invocations inherit that effective class.
+An agent cannot submit, raise, or spoof it. `standard` and `batch` classes use
+separate capacity shares. Batch workers may borrow unused interactive
+capacity, but interactive work must be able to reclaim its reserved share
+without preempting an already running side effect.
+
+Priority alone is insufficient because the current host-task claim is global
+across tenants. The scheduler must provide bounded per-tenant concurrency and
+fair selection within each execution class, with aging so a continuously busy
+tenant or priority tier cannot starve another tenant indefinitely. Horizontal
+replicas may share the database queue, but their claim protocol and indexes
+must preserve the same fairness contract rather than reverting to a global
+oldest-row race.
+
+Task insertion and transition commits must wake eligible executors. A suitable
+PostgreSQL implementation establishes `LISTEN` before catch-up, drains claims
+until empty, waits for a non-sensitive `NOTIFY`, and retains a short fallback
+poll for missed notifications and recovery. The current 500 ms sleep occurs
+after an empty claim, so it is primarily an idle-to-active dispatch penalty,
+not automatically a 500 ms charge for every sequential hop. End-to-end tests
+must nevertheless measure every queue interval because other tenants' tasks
+can be selected between transitions.
+
+Executor capacity is a first-class deployment and admission dimension:
+
+- configurable concurrent host-task workers per service instance;
+- horizontally scalable service replicas and scheduler partitions;
+- reserved interactive workers plus per-tenant and per-tool limits;
+- measured queue depth, oldest runnable age, claim latency, service time, and
+  available interactive slots; and
+- admission that rejects before acceptance when the remaining deadline cannot
+  be met with the currently advertised interactive capacity.
+
+Gateway wait permits must be coordinated with workflow executor capacity. A
+deployment must not admit hundreds of synchronous waits merely because gateway
+connections are available while only one workflow task can execute.
+
+Replace the host task's Boolean lock and fixed five-minute recovery window with
+a renewable lease containing `lease_id`, monotonically increasing
+`fencing_token`, `lease_expires_ts`, and worker identity. Task completion and
+transition writes succeed only when the lease and fencing token still match.
+For interactive work, the initial lease and every renewal are capped by the
+remaining workflow deadline. Expired tasks are reclaimed only while useful
+work can still finish; otherwise they transition to a stable deadline failure.
+Lease duration, renewal interval, and crash-recovery target must be materially
+shorter than the synchronous deadline and tested with executor termination.
+
+Fencing prevents a stale worker from committing workflow state, but it cannot
+undo or deduplicate an external side effect. Phase 1 remains read-only; later
+write-capable tasks also require the protections in
+[Idempotency And Side Effects](#idempotency-and-side-effects) and the durable
+`none`/`possible`/`confirmed` state defined in
+[Failure Mapping](#failure-mapping) before lease-based re-execution is allowed.
+A reclaimed task in `possible` or `confirmed` state cannot automatically repeat
+the call unless the downstream idempotency contract proves that replay is safe.
 
 ## Asynchronous Tools
 
@@ -529,8 +760,36 @@ These tools use the same tenant and caller authorization boundary. A caller
 cannot discover or control another caller's instance merely by obtaining an
 instance ID.
 
+Bind instance access to both the authenticated service principal and the
+initiating end-user subject/actor claim when one exists. A shared service
+principal alone is not sufficient isolation. The instance stores the
+publication-time classification and response-filter policy snapshot so
+`workflow_get_result` can reproduce the approved disclosure boundary after the
+original MCP session ends.
+
+The snapshot is a maximum disclosure ceiling, not a frozen authorization
+grant. Every lifecycle call resolves the principal and end-user subject's
+current claims, revocation state, and tenant access, then evaluates the current
+authorization policy. Result rendering applies the more restrictive
+intersection of that current decision and the stored classification/filter
+snapshot. A user who has lost access is denied; a later policy change cannot
+broaden what the accepted instance was allowed to disclose.
+
+Expose the three lifecycle tools when the authenticated caller's tenant has at
+least one active asynchronous composite tool or the caller can access an
+active or retained workflow instance. Retiring the tenant's last asynchronous
+composite must not remove status, result, or cancel from `tools/list` while an
+authorized instance remains discoverable under the retention policy. The
+existence check applies the same principal, initiating-subject, tenant, and
+current-authorization rules as the lifecycle calls; an inaccessible instance
+must not make the tools visible. This avoids expanding every tenant's
+`tools/list` surface while preserving lifecycle access after retirement.
+
 Do not make one tool unpredictably return either a business result or an async
 handle unless its published output schema explicitly models both outcomes.
+Changing a published tool between synchronous business-result and asynchronous
+handle semantics is a breaking contract change. It requires a new stable tool
+identity and gateway-facing name rather than an alias rebind.
 
 ## Underlying API And MCP Calls
 
@@ -555,14 +814,63 @@ At publication time, resolve each nested tool reference to:
 ```text
 stableToolRef
 gateway-facing name
-schema digest
-endpoint/policy reference
+tool version and contract digest
+contract compatibility class
+logical authorization tool name and endpoint key
+authorization-policy reference
 lifecycle status
 ```
 
-Runtime calls are rejected if those bindings drift. A future internal
-dispatch-by-stable-reference API can remove dependence on gateway-facing names,
-but the public MCP name remains useful for compatibility and diagnostics.
+The workflow definition digest is always an exact immutable pin. Nested tool
+contracts use versioned dependency resolution: an outer composite continues to
+dispatch the approved nested version after a newer alias is published, so an
+unrelated inner publication cannot cause an outer runtime outage. An optional
+`follow-compatible` policy may advance only when Portal proves that the new
+nested input accepts every previously valid outer request, the new output is
+within the contract the outer mapping expects, and authorization or data-
+classification policy has not broadened. Because general JSON Schema
+compatibility is not decidable for every schema, unsupported or ambiguous
+changes are incompatible and require an explicit outer repin, conformance
+test, and reapproval.
+
+Portal uses the dependency reverse index to show the inner publisher the
+affected composites before promotion. Security revocation can still invalidate
+a pinned dependency immediately; ordinary version promotion cannot.
+
+Phase 1 therefore requires version-aware internal dispatch, not alias lookup.
+The control plane projects a private dependency-target registry alongside
+`mcp-router.tools`, keyed by `stableToolRef`, tool version, and contract digest.
+The public alias exposes only the currently promoted version through
+`tools/list`; a workflow delegation token invokes the pinned private target by
+stable reference and version. Private targets reuse the same authorization,
+argument masking, backend dispatch, response filtering, schema validation, and
+audit pipeline, but cannot be invoked by an ordinary external tool name.
+
+Authorization identity belongs to the logical tool; dispatch identity belongs
+to the version target. Every private target therefore carries the logical
+public tool name and the exact endpoint key used by its alias, such as
+`accounts@call`, and passes those values through the existing authorization and
+response-filter pipeline. Its registry key, private target name, version, and
+digest never derive a new endpoint key or new rule binding. This is required
+for `defaultDeny: true`, where an unrecognized endpoint or one without request
+rules is denied.
+
+An approved version may change backend resolution and contract digest without
+changing that logical authorization identity. A version that needs a different
+endpoint key, request rule set, permission boundary, or response-filter policy
+represents a different capability. Portal classifies it as incompatible and
+requires an explicit outer repin, conformance tests, and approval rather than
+silently minting a version-specific authorization identity. Current security
+revocation continues to take precedence over any pin.
+
+Superseded and retirement-candidate targets remain dispatchable while
+referenced by any active composite binding, in-flight workflow snapshot,
+rollback window, or required audit/replay retention. Portal maintains reference
+counts or equivalent durable reachability evidence. Retirement and garbage
+collection use that same reachability index. Garbage collection is allowed
+only after all such references and retention holds are gone, and removal is
+itself projected and audited. This makes the claimed version pin executable in
+Phase 1 rather than depending on a future API.
 
 ## Delegation And Cycle Prevention
 
@@ -575,12 +883,23 @@ binding:
 - allowed audiences and operations;
 - input/data-boundary digest;
 - correlation ID;
-- deadline and cost/action budget;
+- immutable effective execution class and current synchronous permit depth;
+- structured invocation budget for deadline, task attempts, nested calls,
+  depth, parallelism, bytes, and cost, plus the identifier and generation of
+  the shared durable budget ledger that owns the mutable counters;
 - idempotency context; and
 - remaining delegation depth.
 
-Nested calls can only narrow these rights. They cannot extend the initiating
-deadline, add tools, broaden the data boundary, or change tenant.
+Nested calls can only narrow rights and budget reservations. They cannot extend the
+initiating deadline, add tools, broaden the data boundary, change tenant, or
+select their own scheduling class. When dispatching another workflow-backed
+tool, the gateway increments permit depth and copies the effective execution
+class into the nested token. It accepts these claims only from a gateway-issued
+delegation token; an external MCP request always enters at depth zero and uses
+its root binding's class. Token verification authenticates the immutable
+ceiling and ledger identity; every mutable consumption decision is an atomic
+conditional update against that ledger, never a decrement trusted from token
+contents.
 
 Portal publication builds a dependency graph for every workflow-backed tool.
 It rejects:
@@ -588,7 +907,8 @@ It rejects:
 - a workflow that calls its own composite tool;
 - a cycle across two or more workflow-backed tools;
 - a call to an unbound or retired tool;
-- a nested call whose schema digest is unresolved; and
+- a nested call whose approved version or contract digest is unresolved or
+  incompatible; and
 - a path that exceeds the configured maximum delegation depth.
 
 The runtime also enforces the depth and allowed-tool set so a stale or malicious
@@ -605,6 +925,13 @@ Authorization happens at two levels:
 The first authorization does not imply unrestricted access to every tool used
 by the workflow. The binding and workflow policy define the exact internal
 capability set.
+
+Nested identity is declared per step and defaults to narrowed initiating-user
+delegation. Workflow service identity is permitted only when the step has
+explicit publication-time approval evidence because it can authorize an
+operation the initiating user could not perform directly. Service identity
+must remain tenant-bound, tool-bound, deadline-bound, and no broader than the
+published capability set.
 
 The [MCP Tools Access Control](mcp-tools-access-control.md) response-filtering
 boundary still applies to the final result. Intermediate workflow context and
@@ -624,9 +951,23 @@ Required protections include:
 
 ## Idempotency And Side Effects
 
-Read-only workflows can initially use an argument and caller digest for bounded
-deduplication. Side-effecting workflows require a stronger business idempotency
-contract.
+Do not depend on an agent to generate or replay a correct idempotency key. For
+read-only and ordinary synchronous calls, the gateway derives the key from the
+tenant, authenticated principal and end-user subject, stable tool reference,
+workflow definition digest, and canonical effective input. Because input and
+definition digests participate in this derived key, a different input or
+version intentionally creates a different invocation; it is not an
+idempotency conflict.
+
+A client-provided `Idempotency-Key`, explicit business-key input such as
+`requestId`, or configured business-key expression is accepted only when the
+published policy allows it. The gateway scopes and hashes that untrusted key
+with tenant, trusted identity, and stable tool fields, and stores the effective
+input and definition digests beside it. Reusing an explicit scoped key with
+different input or definition produces `WORKFLOW_IDEMPOTENCY_CONFLICT`.
+
+Side-effecting workflows require a stronger business idempotency contract
+because two intentionally distinct operations may have identical arguments.
 
 The publication UI must require one of:
 
@@ -636,10 +977,47 @@ The publication UI must require one of:
 - a declaration that duplicate effects are impossible or compensated, with
   approval evidence.
 
-The workflow invocation service stores the accepted idempotency key with the
-stable tool reference, workflow digest, tenant, caller, and normalized input
-digest. A duplicate request returns the original instance rather than creating
-a second process.
+The workflow invocation service stores the accepted key with the stable tool
+reference, workflow digest, trusted identities, and effective-input digest.
+The database enforces one current reservation with a unique constraint over
+tenant, authenticated principal/end-user subject, stable tool reference, and
+the final scoped key. Definition and input digests are stored values, not part
+of that uniqueness key, so an explicit-key conflict can be detected. The
+implementation uses one atomic insert/conflict or compare-and-swap path rather
+than read-then-write.
+
+Separate two time windows:
+
+- **In-flight deduplication** lasts until the instance reaches a terminal state
+  or its maximum deadline and uncertain-outcome retry grace have elapsed. A
+  duplicate returns the existing instance.
+- **Completed-result replay** is a separate publication-time freshness policy.
+  Before `result_replay_until`, an identical request returns the completed
+  instance and result. After it expires, an atomic reservation-generation
+  change starts a new instance while retaining immutable history.
+
+Read-only tools should normally use a short completed-result replay window so
+repeated questions can observe fresh data. Write-capable tools require a
+window consistent with their downstream side-effect idempotency and retry
+contract. Retention of invocation and audit history is independent of whether
+the active reservation can advance to a new generation.
+
+Canonical effective input is the schema-validated workflow input after
+approved deterministic defaults and request mappings, before logging
+redaction. It uses a versioned JSON Canonicalization Scheme profile based on
+[RFC 8785](https://www.rfc-editor.org/rfc/rfc8785.html): duplicate object keys
+are rejected, object properties are recursively sorted by the RFC's UTF-16
+ordering, array order is preserved, and finite numbers use the specified
+deterministic representation. Values outside the interoperable IEEE 754 range,
+including large integer identifiers, must be schema-declared strings. Absent
+properties remain absent and therefore differ from explicit `null`. Unicode
+string code points are preserved exactly; NFC or other Unicode normalization
+is not applied. These rules and the profile version are pinned by conformance
+fixtures shared by Portal, gateway, and invocation service.
+
+Event-source deduplication, such as a unique source event ID used while
+projecting `WorkflowStartedEvent`, remains a separate safeguard and does not
+satisfy caller-invocation idempotency.
 
 For multi-step writes, the workflow definition owns compensation. The gateway
 does not attempt to reverse completed backend operations.
@@ -659,8 +1037,11 @@ WORKFLOW_TIMEOUT
 WORKFLOW_CANCELLED
 WORKFLOW_TASK_FAILED
 WORKFLOW_OUTPUT_INVALID
+WORKFLOW_OUTPUT_INVALID_AFTER_EFFECT
 WORKFLOW_POLICY_DENIED
 WORKFLOW_CAPACITY_EXHAUSTED
+WORKFLOW_INVOCATION_UNAVAILABLE
+WORKFLOW_IDEMPOTENCY_CONFLICT
 ```
 
 The error envelope should include the workflow instance ID when one exists,
@@ -668,13 +1049,89 @@ whether retry is safe, and a correlation ID. It must not expose credentials,
 raw internal errors, hidden task inputs, or backend responses that have not
 passed disclosure policy.
 
+The workflow tracks whether externally visible side effects are `none`,
+`possible`, or `confirmed`. If public-result construction or output validation
+fails after a confirmed effect, return
+`WORKFLOW_OUTPUT_INVALID_AFTER_EFFECT` with `retryable: false` and the instance
+ID. This is operationally distinct from a pre-effect validation failure; an
+agent must not repeat the write merely because its result was undeliverable.
+
 ## Transformation And Aggregation Language
 
 Use the workflow DSL as the only authoring contract. Do not invent a gateway
 mapping language for composite tools.
 
-The production transformation profile should provide one deterministic,
-sandboxed jq-compatible expression engine for:
+Use CEL as the canonical expression language for workflow conditions and data
+transformations. This keeps one expression contract across Light-Fabric rules,
+gateway policies, workflow authoring, Portal validation, and AI generation.
+CEL is not limited to boolean decisions: an expression can also construct
+lists, maps, and JSON-compatible objects. The rule engine can retain its
+boolean-only contract while the workflow adapter accepts a typed value.
+
+### CEL And jq Comparison
+
+| Concern | CEL | jq |
+|---------|-----|----|
+| Primary fit | Policy, conditions, validation, routing, and computed values. | JSON extraction, reshaping, pipelines, and complex aggregation. |
+| Validation | Can parse and type-check against declared variables and functions before publication. | Dynamically evaluated; schema and type mistakes normally surface during execution. |
+| Result model | Produces one typed value. | A filter can produce zero, one, or many streamed values. |
+| Collection support | Provides `map`, `filter`, `exists`, and `all`; sufficient for common mappings. | Provides concise `sort_by`, `group_by`, `unique_by`, `reduce`, and recursive traversal. |
+| Safety model | Side-effect-free and terminating, but nested collection macros still need cost limits. | Recursion, `while`, and `repeat` require time, memory, depth, and output limits. |
+| Platform cost | Reuses the existing Light-Fabric language, evaluator experience, security profiles, and Portal contract. | Adds another runtime, validator, editor mode, security profile, compatibility contract, and AI prompt. |
+
+CEL therefore provides the better default for a governed platform. jq is more
+ergonomic for some advanced JSON transformations, but that advantage does not
+justify exposing two interchangeable languages throughout every workflow.
+
+References:
+
+- [CEL overview](https://cel.dev/overview/cel-overview)
+- [CEL language definition](https://github.com/cel-expr/cel-spec/blob/master/doc/langdef.md)
+- [jq manual](https://jqlang.org/manual/)
+
+### CEL Runtime Contract
+
+Provide a shared CEL execution core with location-specific adapters:
+
+- a predicate adapter that requires `bool` for rules, `when`, `switch`, retry
+  predicates, and assertions; and
+- a value adapter that converts one CEL result to JSON for task inputs,
+  exports, derived values, joins, and the final public output.
+
+The existing rule boundary remains unchanged. CEL rule conditions decide
+whether declarative actions execute; they do not directly mutate a response or
+become a general workflow runtime. Reuse the compiler, type environment,
+security validation, value conversion, cost accounting, and diagnostics rather
+than coupling workflow execution to the rule engine's boolean API.
+
+The workflow CEL environment exposes only immutable, documented roots:
+
+| Root | Contents |
+|------|----------|
+| `input` | Schema-validated workflow invocation input. |
+| `context` | Accumulated workflow state and approved task exports. |
+| `task` | Current task input or result where the expression location permits it. |
+| `workflow` | Bounded identifiers and execution metadata, never credentials or secret values. |
+
+Each expression location declares its required result category and, when
+available, its JSON Schema-derived type. Portal publication must parse and
+type-check the expression against that environment, reject undeclared roots or
+functions, and persist the normalized expression and digest with the immutable
+workflow version. Runtime execution uses the same environment declaration and
+a cached compiled program; it must not reinterpret an expression under a
+different profile.
+
+The production CEL profile must enforce:
+
+- allowlisted roots, functions, and collection macros;
+- no I/O, network access, mutation, service lookup, or dynamic code loading;
+- expression-size, evaluation-cost, collection-size, nesting-depth,
+  execution-time, and result-size limits;
+- explicit guards for missing or nullable data where required; and
+- deterministic failure when evaluation returns the wrong type or cannot be
+  converted to exactly one JSON value.
+
+The CEL value adapter initially needs to support:
 
 - selecting fields;
 - reshaping objects and arrays;
@@ -683,19 +1140,76 @@ sandboxed jq-compatible expression engine for:
 - filtering collections; and
 - constructing the public output.
 
+### CEL To JSON Contract
+
+The value adapter is new production code, not a thin rename of the existing
+boolean evaluator. The compile cache, reference inspection, guarded execution,
+and JSON-to-CEL context conversion are reusable; the reverse conversion and
+result contract require their own implementation and conformance suite.
+
+The initial cross-runtime CEL-to-JSON mapping is:
+
+| CEL value | JSON representation |
+|-----------|---------------------|
+| `null`, `bool`, `string` | Corresponding JSON value. Missing remains distinct from explicit `null`. |
+| `int`, `uint` | JSON number only within the interoperable ranges `[-9007199254740991, 9007199254740991]` for `int` and `[0, 9007199254740991]` for `uint`; authors must explicitly convert larger identifiers or counters to strings. |
+| `double` | Finite JSON number; `NaN`, positive infinity, and negative infinity are rejected. |
+| `bytes` | Standard padded Base64 string and a schema that declares the encoding. |
+| `timestamp` | UTC RFC 3339 string normalized with a `Z` suffix. |
+| `duration` | Protobuf JSON duration string in seconds with optional fractional nanoseconds, for example `"1.500s"`. |
+| `list` | JSON array after recursively applying this contract. |
+| `map` | JSON object only when every key is a unique string; non-string or colliding keys are rejected rather than stringified. |
+| opaque, function, optional-without-value, or implementation-specific values | Rejected unless a later versioned profile defines an explicit conversion. |
+
+The adapter must not silently convert an unsupported value to `null`. The
+normalized mapping version is part of the compiled-expression/profile digest
+so a library upgrade cannot change persisted results without conformance and
+promotion.
+
+Phase 0 must also qualify the concrete evaluator. The currently pinned Rust
+`cel` 0.14 API provides parsing, execution, reference inspection, and a generic
+JSON helper, but it does not expose the schema-aware checker or evaluation-cost
+budget assumed by this design. Its generic JSON helper also stringifies map
+keys and chooses dependency-specific representations for types such as
+duration. Before Phase 1, either augment or replace that integration with an
+implementation that satisfies the checker, cost, and conversion contracts, or
+narrow the published CEL profile and validation claims accordingly. Wall-clock
+timeouts alone are not a substitute for deterministic evaluation-cost limits.
+
+The current workflow model advertises jq and JavaScript while the runtime
+implements only a small jq-like path and comparison evaluator. Before this
+profile is published, change the workflow default to CEL, execute expressions
+through the shared CEL core, and make Portal and runtime validation reject jq,
+JavaScript, and any other unimplemented language.
+
+### Optional Advanced jq Transform
+
+Do not enable jq in the initial production profile. If representative customer
+workflows later demonstrate a material need for operations such as grouping,
+sorting, reducing, or recursive JSON traversal that would otherwise require
+non-portable CEL extensions, jq may be introduced as an explicit advanced
+`transform` task. It must not become a per-expression alternative for
+conditions, policies, retries, or ordinary mappings.
+
+An optional jq task requires a separate versioned compatibility and security
+profile. It must accept one JSON input and return exactly one JSON output;
+zero-result and multi-result filters fail unless the task contract explicitly
+collects them into one array. The allowed subset must exclude unbounded
+recursion and repetition, imports and modules, environment or input access,
+and debug or stderr output. The runtime must enforce fuel or cost, time, memory,
+depth, input, and output limits.
+
 JavaScript should not be enabled merely because it appears in the workflow
-model. The authoring validator must reject languages and jq features that the
-runtime does not actually implement.
+model. When declarative CEL transformations are insufficient and the optional
+jq profile is not appropriate, an approved isolated runner task may be used.
+Its input, output, image or template digest, resource limit, and execution
+policy must be pinned. It cannot execute in the gateway process.
 
 Parallel aggregation requires explicit fork/join semantics with bounded
 parallelism and a deterministic merge rule. Step retries require explicit
 attempt count, retryable error classes, backoff, jitter, and idempotency
 requirements. These semantics belong in `light-workflow`, not in the MCP tool
 configuration.
-
-If declarative transformations are insufficient, an approved isolated runner
-task may be used. Its input, output, image/template digest, resource limit, and
-execution policy must be pinned. It cannot execute in the gateway process.
 
 ## Portal Authoring Experience
 
@@ -709,6 +1223,7 @@ The user defines:
 - MCP name, description, semantic metadata, and examples;
 - input and output JSON Schemas;
 - synchronous or asynchronous mode;
+- MCP result text mode and completed-result freshness window;
 - latency, deadline, fan-out, and step limits;
 - read-only, idempotent, destructive, and approval metadata; and
 - target gateway instances or environments.
@@ -730,7 +1245,10 @@ Each task exposes editors for:
 - join and aggregation expressions; and
 - final public-output mapping.
 
-The UI previews the input and output shape at each step.
+All expressions use CEL in the initial production profile. The editor shows the
+allowed roots and functions for that location, provides schema-aware completion
+and syntax/type diagnostics, states the expected result type, and previews the
+input and output shape at each step.
 
 ### Generate With AI
 
@@ -740,7 +1258,7 @@ The generation request contains:
 - the user's business objective;
 - only the APIs and MCP tools selected or authorized for the author;
 - their schemas, descriptions, examples, and safety metadata;
-- the supported workflow DSL and expression subset;
+- the supported workflow DSL and CEL profile;
 - organization policy and runtime bounds; and
 - optional sample input and expected output.
 
@@ -768,7 +1286,8 @@ The Portal runs, in order:
 4. Stable tool, endpoint, and workflow reference resolution.
 5. Schema-digest and lifecycle checks.
 6. Dependency-cycle and delegation-depth checks.
-7. Safety, approval, idempotency, and data-boundary policy checks.
+7. Safety, approval, idempotency, result-rendering, and data-boundary policy
+   checks.
 8. Mock fixture tests.
 9. Optional live sandbox tests with failure injection.
 10. Gateway `tools/list` and invocation qualification against a non-production
@@ -788,7 +1307,8 @@ input/output schemas and schema digest
 workflow definition ID, version, and digest
 nested dependency snapshot
 dispatch and delegation policy references
-runtime bounds
+response-classification and filtering policy digest
+execution class, runtime bounds, result text mode, and replay windows
 test evidence
 approver and publication metadata
 ```
@@ -800,12 +1320,34 @@ Promotion atomically moves the tool alias to the new approved binding. New
 calls use the new binding; in-flight workflows continue using their stored
 definition and policy snapshots.
 
+Before moving an inner tool alias, Portal queries the dependency reverse index,
+classifies the contract change, and shows the affected composite tools. An
+incompatible change cannot strand existing outer bindings at runtime: either
+the old nested version remains dispatchable, or the outer tools are explicitly
+repinned, retested, and reapproved in the same promotion plan.
+
+Retiring an inner tool uses the same reverse-index gate. Portal blocks
+retirement while an active outer binding references the tool unless one atomic
+plan repins or retires every affected outer binding. Retirement prevents direct
+new starts and new dependency publication, but it does not invalidate the
+pinned dependency snapshot of a workflow accepted before that plan; its private
+target remains dispatchable until the in-flight and retention references are
+released. An emergency security revocation is a separate fail-closed operation
+and may deliberately break pinned calls with an explicit impact report and
+audit record.
+
+Promotion must not change a stable tool between synchronous business-result
+and asynchronous handle contracts. That change requires a new stable tool
+reference and gateway-facing name so cached schemas and static allowlists do
+not observe a semantic type change behind an alias.
+
 Rollback republishes the previous approved binding. It does not mutate or
 delete historical definitions or running instances.
 
-Retirement removes the tool from new `tools/list` responses and rejects new
-starts while preserving status, result, cancellation, and audit access for
-already accepted instances according to retention policy.
+Retirement removes the tool from new `tools/list` responses and rejects direct
+new starts while preserving the pinned execution dependencies, status, result,
+cancellation, and audit access needed by already accepted instances according
+to retention policy.
 
 ## Observability And Audit
 
@@ -831,6 +1373,8 @@ workflow.definition_id
 workflow.definition_digest
 workflow.instance_id
 workflow.invocation_mode
+workflow.execution_class
+workflow.permit_depth
 workflow.state
 workflow.task_count
 workflow.nested_call_count
@@ -839,16 +1383,26 @@ workflow.wait_ms
 workflow.total_ms
 ```
 
+High-cardinality identifiers such as `workflow.instance_id`, correlation ID,
+and raw digest values belong in spans and audit events, not metric labels.
+Metrics use bounded dimensions such as tenant tier, stable tool reference where
+cardinality policy permits it, workflow version, state, and normalized error
+class.
+
 Metrics should cover:
 
 - starts, completions, failures, cancellations, and timeouts;
-- synchronous wait latency and total workflow latency;
+- durable-acceptance, runnable-to-claim, task service, transition, synchronous
+  wait, result-rendering, and total workflow latency;
+- interactive queue depth, oldest runnable age, executor saturation, lease
+  expiry/reclaim, and deadline-aware admission rejection;
 - active and waiting instances;
 - duplicate/idempotent start hits;
 - definition, schema, and policy mismatch rejections;
 - nested-call denials and cycle/depth rejections;
 - output-validation failures; and
-- capacity rejection by tenant, tool, and workflow version.
+- capacity rejection by tenant, tool, workflow version, and bounded permit
+  depth.
 
 Do not attach raw inputs, intermediate context, or final results to metrics.
 Trace and audit payload capture follows classification and redaction policy.
@@ -859,7 +1413,9 @@ The gateway must bound workflow dispatch independently from HTTP and MCP
 backend dispatch. Recommended controls include:
 
 - global and per-tenant concurrent workflow starts;
-- per-tool concurrent synchronous waits;
+- per-tool and per-delegation-depth concurrent synchronous waits;
+- executor-advertised interactive slots, queue age, and throughput estimates in
+  admission decisions;
 - workflow-invocation connection and response timeouts;
 - circuit health for the invocation service;
 - request and public-result size limits;
@@ -871,66 +1427,182 @@ service has durably accepted the instance. The invocation service returns the
 instance ID as part of durable acceptance, and retries use idempotency lookup to
 resolve uncertain outcomes.
 
+Invocation-service health does not remove an already published tool from
+`tools/list`; discovery is a stable contract and may be cached by agents. Calls
+fail with retryable `WORKFLOW_INVOCATION_UNAVAILABLE` before acceptance while
+the circuit is open. After durable acceptance, errors return the instance ID
+and current state instead of an ambiguous unavailable response.
+
 The gateway remains stateless with respect to workflow progress. Gateway
 restart or reload does not lose the workflow instance.
 
 ## Implementation Phases
 
+Phase 1 is primarily a `light-workflow` runtime qualification project with a
+gateway feature attached. Direct invocation, interactive scheduling, fair
+claiming, notification wake-up, fenced leases, deadline-aware admission, and
+the CEL evaluator decision are release prerequisites rather than follow-up
+gateway optimizations. Delivery ownership, staffing, and milestones must
+reflect that dependency order.
+
 ### Phase 0: Contract And Threat Model
 
-Owners: `light-fabric`, `portal-db`, and `light-portal`.
+Owners: `light-fabric`, `light-workflow`, `portal-db`, and `light-portal`.
 
 - Define the invocation API, state model, public result, and error envelope.
-- Define `workflow_tool_binding_t` and its command/query events.
-- Define definition, schema, dependency, and policy digest rules.
-- Define delegation claims, idempotency semantics, cancellation behavior, and
-  synchronous eligibility rules.
+- Define `workflow_tool_binding_t`, the nested-dependency reverse index, the
+  invocation/idempotency store, the durable atomic invocation-budget ledger,
+  and their command/query events.
+- Define exact workflow pins, supported nested-schema compatibility rules,
+  dependency impact reporting, private version-target retention/garbage
+  collection, and policy digest rules.
+- Define delegation claims, depth-partitioned synchronous permit pools,
+  inherited execution-class semantics, idempotency semantics, cancellation
+  behavior, and synchronous eligibility rules.
+- Define the MCP result envelope, canonical-input profile, completed-result
+  freshness window, and explicit-key conflict behavior with shared fixtures.
+- Spike and load-test the complete interactive result path, including direct
+  transactional acceptance, fair task scheduling, wake-up, executor capacity,
+  and crash recovery. Durable acceptance must create the invocation, process,
+  initial task, snapshots, idempotency reservation, and audit outbox event
+  without waiting for the shared event consumer. Measure acceptance separately
+  as a necessary sub-gate, but gate the architecture on end-to-end result
+  latency.
+- Qualify the CEL implementation for schema-aware checking, deterministic cost
+  enforcement, and the pinned CEL-to-JSON conversion table. Decide whether to
+  augment, upgrade, or replace the current crate before freezing fixtures.
 - Publish OpenAPI/JSON Schema fixtures and positive/negative conformance tests.
 
 Exit gates:
 
-- the same normalized request has one canonical digest;
-- stale definition or schema digests fail closed;
-- cross-tenant start/status/result/cancel tests fail closed; and
-- duplicate idempotency tests resolve to one workflow instance.
+- Portal, gateway, and invocation-service fixtures give the same canonical
+  digest for reordered objects, numeric spellings, absent versus `null`,
+  preserved Unicode, and rejected duplicate keys;
+- a committed start returns its preallocated instance ID and an immediate
+  status read returns `ACCEPTED` or a later state, never projection-lag `404`;
+- numeric acceptance p95/p99 sub-gates and end-to-end result p95/p99 gates are
+  selected before Phase 1. The result gate uses controlled one-task and
+  maximum-task workflows under concurrent interactive load, cross-tenant batch
+  backlog, unrelated outbox traffic, and poison-event injection, with every
+  queue and execution stage measured separately;
+- the selected result-latency gate is met without tenant starvation, and an
+  executor killed after claim is recovered within the remaining interactive
+  deadline while its stale fencing token cannot commit;
+- CEL conformance fixtures pin large integers, finite/non-finite doubles,
+  timestamps, durations, bytes, null versus missing, map keys, opaque values,
+  result types, checker behavior, and cost exhaustion;
+- stale workflow definitions fail closed, while nested compatible changes and
+  incompatible repin requirements follow the documented rules;
+- an inner contract change produces a complete reverse-dependency impact
+  report before promotion, an existing outer binding continues to call its
+  pinned private version, and garbage collection refuses a referenced target;
+- cross-tenant start/status/result/cancel tests fail closed;
+- concurrent derived-key duplicates resolve to one workflow instance, changed
+  derived input starts a new instance, reuse of one permitted explicit key with
+  changed input returns `WORKFLOW_IDEMPOTENCY_CONFLICT`, and expiry of the
+  completed-result replay window atomically starts a new generation;
+- parallel consumers of copied delegation tokens share one ledger: with only
+  `N` attempts, calls, bytes, or cost units remaining, at most `N` reservations
+  commit, retries do not reset counters, and duplicate or stale fenced
+  reconciliation cannot double-release a reservation;
+- compact-JSON and summary-mode fixtures pin `content`, `structuredContent`,
+  filtering, schema validation, size limits, and technical-error rendering.
 
 ### Phase 1: Read-Only Synchronous MVP
 
 Owners: `light-gateway`, `light-workflow`, `light-portal`, and `portal-view`.
 
-- Add the workflow execution variant and configuration parser to the gateway.
-- Add the stable invocation façade and bounded wait operation.
+- Add the workflow execution-placement dispatch branch and configuration parser
+  to the gateway while keeping `apiType` limited to backend transports.
+- Add depth-partitioned synchronous permit pools whose inner reserves are
+  reachable only through signed workflow delegation.
+- Add the direct durable invocation façade and resumable bounded long-poll
+  operation; do not drive gateway starts through the shared Portal event log.
+- Add bounded poison-event quarantine and audited replay to workflow event
+  consumers.
+- Add the immutable interactive execution class, fair per-tenant claiming,
+  wake-on-insert, configurable concurrent executors, deadline-aware admission,
+  and renewable fenced task leases.
 - Support headless, bounded sequential compositions.
+- Replace the placeholder jq-like evaluator with the shared CEL predicate and
+  value adapters, change the workflow default to CEL, and validate expressions
+  before publication.
 - Add manual Composite MCP Tool authoring, validation, test, and publication.
-- Use narrowed delegation for nested MCP calls.
-- Restrict the first profile to read-only or otherwise provably idempotent
-  operations.
+- Project the private version-target registry and dispatch nested workflow calls
+  by pinned stable reference, version, and contract digest rather than alias;
+  preserve the logical authorization identity and retirement reachability.
+- Use narrowed initiating-user delegation by default for nested MCP calls;
+  require approval evidence for each service-identity step.
+- Restrict the first profile to read-only operations.
 
 Exit gates:
 
 - an unchanged generic MCP client discovers and calls a composite tool;
-- the final result passes gateway response filtering and output validation;
+- the final result passes gateway response filtering and output validation,
+  appears unchanged in `structuredContent`, and uses the published text mode;
 - gateway restart does not lose an accepted workflow;
+- any gateway node can resume a wait, concurrent waiters observe one durable
+  instance, and capacity exhaustion rejects before starting or queueing;
+- with `N` permits configured at root and first-nested depth, `N` concurrent
+  root workflows that each call one controlled nested composite complete
+  without root saturation consuming the nested reserve; direct requests cannot
+  claim or spoof an inner-depth permit;
 - workflow/gateway traces share one correlation ID;
-- recursive workflow-tool dependencies are rejected; and
-- the configured step, payload, wait, and total-deadline bounds are enforced.
+- the Phase 0 end-to-end p95/p99 result gates continue to pass at the declared
+  executor concurrency and cross-tenant backlog, with bounded fairness and no
+  starvation;
+- an idle executor is woken without waiting for the fallback poll, and an
+  executor crash reclaims an interactive task before its deadline while a
+  stale completion is rejected by fencing;
+- Portal validation and workflow execution agree on CEL conformance fixtures,
+  and jq or JavaScript definitions fail publication and runtime loading;
+- recursive workflow-tool dependencies and transitively async or unbounded
+  dependencies are rejected for synchronous publication;
+- a nested workflow inherits the outer effective execution class even when its
+  binding has a different direct-root default;
+- with `defaultDeny: true`, promoting an inner alias does not change either the
+  version or logical authorization identity used by an existing outer binding,
+  and its pinned call still passes the alias endpoint's rules without a new
+  private-target rule;
+- retirement is rejected while active outer references exist unless one plan
+  repins or retires them, and referenced or in-flight private targets cannot be
+  retired from dispatch or garbage-collected;
+- the configured static-task, runtime-attempt, nested-call, payload, cost,
+  wait, and total-deadline budgets are enforced by the shared invocation
+  ledger rather than mutable token claims;
+- a malformed event is quarantined after bounded attempts and cannot block
+  start, status, wait, result, or unrelated aggregates in its tenant partition;
+  every deferred offset remains replayable, and retention or purge refuses to
+  remove its payload dependency.
 
 ### Phase 2: Production Orchestration
 
 Owners: `light-workflow` and the workflow client in `light-gateway`.
 
-- Complete deterministic jq-compatible transformations.
+- Complete deterministic, schema-aware CEL transformations and aggregation
+  conformance with cost and result-size enforcement.
 - Add bounded fork/join aggregation and generic task retries.
 - Add explicit task and workflow deadlines.
 - Add asynchronous start/status/result/cancel tools.
 - Add side-effect idempotency, approval, and compensation policies.
+- Distinguish post-effect output failures as non-retryable and preserve their
+  side-effect state in status and audit responses.
 - Add dependency-drift checks and version promotion/rollback.
+- Use representative customer workflows to decide whether the optional
+  restricted jq transform task is justified; keep jq rejected otherwise.
 
 Exit gates:
 
 - parallel partial failure is deterministic and auditable;
+- fork/join siblings and concurrent retries carrying copies of the same signed
+  parent token cannot exceed aggregate attempt, call, byte, or cost ceilings;
+  tests race `N+1` reservations against a remaining budget of `N` and prove
+  that exactly one is rejected without overspend;
 - retry tests never duplicate protected side effects;
 - long-running and human-task workflows return and enforce authorized handles;
+- revoking the initiating subject after acceptance denies status/result access,
+  and result filtering never discloses more than the intersection of current
+  authorization and the stored publication-time ceiling;
 - cancellation reaches a terminal state or reports a stable non-cancellable
   reason; and
 - rollback changes new starts without changing in-flight snapshots.
@@ -978,30 +1650,44 @@ The design is complete when:
   exposure;
 - every published tool is bound to stable tool, schema, workflow, dependency,
   and policy digests;
+- synchronous result latency and tenant fairness are qualified against declared
+  executor capacity, backlog, and crash-recovery gates;
+- nested synchronous calls cannot be starved by root wait permits and inherit
+  the outer execution class through signed delegation;
 - synchronous and asynchronous behaviors are explicit in the tool contract;
 - retries, cancellation, idempotency, and compensation have one runtime owner;
 - outer and nested authorization remain tenant- and caller-bound;
+- private version dispatch preserves the logical tool's authorization identity,
+  and promotion or retirement cannot strand active outer dependencies;
+- shared-principal asynchronous access is also bound to the initiating
+  end-user subject, current authorization, and stored response-filter ceiling;
 - AI-generated workflows are drafts until deterministic checks and human
   approval complete; and
 - publication, promotion, retirement, and rollback preserve in-flight workflow
   snapshots and audit history.
 
-## Open Decisions
+## Settled And Remaining Decisions
 
-The following choices should be settled before Phase 1 implementation:
+This design settles the architecture choices that gate implementation:
 
-1. What percentage of composite tools must complete within the initial
-   synchronous wait target?
-2. Should Phase 1 permit any writes, or only read-only compositions?
-3. Should nested calls normally use initiating-user delegation, a workflow
-   service identity, or a per-step selectable policy?
-4. How many customer agents dynamically refresh `tools/list`, and how many use
-   static allowlists?
-5. Which result fields must remain queryable after the initiating MCP session
-   ends, and for how long?
-6. Is the current event-driven workflow start latency acceptable for
-   interactive tools, or does the invocation façade need a lower-latency
-   accepted-start path?
+- Phase 1 is read-only.
+- Gateway starts use direct transactional durable acceptance rather than the
+  shared event consumer.
+- Nested calls select identity per step, defaulting to narrowed initiating-user
+  delegation; workflow service identity requires explicit approval evidence.
+- The workflow `output` block is the only executable public-result mapping.
+- Workflow execution is selected by `executionPlacement`, not a new transport
+  value in `apiType`.
+
+The remaining product and operational choices require measured customer or
+environment data rather than another runtime architecture:
+
+1. What p95/p99 acceptance, execution, and wait SLOs should each deployment
+   use, and what maximum synchronous wait follows from those measurements?
+2. How many customer agents dynamically refresh `tools/list`, and how many use
+   static allowlists that require an explicit rollout procedure?
+3. Which asynchronous result fields remain queryable after the initiating MCP
+   session ends, and what retention and legal-hold policies apply?
 
 ## Related Documentation
 

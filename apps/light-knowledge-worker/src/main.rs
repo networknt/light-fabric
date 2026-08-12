@@ -46,6 +46,10 @@ struct WorkerConfig {
     #[serde(default)]
     portal_authorization_file: Option<PathBuf>,
     #[serde(default)]
+    portal_command_ca_cert_file: Option<PathBuf>,
+    #[serde(default = "default_true")]
+    portal_command_verify_hostname: bool,
+    #[serde(default)]
     checkout_root: PathBuf,
     #[serde(default)]
     approved_repository_uri: String,
@@ -263,6 +267,10 @@ impl WorkerConfig {
                         .embedding_gateway_ca_cert_file
                         .as_ref()
                         .is_some_and(|path| !path.is_file())
+                    || self
+                        .portal_command_ca_cert_file
+                        .as_ref()
+                        .is_some_and(|path| !path.is_file())
                     || (self.migration_deterministic_pilot && !self.deterministic_pilot)))
             || (!projector_mode
                 && !self.deterministic_pilot
@@ -375,6 +383,27 @@ fn embedding_http_client(config: &WorkerConfig) -> Result<reqwest::Client> {
     builder
         .build()
         .context("build embedding gateway HTTP client")
+}
+
+fn portal_command_http_client(config: &WorkerConfig) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(15));
+    if let Some(path) = &config.portal_command_ca_cert_file {
+        for certificate in load_ca_cert_bundle(path)
+            .with_context(|| format!("load Portal command CA bundle {}", path.display()))?
+        {
+            builder = builder.add_root_certificate(certificate);
+        }
+    }
+    if !config.portal_command_verify_hostname {
+        tracing::warn!(
+            "Portal command hostname verification is disabled by local runtime configuration"
+        );
+        builder = builder.danger_accept_invalid_hostnames(true);
+    }
+    builder.build().context("build Portal command HTTP client")
 }
 
 #[derive(Debug, Deserialize)]
@@ -4282,22 +4311,22 @@ async fn publish_promotion_acknowledgements(pool: &PgPool, config: &WorkerConfig
         "scope": if owner_host.is_some() { "TENANT" } else { "GLOBAL" }
     });
     let token = fs::read_to_string(token_file)?;
-    let response = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(15))
-        .build()?
-        .post(endpoint)
-        .bearer_auth(token.trim())
-        .json(&json!({
-            "host": "lightapi.net",
-            "service": "genai",
-            "action": "acknowledgeKnowledgeBaseIndexGenerationPromotion",
-            "version": "0.1.0",
-            "data": data
-        }))
-        .send()
-        .await;
+    let response: Result<reqwest::Response> = match portal_command_http_client(config) {
+        Ok(client) => client
+            .post(endpoint)
+            .bearer_auth(token.trim())
+            .json(&json!({
+                "host": "lightapi.net",
+                "service": "genai",
+                "action": "acknowledgeKnowledgeBaseIndexGenerationPromotion",
+                "version": "0.1.0",
+                "data": data
+            }))
+            .send()
+            .await
+            .map_err(Into::into),
+        Err(error) => Err(error),
+    };
     let (state, next_attempt) = match response {
         Ok(response) if response.status().is_success() => ("SENT", None),
         Ok(response) => {
@@ -8161,6 +8190,27 @@ mod tests {
         assert!(error.to_string().contains(&format!(
             "load embedding gateway CA bundle {}",
             missing_ca.display()
+        )));
+    }
+
+    #[test]
+    fn portal_command_tls_is_secure_by_default_and_rejects_a_delayed_invalid_ca_bundle() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = serde_json::from_value::<WorkerConfig>(json!({
+            "version": 1,
+            "heartbeatSecretFile": directory.path().join("heartbeat"),
+            "projectorId": "test"
+        }))
+        .unwrap();
+        assert!(config.portal_command_verify_hostname);
+
+        let invalid_ca = directory.path().join("invalid-portal-ca.pem");
+        fs::write(&invalid_ca, "this is not a PEM certificate").unwrap();
+        config.portal_command_ca_cert_file = Some(invalid_ca.clone());
+        let error = portal_command_http_client(&config).unwrap_err();
+        assert!(error.to_string().contains(&format!(
+            "load Portal command CA bundle {}",
+            invalid_ca.display()
         )));
     }
 
