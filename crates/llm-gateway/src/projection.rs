@@ -24,8 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::warn;
 
-pub const PROJECTION_SCHEMA_VERSION: &str = "2";
-pub const PROJECTION_SCHEMA_VERSION_V3: &str = "3";
+pub const PROJECTION_SCHEMA_VERSION: &str = "3";
 pub const PROJECTION_ACKNOWLEDGEMENT_SCHEMA_VERSION: &str = "2";
 pub const GATEWAY_COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const SUPPORTED_ROUTING_FEATURE: &str = "ordered-routing";
@@ -522,9 +521,8 @@ impl LlmProjectionWorker {
             applied_schema_version: manifest.schema_version.clone(),
             applied_at: unix_timestamp_string(),
             gateway_version: GATEWAY_COMPILER_VERSION.to_string(),
-            // Closed, sorted set of projection schemas accepted by this dual
-            // reader. It is independent of the schema applied by this root.
-            reader_version: "projection-reader-v3".to_string(),
+            // The only projection schema accepted by this runtime.
+            reader_version: PROJECTION_SCHEMA_VERSION.to_string(),
             gateway_instance: self.gateway_instance.clone(),
             material_generation: self.status.credential_generation,
             resolved_trust_digest: aggregate_resolved_trust_digest(&config),
@@ -648,10 +646,8 @@ fn validate_bundle(bundle: &ProjectionBundle) -> Result<(), ProjectionError> {
 }
 
 fn validate_manifest(manifest: &ProjectionManifest) -> Result<(), ProjectionError> {
-    if !matches!(
-        manifest.schema_version.as_str(),
-        PROJECTION_SCHEMA_VERSION | PROJECTION_SCHEMA_VERSION_V3
-    ) || manifest.host_id.trim().is_empty()
+    if manifest.schema_version != PROJECTION_SCHEMA_VERSION
+        || manifest.host_id.trim().is_empty()
         || manifest.environment.trim().is_empty()
         || manifest.sequence == 0
         || manifest.resources.is_empty()
@@ -661,9 +657,7 @@ fn validate_manifest(manifest: &ProjectionManifest) -> Result<(), ProjectionErro
             "invalid projection manifest envelope".to_string(),
         ));
     }
-    if manifest.schema_version == PROJECTION_SCHEMA_VERSION_V3
-        && manifest.publication_id.trim().is_empty()
-    {
+    if manifest.publication_id.trim().is_empty() {
         return Err(ProjectionError::Contract(
             "projection v3 manifest requires publicationId".to_string(),
         ));
@@ -683,30 +677,6 @@ fn validate_manifest(manifest: &ProjectionManifest) -> Result<(), ProjectionErro
         ));
     }
     Ok(())
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct DeploymentPayload {
-    deployment_id: String,
-    provider_id: String,
-    provider_protocol: ProviderProtocol,
-    base_url: String,
-    credential_ref: String,
-    #[serde(default)]
-    headers: BTreeMap<String, String>,
-    #[serde(default)]
-    quota_group_id: Option<String>,
-    model: String,
-    #[serde(default = "default_deployment_concurrency")]
-    concurrency: usize,
-    #[serde(default)]
-    declared_capabilities: Option<ProviderCapabilities>,
-    /// One-release read bridge for stored V2 publication resources.
-    #[serde(default, rename = "conformanceDigest")]
-    _legacy_conformance_digest: Option<Value>,
-    #[serde(default, rename = "conformanceResult")]
-    legacy_conformance_result: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -739,28 +709,14 @@ struct DeploymentPayloadV3 {
     pricing_basis: PricingBasis,
     #[serde(default)]
     declared_capabilities: Option<ProviderCapabilities>,
-    /// One-release read bridge for stored V3 publication resources.
-    #[serde(default, rename = "conformanceDigest")]
-    _legacy_conformance_digest: Option<Value>,
-    #[serde(default, rename = "conformanceResult")]
-    legacy_conformance_result: Option<Value>,
 }
 
 fn projected_capabilities(
     declared: Option<ProviderCapabilities>,
-    legacy_conformance_result: Option<Value>,
 ) -> Result<ProviderCapabilities, ProjectionError> {
-    if let Some(capabilities) = declared {
-        return Ok(capabilities);
-    }
-    legacy_conformance_result
-        .and_then(|result| result.get("capabilities").cloned())
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(contract_json)?
-        .ok_or_else(|| {
-            ProjectionError::Contract("deployment has no declared capabilities".to_string())
-        })
+    declared.ok_or_else(|| {
+        ProjectionError::Contract("deployment has no declared capabilities".to_string())
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -836,226 +792,12 @@ fn assemble_config(
     base: &LlmRouterConfig,
     bundle: &ProjectionBundle,
 ) -> Result<LlmRouterConfig, ProjectionError> {
-    match bundle.manifest.schema_version.as_str() {
-        PROJECTION_SCHEMA_VERSION => assemble_config_v2(base, bundle),
-        PROJECTION_SCHEMA_VERSION_V3 => assemble_config_v3(base, bundle),
-        _ => Err(ProjectionError::Contract(
-            "unsupported projection schema version".to_string(),
-        )),
-    }
-}
-
-fn assemble_config_v2(
-    base: &LlmRouterConfig,
-    bundle: &ProjectionBundle,
-) -> Result<LlmRouterConfig, ProjectionError> {
-    let mut config = base.clone();
-    config.enabled = true;
-    config.development_fixtures = false;
-    config.providers.clear();
-    config.deployments.clear();
-    config.aliases.clear();
-    let mut prices = Vec::new();
-    for resource in bundle.resources.values() {
-        match resource.resource_type.as_str() {
-            "llm-deployment" => {
-                let payload: DeploymentPayload =
-                    serde_json::from_value(resource.payload.clone()).map_err(contract_json)?;
-                if payload.deployment_id != resource.resource_id {
-                    return Err(ProjectionError::Contract(
-                        "deployment payload/resource id mismatch".to_string(),
-                    ));
-                }
-                let provider = ProviderConfig {
-                    provider_account_id: payload.provider_id.clone(),
-                    provider_protocol: payload.provider_protocol,
-                    base_url: payload.base_url,
-                    secret_ref: payload.credential_ref,
-                    endpoint_auth: None,
-                    network_profile: Default::default(),
-                    headers: payload.headers,
-                    quota_group_id: payload.quota_group_id,
-                };
-                if let Some(existing) = config.providers.get(&payload.provider_id) {
-                    let existing = serde_json::to_value(existing).map_err(contract_json)?;
-                    let candidate = serde_json::to_value(&provider).map_err(contract_json)?;
-                    if existing != candidate {
-                        return Err(ProjectionError::Contract(
-                            "one provider id has conflicting deployment materialization"
-                                .to_string(),
-                        ));
-                    }
-                } else {
-                    config
-                        .providers
-                        .insert(payload.provider_id.clone(), provider);
-                }
-                let capabilities = projected_capabilities(
-                    payload.declared_capabilities,
-                    payload.legacy_conformance_result,
-                )?;
-                config.deployments.insert(
-                    payload.deployment_id,
-                    DeploymentConfig {
-                        provider: payload.provider_id,
-                        deployment_revision_id: String::new(),
-                        model: payload.model,
-                        concurrency: payload.concurrency,
-                        runtime_capacity: None,
-                        sidecar: None,
-                        pricing_basis: Default::default(),
-                        prices: BTreeMap::new(),
-                        declared_capabilities: Some(capabilities.clone()),
-                        embedding_capabilities: capabilities.embedding.clone(),
-                        conformance_digest: String::new(),
-                        conformance_result: None,
-                        text: capabilities
-                            .generation
-                            .as_ref()
-                            .is_some_and(|value| value.content.text),
-                        images: capabilities
-                            .generation
-                            .as_ref()
-                            .is_some_and(|value| value.content.images),
-                        tools: capabilities
-                            .generation
-                            .as_ref()
-                            .is_some_and(|value| value.content.tools),
-                        structured_json: capabilities
-                            .generation
-                            .as_ref()
-                            .is_some_and(|value| value.content.structured_json),
-                        streaming: capabilities
-                            .generation
-                            .as_ref()
-                            .is_some_and(|value| value.streaming),
-                        pii_placeholder_preservation_percent: 0,
-                    },
-                );
-            }
-            "llm-route" => {
-                let payload: RoutePayload =
-                    serde_json::from_value(resource.payload.clone()).map_err(contract_json)?;
-                if payload.alias_name != resource.resource_id {
-                    return Err(ProjectionError::Contract(
-                        "route payload/resource id mismatch".to_string(),
-                    ));
-                }
-                config.aliases.insert(
-                    payload.alias_name,
-                    AliasConfig {
-                        operations: payload.operations,
-                        deployments: payload.deployments,
-                        max_attempts: payload.max_attempts,
-                        concurrency: payload.concurrency,
-                        max_input_tokens: payload.max_input_tokens,
-                        max_output_tokens: payload.max_output_tokens,
-                        max_cost_micros: payload.max_cost_micros,
-                        internal: payload.internal,
-                        bound_principal: payload.bound_principal,
-                        audit: payload.audit,
-                        pii: payload.pii,
-                        required_capabilities: payload.required_capabilities,
-                        require_expected_embedding_space: payload.require_expected_embedding_space,
-                        embedding_workload_lane: payload.embedding_workload_lane,
-                    },
-                );
-            }
-            "llm-pricing" => prices.push(
-                serde_json::from_value::<PricingPayload>(resource.payload.clone())
-                    .map_err(contract_json)?,
-            ),
-            "llm-policy" => {
-                let payload: PolicyPayload =
-                    serde_json::from_value(resource.payload.clone()).map_err(contract_json)?;
-                if let Some(value) = payload.global_concurrency {
-                    require_local_bound("globalConcurrency", value, config.global_concurrency)?;
-                }
-                if let Some(value) = payload.global_stream_concurrency {
-                    require_local_bound(
-                        "globalStreamConcurrency",
-                        value,
-                        config.global_stream_concurrency,
-                    )?;
-                }
-                if let Some(value) = payload.stream_channel_capacity {
-                    require_local_bound(
-                        "streamChannelCapacity",
-                        value,
-                        config.stream_channel_capacity,
-                    )?;
-                }
-                if let Some(value) = payload.max_stream_response_bytes {
-                    require_local_bound(
-                        "maxStreamResponseBytes",
-                        value,
-                        config.max_stream_response_bytes,
-                    )?;
-                }
-                if let Some(value) = payload.stream_write_timeout_ms {
-                    require_local_bound(
-                        "streamWriteTimeoutMs",
-                        value,
-                        config.stream_write_timeout_ms,
-                    )?;
-                }
-                if let Some(value) = payload.max_replay_bytes {
-                    require_local_bound("maxReplayBytes", value, config.max_replay_bytes)?;
-                }
-                if let Some(value) = payload.request_timeout_ms {
-                    require_local_bound("requestTimeoutMs", value, config.request_timeout_ms)?;
-                }
-            }
-            other => {
-                return Err(ProjectionError::Contract(format!(
-                    "unsupported projection resource type `{other}`"
-                )));
-            }
-        }
-    }
-    for price in prices {
-        let deployment = config
-            .deployments
-            .get_mut(&price.deployment_id)
-            .ok_or_else(|| {
-                ProjectionError::Contract("pricing references a missing deployment".to_string())
-            })?;
-        let operation_price = match price.operation {
-            Operation::Generate => OperationPrice::Generate(GenerationPrice {
-                version: price.price_version,
-                input_micros_per_million: price.input_micros_per_million,
-                output_micros_per_million: price.output_micros_per_million.ok_or_else(|| {
-                    ProjectionError::Contract("generation price requires output rate".to_string())
-                })?,
-            }),
-            Operation::Embed => {
-                if price.output_micros_per_million.is_some() {
-                    return Err(ProjectionError::Contract(
-                        "embedding price must not contain an output rate".to_string(),
-                    ));
-                }
-                OperationPrice::Embed(EmbeddingPrice {
-                    version: price.price_version,
-                    input_micros_per_million: price.input_micros_per_million,
-                })
-            }
-        };
-        if deployment
-            .prices
-            .insert(price.operation, operation_price)
-            .is_some()
-        {
-            return Err(ProjectionError::Contract(
-                "duplicate deployment operation price".to_string(),
-            ));
-        }
-    }
-    if config.deployments.is_empty() || config.aliases.is_empty() {
+    if bundle.manifest.schema_version != PROJECTION_SCHEMA_VERSION {
         return Err(ProjectionError::Contract(
-            "projection root has no deployable alias".to_string(),
+            "unsupported projection schema version".to_string(),
         ));
     }
-    Ok(config)
+    assemble_config_v3(base, bundle)
 }
 
 fn assemble_config_v3(
@@ -1129,10 +871,7 @@ fn assemble_config_v3(
                         "v3 deployment payload/resource/endpoint mismatch".to_string(),
                     ));
                 }
-                let capabilities = projected_capabilities(
-                    payload.declared_capabilities,
-                    payload.legacy_conformance_result,
-                )?;
+                let capabilities = projected_capabilities(payload.declared_capabilities)?;
                 config.deployments.insert(
                     payload.deployment_id,
                     DeploymentConfig {
@@ -1563,18 +1302,40 @@ mod tests {
             .unwrap();
         let resources = [
             resource(
+                "llm-provider-endpoint",
+                "openai-endpoint",
+                sequence,
+                serde_json::json!({
+                    "providerEndpointId":"openai-endpoint",
+                    "providerAccountId":"openai-account",
+                    "providerProtocol":"openai_chat",
+                    "baseUrl":"https://provider.example/v1",
+                    "endpointAuth":{"mode":"bearer","credential_ref":"credential://host-a/openai"},
+                    "networkProfile":{"mode":"public_tls","termination":"native","connection":{}},
+                    "quotaGroupId":"openai-capacity"
+                }),
+            ),
+            resource(
                 "llm-deployment",
                 "openai-primary",
                 sequence,
                 serde_json::json!({
                     "deploymentId":"openai-primary",
-                    "providerId":"openai-account",
-                    "providerProtocol":"openai_chat",
-                    "baseUrl":"https://provider.example/v1",
-                    "credentialRef":"credential://host-a/openai",
-                    "quotaGroupId":"openai-capacity",
+                    "deploymentRevisionId":"openai-primary/r1",
+                    "providerEndpointId":"openai-endpoint",
                     "model":"gpt-governed",
                     "concurrency":8,
+                    "runtimeCapacity":{
+                        "physicalRuntimeId":"external/openai-primary",
+                        "capacityDomainId":"openai-capacity",
+                        "maxParallelRequests":8,
+                        "maxQueuedRequests":32,
+                        "readinessPolicy":"immediate",
+                        "coldStartTimeoutMs":30000,
+                        "streamSetupTimeoutMs":10000,
+                        "requestTimeoutMs":30000
+                    },
+                    "pricingBasis":"external_provider",
                     "declaredCapabilities":declared_capabilities
                 }),
             ),
@@ -1796,11 +1557,15 @@ mod tests {
     #[test]
     fn production_projection_preserves_complete_generation_capabilities() {
         let mut candidate = bundle(1);
+        let endpoint = candidate
+            .resources
+            .get_mut("llm-provider-endpoint/openai-endpoint")
+            .unwrap();
+        endpoint.payload["providerProtocol"] = serde_json::json!("openai_responses");
         let deployment = candidate
             .resources
             .get_mut("llm-deployment/openai-primary")
             .unwrap();
-        deployment.payload["providerProtocol"] = serde_json::json!("openai_responses");
         deployment.payload["declaredCapabilities"]["generation"]["content"]["parallelTools"] =
             serde_json::json!(false);
         deployment.payload["declaredCapabilities"]["generation"]["content"]["reasoningUsage"] =
@@ -1853,13 +1618,12 @@ mod tests {
     }
 
     #[test]
-    fn legacy_publication_capabilities_bridge_into_the_declared_contract() {
+    fn v3_projection_rejects_legacy_conformance_capability_fallback() {
         let mut candidate = bundle(1);
         let deployment = candidate
             .resources
             .get_mut("llm-deployment/openai-primary")
             .unwrap();
-        let capabilities = deployment.payload["declaredCapabilities"].take();
         deployment
             .payload
             .as_object_mut()
@@ -1867,22 +1631,14 @@ mod tests {
             .remove("declaredCapabilities");
         deployment.payload["conformanceDigest"] = serde_json::json!("sha256:legacy");
         deployment.payload["conformanceResult"] = serde_json::json!({
-            "capabilities": capabilities,
             "legacyFieldThatIsNoLongerTrusted": true
         });
 
-        let config = assemble_config(&LlmRouterConfig::default(), &candidate).unwrap();
+        let error = assemble_config(&LlmRouterConfig::default(), &candidate).unwrap_err();
         assert!(
-            config.deployments["openai-primary"]
-                .declared_capabilities
-                .as_ref()
-                .unwrap()
-                .supports(Operation::Generate)
-        );
-        assert!(
-            config.deployments["openai-primary"]
-                .conformance_result
-                .is_none()
+            error
+                .to_string()
+                .contains("unknown field `conformanceDigest`")
         );
     }
 
@@ -1967,10 +1723,11 @@ mod tests {
         .map(|item| (resource_key(&item.resource_type, &item.resource_id), item))
         .collect();
         let mut candidate = bundle(sequence);
-        candidate.manifest.schema_version = PROJECTION_SCHEMA_VERSION_V3.to_string();
         candidate.resources = resources;
+        refresh_manifest(&mut candidate);
 
-        let config = assemble_config_v3(&LlmRouterConfig::default(), &candidate).unwrap();
+        validate_bundle(&candidate).unwrap();
+        let config = assemble_config(&LlmRouterConfig::default(), &candidate).unwrap();
         let resolver = Arc::new(RotatingResolver::default());
         resolver.0.write().unwrap().insert(
             "credential://host-a/nvidia".to_string(),
@@ -2299,7 +2056,7 @@ mod tests {
                 applied_schema_version: PROJECTION_SCHEMA_VERSION.to_string(),
                 applied_at: "1".to_string(),
                 gateway_version: GATEWAY_COMPILER_VERSION.to_string(),
-                reader_version: "projection-reader-v3".to_string(),
+                reader_version: PROJECTION_SCHEMA_VERSION.to_string(),
                 gateway_instance: instance.to_string(),
                 material_generation: 1,
                 resolved_trust_digest: "b".repeat(64),

@@ -68,15 +68,11 @@ async fn forward_one(
     let bytes = fs::read(path).map_err(|error| format!("cannot read outbox entry: {error}"))?;
     let acknowledgement: ProjectionAcknowledgement = serde_json::from_slice(&bytes)
         .map_err(|error| format!("invalid acknowledgement envelope: {error}"))?;
-    match acknowledgement_disposition(&acknowledgement)? {
-        AcknowledgementDisposition::Forward => {}
-        AcknowledgementDisposition::ArchiveLegacyV2 => {
-            archive(&config.outbox, path)?;
-            debug!(path = %path.display(),
-                "archived a legacy v2 acknowledgement that has no Portal publication identity");
-            return Ok(());
-        }
+    validate_acknowledgement_digest(&acknowledgement)?;
+    if archive_legacy_v2_acknowledgement(&config.outbox, path, &acknowledgement)? {
+        return Ok(());
     }
+    validate_forwardable_acknowledgement(&acknowledgement)?;
     let token = fs::read_to_string(&config.token_file)
         .map_err(|error| format!("cannot read projected workload token: {error}"))?;
     let token = token.trim();
@@ -108,26 +104,38 @@ async fn forward_one(
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AcknowledgementDisposition {
-    Forward,
-    ArchiveLegacyV2,
-}
-
-fn acknowledgement_disposition(
+fn validate_acknowledgement_digest(
     acknowledgement: &ProjectionAcknowledgement,
-) -> Result<AcknowledgementDisposition, String> {
+) -> Result<(), String> {
     if !acknowledgement.verify_digest() {
         return Err("acknowledgement digest is invalid".to_string());
     }
-    if acknowledgement.gateway_publication_id.trim().is_empty() {
-        return if acknowledgement.applied_schema_version == "2" {
-            Ok(AcknowledgementDisposition::ArchiveLegacyV2)
-        } else {
-            Err("acknowledgement publication identity is invalid".to_string())
-        };
+    Ok(())
+}
+
+fn archive_legacy_v2_acknowledgement(
+    root: &Path,
+    path: &Path,
+    acknowledgement: &ProjectionAcknowledgement,
+) -> Result<bool, String> {
+    if acknowledgement.applied_schema_version != "2"
+        || !acknowledgement.gateway_publication_id.trim().is_empty()
+    {
+        return Ok(false);
     }
-    Ok(AcknowledgementDisposition::Forward)
+    archive(root, path)?;
+    debug!(path = %path.display(),
+        "archived a legacy v2 acknowledgement that has no Portal publication identity");
+    Ok(true)
+}
+
+fn validate_forwardable_acknowledgement(
+    acknowledgement: &ProjectionAcknowledgement,
+) -> Result<(), String> {
+    if acknowledgement.gateway_publication_id.trim().is_empty() {
+        return Err("acknowledgement publication identity is invalid".to_string());
+    }
+    Ok(())
 }
 
 fn portal_command_bytes(acknowledgement: &ProjectionAcknowledgement) -> Result<Vec<u8>, String> {
@@ -212,7 +220,7 @@ mod tests {
             applied_schema_version: "3".to_string(),
             applied_at: "2026-08-08T12:00:00Z".to_string(),
             gateway_version: "0.2.1".to_string(),
-            reader_version: "projection-reader-v3".to_string(),
+            reader_version: "3".to_string(),
             gateway_instance: "pod-a".to_string(),
             material_generation: 3,
             resolved_trust_digest: "c".repeat(64),
@@ -252,22 +260,33 @@ mod tests {
             serde_json::from_slice(&portal_command_bytes(&acknowledgement()).unwrap()).unwrap();
         assert_eq!(value["action"], "acknowledgeLlmGatewayPublicationReplica");
         assert_eq!(value["version"], "0.1.0");
-        assert_eq!(value["data"]["readerVersion"], "projection-reader-v3");
+        assert_eq!(value["data"]["readerVersion"], "3");
     }
 
     #[test]
-    fn legacy_v2_acknowledgement_without_publication_id_is_archived_not_retried() {
+    fn legacy_v2_acknowledgement_is_drained_but_v3_without_publication_id_is_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let publication = directory.path().join("legacy-publication");
+        fs::create_dir_all(&publication).unwrap();
+        let path = publication.join("pod-a.json");
         let mut value = acknowledgement();
         value.applied_schema_version = "2".to_string();
         value.gateway_publication_id.clear();
         value.refresh_digest().unwrap();
-        assert_eq!(
-            acknowledgement_disposition(&value).unwrap(),
-            AcknowledgementDisposition::ArchiveLegacyV2
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+
+        validate_acknowledgement_digest(&value).unwrap();
+        assert!(archive_legacy_v2_acknowledgement(directory.path(), &path, &value).unwrap());
+        assert!(
+            directory
+                .path()
+                .join("sent/legacy-publication/pod-a.json")
+                .is_file()
         );
 
         value.applied_schema_version = "3".to_string();
         value.refresh_digest().unwrap();
-        assert!(acknowledgement_disposition(&value).is_err());
+        assert!(!archive_legacy_v2_acknowledgement(directory.path(), &path, &value).unwrap());
+        assert!(validate_forwardable_acknowledgement(&value).is_err());
     }
 }
