@@ -1449,6 +1449,16 @@ reflect that dependency order.
 
 Owners: `light-fabric`, `light-workflow`, `portal-db`, and `light-portal`.
 
+The versioned implementation artifacts live under
+`contracts/workflow-invocation/v1`. The shared Rust types and strict
+canonicalizer live in `workflow-invocation-contract`; the direct transactional
+acceptance boundary is `light-workflow::invocation`; and the matching Portal
+schema patch is `patch_20260812_01_workflow_mcp_phase0.sql`. Run
+`scripts/run-workflow-mcp-phase0-gates.sh` with a disposable PostgreSQL URL to
+verify both repositories. The qualification manifest deliberately keeps
+runtime promotion disabled until the exact Phase 1 scheduler/executor topology
+and replacement or augmented CEL evaluator produce passing evidence.
+
 - Define the invocation API, state model, public result, and error envelope.
 - Define `workflow_tool_binding_t`, the nested-dependency reverse index, the
   invocation/idempotency store, the durable atomic invocation-budget ledger,
@@ -1619,6 +1629,40 @@ Owners: `portal-view`, Portal GenAI services, and workflow validation.
   reviewer approval as provenance.
 - Prohibit direct AI-to-production publication.
 
+Implementation contract:
+
+- `workflow-query` exposes `generateWfDefinitionDraft` as a draft-only query.
+  It never creates, updates, or publishes a workflow.
+- The query sends only explicitly selected, authorization-filtered tool
+  metadata to an OpenAI-compatible authoring model. It strips secret-bearing
+  fields, caps the operation count and context size, treats descriptions and
+  schemas as untrusted data, and refuses credentials in the intent or existing
+  definition.
+- Configure the authoring service with `WORKFLOW_AUTHORING_LLM_URL` and
+  `WORKFLOW_AUTHORING_LLM_MODEL`. `WORKFLOW_AUTHORING_LLM_BEARER_TOKEN` is
+  optional, and `WORKFLOW_AUTHORING_LLM_TIMEOUT_SECONDS` is bounded to 1-60
+  seconds. These values remain server-side and are never returned to Portal.
+- The model response is accepted only as strict JSON containing definition,
+  assumptions, policy findings, and contract, mapping, edge, and failure
+  fixtures. A deterministic `workflow-mcp-phase3` validator then rejects
+  unavailable tools, non-MCP generated calls, unsupported tasks, nested or
+  unbounded forks, jq, JavaScript, and non-CEL expression profiles.
+- Portal shows the proposal, bounded human-readable diff, assumptions,
+  dependency graph, fixture categories, policy findings, and generator
+  provenance. Applying it requires a signed-in reviewer checkbox and records
+  model, prompt-template, source-schema, request, definition-digest, and
+  reviewer evidence under `document.metadata.aiAuthoring`.
+- Strict server validation binds `reviewerUserId` to the authenticated subject;
+  it does not trust the reviewer identity supplied by the browser.
+- The first save of an AI-authored draft is private. Server validation fails
+  closed when the authorization-filtered catalog or validator is unavailable,
+  and recomputes the semantic definition digest after removing only provenance
+  metadata so post-approval edits require another review. Production exposure
+  remains a separate promotion action using the normal gates.
+- Workflow create and update command handlers independently reject attempts to
+  set `catalogVisible: true` on an AI-authored definition, so direct RPC calls
+  cannot bypass the private-first rule.
+
 Exit gates:
 
 - generated definitions cannot reference unavailable tools or unsupported DSL
@@ -1626,6 +1670,10 @@ Exit gates:
 - secrets and unauthorized catalog entries never enter generation context;
 - deterministic validators reject unsafe or inconsistent drafts; and
 - manual and AI-authored workflows pass the same promotion gates.
+
+Run `scripts/run-workflow-mcp-phase3-gates.sh` from `light-fabric` to execute
+the existing Phase 2 runtime gates plus the authoring-service tests, Portal
+review tests, lint checks for the Phase 3 UI, and a production Portal build.
 
 ### Phase 4: Optional Skill Integration
 
