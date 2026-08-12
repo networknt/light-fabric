@@ -104,6 +104,7 @@
   - [MCP Tools Access Control](product/light-gateway/mcp-tools-access-control.md)
   - [MCP Tools List Access Control](product/light-gateway/mcp-tools-list-access-control.md)
   - [MCP Tool Metadata Usage](product/light-gateway/mcp-tool-metadata-usage.md)
+  - [Workflow-Backed MCP Tools](product/light-gateway/workflow-backed-mcp-tools.md)
 - [Light-Workflow](product/light-workflow.md)
   - [Start Workflow](product/light-workflow/start-workflow.md)
   - [Native Agent Call](product/light-workflow/native-agent-call.md)

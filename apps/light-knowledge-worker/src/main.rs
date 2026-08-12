@@ -449,6 +449,8 @@ enum WorkerLane {
 }
 
 const PRIORITY_JOB_TYPES: &[&str] = &["ACL_RECONCILE", "PROVIDER_NOTIFICATION"];
+const ZERO_COST_EMBEDDING_MAX_ATTEMPTS: usize = 3;
+const ZERO_COST_EMBEDDING_RETRY_BACKOFF_MILLIS: u64 = 100;
 const BULK_JOB_TYPES: &[&str] = &[
     "SYNC",
     "DELTA_SYNC",
@@ -480,8 +482,22 @@ fn job_fetches_full_base_sources(job_type: &str) -> bool {
     matches!(job_type, "SYNC" | "FULL_REINDEX")
 }
 
+fn job_uses_incremental_repository_build(job_type: &str) -> bool {
+    job_type == "DELTA_SYNC"
+}
+
 fn job_coalesces_queued_syncs(job_type: &str) -> bool {
     job_type == "SYNC"
+}
+
+fn retryable_embedding_status(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::TOO_MANY_REQUESTS
+            | reqwest::StatusCode::BAD_GATEWAY
+            | reqwest::StatusCode::SERVICE_UNAVAILABLE
+            | reqwest::StatusCode::GATEWAY_TIMEOUT
+    )
 }
 
 fn projected_job_type(event_type: &str, enterprise_source: bool) -> Option<&'static str> {
@@ -712,6 +728,16 @@ fn apply_resolved_source(config: &mut WorkerConfig, source: &ResolvedSourceConfi
     config.maximum_checkout_seconds = source.maximum_wall_time_seconds;
     config.maximum_concurrency = source.maximum_concurrency;
     config.maximum_provider_calls = source.maximum_provider_calls;
+}
+
+fn apply_trigger_source_context(config: &mut WorkerConfig, source: &ResolvedSourceConfig) {
+    config.source_id = source.source_id;
+    config.approved_repository_uri = source.approved_repository_uri.clone();
+    config.immutable_commit = source.immutable_commit.clone();
+    config.source_include_prefixes = source.source_include_prefixes.clone();
+    config.source_exclude_prefixes = source.source_exclude_prefixes.clone();
+    config.ingestion_policy_id = source.ingestion_policy_id;
+    config.ingestion_policy_version = source.ingestion_policy_version;
 }
 
 async fn resolve_build_sources(pool: &PgPool, config: &mut WorkerConfig) -> Result<()> {
@@ -1061,7 +1087,7 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
                     .find(|source| source.source_id == job_config.source_id)
                     .cloned()
             {
-                apply_resolved_source(job_config, &trigger_source);
+                apply_trigger_source_context(job_config, &trigger_source);
             }
             job_config.current_job_id = Some(job_id);
             job_config.sync_run_id = sqlx::query_scalar::<_, Uuid>(
@@ -1283,12 +1309,8 @@ async fn execute_job(
         }
     } else if job_type == "UPLOAD" {
         process_upload(pool, config, payload).await
-    } else if job_type == "DELTA_SYNC" {
+    } else if job_uses_incremental_repository_build(job_type) {
         incremental_build(pool, config).await
-    } else if job_type == "SYNC" && phase1b_schema_ready(pool).await? {
-        let mut incremental_config = config.clone();
-        incremental_config.coalesce_queued_syncs = false;
-        incremental_build(pool, &incremental_config).await
     } else if matches!(job_type, "SYNC" | "FULL_REINDEX") {
         build(pool, config).await
     } else if job_type == "COMPACTION" {
@@ -1493,6 +1515,10 @@ fn worker_error_code(error: &anyhow::Error) -> &'static str {
         "KNOWLEDGE_JOB_SOURCE_OR_POLICY_UNAVAILABLE"
     } else if detail.contains("EMBEDDING_PROFILE_UNAVAILABLE") {
         "KNOWLEDGE_JOB_EMBEDDING_PROFILE_UNAVAILABLE"
+    } else if detail.contains("EMBEDDING_GATEWAY_RETRY_EXHAUSTED") {
+        "KNOWLEDGE_EMBEDDING_GATEWAY_RETRY_EXHAUSTED"
+    } else if detail.contains("EMBEDDING_GATEWAY_TRANSIENT_FAILURE") {
+        "KNOWLEDGE_EMBEDDING_GATEWAY_TRANSIENT_FAILURE"
     } else if detail.contains("IMMUTABLE_GIT_CONFIG_INVALID") {
         "KNOWLEDGE_SOURCE_IMMUTABLE_GIT_CONFIG_INVALID"
     } else if detail.contains("SOURCE_INCLUDE_POLICY_UNSUPPORTED") {
@@ -6236,76 +6262,132 @@ async fn apply_configured_embeddings(
                 .collect::<Vec<_>>()
                 .as_slice(),
         );
-        let response = client
-            .post(endpoint)
-            .bearer_auth(token.trim())
-            .header("x-request-id", format!("kb-index:{input_digest}"))
-            .header(
-                "x-light-expected-embedding-space-id",
-                &config.embedding_space_id,
-            )
-            .header(
-                "x-light-expected-embedding-space-revision",
-                config.embedding_space_revision.to_string(),
-            )
-            .header(
-                "x-light-maximum-billed-cost-micros",
-                remaining_cost_micros.to_string(),
-            )
-            .json(&json!({
-                "model": config.embedding_alias,
-                "input": texts,
-                "dimensions": config.embedding_dimension
-            }))
-            .send()
-            .await;
-        let parsed = match response {
-            Ok(response) if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
-                let body = response
-                    .json::<serde_json::Value>()
-                    .await
-                    .context("embedding gateway returned an invalid 429 error envelope")?;
-                let error = body.get("error");
-                let error_code = error
-                    .and_then(|error| error.get("code"))
-                    .and_then(serde_json::Value::as_str)
-                    .or_else(|| {
-                        error
-                            .and_then(|error| error.get("type"))
-                            .and_then(serde_json::Value::as_str)
-                    });
-                if error_code == Some("budget_exhausted") {
-                    bail!(
-                        "KNOWLEDGE_INGESTION_SPEND_BUDGET_EXCEEDED: embedding gateway rejected the request budget"
-                    );
+        let request_id = format!("kb-index:{input_digest}");
+        let mut attempt = 0_usize;
+        let parsed = loop {
+            attempt += 1;
+            let response = client
+                .post(endpoint)
+                .bearer_auth(token.trim())
+                .header("x-request-id", &request_id)
+                .header(
+                    "x-light-expected-embedding-space-id",
+                    &config.embedding_space_id,
+                )
+                .header(
+                    "x-light-expected-embedding-space-revision",
+                    config.embedding_space_revision.to_string(),
+                )
+                .header(
+                    "x-light-maximum-billed-cost-micros",
+                    remaining_cost_micros.to_string(),
+                )
+                .json(&json!({
+                    "model": config.embedding_alias,
+                    "input": &texts,
+                    "dimensions": config.embedding_dimension
+                }))
+                .send()
+                .await;
+            match response {
+                Ok(response) if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
+                    let body = response
+                        .json::<serde_json::Value>()
+                        .await
+                        .context("embedding gateway returned an invalid 429 error envelope")?;
+                    let error = body.get("error");
+                    let error_code = error
+                        .and_then(|error| error.get("code"))
+                        .and_then(serde_json::Value::as_str)
+                        .or_else(|| {
+                            error
+                                .and_then(|error| error.get("type"))
+                                .and_then(serde_json::Value::as_str)
+                        });
+                    if error_code == Some("budget_exhausted") {
+                        bail!(
+                            "KNOWLEDGE_INGESTION_SPEND_BUDGET_EXCEEDED: embedding gateway rejected the request budget"
+                        );
+                    }
+                    if *remaining_cost_micros != 0 {
+                        bail!(
+                            "KNOWLEDGE_EMBEDDING_GATEWAY_TRANSIENT_FAILURE: retry disabled for a nonzero spend ceiling"
+                        );
+                    }
+                    if attempt >= ZERO_COST_EMBEDDING_MAX_ATTEMPTS {
+                        bail!(
+                            "KNOWLEDGE_EMBEDDING_GATEWAY_RETRY_EXHAUSTED: HTTP 429 after {attempt} attempts"
+                        );
+                    }
                 }
-                None
-            }
-            Ok(response)
-                if response.status().is_success()
-                    && response
+                Ok(response) if retryable_embedding_status(response.status()) => {
+                    let status = response.status();
+                    if *remaining_cost_micros != 0 {
+                        bail!(
+                            "KNOWLEDGE_EMBEDDING_GATEWAY_TRANSIENT_FAILURE: HTTP {status}; retry disabled for a nonzero spend ceiling"
+                        );
+                    }
+                    if attempt >= ZERO_COST_EMBEDDING_MAX_ATTEMPTS {
+                        bail!(
+                            "KNOWLEDGE_EMBEDDING_GATEWAY_RETRY_EXHAUSTED: HTTP {status} after {attempt} attempts"
+                        );
+                    }
+                }
+                Ok(response)
+                    if response.status().is_success()
+                        && response
+                            .headers()
+                            .get("x-light-embedding-space-id")
+                            .and_then(|value| value.to_str().ok())
+                            == Some(config.embedding_space_id.as_str())
+                        && response
+                            .headers()
+                            .get("x-light-embedding-space-revision")
+                            .and_then(|value| value.to_str().ok())
+                            == Some(config.embedding_space_revision.to_string().as_str()) =>
+                {
+                    let billed_cost_micros = response
                         .headers()
-                        .get("x-light-embedding-space-id")
+                        .get("x-light-billed-cost-micros")
                         .and_then(|value| value.to_str().ok())
-                        == Some(config.embedding_space_id.as_str())
-                    && response
-                        .headers()
-                        .get("x-light-embedding-space-revision")
-                        .and_then(|value| value.to_str().ok())
-                        == Some(config.embedding_space_revision.to_string().as_str()) =>
-            {
-                let billed_cost_micros = response
-                    .headers()
-                    .get("x-light-billed-cost-micros")
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.parse::<u64>().ok())
-                    .context("embedding gateway omitted bounded billed-cost evidence")?;
-                *remaining_cost_micros = remaining_cost_micros
-                    .checked_sub(billed_cost_micros)
-                    .context("embedding gateway exceeded the ingestion spend budget")?;
-                response.json::<serde_json::Value>().await.ok()
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .context("embedding gateway omitted bounded billed-cost evidence")?;
+                    *remaining_cost_micros = remaining_cost_micros
+                        .checked_sub(billed_cost_micros)
+                        .context("embedding gateway exceeded the ingestion spend budget")?;
+                    match response.bytes().await {
+                        Ok(body) => break serde_json::from_slice::<serde_json::Value>(&body).ok(),
+                        Err(error) => {
+                            if *remaining_cost_micros != 0 {
+                                bail!(
+                                    "KNOWLEDGE_EMBEDDING_GATEWAY_TRANSIENT_FAILURE: response body failure: {error}; retry disabled for a nonzero spend ceiling"
+                                );
+                            }
+                            if attempt >= ZERO_COST_EMBEDDING_MAX_ATTEMPTS {
+                                bail!(
+                                    "KNOWLEDGE_EMBEDDING_GATEWAY_RETRY_EXHAUSTED: response body failure after {attempt} attempts: {error}"
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(error) if error.is_connect() || error.is_timeout() => {
+                    if *remaining_cost_micros != 0 {
+                        bail!(
+                            "KNOWLEDGE_EMBEDDING_GATEWAY_TRANSIENT_FAILURE: {error}; retry disabled for a nonzero spend ceiling"
+                        );
+                    }
+                    if attempt >= ZERO_COST_EMBEDDING_MAX_ATTEMPTS {
+                        bail!(
+                            "KNOWLEDGE_EMBEDDING_GATEWAY_RETRY_EXHAUSTED: transport failure after {attempt} attempts: {error}"
+                        );
+                    }
+                }
+                _ => break None,
             }
-            _ => None,
+            let backoff = ZERO_COST_EMBEDDING_RETRY_BACKOFF_MILLIS
+                .saturating_mul(u64::try_from(attempt).unwrap_or(u64::MAX));
+            tokio::time::sleep(Duration::from_millis(backoff)).await;
         };
         let batch_vectors = parsed
             .as_ref()
@@ -7880,6 +7962,144 @@ mod tests {
         (format!("http://{address}/v1/embeddings"), task)
     }
 
+    async fn embedding_gateway_status_sequence(
+        statuses: Vec<u16>,
+        dimension: usize,
+    ) -> (String, tokio::task::JoinHandle<usize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let request_count = statuses.len();
+            for status in statuses {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                let (header_end, content_length) = loop {
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    assert!(read > 0, "embedding request ended before its headers");
+                    request.extend_from_slice(&buffer[..read]);
+                    let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n")
+                    else {
+                        continue;
+                    };
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    break (header_end, content_length);
+                };
+                while request.len() < header_end + 4 + content_length {
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    assert!(read > 0, "embedding request ended before its body");
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                let (reason, response_body, embedding_headers) = if status == 200 {
+                    (
+                        "OK",
+                        serde_json::to_vec(&json!({
+                            "data": [{"index": 0, "embedding": vec![0.0_f32; dimension]}]
+                        }))
+                        .unwrap(),
+                        "x-light-embedding-space-id: free-space\r\nx-light-embedding-space-revision: 1\r\nx-light-billed-cost-micros: 0\r\n",
+                    )
+                } else {
+                    (
+                        "Upstream Error",
+                        serde_json::to_vec(&json!({
+                            "error": {"type": "upstream_error", "code": "upstream_error"}
+                        }))
+                        .unwrap(),
+                        "",
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\n{embedding_headers}content-length: {}\r\nconnection: close\r\n\r\n",
+                    response_body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.write_all(&response_body).await.unwrap();
+            }
+            request_count
+        });
+        (format!("http://{address}/v1/embeddings"), task)
+    }
+
+    #[derive(Clone, Copy)]
+    enum EmbeddingBodyResponse {
+        Complete,
+        Truncated,
+        Malformed,
+    }
+
+    async fn embedding_gateway_body_sequence(
+        responses: Vec<EmbeddingBodyResponse>,
+        dimension: usize,
+    ) -> (String, tokio::task::JoinHandle<usize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let request_count = responses.len();
+            for response_kind in responses {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                let (header_end, content_length) = loop {
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    assert!(read > 0, "embedding request ended before its headers");
+                    request.extend_from_slice(&buffer[..read]);
+                    let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n")
+                    else {
+                        continue;
+                    };
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    break (header_end, content_length);
+                };
+                while request.len() < header_end + 4 + content_length {
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    assert!(read > 0, "embedding request ended before its body");
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                let response_body = match response_kind {
+                    EmbeddingBodyResponse::Malformed => b"not-json".to_vec(),
+                    _ => serde_json::to_vec(&json!({
+                        "data": [{"index": 0, "embedding": vec![0.0_f32; dimension]}]
+                    }))
+                    .unwrap(),
+                };
+                let declared_length = match response_kind {
+                    EmbeddingBodyResponse::Truncated => response_body.len() + 10,
+                    _ => response_body.len(),
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nx-light-embedding-space-id: free-space\r\nx-light-embedding-space-revision: 1\r\nx-light-billed-cost-micros: 0\r\ncontent-length: {declared_length}\r\nconnection: close\r\n\r\n"
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.write_all(&response_body).await.unwrap();
+            }
+            request_count
+        });
+        (format!("http://{address}/v1/embeddings"), task)
+    }
+
     fn free_embedding_config_and_generation(
         endpoint: String,
     ) -> (tempfile::TempDir, WorkerConfig, FullBaseGeneration) {
@@ -8057,10 +8277,36 @@ mod tests {
         assert!(job_fetches_full_base_sources("SYNC"));
         assert!(!job_fetches_full_base_sources("COMPACTION"));
         assert!(!job_fetches_full_base_sources("UPLOAD"));
+        assert!(job_uses_incremental_repository_build("DELTA_SYNC"));
+        assert!(!job_uses_incremental_repository_build("SYNC"));
+        assert!(!job_uses_incremental_repository_build("FULL_REINDEX"));
         assert!(job_coalesces_queued_syncs("SYNC"));
         assert!(!job_coalesces_queued_syncs("FULL_REINDEX"));
         assert!(!job_coalesces_queued_syncs("COMPACTION"));
         assert!(!job_coalesces_queued_syncs("UPLOAD"));
+    }
+
+    #[test]
+    fn trigger_source_context_preserves_aggregate_job_limits() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = serde_json::from_value::<WorkerConfig>(json!({
+            "version": 1,
+            "heartbeatSecretFile": directory.path().join("heartbeat"),
+            "projectorId": "test"
+        }))
+        .unwrap();
+        config.limits.maximum_documents = 30;
+        config.maximum_checkout_seconds = 120;
+        config.maximum_spend_micros = 10_000;
+
+        let source = resolved_source(Uuid::now_v7(), Uuid::now_v7(), 20);
+        apply_trigger_source_context(&mut config, &source);
+
+        assert_eq!(config.source_id, source.source_id);
+        assert_eq!(config.ingestion_policy_id, source.ingestion_policy_id);
+        assert_eq!(config.limits.maximum_documents, 30);
+        assert_eq!(config.maximum_checkout_seconds, 120);
+        assert_eq!(config.maximum_spend_micros, 10_000);
     }
 
     #[test]
@@ -8334,6 +8580,123 @@ mod tests {
         assert_eq!(
             budget_terminal_state(worker_error_code(&error)),
             "PAUSED_BUDGET"
+        );
+    }
+
+    #[tokio::test]
+    async fn zero_cost_embedding_retries_a_transient_gateway_failure() {
+        let (endpoint, request_count) = embedding_gateway_status_sequence(vec![502, 200], 2).await;
+        let (_directory, config, mut generation) = free_embedding_config_and_generation(endpoint);
+
+        apply_configured_embeddings(&config, &mut generation)
+            .await
+            .unwrap();
+
+        assert_eq!(request_count.await.unwrap(), 2);
+        assert_eq!(generation.chunks[0].vector, vec![0.0, 0.0]);
+    }
+
+    #[tokio::test]
+    async fn zero_cost_embedding_reports_retry_exhaustion() {
+        let (endpoint, request_count) =
+            embedding_gateway_status_sequence(vec![502, 503, 504], 2).await;
+        let (_directory, config, mut generation) = free_embedding_config_and_generation(endpoint);
+
+        let error = apply_configured_embeddings(&config, &mut generation)
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            request_count.await.unwrap(),
+            ZERO_COST_EMBEDDING_MAX_ATTEMPTS
+        );
+        assert_eq!(
+            worker_error_code(&error),
+            "KNOWLEDGE_EMBEDDING_GATEWAY_RETRY_EXHAUSTED",
+            "{error:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn paid_embedding_does_not_retry_an_ambiguous_gateway_failure() {
+        let (endpoint, request_count) = embedding_gateway_status_sequence(vec![502], 2).await;
+        let (_directory, mut config, mut generation) =
+            free_embedding_config_and_generation(endpoint);
+        config.maximum_spend_micros = 100;
+        config.resolved_sources[0].maximum_spend_micros = 100;
+
+        let error = apply_configured_embeddings(&config, &mut generation)
+            .await
+            .unwrap_err();
+
+        assert_eq!(request_count.await.unwrap(), 1);
+        assert_eq!(
+            worker_error_code(&error),
+            "KNOWLEDGE_EMBEDDING_GATEWAY_TRANSIENT_FAILURE",
+            "{error:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn zero_cost_embedding_retries_a_truncated_success_body() {
+        let (endpoint, request_count) = embedding_gateway_body_sequence(
+            vec![
+                EmbeddingBodyResponse::Truncated,
+                EmbeddingBodyResponse::Complete,
+            ],
+            2,
+        )
+        .await;
+        let (_directory, config, mut generation) = free_embedding_config_and_generation(endpoint);
+
+        apply_configured_embeddings(&config, &mut generation)
+            .await
+            .unwrap();
+
+        assert_eq!(request_count.await.unwrap(), 2);
+        assert_eq!(generation.chunks[0].vector, vec![0.0, 0.0]);
+    }
+
+    #[tokio::test]
+    async fn zero_cost_embedding_reports_truncated_body_retry_exhaustion() {
+        let (endpoint, request_count) = embedding_gateway_body_sequence(
+            vec![EmbeddingBodyResponse::Truncated; ZERO_COST_EMBEDDING_MAX_ATTEMPTS],
+            2,
+        )
+        .await;
+        let (_directory, config, mut generation) = free_embedding_config_and_generation(endpoint);
+
+        let error = apply_configured_embeddings(&config, &mut generation)
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            request_count.await.unwrap(),
+            ZERO_COST_EMBEDDING_MAX_ATTEMPTS
+        );
+        assert_eq!(
+            worker_error_code(&error),
+            "KNOWLEDGE_EMBEDDING_GATEWAY_RETRY_EXHAUSTED",
+            "{error:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_success_body_is_not_retried() {
+        let (endpoint, request_count) =
+            embedding_gateway_body_sequence(vec![EmbeddingBodyResponse::Malformed], 2).await;
+        let (_directory, config, mut generation) = free_embedding_config_and_generation(endpoint);
+
+        let error = apply_configured_embeddings(&config, &mut generation)
+            .await
+            .unwrap_err();
+
+        assert_eq!(request_count.await.unwrap(), 1);
+        assert!(
+            error
+                .to_string()
+                .contains("protected kb_index embedding failed after bounded batch bisection"),
+            "{error:#}"
         );
     }
 
