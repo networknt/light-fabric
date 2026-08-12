@@ -38,60 +38,75 @@ pub enum LlmGatewayError {
 }
 
 impl LlmGatewayError {
-    pub fn public_status(&self) -> u16 {
+    fn public_mapping(&self) -> PublicErrorMapping {
         match self {
-            Self::InvalidRequest(_) => 400,
-            Self::MethodNotAllowed => 405,
-            Self::UnsupportedMediaType => 415,
-            Self::PayloadTooLarge => 413,
-            Self::Forbidden => 403,
-            Self::RouteNotFound | Self::AliasNotFound => 404,
-            Self::UnsupportedCapability(_) => 400,
-            Self::NoReadyDeployment => 503,
-            Self::Invariant(_) => 500,
-            Self::Capacity | Self::Budget => 429,
-            Self::Provider(error) => match error.category {
-                InferenceErrorCategory::InvalidRequest
-                | InferenceErrorCategory::UnsupportedFeature => 400,
-                InferenceErrorCategory::Authentication
-                | InferenceErrorCategory::PermissionDenied => 502,
-                InferenceErrorCategory::RateLimited => 429,
-                InferenceErrorCategory::TimeoutBeforeAcceptance
-                | InferenceErrorCategory::TimeoutAfterPossibleAcceptance => 504,
-                _ => 502,
-            },
-            Self::Config(_) | Self::AuditUnavailable | Self::ProviderUnavailable => 503,
+            Self::InvalidRequest(_) => PublicErrorMapping::new(400, "invalid_request"),
+            Self::MethodNotAllowed => PublicErrorMapping::new(405, "method_not_allowed"),
+            Self::UnsupportedMediaType => PublicErrorMapping::new(415, "unsupported_media_type"),
+            Self::PayloadTooLarge => PublicErrorMapping::new(413, "payload_too_large"),
+            Self::Forbidden => PublicErrorMapping::new(403, "permission_denied"),
+            Self::RouteNotFound => PublicErrorMapping::new(404, "route_not_found"),
+            Self::AliasNotFound => PublicErrorMapping::new(404, "model_not_found"),
+            Self::UnsupportedCapability(_) => PublicErrorMapping::new(400, "unsupported_feature"),
+            Self::NoReadyDeployment => PublicErrorMapping::new(503, "model_unavailable"),
+            Self::Invariant(_) => PublicErrorMapping::new(500, "internal_error"),
+            Self::Capacity => PublicErrorMapping::new(429, "capacity_exhausted"),
+            Self::Budget => PublicErrorMapping::new(429, "budget_exhausted"),
+            Self::Provider(error) => provider_public_mapping(error.category),
+            Self::Config(_) | Self::AuditUnavailable | Self::ProviderUnavailable => {
+                PublicErrorMapping::new(503, "service_unavailable")
+            }
         }
     }
 
+    pub fn public_status(&self) -> u16 {
+        self.public_mapping().status
+    }
+
     pub fn public_code(&self) -> &'static str {
-        match self {
-            Self::InvalidRequest(_) => "invalid_request",
-            Self::MethodNotAllowed => "method_not_allowed",
-            Self::UnsupportedMediaType => "unsupported_media_type",
-            Self::PayloadTooLarge => "payload_too_large",
-            Self::Forbidden => "permission_denied",
-            Self::RouteNotFound => "route_not_found",
-            Self::AliasNotFound => "model_not_found",
-            Self::UnsupportedCapability(_) => "unsupported_feature",
-            Self::NoReadyDeployment => "model_unavailable",
-            Self::Invariant(_) => "internal_error",
-            Self::Capacity => "capacity_exhausted",
-            Self::Budget => "budget_exhausted",
-            Self::Provider(error) if error.category == InferenceErrorCategory::RateLimited => {
-                "rate_limit_exceeded"
-            }
-            Self::Provider(_) => "provider_error",
-            Self::Config(_) | Self::AuditUnavailable | Self::ProviderUnavailable => {
-                "service_unavailable"
-            }
+        self.public_mapping().code
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PublicErrorMapping {
+    status: u16,
+    code: &'static str,
+}
+
+impl PublicErrorMapping {
+    const fn new(status: u16, code: &'static str) -> Self {
+        Self { status, code }
+    }
+}
+
+fn provider_public_mapping(category: InferenceErrorCategory) -> PublicErrorMapping {
+    match category {
+        InferenceErrorCategory::InvalidRequest | InferenceErrorCategory::UnsupportedFeature => {
+            PublicErrorMapping::new(400, "provider_error")
         }
+        InferenceErrorCategory::Authentication | InferenceErrorCategory::PermissionDenied => {
+            PublicErrorMapping::new(502, "provider_error")
+        }
+        InferenceErrorCategory::RateLimited => PublicErrorMapping::new(429, "rate_limit_exceeded"),
+        InferenceErrorCategory::TimeoutBeforeAcceptance
+        | InferenceErrorCategory::TimeoutAfterPossibleAcceptance => {
+            PublicErrorMapping::new(504, "provider_error")
+        }
+        InferenceErrorCategory::ProviderOverload
+        | InferenceErrorCategory::Network
+        | InferenceErrorCategory::SecurityInvariant
+        | InferenceErrorCategory::Protocol
+        | InferenceErrorCategory::Cancelled => PublicErrorMapping::new(502, "provider_error"),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::LlmGatewayError;
+    use model_provider::inference::{
+        AcceptanceEvidence, InferenceError, InferenceErrorCategory, RetryDisposition,
+    };
 
     #[test]
     fn route_alias_capability_and_readiness_remain_distinct() {
@@ -108,6 +123,43 @@ mod tests {
         for (error, status, code) in cases {
             assert_eq!(error.public_status(), status);
             assert_eq!(error.public_code(), code);
+        }
+    }
+
+    #[test]
+    fn every_provider_category_has_a_complete_public_mapping() {
+        use InferenceErrorCategory as Category;
+
+        let cases = [
+            (Category::InvalidRequest, 400, "provider_error"),
+            (Category::Authentication, 502, "provider_error"),
+            (Category::PermissionDenied, 502, "provider_error"),
+            (Category::RateLimited, 429, "rate_limit_exceeded"),
+            (Category::TimeoutBeforeAcceptance, 504, "provider_error"),
+            (
+                Category::TimeoutAfterPossibleAcceptance,
+                504,
+                "provider_error",
+            ),
+            (Category::ProviderOverload, 502, "provider_error"),
+            (Category::Network, 502, "provider_error"),
+            (Category::SecurityInvariant, 502, "provider_error"),
+            (Category::Protocol, 502, "provider_error"),
+            (Category::Cancelled, 502, "provider_error"),
+            (Category::UnsupportedFeature, 400, "provider_error"),
+        ];
+
+        for (category, status, code) in cases {
+            let error = LlmGatewayError::Provider(InferenceError {
+                category,
+                provider_status: None,
+                retry: RetryDisposition::Never,
+                acceptance: AcceptanceEvidence::NotAccepted,
+                retry_after_ms: None,
+                detail: "test provider error".to_string(),
+            });
+            assert_eq!(error.public_status(), status, "{category:?}");
+            assert_eq!(error.public_code(), code, "{category:?}");
         }
     }
 }
