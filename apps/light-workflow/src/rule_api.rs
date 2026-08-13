@@ -1175,25 +1175,52 @@ fn validate_cel_expressions(engine: &RuleEngine, definition: &Value) -> Result<(
         engine: &RuleEngine,
         value: &Value,
         key: Option<&str>,
+        in_export_as: bool,
         sequence: &mut usize,
     ) -> Result<(), ApiError> {
         match value {
             Value::Object(object) => {
-                for (key, value) in object {
-                    walk(engine, value, Some(key), sequence)?;
+                for (child_key, child_value) in object {
+                    if key == Some("export") && child_key == "as" {
+                        let Value::Object(exports) = child_value else {
+                            return Err(ApiError::definition_mismatch(
+                                "workflow export.as must be a flat object with string expressions",
+                            ));
+                        };
+                        for (export_key, export_value) in exports {
+                            if !export_value.is_string() {
+                                return Err(ApiError::definition_mismatch(
+                                    "workflow export.as must be a flat object with string expressions",
+                                ));
+                            }
+                            walk(engine, export_value, Some(export_key), true, sequence)?;
+                        }
+                    } else {
+                        walk(engine, child_value, Some(child_key), false, sequence)?;
+                    }
                 }
             }
             Value::Array(values) => {
                 for value in values {
-                    walk(engine, value, key, sequence)?;
+                    walk(engine, value, key, false, sequence)?;
                 }
             }
             Value::String(expression) => {
                 let expression = expression.trim();
-                if expression.contains("${ .") || expression.starts_with('.') {
+                let executor_output_selector = in_export_as
+                    && (expression == ".output"
+                        || expression
+                            .strip_prefix(".output.")
+                            .is_some_and(|path| !path.is_empty()));
+                if expression.contains("${ .")
+                    || (expression.starts_with('.') && !executor_output_selector)
+                {
                     return Err(ApiError::definition_mismatch(
                         "jq-style workflow expressions are not allowed for workflow-backed tools",
                     ));
+                }
+                if executor_output_selector {
+                    return Ok(());
                 }
                 let direct_expression = matches!(key, Some("when") | Some("as"));
                 if direct_expression || expression.starts_with("${{") {
@@ -1221,7 +1248,7 @@ fn validate_cel_expressions(engine: &RuleEngine, definition: &Value) -> Result<(
     }
 
     let mut sequence = 0;
-    walk(engine, definition, None, &mut sequence)
+    walk(engine, definition, None, false, &mut sequence)
 }
 
 fn supported_phase2_task_type(task: &TaskDefinition) -> Result<&'static str, ApiError> {
@@ -1413,5 +1440,41 @@ mod tests {
 
         let cel = json!({"output": {"as": "customer.name"}});
         validate_cel_expressions(&engine, &cel).expect("valid CEL expression");
+    }
+
+    #[test]
+    fn phase2_accepts_only_executor_output_selectors_in_task_exports() {
+        let engine = RuleEngine::new(Arc::new(ActionRegistry::default()));
+        let task_exports = json!({
+            "do": [{
+                "loadCustomerContext": {
+                    "fork": {"branches": []},
+                    "export": {
+                        "as": {
+                            "responses": ".output",
+                            "profile": ".output.profile"
+                        }
+                    }
+                }
+            }]
+        });
+        validate_cel_expressions(&engine, &task_exports)
+            .expect("executor-compatible task output selectors");
+
+        let jq_export = json!({"export": {"as": {"customer": ".customer"}}});
+        assert!(validate_cel_expressions(&engine, &jq_export).is_err());
+
+        let output_selector_outside_export = json!({"output": {"as": ".output"}});
+        assert!(validate_cel_expressions(&engine, &output_selector_outside_export).is_err());
+
+        for invalid_export in [
+            json!({"export": {"as": {"value": ".output."}}}),
+            json!({"export": {"as": {"value": ".outputExtra"}}}),
+            json!({"export": {"as": {"value": {"nested": ".output"}}}}),
+            json!({"export": {"as": ".output"}}),
+            json!({"export": {"as": {"value": 42}}}),
+        ] {
+            assert!(validate_cel_expressions(&engine, &invalid_export).is_err());
+        }
     }
 }

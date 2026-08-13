@@ -68,6 +68,13 @@ placing that digest in the runner config; do not copy placeholder admission
 digests into a deployment. The example has no network, credentials, persistent
 workspace, or artifact export.
 
+To compute the canonical workflow-definition digest used by a pinned workflow
+binding, run:
+
+```bash
+cargo run -p light-workflow --example workflow_definition_digest -- <definition.yaml>
+```
+
 The `startWorkflow` command must send `input` as a JSON object, not as a JSON
 string.
 

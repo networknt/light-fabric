@@ -415,6 +415,13 @@ must be read-only:
       status: active
 ```
 
+Replace the placeholder `definitionDigest` with the canonical digest of the
+exact workflow definition being pinned:
+
+```bash
+cargo run -p light-workflow --example workflow_definition_digest -- <definition.yaml>
+```
+
 The configuration contains only an approved reference, contract, and bounds.
 It does not contain executable scripts or caller-selectable destinations.
 The five-minute `resultReplayMs` in this later write-capable example is an
