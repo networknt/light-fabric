@@ -19,6 +19,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 use uuid::Uuid;
+use workflow_core::models::duration::OneOfDurationOrIso8601Expression;
 use workflow_core::models::task::{
     AgentArguments, AskDefinition, AssertComparison, AssertComparisonObject, AssertDefinition,
     CallTaskDefinition, HasLengthComparison, JsonRpcArguments, JsonRpcErrorPolicy, McpArguments,
@@ -1429,6 +1430,7 @@ impl TaskExecutor {
             args.id.as_ref(),
             args.notification.unwrap_or(false),
             args.headers.as_ref(),
+            None,
             args.output.as_deref(),
             args.error_policy.as_ref(),
             context,
@@ -1455,6 +1457,7 @@ impl TaskExecutor {
             resolved_params.as_ref(),
             args.id.as_ref(),
             args.notification.unwrap_or(false),
+            None,
             None,
             args.output.as_deref(),
             args.error_policy.as_ref(),
@@ -1502,7 +1505,12 @@ impl TaskExecutor {
             })
             .unwrap_or_else(|| json!({}));
 
-        let (method, mut params) = if let Some(tool) = &args.tool {
+        let (method, mut params) = if let Some(method) = &args.method {
+            (
+                method.clone(),
+                args.parameters.clone().unwrap_or_else(|| json!({})),
+            )
+        } else if let Some(tool) = &args.tool {
             (
                 "tools/call".to_string(),
                 json!({
@@ -1533,9 +1541,20 @@ impl TaskExecutor {
             .into());
         };
 
+        let tool_alias = args.tool.clone().or_else(|| {
+            (method == "tools/call")
+                .then(|| {
+                    params
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .flatten()
+        });
+
         let mut delegation_headers = None;
         let mut budget_reservation = None;
-        if let Some(tool_alias) = args.tool.as_deref() {
+        if let Some(tool_alias) = tool_alias.as_deref() {
             #[allow(clippy::type_complexity)]
             let invocation: Option<(
                 Uuid,
@@ -1781,14 +1800,35 @@ impl TaskExecutor {
             None
         };
 
+        let mut request_headers = args
+            .transport
+            .as_ref()
+            .and_then(|transport| transport.http.as_ref())
+            .and_then(|http| http.headers.as_ref())
+            .map(|headers| {
+                Value::Object(
+                    headers
+                        .iter()
+                        .map(|(name, value)| (name.clone(), Value::String(value.clone())))
+                        .collect(),
+                )
+            });
+        if let Some(Value::Object(delegation)) = delegation_headers {
+            let target = request_headers.get_or_insert_with(|| Value::Object(JsonMap::new()));
+            if let Value::Object(headers) = target {
+                headers.extend(delegation);
+            }
+        }
+
         let execution = self
             .execute_jsonrpc_request(
                 &configured_uri,
                 &method,
                 Some(&params),
-                delegation_headers.as_ref(),
-                false,
                 None,
+                false,
+                request_headers.as_ref(),
+                args.timeout.as_ref(),
                 args.output.as_deref().or(Some("result")),
                 None,
                 context,
@@ -2638,6 +2678,7 @@ impl TaskExecutor {
         id: Option<&Value>,
         notification: bool,
         headers: Option<&Value>,
+        request_timeout: Option<&workflow_core::models::duration::OneOfDurationOrIso8601Expression>,
         output: Option<&str>,
         error_policy: Option<&JsonRpcErrorPolicy>,
         context: &Value,
@@ -2659,6 +2700,17 @@ impl TaskExecutor {
         }
 
         let mut req_builder = self.http_client.post(validated_uri.clone());
+        let request_timeout_ms = request_timeout.and_then(|duration| match duration {
+            OneOfDurationOrIso8601Expression::Duration(duration) => {
+                Some(duration.total_milliseconds())
+            }
+            OneOfDurationOrIso8601Expression::Iso8601Expression(value) => {
+                parse_iso8601_duration_ms(value)
+            }
+        });
+        if let Some(timeout_ms) = request_timeout_ms {
+            req_builder = req_builder.timeout(Duration::from_millis(timeout_ms.max(1)));
+        }
         if let Some(headers) = headers {
             if let Value::Object(headers) = self.resolve_json_value(headers, context) {
                 for (key, value) in headers {
@@ -3011,6 +3063,28 @@ impl TaskExecutor {
         args: &McpArguments,
         definition: &WorkflowDefinition,
     ) -> Result<McpServerDefinition, DynError> {
+        if let Some(transport) = &args.transport {
+            if transport.stdio.is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "canonical MCP stdio transport is not supported by the durable executor",
+                )
+                .into());
+            }
+            if let Some(http) = &transport.http {
+                return Ok(McpServerDefinition {
+                    endpoint: Some(http.endpoint.clone()),
+                    transport: Some("streamable-http".to_string()),
+                    ..McpServerDefinition::default()
+                });
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "canonical MCP call requires transport.http or transport.stdio",
+            )
+            .into());
+        }
+
         if let Some(server) = &args.server {
             return Ok(server.clone());
         }
@@ -4216,13 +4290,13 @@ impl TaskExecutor {
         .execute(&mut **tx)
         .await?;
 
-        let next_task_name = if self.task_ends_workflow(raw_definition, &task.wf_task_id) {
-            None
-        } else {
-            next_task_override
-                .or_else(|| self.get_then_directive(task_def).clone())
-                .or_else(|| self.get_next_sequential_task(definition, &task.wf_task_id))
-        };
+        let next_task_name = self.resolve_next_task_name(
+            definition,
+            raw_definition,
+            &task.wf_task_id,
+            task_def,
+            next_task_override,
+        );
 
         if let Some(next_name) = next_task_name {
             if let Some(next_def) = self.find_task_definition(definition, &next_name) {
@@ -4372,6 +4446,28 @@ impl TaskExecutor {
             .unwrap_or(false)
     }
 
+    fn resolve_next_task_name(
+        &self,
+        definition: &WorkflowDefinition,
+        raw_definition: &YamlValue,
+        task_name: &str,
+        task_definition: &TaskDefinition,
+        next_task_override: Option<String>,
+    ) -> Option<String> {
+        if self.task_ends_workflow(raw_definition, task_name) {
+            return None;
+        }
+
+        match next_task_override
+            .or_else(|| self.get_then_directive(task_definition).clone())
+            .as_deref()
+        {
+            Some("end" | "exit") => None,
+            None | Some("continue") => self.get_next_sequential_task(definition, task_name),
+            Some(task_name) => Some(task_name.to_string()),
+        }
+    }
+
     fn get_export_map(
         &self,
         raw_definition: &YamlValue,
@@ -4411,6 +4507,7 @@ impl TaskExecutor {
 
     fn common_fields<'a>(&self, task_def: &'a TaskDefinition) -> &'a TaskDefinitionFields {
         match task_def {
+            TaskDefinition::LegacyAgent(task) => &task.common,
             TaskDefinition::Ask(task) => &task.common,
             TaskDefinition::Assert(task) => &task.common,
             TaskDefinition::Call(call) => call.common(),
@@ -5104,6 +5201,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn canonical_mcp_http_transport_resolves_to_runtime_server() {
+        let executor = executor();
+        let args: McpArguments = serde_json::from_value(json!({
+            "method": "tools/list",
+            "transport": {
+                "http": {
+                    "endpoint": "https://gateway.example/mcp",
+                    "headers": { "x-tenant": "demo" }
+                }
+            }
+        }))
+        .unwrap();
+
+        let server = executor
+            .resolve_mcp_server(&args, &WorkflowDefinition::default())
+            .expect("canonical HTTP transport must normalize");
+
+        assert_eq!(server.transport.as_deref(), Some("streamable-http"));
+        assert_eq!(
+            server
+                .endpoint
+                .as_ref()
+                .map(|endpoint| executor.endpoint_to_uri(endpoint)),
+            Some("https://gateway.example/mcp".to_string())
+        );
+    }
+
+    #[tokio::test]
     async fn ask_task_waits_and_completed_answer_is_forwarded_once() {
         let executor = executor();
         let mut claimed = claimed_from_yaml(
@@ -5145,6 +5270,49 @@ mod tests {
         assert_eq!(
             executor.get_next_sequential_task(&definition, "initializeDecision"),
             Some("verifyDecision".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn open_workflow_flow_directives_are_control_tokens() {
+        let executor = executor();
+        for (directive, expected) in [
+            ("continue", Some("second")),
+            ("second", Some("second")),
+            ("end", None),
+            ("exit", None),
+        ] {
+            let yaml = format!(
+                "document: {{ dsl: 1.0.3, namespace: test, name: flow, version: 1.0.0 }}\ndo:\n  - first:\n      set: {{ value: 1 }}\n      then: {directive}\n  - second:\n      set: {{ value: 2 }}"
+            );
+            let definition: WorkflowDefinition = serde_yaml::from_str(&yaml).unwrap();
+            let raw: YamlValue = serde_yaml::from_str(&yaml).unwrap();
+            let first = executor
+                .find_task_definition(&definition, "first")
+                .expect("fixture has first task");
+
+            assert_eq!(
+                executor
+                    .resolve_next_task_name(&definition, &raw, "first", first, None)
+                    .as_deref(),
+                expected
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_end_true_remains_a_read_compatibility_marker() {
+        let executor = executor();
+        let yaml = "document: { dsl: 1.0.3, namespace: test, name: legacy, version: 1.0.0 }\ndo:\n  - first:\n      set: { value: 1 }\n      end: true\n  - second:\n      set: { value: 2 }";
+        let definition: WorkflowDefinition = serde_yaml::from_str(yaml).unwrap();
+        let raw: YamlValue = serde_yaml::from_str(yaml).unwrap();
+        let first = executor
+            .find_task_definition(&definition, "first")
+            .expect("fixture has first task");
+
+        assert_eq!(
+            executor.resolve_next_task_name(&definition, &raw, "first", first, None),
+            None
         );
     }
 

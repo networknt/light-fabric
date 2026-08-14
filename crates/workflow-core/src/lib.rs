@@ -659,4 +659,118 @@ mod unit_tests {
             TaskDefinition::Call(CallTaskDefinition::Mcp(_))
         ));
     }
+
+    #[test]
+    fn test_open_workflow_1_0_3_model_additions_deserialize() {
+        let workflow_json = json!({
+            "document": {
+                "dsl": "1.0.3",
+                "namespace": "test",
+                "name": "open-workflow-models",
+                "version": "0.1.0"
+            },
+            "evaluate": { "language": "cel", "mode": "strict" },
+            "schedule": { "read": "envelope" },
+            "use": {
+                "agents": { "reviewer": { "provider": "openai" } },
+                "dataStores": { "claims": { "type": "document" } }
+            },
+            "do": [
+                {
+                    "iterate": {
+                        "for": { "each": "item", "in": [1, "two"] },
+                        "do": [ { "remember": { "set": { "seen": true } } } ]
+                    }
+                },
+                {
+                    "guard": {
+                        "try": [ { "work": { "set": { "ok": true } } } ],
+                        "catch": { "then": "end" }
+                    }
+                }
+            ]
+        });
+
+        let workflow: WorkflowDefinition = serde_json::from_value(workflow_json).unwrap();
+        assert_eq!(
+            workflow.schedule.unwrap().read,
+            Some(WorkflowScheduleReadMode::Envelope)
+        );
+        let components = workflow.use_.unwrap();
+        assert!(components.agents.unwrap().contains_key("reviewer"));
+        assert!(components.data_stores.unwrap().contains_key("claims"));
+        let TaskDefinition::For(for_task) = workflow.do_.entries[0].get("iterate").unwrap() else {
+            panic!("iterate must deserialize as a for task");
+        };
+        assert_eq!(
+            for_task.for_.in_,
+            ForInDefinition::Inline(vec![json!(1), json!("two")])
+        );
+        let TaskDefinition::Try(try_task) = workflow.do_.entries[1].get("guard").unwrap() else {
+            panic!("guard must deserialize as a try task");
+        };
+        assert_eq!(try_task.catch.then.as_deref(), Some("end"));
+    }
+
+    #[test]
+    fn test_canonical_open_workflow_mcp_deserialization() {
+        let task_json = json!({
+            "call": "mcp",
+            "with": {
+                "protocolVersion": "2025-06-18",
+                "method": "tools/call",
+                "parameters": {
+                    "name": "customer_lookup",
+                    "arguments": { "customerId": "C-1" }
+                },
+                "timeout": "PT5S",
+                "transport": {
+                    "http": {
+                        "endpoint": "https://gateway.example/mcp",
+                        "headers": { "x-tenant": "demo" }
+                    }
+                },
+                "client": { "name": "light-workflow", "version": "0.2.1" },
+                "tool": "canonical-call-may-carry-legacy-named-fields",
+                "x-vendor-trace": "enabled"
+            }
+        });
+
+        let TaskDefinition::Call(CallTaskDefinition::Mcp(task)) =
+            serde_json::from_value(task_json).unwrap()
+        else {
+            panic!("canonical MCP must deserialize as call mcp");
+        };
+        assert_eq!(task.with.method.as_deref(), Some("tools/call"));
+        assert_eq!(
+            task.with.tool.as_deref(),
+            Some("canonical-call-may-carry-legacy-named-fields")
+        );
+        assert_eq!(
+            task.with
+                .transport
+                .as_ref()
+                .and_then(|transport| transport.http.as_ref())
+                .and_then(|http| http.headers.as_ref())
+                .and_then(|headers| headers.get("x-tenant"))
+                .map(String::as_str),
+            Some("demo")
+        );
+    }
+
+    #[test]
+    fn test_legacy_standalone_agent_task_remains_deserializable() {
+        let task: TaskDefinition = serde_json::from_value(json!({
+            "agent": "reviewer",
+            "goal": "Review the customer profile",
+            "constraints": { "maxIterations": 3 }
+        }))
+        .unwrap();
+
+        let TaskDefinition::LegacyAgent(task) = task else {
+            panic!("legacy standalone agent must use the compatibility variant");
+        };
+        assert_eq!(task.agent, json!("reviewer"));
+        assert_eq!(task.goal, "Review the customer profile");
+    }
 }

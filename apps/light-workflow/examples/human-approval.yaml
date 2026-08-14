@@ -8,6 +8,8 @@ document:
   tags:
     testType: local
     dependencies: worklist
+evaluate:
+  language: cel
 input:
   schema:
     format: json

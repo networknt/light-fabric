@@ -8,6 +8,8 @@ document:
   tags:
     testType: local
     dependencies: light-workflow-runner-mock
+evaluate:
+  language: cel
 metadata:
   lightWorkflow:
     security:

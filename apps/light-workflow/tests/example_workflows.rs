@@ -3,7 +3,7 @@ use std::path::Path;
 
 use execution_runner_protocol::canonical_sha256;
 use light_workflow::command_template::resolve_run_shell_spec;
-use workflow_core::models::workflow::WorkflowDefinition;
+use workflow_core::models::workflow::{RuntimeExpressionLanguage, WorkflowDefinition};
 use workflow_policy::{
     CommandTemplate, ExecutionProfile, TaskKind, parse_security_policy, resolve_policy,
 };
@@ -35,6 +35,15 @@ fn example_workflows_parse() {
         assert!(
             !workflow.do_.entries.is_empty(),
             "{} should define at least one task",
+            path.display()
+        );
+        assert_eq!(
+            workflow
+                .evaluate
+                .as_ref()
+                .map(|evaluate| evaluate.language.as_str()),
+            Some(RuntimeExpressionLanguage::CEL),
+            "{} should explicitly declare evaluate.language: cel",
             path.display()
         );
         parsed += 1;

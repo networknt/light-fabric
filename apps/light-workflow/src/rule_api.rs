@@ -340,7 +340,7 @@ async fn validate_pinned_dependencies(
         let TaskDefinition::Call(CallTaskDefinition::Mcp(call)) = task else {
             continue;
         };
-        let tool_name = call.with.tool.as_deref().ok_or_else(|| {
+        let tool_name = mcp_tool_name(&call.with).ok_or_else(|| {
             ApiError::definition_mismatch(
                 "Phase 1 MCP workflow tasks must call a pinned tool, not a resource or prompt",
             )
@@ -396,6 +396,19 @@ async fn validate_pinned_dependencies(
         }
     }
     Ok(())
+}
+
+fn mcp_tool_name(args: &workflow_core::models::task::McpArguments) -> Option<&str> {
+    args.tool.as_deref().or_else(|| {
+        (args.method.as_deref() == Some("tools/call"))
+            .then(|| {
+                args.parameters
+                    .as_ref()
+                    .and_then(|parameters| parameters.get("name"))
+                    .and_then(Value::as_str)
+            })
+            .flatten()
+    })
 }
 
 async fn validate_approval_evidence(
@@ -1117,7 +1130,7 @@ fn validate_phase2_task(
             validate_effect_policy(&call.common, read_only)
         }
         TaskDefinition::Call(CallTaskDefinition::Mcp(call)) => {
-            if call.with.tool.as_deref().is_none_or(str::is_empty)
+            if mcp_tool_name(&call.with).is_none_or(str::is_empty)
                 || call.with.resource.is_some()
                 || call.with.prompt.is_some()
             {
@@ -1430,6 +1443,26 @@ mod tests {
             panic!("expected protected HTTP call");
         };
         validate_effect_policy(&protected.common, false).expect("protected write policy");
+    }
+
+    #[test]
+    fn phase2_resolves_legacy_and_canonical_mcp_tool_names() {
+        let legacy: workflow_core::models::task::McpArguments =
+            serde_json::from_value(json!({ "tool": "customer_lookup" })).unwrap();
+        assert_eq!(mcp_tool_name(&legacy), Some("customer_lookup"));
+
+        let canonical: workflow_core::models::task::McpArguments = serde_json::from_value(json!({
+            "method": "tools/call",
+            "parameters": {
+                "name": "customer_lookup",
+                "arguments": { "customerId": "C-1" }
+            },
+            "transport": {
+                "http": { "endpoint": "https://gateway.example/mcp" }
+            }
+        }))
+        .unwrap();
+        assert_eq!(mcp_tool_name(&canonical), Some("customer_lookup"));
     }
 
     #[test]

@@ -669,7 +669,13 @@ impl ForTaskDefinitionBuilder {
 
     /// Sets the runtime expression used to resolve the collection to iterate
     pub fn in_(&mut self, expression: &str) -> &mut Self {
-        self.task.for_.in_ = expression.to_string();
+        self.task.for_.in_ = ForInDefinition::Expression(expression.to_string());
+        self
+    }
+
+    /// Sets an inline collection to iterate.
+    pub fn in_array(&mut self, values: Vec<Value>) -> &mut Self {
+        self.task.for_.in_ = ForInDefinition::Inline(values);
         self
     }
 

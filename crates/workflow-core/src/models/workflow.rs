@@ -178,6 +178,20 @@ pub struct WorkflowScheduleDefinition {
     /// Gets/sets the events that trigger the workflow execution
     #[serde(rename = "on", skip_serializing_if = "Option::is_none")]
     pub on: Option<EventConsumptionStrategyDefinition>,
+
+    /// Gets/sets how event-triggered input is exposed to the workflow.
+    #[serde(rename = "read", skip_serializing_if = "Option::is_none")]
+    pub read: Option<WorkflowScheduleReadMode>,
+}
+
+/// Selects which part of an event becomes scheduled workflow input.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkflowScheduleReadMode {
+    #[default]
+    Data,
+    Envelope,
+    Raw,
 }
 
 /// Represents an object used to configure the workflow's runtime expression evaluation
@@ -195,6 +209,10 @@ pub struct RuntimeExpressionEvaluationConfiguration {
 /// Represents a collection of workflow components
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ComponentDefinitionCollection {
+    /// Gets/sets Agentic Workflow reusable agent definitions.
+    #[serde(rename = "agents", skip_serializing_if = "Option::is_none")]
+    pub agents: Option<HashMap<String, Value>>,
+
     /// Gets/sets a name/value mapping of the workflow's reusable authentication policies
     #[serde(rename = "authentications", skip_serializing_if = "Option::is_none")]
     pub authentications: Option<HashMap<String, AuthenticationPolicyDefinition>>,
@@ -202,6 +220,10 @@ pub struct ComponentDefinitionCollection {
     /// Gets/sets a name/value mapping of the catalogs, if any, from which to import reusable components used within the workflow
     #[serde(rename = "catalogs", skip_serializing_if = "Option::is_none")]
     pub catalogs: Option<HashMap<String, CatalogDefinition>>,
+
+    /// Gets/sets Agentic Workflow reusable data-store definitions.
+    #[serde(rename = "dataStores", skip_serializing_if = "Option::is_none")]
+    pub data_stores: Option<HashMap<String, Value>>,
 
     /// Gets/sets a name/value mapping of reusable MCP session lifecycle configurations
     #[serde(rename = "mcpSessions", skip_serializing_if = "Option::is_none")]

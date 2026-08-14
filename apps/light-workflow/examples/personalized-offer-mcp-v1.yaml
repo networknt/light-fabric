@@ -8,6 +8,8 @@ document:
   tags:
     demo: skill-workflow-orchestration
     executionPath: mcp
+evaluate:
+  language: cel
 input:
   schema:
     format: json

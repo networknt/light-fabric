@@ -73,6 +73,8 @@ impl ProcessType {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum TaskDefinition {
+    /// Deprecated Agentic 1.0 standalone agent task.
+    LegacyAgent(LegacyAgentTaskDefinition),
     /// Variant holding the definition of an 'ask' task
     Ask(AskTaskDefinition),
     /// Variant holding the definition of an 'assert' task
@@ -115,6 +117,12 @@ impl<'de> serde::Deserialize<'de> for TaskDefinition {
         if value.get("for").is_some() {
             return ForTaskDefinition::deserialize(value)
                 .map(TaskDefinition::For)
+                .map_err(serde::de::Error::custom);
+        }
+
+        if value.get("agent").is_some() && value.get("goal").is_some() {
+            return LegacyAgentTaskDefinition::deserialize(value)
+                .map(TaskDefinition::LegacyAgent)
                 .map_err(serde::de::Error::custom);
         }
 
@@ -206,6 +214,21 @@ impl<'de> serde::Deserialize<'de> for TaskDefinition {
 pub trait TaskDefinitionBase {
     /// Gets the task's type
     fn task_type(&self) -> &str;
+}
+
+/// Deprecated Agentic 1.0 standalone agent task retained for deserialization compatibility.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LegacyAgentTaskDefinition {
+    #[serde(rename = "agent")]
+    pub agent: Value,
+    #[serde(rename = "goal")]
+    pub goal: String,
+    #[serde(rename = "context", skip_serializing_if = "Option::is_none")]
+    pub context: Option<Value>,
+    #[serde(rename = "constraints", skip_serializing_if = "Option::is_none")]
+    pub constraints: Option<Value>,
+    #[serde(flatten)]
+    pub common: TaskDefinitionFields,
 }
 
 /// Holds the fields common to all tasks
@@ -963,6 +986,18 @@ impl Default for CallMcpTaskDefinition {
 /// Arguments for an MCP call
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpArguments {
+    #[serde(rename = "protocolVersion", skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<String>,
+    #[serde(rename = "method", skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(rename = "parameters", skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<Value>,
+    #[serde(rename = "timeout", skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<OneOfDurationOrIso8601Expression>,
+    #[serde(rename = "transport", skip_serializing_if = "Option::is_none")]
+    pub transport: Option<McpCallTransportDefinition>,
+    #[serde(rename = "client", skip_serializing_if = "Option::is_none")]
+    pub client: Option<McpClientDefinition>,
     #[serde(rename = "document", skip_serializing_if = "Option::is_none")]
     pub document: Option<ExternalResourceDefinition>,
     #[serde(rename = "serverRef", skip_serializing_if = "Option::is_none")]
@@ -983,6 +1018,46 @@ pub struct McpArguments {
     pub authentication: Option<OneOfAuthenticationPolicyDefinitionOrReference>,
     #[serde(rename = "output", skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
+}
+
+/// Canonical Open Workflow MCP transport configuration.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpCallTransportDefinition {
+    #[serde(rename = "http", skip_serializing_if = "Option::is_none")]
+    pub http: Option<McpHttpTransportDefinition>,
+    #[serde(rename = "stdio", skip_serializing_if = "Option::is_none")]
+    pub stdio: Option<McpStdioTransportDefinition>,
+    #[serde(rename = "options", skip_serializing_if = "Option::is_none")]
+    pub options: Option<HashMap<String, String>>,
+}
+
+/// Canonical Open Workflow MCP HTTP transport configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpHttpTransportDefinition {
+    #[serde(rename = "endpoint")]
+    pub endpoint: OneOfEndpointDefinitionOrUri,
+    #[serde(rename = "headers", skip_serializing_if = "Option::is_none")]
+    pub headers: Option<HashMap<String, String>>,
+}
+
+/// Canonical Open Workflow MCP stdio transport configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpStdioTransportDefinition {
+    #[serde(rename = "command")]
+    pub command: String,
+    #[serde(rename = "arguments", skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<Vec<String>>,
+    #[serde(rename = "environment", skip_serializing_if = "Option::is_none")]
+    pub environment: Option<HashMap<String, String>>,
+}
+
+/// Identifies the MCP client used for a canonical Open Workflow call.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpClientDefinition {
+    #[serde(rename = "name")]
+    pub name: String,
+    #[serde(rename = "version")]
+    pub version: String,
 }
 
 /// Inline MCP server connection configuration.
@@ -1301,9 +1376,9 @@ pub struct ForLoopDefinition {
     #[serde(rename = "each")]
     pub each: String,
 
-    /// Gets/sets the runtime expression used to get the collection to iterate over
+    /// Gets/sets a runtime expression or inline collection to iterate over.
     #[serde(rename = "in")]
-    pub in_: String,
+    pub in_: ForInDefinition,
 
     /// Gets/sets the name of the variable used to hold the index of each element in the collection during iteration
     #[serde(rename = "at", skip_serializing_if = "Option::is_none")]
@@ -1322,10 +1397,28 @@ impl ForLoopDefinition {
     ) -> Self {
         Self {
             each: each.to_string(),
-            in_: in_.to_string(),
+            in_: ForInDefinition::Expression(in_.to_string()),
             at,
             input,
         }
+    }
+}
+
+/// Selects a runtime expression or an inline array for a `for` task.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ForInDefinition {
+    Expression(String),
+    Inline(Vec<Value>),
+}
+impl Default for ForInDefinition {
+    fn default() -> Self {
+        Self::Expression(String::new())
+    }
+}
+impl PartialEq<&str> for ForInDefinition {
+    fn eq(&self, other: &&str) -> bool {
+        matches!(self, Self::Expression(expression) if expression == other)
     }
 }
 
@@ -1626,6 +1719,14 @@ pub struct ContainerProcessDefinition {
     /// Gets/sets a list of arguments, if any, to pass to the container (argv)
     #[serde(rename = "arguments", skip_serializing_if = "Option::is_none")]
     pub arguments: Option<Vec<String>>,
+
+    /// Gets/sets the container cleanup policy and delay.
+    #[serde(rename = "lifetime", skip_serializing_if = "Option::is_none")]
+    pub lifetime: Option<ContainerLifetimeDefinition>,
+
+    /// Gets/sets the image pull policy.
+    #[serde(rename = "pullPolicy", skip_serializing_if = "Option::is_none")]
+    pub pull_policy: Option<ContainerPullPolicy>,
 }
 impl ContainerProcessDefinition {
     pub fn new(
@@ -1647,8 +1748,37 @@ impl ContainerProcessDefinition {
             environment,
             stdin,
             arguments,
+            lifetime: None,
+            pull_policy: None,
         }
     }
+}
+
+/// Configures when a run-task container is cleaned up.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContainerLifetimeDefinition {
+    #[serde(rename = "cleanup")]
+    pub cleanup: ContainerCleanupPolicy,
+    #[serde(rename = "after", skip_serializing_if = "Option::is_none")]
+    pub after: Option<OneOfDurationOrIso8601Expression>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ContainerCleanupPolicy {
+    Always,
+    Never,
+    Eventually,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContainerPullPolicy {
+    #[serde(rename = "ifNotPresent")]
+    IfNotPresent,
+    #[serde(rename = "always")]
+    Always,
+    #[serde(rename = "never")]
+    Never,
 }
 
 /// Represents the definition of a script evaluation process
@@ -1731,6 +1861,10 @@ pub struct ShellProcessDefinition {
     #[serde(rename = "arguments", skip_serializing_if = "Option::is_none")]
     pub arguments: Option<Vec<String>>,
 
+    /// Gets/sets the data to pass to the shell command via stdin, if any.
+    #[serde(rename = "stdin", skip_serializing_if = "Option::is_none")]
+    pub stdin: Option<String>,
+
     /// Gets/sets a key/value mapping of the environment variables, if any, to use when running the configured process
     #[serde(rename = "environment", skip_serializing_if = "Option::is_none")]
     pub environment: Option<HashMap<String, String>>,
@@ -1745,6 +1879,7 @@ impl ShellProcessDefinition {
             command_template_id: None,
             command: command.to_string(),
             arguments,
+            stdin: None,
             environment,
         }
     }
@@ -1917,6 +2052,10 @@ pub struct ErrorCatcherDefinition {
     /// Gets/sets a name/definition map of the tasks, if any, to run when catching an error
     #[serde(rename = "do", skip_serializing_if = "Option::is_none")]
     pub do_: Option<Map<String, TaskDefinition>>,
+
+    /// Gets/sets the flow directive to perform after the error is caught.
+    #[serde(rename = "then", skip_serializing_if = "Option::is_none")]
+    pub then: Option<String>,
 }
 
 /// Represents the definition an an error filter

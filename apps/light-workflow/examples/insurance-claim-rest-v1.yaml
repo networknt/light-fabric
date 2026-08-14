@@ -8,6 +8,8 @@ document:
   tags:
     demo: insurance-claim-agentic-workflow
     executionPath: rest
+evaluate:
+  language: cel
 input:
   schema:
     format: json

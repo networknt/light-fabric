@@ -11,7 +11,7 @@ use tokio::time::sleep;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 use workflow_core::models::task::{CallTaskDefinition, TaskDefinition};
-use workflow_core::models::workflow::WorkflowDefinition;
+use workflow_core::models::workflow::{RuntimeExpressionLanguage, WorkflowDefinition};
 use workflow_policy::{
     ExecutionPlacement, ExecutionProfile, ResolvedExecutionPolicy, TaskKind, parse_security_policy,
     resolve_policy,
@@ -50,6 +50,137 @@ fn retryable_event_infrastructure_error(
             .is_none_or(|code| matches!(code.as_ref(), "40001" | "40P01" | "55P03" | "57014")),
         _ => false,
     }
+}
+
+fn validate_runtime_definition(definition: &WorkflowDefinition) -> Result<(), String> {
+    match definition.evaluate.as_ref() {
+        Some(evaluate) if evaluate.language == RuntimeExpressionLanguage::CEL => {}
+        Some(evaluate) => {
+            return Err(format!(
+                "light-workflow supports evaluate.language 'cel', not '{}'",
+                evaluate.language
+            ));
+        }
+        None => {
+            return Err(
+                "light-workflow requires evaluate.language: cel; Open Workflow defaults an omitted evaluate block to jq"
+                    .to_string(),
+            );
+        }
+    }
+
+    for entry in &definition.do_.entries {
+        let Some((task_name, task)) = entry.iter().next() else {
+            return Err("workflow task entry is empty".to_string());
+        };
+        match task {
+            TaskDefinition::LegacyAgent(_) => {
+                return Err(format!(
+                    "task '{task_name}' uses deprecated standalone agentTask; use call: agent"
+                ));
+            }
+            TaskDefinition::Ask(_)
+            | TaskDefinition::Assert(_)
+            | TaskDefinition::Set(_)
+            | TaskDefinition::Switch(_) => {}
+            TaskDefinition::Run(run)
+                if run.run.shell.is_some()
+                    || run.run.container.is_some()
+                    || run.run.script.is_some() => {}
+            TaskDefinition::Run(_) => {
+                return Err(format!(
+                    "task '{task_name}' uses run.workflow, which is not supported by light-workflow"
+                ));
+            }
+            TaskDefinition::Call(call) => match call {
+                CallTaskDefinition::Http(_)
+                | CallTaskDefinition::JsonRpc(_)
+                | CallTaskDefinition::OpenRpc(_)
+                | CallTaskDefinition::Agent(_)
+                | CallTaskDefinition::Rule(_) => {}
+                CallTaskDefinition::Mcp(call) => {
+                    if call
+                        .with
+                        .transport
+                        .as_ref()
+                        .is_some_and(|transport| transport.stdio.is_some())
+                    {
+                        return Err(format!(
+                            "task '{task_name}' uses MCP stdio, which is not supported by the durable executor"
+                        ));
+                    }
+                    if let Some(method) = call.with.method.as_deref()
+                        && !matches!(
+                            method,
+                            "tools/list"
+                                | "tools/call"
+                                | "prompts/list"
+                                | "prompts/get"
+                                | "resources/list"
+                                | "resources/read"
+                                | "resources/templates/list"
+                        )
+                    {
+                        return Err(format!(
+                            "task '{task_name}' uses unsupported MCP method '{method}'"
+                        ));
+                    }
+                }
+                CallTaskDefinition::AsyncApi(_) => {
+                    return Err(format!(
+                        "task '{task_name}' uses call asyncapi, which is not implemented by light-workflow"
+                    ));
+                }
+                CallTaskDefinition::Grpc(_) => {
+                    return Err(format!(
+                        "task '{task_name}' uses call grpc, which is not implemented by light-workflow"
+                    ));
+                }
+                CallTaskDefinition::OpenApi(_) => {
+                    return Err(format!(
+                        "task '{task_name}' uses call openapi, which is not implemented by light-workflow"
+                    ));
+                }
+                CallTaskDefinition::A2a(_) => {
+                    return Err(format!(
+                        "task '{task_name}' uses call a2a, which is not implemented by light-workflow"
+                    ));
+                }
+                CallTaskDefinition::Function(_) => {
+                    return Err(format!(
+                        "task '{task_name}' uses a custom function call, which is not implemented by light-workflow"
+                    ));
+                }
+            },
+            TaskDefinition::Fork(_) => {
+                return Err(format!(
+                    "task '{task_name}' uses fork, which is not yet supported by the execution-policy placement layer"
+                ));
+            }
+            TaskDefinition::Do(_) => {
+                return Err(format!("task '{task_name}' uses unimplemented task do"));
+            }
+            TaskDefinition::Emit(_) => {
+                return Err(format!("task '{task_name}' uses unimplemented task emit"));
+            }
+            TaskDefinition::For(_) => {
+                return Err(format!("task '{task_name}' uses unimplemented task for"));
+            }
+            TaskDefinition::Listen(_) => {
+                return Err(format!("task '{task_name}' uses unimplemented task listen"));
+            }
+            TaskDefinition::Raise(_) => {
+                return Err(format!("task '{task_name}' uses unimplemented task raise"));
+            }
+            TaskDefinition::Try(_) => {
+                return Err(format!("task '{task_name}' uses unimplemented task try"));
+            }
+            TaskDefinition::Wait(_) => {
+                return Err(format!("task '{task_name}' uses unimplemented task wait"));
+            }
+        }
+    }
+    Ok(())
 }
 
 impl EventConsumer {
@@ -511,6 +642,7 @@ impl EventConsumer {
                     .get_workflow_definition(tx, &host_id, &payload.wf_def_id)
                     .await?;
                 let definition: WorkflowDefinition = serde_yaml::from_str(&dsl_yaml)?;
+                validate_runtime_definition(&definition).map_err(sqlx::Error::Protocol)?;
                 let raw_definition: serde_yaml::Value = serde_yaml::from_str(&dsl_yaml)?;
                 let definition_snapshot: Value = serde_yaml::from_str(&dsl_yaml)?;
                 let definition_digest = canonical_sha256(&definition_snapshot)
@@ -727,5 +859,55 @@ mod tests {
 
         let poison = sqlx::Error::Protocol("invalid CloudEvent payload".to_string());
         assert!(!retryable_event_infrastructure_error(&poison));
+    }
+
+    #[test]
+    fn runtime_definition_rejects_explicit_unsupported_language_and_tasks() {
+        let jq: WorkflowDefinition = serde_yaml::from_str(
+            "document: { dsl: 1.0.3, namespace: test, name: jq, version: 1.0.0 }\nevaluate: { language: jq }\ndo:\n  - start:\n      set: { ok: true }",
+        )
+        .unwrap();
+        assert!(
+            validate_runtime_definition(&jq)
+                .unwrap_err()
+                .contains("evaluate.language 'cel'")
+        );
+
+        let implicit_jq: WorkflowDefinition = serde_yaml::from_str(
+            "document: { dsl: 1.0.3, namespace: test, name: implicit-jq, version: 1.0.0 }\ndo:\n  - start:\n      set: { ok: true }",
+        )
+        .unwrap();
+        assert_eq!(
+            validate_runtime_definition(&implicit_jq).unwrap_err(),
+            "light-workflow requires evaluate.language: cel; Open Workflow defaults an omitted evaluate block to jq"
+        );
+
+        let wait: WorkflowDefinition = serde_yaml::from_str(
+            "document: { dsl: 1.0.3, namespace: test, name: wait, version: 1.0.0 }\nevaluate: { language: cel }\ndo:\n  - pause:\n      wait: PT1S",
+        )
+        .unwrap();
+        assert_eq!(
+            validate_runtime_definition(&wait).unwrap_err(),
+            "task 'pause' uses unimplemented task wait"
+        );
+    }
+
+    #[test]
+    fn runtime_definition_accepts_canonical_http_mcp_and_rejects_stdio() {
+        let http: WorkflowDefinition = serde_yaml::from_str(
+            "document: { dsl: 1.0.3, namespace: test, name: mcp-http, version: 1.0.0 }\nevaluate: { language: cel }\ndo:\n  - listTools:\n      call: mcp\n      with:\n        method: tools/list\n        transport:\n          http:\n            endpoint: https://gateway.example/mcp",
+        )
+        .unwrap();
+        validate_runtime_definition(&http).expect("canonical MCP HTTP is executable");
+
+        let stdio: WorkflowDefinition = serde_yaml::from_str(
+            "document: { dsl: 1.0.3, namespace: test, name: mcp-stdio, version: 1.0.0 }\nevaluate: { language: cel }\ndo:\n  - listTools:\n      call: mcp\n      with:\n        method: tools/list\n        transport:\n          stdio:\n            command: mcp-server",
+        )
+        .unwrap();
+        assert!(
+            validate_runtime_definition(&stdio)
+                .unwrap_err()
+                .contains("MCP stdio")
+        );
     }
 }

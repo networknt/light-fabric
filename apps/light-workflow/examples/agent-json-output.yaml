@@ -8,6 +8,8 @@ document:
   tags:
     testType: local
     dependencies: agent-catalog
+evaluate:
+  language: cel
 input:
   schema:
     format: json
