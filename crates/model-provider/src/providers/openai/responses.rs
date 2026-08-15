@@ -1,9 +1,10 @@
 use crate::inference::GenerateOutputItem;
 use crate::inference::{
     ContentBlock, FinishReason, ImageSource, InferenceError, InferenceEvent, InferenceRequest,
-    InferenceResponse, ItemStatus, Message, NormalizedUsage, ProviderEvidence, ReasoningOptions,
-    ResponseFormat, Role, SamplingOptions, StreamDecoder, TerminalState, TokenLimits, ToolCall,
-    ToolCallDelta, ToolChoice, ToolDefinition, ToolResult,
+    InferenceResponse, ItemStatus, Message, NormalizedUsage, ProviderContinuationState,
+    ProviderEvidence, ProviderProtocol, ReasoningOptions, ResponseFormat, Role, SamplingOptions,
+    StreamDecoder, TerminalState, TokenLimits, ToolCall, ToolCallDelta, ToolChoice, ToolDefinition,
+    ToolResult,
 };
 use bytes::{Buf, BytesMut};
 use serde_json::{Map, Value, json};
@@ -60,6 +61,7 @@ impl OpenAiResponsesCodec {
         let model = required_nonempty_string(object, "model")?;
         let stream = optional_bool(object, "stream")?.unwrap_or(false);
         let mut messages = Vec::new();
+        let mut provider_continuation = None;
         if let Some(instructions) = optional_string(object, "instructions")?
             && !instructions.is_empty()
         {
@@ -70,6 +72,7 @@ impl OpenAiResponsesCodec {
                 .get("input")
                 .ok_or_else(|| InferenceError::invalid_request("input is required"))?,
             &mut messages,
+            &mut provider_continuation,
         )?;
         let tools = object
             .get("tools")
@@ -112,6 +115,7 @@ impl OpenAiResponsesCodec {
                     max_output_tokens: optional_u32(object, "max_output_tokens")?,
                 },
                 extensions: BTreeMap::new(),
+                provider_continuation,
             },
             stream,
         ))
@@ -240,6 +244,7 @@ impl OpenAiResponsesCodec {
                     .map(str::to_string),
                 api_version: None,
                 raw_finish_reason: Some(raw_status.to_string()),
+                continuation: None,
             },
             terminal_state,
         })
@@ -292,16 +297,23 @@ fn reject_deferred(object: &Map<String, Value>) -> Result<(), InferenceError> {
             ));
         }
     }
-    for field in ["include", "metadata"] {
-        if object.get(field).is_some_and(|value| {
-            !value.is_null()
-                && value.as_array().is_none_or(|v| !v.is_empty())
-                && value.as_object().is_none_or(|v| !v.is_empty())
-        }) {
-            return Err(InferenceError::unsupported(format!(
-                "{field} is not supported"
-            )));
+    if let Some(include) = object.get("include").filter(|value| !value.is_null()) {
+        let include = include
+            .as_array()
+            .ok_or_else(|| InferenceError::invalid_request("include must be an array"))?;
+        if include
+            .iter()
+            .any(|value| value.as_str() != Some("reasoning.encrypted_content"))
+        {
+            return Err(InferenceError::unsupported(
+                "include contains an unsupported value",
+            ));
         }
+    }
+    if object.get("metadata").is_some_and(|value| {
+        !value.is_null() && value.as_object().is_none_or(|values| !values.is_empty())
+    }) {
+        return Err(InferenceError::unsupported("metadata is not supported"));
     }
     if object
         .get("truncation")
@@ -329,7 +341,11 @@ fn reject_deferred(object: &Map<String, Value>) -> Result<(), InferenceError> {
     Ok(())
 }
 
-fn parse_input(value: &Value, messages: &mut Vec<Message>) -> Result<(), InferenceError> {
+fn parse_input(
+    value: &Value,
+    messages: &mut Vec<Message>,
+    provider_continuation: &mut Option<ProviderContinuationState>,
+) -> Result<(), InferenceError> {
     match value {
         Value::String(text) => messages.push(Message::text(Role::User, text)),
         Value::Array(items) if items.is_empty() => {
@@ -337,7 +353,7 @@ fn parse_input(value: &Value, messages: &mut Vec<Message>) -> Result<(), Inferen
         }
         Value::Array(items) => {
             for item in items {
-                parse_input_item(item, messages)?;
+                parse_input_item(item, messages, provider_continuation)?;
             }
         }
         _ => {
@@ -349,7 +365,11 @@ fn parse_input(value: &Value, messages: &mut Vec<Message>) -> Result<(), Inferen
     Ok(())
 }
 
-fn parse_input_item(value: &Value, messages: &mut Vec<Message>) -> Result<(), InferenceError> {
+fn parse_input_item(
+    value: &Value,
+    messages: &mut Vec<Message>,
+    provider_continuation: &mut Option<ProviderContinuationState>,
+) -> Result<(), InferenceError> {
     let object = value
         .as_object()
         .ok_or_else(|| InferenceError::invalid_request("input item must be an object"))?;
@@ -361,6 +381,7 @@ fn parse_input_item(value: &Value, messages: &mut Vec<Message>) -> Result<(), In
         "message" => &["type", "id", "status", "role", "content"][..],
         "function_call" => &["type", "id", "status", "call_id", "name", "arguments"][..],
         "function_call_output" => &["type", "id", "status", "call_id", "output"][..],
+        "reasoning" => &["type", "id", "status", "summary", "encrypted_content"][..],
         _ => &[][..],
     };
     if let Some(field) = object
@@ -425,6 +446,33 @@ fn parse_input_item(value: &Value, messages: &mut Vec<Message>) -> Result<(), In
                         is_error: false,
                     },
                 }],
+            });
+        }
+        "reasoning" => {
+            let encrypted = object
+                .get("encrypted_content")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    InferenceError::invalid_request(
+                        "reasoning encrypted_content is required for stateless continuation",
+                    )
+                })?;
+            if provider_continuation.is_some() {
+                return Err(InferenceError::invalid_request(
+                    "only one reasoning continuation item is supported",
+                ));
+            }
+            if object.get("summary").is_some_and(|value| {
+                !value.is_null() && !value.as_array().is_some_and(Vec::is_empty)
+            }) {
+                return Err(InferenceError::unsupported(
+                    "replayed reasoning summaries are not accepted",
+                ));
+            }
+            *provider_continuation = Some(ProviderContinuationState {
+                protocol: ProviderProtocol::OpenAiResponses,
+                payload: zeroize::Zeroizing::new(encrypted.as_bytes().to_vec()),
             });
         }
         other => {

@@ -496,6 +496,9 @@ impl ConformanceRunner {
                         serde_json::from_value(fixture.input.clone())?;
                     openai::OpenAiEmbeddingsCodec.encode_request(&request)
                 }
+                ProviderProtocol::BedrockConverse => {
+                    return Err("Bedrock fixtures require the typed Converse fixture runner".into());
+                }
             },
             FixtureKind::Response => {
                 let decoded: Result<Value, InferenceError> = match fixture.provider {
@@ -549,6 +552,9 @@ impl ConformanceRunner {
                                 })
                             })
                     })(),
+                    ProviderProtocol::BedrockConverse => Err(InferenceError::unsupported(
+                        "Bedrock fixtures require the typed Converse fixture runner",
+                    )),
                 };
                 match decoded {
                     Ok(value) => value,
@@ -583,6 +589,9 @@ impl ConformanceRunner {
                     }
                     ProviderProtocol::OpenAiEmbeddings => {
                         openai::OpenAiCodec.decode_error(status, retry_after, &body)
+                    }
+                    ProviderProtocol::BedrockConverse => {
+                        InferenceError::from_status(status, retry_after, "Bedrock service error")
                     }
                 };
                 serde_json::to_value(error)?
@@ -650,6 +659,11 @@ impl ConformanceRunner {
             ProviderProtocol::OpenAiEmbeddings => {
                 return Err(InferenceError::unsupported(
                     "embedding protocol does not stream",
+                ));
+            }
+            ProviderProtocol::BedrockConverse => {
+                return Err(InferenceError::unsupported(
+                    "Bedrock streams use AWS event-stream typed fixtures",
                 ));
             }
         }
@@ -904,6 +918,7 @@ fn codec_version(provider: ProviderProtocol) -> &'static str {
         ProviderProtocol::AnthropicMessages => anthropic::CODEC_VERSION,
         ProviderProtocol::OpenAiResponses => openai::RESPONSES_CODEC_VERSION,
         ProviderProtocol::OpenAiEmbeddings => "openai-embeddings-v1",
+        ProviderProtocol::BedrockConverse => crate::providers::bedrock::CODEC_VERSION,
     }
 }
 

@@ -1131,26 +1131,55 @@ impl TaskExecutor {
                     .and_then(Value::as_str)
                     .map(str::trim)
                     .filter(|value| !value.is_empty());
-                let workflow_tool = http_call.common.metadata.as_ref()
+                let workflow_tool = http_call
+                    .common
+                    .metadata
+                    .as_ref()
                     .and_then(|metadata| metadata.get("workflowTool"))
                     .and_then(Value::as_object);
                 let logical_tool_uri = inline_uri.starts_with("lightapi://");
                 let granted_uri: Option<String> = if logical_tool_uri || workflow_tool.is_some() {
-                    let pin = workflow_tool.ok_or_else(|| io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "logical LightAPI call requires metadata.workflowTool",
-                    ))?;
-                    let capability_ref = pin.get("capabilityRef").and_then(Value::as_str)
+                    let pin = workflow_tool.ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "logical LightAPI call requires metadata.workflowTool",
+                        )
+                    })?;
+                    let capability_ref = pin
+                        .get("capabilityRef")
+                        .and_then(Value::as_str)
                         .filter(|value| !value.trim().is_empty())
-                        .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "workflow Tool capabilityRef is required"))?;
-                    let tool_version = pin.get("version").and_then(Value::as_str)
-                        .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "workflow Tool version is required"))?;
-                    let lightapi_digest = pin.get("lightapiDigest").and_then(Value::as_str)
-                        .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "workflow Tool digest is required"))?;
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::PermissionDenied,
+                                "workflow Tool capabilityRef is required",
+                            )
+                        })?;
+                    let tool_version =
+                        pin.get("version").and_then(Value::as_str).ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::PermissionDenied,
+                                "workflow Tool version is required",
+                            )
+                        })?;
+                    let lightapi_digest = pin
+                        .get("lightapiDigest")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::PermissionDenied,
+                                "workflow Tool digest is required",
+                            )
+                        })?;
                     if inline_uri != format!("lightapi://{capability_ref}") {
-                        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "logical URI and capabilityRef do not match").into());
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "logical URI and capabilityRef do not match",
+                        )
+                        .into());
                     }
-                    let environment = env::var("LIGHTAPI_ENVIRONMENT").unwrap_or_else(|_| "local".to_string());
+                    let environment =
+                        env::var("LIGHTAPI_ENVIRONMENT").unwrap_or_else(|_| "local".to_string());
                     let resolved: Option<(Uuid, Uuid, String)> = sqlx::query_as(
                         "SELECT g.grant_id,t.tool_id,(av.protocol || '://' || av.target_host || e.endpoint_path) AS endpoint_uri
                            FROM workflow_tool_grant_t g
@@ -1183,7 +1212,9 @@ impl TaskExecutor {
                         %grant_id, %tool_id, capability_ref, lightapi_digest, environment,
                         "workflow Tool capability resolved");
                     Some(endpoint_uri)
-                } else { None };
+                } else {
+                    None
+                };
                 let registered_uri: Option<String> = if let Some(endpoint_ref) = endpoint_ref {
                     sqlx::query_scalar(
                         "SELECT target.endpoint_uri
@@ -1219,10 +1250,14 @@ impl TaskExecutor {
                 }
                 let configured_uri = granted_uri.or(registered_uri).unwrap_or(inline_uri);
                 let configured_template = OPENAPI_PATH_PLACEHOLDER_REGEX
-                    .replace_all(&configured_uri, |captures: &regex::Captures<'_>| format!("${{{{ {} }}}}", &captures[1]))
+                    .replace_all(&configured_uri, |captures: &regex::Captures<'_>| {
+                        format!("${{{{ {} }}}}", &captures[1])
+                    })
                     .into_owned();
-                let resolved_uri = self.resolve_template_to_string(&configured_template, &claimed.context_data);
-                let validated_uri = self.validate_resolved_uri(&configured_template, &resolved_uri)?;
+                let resolved_uri =
+                    self.resolve_template_to_string(&configured_template, &claimed.context_data);
+                let validated_uri =
+                    self.validate_resolved_uri(&configured_template, &resolved_uri)?;
 
                 let method = reqwest::Method::from_bytes(http_call.with.method.as_bytes())
                     .map_err(|err| {

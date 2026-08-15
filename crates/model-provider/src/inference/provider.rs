@@ -19,6 +19,8 @@ pub enum ClientProtocol {
     OpenAiResponses,
     #[serde(rename = "openai_embeddings")]
     OpenAiEmbeddings,
+    #[serde(rename = "anthropic_messages")]
+    AnthropicMessages,
     #[serde(rename = "internal_canonical")]
     InternalCanonical,
 }
@@ -40,14 +42,17 @@ pub enum ProviderProtocol {
     OpenAiEmbeddings,
     #[serde(rename = "anthropic_messages")]
     AnthropicMessages,
+    #[serde(rename = "bedrock_converse")]
+    BedrockConverse,
 }
 
 impl ProviderProtocol {
     pub const fn operation(self) -> Operation {
         match self {
-            Self::OpenAiChat | Self::OpenAiResponses | Self::AnthropicMessages => {
-                Operation::Generate
-            }
+            Self::OpenAiChat
+            | Self::OpenAiResponses
+            | Self::AnthropicMessages
+            | Self::BedrockConverse => Operation::Generate,
             Self::OpenAiEmbeddings => Operation::Embed,
         }
     }

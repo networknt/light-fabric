@@ -1,5 +1,6 @@
 use super::content::Message;
 use super::error::InferenceError;
+use super::response::ProviderContinuationState;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -107,6 +108,8 @@ pub struct InferenceRequest {
     pub token_limits: TokenLimits,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extensions: BTreeMap<String, Value>,
+    #[serde(skip)]
+    pub provider_continuation: Option<ProviderContinuationState>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -126,6 +129,7 @@ impl InferenceRequest {
             sampling: SamplingOptions::default(),
             token_limits: TokenLimits::default(),
             extensions: BTreeMap::new(),
+            provider_continuation: None,
         }
     }
 }

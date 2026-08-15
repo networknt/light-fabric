@@ -1,13 +1,17 @@
 use crate::inference::content::{ContentBlock, Role};
 use crate::inference::error::InferenceError;
+use crate::inference::provider::ProviderProtocol;
 use crate::inference::request::{InferenceRequest, ResponseFormat, ToolChoice};
 use crate::inference::response::{
     FinishReason, GenerateOutputItem, InferenceResponse, ItemStatus, NormalizedUsage,
-    ProviderEvidence, TerminalState,
+    ProviderContinuationState, ProviderEvidence, TerminalState,
 };
 use crate::inference::stream::{InferenceEvent, StreamDecoder, ToolCallDelta};
+use crate::providers::anthropic::client::{ReasoningBlock, ReasoningState, ReasoningTurn};
 use bytes::{Buf, BytesMut};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use zeroize::Zeroizing;
 
 pub const CODEC_VERSION: &str = "anthropic-messages-v1";
 pub const DEFAULT_MAX_STREAM_BUFFER_BYTES: usize = 1024 * 1024;
@@ -33,7 +37,8 @@ impl AnthropicCodec {
         }
         let mut system = Vec::new();
         let mut messages = Vec::new();
-        for message in &request.messages {
+        let mut message_positions = vec![None; request.messages.len()];
+        for (source_index, message) in request.messages.iter().enumerate() {
             if message.role == Role::System {
                 for block in &message.content {
                     match block {
@@ -64,10 +69,12 @@ impl AnthropicCodec {
                 .iter()
                 .map(encode_content)
                 .collect::<Result<Vec<_>, _>>()?;
+            let previous_position = messages.len().checked_sub(1);
             if let Some(Value::Object(previous)) = messages.last_mut()
                 && previous.get("role").and_then(Value::as_str) == Some(role)
                 && role == "user"
             {
+                message_positions[source_index] = previous_position;
                 previous
                     .get_mut("content")
                     .and_then(Value::as_array_mut)
@@ -75,6 +82,70 @@ impl AnthropicCodec {
                     .extend(content);
             } else {
                 messages.push(json!({"role":role,"content":content}));
+                message_positions[source_index] = Some(messages.len() - 1);
+            }
+        }
+        if let Some(continuation) = &request.provider_continuation {
+            if continuation.protocol != ProviderProtocol::AnthropicMessages {
+                return Err(InferenceError::invalid_request(
+                    "provider continuation protocol does not match Anthropic Messages",
+                ));
+            }
+            let state: ReasoningState =
+                serde_json::from_slice(&continuation.payload).map_err(|_| {
+                    InferenceError::invalid_request("invalid Anthropic reasoning state")
+                })?;
+            if state.version != 1
+                || state.turns.is_empty()
+                || state.turns.iter().any(|turn| turn.blocks.is_empty())
+            {
+                return Err(InferenceError::invalid_request(
+                    "unsupported Anthropic reasoning-state version",
+                ));
+            }
+            for turn in state.turns {
+                let target = if let Some(source_index) = turn.message_index {
+                    message_positions
+                        .get(source_index)
+                        .and_then(|position| *position)
+                        .ok_or_else(|| {
+                            InferenceError::invalid_request(
+                                "Anthropic reasoning state references an invalid message",
+                            )
+                        })?
+                } else {
+                    messages
+                        .iter()
+                        .rposition(|message| {
+                            message.get("role").and_then(Value::as_str) == Some("assistant")
+                        })
+                        .ok_or_else(|| {
+                            InferenceError::invalid_request(
+                                "Anthropic reasoning state requires assistant history",
+                            )
+                        })?
+                };
+                let assistant = messages.get_mut(target).ok_or_else(|| {
+                    InferenceError::invalid_request("assistant content is invalid")
+                })?;
+                if assistant.get("role").and_then(Value::as_str) != Some("assistant") {
+                    return Err(InferenceError::invalid_request(
+                        "Anthropic reasoning state must reference assistant history",
+                    ));
+                }
+                let content = assistant
+                    .get_mut("content")
+                    .and_then(Value::as_array_mut)
+                    .ok_or_else(|| {
+                        InferenceError::invalid_request("assistant content is invalid")
+                    })?;
+                let mut reasoning = turn
+                    .blocks
+                    .into_iter()
+                    .map(encode_reasoning_block)
+                    .collect::<Vec<_>>();
+                reasoning.append(content);
+                *content = reasoning;
             }
         }
         let max_tokens = request.token_limits.max_output_tokens.ok_or_else(|| {
@@ -146,6 +217,7 @@ impl AnthropicCodec {
             })?;
         let mut message_content = Vec::new();
         let mut output = Vec::new();
+        let mut reasoning = Vec::new();
         for block in blocks {
             match block.get("type").and_then(Value::as_str) {
                 Some("text") => {
@@ -167,9 +239,16 @@ impl AnthropicCodec {
                         status: ItemStatus::Completed,
                     });
                 }
-                Some("thinking") | Some("redacted_thinking") => {
-                    // Provider reasoning is intentionally not exposed by the public contract.
-                }
+                Some("thinking") => reasoning.push(ReasoningBlock::ReasoningText {
+                    text: required_string(block, "thinking", "Anthropic thinking")?,
+                    signature: block
+                        .get("signature")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                }),
+                Some("redacted_thinking") => reasoning.push(ReasoningBlock::RedactedContent {
+                    data: required_string(block, "data", "Anthropic redacted thinking")?,
+                }),
                 Some(other) => {
                     return Err(InferenceError::provider_protocol(
                         Some(502),
@@ -214,6 +293,25 @@ impl AnthropicCodec {
                     .map(ToString::to_string),
                 api_version: None,
                 raw_finish_reason: raw_stop,
+                continuation: if reasoning.is_empty() {
+                    None
+                } else {
+                    Some(ProviderContinuationState {
+                        protocol: ProviderProtocol::AnthropicMessages,
+                        payload: Zeroizing::new(
+                            serde_json::to_vec(&ReasoningState {
+                                version: 1,
+                                turns: vec![ReasoningTurn {
+                                    message_index: None,
+                                    blocks: reasoning,
+                                }],
+                            })
+                            .map_err(|_| {
+                                InferenceError::protocol("invalid Anthropic reasoning state")
+                            })?,
+                        ),
+                    })
+                },
             },
             terminal_state: TerminalState::Complete,
         })
@@ -235,6 +333,17 @@ impl AnthropicCodec {
             })
             .unwrap_or_else(|| format!("Anthropic provider returned HTTP {status}"));
         InferenceError::from_status(status, retry_after, detail)
+    }
+}
+
+fn encode_reasoning_block(block: ReasoningBlock) -> Value {
+    match block {
+        ReasoningBlock::ReasoningText { text, signature } => {
+            json!({"type":"thinking","thinking":text,"signature":signature.unwrap_or_default()})
+        }
+        ReasoningBlock::RedactedContent { data } => {
+            json!({"type":"redacted_thinking","data":data})
+        }
     }
 }
 
@@ -342,6 +451,14 @@ pub struct AnthropicStreamDecoder {
     buffer: BytesMut,
     stopped: bool,
     max_buffer_bytes: usize,
+    reasoning: BTreeMap<u32, StreamingReasoningBlock>,
+    finish_reason: Option<FinishReason>,
+}
+
+#[derive(Debug)]
+enum StreamingReasoningBlock {
+    Thinking { text: String, signature: String },
+    Redacted { data: String },
 }
 
 impl Default for AnthropicStreamDecoder {
@@ -356,6 +473,8 @@ impl AnthropicStreamDecoder {
             buffer: BytesMut::new(),
             stopped: false,
             max_buffer_bytes: max_buffer_bytes.max(1),
+            reasoning: BTreeMap::new(),
+            finish_reason: None,
         }
     }
 
@@ -386,7 +505,13 @@ impl AnthropicStreamDecoder {
                     format!("malformed Anthropic stream event: {error}"),
                 )
             })?;
-            decode_stream_value(&value, events, &mut self.stopped)?;
+            decode_stream_value(
+                &value,
+                events,
+                &mut self.stopped,
+                &mut self.reasoning,
+                &mut self.finish_reason,
+            )?;
             if self.stopped {
                 break;
             }
@@ -474,6 +599,8 @@ fn decode_stream_value(
     value: &Value,
     events: &mut Vec<InferenceEvent>,
     stopped: &mut bool,
+    reasoning: &mut BTreeMap<u32, StreamingReasoningBlock>,
+    finish_reason: &mut Option<FinishReason>,
 ) -> Result<(), InferenceError> {
     match value.get("type").and_then(Value::as_str) {
         Some("message_start") => {
@@ -499,13 +626,14 @@ fn decode_stream_value(
         }
         Some("content_block_start") => {
             let block = value.get("content_block").unwrap_or(&Value::Null);
-            if block.get("type").and_then(Value::as_str) == Some("tool_use") {
-                events.push(InferenceEvent::ToolCallDelta {
+            let index = value
+                .get("index")
+                .and_then(Value::as_u64)
+                .unwrap_or_default() as u32;
+            match block.get("type").and_then(Value::as_str) {
+                Some("tool_use") => events.push(InferenceEvent::ToolCallDelta {
                     delta: ToolCallDelta {
-                        index: value
-                            .get("index")
-                            .and_then(Value::as_u64)
-                            .unwrap_or_default() as u32,
+                        index,
                         id: block
                             .get("id")
                             .and_then(Value::as_str)
@@ -516,7 +644,45 @@ fn decode_stream_value(
                             .map(ToString::to_string),
                         arguments_fragment: String::new(),
                     },
-                });
+                }),
+                Some("thinking") => {
+                    reasoning.insert(
+                        index,
+                        StreamingReasoningBlock::Thinking {
+                            text: block
+                                .get("thinking")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                            signature: block
+                                .get("signature")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                        },
+                    );
+                }
+                Some("redacted_thinking") => {
+                    reasoning.insert(
+                        index,
+                        StreamingReasoningBlock::Redacted {
+                            data: required_string(block, "data", "Anthropic redacted thinking")?,
+                        },
+                    );
+                }
+                Some("text") => {}
+                Some(other) => {
+                    return Err(InferenceError::provider_protocol(
+                        Some(502),
+                        format!("unknown Anthropic content block `{other}`"),
+                    ));
+                }
+                None => {
+                    return Err(InferenceError::provider_protocol(
+                        Some(502),
+                        "Anthropic content block has no type",
+                    ));
+                }
             }
         }
         Some("content_block_delta") => {
@@ -544,7 +710,46 @@ fn decode_stream_value(
                             .to_string(),
                     },
                 }),
-                Some("thinking_delta") | Some("signature_delta") => {}
+                Some("thinking_delta") => {
+                    let index = value
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .unwrap_or_default() as u32;
+                    let Some(StreamingReasoningBlock::Thinking { text, .. }) =
+                        reasoning.get_mut(&index)
+                    else {
+                        return Err(InferenceError::provider_protocol(
+                            Some(502),
+                            "thinking delta has no matching block",
+                        ));
+                    };
+                    text.push_str(
+                        delta
+                            .get("thinking")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default(),
+                    );
+                }
+                Some("signature_delta") => {
+                    let index = value
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .unwrap_or_default() as u32;
+                    let Some(StreamingReasoningBlock::Thinking { signature, .. }) =
+                        reasoning.get_mut(&index)
+                    else {
+                        return Err(InferenceError::provider_protocol(
+                            Some(502),
+                            "signature delta has no matching block",
+                        ));
+                    };
+                    signature.push_str(
+                        delta
+                            .get("signature")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default(),
+                    );
+                }
                 Some(other) => {
                     return Err(InferenceError::provider_protocol(
                         Some(502),
@@ -567,13 +772,46 @@ fn decode_stream_value(
             }
             let reason = value.pointer("/delta/stop_reason").and_then(Value::as_str);
             if let Some(reason) = reason {
-                events.push(InferenceEvent::MessageEnd {
-                    finish_reason: map_stop_reason(Some(reason)),
-                    terminal_state: TerminalState::Complete,
-                });
+                *finish_reason = Some(map_stop_reason(Some(reason)));
             }
         }
-        Some("message_stop") => *stopped = true,
+        Some("message_stop") => {
+            if !reasoning.is_empty() {
+                let blocks = std::mem::take(reasoning)
+                    .into_values()
+                    .map(|block| match block {
+                        StreamingReasoningBlock::Thinking { text, signature } => {
+                            ReasoningBlock::ReasoningText {
+                                text,
+                                signature: Some(signature),
+                            }
+                        }
+                        StreamingReasoningBlock::Redacted { data } => {
+                            ReasoningBlock::RedactedContent { data }
+                        }
+                    })
+                    .collect();
+                let payload = serde_json::to_vec(&ReasoningState {
+                    version: 1,
+                    turns: vec![ReasoningTurn {
+                        message_index: None,
+                        blocks,
+                    }],
+                })
+                .map_err(|_| InferenceError::protocol("invalid Anthropic reasoning state"))?;
+                events.push(InferenceEvent::ProviderContinuation {
+                    state: ProviderContinuationState {
+                        protocol: ProviderProtocol::AnthropicMessages,
+                        payload: Zeroizing::new(payload),
+                    },
+                });
+            }
+            events.push(InferenceEvent::MessageEnd {
+                finish_reason: finish_reason.take().unwrap_or(FinishReason::Unknown),
+                terminal_state: TerminalState::Complete,
+            });
+            *stopped = true;
+        }
         Some("ping") | Some("content_block_stop") => {}
         Some("error") => {
             let detail = value
@@ -604,6 +842,25 @@ fn decode_stream_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::anthropic::client::AnthropicClientCodec;
+
+    #[test]
+    fn reattaches_reasoning_to_its_original_assistant_turn() {
+        let (request, _) = AnthropicClientCodec
+            .parse_request(
+                br#"{"model":"claude","max_tokens":32,"messages":[
+                  {"role":"assistant","content":[{"type":"thinking","thinking":"first","signature":"one"},{"type":"text","text":"a"}]},
+                  {"role":"user","content":"next"},
+                  {"role":"assistant","content":[{"type":"thinking","thinking":"second","signature":"two"},{"type":"text","text":"b"}]},
+                  {"role":"user","content":"finish"}
+                ]}"#,
+            )
+            .unwrap();
+        let encoded = AnthropicCodec.encode_request(&request, false).unwrap();
+        let messages = encoded["messages"].as_array().unwrap();
+        assert_eq!(messages[0]["content"][0]["thinking"], "first");
+        assert_eq!(messages[2]["content"][0]["thinking"], "second");
+    }
 
     #[test]
     fn reasoning_blocks_are_not_exposed() {

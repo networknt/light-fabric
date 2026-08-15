@@ -5,6 +5,7 @@ use model_provider::inference::{
     InferenceErrorCategory, InferenceRequest, InferenceResponse, OpenAiCompatibilityProfile,
     ProviderProtocol,
 };
+use model_provider::providers::anthropic::AnthropicClientCodec;
 use model_provider::providers::openai::OpenAiResponsesCodec;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -26,6 +27,9 @@ pub struct BufferedHttpRequest {
     pub headers: BTreeMap<String, String>,
     pub body: Vec<u8>,
     pub principal_id: String,
+    /// Authenticated host/tenant boundary. It is required for portable
+    /// reasoning-state continuation and is never accepted from the JSON body.
+    pub tenant_id: Option<String>,
     pub trusted_request_id: String,
 }
 
@@ -150,7 +154,14 @@ impl LlmBufferedHttp {
                 LlmHttpResponse::Streaming(response)
             }
             Err(error) => {
-                LlmHttpResponse::Buffered(public_error(error, &request.trusted_request_id))
+                if request.path == "/anthropic/v1/messages" {
+                    LlmHttpResponse::Buffered(public_anthropic_error(
+                        error,
+                        &request.trusted_request_id,
+                    ))
+                } else {
+                    LlmHttpResponse::Buffered(public_error(error, &request.trusted_request_id))
+                }
             }
         }
     }
@@ -195,7 +206,12 @@ impl LlmBufferedHttp {
         }
         let embedding_route = request.path == "/v1/embeddings";
         let responses_route = request.path == "/v1/responses";
-        if request.path != "/v1/chat/completions" && !embedding_route && !responses_route {
+        let anthropic_route = request.path == "/anthropic/v1/messages";
+        if request.path != "/v1/chat/completions"
+            && !embedding_route
+            && !responses_route
+            && !anthropic_route
+        {
             return Err(LlmGatewayError::RouteNotFound);
         }
         if request.method != "POST" {
@@ -217,6 +233,9 @@ impl LlmBufferedHttp {
             return Err(LlmGatewayError::UnsupportedMediaType);
         }
         let root = self.runtime.snapshot();
+        if anthropic_route && !root.anthropic_messages_enabled {
+            return Err(LlmGatewayError::RouteNotFound);
+        }
         let max_body_bytes = if embedding_route {
             root.embedding_memory.max_request_body_bytes
         } else {
@@ -312,7 +331,7 @@ impl LlmBufferedHttp {
                 ));
             }
         };
-        let client_include_usage = if streaming && !responses_route {
+        let client_include_usage = if streaming && !responses_route && !anthropic_route {
             match raw.get("stream_options") {
                 None | Some(Value::Null) => false,
                 Some(Value::Object(options))
@@ -337,14 +356,14 @@ impl LlmBufferedHttp {
         } else {
             false
         };
-        if streaming && !responses_route {
+        if streaming && !responses_route && !anthropic_route {
             let object = raw.as_object_mut().ok_or_else(|| {
                 LlmGatewayError::InvalidRequest("request must be a JSON object".to_string())
             })?;
             object.insert("stream".to_string(), Value::Bool(false));
             object.remove("stream_options");
         }
-        let parse_body = if streaming && !responses_route {
+        let parse_body = if streaming && !responses_route && !anthropic_route {
             serde_json::to_vec(&raw)
                 .map_err(|_| LlmGatewayError::InvalidRequest("invalid JSON".to_string()))?
         } else {
@@ -352,7 +371,17 @@ impl LlmBufferedHttp {
         };
         let responses_metadata =
             responses_route.then(|| ResponsesResponseMetadata::from_validated_request(&raw));
-        let mut canonical: InferenceRequest = if responses_route {
+        let mut canonical: InferenceRequest = if anthropic_route {
+            let (canonical, parsed_stream) = AnthropicClientCodec
+                .parse_request(&parse_body)
+                .map_err(client_codec_error)?;
+            if parsed_stream != streaming {
+                return Err(LlmGatewayError::InvalidRequest(
+                    "stream contains an inconsistent value".to_string(),
+                ));
+            }
+            canonical
+        } else if responses_route {
             let (canonical, parsed_stream) = OpenAiResponsesCodec
                 .parse_client_request(&parse_body)
                 .map_err(client_codec_error)?;
@@ -400,6 +429,7 @@ impl LlmBufferedHttp {
             // header and is never forced into the audit database UUID key.
             request_id: uuid::Uuid::now_v7().to_string(),
             principal_id: request.principal_id.clone(),
+            tenant_id: request.tenant_id.clone(),
             deadline: std::time::Instant::now() + self.timeout,
         };
         if streaming {
@@ -411,6 +441,8 @@ impl LlmBufferedHttp {
                     canonical,
                     if responses_route {
                         ClientProtocol::OpenAiResponses
+                    } else if anthropic_route {
+                        ClientProtocol::AnthropicMessages
                     } else {
                         ClientProtocol::OpenAiChat
                     },
@@ -432,7 +464,18 @@ impl LlmBufferedHttp {
         }
         let execution = self
             .runtime
-            .execute_with_snapshot(context, root, canonical)
+            .execute_with_snapshot_protocol(
+                context,
+                Arc::clone(&root),
+                canonical,
+                if responses_route {
+                    ClientProtocol::OpenAiResponses
+                } else if anthropic_route {
+                    ClientProtocol::AnthropicMessages
+                } else {
+                    ClientProtocol::OpenAiChat
+                },
+            )
             .await?;
         if responses_route {
             return render_responses_response(
@@ -440,8 +483,18 @@ impl LlmBufferedHttp {
                 &execution.alias,
                 execution.response,
                 responses_metadata.as_ref(),
+                root.reasoning_sealer.as_ref(),
+                request.tenant_id.as_deref(),
+                &execution.deployment_id,
+                execution.provider_material_generation,
             )
             .map(LlmHttpResponse::Buffered);
+        }
+        if anthropic_route {
+            let rendered = AnthropicClientCodec
+                .render_response(&execution.request_id, &execution.alias, execution.response)
+                .map_err(|error| LlmGatewayError::Provider(error))?;
+            return json_response(200, rendered).map(LlmHttpResponse::Buffered);
         }
         let mut text = String::new();
         let mut refusal: Option<String> = None;
@@ -600,6 +653,7 @@ impl LlmBufferedHttp {
         let context = LlmRequestContext {
             request_id: request.trusted_request_id.clone(),
             principal_id: request.principal_id.clone(),
+            tenant_id: request.tenant_id.clone(),
             deadline: std::time::Instant::now() + self.timeout,
         };
         let execution = self
@@ -778,7 +832,12 @@ fn render_responses_response(
     alias: &str,
     response: InferenceResponse,
     metadata: Option<&ResponsesResponseMetadata>,
+    reasoning_sealer: &crate::reasoning_seal::ReasoningSealer,
+    tenant_id: Option<&str>,
+    deployment_id: &str,
+    provider_material_generation: u64,
 ) -> Result<BufferedHttpResponse, LlmGatewayError> {
+    let continuation = response.evidence.continuation.clone();
     let mut output = Vec::with_capacity(response.output.len());
     for (index, item) in response.output.into_iter().enumerate() {
         match item {
@@ -837,6 +896,40 @@ fn render_responses_response(
                 continue;
             }
         }
+    }
+    if let Some(continuation) = continuation {
+        if continuation.protocol != ProviderProtocol::BedrockConverse {
+            return Err(LlmGatewayError::Invariant(
+                "provider returned continuation state for an unsupported protocol".to_string(),
+            ));
+        }
+        let tenant_id = tenant_id.ok_or_else(|| {
+            LlmGatewayError::InvalidRequest(
+                "authenticated tenant identity is required for reasoning continuation".to_string(),
+            )
+        })?;
+        let encrypted_content = reasoning_sealer
+            .seal(
+                &crate::reasoning_seal::ReasoningBinding {
+                    tenant_id,
+                    alias,
+                    client_protocol: ClientProtocol::OpenAiResponses,
+                    deployment_id,
+                    provider_material_generation,
+                },
+                continuation.payload.as_slice(),
+            )
+            .map_err(LlmGatewayError::ReasoningState)?;
+        output.insert(
+            0,
+            json!({
+                "id":format!("rs_{request_id}_continuation"),
+                "type":"reasoning",
+                "status":"completed",
+                "summary":[],
+                "encrypted_content":encrypted_content
+            }),
+        );
     }
     let usage = response.usage.unwrap_or_default();
     let status = match response.terminal_state {
@@ -927,6 +1020,7 @@ fn public_error(error: LlmGatewayError, request_id: &str) -> BufferedHttpRespons
         LlmGatewayError::Invariant(_) => "The gateway encountered an internal error",
         LlmGatewayError::Forbidden => "The request was denied",
         LlmGatewayError::Capacity | LlmGatewayError::Budget => "Request capacity is exhausted",
+        LlmGatewayError::ReasoningState(_) => "The reasoning continuation state was rejected",
         LlmGatewayError::Provider(error)
             if matches!(
                 error.category,
@@ -952,6 +1046,38 @@ fn public_error(error: LlmGatewayError, request_id: &str) -> BufferedHttpRespons
         status,
         headers,
         body,
+        lifecycle: None,
+    }
+}
+
+fn public_anthropic_error(error: LlmGatewayError, request_id: &str) -> BufferedHttpResponse {
+    let status = error.public_status();
+    let error_type = match status {
+        400 | 405 | 409 | 413 | 415 => "invalid_request_error",
+        401 => "authentication_error",
+        403 => "permission_error",
+        404 => "not_found_error",
+        429 => "rate_limit_error",
+        500..=599 => "api_error",
+        _ => "api_error",
+    };
+    let message = if matches!(error, LlmGatewayError::InvalidRequest(_)) {
+        error.to_string()
+    } else {
+        "The request could not be completed".to_string()
+    };
+    BufferedHttpResponse {
+        status,
+        headers: BTreeMap::from([
+            ("content-type".to_string(), "application/json".to_string()),
+            ("request-id".to_string(), request_id.to_string()),
+            ("x-request-id".to_string(), request_id.to_string()),
+        ]),
+        body: serde_json::to_vec(&json!({
+            "type":"error",
+            "error":{"type":error_type,"message":message}
+        }))
+        .unwrap_or_default(),
         lifecycle: None,
     }
 }

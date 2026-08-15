@@ -1,6 +1,5 @@
 pub mod anthropic;
 pub mod azure_openai;
-pub mod bedrock;
 pub mod claude_code;
 pub mod codex;
 pub mod compatible;
@@ -23,7 +22,6 @@ pub mod traits;
 
 pub use anthropic::AnthropicProvider;
 pub use azure_openai::AzureOpenAiProvider;
-pub use bedrock::BedrockProvider;
 pub use claude_code::ClaudeCodeProvider;
 pub use codex::CodexProvider;
 pub use compatible::CompatibleProvider;

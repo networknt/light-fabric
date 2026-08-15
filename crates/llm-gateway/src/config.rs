@@ -59,14 +59,15 @@ pub struct LlmRouterConfig {
     pub stream_drain_grace_ms: u64,
     #[serde(default)]
     pub development_fixtures: bool,
-    /// Protected rollout switch. V3 local profiles parse while this is false,
-    /// but compilation fails before any legacy development-fixture advice.
+    /// Protected rollout switch for explicitly enabled local provider profiles.
     #[serde(default)]
     pub local_transport_enabled: bool,
     #[serde(default)]
     pub openai_extension_allowlist: BTreeSet<String>,
     #[serde(default)]
-    pub production_projection: ProductionProjectionConfig,
+    pub client_compatibility: ClientCompatibilityConfig,
+    #[serde(default)]
+    pub runtime_material: RuntimeMaterialConfig,
     #[serde(default)]
     pub audit_runtime: AuditRuntimeConfig,
     #[serde(default)]
@@ -102,7 +103,8 @@ impl Default for LlmRouterConfig {
             development_fixtures: false,
             local_transport_enabled: false,
             openai_extension_allowlist: BTreeSet::new(),
-            production_projection: ProductionProjectionConfig::default(),
+            client_compatibility: ClientCompatibilityConfig::default(),
+            runtime_material: RuntimeMaterialConfig::default(),
             audit_runtime: AuditRuntimeConfig::default(),
             network_zones: BTreeMap::new(),
             providers: BTreeMap::new(),
@@ -110,6 +112,13 @@ impl Default for LlmRouterConfig {
             aliases: BTreeMap::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClientCompatibilityConfig {
+    #[serde(default)]
+    pub anthropic_messages: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -233,21 +242,7 @@ impl Default for AuditRuntimeConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProductionProjectionConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default = "default_projection_root")]
-    pub root_directory: String,
-    #[serde(default = "default_projection_checkpoint")]
-    pub checkpoint_path: String,
-    #[serde(default = "default_projection_acknowledgements")]
-    pub acknowledgement_directory: String,
-    #[serde(default = "default_gateway_instance")]
-    pub gateway_instance: String,
-    #[serde(default = "default_projection_poll_ms")]
-    pub poll_interval_ms: u64,
-    #[serde(default = "default_projection_artifact_bytes")]
-    pub max_artifact_bytes: usize,
+pub struct RuntimeMaterialConfig {
     /// Minimum evidence provenance accepted for production routing. Production
     /// defaults to sanitized provider captures; synthetic fixtures remain
     /// available only to explicitly marked development configurations.
@@ -258,7 +253,7 @@ pub struct ProductionProjectionConfig {
     #[serde(default)]
     pub credential_environment: BTreeMap<String, String>,
     /// Maps approved `config://` trust-bundle references to protected local
-    /// PEM paths. The projection carries only the reference and digest.
+    /// PEM paths. Configuration carries only the reference and digest.
     #[serde(default)]
     pub trust_bundle_files: BTreeMap<String, String>,
     /// Protected runner public keys, encoded as base64 raw Ed25519 keys.
@@ -269,43 +264,79 @@ pub struct ProductionProjectionConfig {
     #[serde(default)]
     pub evidence_key_set_digest: String,
     #[serde(default)]
-    pub replica_inventory_id: String,
-    #[serde(default)]
-    pub replica_inventory_generation: u64,
-    #[serde(default)]
-    pub replica_inventory_digest: String,
-    #[serde(default)]
-    pub acknowledgement_endpoint: Option<String>,
-    #[serde(default)]
-    pub acknowledgement_token_file: Option<String>,
-    #[serde(default)]
-    pub acknowledgement_audience: Option<String>,
+    pub reasoning_seal: ReasoningSealConfig,
 }
 
-impl Default for ProductionProjectionConfig {
+impl Default for RuntimeMaterialConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
-            root_directory: default_projection_root(),
-            checkpoint_path: default_projection_checkpoint(),
-            acknowledgement_directory: default_projection_acknowledgements(),
-            gateway_instance: default_gateway_instance(),
-            poll_interval_ms: default_projection_poll_ms(),
-            max_artifact_bytes: default_projection_artifact_bytes(),
             required_conformance_provenance: default_conformance_provenance(),
             credential_environment: BTreeMap::new(),
             trust_bundle_files: BTreeMap::new(),
             evidence_public_keys: BTreeMap::new(),
             evidence_key_set_version: String::new(),
             evidence_key_set_digest: String::new(),
-            replica_inventory_id: String::new(),
-            replica_inventory_generation: 0,
-            replica_inventory_digest: String::new(),
-            acknowledgement_endpoint: None,
-            acknowledgement_token_file: None,
-            acknowledgement_audience: None,
+            reasoning_seal: ReasoningSealConfig::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningSealState {
+    #[default]
+    Disabled,
+    Prepared,
+    Active,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReasoningSealKeyReference {
+    pub key_id: String,
+    pub credential_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReasoningStateLimits {
+    #[serde(default = "default_reasoning_encoded_item_bytes")]
+    pub max_encoded_item_bytes: usize,
+    #[serde(default = "default_reasoning_decoded_state_bytes")]
+    pub max_decoded_provider_state_bytes: usize,
+    #[serde(default = "default_reasoning_item_count")]
+    pub max_items_per_request: usize,
+    #[serde(default = "default_reasoning_cumulative_bytes")]
+    pub max_cumulative_encoded_bytes: usize,
+    #[serde(default = "default_reasoning_cumulative_decoded_bytes")]
+    pub max_cumulative_decoded_bytes: usize,
+}
+
+impl Default for ReasoningStateLimits {
+    fn default() -> Self {
+        Self {
+            max_encoded_item_bytes: default_reasoning_encoded_item_bytes(),
+            max_decoded_provider_state_bytes: default_reasoning_decoded_state_bytes(),
+            max_items_per_request: default_reasoning_item_count(),
+            max_cumulative_encoded_bytes: default_reasoning_cumulative_bytes(),
+            max_cumulative_decoded_bytes: default_reasoning_cumulative_decoded_bytes(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReasoningSealConfig {
+    #[serde(default)]
+    pub state: ReasoningSealState,
+    #[serde(default)]
+    pub key_set_generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current: Option<ReasoningSealKeyReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<ReasoningSealKeyReference>,
+    #[serde(default)]
+    pub limits: ReasoningStateLimits,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -314,6 +345,26 @@ pub enum EndpointApiKeyHeader {
     #[default]
     XApiKey,
     Authorization,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderProfileType {
+    OpenAi,
+    Anthropic,
+    AwsBedrock,
+    Xai,
+    GoogleGemini,
+    GoogleVertex,
+    #[default]
+    Compatible,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AwsCredentialSource {
+    #[default]
+    DefaultChain,
 }
 
 impl EndpointApiKeyHeader {
@@ -335,6 +386,13 @@ pub enum EndpointAuth {
     ApiKey {
         credential_ref: String,
         header: EndpointApiKeyHeader,
+    },
+    BedrockApiKey {
+        credential_ref: String,
+    },
+    AwsSigV4 {
+        #[serde(default)]
+        credential_source: AwsCredentialSource,
     },
 }
 
@@ -475,13 +533,14 @@ pub enum PricingBasis {
 pub struct ProviderConfig {
     #[serde(default)]
     pub provider_account_id: String,
-    pub provider_protocol: ProviderProtocol,
-    pub base_url: String,
-    /// Deprecated v2 compatibility input. V3 endpoints use `endpointAuth`.
     #[serde(default)]
-    pub secret_ref: String,
+    pub provider_type: ProviderProfileType,
+    pub provider_protocol: ProviderProtocol,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub endpoint_auth: Option<EndpointAuth>,
+    pub aws_region: Option<String>,
+    pub material_generation: u64,
+    pub base_url: String,
+    pub endpoint_auth: EndpointAuth,
     #[serde(default)]
     pub network_profile: NetworkProfile,
     #[serde(default)]
@@ -506,8 +565,10 @@ pub struct DeploymentConfig {
     #[serde(default)]
     pub pricing_basis: PricingBasis,
     pub prices: BTreeMap<Operation, OperationPrice>,
-    /// Complete static provider contract supplied by the control plane.
-    /// Projection V2/V3 populate this without flattening capability fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bedrock_policy: Option<BedrockDeploymentPolicy>,
+    /// Complete static provider contract supplied by the control plane through
+    /// the values-backed deployment map, without flattening capability fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declared_capabilities: Option<ProviderCapabilities>,
     #[serde(default)]
@@ -515,7 +576,7 @@ pub struct DeploymentConfig {
     #[serde(default)]
     pub conformance_digest: String,
     /// Legacy complete, self-digested deployment evidence. New control-plane
-    /// projections use `declaredCapabilities`; this remains readable for
+    /// publications use `declaredCapabilities`; this remains readable for
     /// compatibility with manually supplied or older configuration.
     #[serde(default)]
     pub conformance_result: Option<ConformanceResult>,
@@ -534,6 +595,58 @@ pub struct DeploymentConfig {
     /// Legacy development-fixture placeholder-preservation percentage.
     #[serde(default)]
     pub pii_placeholder_preservation_percent: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BedrockDeploymentPolicy {
+    #[serde(default)]
+    pub sampling: SamplingCapabilities,
+    #[serde(default)]
+    pub reasoning: ReasoningCapabilities,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SamplingCapabilities {
+    #[serde(default)]
+    pub temperature: SamplingParameterPolicy,
+    #[serde(default)]
+    pub top_p: SamplingParameterPolicy,
+    #[serde(default)]
+    pub allow_temperature_and_top_p: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SamplingParameterPolicy {
+    #[default]
+    Unsupported,
+    Range {
+        minimum: f64,
+        maximum: f64,
+    },
+    Fixed {
+        value: f64,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReasoningCapabilities {
+    #[serde(default)]
+    pub mode: ReasoningMode,
+    #[serde(default)]
+    pub supported_efforts: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningMode {
+    #[default]
+    Unsupported,
+    OptionalAdaptive,
+    AlwaysOnAdaptive,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -740,23 +853,28 @@ fn default_audit_sink_poll_ms() -> u64 {
 fn default_audit_sink_retry_max_ms() -> u64 {
     10_000
 }
-fn default_projection_root() -> String {
-    "config-cache/llm-projection".to_string()
-}
-fn default_projection_checkpoint() -> String {
-    "data/llm-projection/checkpoint.json".to_string()
-}
-fn default_projection_acknowledgements() -> String {
-    "data/llm-projection/acknowledgements".to_string()
-}
 fn default_gateway_instance() -> String {
     "gateway-local".to_string()
 }
-fn default_projection_poll_ms() -> u64 {
-    1_000
+
+fn default_reasoning_encoded_item_bytes() -> usize {
+    128 * 1024
 }
-fn default_projection_artifact_bytes() -> usize {
-    4 * 1024 * 1024
+
+fn default_reasoning_decoded_state_bytes() -> usize {
+    96 * 1024
+}
+
+fn default_reasoning_item_count() -> usize {
+    8
+}
+
+fn default_reasoning_cumulative_bytes() -> usize {
+    256 * 1024
+}
+
+fn default_reasoning_cumulative_decoded_bytes() -> usize {
+    192 * 1024
 }
 
 fn default_pool_idle_timeout_ms() -> u64 {

@@ -175,6 +175,7 @@ impl OpenAiCodec {
                     .map(ToString::to_string),
                 api_version: None,
                 raw_finish_reason: raw_finish,
+                continuation: None,
             },
             terminal_state: TerminalState::Complete,
         })

@@ -25,13 +25,15 @@ use crate::audit::{
 };
 use crate::error::LlmGatewayError;
 use crate::pii::RequestPiiSession;
+use crate::reasoning_seal::{ReasoningSealError, RouteCandidate};
 use crate::routing::{request_capabilities, retryable};
 use crate::usage::{
     ReconciledUsage, UsageReservation, cost, cost_embedding, maximum_attempt_envelope,
 };
 use model_provider::inference::{
-    AcceptanceEvidence, EmbeddingEncoding, EmbeddingRequest, EmbeddingResponse, InferenceRequest,
-    InferenceResponse, Operation, ProviderProtocol, ProviderRequestContext,
+    AcceptanceEvidence, ClientProtocol, ContentBlock, EmbeddingEncoding, EmbeddingRequest,
+    EmbeddingResponse, InferenceRequest, InferenceResponse, Operation, ProviderContinuationState,
+    ProviderProtocol, ProviderRequestContext,
 };
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -44,6 +46,7 @@ use uuid::Uuid;
 pub struct LlmRequestContext {
     pub request_id: String,
     pub principal_id: String,
+    pub tenant_id: Option<String>,
     pub deadline: Instant,
 }
 
@@ -52,6 +55,7 @@ impl LlmRequestContext {
         Self {
             request_id: Uuid::now_v7().to_string(),
             principal_id: principal_id.into(),
+            tenant_id: None,
             deadline: Instant::now() + timeout,
         }
     }
@@ -65,6 +69,8 @@ pub struct LlmExecution {
     pub attempts: usize,
     pub usage: ReconciledUsage,
     pub generation: u64,
+    pub deployment_id: String,
+    pub provider_material_generation: u64,
 }
 
 #[derive(Debug)]
@@ -76,6 +82,15 @@ pub struct LlmEmbeddingExecution {
     pub usage: ReconciledUsage,
     pub generation: u64,
     pub selected_space: EmbeddingSpaceSelection,
+}
+
+fn rejected_finish() -> AuditFinish {
+    AuditFinish {
+        terminal: "rejected",
+        attempts: 0,
+        charged_micros: 0,
+        usage_complete: true,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,8 +184,8 @@ impl LlmRuntime {
         self.store.load()
     }
 
-    /// Off-path projection workers publish through the same store as request
-    /// execution; request handlers still capture only one immutable root.
+    /// Module reload publishes a fully compiled candidate through the same
+    /// store used by request execution; each request captures one immutable root.
     pub fn snapshot_store(&self) -> Arc<LlmSnapshotStore> {
         Arc::clone(&self.store)
     }
@@ -277,7 +292,23 @@ impl LlmRuntime {
         &self,
         context: LlmRequestContext,
         root: Arc<LlmPublishedSnapshot>,
+        request: InferenceRequest,
+    ) -> Result<LlmExecution, LlmGatewayError> {
+        self.execute_with_snapshot_protocol(
+            context,
+            root,
+            request,
+            ClientProtocol::InternalCanonical,
+        )
+        .await
+    }
+
+    pub async fn execute_with_snapshot_protocol(
+        &self,
+        context: LlmRequestContext,
+        root: Arc<LlmPublishedSnapshot>,
         mut request: InferenceRequest,
+        client_protocol: ClientProtocol,
     ) -> Result<LlmExecution, LlmGatewayError> {
         if context.deadline <= Instant::now() {
             return Err(LlmGatewayError::Provider(
@@ -323,6 +354,96 @@ impl LlmRuntime {
                 },
             )
             .await?;
+
+        let has_tool_result = request.messages.iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+        });
+        let has_assistant_tool_call = request.messages.iter().any(|message| {
+            message.role == model_provider::inference::Role::Assistant
+                && message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::ToolCall { .. }))
+        });
+        let mut pinned_deployment_id = None;
+        let mut carries_continuation = false;
+        if let Some(sealed) = request.provider_continuation.take() {
+            carries_continuation = true;
+            if client_protocol == ClientProtocol::AnthropicMessages
+                && sealed.protocol == ProviderProtocol::AnthropicMessages
+            {
+                request.provider_continuation = Some(sealed);
+            } else {
+                let resolved = (|| {
+                    if client_protocol != ClientProtocol::OpenAiResponses
+                        || sealed.protocol != ProviderProtocol::OpenAiResponses
+                    {
+                        return Err(LlmGatewayError::ReasoningState(ReasoningSealError::Invalid));
+                    }
+                    let tenant_id = context.tenant_id.as_deref().ok_or_else(|| {
+                        LlmGatewayError::InvalidRequest(
+                            "authenticated tenant identity is required for reasoning continuation"
+                                .to_string(),
+                        )
+                    })?;
+                    let encoded = std::str::from_utf8(sealed.payload.as_slice()).map_err(|_| {
+                        LlmGatewayError::ReasoningState(ReasoningSealError::Invalid)
+                    })?;
+                    let route_candidates = alias
+                        .deployments
+                        .iter()
+                        .map(|deployment| RouteCandidate {
+                            deployment_id: deployment.id.as_str(),
+                            provider_material_generation: deployment.provider_client_generation,
+                        })
+                        .collect::<Vec<_>>();
+                    root.reasoning_sealer
+                        .unseal(
+                            encoded,
+                            tenant_id,
+                            &alias.public_name,
+                            client_protocol,
+                            &route_candidates,
+                        )
+                        .map_err(LlmGatewayError::ReasoningState)
+                })();
+                let resolved = match resolved {
+                    Ok(resolved) => resolved,
+                    Err(error) => {
+                        finish_audit(
+                            audit,
+                            rejected_finish(),
+                            error.public_status(),
+                            error.public_code(),
+                        )
+                        .await?;
+                        return Err(error);
+                    }
+                };
+                pinned_deployment_id = Some(resolved.deployment_id);
+                request.provider_continuation = Some(ProviderContinuationState {
+                    protocol: ProviderProtocol::BedrockConverse,
+                    payload: resolved.provider_state,
+                });
+            }
+        } else if client_protocol == ClientProtocol::OpenAiResponses
+            && request.reasoning.is_some()
+            && has_assistant_tool_call
+            && has_tool_result
+        {
+            let error = LlmGatewayError::ReasoningState(ReasoningSealError::Required);
+            finish_audit(
+                audit,
+                rejected_finish(),
+                error.public_status(),
+                error.public_code(),
+            )
+            .await?;
+            return Err(error);
+        }
 
         if let Err(error) = pii.tokenize_request(&mut request) {
             finish_audit(
@@ -392,11 +513,13 @@ impl LlmRuntime {
         }
 
         let required = alias.merge_requirements(request_capabilities(&request, false));
-        if !alias
-            .deployments
-            .iter()
-            .any(|deployment| deployment.supports_static(&required))
-        {
+        if !alias.deployments.iter().any(|deployment| {
+            let mut candidate_request = request.clone();
+            deployment.supports_static(&required)
+                && deployment
+                    .prepare_generate_request(&mut candidate_request, client_protocol)
+                    .is_ok()
+        }) {
             let error = LlmGatewayError::UnsupportedCapability(
                 "no configured route preserves the requested generate capabilities".to_string(),
             );
@@ -417,9 +540,44 @@ impl LlmRuntime {
         let candidates = alias
             .deployments
             .iter()
-            .filter(|deployment| deployment.supports(&required))
+            .filter(|deployment| {
+                pinned_deployment_id
+                    .as_ref()
+                    .is_none_or(|pinned| pinned == &deployment.id)
+                    && deployment.supports(&required)
+                    && {
+                        let mut candidate_request = request.clone();
+                        deployment
+                            .prepare_generate_request(&mut candidate_request, client_protocol)
+                            .is_ok()
+                    }
+                    && (pinned_deployment_id.is_none()
+                        || deployment.provider.protocol() == ProviderProtocol::BedrockConverse)
+            })
             .cloned()
             .collect::<Vec<_>>();
+        if carries_continuation && pinned_deployment_id.is_none() && candidates.len() != 1 {
+            let error = LlmGatewayError::ReasoningState(ReasoningSealError::RouteUnavailable);
+            finish_audit(
+                audit,
+                rejected_finish(),
+                error.public_status(),
+                error.public_code(),
+            )
+            .await?;
+            return Err(error);
+        }
+        if pinned_deployment_id.is_some() && candidates.is_empty() {
+            let error = LlmGatewayError::ReasoningState(ReasoningSealError::RouteUnavailable);
+            finish_audit(
+                audit,
+                rejected_finish(),
+                error.public_status(),
+                error.public_code(),
+            )
+            .await?;
+            return Err(error);
+        }
         let Some(first_price) = candidates.first().map(|candidate| {
             candidate
                 .generation_price()
@@ -534,7 +692,9 @@ impl LlmRuntime {
                 estimated_input,
                 max_output,
             ));
-            request.model = deployment.model.clone();
+            let mut provider_request = request.clone();
+            provider_request.model = deployment.model.clone();
+            deployment.prepare_generate_request(&mut provider_request, client_protocol)?;
             let deployment_deadline = context
                 .deadline
                 .min(Instant::now() + Duration::from_millis(deployment.request_timeout_ms));
@@ -551,11 +711,35 @@ impl LlmRuntime {
             })?;
             let provider_result = tokio::time::timeout(
                 deployment_deadline.saturating_duration_since(Instant::now()),
-                provider.generate(provider_context, request.clone()),
+                provider.generate(provider_context, provider_request),
             )
             .await
             .unwrap_or_else(|_| {
                 Err(model_provider::inference::InferenceError::timeout_after_possible_acceptance())
+            });
+            let provider_result = provider_result.and_then(|response| {
+                let continuation_protocol = response
+                    .evidence
+                    .continuation
+                    .as_ref()
+                    .map(|continuation| continuation.protocol);
+                let eligible = match (client_protocol, continuation_protocol) {
+                    (_, None) => true,
+                    (ClientProtocol::OpenAiResponses, Some(ProviderProtocol::BedrockConverse)) => true,
+                    (
+                        ClientProtocol::AnthropicMessages,
+                        Some(ProviderProtocol::BedrockConverse | ProviderProtocol::AnthropicMessages),
+                    ) => true,
+                    _ => false,
+                };
+                if eligible {
+                    Ok(response)
+                } else {
+                    Err(model_provider::inference::InferenceError::provider_protocol(
+                        Some(502),
+                        "provider reasoning continuation is not eligible for this client protocol",
+                    ))
+                }
             });
             match provider_result {
                 Ok(mut response) => {
@@ -630,6 +814,8 @@ impl LlmRuntime {
                         attempts,
                         usage,
                         generation: root.generation,
+                        deployment_id: deployment.id.clone(),
+                        provider_material_generation: deployment.provider_client_generation,
                     });
                 }
                 Err(error) => {
@@ -664,7 +850,10 @@ impl LlmRuntime {
                         .await?;
                         return Err(audit_error);
                     }
-                    let can_retry = retryable(&error) && attempts < alias.max_attempts;
+                    let can_retry = !carries_continuation
+                        && pinned_deployment_id.is_none()
+                        && retryable(&error)
+                        && attempts < alias.max_attempts;
                     last_error = Some(error);
                     if !can_retry {
                         break;

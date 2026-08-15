@@ -42,6 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             model_provider::inference::ProviderProtocol::OpenAiEmbeddings => {
                 "openai-embeddings.json"
             }
+            model_provider::inference::ProviderProtocol::BedrockConverse => "bedrock-converse.json",
         };
         if let Some(expected) = &expected {
             let expected_result: model_provider::conformance::ConformanceResult =

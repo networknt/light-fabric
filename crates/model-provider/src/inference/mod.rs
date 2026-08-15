@@ -26,6 +26,6 @@ pub use request::{
 };
 pub use response::{
     FinishReason, GenerateOutputItem, InferenceResponse, ItemStatus, NormalizedUsage,
-    ProviderEvidence, TerminalState,
+    ProviderContinuationState, ProviderEvidence, TerminalState,
 };
 pub use stream::{InferenceEvent, StreamDecoder, ToolCallDelta};

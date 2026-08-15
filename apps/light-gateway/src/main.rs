@@ -40,15 +40,10 @@ use light_runtime::{
 use llm_gateway::LlmRuntime;
 use llm_gateway::audit::{AuditSinkConfig, AuditSinkTask, ProcessAudit, WalAudit, WalConfig};
 use llm_gateway::config::{LLM_ROUTER_FILE, LLM_ROUTER_MODULE_ID, LlmRouterConfig};
-use llm_gateway::credentials::{
-    EnvironmentReferenceSecretResolver, EnvironmentSecretResolver, SecretResolver,
-};
+use llm_gateway::credentials::{EnvironmentReferenceSecretResolver, SecretResolver};
 use llm_gateway::http::{
     BufferedHttpRequest, LlmBufferedHttp, LlmHttpResponse, PreauthorizedBodyAccessControl,
     StreamingHttpResponse,
-};
-use llm_gateway::projection::{
-    FileAcknowledgementSink, FileProjectionSource, LlmProjectionWorker, ProjectionApplyOutcome,
 };
 use llm_gateway::runtime::{
     LlmCompiler, LlmSnapshotStore, ReadinessControllerTask, start_readiness_controller,
@@ -61,7 +56,6 @@ use serde_json::{Value as JsonValue, json};
 use sqlx::postgres::PgPoolOptions;
 use std::collections::BTreeMap;
 use std::io::BufReader;
-use std::path::{Component, Path};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -69,11 +63,6 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 use url::form_urlencoded;
-
-mod projection_ack;
-use projection_ack::{
-    ProjectionAcknowledgementForwarderConfig, start_projection_acknowledgement_forwarder,
-};
 
 mod live_validation;
 use live_validation::{
@@ -308,244 +297,9 @@ struct LlmGatewayModule {
     embedding_body_read_timeout: Duration,
     embedding_minimum_receive_bytes_per_second: u64,
     embedding_authorization_timeout: Duration,
-    projection_task: Option<Arc<LlmProjectionTask>>,
     audit_sink_task: Option<Arc<AuditSinkTask>>,
     readiness_task: Arc<ReadinessControllerTask>,
     audit_fingerprint: String,
-}
-
-struct LlmProjectionTask {
-    fingerprint: String,
-    handle: tokio::task::JoinHandle<()>,
-    acknowledgement_forwarder: Option<tokio::task::JoinHandle<()>>,
-}
-
-impl Drop for LlmProjectionTask {
-    fn drop(&mut self) {
-        self.handle.abort();
-        if let Some(handle) = &self.acknowledgement_forwarder {
-            handle.abort();
-        }
-    }
-}
-
-impl LlmProjectionTask {
-    fn stop(&self) {
-        self.handle.abort();
-        if let Some(handle) = &self.acknowledgement_forwarder {
-            handle.abort();
-        }
-    }
-}
-
-fn is_config_cache_projection_root(path: &Path) -> bool {
-    let mut config_cache = false;
-    for component in path.components() {
-        match component {
-            Component::ParentDir => return false,
-            Component::Normal(value) if value == EXTERNAL_CONFIG_DIR => config_cache = true,
-            _ => {}
-        }
-    }
-    config_cache
-}
-
-fn start_llm_projection_task(
-    config: &LlmRouterConfig,
-    compiler: Arc<LlmCompiler>,
-    runtime: Arc<LlmRuntime>,
-) -> Result<Arc<LlmProjectionTask>, RuntimeError> {
-    let projection = &config.production_projection;
-    if !is_config_cache_projection_root(Path::new(&projection.root_directory)) {
-        return Err(RuntimeError::Config(
-            "LLM production projection rootDirectory must be inside config-cache".to_string(),
-        ));
-    }
-    let fingerprint =
-        serde_json::to_string(config).map_err(|error| RuntimeError::Config(error.to_string()))?;
-    let source = Arc::new(FileProjectionSource::new(
-        &projection.root_directory,
-        projection.max_artifact_bytes,
-    ));
-    let acknowledgements = Arc::new(FileAcknowledgementSink::new(
-        &projection.acknowledgement_directory,
-    ));
-    let mut worker = LlmProjectionWorker::new(
-        source,
-        acknowledgements,
-        compiler,
-        runtime.snapshot_store(),
-        &projection.checkpoint_path,
-        &projection.gateway_instance,
-        config.clone(),
-    )
-    .map_err(|error| RuntimeError::Config(error.to_string()))?;
-    worker
-        .resync_latest()
-        .map_err(|error| RuntimeError::Config(error.to_string()))?;
-    let worker = Arc::new(Mutex::new(worker));
-    let poll_interval = Duration::from_millis(projection.poll_interval_ms.max(100));
-    let handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(poll_interval);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        interval.tick().await;
-        loop {
-            interval.tick().await;
-            let worker = Arc::clone(&worker);
-            let result = tokio::task::spawn_blocking(move || {
-                let mut worker = worker.lock().unwrap_or_else(|error| error.into_inner());
-                match worker.apply_latest() {
-                    Ok(ProjectionApplyOutcome::Duplicate) => worker.reload_secrets(),
-                    other => other,
-                }
-            })
-            .await;
-            match result {
-                Ok(Ok(_)) => {}
-                Ok(Err(error)) => {
-                    warn!(error = %error, "LLM production projection retained the last valid root")
-                }
-                Err(error) => warn!(error = %error, "LLM production projection worker failed"),
-            }
-        }
-    });
-    let acknowledgement_forwarder = match (
-        &projection.acknowledgement_endpoint,
-        &projection.acknowledgement_token_file,
-        &projection.acknowledgement_audience,
-    ) {
-        (Some(endpoint), Some(token_file), Some(audience)) => Some(
-            start_projection_acknowledgement_forwarder(ProjectionAcknowledgementForwarderConfig {
-                outbox: Path::new(&projection.acknowledgement_directory).to_path_buf(),
-                endpoint: endpoint.trim().to_string(),
-                token_file: Path::new(token_file.trim()).to_path_buf(),
-                audience: audience.trim().to_string(),
-                poll_interval: poll_interval,
-            })
-            .map_err(RuntimeError::Config)?,
-        ),
-        _ => None,
-    };
-    Ok(Arc::new(LlmProjectionTask {
-        fingerprint,
-        handle,
-        acknowledgement_forwarder,
-    }))
-}
-
-fn validate_llm_config_authority(config: &LlmRouterConfig) -> Result<(), RuntimeError> {
-    if !config.production_projection.enabled {
-        return Ok(());
-    }
-    // Production topology is authoritative in the immutable projection.
-    // Reject embedded YAML topology instead of silently ignoring it, so a
-    // misconfigured deployment cannot believe fixture routes are active.
-    if !config.providers.is_empty() || !config.deployments.is_empty() || !config.aliases.is_empty()
-    {
-        return Err(RuntimeError::Config(
-            "llm-router.yml must not embed providers, deployments, or aliases when \
-             productionProjection is enabled; production topology comes only from the \
-             projection"
-                .to_string(),
-        ));
-    }
-    // Development fixtures relax provenance and endpoint validation and must
-    // never combine with the production projection.
-    if config.development_fixtures {
-        return Err(RuntimeError::Config(
-            "developmentFixtures must be false when productionProjection is enabled".to_string(),
-        ));
-    }
-    let projection_instance = config.production_projection.gateway_instance.trim();
-    let audit_instance = config.audit_runtime.gateway_instance.trim();
-    if projection_instance.is_empty()
-        || projection_instance == "gateway-local"
-        || audit_instance.is_empty()
-        || audit_instance == "gateway-local"
-        || projection_instance != audit_instance
-    {
-        return Err(RuntimeError::Config(
-            "production projection requires one non-default gatewayInstance shared by projection and audit"
-                .to_string(),
-        ));
-    }
-    let projection = &config.production_projection;
-    let endpoint = projection
-        .acknowledgement_endpoint
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let token_file = projection
-        .acknowledgement_token_file
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let audience = projection
-        .acknowledgement_audience
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    if endpoint.is_none() || token_file.is_none() || audience.is_none() {
-        return Err(RuntimeError::Config(
-            "production projection requires non-empty authenticated Portal acknowledgement forwarder settings"
-                .to_string(),
-        ));
-    }
-    let endpoint = url::Url::parse(endpoint.expect("checked above")).map_err(|_| {
-        RuntimeError::Config(
-            "production acknowledgementEndpoint must be a valid HTTPS URL".to_string(),
-        )
-    })?;
-    if endpoint.scheme() != "https"
-        || endpoint.host_str().is_none()
-        || !endpoint.username().is_empty()
-        || endpoint.password().is_some()
-        || endpoint.query().is_some()
-        || endpoint.fragment().is_some()
-    {
-        return Err(RuntimeError::Config(
-            "production acknowledgementEndpoint must be an HTTPS URL without credentials, query, or fragment"
-                .to_string(),
-        ));
-    }
-    let token_file = Path::new(token_file.expect("checked above"));
-    if !token_file.is_absolute()
-        || !token_file.is_file()
-        || std::fs::read_to_string(token_file)
-            .ok()
-            .is_none_or(|value| value.trim().is_empty())
-    {
-        return Err(RuntimeError::Config(
-            "production acknowledgementTokenFile must be an existing absolute regular file containing a token"
-                .to_string(),
-        ));
-    }
-    if uuid::Uuid::parse_str(projection.replica_inventory_id.trim()).is_err()
-        || projection.replica_inventory_generation == 0
-        || !is_lower_hex_sha256(&projection.replica_inventory_digest)
-    {
-        return Err(RuntimeError::Config(
-            "production projection requires a UUID inventoryId, positive inventoryGeneration, and SHA-256 inventoryDigest"
-                .to_string(),
-        ));
-    }
-    if projection.evidence_key_set_version.trim().is_empty()
-        || !is_lower_hex_sha256(&projection.evidence_key_set_digest)
-        || projection.evidence_public_keys.is_empty()
-    {
-        return Err(RuntimeError::Config(
-            "production projection requires complete evidence key-set metadata and at least one verification key"
-                .to_string(),
-        ));
-    }
-    Ok(())
-}
-
-fn is_lower_hex_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn load_llm_gateway_module(
@@ -575,21 +329,14 @@ fn load_llm_gateway_module(
         stop_llm_background_tasks(previous);
         return Ok(None);
     }
-    validate_llm_config_authority(&config)?;
-    let resolver: Arc<dyn SecretResolver> = if config.production_projection.enabled {
-        Arc::new(EnvironmentReferenceSecretResolver::new(
-            config.production_projection.credential_environment.clone(),
-        ))
-    } else {
-        Arc::new(EnvironmentSecretResolver)
-    };
+    let resolver: Arc<dyn SecretResolver> = Arc::new(EnvironmentReferenceSecretResolver::new(
+        config.runtime_material.credential_environment.clone(),
+    ));
     let compiler = Arc::new(LlmCompiler::new(resolver));
     let previous_snapshot = previous.map(|module| module.runtime.snapshot());
     let snapshot = compiler
         .compile(&config, generation, previous_snapshot.as_deref())
         .map_err(|error| RuntimeError::Config(error.to_string()))?;
-    let projection_fingerprint =
-        serde_json::to_string(&config).map_err(|error| RuntimeError::Config(error.to_string()))?;
     let audit_fingerprint = serde_json::to_string(&config.audit_runtime)
         .map_err(|error| RuntimeError::Config(error.to_string()))?;
     if previous.is_some_and(|module| module.audit_fingerprint != audit_fingerprint) {
@@ -598,10 +345,6 @@ fn load_llm_gateway_module(
                 .to_string(),
         ));
     }
-    let reusable_projection = config.production_projection.enabled
-        && previous
-            .and_then(|module| module.projection_task.as_ref())
-            .is_some_and(|task| task.fingerprint == projection_fingerprint);
     let reusable_runtime = previous.filter(|module| {
         let snapshot = module.runtime.snapshot();
         snapshot.global_concurrency == config.global_concurrency
@@ -610,9 +353,7 @@ fn load_llm_gateway_module(
     });
     let (runtime, audit_sink_task) = match reusable_runtime {
         Some(previous) => {
-            if !reusable_projection {
-                previous.runtime.publish(snapshot);
-            }
+            previous.runtime.publish(snapshot);
             (
                 Arc::clone(&previous.runtime),
                 previous.audit_sink_task.clone(),
@@ -623,7 +364,11 @@ fn load_llm_gateway_module(
             let (audit, audit_sink_task): (
                 Arc<dyn llm_gateway::audit::AuditAdmission>,
                 Option<Arc<AuditSinkTask>>,
-            ) = if config.production_projection.enabled {
+            ) = if config
+                .aliases
+                .values()
+                .any(|alias| alias.audit != llm_gateway::config::AuditMode::Disabled)
+            {
                 let wal_audit = WalAudit::open(
                     WalConfig {
                         directory: config.audit_runtime.directory.clone().into(),
@@ -682,19 +427,6 @@ fn load_llm_gateway_module(
             (Arc::new(LlmRuntime::new(store, audit)), audit_sink_task)
         }
     };
-    let projection_task = if config.production_projection.enabled {
-        if reusable_projection {
-            previous.and_then(|module| module.projection_task.clone())
-        } else {
-            Some(start_llm_projection_task(
-                &config,
-                Arc::clone(&compiler),
-                Arc::clone(&runtime),
-            )?)
-        }
-    } else {
-        None
-    };
     let readiness_task = previous
         .filter(|module| Arc::ptr_eq(&module.runtime, &runtime))
         .map(|module| Arc::clone(&module.readiness_task))
@@ -712,13 +444,6 @@ fn load_llm_gateway_module(
         Duration::from_millis(config.request_timeout_ms),
     )
     .with_openai_extension_allowlist(config.openai_extension_allowlist.clone());
-    if let Some(previous_task) = previous.and_then(|module| module.projection_task.as_ref())
-        && projection_task
-            .as_ref()
-            .is_none_or(|task| !Arc::ptr_eq(task, previous_task))
-    {
-        previous_task.stop();
-    }
     if let Some(previous_task) = previous.map(|module| &module.readiness_task)
         && !Arc::ptr_eq(previous_task, &readiness_task)
     {
@@ -741,7 +466,6 @@ fn load_llm_gateway_module(
         embedding_authorization_timeout: Duration::from_millis(
             config.embedding_memory.authorization_timeout_ms,
         ),
-        projection_task,
         audit_sink_task,
         readiness_task,
         audit_fingerprint,
@@ -783,9 +507,6 @@ fn load_llm_gateway_module_at_startup(
 
 fn stop_llm_background_tasks(previous: Option<&Arc<LlmGatewayModule>>) {
     if let Some(module) = previous {
-        if let Some(task) = module.projection_task.as_ref() {
-            task.stop();
-        }
         if let Some(task) = module.audit_sink_task.as_ref() {
             task.stop();
         }
@@ -3719,6 +3440,29 @@ impl ProxyHttp for GatewayProxy {
                         .as_ref()
                         .and_then(|auth| auth.client_id.clone().or_else(|| auth.user_id.clone()))
                         .unwrap_or_else(|| "anonymous".to_string());
+                    let tenant_id = ctx.auth.as_ref().and_then(|auth| {
+                        auth.host
+                            .clone()
+                            .filter(|value| !value.is_empty())
+                            .or_else(|| {
+                                [
+                                    "tenant",
+                                    "tenant_id",
+                                    "tenantId",
+                                    "host",
+                                    "host_id",
+                                    "hostId",
+                                ]
+                                .into_iter()
+                                .find_map(|claim| {
+                                    auth.claims
+                                        .get(claim)
+                                        .and_then(serde_json::Value::as_str)
+                                        .filter(|value| !value.is_empty())
+                                        .map(str::to_string)
+                                })
+                            })
+                    });
                     let trusted_request_id = ctx
                         .correlation
                         .correlation_id
@@ -3733,6 +3477,7 @@ impl ProxyHttp for GatewayProxy {
                                 headers,
                                 body,
                                 principal_id,
+                                tenant_id,
                                 trusted_request_id,
                             },
                             embedding_ingress_permit,
@@ -5957,200 +5702,53 @@ tools:
     }
 
     #[tokio::test]
-    async fn disabling_llm_module_stops_the_existing_projection_worker() {
+    async fn llm_module_reload_publishes_a_new_immutable_values_snapshot() {
         let config_dir = TempDir::new().expect("config temp dir");
         let external_dir = TempDir::new().expect("external temp dir");
-        std::fs::write(
-            config_dir.path().join(LLM_ROUTER_FILE),
-            r#"
-enabled: true
-developmentFixtures: true
-providers:
-  mock:
-    providerProtocol: openai_chat
-    baseUrl: http://127.0.0.1:18080/v1
-    secretRef: env:LIGHT_GATEWAY_REL1_TEST_KEY
-deployments:
-  mock:
-    provider: mock
-    model: mock-model
-    concurrency: 1
-    prices:
-      generate:
-        operation: generate
-        version: 1
-        inputMicrosPerMillion: 1
-        outputMicrosPerMillion: 1
-    conformanceDigest: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-aliases:
-  public-model:
-    operations: [generate]
-    deployments: [mock]
-    maxAttempts: 1
-    concurrency: 1
-    maxInputTokens: 1000
-    maxOutputTokens: 100
-    maxCostMicros: 1000
-    audit: disabled
-"#,
-        )
-        .expect("write LLM config");
-        // SAFETY: the test uses a unique process-local variable and removes it
-        // immediately after off-path client construction.
-        unsafe { std::env::set_var("LIGHT_GATEWAY_REL1_TEST_KEY", "test-key") };
         let config = runtime_config(&config_dir, &external_dir, HashMap::new());
-        let mut module = load_llm_gateway_module(&config, true, 1, None)
-            .expect("load enabled module")
-            .expect("enabled module");
-        unsafe { std::env::remove_var("LIGHT_GATEWAY_REL1_TEST_KEY") };
-        let task = Arc::new(LlmProjectionTask {
-            fingerprint: "rollout-disable-test".to_string(),
-            handle: tokio::spawn(std::future::pending()),
-            acknowledgement_forwarder: None,
-        });
-        Arc::get_mut(&mut module)
-            .expect("module has one owner")
-            .projection_task = Some(Arc::clone(&task));
+        let path = external_dir.path().join(LLM_ROUTER_FILE);
+        std::fs::write(&path, "enabled: true\nopenaiExtensionAllowlist: [first]\n")
+            .expect("write initial llm-router config");
 
-        let disabled =
-            load_llm_gateway_module(&config, false, 2, Some(&module)).expect("disable module");
-        tokio::task::yield_now().await;
+        let first = load_llm_gateway_module(&config, true, 1, None)
+            .expect("compile initial values-backed configuration")
+            .expect("active LLM module");
+        let first_digest = first.runtime.snapshot().digest.clone();
 
-        assert!(disabled.is_none());
-        assert!(task.handle.is_finished());
+        std::fs::write(&path, "enabled: true\nopenaiExtensionAllowlist: [second]\n")
+            .expect("write replacement llm-router config");
+        let second = load_llm_gateway_module(&config, true, 2, Some(&first))
+            .expect("compile replacement values-backed configuration")
+            .expect("reloaded LLM module");
+        let published = second.runtime.snapshot();
+
+        assert!(Arc::ptr_eq(&first.runtime, &second.runtime));
+        assert_eq!(published.generation, 2);
+        assert_ne!(published.digest, first_digest);
+        stop_llm_background_tasks(Some(&second));
     }
 
-    #[test]
-    fn production_projection_rejects_yaml_topology_and_development_fixtures() {
+    #[tokio::test]
+    async fn rejected_llm_module_reload_retains_last_known_good_snapshot() {
         let config_dir = TempDir::new().expect("config temp dir");
         let external_dir = TempDir::new().expect("external temp dir");
-        std::fs::write(
-            config_dir.path().join(LLM_ROUTER_FILE),
-            r#"
-enabled: true
-developmentFixtures: false
-productionProjection:
-  enabled: true
-providers:
-  mock:
-    providerProtocol: openai_chat
-    baseUrl: https://example.invalid/v1
-    secretRef: env:LIGHT_GATEWAY_PROJECTION_TEST_KEY
-"#,
-        )
-        .expect("write LLM config");
         let config = runtime_config(&config_dir, &external_dir, HashMap::new());
-        let error = load_llm_gateway_module(&config, true, 1, None)
-            .err()
-            .expect("embedded YAML topology must be rejected in production mode");
-        assert!(
-            error.to_string().contains("must not embed providers"),
-            "{error}"
-        );
+        let path = external_dir.path().join(LLM_ROUTER_FILE);
+        std::fs::write(&path, "enabled: true\n").expect("write initial llm-router config");
 
-        std::fs::write(
-            config_dir.path().join(LLM_ROUTER_FILE),
-            r#"
-enabled: true
-developmentFixtures: true
-productionProjection:
-  enabled: true
-"#,
-        )
-        .expect("write LLM config");
-        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
-        let error = load_llm_gateway_module(&config, true, 1, None)
-            .err()
-            .expect("development fixtures must be rejected in production mode");
-        assert!(
-            error
-                .to_string()
-                .contains("developmentFixtures must be false"),
-            "{error}"
-        );
-    }
+        let active = load_llm_gateway_module(&config, true, 1, None)
+            .expect("compile initial values-backed configuration")
+            .expect("active LLM module");
+        let before = active.runtime.snapshot();
 
-    #[test]
-    fn production_projection_accepts_topology_free_non_fixture_authority() {
-        let token = tempfile::NamedTempFile::new().expect("token file");
-        std::fs::write(token.path(), "test-token\n").expect("write token");
-        let mut config = LlmRouterConfig {
-            enabled: true,
-            ..LlmRouterConfig::default()
-        };
-        config.production_projection.enabled = true;
-        config.production_projection.gateway_instance = "pod-uid-a".to_string();
-        config.production_projection.acknowledgement_endpoint =
-            Some("https://portal.invalid/command".to_string());
-        config.production_projection.acknowledgement_token_file =
-            Some(token.path().to_string_lossy().into_owned());
-        config.production_projection.acknowledgement_audience = Some("portal-command".to_string());
-        config.production_projection.replica_inventory_id =
-            "018f8f43-2b75-7d8b-8a7b-5f45fd38a7ef".to_string();
-        config.production_projection.replica_inventory_generation = 1;
-        config.production_projection.replica_inventory_digest = "a".repeat(64);
-        config.production_projection.evidence_key_set_version = "keys-v1".to_string();
-        config.production_projection.evidence_key_set_digest = "b".repeat(64);
-        config
-            .production_projection
-            .evidence_public_keys
-            .insert("runner-1".to_string(), "AA==".to_string());
-        config.audit_runtime.gateway_instance = "pod-uid-a".to_string();
+        std::fs::write(&path, "enabled: true\nglobalConcurrency: 0\n")
+            .expect("write invalid replacement llm-router config");
+        assert!(load_llm_gateway_module(&config, true, 2, Some(&active)).is_err());
 
-        validate_llm_config_authority(&config)
-            .expect("strict topology-free production authority must pass validation");
-
-        for field in ["endpoint", "token", "audience"] {
-            let mut invalid = config.clone();
-            match field {
-                "endpoint" => {
-                    invalid.production_projection.acknowledgement_endpoint = Some(" ".to_string())
-                }
-                "token" => {
-                    invalid.production_projection.acknowledgement_token_file = Some("".to_string())
-                }
-                _ => invalid.production_projection.acknowledgement_audience = Some(" ".to_string()),
-            }
-            let error = validate_llm_config_authority(&invalid)
-                .expect_err("blank acknowledgement setting must fail closed");
-            assert!(error.to_string().contains("non-empty authenticated"));
-        }
-    }
-
-    #[test]
-    fn production_projection_rejects_default_empty_and_mismatched_replica_identity() {
-        let mut config = LlmRouterConfig {
-            enabled: true,
-            ..LlmRouterConfig::default()
-        };
-        config.production_projection.enabled = true;
-        for (projection, audit) in [
-            ("gateway-local", "gateway-local"),
-            ("", ""),
-            ("pod-uid-a", "pod-uid-b"),
-        ] {
-            config.production_projection.gateway_instance = projection.to_string();
-            config.audit_runtime.gateway_instance = audit.to_string();
-            let error = validate_llm_config_authority(&config)
-                .expect_err("invalid production replica identity must fail");
-            assert!(error.to_string().contains("non-default gatewayInstance"));
-        }
-    }
-
-    #[test]
-    fn llm_production_projection_is_confined_to_config_cache() {
-        assert!(is_config_cache_projection_root(Path::new(
-            "config-cache/llm-projection"
-        )));
-        assert!(is_config_cache_projection_root(Path::new(
-            "/srv/light-gateway/config-cache/llm-projection"
-        )));
-        assert!(!is_config_cache_projection_root(Path::new(
-            "data/llm-projection"
-        )));
-        assert!(!is_config_cache_projection_root(Path::new(
-            "config-cache/../secrets"
-        )));
+        let retained = active.runtime.snapshot();
+        assert_eq!(retained.generation, before.generation);
+        assert_eq!(retained.digest, before.digest);
+        stop_llm_background_tasks(Some(&active));
     }
 
     #[test]
@@ -8973,8 +8571,11 @@ streamWriteTimeoutMs: 1000
 providers:
   mock:
     providerProtocol: openai_chat
+    materialGeneration: 1
     baseUrl: http://{provider_address}/v1
-    secretRef: env:LIGHT_GATEWAY_LF6B_TEST_KEY
+    endpointAuth:
+      mode: bearer
+      credential_ref: env:LIGHT_GATEWAY_LF6B_TEST_KEY
 deployments:
   mock:
     provider: mock

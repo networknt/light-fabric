@@ -34,6 +34,7 @@ impl LlmSnapshotStore {
                 candidate.deployments.get(id).is_some_and(|other| {
                     other.provider_digest == deployment.provider_digest
                         && other.provider_client_generation == deployment.provider_client_generation
+                        && other.provider_client_built_at == deployment.provider_client_built_at
                 })
             });
         if current.digest == candidate.digest && same_materialization {

@@ -20,7 +20,7 @@ struct GoldenVector {
 
 fn vector() -> GoldenVector {
     serde_json::from_str(include_str!(
-        "fixtures/projection/v3/signing-golden-vector.json"
+        "fixtures/provider/v1/signing-golden-vector.json"
     ))
     .expect("checked-in Ed25519 vector")
 }

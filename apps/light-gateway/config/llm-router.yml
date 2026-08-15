@@ -1,10 +1,7 @@
 # Local LLM data plane. It is inert unless both this flag and the `llm`
-# handler are enabled. Provider topology is supplied through typed instance
-# properties rendered into values.yml; this template contains no provider fixtures.
-# When productionProjection is enabled, this file must not embed providers,
-# deployments, or aliases (production topology comes only from the immutable
-# projection) and developmentFixtures must be false; the gateway rejects the
-# configuration otherwise.
+# handler are enabled. Provider topology and runtime material references are
+# supplied through typed instance properties rendered into the immutable
+# values.yml snapshot; this template contains no provider fixtures.
 # The handler path must execute, in order:
 # correlation -> unified-security -> limit -> access-control -> llm
 enabled: ${llm-router.enabled:false}
@@ -45,6 +42,9 @@ streamIdleTimeoutMs: ${llm-router.streamIdleTimeoutMs:15000}
 streamMinimumDrainBytesPerSecond: ${llm-router.streamMinimumDrainBytesPerSecond:128}
 streamDrainGraceMs: ${llm-router.streamDrainGraceMs:1000}
 developmentFixtures: ${llm-router.developmentFixtures:false}
+# Explicitly enables non-public provider transports after their network-zone
+# policy has been compiled from the same immutable snapshot.
+localTransportEnabled: ${llm-router.localTransportEnabled:false}
 # One gateway deployment serves one embedding admission lane. Deploy separate,
 # network-restricted instances for kb_query and kb_index; a request header does
 # not select this value. The 3 GiB ingress default above is a publication bound,
@@ -58,33 +58,23 @@ embeddingWorkloadLane: ${llm-router.embeddingWorkloadLane:standard}
 # The compiler emits a warning when that compatibility narrowing is present.
 openaiExtensionAllowlist: ${llm-router.openaiExtensionAllowlist:[]}
 
-# Production-only config-server `/files` projection. When enabled, startup
-# fails closed until a valid full root is available in config-cache. Every
-# replica writes its own acknowledgement; credentialEnvironment maps opaque
-# references to environment-variable names, never values.
-productionProjection:
-  enabled: ${llm-router.productionProjection.enabled:false}
-  rootDirectory: ${llm-router.productionProjection.rootDirectory:config-cache/llm-projection}
-  checkpointPath: ${llm-router.productionProjection.checkpointPath:data/llm-projection/checkpoint.json}
-  acknowledgementDirectory: ${llm-router.productionProjection.acknowledgementDirectory:data/llm-projection/acknowledgements}
-  gatewayInstance: ${llm_gateway_instance:gateway-local}
-  pollIntervalMs: ${llm-router.productionProjection.pollIntervalMs:1000}
-  maxArtifactBytes: ${llm-router.productionProjection.maxArtifactBytes:4194304}
-  # This setting applies only to the legacy filesystem projection workflow.
-  requiredConformanceProvenance: ${llm-router.productionProjection.requiredConformanceProvenance:captured_sanitized}
-  credentialEnvironment: {}
-  trustBundleFiles: {}
-  evidencePublicKeys: {}
-  evidenceKeySetVersion: ${llm-router.productionProjection.evidenceKeySetVersion:}
-  evidenceKeySetDigest: ${llm-router.productionProjection.evidenceKeySetDigest:}
-  replicaInventoryId: ${llm-router.productionProjection.replicaInventoryId:}
-  replicaInventoryGeneration: ${llm-router.productionProjection.replicaInventoryGeneration:0}
-  replicaInventoryDigest: ${llm-router.productionProjection.replicaInventoryDigest:}
-  acknowledgementEndpoint: ${llm-router.productionProjection.acknowledgementEndpoint:}
-  acknowledgementTokenFile: ${llm-router.productionProjection.acknowledgementTokenFile:}
-  acknowledgementAudience: ${llm-router.productionProjection.acknowledgementAudience:}
+# Optional public protocol facades. Keep disabled unless the corresponding
+# handler paths and security rules are published for this gateway instance.
+clientCompatibility:
+  anthropicMessages: ${llm-router.clientCompatibility.anthropicMessages:false}
 
-# Production projection uses the bounded single-writer WAL. `required` aliases
+# Non-secret local materialization policy. Opaque credential and trust-bundle
+# references are resolved locally; values.yml never contains secret bytes.
+runtimeMaterial:
+  requiredConformanceProvenance: ${llm-router.runtimeMaterial.requiredConformanceProvenance:captured_sanitized}
+  credentialEnvironment: ${llm-router.runtimeMaterial.credentialEnvironment:{}}
+  trustBundleFiles: ${llm-router.runtimeMaterial.trustBundleFiles:{}}
+  evidencePublicKeys: ${llm-router.runtimeMaterial.evidencePublicKeys:{}}
+  evidenceKeySetVersion: ${llm-router.runtimeMaterial.evidenceKeySetVersion:}
+  evidenceKeySetDigest: ${llm-router.runtimeMaterial.evidenceKeySetDigest:}
+  reasoningSeal: ${llm-router.runtimeMaterial.reasoningSeal:{}}
+
+# Audited aliases use the bounded single-writer WAL. `required` aliases
 # map to bounded-async; `local_durable` aliases additionally require
 # persistentVolume=true and wait for attempt-start fdatasync before dispatch.
 # Persistent network filesystems are not automatically equivalent: operators
@@ -109,12 +99,13 @@ auditRuntime:
   persistentVolume: ${llm-router.auditRuntime.persistentVolume:false}
   # Set sinkDatabaseUrlEnv to the name (not value) of an environment variable
   # holding the separately credentialed dedicated-audit PostgreSQL URL.
-  # sinkDatabaseUrlEnv: LIGHT_GATEWAY_LLM_AUDIT_DATABASE_URL
+  sinkDatabaseUrlEnv: ${llm-router.auditRuntime.sinkDatabaseUrlEnv:}
   sinkBatchRecords: ${llm-router.auditRuntime.sinkBatchRecords:256}
   sinkBatchBytes: ${llm-router.auditRuntime.sinkBatchBytes:1048576}
   sinkPollMs: ${llm-router.auditRuntime.sinkPollMs:100}
   sinkRetryMaxMs: ${llm-router.auditRuntime.sinkRetryMaxMs:10000}
 
+networkZones: ${llm-router.networkZones:{}}
 providers: ${llm-router.providers:{}}
 deployments: ${llm-router.deployments:{}}
 aliases: ${llm-router.aliases:{}}

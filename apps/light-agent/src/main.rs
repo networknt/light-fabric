@@ -29,10 +29,10 @@ use light_security::{
 };
 use mcp_client::{McpContent, McpGatewayClient, McpTool};
 use model_provider::{
-    AnthropicProvider, AzureOpenAiProvider, BedrockProvider, ChatMessage, ChatRequest,
-    ChatResponse, ClaudeCodeProvider, CodexProvider, CompatibleProvider, CopilotProvider,
-    GeminiCliProvider, GeminiProvider, GlmProvider, KiloCliProvider, OllamaProvider,
-    OpenAiProvider, OpenRouterProvider, Provider, TelnyxProvider, ToolSpec,
+    AnthropicProvider, AzureOpenAiProvider, ChatMessage, ChatRequest, ChatResponse,
+    ClaudeCodeProvider, CodexProvider, CompatibleProvider, CopilotProvider, GeminiCliProvider,
+    GeminiProvider, GlmProvider, KiloCliProvider, OllamaProvider, OpenAiProvider,
+    OpenRouterProvider, Provider, TelnyxProvider, ToolSpec,
 };
 use portal_registry::RegistryHandler;
 use serde::{Deserialize, Serialize};
@@ -229,23 +229,6 @@ pub struct AzureOpenAiConfig {
     pub deployment_name: Option<String>,
     #[serde(default)]
     pub api_version: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BedrockConfig {
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub region: Option<String>,
-    #[serde(default)]
-    pub access_key_id: Option<String>,
-    #[serde(default)]
-    pub secret_access_key: Option<String>,
-    #[serde(default)]
-    pub session_token: Option<String>,
-    #[serde(default)]
-    pub max_tokens: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -2576,33 +2559,6 @@ fn build_model_provider(
             })?;
             if let Some(max_tokens) =
                 optional_u32(&provider_config.max_tokens, "anthropic.maxTokens")?
-            {
-                provider = provider.with_max_tokens(max_tokens);
-            }
-            ModelProviderSelection {
-                provider: Box::new(provider),
-                model,
-                temperature,
-            }
-        }
-        "bedrock" | "aws-bedrock" => {
-            let provider_config: BedrockConfig =
-                load_provider_config(runtime_config, "bedrock.yml", "bedrock")?;
-            let model = choose_model(
-                config,
-                optional_str(&provider_config.model),
-                None,
-                "bedrock",
-            )?;
-            let mut provider = BedrockProvider::new(
-                optional_str(&provider_config.region),
-                optional_str(&provider_config.access_key_id),
-                optional_str(&provider_config.secret_access_key),
-                optional_str(&provider_config.session_token),
-            )
-            .map_err(|e| RuntimeError::Config(format!("failed to build Bedrock provider: {e}")))?;
-            if let Some(max_tokens) =
-                optional_u32(&provider_config.max_tokens, "bedrock.maxTokens")?
             {
                 provider = provider.with_max_tokens(max_tokens);
             }

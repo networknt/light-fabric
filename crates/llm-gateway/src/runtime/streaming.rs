@@ -3,11 +3,11 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use model_provider::inference::{
     AcceptanceEvidence, ClientProtocol, FinishReason, InferenceError, InferenceErrorCategory,
-    InferenceEvent, InferenceRequest, NormalizedUsage, Operation, ProviderRequestContext,
-    ToolCallDelta,
+    InferenceEvent, InferenceRequest, NormalizedUsage, Operation, ProviderContinuationState,
+    ProviderProtocol, ProviderRequestContext, ToolCallDelta,
 };
 use serde_json::{Map, Value, json};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -20,6 +20,7 @@ use crate::admission::fail_fast_permits;
 use crate::audit::{AuditAttemptFinish, AuditAttemptStart, AuditFinish, AuditStart};
 use crate::error::LlmGatewayError;
 use crate::pii::{RequestPiiSession, UnresolvedPiiBehavior};
+use crate::reasoning_seal::{ReasoningBinding, ReasoningSealError, RouteCandidate};
 use crate::routing::{request_capabilities, retryable};
 use crate::usage::{UsageReservation, cost, maximum_attempt_envelope};
 
@@ -206,6 +207,100 @@ impl LlmRuntime {
             )
             .await?;
 
+        let has_tool_result = request.messages.iter().any(|message| {
+            message.content.iter().any(|block| {
+                matches!(
+                    block,
+                    model_provider::inference::ContentBlock::ToolResult { .. }
+                )
+            })
+        });
+        let has_assistant_tool_call = request.messages.iter().any(|message| {
+            message.role == model_provider::inference::Role::Assistant
+                && message.content.iter().any(|block| {
+                    matches!(
+                        block,
+                        model_provider::inference::ContentBlock::ToolCall { .. }
+                    )
+                })
+        });
+        let mut pinned_deployment_id = None;
+        let mut carries_continuation = false;
+        if let Some(sealed) = request.provider_continuation.take() {
+            carries_continuation = true;
+            if client_protocol == ClientProtocol::AnthropicMessages
+                && sealed.protocol == ProviderProtocol::AnthropicMessages
+            {
+                request.provider_continuation = Some(sealed);
+            } else {
+                let result = (|| {
+                    if client_protocol != ClientProtocol::OpenAiResponses
+                        || sealed.protocol != ProviderProtocol::OpenAiResponses
+                    {
+                        return Err(LlmGatewayError::ReasoningState(ReasoningSealError::Invalid));
+                    }
+                    let tenant_id = context.tenant_id.as_deref().ok_or_else(|| {
+                        LlmGatewayError::InvalidRequest(
+                            "authenticated tenant identity is required for reasoning continuation"
+                                .to_string(),
+                        )
+                    })?;
+                    let encoded = std::str::from_utf8(sealed.payload.as_slice()).map_err(|_| {
+                        LlmGatewayError::ReasoningState(ReasoningSealError::Invalid)
+                    })?;
+                    let route_candidates = alias
+                        .deployments
+                        .iter()
+                        .map(|deployment| RouteCandidate {
+                            deployment_id: deployment.id.as_str(),
+                            provider_material_generation: deployment.provider_client_generation,
+                        })
+                        .collect::<Vec<_>>();
+                    root.reasoning_sealer
+                        .unseal(
+                            encoded,
+                            tenant_id,
+                            &alias.public_name,
+                            client_protocol,
+                            &route_candidates,
+                        )
+                        .map_err(LlmGatewayError::ReasoningState)
+                })();
+                let resolved = match result {
+                    Ok(resolved) => resolved,
+                    Err(error) => {
+                        finish_audit(
+                            audit,
+                            rejected_finish(),
+                            error.public_status(),
+                            error.public_code(),
+                        )
+                        .await?;
+                        return Err(error);
+                    }
+                };
+                pinned_deployment_id = Some(resolved.deployment_id);
+                request.provider_continuation = Some(ProviderContinuationState {
+                    protocol: ProviderProtocol::BedrockConverse,
+                    payload: resolved.provider_state,
+                });
+            }
+        } else if client_protocol == ClientProtocol::OpenAiResponses
+            && request.reasoning.is_some()
+            && has_assistant_tool_call
+            && has_tool_result
+        {
+            let error = LlmGatewayError::ReasoningState(ReasoningSealError::Required);
+            finish_audit(
+                audit,
+                rejected_finish(),
+                error.public_status(),
+                error.public_code(),
+            )
+            .await?;
+            return Err(error);
+        }
+
         if let Err(error) = pii.tokenize_request(&mut request) {
             finish_audit(
                 audit,
@@ -257,11 +352,13 @@ impl LlmRuntime {
         }
 
         let required = alias.merge_requirements(request_capabilities(&request, true));
-        if !alias
-            .deployments
-            .iter()
-            .any(|deployment| deployment.supports_static(&required))
-        {
+        if !alias.deployments.iter().any(|deployment| {
+            let mut candidate_request = request.clone();
+            deployment.supports_static(&required)
+                && deployment
+                    .prepare_generate_request(&mut candidate_request, client_protocol)
+                    .is_ok()
+        }) {
             let error = LlmGatewayError::UnsupportedCapability(
                 "no configured route preserves the requested streaming capabilities".to_string(),
             );
@@ -277,9 +374,44 @@ impl LlmRuntime {
         let candidates = alias
             .deployments
             .iter()
-            .filter(|deployment| deployment.supports(&required))
+            .filter(|deployment| {
+                pinned_deployment_id
+                    .as_ref()
+                    .is_none_or(|pinned| pinned == &deployment.id)
+                    && deployment.supports(&required)
+                    && {
+                        let mut candidate_request = request.clone();
+                        deployment
+                            .prepare_generate_request(&mut candidate_request, client_protocol)
+                            .is_ok()
+                    }
+                    && (pinned_deployment_id.is_none()
+                        || deployment.provider.protocol() == ProviderProtocol::BedrockConverse)
+            })
             .cloned()
             .collect::<Vec<_>>();
+        if carries_continuation && pinned_deployment_id.is_none() && candidates.len() != 1 {
+            let error = LlmGatewayError::ReasoningState(ReasoningSealError::RouteUnavailable);
+            finish_audit(
+                audit,
+                rejected_finish(),
+                error.public_status(),
+                error.public_code(),
+            )
+            .await?;
+            return Err(error);
+        }
+        if pinned_deployment_id.is_some() && candidates.is_empty() {
+            let error = LlmGatewayError::ReasoningState(ReasoningSealError::RouteUnavailable);
+            finish_audit(
+                audit,
+                rejected_finish(),
+                error.public_status(),
+                error.public_code(),
+            )
+            .await?;
+            return Err(error);
+        }
         let Some(first_price) = candidates.first().map(|candidate| {
             candidate
                 .generation_price()
@@ -450,6 +582,7 @@ impl LlmRuntime {
 
             let mut provider_request = request.clone();
             provider_request.model = deployment.model.clone();
+            deployment.prepare_generate_request(&mut provider_request, client_protocol)?;
             let attempt_cancellation = cancellation.child_token();
             let provider_context = ProviderRequestContext {
                 deadline: deployment_deadline.into_std(),
@@ -531,7 +664,10 @@ impl LlmRuntime {
                                 .await?;
                                 return Err(audit_error);
                             }
-                            let can_retry = retryable(&error) && attempts < alias.max_attempts;
+                            let can_retry = !carries_continuation
+                                && pinned_deployment_id.is_none()
+                                && retryable(&error)
+                                && attempts < alias.max_attempts;
                             last_error = Some(error);
                             if !can_retry {
                                 break;
@@ -571,7 +707,10 @@ impl LlmRuntime {
                         .await?;
                         return Err(audit_error);
                     }
-                    let can_retry = retryable(&error) && attempts < alias.max_attempts;
+                    let can_retry = !carries_continuation
+                        && pinned_deployment_id.is_none()
+                        && retryable(&error)
+                        && attempts < alias.max_attempts;
                     last_error = Some(error);
                     if !can_retry {
                         break;
@@ -622,6 +761,11 @@ impl LlmRuntime {
         let (sender, receiver) = mpsc::channel(root.stream_channel_capacity);
         let producer_cancellation = cancellation.clone();
         let request_id = context.request_id.clone();
+        let response_tenant_id = context.tenant_id.clone();
+        let response_alias = alias.public_name.clone();
+        let reasoning_sealer = Arc::clone(&root.reasoning_sealer);
+        let response_deployment_id = deployment.id.clone();
+        let response_material_generation = deployment.provider_client_generation;
         tokio::spawn(async move {
             let _request_permits = request_permits;
             let _provider_permit = provider_permit;
@@ -660,7 +804,83 @@ impl LlmRuntime {
                 };
                 let Some(next) = next else { break };
                 match next {
-                    Ok(InferenceEvent::Usage { usage: value }) => usage = Some(value),
+                    Ok(InferenceEvent::Usage { usage: value }) => {
+                        usage = Some(value.clone());
+                        if client_protocol == ClientProtocol::AnthropicMessages
+                            && let Err(error) = send_event(
+                                &sender,
+                                GatewayStreamEvent::Usage(value),
+                                &producer_cancellation,
+                                deadline,
+                                progress_timeout,
+                            )
+                            .await
+                        {
+                            producer_cancellation.cancel();
+                            stream_error = Some(error);
+                            break;
+                        }
+                    }
+                    Ok(InferenceEvent::ProviderContinuation { state }) => {
+                        if finish_reason.is_some()
+                            || !continuation_is_eligible(client_protocol, state.protocol)
+                        {
+                            stream_error = Some(InferenceError::protocol(
+                                "provider reasoning continuation is not eligible for this client protocol",
+                            ));
+                            break;
+                        }
+                        let gateway_event = match client_protocol {
+                            ClientProtocol::OpenAiResponses => {
+                                let Some(tenant_id) = response_tenant_id.as_deref() else {
+                                    stream_error = Some(InferenceError::protocol(
+                                        "authenticated tenant identity is required for reasoning continuation",
+                                    ));
+                                    break;
+                                };
+                                let encrypted = match reasoning_sealer.seal(
+                                    &ReasoningBinding {
+                                        tenant_id,
+                                        alias: &response_alias,
+                                        client_protocol,
+                                        deployment_id: &response_deployment_id,
+                                        provider_material_generation: response_material_generation,
+                                    },
+                                    state.payload.as_slice(),
+                                ) {
+                                    Ok(value) => value,
+                                    Err(error) => {
+                                        stream_error = Some(InferenceError::protocol(error.code()));
+                                        break;
+                                    }
+                                };
+                                GatewayStreamEvent::ReasoningContinuation(encrypted)
+                            }
+                            ClientProtocol::AnthropicMessages => {
+                                GatewayStreamEvent::AnthropicReasoningContinuation(state)
+                            }
+                            _ => {
+                                stream_error = Some(InferenceError::protocol(
+                                    "provider reasoning continuation is not eligible for this client protocol",
+                                ));
+                                break;
+                            }
+                        };
+                        if let Err(error) = send_event(
+                            &sender,
+                            gateway_event,
+                            &producer_cancellation,
+                            deadline,
+                            progress_timeout,
+                        )
+                        .await
+                        {
+                            producer_cancellation.cancel();
+                            stream_error = Some(error);
+                            break;
+                        }
+                        visible = true;
+                    }
                     Ok(InferenceEvent::MessageEnd {
                         finish_reason: terminal_reason,
                         ..
@@ -887,9 +1107,26 @@ fn rejected_finish() -> AuditFinish {
     }
 }
 
+fn continuation_is_eligible(
+    client_protocol: ClientProtocol,
+    provider_protocol: ProviderProtocol,
+) -> bool {
+    matches!(
+        (client_protocol, provider_protocol),
+        (
+            ClientProtocol::OpenAiResponses,
+            ProviderProtocol::BedrockConverse
+        ) | (
+            ClientProtocol::AnthropicMessages,
+            ProviderProtocol::BedrockConverse | ProviderProtocol::AnthropicMessages
+        )
+    )
+}
+
 #[derive(Debug)]
 enum GatewayStreamEvent {
     MessageStart,
+    Usage(NormalizedUsage),
     TextDelta(String),
     RefusalDelta(String),
     ReasoningSummaryDelta {
@@ -897,6 +1134,8 @@ enum GatewayStreamEvent {
         text: String,
     },
     ToolCallDelta(ToolCallDelta),
+    ReasoningContinuation(String),
+    AnthropicReasoningContinuation(ProviderContinuationState),
     Completed {
         finish_reason: FinishReason,
         usage: Option<NormalizedUsage>,
@@ -915,7 +1154,9 @@ impl GatewayStreamEvent {
                 Some(Self::ReasoningSummaryDelta { index, text })
             }
             InferenceEvent::ToolCallDelta { delta } => Some(Self::ToolCallDelta(delta)),
-            InferenceEvent::Usage { .. } | InferenceEvent::MessageEnd { .. } => None,
+            InferenceEvent::ProviderContinuation { .. }
+            | InferenceEvent::Usage { .. }
+            | InferenceEvent::MessageEnd { .. } => None,
         }
     }
 }
@@ -954,6 +1195,10 @@ struct ClientStreamEncoder {
     responses_started: bool,
     tool_calls: BTreeMap<u32, EncodedToolCall>,
     reasoning_summaries: BTreeMap<u32, EncodedReasoningSummary>,
+    reasoning_continuation: Option<EncodedReasoningContinuation>,
+    anthropic_started: bool,
+    anthropic_usage: Option<NormalizedUsage>,
+    anthropic_open_blocks: BTreeSet<u32>,
     next_output_index: u32,
     max_response_bytes: usize,
     response_bytes: usize,
@@ -973,6 +1218,12 @@ struct EncodedToolCall {
 struct EncodedReasoningSummary {
     output_index: u32,
     text: String,
+}
+
+#[derive(Clone, Default)]
+struct EncodedReasoningContinuation {
+    output_index: u32,
+    encrypted_content: String,
 }
 
 impl ClientStreamEncoder {
@@ -1000,6 +1251,10 @@ impl ClientStreamEncoder {
             responses_started: false,
             tool_calls: BTreeMap::new(),
             reasoning_summaries: BTreeMap::new(),
+            reasoning_continuation: None,
+            anthropic_started: false,
+            anthropic_usage: None,
+            anthropic_open_blocks: BTreeSet::new(),
             next_output_index: 0,
             max_response_bytes,
             response_bytes: 0,
@@ -1017,6 +1272,7 @@ impl ClientStreamEncoder {
             ClientProtocol::OpenAiEmbeddings => self.pending.push_back(sse_json(json!({
                 "error":{"message":"Invalid streaming protocol.","type":"server_error","code":"internal_error"}
             }))),
+            ClientProtocol::AnthropicMessages => self.encode_anthropic(event),
         }
     }
 
@@ -1026,6 +1282,7 @@ impl ClientStreamEncoder {
             GatewayStreamEvent::MessageStart => self.pending.push_back(sse_json(json!({
                 "id":id,"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]
             }))),
+            GatewayStreamEvent::Usage(_) => {}
             GatewayStreamEvent::TextDelta(text) => self.pending.push_back(sse_json(json!({
                 "id":id,"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]
             }))),
@@ -1038,6 +1295,18 @@ impl ClientStreamEncoder {
                     "index":delta.index,"id":delta.id,"type":"function","function":{"name":delta.name,"arguments":delta.arguments_fragment}
                 }]},"finish_reason":null}]
             }))),
+            GatewayStreamEvent::ReasoningContinuation(_) => {
+                self.pending.push_back(sse_json(json!({"error":{
+                    "message":"Reasoning continuation is not available through Chat Completions.",
+                    "type":"invalid_request_error","code":"unsupported_feature"
+                }})));
+            }
+            GatewayStreamEvent::AnthropicReasoningContinuation(_) => {
+                self.pending.push_back(sse_json(json!({"error":{
+                    "message":"Anthropic reasoning state cannot cross into Chat Completions.",
+                    "type":"invalid_request_error","code":"unsupported_feature"
+                }})));
+            }
             GatewayStreamEvent::Completed { finish_reason, usage, include_usage } => {
                 self.pending.push_back(sse_json(json!({"id":id,"object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":finish_reason}]})));
                 if include_usage && let Some(usage) = usage {
@@ -1075,6 +1344,7 @@ impl ClientStreamEncoder {
         }
         match event {
             GatewayStreamEvent::MessageStart => {}
+            GatewayStreamEvent::Usage(_) => {}
             GatewayStreamEvent::TextDelta(delta) => {
                 if !self.text_started {
                     self.text_started = true;
@@ -1137,6 +1407,25 @@ impl ClientStreamEncoder {
                 }
                 self.push_named("response.function_call_arguments.delta", json!({"type":"response.function_call_arguments.delta","item_id":item_id,"output_index":output_index,"delta":delta.arguments_fragment}));
             }
+            GatewayStreamEvent::ReasoningContinuation(encrypted_content) => {
+                if self.reasoning_continuation.is_some() {
+                    self.fail_response_limit();
+                    return;
+                }
+                let output_index = self.allocate_output_index();
+                let item_id = format!("rs_{}_continuation", self.request_id);
+                let item = json!({"id":item_id,"type":"reasoning","status":"completed","summary":[],"encrypted_content":encrypted_content});
+                self.push_named("response.output_item.added", json!({"type":"response.output_item.added","output_index":output_index,"item":item}));
+                self.push_named("response.output_item.done", json!({"type":"response.output_item.done","output_index":output_index,"item":item}));
+                self.reasoning_continuation = Some(EncodedReasoningContinuation {
+                    output_index,
+                    encrypted_content,
+                });
+            }
+            GatewayStreamEvent::AnthropicReasoningContinuation(_) => {
+                self.fail_response_limit();
+                return;
+            }
             GatewayStreamEvent::Completed { finish_reason, usage, .. } => {
                 let mut output = Vec::<(u32, Value)>::new();
                 if let Some(output_index) = self.message_output_index {
@@ -1180,6 +1469,13 @@ impl ClientStreamEncoder {
                     self.push_named("response.output_item.done", json!({"type":"response.output_item.done","output_index":index,"item":item}));
                     output.push((index, item));
                 }
+                if let Some(continuation) = self.reasoning_continuation.clone() {
+                    output.push((continuation.output_index, json!({
+                        "id":format!("rs_{}_continuation", self.request_id),
+                        "type":"reasoning","status":"completed","summary":[],
+                        "encrypted_content":continuation.encrypted_content
+                    })));
+                }
                 output.sort_by_key(|(index, _)| *index);
                 let output = output.into_iter().map(|(_, item)| item).collect::<Vec<_>>();
                 let usage_value = usage.as_ref().map(responses_usage).unwrap_or(Value::Null);
@@ -1201,6 +1497,151 @@ impl ClientStreamEncoder {
             GatewayStreamEvent::Failed => self.push_named("response.failed", json!({"type":"response.failed","response":{
                 "id":response_id,"object":"response","status":"failed","store":false,"output":[],"error":{"code":"provider_error","message":"The model stream terminated before completion."}
             }})),
+        }
+    }
+
+    fn encode_anthropic(&mut self, event: GatewayStreamEvent) {
+        match event {
+            GatewayStreamEvent::MessageStart => {}
+            GatewayStreamEvent::Usage(usage) => self.anthropic_usage = Some(usage),
+            GatewayStreamEvent::TextDelta(delta) | GatewayStreamEvent::RefusalDelta(delta) => {
+                self.ensure_anthropic_started();
+                let index = if let Some(index) = self.message_output_index {
+                    index
+                } else {
+                    let index = self.allocate_output_index();
+                    self.message_output_index = Some(index);
+                    self.pending.push_back(named_sse("content_block_start", json!({
+                        "type":"content_block_start","index":index,"content_block":{"type":"text","text":""}
+                    })));
+                    self.anthropic_open_blocks.insert(index);
+                    index
+                };
+                self.pending.push_back(named_sse("content_block_delta", json!({
+                    "type":"content_block_delta","index":index,"delta":{"type":"text_delta","text":delta}
+                })));
+            }
+            GatewayStreamEvent::ToolCallDelta(delta) => {
+                self.ensure_anthropic_started();
+                let is_new = !self.tool_calls.contains_key(&delta.index);
+                if is_new {
+                    let output_index = self.allocate_output_index();
+                    let call_id = delta.id.clone().unwrap_or_else(|| format!("toolu_{}_{}",self.request_id,delta.index));
+                    let name = delta.name.clone().unwrap_or_default();
+                    self.tool_calls.insert(delta.index, EncodedToolCall { output_index, call_id: call_id.clone(), name: name.clone(), arguments: String::new() });
+                    self.pending.push_back(named_sse("content_block_start", json!({
+                        "type":"content_block_start","index":output_index,
+                        "content_block":{"type":"tool_use","id":call_id,"name":name,"input":{}}
+                    })));
+                    self.anthropic_open_blocks.insert(output_index);
+                }
+                if let Some(call) = self.tool_calls.get_mut(&delta.index) {
+                    if let Some(id) = delta.id { call.call_id = id; }
+                    if let Some(name) = delta.name { call.name = name; }
+                    call.arguments.push_str(&delta.arguments_fragment);
+                }
+                if !delta.arguments_fragment.is_empty() {
+                    let output_index = self.tool_calls.get(&delta.index).map_or(0, |call| call.output_index);
+                    self.pending.push_back(named_sse("content_block_delta", json!({
+                        "type":"content_block_delta","index":output_index,
+                        "delta":{"type":"input_json_delta","partial_json":delta.arguments_fragment}
+                    })));
+                }
+            }
+            GatewayStreamEvent::AnthropicReasoningContinuation(state) => {
+                self.ensure_anthropic_started();
+                self.close_anthropic_blocks();
+                let value: Value = match serde_json::from_slice(&state.payload) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        self.pending.push_back(named_sse("error", json!({"type":"error","error":{"type":"api_error","message":"Invalid provider reasoning state."}})));
+                        return;
+                    }
+                };
+                let Some(turns) = value.get("turns").and_then(Value::as_array) else {
+                    self.pending.push_back(named_sse("error", json!({"type":"error","error":{"type":"api_error","message":"Invalid provider reasoning state."}})));
+                    return;
+                };
+                for block in turns
+                    .iter()
+                    .filter_map(|turn| turn.get("blocks").and_then(Value::as_array))
+                    .flatten()
+                {
+                    let index = self.allocate_output_index();
+                    match block.get("type").and_then(Value::as_str) {
+                        Some("reasoning_text") => {
+                            let text = block.get("text").and_then(Value::as_str).unwrap_or_default();
+                            let signature = block.get("signature").and_then(Value::as_str).unwrap_or_default();
+                            self.pending.push_back(named_sse("content_block_start", json!({"type":"content_block_start","index":index,"content_block":{"type":"thinking","thinking":"","signature":""}})));
+                            if !text.is_empty() { self.pending.push_back(named_sse("content_block_delta", json!({"type":"content_block_delta","index":index,"delta":{"type":"thinking_delta","thinking":text}}))); }
+                            if !signature.is_empty() { self.pending.push_back(named_sse("content_block_delta", json!({"type":"content_block_delta","index":index,"delta":{"type":"signature_delta","signature":signature}}))); }
+                        }
+                        Some("redacted_content") => {
+                            let data = block.get("data").and_then(Value::as_str).unwrap_or_default();
+                            self.pending.push_back(named_sse("content_block_start", json!({"type":"content_block_start","index":index,"content_block":{"type":"redacted_thinking","data":data}})));
+                        }
+                        _ => {
+                            self.pending.push_back(named_sse("error", json!({"type":"error","error":{"type":"api_error","message":"Unsupported provider reasoning state."}})));
+                            return;
+                        }
+                    }
+                    self.pending.push_back(named_sse("content_block_stop", json!({"type":"content_block_stop","index":index})));
+                }
+            }
+            GatewayStreamEvent::ReasoningSummaryDelta { .. } => {}
+            GatewayStreamEvent::ReasoningContinuation(_) => {
+                self.pending.push_back(named_sse("error", json!({"type":"error","error":{"type":"api_error","message":"Invalid Anthropic continuation state."}})));
+            }
+            GatewayStreamEvent::Completed { finish_reason, usage, .. } => {
+                let usage = usage.unwrap_or_default();
+                self.anthropic_usage = Some(usage.clone());
+                self.ensure_anthropic_started();
+                self.close_anthropic_blocks();
+                self.pending.push_back(named_sse("message_delta", json!({
+                    "type":"message_delta","delta":{"stop_reason":anthropic_stop_reason(finish_reason),"stop_sequence":null},
+                    "usage":{
+                        "input_tokens":usage.input_tokens.unwrap_or(0),
+                        "output_tokens":usage.output_tokens.unwrap_or(0),
+                        "cache_read_input_tokens":usage.cached_input_tokens.unwrap_or(0)
+                    }
+                })));
+                self.pending.push_back(named_sse("message_stop", json!({"type":"message_stop"})));
+            }
+            GatewayStreamEvent::Failed => self.pending.push_back(named_sse("error", json!({
+                "type":"error","error":{"type":"api_error","message":"The model stream terminated before completion."}
+            }))),
+        }
+    }
+
+    fn ensure_anthropic_started(&mut self) {
+        if self.anthropic_started {
+            return;
+        }
+        self.anthropic_started = true;
+        let usage = self.anthropic_usage.clone().unwrap_or_default();
+        self.pending.push_back(named_sse(
+            "message_start",
+            json!({
+                "type":"message_start","message":{
+                    "id":format!("msg_{}",self.request_id),"type":"message","role":"assistant",
+                    "model":self.alias,"content":[],"stop_reason":null,"stop_sequence":null,
+                    "usage":{
+                        "input_tokens":usage.input_tokens.unwrap_or(0),
+                        "output_tokens":usage.output_tokens.unwrap_or(0),
+                        "cache_read_input_tokens":usage.cached_input_tokens.unwrap_or(0)
+                    }
+                }
+            }),
+        ));
+    }
+
+    fn close_anthropic_blocks(&mut self) {
+        let indices = std::mem::take(&mut self.anthropic_open_blocks);
+        for index in indices {
+            self.pending.push_back(named_sse(
+                "content_block_stop",
+                json!({"type":"content_block_stop","index":index}),
+            ));
         }
     }
 
@@ -1250,6 +1691,8 @@ impl ClientStreamEncoder {
         self.refusal.clear();
         self.tool_calls.clear();
         self.reasoning_summaries.clear();
+        self.reasoning_continuation = None;
+        self.anthropic_started = false;
         let response_id = format!("resp_{}", self.request_id);
         self.pending.push_back(named_sse("response.failed", json!({
             "type":"response.failed","sequence_number":self.sequence_number,"response":{
@@ -1257,6 +1700,16 @@ impl ClientStreamEncoder {
                 "error":{"code":"response_too_large","message":"The model response exceeded the gateway output limit."}
             }
         })));
+    }
+}
+
+fn anthropic_stop_reason(reason: FinishReason) -> &'static str {
+    match reason {
+        FinishReason::Length => "max_tokens",
+        FinishReason::ToolCalls => "tool_use",
+        FinishReason::Stop => "end_turn",
+        FinishReason::ContentFilter => "refusal",
+        FinishReason::Cancelled | FinishReason::Error | FinishReason::Unknown => "end_turn",
     }
 }
 
@@ -1276,4 +1729,90 @@ fn named_sse(name: &str, value: serde_json::Value) -> Bytes {
 
 fn sse_json(value: serde_json::Value) -> Bytes {
     Bytes::from(format!("data: {value}\n\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zeroize::Zeroizing;
+
+    #[test]
+    fn anthropic_facade_accepts_native_and_bedrock_continuations() {
+        assert!(continuation_is_eligible(
+            ClientProtocol::AnthropicMessages,
+            ProviderProtocol::AnthropicMessages
+        ));
+        assert!(continuation_is_eligible(
+            ClientProtocol::AnthropicMessages,
+            ProviderProtocol::BedrockConverse
+        ));
+        assert!(!continuation_is_eligible(
+            ClientProtocol::OpenAiResponses,
+            ProviderProtocol::AnthropicMessages
+        ));
+    }
+
+    #[test]
+    fn anthropic_stream_closes_text_before_continuation_and_preserves_usage() {
+        let mut encoder = ClientStreamEncoder::new(
+            ClientProtocol::AnthropicMessages,
+            "request-1".to_string(),
+            "claude".to_string(),
+            1024 * 1024,
+            ResponsesResponseMetadata::default(),
+        );
+        encoder.encode(GatewayStreamEvent::Usage(NormalizedUsage {
+            input_tokens: Some(11),
+            output_tokens: Some(0),
+            cached_input_tokens: Some(2),
+            reasoning_tokens: None,
+        }));
+        encoder.encode(GatewayStreamEvent::MessageStart);
+        encoder.encode(GatewayStreamEvent::TextDelta("answer".to_string()));
+        encoder.encode(GatewayStreamEvent::AnthropicReasoningContinuation(
+            ProviderContinuationState {
+                protocol: ProviderProtocol::BedrockConverse,
+                payload: Zeroizing::new(
+                    serde_json::to_vec(&json!({
+                        "version":1,
+                        "turns":[{"blocks":[{
+                            "type":"reasoning_text","text":"opaque","signature":"sig"
+                        }]}]
+                    }))
+                    .unwrap(),
+                ),
+            },
+        ));
+        encoder.encode(GatewayStreamEvent::Completed {
+            finish_reason: FinishReason::Stop,
+            usage: Some(NormalizedUsage {
+                input_tokens: Some(11),
+                output_tokens: Some(7),
+                cached_input_tokens: Some(2),
+                reasoning_tokens: None,
+            }),
+            include_usage: true,
+        });
+        let stream = encoder
+            .pending
+            .iter()
+            .map(|frame| String::from_utf8_lossy(frame).into_owned())
+            .collect::<String>();
+        let text_stop = stream
+            .find("content_block_stop\ndata: {\"index\":0")
+            .expect("text stop");
+        let thinking_start = stream
+            .find("\"content_block\":{\"signature\":\"\",\"thinking\":\"\",\"type\":\"thinking\"}")
+            .expect("thinking start");
+        assert!(text_stop < thinking_start);
+        assert_eq!(
+            stream
+                .matches("content_block_stop\ndata: {\"index\":0")
+                .count(),
+            1
+        );
+        assert!(stream.contains("\"input_tokens\":11"));
+        assert!(stream.contains("\"output_tokens\":7"));
+        assert!(stream.contains("\"cache_read_input_tokens\":2"));
+    }
 }

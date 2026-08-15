@@ -2281,30 +2281,30 @@ unless enabled identically for every candidate.
 19. Add semantic caching only with separate embedding/vector admission,
     deadline and cost slices, stampede control, and named performance profiles.
 
-## Production Projection And Agent Cutover
+## Config Snapshot Lifecycle And Agent Cutover
 
-Production projection is opt-in under `llm-router.yml` at
-`productionProjection.enabled`. Config server delivers `manifest.json` and the
-referenced immutable files beneath `config-cache/llm-projection`. The gateway
-validates canonical digests, schema/compiler compatibility, host/environment,
-resource versions, and sequence before compiling and atomically swapping one
-root. A missing, bad, conflicting, or unsupported publication leaves the last
-valid root active; an enabled gateway with no valid bootstrap root fails
-closed.
+The current immutable config-server `values.yml` snapshot is authoritative for
+`llm-router`, including providers, deployments, aliases, prices, policies, and
+non-secret runtime material references. At startup the gateway resolves
+`llm-router.yml`, compiles the complete graph, and publishes one immutable
+runtime snapshot. During an explicit control-plane reload, the runtime fetches
+the current `values.yml` again and invokes only the selected module reloaders.
+Selecting `llm-router` compiles and atomically publishes a new LLM snapshot;
+failure retains the last-known-good snapshot. Reloading another module cannot
+change LLM routing.
 
-Every replica writes an independent acknowledgement containing only host,
-environment, sequence, root digest, application time, gateway version, and
-instance ID. Configure a unique `gatewayInstance` per replica. If delivery of
-that acknowledgement fails after publication, the root remains active and the
-worker retries the same acknowledgement before processing another root. The
-`credentialEnvironment` map authorizes each opaque `credential://` reference
-to one application-owned environment-variable name. Neither this map nor the
-projection contains secret values. Rotation is detected off the request path;
-only affected provider clients are replaced, while provider-account capacity,
-principal permits, in-flight roots, and unchanged subgraphs remain stable. A
-pricing-only root replaces the price-bearing deployment and alias views but
-retains their circuit, semaphore, usage-ledger, provider-client, account, and
-principal-stripe state.
+There is no independent LLM filesystem projection, polling worker, checkpoint,
+or publication acknowledgement channel. Control-plane publication writes typed
+`llm-router.*` properties to the selected instance. The operator then creates
+or promotes a normal config snapshot and explicitly restarts the gateway or
+reloads `llm-router`.
+
+`runtimeMaterial.credentialEnvironment` authorizes opaque `credential://`
+references to application-owned environment-variable names. Direct `env:`
+references are also resolved locally. Neither `values.yml` nor the rendered
+module configuration contains secret values. A successful snapshot load proves
+configuration application, not provider reachability; provider testing remains
+a separate operation.
 
 Migrated light-agent definitions resolve a direct alias or exactly one policy
 default before a turn is persisted. The immutable turn stores provider

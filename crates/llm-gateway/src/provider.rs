@@ -372,8 +372,8 @@ impl HttpInferenceProvider {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         match (&config.endpoint_auth, config.provider_protocol) {
-            (Some(EndpointAuth::None), _) => {}
-            (Some(EndpointAuth::Bearer { .. }), _) => {
+            (EndpointAuth::None, _) => {}
+            (EndpointAuth::Bearer { .. }, _) => {
                 let secret = secret.ok_or_else(|| {
                     LlmGatewayError::Config(
                         "provider endpoint bearer credential was not resolved".to_string(),
@@ -388,7 +388,7 @@ impl HttpInferenceProvider {
                     })?,
                 );
             }
-            (Some(EndpointAuth::ApiKey { header, .. }), _) => {
+            (EndpointAuth::ApiKey { header, .. }, _) => {
                 let secret = secret.ok_or_else(|| {
                     LlmGatewayError::Config(
                         "provider endpoint API-key credential was not resolved".to_string(),
@@ -403,40 +403,10 @@ impl HttpInferenceProvider {
                     })?,
                 );
             }
-            (
-                None,
-                ProviderProtocol::OpenAiChat
-                | ProviderProtocol::OpenAiResponses
-                | ProviderProtocol::OpenAiEmbeddings,
-            ) => {
-                let secret = secret.ok_or_else(|| {
-                    LlmGatewayError::Config(
-                        "legacy provider credential was not resolved".to_string(),
-                    )
-                })?;
-                headers.insert(
-                    AUTHORIZATION,
-                    HeaderValue::from_str(&format!("Bearer {secret}")).map_err(|_| {
-                        LlmGatewayError::Config(
-                            "provider secret is not a valid header value".to_string(),
-                        )
-                    })?,
-                );
-            }
-            (None, ProviderProtocol::AnthropicMessages) => {
-                let secret = secret.ok_or_else(|| {
-                    LlmGatewayError::Config(
-                        "legacy provider credential was not resolved".to_string(),
-                    )
-                })?;
-                headers.insert(
-                    "x-api-key",
-                    HeaderValue::from_str(secret).map_err(|_| {
-                        LlmGatewayError::Config(
-                            "provider secret is not a valid header value".to_string(),
-                        )
-                    })?,
-                );
+            (EndpointAuth::BedrockApiKey { .. } | EndpointAuth::AwsSigV4 { .. }, _) => {
+                return Err(LlmGatewayError::Config(
+                    "Bedrock endpoint auth must use BedrockConverseProvider".to_string(),
+                ));
             }
         }
         if config.provider_protocol == ProviderProtocol::AnthropicMessages {
@@ -513,6 +483,7 @@ impl HttpInferenceProvider {
             ProviderProtocol::AnthropicMessages => format!("{}/messages", self.base_url),
             ProviderProtocol::OpenAiResponses => format!("{}/responses", self.base_url),
             ProviderProtocol::OpenAiEmbeddings => format!("{}/embeddings", self.base_url),
+            ProviderProtocol::BedrockConverse => self.base_url.clone(),
         }
     }
 }
@@ -723,6 +694,11 @@ impl GenerationProvider for HttpInferenceProvider {
                     "embedding protocol cannot execute generation",
                 ));
             }
+            ProviderProtocol::BedrockConverse => {
+                return Err(InferenceError::unsupported(
+                    "Bedrock protocol requires BedrockConverseProvider",
+                ));
+            }
         };
         let request = self
             .client
@@ -759,6 +735,9 @@ impl GenerationProvider for HttpInferenceProvider {
                 ProviderProtocol::OpenAiEmbeddings => {
                     InferenceError::unsupported("embedding protocol cannot execute generation")
                 }
+                ProviderProtocol::BedrockConverse => {
+                    InferenceError::unsupported("Bedrock protocol requires BedrockConverseProvider")
+                }
             });
         }
         let json = serde_json::from_slice(&bytes).map_err(|_| {
@@ -770,6 +749,9 @@ impl GenerationProvider for HttpInferenceProvider {
             ProviderProtocol::OpenAiResponses => OpenAiResponsesCodec.decode_response(&json),
             ProviderProtocol::OpenAiEmbeddings => Err(InferenceError::unsupported(
                 "embedding protocol cannot execute generation",
+            )),
+            ProviderProtocol::BedrockConverse => Err(InferenceError::unsupported(
+                "Bedrock protocol requires BedrockConverseProvider",
             )),
         }
     }
@@ -789,6 +771,11 @@ impl GenerationProvider for HttpInferenceProvider {
             ProviderProtocol::OpenAiEmbeddings => {
                 return Err(InferenceError::unsupported(
                     "embedding protocol cannot execute generation",
+                ));
+            }
+            ProviderProtocol::BedrockConverse => {
+                return Err(InferenceError::unsupported(
+                    "Bedrock protocol requires BedrockConverseProvider",
                 ));
             }
         };
@@ -830,6 +817,9 @@ impl GenerationProvider for HttpInferenceProvider {
                 ProviderProtocol::OpenAiEmbeddings => {
                     InferenceError::unsupported("embedding protocol cannot execute generation")
                 }
+                ProviderProtocol::BedrockConverse => {
+                    InferenceError::unsupported("Bedrock protocol requires BedrockConverseProvider")
+                }
             });
         }
         let mut decoder: Box<dyn StreamDecoder + Send> = match self.protocol {
@@ -839,6 +829,11 @@ impl GenerationProvider for HttpInferenceProvider {
             ProviderProtocol::OpenAiEmbeddings => {
                 return Err(InferenceError::unsupported(
                     "embedding protocol cannot execute generation",
+                ));
+            }
+            ProviderProtocol::BedrockConverse => {
+                return Err(InferenceError::unsupported(
+                    "Bedrock protocol requires BedrockConverseProvider",
                 ));
             }
         };
@@ -892,10 +887,14 @@ mod tests {
     fn config(base_url: &str) -> ProviderConfig {
         ProviderConfig {
             provider_account_id: "provider-test".to_string(),
+            provider_type: Default::default(),
             provider_protocol: ProviderProtocol::OpenAiChat,
+            aws_region: None,
+            material_generation: 1,
             base_url: base_url.to_string(),
-            secret_ref: "credential://provider/test".to_string(),
-            endpoint_auth: None,
+            endpoint_auth: EndpointAuth::Bearer {
+                credential_ref: "credential://provider/test".to_string(),
+            },
             network_profile: Default::default(),
             headers: BTreeMap::new(),
             quota_group_id: None,
@@ -994,7 +993,7 @@ mod tests {
         trust_bundle_pem: Option<Vec<u8>>,
     ) -> HttpInferenceProvider {
         let mut provider_config = config(&format!("https://{host}:{port}/v1"));
-        provider_config.endpoint_auth = Some(EndpointAuth::None);
+        provider_config.endpoint_auth = EndpointAuth::None;
         HttpInferenceProvider::build_with_material(
             &provider_config,
             None,
@@ -1261,7 +1260,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let mut provider_config = config(&format!("http://{address}/v1"));
-        provider_config.endpoint_auth = Some(EndpointAuth::None);
+        provider_config.endpoint_auth = EndpointAuth::None;
         let provider = HttpInferenceProvider::build_with_auth(
             &provider_config,
             None,

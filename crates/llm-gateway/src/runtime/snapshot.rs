@@ -1,10 +1,12 @@
 use super::readiness::DeploymentReadiness;
 use crate::audit::AuditTransportContext;
 use crate::config::{
-    AliasCapabilityRequirements, AuditMode, EmbeddingWorkloadLane, ReadinessPolicy,
+    AliasCapabilityRequirements, AuditMode, BedrockDeploymentPolicy, EmbeddingWorkloadLane,
+    ReadinessPolicy, ReasoningMode, SamplingParameterPolicy,
 };
 use crate::error::LlmGatewayError;
 use crate::pii::PiiProfile;
+use crate::reasoning_seal::ReasoningSealer;
 use crate::routing::{OwnedCircuitPermit, PassiveCircuit};
 use crate::usage::{EmbeddingPrice, GenerationPrice, OperationPrice, UsageLedger};
 use chrono::Utc;
@@ -47,9 +49,70 @@ pub struct DeploymentRuntime {
     pub circuit: Arc<PassiveCircuit>,
     pub account: Arc<ProviderAccountRuntime>,
     pub prices: BTreeMap<Operation, OperationPrice>,
+    pub bedrock_policy: Option<BedrockDeploymentPolicy>,
 }
 
 impl DeploymentRuntime {
+    pub fn prepare_generate_request(
+        &self,
+        request: &mut model_provider::inference::InferenceRequest,
+        client_protocol: model_provider::inference::ClientProtocol,
+    ) -> Result<(), LlmGatewayError> {
+        if self.provider.protocol() != ProviderProtocol::BedrockConverse {
+            return Ok(());
+        }
+        let policy = self.bedrock_policy.as_ref().ok_or_else(|| {
+            LlmGatewayError::UnsupportedCapability(
+                "Bedrock deployment has no typed request policy".to_string(),
+            )
+        })?;
+        validate_sampling_parameter(
+            "temperature",
+            request.sampling.temperature,
+            &policy.sampling.temperature,
+        )?;
+        validate_sampling_parameter("top_p", request.sampling.top_p, &policy.sampling.top_p)?;
+        if request.sampling.temperature.is_some()
+            && request.sampling.top_p.is_some()
+            && !policy.sampling.allow_temperature_and_top_p
+        {
+            return Err(LlmGatewayError::UnsupportedCapability(
+                "selected deployment does not allow temperature and top_p together".to_string(),
+            ));
+        }
+        match policy.reasoning.mode {
+            ReasoningMode::Unsupported
+                if request.reasoning.is_some() || request.provider_continuation.is_some() =>
+            {
+                return Err(LlmGatewayError::UnsupportedCapability(
+                    "selected deployment does not support reasoning continuation".to_string(),
+                ));
+            }
+            ReasoningMode::AlwaysOnAdaptive
+                if client_protocol == model_provider::inference::ClientProtocol::OpenAiChat =>
+            {
+                return Err(LlmGatewayError::UnsupportedCapability(
+                    "always-on reasoning is not available through Chat Completions".to_string(),
+                ));
+            }
+            ReasoningMode::AlwaysOnAdaptive if request.reasoning.is_none() => {
+                request.reasoning = Some(model_provider::inference::ReasoningOptions::default());
+            }
+            _ => {}
+        }
+        if let Some(effort) = request
+            .reasoning
+            .as_ref()
+            .and_then(|reasoning| reasoning.effort.as_ref())
+            && !policy.reasoning.supported_efforts.contains(effort)
+        {
+            return Err(LlmGatewayError::UnsupportedCapability(format!(
+                "reasoning effort `{effort}` is not supported by the selected deployment"
+            )));
+        }
+        Ok(())
+    }
+
     pub fn readiness_policy(&self) -> ReadinessPolicy {
         self.readiness_policy
     }
@@ -120,6 +183,32 @@ impl DeploymentRuntime {
                 || (self.provider.protocol() == ProviderProtocol::OpenAiResponses
                     && generation.is_some_and(|value| value.content.reasoning_usage)))
             && (!required.streaming || generation.is_some_and(|value| value.streaming))
+    }
+}
+
+fn validate_sampling_parameter(
+    name: &str,
+    supplied: Option<f64>,
+    policy: &SamplingParameterPolicy,
+) -> Result<(), LlmGatewayError> {
+    let Some(value) = supplied else {
+        return Ok(());
+    };
+    let valid = match policy {
+        SamplingParameterPolicy::Unsupported => false,
+        SamplingParameterPolicy::Range { minimum, maximum } => {
+            value.is_finite() && value >= *minimum && value <= *maximum
+        }
+        SamplingParameterPolicy::Fixed { value: fixed } => {
+            value.is_finite() && (value - fixed).abs() <= f64::EPSILON
+        }
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(LlmGatewayError::UnsupportedCapability(format!(
+            "{name} is not accepted by the selected deployment"
+        )))
     }
 }
 
@@ -197,6 +286,10 @@ pub struct LlmPublishedSnapshot {
     pub aliases: BTreeMap<String, Arc<AliasPlan>>,
     pub deployments: BTreeMap<String, Arc<DeploymentRuntime>>,
     pub principal_permits: Arc<PrincipalPermitStripes>,
+    pub reasoning_sealer: Arc<ReasoningSealer>,
+    pub reasoning_key_set_generation: u64,
+    pub reasoning_key_set_digest: String,
+    pub anthropic_messages_enabled: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

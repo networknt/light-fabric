@@ -1,41 +1,51 @@
-# ADR 0004: Config-Server File Projection Transport
+# ADR 0004: LLM Configuration Uses the Standard Config Lifecycle
 
-- Status: Accepted
-- Date: 2026-07-18
-- Gate: LF-2 before PDB-1, LP-1, and DIST-1
+- Status: Superseded filesystem projection; accepted values-backed lifecycle
+- Date: 2026-08-15
 
 ## Decision
 
-Production topology uses the existing config-server `/files` snapshot delivery
-seam. The runtime bootstrap already materializes remote files in
-`config-cache`; the LLM projection is delivered there as one root manifest and
-immutable resource files. Development may point to checked-in fixtures, but
-production may not read arbitrary local topology.
+`llm-router` uses the same configuration authority and lifecycle as every
+other reloadable gateway module. The config server's current immutable
+`values.yml` snapshot is the only source of LLM routing configuration.
 
-Resources and manifests use UTF-8 canonical JSON: object keys sorted
-lexicographically, no insignificant whitespace, and standard JSON scalar
-encoding. A resource SHA-256 covers every field except `digest`. A root
-SHA-256 covers every manifest field except `rootDigest`. Secret values are
-never included. Digests are computed from the in-memory canonical serialization,
-not from editor-specific line endings. Checked-in canonical fixtures may have
-trailing ASCII whitespace, which is excluded only when verifying the fixture's
-byte-for-byte canonical form.
+At startup, `LightRuntime` downloads the current snapshot, resolves
+`llm-router.yml`, compiles the complete providers/deployments/aliases graph,
+and publishes one immutable runtime snapshot. During an explicit module reload,
+the runtime downloads the current snapshot again and invokes only the selected
+reloaders. `LlmRouterReloader` compiles from that fresh reload context and
+atomically swaps the candidate only after validation succeeds. A failed reload
+retains the last-known-good LLM runtime.
 
-Sequences are monotonic per host/environment. The next new publication must be
-exactly last-applied + 1. An identical sequence/digest is an idempotent
-duplicate; a conflicting duplicate or a gap rejects the delta and triggers a
-full resync. Deletes are explicit tombstoned manifest entries. Full resync
-fetches the manifest first, then every referenced immutable resource, with
-bounded pagination/artifact size, validates the complete graph, and publishes
-one root.
+The former config-server `/files` manifest/resource projection,
+`LlmProjectionWorker` polling loop, projection checkpoint, and gateway-to-Portal
+publication acknowledgement are removed. LLM configuration cannot change merely
+because files appeared in `config-cache`; it changes only at startup or when
+`llm-router` is included in an explicit reload.
 
-The acknowledgement is `{hostId, environment, sequence, rootDigest,
-appliedAt, gatewayVersion}`. Unknown schema versions or a
-`minimumGatewayVersion` newer than the runtime reject the candidate. The last
-valid root remains active on all fetch, digest, schema, ordering, compatibility,
-or compilation failures.
+## Configuration Boundary
 
-## Fixtures
+The typed `llm-router.*` properties in `values.yml` include the complete
+provider, deployment, alias, policy-derived, pricing, and non-secret runtime
+material configuration. Map and list properties are whole typed nodes, not
+quoted JSON strings.
 
-The schemas and canonical digest fixtures are under
-`benchmarks/llm-gateway/schemas` and `manifests/projection-*.json`.
+Credential and reasoning-seal values remain outside config server. The snapshot
+contains only `env:` or opaque credential references plus the authorized local
+reference-to-environment mapping. Trust-bundle configuration similarly contains
+only approved references, paths, and digests; it does not contain private key or
+provider credential bytes.
+
+The config snapshot is immutable. Publishing control-plane changes means
+updating the target instance's `llm-router` properties, creating/promoting a new
+snapshot through the normal config workflow, and then explicitly restarting or
+reloading `llm-router`.
+
+## Consequences
+
+- Startup and reload observe one coherent config-server snapshot.
+- Reloading an unrelated module cannot alter LLM routing.
+- In-flight requests retain the immutable runtime snapshot they captured.
+- There is no second polling, sequence, checkpoint, or acknowledgement protocol.
+- Delivery success is reported by the standard module reload result; provider
+  reachability remains a separate runtime qualification concern.

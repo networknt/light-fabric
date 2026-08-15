@@ -1,3 +1,4 @@
+use crate::reasoning_seal::ReasoningSealError;
 use model_provider::inference::{InferenceError, InferenceErrorCategory};
 use thiserror::Error;
 
@@ -35,6 +36,8 @@ pub enum LlmGatewayError {
     ProviderUnavailable,
     #[error("provider request failed: {0}")]
     Provider(InferenceError),
+    #[error("reasoning continuation failed: {0}")]
+    ReasoningState(ReasoningSealError),
 }
 
 impl LlmGatewayError {
@@ -53,6 +56,18 @@ impl LlmGatewayError {
             Self::Capacity => PublicErrorMapping::new(429, "capacity_exhausted"),
             Self::Budget => PublicErrorMapping::new(429, "budget_exhausted"),
             Self::Provider(error) => provider_public_mapping(error.category),
+            Self::ReasoningState(error) => match error {
+                ReasoningSealError::TooLarge => PublicErrorMapping::new(413, error.code()),
+                ReasoningSealError::RouteUnavailable => PublicErrorMapping::new(409, error.code()),
+                ReasoningSealError::KeyUnavailable
+                | ReasoningSealError::KeyConfigInvalid
+                | ReasoningSealError::Disabled => PublicErrorMapping::new(503, error.code()),
+                ReasoningSealError::TooManyItems
+                | ReasoningSealError::Invalid
+                | ReasoningSealError::Required
+                | ReasoningSealError::Tampered
+                | ReasoningSealError::Stale => PublicErrorMapping::new(400, error.code()),
+            },
             Self::Config(_) | Self::AuditUnavailable | Self::ProviderUnavailable => {
                 PublicErrorMapping::new(503, "service_unavailable")
             }

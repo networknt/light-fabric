@@ -6,7 +6,7 @@ use super::snapshot::{
 use crate::audit::AuditTransportContext;
 use crate::config::{
     EndpointAuth, LlmRouterConfig, NetworkProfileMode, NetworkTermination, PricingBasis,
-    ReadinessPolicy,
+    ProviderProfileType, ReadinessPolicy,
 };
 use crate::credentials::{FileTrustBundleResolver, SecretResolver, TrustBundleResolver};
 use crate::error::LlmGatewayError;
@@ -14,6 +14,7 @@ use crate::pii::validate_pii_promotion;
 use crate::provider::{
     CompiledAddressPolicy, HttpEmbeddingProvider, HttpInferenceProvider, ProviderTransportMaterial,
 };
+use crate::reasoning_seal::ReasoningSealer;
 use crate::routing::PassiveCircuit;
 use crate::usage::{OperationPrice, UsageLedger};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -25,6 +26,7 @@ use model_provider::inference::{
     CompiledProvider, ContentCapabilities, EmbeddingCapabilities, GenerationCapabilities,
     Operation, ProviderCapabilities,
 };
+use model_provider::providers::bedrock::{BedrockAuth, BedrockConverseProvider};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -108,6 +110,11 @@ impl LlmCompiler {
         let mut accounts = BTreeMap::<String, Arc<ProviderAccountRuntime>>::new();
         let mut providers = BTreeMap::new();
         for (id, provider) in &config.providers {
+            if provider.material_generation == 0 {
+                return Err(LlmGatewayError::Config(format!(
+                    "provider `{id}` requires materialGeneration greater than zero"
+                )));
+            }
             let credential_ref = endpoint_credential_ref(provider)?;
             let secret = if let Some(reference) = credential_ref {
                 self.probe
@@ -155,33 +162,64 @@ impl LlmCompiler {
                 ),
                 None => {
                     self.probe.client_builds.fetch_add(1, Ordering::Relaxed);
-                    let client = match provider.provider_protocol.operation() {
-                        Operation::Generate => CompiledProvider::Generation(Arc::new(
-                            HttpInferenceProvider::build_with_material(
-                                provider,
-                                secret.as_deref(),
+                    let client = if provider.provider_protocol
+                        == model_provider::inference::ProviderProtocol::BedrockConverse
+                    {
+                        let region = provider.aws_region.as_deref().ok_or_else(|| {
+                            LlmGatewayError::Config(format!(
+                                "Bedrock provider `{id}` requires awsRegion"
+                            ))
+                        })?;
+                        let auth = match &provider.endpoint_auth {
+                            EndpointAuth::BedrockApiKey { .. } => {
+                                BedrockAuth::ApiKey(secret.clone().ok_or_else(|| {
+                                    LlmGatewayError::Config(format!(
+                                        "Bedrock provider `{id}` has no resolved API key"
+                                    ))
+                                })?)
+                            }
+                            EndpointAuth::AwsSigV4 { .. } => BedrockAuth::DefaultChain,
+                            _ => {
+                                return Err(LlmGatewayError::Config(format!(
+                                    "Bedrock provider `{id}` requires bedrock_api_key or aws_sig_v4 endpoint auth"
+                                )));
+                            }
+                        };
+                        CompiledProvider::Generation(Arc::new(
+                            BedrockConverseProvider::new(
+                                region,
+                                Some(provider.base_url.clone()),
+                                auth,
                                 capabilities.generation.unwrap_or_default(),
                                 timeout,
-                                transport_material.clone(),
-                            )?,
-                        )),
-                        Operation::Embed => CompiledProvider::Embedding(Arc::new(
-                            HttpEmbeddingProvider::build_with_material(
-                                provider,
-                                secret.as_deref(),
-                                capabilities.embedding.unwrap_or_default(),
-                                timeout,
-                                transport_material,
-                            )?,
-                        )),
+                            )
+                            .map_err(|error| LlmGatewayError::Config(error.detail))?,
+                        ))
+                    } else {
+                        match provider.provider_protocol.operation() {
+                            Operation::Generate => CompiledProvider::Generation(Arc::new(
+                                HttpInferenceProvider::build_with_material(
+                                    provider,
+                                    secret.as_deref(),
+                                    capabilities.generation.unwrap_or_default(),
+                                    timeout,
+                                    transport_material.clone(),
+                                )?,
+                            )),
+                            Operation::Embed => CompiledProvider::Embedding(Arc::new(
+                                HttpEmbeddingProvider::build_with_material(
+                                    provider,
+                                    secret.as_deref(),
+                                    capabilities.embedding.unwrap_or_default(),
+                                    timeout,
+                                    transport_material,
+                                )?,
+                            )),
+                        }
                     };
                     (
                         client,
-                        previous_client
-                            .map(|deployment| {
-                                deployment.provider_client_generation.saturating_add(1)
-                            })
-                            .unwrap_or(1),
+                        provider.material_generation,
                         std::time::Instant::now(),
                     )
                 }
@@ -221,7 +259,7 @@ impl LlmCompiler {
             let required_conformance_provenance = deployment
                 .conformance_result
                 .as_ref()
-                .map(|_| config.production_projection.required_conformance_provenance);
+                .map(|_| config.runtime_material.required_conformance_provenance);
             let provider_config = &config.providers[&deployment.provider];
             let quota = provider_config
                 .quota_group_id
@@ -243,6 +281,7 @@ impl LlmCompiler {
                         && old.prices == deployment.prices
                         && old.provider_digest == *provider_digest
                         && old.provider_client_generation == *provider_client_generation
+                        && old.provider_client_built_at == *provider_client_built_at
                         && old.audit_transport == audit_transport
                         && old.readiness_policy() == readiness_policy(deployment)
                         && old.cold_start_timeout_ms == cold_start_timeout_ms(deployment)
@@ -265,6 +304,7 @@ impl LlmCompiler {
                         && old.request_timeout_ms == request_timeout_ms(config, deployment)
                         && old.stream_setup_timeout_ms
                             == stream_setup_timeout_ms(config, deployment)
+                        && old.bedrock_policy == deployment.bedrock_policy
                 });
                 Arc::new(DeploymentRuntime {
                     id: id.clone(),
@@ -298,6 +338,7 @@ impl LlmCompiler {
                         }),
                     account: Arc::clone(&accounts[&quota]),
                     prices: deployment.prices.clone(),
+                    bedrock_policy: deployment.bedrock_policy.clone(),
                 })
             });
             deployments.insert(id.clone(), runtime);
@@ -377,6 +418,19 @@ impl LlmCompiler {
         let principal_permits = previous
             .map(|old| Arc::clone(&old.principal_permits))
             .unwrap_or_else(|| Arc::new(PrincipalPermitStripes::new(64, 16)));
+        let reasoning_sealer = Arc::new(
+            ReasoningSealer::resolve(
+                &config.runtime_material.reasoning_seal,
+                self.resolver.as_ref(),
+            )
+            .map_err(|error| LlmGatewayError::Config(error.code().to_string()))?,
+        );
+        if !reasoning_sealer.is_ready() {
+            return Err(LlmGatewayError::Config(
+                "reasoning_key_unavailable".to_string(),
+            ));
+        }
+        let reasoning_key_set_digest = canonical_sha256(&config.runtime_material.reasoning_seal);
         Ok(LlmPublishedSnapshot {
             generation,
             digest,
@@ -396,6 +450,10 @@ impl LlmCompiler {
             aliases,
             deployments,
             principal_permits,
+            reasoning_sealer,
+            reasoning_key_set_generation: config.runtime_material.reasoning_seal.key_set_generation,
+            reasoning_key_set_digest,
+            anthropic_messages_enabled: config.client_compatibility.anthropic_messages,
         })
     }
 }
@@ -559,6 +617,56 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
         ));
     }
     for (id, provider) in &config.providers {
+        let is_bedrock = provider.provider_protocol
+            == model_provider::inference::ProviderProtocol::BedrockConverse;
+        if is_bedrock != (provider.provider_type == ProviderProfileType::AwsBedrock) {
+            return Err(LlmGatewayError::Config(format!(
+                "provider `{id}` must pair providerType aws_bedrock with providerProtocol bedrock_converse"
+            )));
+        }
+        if is_bedrock {
+            let region = provider
+                .aws_region
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    LlmGatewayError::Config(format!(
+                        "Bedrock provider `{id}` requires a non-empty awsRegion"
+                    ))
+                })?;
+            if !region
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            {
+                return Err(LlmGatewayError::Config(format!(
+                    "Bedrock provider `{id}` has an invalid awsRegion"
+                )));
+            }
+            if !matches!(
+                provider.endpoint_auth,
+                EndpointAuth::BedrockApiKey { .. } | EndpointAuth::AwsSigV4 { .. }
+            ) {
+                return Err(LlmGatewayError::Config(format!(
+                    "Bedrock provider `{id}` requires bedrock_api_key or aws_sig_v4 endpoint auth"
+                )));
+            }
+            if provider.network_profile.mode != NetworkProfileMode::PublicTls
+                || provider.network_profile.termination != NetworkTermination::Native
+            {
+                return Err(LlmGatewayError::Config(format!(
+                    "Bedrock provider `{id}` initially supports only native public TLS"
+                )));
+            }
+        } else if provider.aws_region.is_some()
+            || matches!(
+                provider.endpoint_auth,
+                EndpointAuth::BedrockApiKey { .. } | EndpointAuth::AwsSigV4 { .. }
+            )
+        {
+            return Err(LlmGatewayError::Config(format!(
+                "non-Bedrock provider `{id}` cannot declare awsRegion or Bedrock auth"
+            )));
+        }
         let url = url::Url::parse(&provider.base_url).map_err(|error| {
             LlmGatewayError::Config(format!("provider `{id}` URL is invalid: {error}"))
         })?;
@@ -656,7 +764,7 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
                     NetworkProfileMode::PrivatePlaintext => {
                         if url.scheme() != "http"
                             || !zone.allow_private_plaintext
-                            || !matches!(provider.endpoint_auth, Some(EndpointAuth::None))
+                            || !matches!(provider.endpoint_auth, EndpointAuth::None)
                             || profile.tls.is_some()
                         {
                             return Err(LlmGatewayError::Config(format!(
@@ -726,8 +834,7 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
                 "local-durable alias `{name}` requires declared persistent audit storage"
             )));
         }
-        if config.production_projection.enabled
-            && alias.audit != crate::config::AuditMode::Disabled
+        if alias.audit != crate::config::AuditMode::Disabled
             && config
                 .audit_runtime
                 .sink_database_url_env
@@ -808,7 +915,7 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
                 candidate
                     .conformance_result
                     .as_ref()
-                    .map(|_| config.production_projection.required_conformance_provenance),
+                    .map(|_| config.runtime_material.required_conformance_provenance),
             );
             match &candidate.conformance_result {
                 Some(result) if !result.satisfies(&requirements, now) => {
@@ -1398,7 +1505,7 @@ fn provider_transport_material(
     let (trust_bundle_pem, resolved_trust_digest) =
         if let Some(expected) = &provider.network_profile.tls {
             let resolver = FileTrustBundleResolver::new(
-                config.production_projection.trust_bundle_files.clone(),
+                config.runtime_material.trust_bundle_files.clone(),
                 1024 * 1024,
             );
             let resolved = resolver.resolve(&expected.trust_bundle_ref)?;
@@ -1427,9 +1534,10 @@ fn endpoint_credential_ref(
     provider: &crate::config::ProviderConfig,
 ) -> Result<Option<&str>, LlmGatewayError> {
     match &provider.endpoint_auth {
-        Some(EndpointAuth::None) => Ok(None),
-        Some(EndpointAuth::Bearer { credential_ref })
-        | Some(EndpointAuth::ApiKey { credential_ref, .. }) => {
+        EndpointAuth::None => Ok(None),
+        EndpointAuth::Bearer { credential_ref }
+        | EndpointAuth::ApiKey { credential_ref, .. }
+        | EndpointAuth::BedrockApiKey { credential_ref } => {
             if credential_ref.trim().is_empty() {
                 Err(LlmGatewayError::Config(
                     "credential-bearing endpoint auth requires a non-empty reference".to_string(),
@@ -1438,10 +1546,7 @@ fn endpoint_credential_ref(
                 Ok(Some(credential_ref))
             }
         }
-        None if provider.secret_ref.trim().is_empty() => Err(LlmGatewayError::Config(
-            "legacy provider requires a non-empty secretRef".to_string(),
-        )),
-        None => Ok(Some(&provider.secret_ref)),
+        EndpointAuth::AwsSigV4 { .. } => Ok(None),
     }
 }
 
@@ -1498,11 +1603,11 @@ fn price_is_zero(price: &OperationPrice) -> bool {
 fn trusted_evidence_keys(
     config: &LlmRouterConfig,
 ) -> Result<Option<TrustedEvidenceKeySet>, LlmGatewayError> {
-    if config.production_projection.evidence_public_keys.is_empty() {
+    if config.runtime_material.evidence_public_keys.is_empty() {
         return Ok(None);
     }
     let keys = config
-        .production_projection
+        .runtime_material
         .evidence_public_keys
         .iter()
         .map(|(key_id, encoded)| {
@@ -1517,14 +1622,11 @@ fn trusted_evidence_keys(
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
     let trust = TrustedEvidenceKeySet::new(
-        config
-            .production_projection
-            .evidence_key_set_version
-            .clone(),
+        config.runtime_material.evidence_key_set_version.clone(),
         keys,
     )
     .map_err(|error| LlmGatewayError::Config(error.to_string()))?;
-    let published = &config.production_projection.evidence_key_set_digest;
+    let published = &config.runtime_material.evidence_key_set_digest;
     if !published.is_empty() && !published.eq_ignore_ascii_case(trust.digest()) {
         return Err(LlmGatewayError::Config(
             "evidence key-set digest does not match protected keys".to_string(),

@@ -6,9 +6,10 @@ use llm_gateway::audit::{
     WalConfig,
 };
 use llm_gateway::config::{
-    AliasCapabilityRequirements, AliasConfig, AuditMode, DeploymentConfig, EmbeddingWorkloadLane,
-    EndpointAuth, LlmRouterConfig, NetworkProfileMode, NetworkTermination, NetworkZone,
-    ProviderConfig, ReadinessPolicy, RuntimeCapacity,
+    AliasCapabilityRequirements, AliasConfig, AuditMode, AwsCredentialSource,
+    BedrockDeploymentPolicy, DeploymentConfig, EmbeddingWorkloadLane, EndpointAuth,
+    LlmRouterConfig, NetworkProfileMode, NetworkTermination, NetworkZone, ProviderConfig,
+    ProviderProfileType, ReadinessPolicy, RuntimeCapacity,
 };
 use llm_gateway::credentials::MapSecretResolver;
 use llm_gateway::http::{BodyAccessControl, BufferedHttpRequest, LlmBufferedHttp, LlmHttpResponse};
@@ -524,6 +525,7 @@ fn embedding_runtime_with_policy(
                 provider_endpoint_id: format!("embed-{index}"),
                 model: format!("embed-{index}-physical"),
                 configured_concurrency: 4,
+                bedrock_policy: None,
                 capabilities: ProviderCapabilities {
                     operations: BTreeSet::from([Operation::Embed]),
                     generation: None,
@@ -621,6 +623,10 @@ fn embedding_runtime_with_policy(
             .map(|deployment| (deployment.id.clone(), deployment))
             .collect(),
         principal_permits: Arc::new(PrincipalPermitStripes::new(8, 2)),
+        reasoning_sealer: Arc::new(Default::default()),
+        reasoning_key_set_generation: 0,
+        anthropic_messages_enabled: false,
+        reasoning_key_set_digest: String::new(),
     };
     (
         Arc::new(LlmRuntime::new(
@@ -666,6 +672,7 @@ fn deployment(id: &str, provider: Arc<dyn GenerationProvider>) -> Arc<Deployment
         provider_endpoint_id: id.to_string(),
         model: format!("{id}-physical"),
         configured_concurrency: 2,
+        bedrock_policy: None,
         capabilities: ProviderCapabilities {
             operations: BTreeSet::from([Operation::Generate]),
             generation: Some(provider.capabilities()),
@@ -738,6 +745,7 @@ fn governed_deployment(
         provider_endpoint_id: "governed".to_string(),
         model: conformance_result.physical_model.clone(),
         configured_concurrency: 2,
+        bedrock_policy: None,
         capabilities: conformance_result.capabilities.clone(),
         provider: CompiledProvider::Generation(provider),
         provider_digest: "governed".to_string(),
@@ -812,6 +820,10 @@ fn runtime_with_deployment(
         aliases: BTreeMap::from([("public-model".to_string(), alias)]),
         deployments: BTreeMap::from([(deployment.id.clone(), deployment)]),
         principal_permits: Arc::new(PrincipalPermitStripes::new(8, 2)),
+        reasoning_sealer: Arc::new(Default::default()),
+        reasoning_key_set_generation: 0,
+        anthropic_messages_enabled: false,
+        reasoning_key_set_digest: String::new(),
     };
     Arc::new(LlmRuntime::new(
         Arc::new(LlmSnapshotStore::new(snapshot, 2)),
@@ -921,6 +933,10 @@ fn runtime_with_mode_and_pii(
             .map(|deployment| (deployment.id.clone(), deployment))
             .collect(),
         principal_permits: Arc::new(PrincipalPermitStripes::new(8, 2)),
+        reasoning_sealer: Arc::new(Default::default()),
+        reasoning_key_set_generation: 0,
+        anthropic_messages_enabled: false,
+        reasoning_key_set_digest: String::new(),
     };
     Arc::new(LlmRuntime::new(
         Arc::new(LlmSnapshotStore::new(snapshot, 2)),
@@ -1216,10 +1232,14 @@ fn compiler_config() -> LlmRouterConfig {
             "p".to_string(),
             ProviderConfig {
                 provider_account_id: "p".to_string(),
+                provider_type: Default::default(),
                 provider_protocol: ProviderProtocol::OpenAiChat,
+                aws_region: None,
+                material_generation: 1,
                 base_url: "http://127.0.0.1:9/v1".to_string(),
-                secret_ref: "secret".to_string(),
-                endpoint_auth: None,
+                endpoint_auth: EndpointAuth::Bearer {
+                    credential_ref: "secret".to_string(),
+                },
                 network_profile: Default::default(),
                 headers: BTreeMap::new(),
                 quota_group_id: Some("quota".to_string()),
@@ -1243,6 +1263,7 @@ fn compiler_config() -> LlmRouterConfig {
                         output_micros_per_million: 2,
                     }),
                 )]),
+                bedrock_policy: None,
                 declared_capabilities: None,
                 embedding_capabilities: None,
                 conformance_digest: "a".repeat(64),
@@ -1295,7 +1316,7 @@ fn private_plaintext_compiler_config() -> LlmRouterConfig {
     );
     let provider = config.providers.get_mut("p").unwrap();
     provider.base_url = "http://10.0.0.9:9/v1".to_string();
-    provider.endpoint_auth = Some(EndpointAuth::None);
+    provider.endpoint_auth = EndpointAuth::None;
     provider.network_profile.mode = NetworkProfileMode::PrivatePlaintext;
     provider.network_profile.termination = NetworkTermination::Native;
     provider.network_profile.network_zone_id = Some("local-zone".to_string());
@@ -1310,6 +1331,73 @@ fn private_plaintext_compiler_config() -> LlmRouterConfig {
         request_timeout_ms: 30_000,
     });
     config
+}
+
+fn bedrock_compiler_config(auth: EndpointAuth) -> LlmRouterConfig {
+    let mut config = compiler_config();
+    let provider = config.providers.get_mut("p").unwrap();
+    provider.provider_type = ProviderProfileType::AwsBedrock;
+    provider.provider_protocol = ProviderProtocol::BedrockConverse;
+    provider.aws_region = Some("us-east-1".to_string());
+    provider.base_url = "https://bedrock-runtime.us-east-1.amazonaws.com".to_string();
+    provider.endpoint_auth = auth;
+    let deployment = config.deployments.get_mut("d").unwrap();
+    deployment.model = "us.anthropic.claude-sonnet-4-6".to_string();
+    deployment.bedrock_policy = Some(BedrockDeploymentPolicy {
+        sampling: Default::default(),
+        reasoning: Default::default(),
+    });
+    deployment.declared_capabilities = Some(ProviderCapabilities {
+        operations: BTreeSet::from([Operation::Generate]),
+        generation: Some(generation_capabilities(true, true, false)),
+        embedding: None,
+    });
+    config
+}
+
+#[test]
+fn compiler_builds_bedrock_api_key_endpoint_from_values_backed_shape() {
+    let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
+        "secret".to_string(),
+        "development-token".to_string(),
+    )]))));
+    let snapshot = compiler
+        .compile(
+            &bedrock_compiler_config(EndpointAuth::BedrockApiKey {
+                credential_ref: "secret".to_string(),
+            }),
+            1,
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        snapshot.deployments["d"].provider.protocol(),
+        ProviderProtocol::BedrockConverse
+    );
+    assert_eq!(snapshot.deployments["d"].provider_client_generation, 1);
+}
+
+#[test]
+fn compiler_builds_bedrock_sigv4_endpoint_without_resolving_a_secret() {
+    let probe = Arc::new(CompileProbe::default());
+    let compiler = LlmCompiler::with_probe(
+        Arc::new(MapSecretResolver(BTreeMap::new())),
+        Arc::clone(&probe),
+    );
+    let snapshot = compiler
+        .compile(
+            &bedrock_compiler_config(EndpointAuth::AwsSigV4 {
+                credential_source: AwsCredentialSource::DefaultChain,
+            }),
+            1,
+            None,
+        )
+        .unwrap();
+    assert_eq!(probe.secret_resolutions.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        snapshot.deployments["d"].provider.protocol(),
+        ProviderProtocol::BedrockConverse
+    );
 }
 
 #[test]
@@ -1694,10 +1782,14 @@ fn compiler_accepts_alias_with_separate_generate_and_embed_deployments() {
         "embedding-provider".to_string(),
         ProviderConfig {
             provider_account_id: "embedding-provider".to_string(),
+            provider_type: Default::default(),
             provider_protocol: ProviderProtocol::OpenAiEmbeddings,
+            aws_region: None,
+            material_generation: 1,
             base_url: "http://127.0.0.1:9/v1".to_string(),
-            secret_ref: "secret".to_string(),
-            endpoint_auth: None,
+            endpoint_auth: EndpointAuth::Bearer {
+                credential_ref: "secret".to_string(),
+            },
             network_profile: Default::default(),
             headers: BTreeMap::new(),
             quota_group_id: Some("quota".to_string()),
@@ -1720,6 +1812,7 @@ fn compiler_accepts_alias_with_separate_generate_and_embed_deployments() {
                     input_micros_per_million: 1,
                 }),
             )]),
+            bedrock_policy: None,
             declared_capabilities: None,
             embedding_capabilities: Some(EmbeddingCapabilities {
                 max_batch_items: 2,
@@ -1950,7 +2043,7 @@ fn credential_rotation_rebuilds_client_but_preserves_provider_account_runtime() 
 }
 
 #[test]
-fn same_material_client_refresh_replaces_pool_and_advances_generation() {
+fn same_material_client_refresh_replaces_pool_without_advancing_material_generation() {
     let mut config = compiler_config();
     let connection = &mut config
         .providers
@@ -1968,7 +2061,7 @@ fn same_material_client_refresh_replaces_pool_and_advances_generation() {
     std::thread::sleep(Duration::from_millis(2));
     let second = compiler.compile(&config, 2, Some(&first)).unwrap();
     assert_eq!(first.deployments["d"].provider_client_generation, 1);
-    assert_eq!(second.deployments["d"].provider_client_generation, 2);
+    assert_eq!(second.deployments["d"].provider_client_generation, 1);
     assert!(!Arc::ptr_eq(
         &first.deployments["d"],
         &second.deployments["d"]
@@ -2121,7 +2214,9 @@ fn production_instance_properties_allow_declared_capabilities_without_conformanc
     config.development_fixtures = false;
     let provider = config.providers.get_mut("p").unwrap();
     provider.base_url = "https://api.example.com/v1".to_string();
-    provider.secret_ref = "env:PROVIDER_API_KEY".to_string();
+    provider.endpoint_auth = EndpointAuth::Bearer {
+        credential_ref: "env:PROVIDER_API_KEY".to_string(),
+    };
     let deployment = config.deployments.get_mut("d").unwrap();
     deployment.conformance_digest.clear();
     deployment.conformance_result = None;
@@ -2196,6 +2291,7 @@ fn http_request(body: &[u8]) -> BufferedHttpRequest {
         ]),
         body: body.to_vec(),
         principal_id: "user".to_string(),
+        tenant_id: Some("tenant-test".to_string()),
         trusted_request_id: "trusted".to_string(),
     }
 }
@@ -3742,6 +3838,7 @@ async fn models_never_enumerate_internal_aliases() {
             headers: BTreeMap::new(),
             body: Vec::new(),
             principal_id: "test-agent".to_string(),
+            tenant_id: Some("tenant-test".to_string()),
             trusted_request_id: "trusted".to_string(),
         })
         .await;
@@ -3762,6 +3859,7 @@ async fn models_never_enumerate_internal_aliases() {
                 headers: BTreeMap::new(),
                 body: Vec::new(),
                 principal_id: "test-agent".to_string(),
+                tenant_id: Some("tenant-test".to_string()),
                 trusted_request_id: "trusted-model".to_string(),
             })
             .await;

@@ -196,6 +196,8 @@ to alias capabilities:
 - client-side function tools and tool results;
 - structured text output;
 - reasoning controls and summaries where representable;
+- stateless opaque reasoning continuity through the standard Responses
+  reasoning item when the selected route requires it;
 - `previous_response_id` only when retained state is enabled for the alias;
 - buffered JSON and OpenAI Responses SSE events;
 - client cancellation propagated to the active upstream request.
@@ -204,6 +206,64 @@ The first release of Responses support MAY require `store: false`. If retained
 responses are not enabled, `store: true`, `previous_response_id`, retrieval,
 and deletion MUST return `unsupported_feature`; they MUST NOT be silently
 ignored.
+
+Opaque reasoning continuity is client-protocol-specific and does not imply
+gateway-owned conversation state. For stateless `/v1/responses`, the gateway
+returns a gateway-sealed `encrypted_content` value when the upstream turn
+produces opaque continuation state; it does not manufacture a reasoning blob
+for a response without such state. The caller returns the complete reasoning
+item as input on the subsequent turn. The legacy
+`include: ["reasoning.encrypted_content"]` request remains accepted but is not
+required. The gateway MUST bind the opaque state to the tenant, public alias,
+client protocol, selected deployment, and that deployment's provider-client
+material generation. It MUST reject tampering and cross-route replay and MUST
+NOT log or render the provider continuation material as public reasoning text.
+
+Reasoning envelopes use a gateway-wide, host/environment-scoped key set
+distributed through the existing credential-reference and local secret
+materialization boundary using `credentialPurpose: REASONING_SEAL`; it is not a
+provider-endpoint credential. The immutable `values.yml` snapshot carries exactly one current key
+ID and reference, at most one previous key ID and reference, key-set generation,
+and bounded item/count/aggregate limits. It never carries key bytes. Every
+serving replica MUST resolve the same key set before acknowledging readiness; a
+random per-process boot key is forbidden. New envelopes use the current key.
+The previous key decrypts while it remains in the active key-set generation.
+
+Key retirement is generation-based, not time-based. A replacement generation
+is prepared and resolved by every required replica before fleet promotion. The
+serving set MUST NOT contain replicas on different active key-set generations.
+Removing the previous key in a later promoted generation retires it for the
+entire serving fleet; replica wall clocks do not participate in acceptance.
+
+Rotating the selected provider endpoint credential changes that deployment's
+provider-client material generation and deliberately invalidates its older
+reasoning envelopes with `reasoning_state_stale`; rotation of an unrelated
+endpoint does not. The generation is derived from the endpoint authentication
+policy and active credential identity/version. Routine refresh of short-lived
+SigV4 session credentials does not change it. `reasoning_state_stale` is
+non-retryable for the existing conversation: the caller MUST restart from a new
+initial request. Dropping the stale item and resubmitting its tool result does
+not create an escape hatch; it fails with `reasoning_state_required`.
+
+A continuity-required turn containing assistant tool-call history and a tool
+result without the associated reasoning item fails before dispatch with
+`reasoning_state_required`. Tampered, replayed, unknown-key, retired-key,
+oversized, or over-count state likewise fails before dispatch with a stable
+typed error.
+
+A continuity-required alias MAY have multiple deployments for new
+conversations. Once sealed state is returned, the subsequent request is pinned
+to its bound deployment before preference ordering. If that deployment is no
+longer mapped or eligible, the gateway returns `reasoning_route_unavailable`
+without revealing physical identity. A request carrying sealed state is never
+eligible for fallback, even when the bound provider fails before output. The
+gateway MUST NOT discard reasoning state to start a fresh chain implicitly.
+
+`/v1/chat/completions` has no portable opaque reasoning-state item. A deployment
+that requires reasoning continuity, including for a multi-turn tool exchange,
+is ineligible for Chat Completions and MUST fail before provider dispatch. An
+optional native client protocol, such as Anthropic Messages, MAY use its own
+typed signed/redacted reasoning blocks after independent qualification.
 
 The portable first-release function-tool profile accepts `strict` when omitted
 or `false`. `strict: true` is rejected as `unsupported_feature` until strict
@@ -390,6 +450,19 @@ bytes across different protocols. After semantic output begins, the gateway
 MUST NOT retry or fail over to another provider. Cancellation and disconnect
 MUST propagate upstream.
 
+On the Anthropic Messages facade, reasoning block ordering is provider-dependent.
+For Bedrock-backed streams, reasoning blocks are emitted after text because
+Bedrock provides continuation state at message completion. Gateway round-trips
+remain supported, but the accumulated message is not guaranteed to be directly
+replayable to Anthropic's native endpoint.
+
+Each reasoning block is emitted as a self-contained `content_block_start` /
+`content_block_stop` pair after any open text block has been closed, so at most
+one content block is open at a time. The gateway does not buffer text deltas to
+place reasoning blocks first; a strict-order buffering mode remains a possible
+future per-deployment option. This non-buffering behavior is deliberately
+pinned by regression tests.
+
 ### Headers
 
 - `Authorization: Bearer <Light credential>` is the canonical inbound
@@ -459,7 +532,7 @@ authority controls.
 |------------------|-------------------|-----------------------|---------------------------|-------|
 | `openai` | `openai_responses`, with `openai_chat` compatibility | `https://api.openai.com/v1` | `Authorization: Bearer` from an OpenAI Platform API-key secret reference | Shared or owner-scoped server-to-server route using Platform API billing. |
 | `anthropic` | `anthropic_messages` | `https://api.anthropic.com` | `x-api-key` from an Anthropic Console secret reference, or short-lived bearer token from approved workload identity; fixed `anthropic-version` | Direct Claude API. Cloud-hosted Claude needs a separate Bedrock, Vertex, or other cloud adapter because IAM and wire contracts differ. |
-| `aws_bedrock` | `bedrock_converse` | `https://bedrock-runtime.{region}.amazonaws.com` | `Authorization: Bearer` from an AWS Bedrock API-key secret reference for development/evaluation, or SigV4 from an AWS workload identity for production | The deployment owns the region and physical model or inference-profile ID. For example, a US cross-region inference profile may use `us.anthropic.claude-sonnet-4-6`; clients still send only a Light alias. |
+| `aws_bedrock` | `bedrock_converse` | `https://bedrock-runtime.{region}.amazonaws.com` | `Authorization: Bearer` from an AWS Bedrock API-key secret reference for development/evaluation, or SigV4 from an AWS workload identity for production | The endpoint owns the AWS runtime/signing region; the deployment owns the physical model or inference-profile ID. For example, a US cross-region inference profile may use `us.anthropic.claude-sonnet-4-6`; clients still send only a Light alias. |
 | `xai` | `xai_responses`, with `xai_chat` compatibility | `https://api.x.ai/v1` | `Authorization: Bearer` from an xAI API-key secret reference | Grok supports Responses and Chat Completions. Prefer Responses for agent routes. |
 | `google_gemini` | `gemini_interactions`, `gemini_generate_content` | `https://generativelanguage.googleapis.com` | `x-goog-api-key` from a Gemini API-key secret reference | Developer API upstream profile. Supporting it behind the OpenAI-compatible core does not enable the optional Gemini client facade. |
 | `google_vertex` | `vertex_generate_content` | validated regional or global Vertex AI authority | Short-lived OAuth bearer token obtained through ADC or workload identity | Production Google Cloud profile. The gateway refreshes tokens; Portal stores configuration and references, not access tokens. |
@@ -474,9 +547,9 @@ The Bedrock profile uses the Bedrock Runtime `Converse` and `ConverseStream`
 operations. It is distinct from both the direct Anthropic Messages provider
 protocol and the optional public Anthropic Messages facade.
 
-- The route configuration owns the AWS region, validated Bedrock Runtime
-  authority, and physical model or inference-profile ID. None may be supplied
-  or overridden by the client.
+- The provider endpoint owns the AWS runtime/signing region and validated
+  Bedrock Runtime authority. The provider deployment owns the physical model or
+  inference-profile ID. None may be supplied or overridden by the client.
 - The adapter converts canonical system content, messages, tool definitions,
   tool choice, tool use, tool results, inference parameters, stop reasons, and
   usage to and from their typed Converse equivalents.
@@ -497,7 +570,9 @@ protocol and the optional public Anthropic Messages facade.
 For the initial `us-east-1` qualification, Claude Sonnet 4.6 through the US
 inference profile is the baseline text and native tool-use target. Catalog-only
 Claude 5 entries remain ineligible until the configured account can invoke
-them successfully.
+them successfully. An always-on-reasoning deployment is additionally eligible
+only for client protocols that can round-trip its opaque continuation state;
+OpenAI Chat is not such a protocol.
 
 ## Provider Authentication
 
@@ -546,6 +621,20 @@ Portal model remains authoritative; projection rows MUST be produced from
 events and secret values remain local to the gateway instance.
 
 ```yaml
+reasoningSeal:
+  state: active
+  keySetGeneration: 1
+  current:
+    keyId: reasoning-seal-2026-08
+    credentialRef: env:LLM_REASONING_SEAL_KEY
+  previous: null
+  limits:
+    maxEncodedItemBytes: 131072
+    maxDecodedProviderStateBytes: 98304
+    maxItemsPerRequest: 8
+    maxCumulativeEncodedBytes: 262144
+    maxCumulativeDecodedBytes: 196608
+
 providerProfiles:
   openai-primary:
     providerType: openai
@@ -686,7 +775,8 @@ At minimum, generation capabilities distinguish:
 - text, image, audio, document, and video input;
 - client-side function tools and parallel tool calls;
 - structured JSON output;
-- reasoning controls and summaries;
+- reasoning controls, public summaries, and client-protocol-specific opaque
+  continuation state;
 - retained response/interaction state;
 - prompt caching controls;
 - safety configuration and safety-result visibility;

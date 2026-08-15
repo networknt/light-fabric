@@ -183,6 +183,7 @@ impl OpenAiCompatibilityProfile {
             },
             token_limits,
             extensions,
+            provider_continuation: None,
         })
     }
 }
@@ -501,6 +502,7 @@ fn legacy_request(request: ChatRequest<'_>, model: &str, temperature: f64) -> In
         },
         token_limits: TokenLimits::default(),
         extensions: BTreeMap::new(),
+        provider_continuation: None,
     }
 }
 

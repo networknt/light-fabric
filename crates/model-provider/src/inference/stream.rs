@@ -1,5 +1,7 @@
 use super::error::InferenceError;
-use super::response::{FinishReason, NormalizedUsage, ProviderEvidence, TerminalState};
+use super::response::{
+    FinishReason, NormalizedUsage, ProviderContinuationState, ProviderEvidence, TerminalState,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +38,12 @@ pub enum InferenceEvent {
     },
     ToolCallDelta {
         delta: ToolCallDelta,
+    },
+    /// Opaque provider continuation material. This event is internal to the
+    /// gateway and must be sealed by an eligible client codec before output.
+    #[serde(skip)]
+    ProviderContinuation {
+        state: ProviderContinuationState,
     },
     Usage {
         usage: NormalizedUsage,

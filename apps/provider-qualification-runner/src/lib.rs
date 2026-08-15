@@ -569,6 +569,9 @@ fn validate_generation_response(protocol: ProviderProtocol, value: &Value) -> Re
             .map(|_| ())
             .map_err(|error| anyhow!(error)),
         ProviderProtocol::OpenAiEmbeddings => bail!("embedding protocol used for generation"),
+        ProviderProtocol::BedrockConverse => {
+            bail!("Bedrock Converse qualification requires the typed AWS runtime adapter")
+        }
     }
 }
 
@@ -589,6 +592,9 @@ impl QualificationStreamDecoder {
                 Ok(Self::Anthropic(AnthropicStreamDecoder::default()))
             }
             ProviderProtocol::OpenAiEmbeddings => bail!("embedding protocol cannot stream"),
+            ProviderProtocol::BedrockConverse => {
+                bail!("Bedrock Converse streaming requires the typed AWS runtime adapter")
+            }
         }
     }
 
@@ -637,6 +643,9 @@ fn operation_request(
             "/v1/messages",
             json!({"model": task.model, "messages": [{"role": "user", "content": "qualification"}], "max_tokens": 1, "stream": stream}),
         ),
+        ProviderProtocol::BedrockConverse => {
+            bail!("Bedrock Converse qualification requires the typed AWS runtime adapter")
+        }
     };
     Ok((join_endpoint(&task.endpoint_url, path)?, body))
 }
