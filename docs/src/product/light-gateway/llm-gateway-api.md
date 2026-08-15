@@ -3,7 +3,7 @@
 ## Status
 
 - Status: Core API implemented; live production qualification pending
-- Date: 2026-08-07
+- Date: 2026-08-14
 - Scope: public inference APIs, provider adapters, and authentication boundaries
 
 This document defines the stable HTTP contract that agents and applications use
@@ -56,6 +56,10 @@ The terms **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
     contract and every eligible provider route. Unsupported or lossy
     conversion MUST fail before dispatch; the gateway does not silently drop a
     behavior-changing field to manufacture compatibility.
+11. AWS Bedrock Converse is an upstream provider protocol, not a public client
+    API. Core OpenAI-compatible requests and an optional Anthropic Messages
+    facade normalize into the canonical representation before a Bedrock adapter
+    emits Converse requests. Raw `/converse` pass-through is not exposed.
 
 These decisions extend, but do not weaken, the accepted
 [public compatibility ADR](../../adr/llm-gateway/0001-public-compatibility.md).
@@ -116,9 +120,9 @@ The implementation MUST model these dimensions independently:
 |-----------|---------|----------------|
 | `ClientProtocol` | Request, response, stream, and error contract owed to the caller | Required: `openai_responses`, `openai_chat`, `openai_embeddings`; optional profiles: `anthropic_messages`, `gemini_interactions`, `gemini_generate_content` |
 | `Operation` | Provider-neutral intent used by policy and capability checks | `generate`, `embed`, `rerank`, `count_tokens`, `list_models`, `get_result`, `cancel_result`, `delete_result` |
-| `ProviderProtocol` | Wire contract used for the selected upstream | `openai_responses`, `openai_chat`, `anthropic_messages`, `xai_responses`, `xai_chat`, `gemini_interactions`, `gemini_generate_content`, `vertex_generate_content` |
-| `ProviderProfileType` | Credential, transport, and eligibility class of the route | `openai`, `anthropic`, `xai`, `google_gemini`, `google_vertex` |
-| `ProviderAuthMode` | How upstream authorization headers are produced | `bearer_secret`, `x_api_key_secret`, `google_api_key_secret`, `oauth2_workload`, `google_adc` |
+| `ProviderProtocol` | Wire contract used for the selected upstream | `openai_responses`, `openai_chat`, `anthropic_messages`, `bedrock_converse`, `xai_responses`, `xai_chat`, `gemini_interactions`, `gemini_generate_content`, `vertex_generate_content` |
+| `ProviderProfileType` | Credential, transport, and eligibility class of the route | `openai`, `anthropic`, `aws_bedrock`, `xai`, `google_gemini`, `google_vertex` |
+| `ProviderAuthMode` | How upstream authorization headers are produced | `bearer_secret`, `x_api_key_secret`, `aws_bedrock_api_key`, `aws_sigv4`, `google_api_key_secret`, `oauth2_workload`, `google_adc` |
 
 The canonical representation MUST retain typed text, image and document input,
 tool definitions and calls, tool results, structured-output constraints, usage,
@@ -455,6 +459,7 @@ authority controls.
 |------------------|-------------------|-----------------------|---------------------------|-------|
 | `openai` | `openai_responses`, with `openai_chat` compatibility | `https://api.openai.com/v1` | `Authorization: Bearer` from an OpenAI Platform API-key secret reference | Shared or owner-scoped server-to-server route using Platform API billing. |
 | `anthropic` | `anthropic_messages` | `https://api.anthropic.com` | `x-api-key` from an Anthropic Console secret reference, or short-lived bearer token from approved workload identity; fixed `anthropic-version` | Direct Claude API. Cloud-hosted Claude needs a separate Bedrock, Vertex, or other cloud adapter because IAM and wire contracts differ. |
+| `aws_bedrock` | `bedrock_converse` | `https://bedrock-runtime.{region}.amazonaws.com` | `Authorization: Bearer` from an AWS Bedrock API-key secret reference for development/evaluation, or SigV4 from an AWS workload identity for production | The deployment owns the region and physical model or inference-profile ID. For example, a US cross-region inference profile may use `us.anthropic.claude-sonnet-4-6`; clients still send only a Light alias. |
 | `xai` | `xai_responses`, with `xai_chat` compatibility | `https://api.x.ai/v1` | `Authorization: Bearer` from an xAI API-key secret reference | Grok supports Responses and Chat Completions. Prefer Responses for agent routes. |
 | `google_gemini` | `gemini_interactions`, `gemini_generate_content` | `https://generativelanguage.googleapis.com` | `x-goog-api-key` from a Gemini API-key secret reference | Developer API upstream profile. Supporting it behind the OpenAI-compatible core does not enable the optional Gemini client facade. |
 | `google_vertex` | `vertex_generate_content` | validated regional or global Vertex AI authority | Short-lived OAuth bearer token obtained through ADC or workload identity | Production Google Cloud profile. The gateway refreshes tokens; Portal stores configuration and references, not access tokens. |
@@ -462,6 +467,37 @@ authority controls.
 Optional mTLS is a transport property layered on the provider profile. For
 example, xAI mTLS still requires its bearer API key. Certificate references
 must use the same secret-materialization boundary as other provider secrets.
+
+### AWS Bedrock Converse adapter
+
+The Bedrock profile uses the Bedrock Runtime `Converse` and `ConverseStream`
+operations. It is distinct from both the direct Anthropic Messages provider
+protocol and the optional public Anthropic Messages facade.
+
+- The route configuration owns the AWS region, validated Bedrock Runtime
+  authority, and physical model or inference-profile ID. None may be supplied
+  or overridden by the client.
+- The adapter converts canonical system content, messages, tool definitions,
+  tool choice, tool use, tool results, inference parameters, stop reasons, and
+  usage to and from their typed Converse equivalents.
+- Conversion is explicitly fallible. A required field or semantic that cannot
+  be represented by Converse MUST return `unsupported_feature` before
+  dispatch; it MUST NOT be silently discarded.
+- `ConverseStream` events are decoded into canonical stream events and then
+  encoded into the selected client protocol. Raw AWS event-stream frames are
+  never exposed to clients.
+- Model IDs and inference-profile IDs are account-, region-, and
+  availability-dependent deployment data. They are not a static global model
+  catalog and must be live-qualified for the target AWS account and region.
+- The AWS Mantle-compatible `/anthropic/v1/messages` endpoint is a separate
+  upstream protocol. It MUST NOT be substituted for Converse merely because a
+  model appears in the AWS catalog; it requires its own provider adapter and
+  live qualification before use.
+
+For the initial `us-east-1` qualification, Claude Sonnet 4.6 through the US
+inference profile is the baseline text and native tool-use target. Catalog-only
+Claude 5 entries remain ineligible until the configured account can invoke
+them successfully.
 
 ## Provider Authentication
 
@@ -472,6 +508,9 @@ Shared routes MUST use credentials intended for server-to-server API access:
 - OpenAI Platform API key for OpenAI models;
 - Anthropic Console API key or approved workload-identity bearer token for the
   direct Claude API;
+- AWS Bedrock API key for development/evaluation routes, or SigV4 credentials
+  from an IAM role or other approved workload identity for production Bedrock
+  routes;
 - xAI API key for Grok;
 - Gemini API key for the Gemini Developer API;
 - Google ADC, service-account impersonation, or workload identity for Vertex
@@ -527,6 +566,24 @@ providerProfiles:
     headers:
       anthropic-version: "2023-06-01"
 
+  bedrock-us-evaluation:
+    providerType: aws_bedrock
+    protocol: bedrock_converse
+    baseUrl: https://bedrock-runtime.us-east-1.amazonaws.com
+    region: us-east-1
+    auth:
+      mode: aws_bedrock_api_key
+      secretRef: env:AWS_BEARER_TOKEN_BEDROCK
+
+  bedrock-us-production:
+    providerType: aws_bedrock
+    protocol: bedrock_converse
+    baseUrl: https://bedrock-runtime.us-east-1.amazonaws.com
+    region: us-east-1
+    auth:
+      mode: aws_sigv4
+      service: bedrock
+
   xai-primary:
     providerType: xai
     protocol: xai_responses
@@ -560,7 +617,9 @@ A deployment binds one provider profile to a physical model and declared
 capabilities. A public alias binds policy and pricing to one or more eligible
 deployments. API clients see only the alias. The persisted control-plane shape
 routes through deployment aggregates rather than directly from an alias to a
-provider profile.
+provider profile. For Bedrock, `physicalModelId` may be a foundation-model ID
+or an inference-profile ID; it belongs on the deployment, never in a client
+request or global reference value that assumes universal account availability.
 
 ## Agent and CLI Profiles
 
@@ -638,6 +697,11 @@ under an explicit compatibility allowlist. Cross-format conversion uses typed
 canonical fields. Required or behavior-changing fields that cannot be mapped
 cause `unsupported_feature` before provider dispatch.
 
+Protocol conversion SHOULD use an explicit fallible codec or Rust `TryFrom`
+implementation with structured conversion errors. An infallible `From`
+implementation is appropriate only where every source value has a valid,
+semantically equivalent target representation.
+
 ## Rust Implementation Alignment
 
 The generic recommendation to start with Axum is sound for a new standalone
@@ -651,6 +715,10 @@ path instead of introducing a second HTTP server or middleware stack.
 - Represent buffered and streaming results with async streams and typed codec
   events. Provider SSE is decoded incrementally and encoded into the client
   protocol without buffering the entire completion.
+- Treat Bedrock `ConverseStream` as a typed AWS event stream rather than SSE.
+  Decode its content-block, tool-use, metadata, and terminal events into the
+  same canonical stream consumed by the OpenAI and optional Anthropic client
+  encoders.
 - Use typed `serde` request models. Unknown fields are not globally lenient:
   they may enter only the existing bounded compatibility envelope for approved
   same-format forwarding. A malformed known field is a terminal parse error.
@@ -673,20 +741,27 @@ path instead of introducing a second HTTP server or middleware stack.
    accounting, audit, and provider conformance gates.
 3. **Responses and Codex:** add `POST /v1/responses`, Responses SSE, OpenAI and
    xAI Responses adapters, and a Codex CLI smoke test.
-4. **Optional Claude profile:** only when Claude Code is a committed client,
+4. **AWS Bedrock provider:** add the `aws_bedrock` profile, API-key and SigV4
+   auth providers, `Converse`/`ConverseStream` codecs, inference-profile routing,
+   and buffered, streaming, usage, error, and tool-use conformance gates. Route
+   the existing OpenAI-compatible core to Bedrock before adding another public
+   client facade.
+5. **Optional Claude profile:** only when Claude Code is a committed client,
    add namespaced Messages, required token counting, Anthropic SSE, and pinned
-   Claude Code conformance fixtures. Keep the profile disabled otherwise.
-5. **Optional Gemini profile:** only when a Gemini-native client or native-only
+   Claude Code conformance fixtures. Prove that the client facade can route to
+   both direct Anthropic and Bedrock without changing its public contract. Keep
+   the profile disabled otherwise.
+6. **Optional Gemini profile:** only when a Gemini-native client or native-only
    feature is committed, add the smallest GenerateContent, streaming,
    embedding, token-counting, and model-list surface required by its pinned
    conformance suite.
-6. **Optional retained state:** add Responses retrieval/deletion and Gemini
+7. **Optional retained state:** add Responses retrieval/deletion and Gemini
    Interactions only after retention ownership, route affinity, deletion,
    encryption, expiry, and audit rules are implemented.
-7. **Optional rerank:** add the provider-neutral rerank operation only after
+8. **Optional rerank:** add the provider-neutral rerank operation only after
    document limits, score semantics, pricing, accounting, and conformance are
    frozen.
-8. **Workflow integration boundary:** document and test that personal CLI
+9. **Workflow integration boundary:** document and test that personal CLI
    sessions remain in workflow-owned adapters while Light Gateway provider
    profiles accept API keys or workload credentials only.
 
@@ -698,6 +773,14 @@ path instead of introducing a second HTTP server or middleware stack.
   credential caches, and delegated consumer credentials as provider auth.
 - Official OpenAI SDKs can call OpenAI-, Anthropic-, xAI-, and Gemini-backed
   aliases without seeing a physical provider model.
+- Official OpenAI-compatible clients can complete buffered, streaming, and
+  native tool-use turns against a Claude Sonnet 4.6 alias backed by Bedrock
+  Converse in `us-east-1`, without seeing the AWS region, physical model, or
+  inference-profile ID.
+- Bedrock API-key and SigV4 modes have separate authentication tests. Inbound
+  Light credentials are never used as AWS credentials, and AWS credentials or
+  signing material are absent from snapshots, logs, errors, audit payloads,
+  and client responses.
 - The required core passes model-list, Chat Completions, Responses, and
   embeddings conformance without enabling either native client facade.
 - If `anthropic_messages` is enabled, official Claude Code completes the
@@ -731,6 +814,11 @@ path instead of introducing a second HTTP server or middleware stack.
 - [Claude API overview and authentication](https://platform.claude.com/docs/en/api/overview)
 - [Claude Code gateway guidance](https://code.claude.com/docs/en/llm-gateway)
 - [Claude OpenAI SDK compatibility and limitations](https://platform.claude.com/docs/en/cli-sdks-libraries/libraries/openai-sdk)
+- [Amazon Bedrock Claude Sonnet 4.6 model card](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-4-6.html)
+- [Amazon Bedrock Converse API](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html)
+- [Amazon Bedrock inference profiles](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles-use.html)
+- [Amazon Bedrock Anthropic Messages API](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-messages-api.html)
+- [Amazon Bedrock Runtime endpoints](https://docs.aws.amazon.com/bedrock/latest/userguide/endpoints.html)
 - [xAI inference API](https://docs.x.ai/developers/rest-api-reference/inference/chat)
 - [xAI API-key authorization](https://docs.x.ai/developers/rest-api-reference/management/auth)
 - [Gemini API reference](https://ai.google.dev/api)

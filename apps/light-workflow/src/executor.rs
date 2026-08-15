@@ -33,6 +33,9 @@ static TEMPLATE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\$\{\{\s*([^}]*(?:}[^}]+)*)\s*\}\}|\$\{\s*([^}]*)\s*\}")
         .expect("valid template regex")
 });
+static OPENAPI_PATH_PLACEHOLDER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\{([A-Za-z0-9_.-]+)\}").expect("valid OpenAPI path placeholder regex")
+});
 const DEFAULT_HOST_EXECUTOR_CONCURRENCY: usize = 8;
 const DEFAULT_HOST_TASK_LEASE_MS: i32 = 30_000;
 const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -52,6 +55,7 @@ pub struct ActiveTask {
 
 struct ClaimedTask {
     task: ActiveTask,
+    wf_def_id: Uuid,
     context_data: Value,
     definition: WorkflowDefinition,
     raw_definition: YamlValue,
@@ -216,6 +220,7 @@ impl TaskExecutor {
         };
         let claimed = ClaimedTask {
             task,
+            wf_def_id,
             context_data,
             definition,
             raw_definition,
@@ -994,6 +999,7 @@ impl TaskExecutor {
         };
         Ok(ClaimedTask {
             task,
+            wf_def_id,
             context_data,
             definition,
             raw_definition,
@@ -1070,6 +1076,7 @@ impl TaskExecutor {
 
         Ok(Some(ClaimedTask {
             task,
+            wf_def_id,
             context_data,
             definition,
             raw_definition,
@@ -1124,6 +1131,59 @@ impl TaskExecutor {
                     .and_then(Value::as_str)
                     .map(str::trim)
                     .filter(|value| !value.is_empty());
+                let workflow_tool = http_call.common.metadata.as_ref()
+                    .and_then(|metadata| metadata.get("workflowTool"))
+                    .and_then(Value::as_object);
+                let logical_tool_uri = inline_uri.starts_with("lightapi://");
+                let granted_uri: Option<String> = if logical_tool_uri || workflow_tool.is_some() {
+                    let pin = workflow_tool.ok_or_else(|| io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "logical LightAPI call requires metadata.workflowTool",
+                    ))?;
+                    let capability_ref = pin.get("capabilityRef").and_then(Value::as_str)
+                        .filter(|value| !value.trim().is_empty())
+                        .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "workflow Tool capabilityRef is required"))?;
+                    let tool_version = pin.get("version").and_then(Value::as_str)
+                        .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "workflow Tool version is required"))?;
+                    let lightapi_digest = pin.get("lightapiDigest").and_then(Value::as_str)
+                        .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "workflow Tool digest is required"))?;
+                    if inline_uri != format!("lightapi://{capability_ref}") {
+                        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "logical URI and capabilityRef do not match").into());
+                    }
+                    let environment = env::var("LIGHTAPI_ENVIRONMENT").unwrap_or_else(|_| "local".to_string());
+                    let resolved: Option<(Uuid, Uuid, String)> = sqlx::query_as(
+                        "SELECT g.grant_id,t.tool_id,(av.protocol || '://' || av.target_host || e.endpoint_path) AS endpoint_uri
+                           FROM workflow_tool_grant_t g
+                           JOIN tool_t t ON t.host_id=g.host_id AND t.tool_id=g.tool_id
+                           JOIN api_endpoint_t e ON e.host_id=t.host_id AND e.endpoint_id=t.endpoint_id
+                           JOIN api_version_t av ON av.host_id=e.host_id AND av.api_version_id=e.api_version_id
+                           JOIN api_t a ON a.host_id=av.host_id AND a.api_id=av.api_id
+                          WHERE g.host_id=$1 AND g.wf_def_id=$2 AND g.active
+                            AND (g.workflow_version IS NULL OR g.workflow_version=$3)
+                            AND g.tool_version=$4 AND g.lightapi_digest=$5 AND $6=ANY(g.allowed_environments)
+                            AND t.capability_ref=$7 AND t.version=g.tool_version AND t.lightapi_digest=g.lightapi_digest
+                            AND t.lightapi_validation_status='VALID' AND t.active AND t.lifecycle_status='active'
+                            AND e.active AND e.lifecycle_status='active' AND av.active AND a.active
+                            AND upper(e.http_method)=upper($8) AND av.target_host IS NOT NULL"
+                    )
+                    .bind(claimed.task.host_id)
+                    .bind(claimed.wf_def_id)
+                    .bind(&claimed.definition.document.version)
+                    .bind(tool_version)
+                    .bind(lightapi_digest)
+                    .bind(&environment)
+                    .bind(capability_ref)
+                    .bind(&http_call.with.method)
+                    .fetch_optional(&self.pool).await?;
+                    let (grant_id, tool_id, endpoint_uri) = resolved.ok_or_else(|| io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "workflow Tool grant is missing, inactive, stale, or not allowed in this environment",
+                    ))?;
+                    info!(host_id=%claimed.task.host_id, workflow_definition_id=%claimed.wf_def_id,
+                        %grant_id, %tool_id, capability_ref, lightapi_digest, environment,
+                        "workflow Tool capability resolved");
+                    Some(endpoint_uri)
+                } else { None };
                 let registered_uri: Option<String> = if let Some(endpoint_ref) = endpoint_ref {
                     sqlx::query_scalar(
                         "SELECT target.endpoint_uri
@@ -1157,10 +1217,12 @@ impl TaskExecutor {
                     )
                     .into());
                 }
-                let configured_uri = registered_uri.unwrap_or(inline_uri);
-                let resolved_uri =
-                    self.resolve_template_to_string(&configured_uri, &claimed.context_data);
-                let validated_uri = self.validate_resolved_uri(&configured_uri, &resolved_uri)?;
+                let configured_uri = granted_uri.or(registered_uri).unwrap_or(inline_uri);
+                let configured_template = OPENAPI_PATH_PLACEHOLDER_REGEX
+                    .replace_all(&configured_uri, |captures: &regex::Captures<'_>| format!("${{{{ {} }}}}", &captures[1]))
+                    .into_owned();
+                let resolved_uri = self.resolve_template_to_string(&configured_template, &claimed.context_data);
+                let validated_uri = self.validate_resolved_uri(&configured_template, &resolved_uri)?;
 
                 let method = reqwest::Method::from_bytes(http_call.with.method.as_bytes())
                     .map_err(|err| {
@@ -5125,6 +5187,7 @@ mod tests {
                 status_code: "A".to_string(),
                 result_code: None,
             },
+            wf_def_id: Uuid::nil(),
             context_data: json!({"requestId": "REQ-1", "summary": "review"}),
             definition: serde_yaml::from_str(yaml).expect("fixture must be a workflow"),
             raw_definition: serde_yaml::from_str(yaml).expect("fixture must be YAML"),
@@ -5249,6 +5312,35 @@ mod tests {
         let completed = executor.completed_ask_result(&claimed);
         assert_eq!(completed.status_code, "C");
         assert_eq!(completed.task_output["decision"], "APPROVED");
+    }
+
+    #[tokio::test]
+    async fn logical_lightapi_http_call_without_a_tool_pin_fails_before_dispatch() {
+        let executor = executor();
+        let claimed = claimed_from_yaml(
+            r#"
+document:
+  dsl: "1.0.3"
+  namespace: test
+  name: grant-check
+  version: "1.0.0"
+do:
+  - denied:
+      call: http
+      with:
+        method: GET
+        endpoint:
+          uri: lightapi://customer-api/customer.get
+"#,
+            "denied",
+            "call",
+        );
+
+        let error = match executor.execute_task(&claimed).await {
+            Ok(_) => panic!("missing pin must fail"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("metadata.workflowTool"));
     }
 
     #[tokio::test]
