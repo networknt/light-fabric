@@ -5390,8 +5390,20 @@ fn resolve_lightapi_http_endpoint(
     Ok(if absolute_endpoint {
         resolved
     } else {
-        destination.to_string()
+        restore_openapi_path_placeholders(destination.to_string(), &resolved)
     })
+}
+
+fn restore_openapi_path_placeholders(mut destination: String, source: &str) -> String {
+    for captures in OPENAPI_PATH_PLACEHOLDER_REGEX.captures_iter(source) {
+        let Some(placeholder) = captures.get(0) else {
+            continue;
+        };
+        let encoded = format!("%7B{}%7D", &captures[1]);
+        destination = destination.replace(&encoded, placeholder.as_str());
+        destination = destination.replace(&encoded.to_ascii_lowercase(), placeholder.as_str());
+    }
+    destination
 }
 
 fn is_protected_workflow_http_header(name: &reqwest::header::HeaderName) -> bool {
@@ -5772,6 +5784,46 @@ do:
         assert_eq!(
             endpoint,
             "http://customer-api:8080/customers/{customerId}/preferences"
+        );
+    }
+
+    #[tokio::test]
+    async fn lightapi_relative_http_endpoint_preserves_path_placeholders() {
+        let document = json!({
+            "operations": {
+                "profile": {
+                    "endpointId": "customer-api/profile.get",
+                    "protocol": "http",
+                    "method": "GET",
+                    "endpoint": "/customers/{customerId}",
+                    "authentication": {"type": "none"}
+                }
+            }
+        });
+
+        let endpoint = resolve_lightapi_http_endpoint(
+            &document,
+            "customer-api/profile.get",
+            "local",
+            "GET",
+            "http://customer-api:8080",
+        )
+        .expect("relative endpoint must resolve without encoding its path placeholder");
+
+        assert_eq!(endpoint, "http://customer-api:8080/customers/{customerId}");
+
+        let executor = executor();
+        let configured_template = OPENAPI_PATH_PLACEHOLDER_REGEX
+            .replace_all(&endpoint, |captures: &regex::Captures<'_>| {
+                format!("${{{{ {} }}}}", &captures[1])
+            })
+            .into_owned();
+        assert_eq!(
+            executor.resolve_template_to_string(
+                &configured_template,
+                &json!({"customerId": "CUST-1001"}),
+            ),
+            "http://customer-api:8080/customers/CUST-1001"
         );
     }
 
