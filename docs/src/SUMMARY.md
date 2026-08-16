@@ -45,6 +45,7 @@
 - [Token Handler](design/token-handler.md)
 - [Service Discovery](design/service-discovery.md)
 - [Tracing](design/tracing.md)
+- [Graceful Service Shutdown](design/graceful-shutdown.md)
 - [Release Workflow](design/release-workflow.md)
 - [Light-Workflow Runner](design/light-workflow-runner.md)
 
