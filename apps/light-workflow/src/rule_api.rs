@@ -21,7 +21,7 @@ use tokio::sync::Semaphore;
 use tracing::{error, info};
 use uuid::Uuid;
 use workflow_core::models::retry::OneOfRetryPolicyDefinitionOrReference;
-use workflow_core::models::task::{CallTaskDefinition, TaskDefinition};
+use workflow_core::models::task::{CallTaskDefinition, TaskDefinition, TaskDefinitionFields};
 use workflow_core::models::workflow::{RuntimeExpressionLanguage, WorkflowDefinition};
 use workflow_invocation_contract::{
     CONTRACT_VERSION, CancellationPolicy, EffectState, ErrorCode, InvocationError, InvocationMode,
@@ -1092,9 +1092,12 @@ fn validate_phase2_task(
     match task {
         TaskDefinition::Ask(_) if mode == InvocationMode::Async => Ok(()),
         TaskDefinition::Fork(fork) => {
-            if fork.fork.branches.entries.is_empty()
-                || fork.fork.branches.entries.len() > usize::from(budget.maximum_parallelism)
-            {
+            if !(1..=64).contains(&fork.fork.branches.entries.len()) {
+                return Err(ApiError::definition_mismatch(
+                    "fork branch count must be between 1 and 64",
+                ));
+            }
+            if fork.fork.branches.entries.len() > usize::from(budget.maximum_parallelism) {
                 return Err(ApiError::definition_mismatch(
                     "fork branch count exceeds maximumParallelism",
                 ));
@@ -1106,6 +1109,17 @@ fn validate_phase2_task(
                 if matches!(branch_task, TaskDefinition::Fork(_)) {
                     return Err(ApiError::definition_mismatch(
                         "nested forks are not supported in the Phase 2 profile",
+                    ));
+                }
+                if matches!(branch_task, TaskDefinition::Switch(_)) {
+                    return Err(ApiError::definition_mismatch(
+                        "switch is not supported as a fork branch",
+                    ));
+                }
+                let common = phase2_task_fields(branch_task);
+                if common.then.is_some() || common.export.is_some() {
+                    return Err(ApiError::definition_mismatch(
+                        "fork branches cannot declare then or export",
                     ));
                 }
                 validate_phase2_task(branch_task, mode, budget)?;
@@ -1120,9 +1134,24 @@ fn validate_phase2_task(
                 .and_then(|metadata| metadata.get("endpointRef"))
                 .and_then(Value::as_str)
                 .is_some_and(|value| !value.trim().is_empty());
-            if !endpoint_registered {
+            let workflow_tool_granted = call
+                .common
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("workflowTool"))
+                .and_then(Value::as_object)
+                .is_some_and(|pin| {
+                    ["capabilityRef", "version", "lightapiDigest"]
+                        .iter()
+                        .all(|key| {
+                            pin.get(*key)
+                                .and_then(Value::as_str)
+                                .is_some_and(|value| !value.trim().is_empty())
+                        })
+                });
+            if !endpoint_registered && !workflow_tool_granted {
                 return Err(ApiError::definition_mismatch(
-                    "HTTP workflow tasks require a registered metadata.endpointRef",
+                    "HTTP workflow tasks require metadata.workflowTool or a registered metadata.endpointRef",
                 ));
             }
             let read_only = call.with.method.eq_ignore_ascii_case("GET")
@@ -1152,6 +1181,26 @@ fn validate_phase2_task(
         _ => Err(ApiError::definition_mismatch(
             "task type is outside the Phase 2 production orchestration profile",
         )),
+    }
+}
+
+fn phase2_task_fields(task: &TaskDefinition) -> &TaskDefinitionFields {
+    match task {
+        TaskDefinition::LegacyAgent(task) => &task.common,
+        TaskDefinition::Ask(task) => &task.common,
+        TaskDefinition::Assert(task) => &task.common,
+        TaskDefinition::Call(task) => task.common(),
+        TaskDefinition::Do(task) => &task.common,
+        TaskDefinition::Emit(task) => &task.common,
+        TaskDefinition::For(task) => &task.common,
+        TaskDefinition::Fork(task) => &task.common,
+        TaskDefinition::Listen(task) => &task.common,
+        TaskDefinition::Raise(task) => &task.common,
+        TaskDefinition::Run(task) => &task.common,
+        TaskDefinition::Set(task) => &task.common,
+        TaskDefinition::Switch(task) => &task.common,
+        TaskDefinition::Try(task) => &task.common,
+        TaskDefinition::Wait(task) => &task.common,
     }
 }
 
@@ -1420,6 +1469,19 @@ fn bad_request<E: std::fmt::Display>(err: E) -> (StatusCode, Json<Value>) {
 mod tests {
     use super::*;
 
+    fn test_budget(maximum_parallelism: u16) -> workflow_invocation_contract::InvocationBudget {
+        workflow_invocation_contract::InvocationBudget {
+            maximum_task_attempts: 10,
+            maximum_nested_calls: 10,
+            maximum_delegation_depth: 1,
+            maximum_parallelism,
+            maximum_request_bytes: 1_048_576,
+            maximum_intermediate_bytes: 1_048_576,
+            maximum_result_bytes: 1_048_576,
+            maximum_cost_units: 100,
+        }
+    }
+
     #[test]
     fn phase2_accepts_read_tasks_and_requires_write_effect_policy() {
         let get: TaskDefinition = serde_yaml::from_str(
@@ -1443,6 +1505,62 @@ mod tests {
             panic!("expected protected HTTP call");
         };
         validate_effect_policy(&protected.common, false).expect("protected write policy");
+    }
+
+    #[test]
+    fn phase2_accepts_workflow_tool_authorization_without_endpoint_ref() {
+        let granted: TaskDefinition = serde_yaml::from_str(
+            r#"
+call: http
+with:
+  method: GET
+  endpoint:
+    uri: lightapi://API0004/getCustomerProfile
+metadata:
+  workflowTool:
+    capabilityRef: API0004/getCustomerProfile
+    version: 1.0.0
+    lightapiDigest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+"#,
+        )
+        .unwrap();
+        validate_phase2_task(&granted, InvocationMode::Sync, &test_budget(3))
+            .expect("workflowTool grant should authorize the HTTP target");
+
+        let unregistered: TaskDefinition = serde_yaml::from_str(
+            "call: http\nwith:\n  method: GET\n  endpoint:\n    uri: https://example.com/customer",
+        )
+        .unwrap();
+        assert!(
+            validate_phase2_task(&unregistered, InvocationMode::Sync, &test_budget(3))
+                .unwrap_err()
+                .error
+                .message
+                .contains("workflowTool")
+        );
+    }
+
+    #[test]
+    fn phase2_rejects_fork_shapes_the_reconciler_cannot_preserve() {
+        let transitioning: TaskDefinition = serde_yaml::from_str(
+            r#"
+fork:
+  branches:
+    - profile:
+        set: { source: profile }
+        export:
+          as: { profile: .output }
+  compete: false
+"#,
+        )
+        .unwrap();
+        assert!(
+            validate_phase2_task(&transitioning, InvocationMode::Sync, &test_budget(64))
+                .unwrap_err()
+                .error
+                .message
+                .contains("then or export")
+        );
     }
 
     #[test]

@@ -12,11 +12,7 @@ pub fn resolve_run_shell_spec(
 ) -> Result<CommandExecutionSpec, String> {
     let definition = serde_json::from_value::<WorkflowDefinition>(definition_snapshot)
         .map_err(|error| format!("invalid workflow definition snapshot: {error}"))?;
-    let task = definition
-        .do_
-        .entries
-        .iter()
-        .find_map(|entry| entry.get(workflow_task_id))
+    let task = find_task_definition(&definition, workflow_task_id)
         .ok_or_else(|| format!("task definition `{workflow_task_id}` was not found"))?;
     let TaskDefinition::Run(run) = task else {
         return Err(format!("task `{workflow_task_id}` is not a run task"));
@@ -69,6 +65,32 @@ pub fn resolve_run_shell_spec(
         credentials_enabled: false,
         persistent_workspace: false,
     })
+}
+
+fn find_task_definition<'a>(
+    definition: &'a WorkflowDefinition,
+    workflow_task_id: &str,
+) -> Option<&'a TaskDefinition> {
+    if let Some((fork_name, branch_name)) = workflow_task_id.split_once("::") {
+        let fork = definition
+            .do_
+            .entries
+            .iter()
+            .find_map(|entry| entry.get(fork_name));
+        if let Some(TaskDefinition::Fork(fork)) = fork {
+            return fork
+                .fork
+                .branches
+                .entries
+                .iter()
+                .find_map(|entry| entry.get(branch_name));
+        }
+    }
+    definition
+        .do_
+        .entries
+        .iter()
+        .find_map(|entry| entry.get(workflow_task_id))
 }
 
 pub fn validate_command_template(template: &CommandTemplate) -> Result<(), String> {
@@ -350,5 +372,40 @@ mod tests {
         )
         .unwrap();
         assert_eq!(arguments, ["%s\\n", "hello world"]);
+    }
+
+    #[test]
+    fn fork_branch_run_shell_resolves_its_synthetic_task_id() {
+        let definition: WorkflowDefinition = serde_yaml::from_str(
+            r#"
+document: { dsl: 1.0.3, namespace: test, name: fork-runner, version: 1.0.0 }
+evaluate: { language: cel }
+do:
+  - load:
+      fork:
+        branches:
+          - build:
+              run:
+                shell:
+                  commandTemplateId: print-message
+                  command: print-message
+                  arguments:
+                    - message=hello branch
+                  environment:
+                    LANG: C
+        compete: false
+"#,
+        )
+        .unwrap();
+        let spec = resolve_run_shell_spec(
+            serde_json::to_value(definition).unwrap(),
+            "load::build",
+            &BTreeMap::from([("print-message".to_string(), template())]),
+        )
+        .expect("fork branch should resolve to a runner command spec");
+
+        assert_eq!(spec.template_id, "print-message");
+        assert_eq!(spec.arguments, ["%s\\n", "hello branch"]);
+        assert_eq!(spec.environment.get("LANG").map(String::as_str), Some("C"));
     }
 }

@@ -20,6 +20,7 @@ pub enum ExecutionPlacement {
 pub enum TaskKind {
     Ask,
     Assert,
+    Fork,
     Set,
     Switch,
     CallAgent,
@@ -592,6 +593,7 @@ fn action_kind(task_kind: TaskKind) -> &'static str {
     match task_kind {
         TaskKind::Ask => "ask",
         TaskKind::Assert => "assert",
+        TaskKind::Fork => "fork",
         TaskKind::Set => "set",
         TaskKind::Switch => "switch",
         TaskKind::CallAgent => "call.agent",
@@ -613,7 +615,7 @@ fn requires_runner(task_kind: TaskKind) -> bool {
 fn is_pure_orchestration(task_kind: TaskKind) -> bool {
     matches!(
         task_kind,
-        TaskKind::Ask | TaskKind::Assert | TaskKind::Set | TaskKind::Switch
+        TaskKind::Ask | TaskKind::Assert | TaskKind::Fork | TaskKind::Set | TaskKind::Switch
     )
 }
 
@@ -698,6 +700,14 @@ mod tests {
     fn absent_security_keeps_existing_tasks_on_host() {
         let policy = resolve_policy(TaskKind::CallMcp, None, &BTreeMap::new()).unwrap();
         assert_eq!(policy.placement, ExecutionPlacement::Host);
+        assert!(policy.profile.is_none());
+    }
+
+    #[test]
+    fn fork_is_host_side_pure_orchestration() {
+        let policy = resolve_policy(TaskKind::Fork, None, &BTreeMap::new()).unwrap();
+        assert_eq!(policy.placement, ExecutionPlacement::Host);
+        assert_eq!(policy.action_kind, "fork");
         assert!(policy.profile.is_none());
     }
 

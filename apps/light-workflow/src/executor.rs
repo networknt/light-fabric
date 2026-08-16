@@ -251,6 +251,7 @@ impl TaskExecutor {
         match task_def {
             TaskDefinition::Ask(_) => Ok(TaskKind::Ask),
             TaskDefinition::Assert(_) => Ok(TaskKind::Assert),
+            TaskDefinition::Fork(_) => Ok(TaskKind::Fork),
             TaskDefinition::Set(_) => Ok(TaskKind::Set),
             TaskDefinition::Switch(_) => Ok(TaskKind::Switch),
             TaskDefinition::Call(call) => match call {
@@ -1267,10 +1268,14 @@ impl TaskExecutor {
                 .bind(claimed.task.process_id)
                 .fetch_one(&self.pool)
                 .await?;
-                if workflow_backed && registered_uri.is_none() {
+                if workflow_http_requires_registered_target(
+                    workflow_backed,
+                    granted_uri.is_some(),
+                    registered_uri.is_some(),
+                ) {
                     return Err(io::Error::new(
                         io::ErrorKind::PermissionDenied,
-                        "workflow-backed HTTP call requires an active registered endpointRef and allowed method",
+                        "workflow-backed direct HTTP call requires an active registered endpointRef and allowed method",
                     )
                     .into());
                 }
@@ -3901,13 +3906,18 @@ impl TaskExecutor {
         .bind(i32::try_from(fork.fork.branches.entries.len()).unwrap_or(i32::MAX))
         .execute(&mut **tx)
         .await?;
-        let policy_digest: String = sqlx::query_scalar(
-            "SELECT task_policy_digest FROM task_info_t WHERE host_id=$1 AND task_id=$2",
+        let security = parse_security_policy(&claimed.raw_definition)
+            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+        let definition_digest: Option<String> = sqlx::query_scalar(
+            "SELECT definition_digest FROM process_info_t WHERE host_id=$1 AND process_id=$2",
         )
         .bind(claimed.task.host_id)
-        .bind(claimed.task.task_id)
+        .bind(claimed.task.process_id)
         .fetch_one(&mut **tx)
         .await?;
+        let definition_digest = definition_digest.ok_or_else(|| {
+            sqlx::Error::Protocol("fork process has no definition digest".to_string())
+        })?;
         for branch in &fork.fork.branches.entries {
             let Some((branch_name, branch_task)) = branch.iter().next() else {
                 return Err(sqlx::Error::Protocol("fork branch is empty".into()));
@@ -3917,6 +3927,18 @@ impl TaskExecutor {
                     "fork branch `{branch_name}` uses an unsupported task type"
                 )));
             };
+            let task_kind = Self::policy_task_kind(branch_task)?;
+            let resolved_policy =
+                resolve_policy(task_kind, security.as_ref(), &self.execution_profiles)
+                    .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+            WorkflowRepository::store_policy_snapshot(
+                tx,
+                claimed.task.host_id,
+                &definition_digest,
+                &resolved_policy,
+                "light-workflow",
+            )
+            .await?;
             let task_id = Uuid::now_v7();
             let synthetic_name = format!("{}::{branch_name}", claimed.task.wf_task_id);
             WorkflowRepository::insert_task(
@@ -3929,8 +3951,8 @@ impl TaskExecutor {
                     wf_instance_id: claimed.task.wf_instance_id.clone(),
                     wf_task_id: &synthetic_name,
                     task_input: &claimed.context_data,
-                    placement: workflow_policy::ExecutionPlacement::Host,
-                    policy_digest: &policy_digest,
+                    placement: resolved_policy.placement,
+                    policy_digest: &resolved_policy.policy_digest,
                 },
             )
             .await?;
@@ -5382,6 +5404,14 @@ fn is_protected_workflow_http_header(name: &reqwest::header::HeaderName) -> bool
     )
 }
 
+fn workflow_http_requires_registered_target(
+    workflow_backed: bool,
+    granted_uri_available: bool,
+    registered_uri_available: bool,
+) -> bool {
+    workflow_backed && !granted_uri_available && !registered_uri_available
+}
+
 fn lightapi_authentication_required(document: &Value, operation: &Value) -> bool {
     match operation.get("authentication") {
         None | Some(Value::Null) => true,
@@ -5654,6 +5684,62 @@ do:
             Err(error) => error,
         };
         assert!(error.to_string().contains("metadata.workflowTool"));
+    }
+
+    #[test]
+    fn workflow_tool_grant_satisfies_workflow_backed_http_target_authorization() {
+        assert!(!workflow_http_requires_registered_target(true, true, false));
+    }
+
+    #[test]
+    fn workflow_backed_direct_http_call_still_requires_registered_endpoint() {
+        assert!(workflow_http_requires_registered_target(true, false, false));
+        assert!(!workflow_http_requires_registered_target(true, false, true));
+        assert!(!workflow_http_requires_registered_target(
+            false, false, false
+        ));
+    }
+
+    #[test]
+    fn fork_transition_uses_host_orchestration_policy() {
+        let definition: WorkflowDefinition = serde_yaml::from_str(
+            r#"
+document: { dsl: 1.0.3, namespace: test, name: fork-policy, version: 1.0.0 }
+evaluate: { language: cel }
+do:
+  - load:
+      fork:
+        branches:
+          - profile:
+              set: { source: profile }
+        compete: false
+"#,
+        )
+        .unwrap();
+        let fork = definition.do_.entries[0].get("load").unwrap();
+        assert_eq!(
+            TaskExecutor::policy_task_kind(fork).unwrap(),
+            TaskKind::Fork
+        );
+        let TaskDefinition::Fork(fork_definition) = fork else {
+            panic!("expected fork task");
+        };
+        let branch = fork_definition.fork.branches.entries[0]
+            .get("profile")
+            .unwrap();
+        let branch_policy = resolve_policy(
+            TaskExecutor::policy_task_kind(branch).unwrap(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let fork_policy = resolve_policy(TaskKind::Fork, None, &BTreeMap::new()).unwrap();
+        assert_eq!(
+            branch_policy.placement,
+            workflow_policy::ExecutionPlacement::Host
+        );
+        assert_eq!(branch_policy.action_kind, "set");
+        assert_ne!(branch_policy.policy_digest, fork_policy.policy_digest);
     }
 
     #[test]
