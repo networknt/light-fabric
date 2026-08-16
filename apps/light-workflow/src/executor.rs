@@ -36,6 +36,10 @@ static TEMPLATE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static OPENAPI_PATH_PLACEHOLDER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\{([A-Za-z0-9_.-]+)\}").expect("valid OpenAPI path placeholder regex")
 });
+static LIGHTAPI_ENV_EXPRESSION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\$\{env\.([A-Za-z0-9_.-]+)\}")
+        .expect("valid LightAPI environment expression regex")
+});
 const DEFAULT_HOST_EXECUTOR_CONCURRENCY: usize = 8;
 const DEFAULT_HOST_TASK_LEASE_MS: i32 = 30_000;
 const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -1180,8 +1184,9 @@ impl TaskExecutor {
                     }
                     let environment =
                         env::var("LIGHTAPI_ENVIRONMENT").unwrap_or_else(|_| "local".to_string());
-                    let resolved: Option<(Uuid, Uuid, String)> = sqlx::query_as(
-                        "SELECT g.grant_id,t.tool_id,(av.protocol || '://' || av.target_host || e.endpoint_path) AS endpoint_uri
+                    let resolved: Option<(Uuid, Uuid, Value, String)> = sqlx::query_as(
+                        "SELECT g.grant_id,t.tool_id,t.lightapi_document,
+                                (av.protocol || '://' || av.target_host) AS base_uri
                            FROM workflow_tool_grant_t g
                            JOIN tool_t t ON t.host_id=g.host_id AND t.tool_id=g.tool_id
                            JOIN api_endpoint_t e ON e.host_id=t.host_id AND e.endpoint_id=t.endpoint_id
@@ -1193,7 +1198,21 @@ impl TaskExecutor {
                             AND t.capability_ref=$7 AND t.version=g.tool_version AND t.lightapi_digest=g.lightapi_digest
                             AND t.lightapi_validation_status='VALID' AND t.active AND t.lifecycle_status='active'
                             AND e.active AND e.lifecycle_status='active' AND av.active AND a.active
-                            AND upper(e.http_method)=upper($8) AND av.target_host IS NOT NULL"
+                            AND upper(e.http_method)=upper($8) AND av.target_host IS NOT NULL
+                            AND NOT EXISTS (SELECT 1 FROM api_endpoint_scope_t scope
+                                             WHERE scope.host_id=e.host_id AND scope.endpoint_id=e.endpoint_id AND scope.active)
+                            AND NOT EXISTS (SELECT 1 FROM api_endpoint_rule_t endpoint_rule
+                                             WHERE endpoint_rule.host_id=e.host_id AND endpoint_rule.endpoint_id=e.endpoint_id AND endpoint_rule.active)
+                            AND NOT EXISTS (SELECT 1 FROM role_permission_t permission
+                                             WHERE permission.host_id=e.host_id AND permission.endpoint_id=e.endpoint_id AND permission.active)
+                            AND NOT EXISTS (SELECT 1 FROM group_permission_t permission
+                                             WHERE permission.host_id=e.host_id AND permission.endpoint_id=e.endpoint_id AND permission.active)
+                            AND NOT EXISTS (SELECT 1 FROM user_permission_t permission
+                                             WHERE permission.host_id=e.host_id AND permission.endpoint_id=e.endpoint_id AND permission.active)
+                            AND NOT EXISTS (SELECT 1 FROM position_permission_t permission
+                                             WHERE permission.host_id=e.host_id AND permission.endpoint_id=e.endpoint_id AND permission.active)
+                            AND NOT EXISTS (SELECT 1 FROM attribute_permission_t permission
+                                             WHERE permission.host_id=e.host_id AND permission.endpoint_id=e.endpoint_id AND permission.active)"
                     )
                     .bind(claimed.task.host_id)
                     .bind(claimed.wf_def_id)
@@ -1204,10 +1223,17 @@ impl TaskExecutor {
                     .bind(capability_ref)
                     .bind(&http_call.with.method)
                     .fetch_optional(&self.pool).await?;
-                    let (grant_id, tool_id, endpoint_uri) = resolved.ok_or_else(|| io::Error::new(
+                    let (grant_id, tool_id, lightapi_document, base_uri) = resolved.ok_or_else(|| io::Error::new(
                         io::ErrorKind::PermissionDenied,
-                        "workflow Tool grant is missing, inactive, stale, or not allowed in this environment",
+                        "workflow Tool grant is missing, inactive, stale, protected by an unsupported endpoint policy, or not allowed in this environment",
                     ))?;
+                    let endpoint_uri = resolve_lightapi_http_endpoint(
+                        &lightapi_document,
+                        capability_ref,
+                        &environment,
+                        &http_call.with.method,
+                        &base_uri,
+                    )?;
                     info!(host_id=%claimed.task.host_id, workflow_definition_id=%claimed.wf_def_id,
                         %grant_id, %tool_id, capability_ref, lightapi_digest, environment,
                         "workflow Tool capability resolved");
@@ -1272,6 +1298,12 @@ impl TaskExecutor {
                     .body
                     .as_ref()
                     .map(|body| self.resolve_json_value(body, &claimed.context_data));
+                let resolved_query = self
+                    .resolve_http_string_map(http_call.with.query.as_ref(), &claimed.context_data);
+                let resolved_headers = self.resolve_http_string_map(
+                    http_call.with.headers.as_ref(),
+                    &claimed.context_data,
+                );
                 let effect_claim = if read_only {
                     None
                 } else {
@@ -1289,6 +1321,8 @@ impl TaskExecutor {
                         canonical_sha256(&json!({
                             "method":method.as_str(),
                             "uri":validated_uri.as_str(),
+                            "query":resolved_query,
+                            "headers":resolved_headers,
                             "body":resolved_body.clone()
                         }))?
                     );
@@ -1306,6 +1340,34 @@ impl TaskExecutor {
                     Some(claim)
                 };
                 let mut req_builder = self.http_client.request(method, validated_uri.clone());
+
+                if !resolved_query.is_empty() {
+                    req_builder = req_builder.query(&resolved_query);
+                }
+                for (name, value) in &resolved_headers {
+                    let name = reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(
+                        |error| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                format!("invalid HTTP header name '{name}': {error}"),
+                            )
+                        },
+                    )?;
+                    if is_protected_workflow_http_header(&name) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            format!("workflow HTTP call cannot override protected header '{name}'"),
+                        )
+                        .into());
+                    }
+                    let value = reqwest::header::HeaderValue::from_str(value).map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!("invalid HTTP header value for '{name}': {error}"),
+                        )
+                    })?;
+                    req_builder = req_builder.header(name, value);
+                }
 
                 if let Some(body) = &resolved_body {
                     req_builder = req_builder.json(body);
@@ -4942,6 +5004,25 @@ impl TaskExecutor {
         }
     }
 
+    fn resolve_http_string_map(
+        &self,
+        values: Option<&HashMap<String, String>>,
+        context: &Value,
+    ) -> Vec<(String, String)> {
+        let mut resolved = values
+            .into_iter()
+            .flat_map(HashMap::iter)
+            .map(|(name, value)| {
+                (
+                    name.clone(),
+                    self.resolve_template_to_string(value, context),
+                )
+            })
+            .collect::<Vec<_>>();
+        resolved.sort_by(|left, right| left.0.cmp(&right.0));
+        resolved
+    }
+
     fn resolve_template_to_string(&self, template: &str, context: &Value) -> String {
         self.stringify_json_value(&self.resolve_template_value(template, context))
     }
@@ -5173,6 +5254,203 @@ impl TaskExecutor {
     }
 }
 
+fn resolve_lightapi_http_endpoint(
+    document: &Value,
+    capability_ref: &str,
+    environment: &str,
+    method: &str,
+    fallback_base_uri: &str,
+) -> Result<String, DynError> {
+    let operations = document
+        .get("operations")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "validated LightAPI document has no operations object",
+            )
+        })?;
+    let matches_portal_operation = |operation: &Value| {
+        operation.get("endpointId").and_then(Value::as_str) == Some(capability_ref)
+            && operation.get("protocol").and_then(Value::as_str) == Some("http")
+            && operation
+                .get("method")
+                .and_then(Value::as_str)
+                .is_some_and(|operation_method| operation_method.eq_ignore_ascii_case(method))
+            && operation
+                .get("lifecycle")
+                .and_then(Value::as_str)
+                .is_none_or(|lifecycle| lifecycle == "active")
+    };
+    let mut matching_operations: Vec<_> = operations
+        .iter()
+        .filter(|(_, operation)| matches_portal_operation(operation))
+        .collect();
+    matching_operations.sort_by(|(left, _), (right, _)| left.cmp(right));
+    let operation = matching_operations
+        .iter()
+        .find(|(_, operation)| !lightapi_authentication_required(document, operation))
+        .map(|(_, operation)| *operation);
+    let Some(operation) = operation else {
+        if matching_operations
+            .iter()
+            .any(|(_, operation)| lightapi_authentication_required(document, operation))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "authenticated LightAPI operations require delegated credential support",
+            )
+            .into());
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "LightAPI operation protocol, method, or lifecycle is not callable",
+        )
+        .into());
+    };
+    let endpoint = operation
+        .get("endpoint")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "validated LightAPI HTTP operation has no endpoint",
+            )
+        })?;
+    let variables = lightapi_environment_variables(document, environment)?;
+    let resolved = LIGHTAPI_ENV_EXPRESSION_REGEX
+        .replace_all(endpoint, |captures: &regex::Captures<'_>| {
+            variables
+                .get(&captures[1])
+                .cloned()
+                .unwrap_or_else(|| captures[0].to_string())
+        })
+        .into_owned();
+    if LIGHTAPI_ENV_EXPRESSION_REGEX.is_match(&resolved) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("LightAPI environment '{environment}' does not resolve the endpoint"),
+        )
+        .into());
+    }
+    let base = reqwest::Url::parse(&format!("{}/", fallback_base_uri.trim_end_matches('/')))
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid Portal API-version target '{fallback_base_uri}': {error}"),
+            )
+        })?;
+    if !matches!(base.scheme(), "http" | "https") || base.host_str().is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Portal API-version target '{fallback_base_uri}' is not an HTTP origin"),
+        )
+        .into());
+    }
+    let (destination, absolute_endpoint) = match reqwest::Url::parse(&resolved) {
+        Ok(destination) => (destination, true),
+        Err(_) => (base.join(&resolved)?, false),
+    };
+    let same_authority = destination.scheme() == base.scheme()
+        && destination.host_str() == base.host_str()
+        && destination.port_or_known_default() == base.port_or_known_default()
+        && destination.username().is_empty()
+        && destination.password().is_none();
+    if !same_authority {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "LightAPI operation endpoint must remain on the Portal API-version target authority",
+        )
+        .into());
+    }
+    Ok(if absolute_endpoint {
+        resolved
+    } else {
+        destination.to_string()
+    })
+}
+
+fn is_protected_workflow_http_header(name: &reqwest::header::HeaderName) -> bool {
+    matches!(
+        name,
+        &reqwest::header::HOST
+            | &reqwest::header::CONTENT_LENGTH
+            | &reqwest::header::TRANSFER_ENCODING
+            | &reqwest::header::CONNECTION
+    )
+}
+
+fn lightapi_authentication_required(document: &Value, operation: &Value) -> bool {
+    match operation.get("authentication") {
+        None | Some(Value::Null) => true,
+        Some(Value::Object(authentication)) => {
+            authentication.get("type").and_then(Value::as_str) != Some("none")
+        }
+        Some(Value::String(reference)) => {
+            document
+                .get("authentications")
+                .and_then(Value::as_object)
+                .and_then(|authentications| authentications.get(reference))
+                .and_then(|authentication| authentication.get("type"))
+                .and_then(Value::as_str)
+                != Some("none")
+        }
+        Some(_) => true,
+    }
+}
+
+fn lightapi_environment_variables(
+    document: &Value,
+    environment: &str,
+) -> Result<HashMap<String, String>, DynError> {
+    let environments = document.get("environments").and_then(Value::as_object);
+    let Some(environments) = environments else {
+        return Ok(HashMap::new());
+    };
+    if environments.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut variables = HashMap::new();
+    let mut chain = Vec::new();
+    let mut current = environment;
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(current.to_string()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "LightAPI environment inheritance contains a cycle",
+            )
+            .into());
+        }
+        let value = environments.get(current).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("LightAPI environment '{environment}' is not defined"),
+            )
+        })?;
+        chain.push(value);
+        let Some(parent) = value.get("extends").and_then(Value::as_str) else {
+            break;
+        };
+        current = parent;
+    }
+    for value in chain.into_iter().rev() {
+        if let Some(entries) = value.get("variables").and_then(Value::as_object) {
+            for (name, value) in entries {
+                let value = match value {
+                    Value::String(value) => value.clone(),
+                    Value::Null => String::new(),
+                    value => value.to_string(),
+                };
+                variables.insert(name.clone(), value);
+            }
+        }
+    }
+    Ok(variables)
+}
+
 fn parse_iso8601_duration_ms(value: &str) -> Option<u64> {
     let value = value.strip_prefix("PT")?;
     if value.is_empty() {
@@ -5376,6 +5654,248 @@ do:
             Err(error) => error,
         };
         assert!(error.to_string().contains("metadata.workflowTool"));
+    }
+
+    #[test]
+    fn lightapi_http_endpoint_uses_the_selected_environment() {
+        let document = json!({
+            "environments": {
+                "base": {"variables": {"serviceBaseUrl": "https://base.example"}},
+                "local": {"extends": "base", "variables": {"serviceBaseUrl": "http://customer-api:8080"}}
+            },
+            "operations": {
+                "preferences": {
+                    "endpointId": "customer-api/preferences.get",
+                    "protocol": "http",
+                    "method": "GET",
+                    "endpoint": "${env.serviceBaseUrl}/customers/{customerId}/preferences",
+                    "authentication": {"type": "none"}
+                }
+            }
+        });
+
+        let endpoint = resolve_lightapi_http_endpoint(
+            &document,
+            "customer-api/preferences.get",
+            "local",
+            "GET",
+            "http://customer-api:8080",
+        )
+        .expect("selected environment must resolve");
+
+        assert_eq!(
+            endpoint,
+            "http://customer-api:8080/customers/{customerId}/preferences"
+        );
+    }
+
+    #[test]
+    fn lightapi_http_endpoint_rejects_absolute_foreign_authority() {
+        let document = json!({
+            "operations": {
+                "preferences": {
+                    "endpointId": "customer-api/preferences.get",
+                    "protocol": "http",
+                    "method": "GET",
+                    "endpoint": "https://evil.example/preferences",
+                    "authentication": {"type": "none"}
+                }
+            }
+        });
+
+        let error = resolve_lightapi_http_endpoint(
+            &document,
+            "customer-api/preferences.get",
+            "local",
+            "GET",
+            "https://customer-api.example",
+        )
+        .expect_err("an absolute foreign authority must not bypass the Portal target");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Portal API-version target authority")
+        );
+    }
+
+    #[test]
+    fn lightapi_http_endpoint_rejects_protocol_relative_foreign_authority() {
+        let document = json!({
+            "operations": {
+                "preferences": {
+                    "endpointId": "customer-api/preferences.get",
+                    "protocol": "http",
+                    "method": "GET",
+                    "endpoint": "//evil.example/preferences",
+                    "authentication": {"type": "none"}
+                }
+            }
+        });
+
+        let error = resolve_lightapi_http_endpoint(
+            &document,
+            "customer-api/preferences.get",
+            "local",
+            "GET",
+            "https://customer-api.example",
+        )
+        .expect_err("a protocol-relative foreign authority must not bypass the Portal target");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Portal API-version target authority")
+        );
+    }
+
+    #[test]
+    fn lightapi_http_endpoint_selects_the_same_sorted_callable_operation_as_portal() {
+        let document = json!({
+            "operations": {
+                "a-wrong-method": {
+                    "endpointId": "customer-api/preferences.get",
+                    "protocol": "http",
+                    "method": "POST",
+                    "endpoint": "/wrong",
+                    "authentication": {"type": "none"}
+                },
+                "b-callable": {
+                    "endpointId": "customer-api/preferences.get",
+                    "protocol": "http",
+                    "method": "GET",
+                    "endpoint": "/preferences",
+                    "authentication": {"type": "none"}
+                },
+                "c-callable": {
+                    "endpointId": "customer-api/preferences.get",
+                    "protocol": "http",
+                    "method": "GET",
+                    "endpoint": "/later",
+                    "authentication": {"type": "none"}
+                }
+            }
+        });
+
+        let endpoint = resolve_lightapi_http_endpoint(
+            &document,
+            "customer-api/preferences.get",
+            "local",
+            "GET",
+            "https://customer-api.example",
+        )
+        .expect("the first sorted operation matching Portal's full predicate must be selected");
+
+        assert_eq!(endpoint, "https://customer-api.example/preferences");
+    }
+
+    #[test]
+    fn protected_lightapi_http_endpoint_fails_closed() {
+        let document = json!({
+            "operations": {
+                "preferences": {
+                    "endpointId": "customer-api/preferences.get",
+                    "protocol": "http",
+                    "method": "GET",
+                    "endpoint": "/preferences",
+                    "authentication": {"type": "oauth2"}
+                }
+            }
+        });
+
+        let error = resolve_lightapi_http_endpoint(
+            &document,
+            "customer-api/preferences.get",
+            "local",
+            "GET",
+            "http://customer-api:8080",
+        )
+        .expect_err("authenticated operation must not bypass delegated credentials");
+
+        assert!(error.to_string().contains("delegated credential"));
+    }
+
+    #[test]
+    fn lightapi_http_endpoint_without_explicit_authentication_fails_closed() {
+        let document = json!({
+            "operations": {
+                "preferences": {
+                    "endpointId": "customer-api/preferences.get",
+                    "protocol": "http",
+                    "method": "GET",
+                    "endpoint": "/preferences"
+                }
+            }
+        });
+
+        let error = resolve_lightapi_http_endpoint(
+            &document,
+            "customer-api/preferences.get",
+            "local",
+            "GET",
+            "http://customer-api:8080",
+        )
+        .expect_err("missing authentication metadata must fail closed");
+
+        assert!(error.to_string().contains("delegated credential"));
+    }
+
+    #[test]
+    fn non_active_lightapi_http_endpoint_fails_closed() {
+        let document = json!({
+            "operations": {
+                "preferences": {
+                    "endpointId": "customer-api/preferences.get",
+                    "protocol": "http",
+                    "method": "GET",
+                    "endpoint": "/preferences",
+                    "lifecycle": "draft",
+                    "authentication": {"type": "none"}
+                }
+            }
+        });
+
+        let error = resolve_lightapi_http_endpoint(
+            &document,
+            "customer-api/preferences.get",
+            "local",
+            "GET",
+            "http://customer-api:8080",
+        )
+        .expect_err("non-active operation must not be callable");
+
+        assert!(error.to_string().contains("lifecycle"));
+    }
+
+    #[tokio::test]
+    async fn http_query_and_header_templates_resolve_from_context() {
+        let executor = executor();
+        let context = json!({"channel": "mobile", "requestId": "request-1"});
+        let values = HashMap::from([
+            ("channel".to_string(), "${{ channel }}".to_string()),
+            ("requestId".to_string(), "${{ requestId }}".to_string()),
+        ]);
+        let resolved: HashMap<_, _> = executor
+            .resolve_http_string_map(Some(&values), &context)
+            .into_iter()
+            .collect();
+
+        assert_eq!(resolved.get("channel").map(String::as_str), Some("mobile"));
+        assert_eq!(
+            resolved.get("requestId").map(String::as_str),
+            Some("request-1")
+        );
+    }
+
+    #[test]
+    fn workflow_http_protected_headers_cannot_be_overridden() {
+        for name in ["host", "content-length", "transfer-encoding", "connection"] {
+            let name = reqwest::header::HeaderName::from_bytes(name.as_bytes()).unwrap();
+            assert!(is_protected_workflow_http_header(&name), "{name}");
+        }
+        assert!(!is_protected_workflow_http_header(
+            &reqwest::header::HeaderName::from_static("x-request-id")
+        ));
     }
 
     #[tokio::test]
