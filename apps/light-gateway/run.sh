@@ -129,7 +129,7 @@ mkdir -p "${SCRIPT_DIR}/config-cache"
 
 export LIGHT_PORTAL_AUTHORIZATION="${LIGHT_PORTAL_AUTHORIZATION:-${LIGHT_PORTAL_TOKEN:-}}"
 if [[ -z "$LIGHT_PORTAL_AUTHORIZATION" ]]; then
-  fail "LIGHT_PORTAL_AUTHORIZATION is required for config-server bootstrap and controller registration. Put it in light-gateway.env or keep the multi-line command contiguous with no blank line before ./run.sh."
+  fail "LIGHT_PORTAL_AUTHORIZATION is required for config-server bootstrap, controller registration, and authenticated outbound service calls. Put it in light-gateway.env or keep the multi-line command contiguous with no blank line before ./run.sh."
 fi
 
 export_if_set LIGHT_CONFIG_SERVER_URI "${LIGHT_CONFIG_SERVER_URI:-${CONFIG_SERVER_URI:-}}"

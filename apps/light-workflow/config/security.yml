@@ -1,0 +1,9 @@
+enableVerifyJwt: true
+enableVerifyScope: false
+ignoreJwtExpiry: false
+enableRelaxedKeyValidation: false
+issuer: ${security.issuer:urn:com:networknt:oauth2:v1}
+audience: ${security.audience:[urn:com.networknt]}
+jwt:
+  clockSkewInSeconds: ${security.jwt.clockSkewInSeconds:60}
+bootstrapFromKeyService: true

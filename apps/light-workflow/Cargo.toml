@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 async-trait = { workspace = true }
 agent-delegation = { path = "../../crates/agent-delegation" }
+base64 = "0.22"
 hex = { workspace = true }
 sha2 = { workspace = true }
 axum = { workspace = true }
@@ -17,6 +18,8 @@ serde_yaml = { workspace = true }
 workflow-core = { path = "../../crates/workflow-core" }
 light-rule = { path = "../../crates/light-rule" }
 light-runtime = { path = "../../crates/light-runtime" }
+light-security = { path = "../../crates/light-security" }
+config-loader = { path = "../../crates/config-loader" }
 execution-runner-protocol = { path = "../../crates/execution-runner-protocol" }
 execution-fixed-action = { path = "../../crates/execution-fixed-action" }
 execution-security = { path = "../../crates/execution-security" }
@@ -31,5 +34,7 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true }
 regex = "1"
-subtle = "2.6"
 jsonschema = { workspace = true }
+
+[build-dependencies]
+config-embed-build = { path = "../../crates/config-embed-build" }

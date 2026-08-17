@@ -49,8 +49,8 @@ use url::{Url, form_urlencoded};
 use uuid::Uuid;
 use workflow_invocation_contract::{
     CANONICAL_INPUT_PROFILE, CONTRACT_VERSION as WORKFLOW_CONTRACT_VERSION, ErrorCode,
-    ExecutionClass, IdempotencyBinding, IdempotencyKind, InvocationBudget, InvocationMode,
-    InvocationState, InvocationStatus, ResultTextMode, StartInvocationRequest,
+    ExecutionClass, IdempotencyBinding, IdempotencyKind, InvocationBudget, InvocationError,
+    InvocationMode, InvocationState, InvocationStatus, ResultTextMode, StartInvocationRequest,
     canonical_json_bytes, canonical_sha256, stable_subject_claims, validate_digest,
 };
 
@@ -157,8 +157,13 @@ impl Default for McpRouterConfig {
 pub struct McpWorkflowRuntimeConfig {
     #[serde(default)]
     pub invocation_url: String,
-    #[serde(default = "default_workflow_bearer_token_env")]
-    pub bearer_token_env: String,
+    /// Deprecated compatibility-only fields. They are accepted so a stale
+    /// config-server document does not prevent a lockstep rollout, but are
+    /// never read; LIGHT_PORTAL_AUTHORIZATION is the only service token.
+    #[serde(default, skip_serializing)]
+    pub bearer_token_env: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub scope_token_env: Option<String>,
     #[serde(default = "default_workflow_permit_pools")]
     pub permit_pools: Vec<usize>,
 }
@@ -167,14 +172,54 @@ impl Default for McpWorkflowRuntimeConfig {
     fn default() -> Self {
         Self {
             invocation_url: String::new(),
-            bearer_token_env: default_workflow_bearer_token_env(),
+            bearer_token_env: None,
+            scope_token_env: None,
             permit_pools: default_workflow_permit_pools(),
         }
     }
 }
 
-fn default_workflow_bearer_token_env() -> String {
-    "WORKFLOW_INVOCATION_BEARER_TOKEN".to_string()
+const LIGHT_PORTAL_AUTHORIZATION_ENV: &str = "LIGHT_PORTAL_AUTHORIZATION";
+
+fn normalize_bearer_header(value: &str) -> Option<String> {
+    let (scheme, token) = value.trim().split_once(char::is_whitespace)?;
+    let token = token.trim();
+    (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then(|| format!("Bearer {token}"))
+}
+
+fn service_bearer_header(value: &str) -> Option<String> {
+    let value = value.trim();
+    let normalized = normalize_bearer_header(value);
+    let token = normalized
+        .as_deref()
+        .and_then(|header| header.strip_prefix("Bearer "))
+        .unwrap_or(value);
+    (token.len() >= 32 && !token.chars().any(char::is_whitespace))
+        .then(|| format!("Bearer {token}"))
+}
+
+fn workflow_start_error_code(status: reqwest::StatusCode) -> ErrorCode {
+    if status.is_server_error() {
+        ErrorCode::WorkflowInvocationUnavailable
+    } else {
+        ErrorCode::WorkflowStartRejected
+    }
+}
+
+fn workflow_user_authorization(
+    authorization: Option<&str>,
+    delegated: bool,
+) -> Result<String, &'static str> {
+    if delegated {
+        return Err(
+            "WORKFLOW_POLICY_DENIED: agent-delegated workflow access requires the original user Authorization JWT",
+        );
+    }
+    authorization
+        .and_then(normalize_bearer_header)
+        .ok_or(
+            "WORKFLOW_POLICY_DENIED: workflow-backed tools require the original user Authorization bearer token; X-Scope-Token-only, Basic, and API-key callers are unsupported",
+        )
 }
 
 fn default_workflow_permit_pools() -> Vec<usize> {
@@ -905,6 +950,10 @@ fn decrement_principal_count(counts: &mut BTreeMap<String, usize>, principal: &s
 #[derive(Debug, Clone, Default)]
 pub struct McpRequestContext {
     pub auth: Option<AuthPrincipal>,
+    /// The current end-user Authorization header after authentication and any
+    /// stateless token renewal. Workflow dispatch preserves this credential;
+    /// service-to-service authentication uses X-Scope-Token separately.
+    pub authorization: Option<String>,
     pub correlation_id: Option<String>,
     pub delegation: Option<DelegationClaims>,
     pub anonymous_binding: Option<String>,
@@ -1442,7 +1491,6 @@ pub struct McpRouterRuntime {
 
 struct WorkflowDispatchRuntime {
     invocation_url: String,
-    bearer_token_env: String,
     permit_pools: Vec<Arc<Semaphore>>,
 }
 
@@ -1638,6 +1686,12 @@ impl McpRouterRuntime {
         direct_registry: DirectRegistryConfig,
         client_config: ClientConfig,
     ) -> Result<Self, RuntimeError> {
+        if config.workflow.bearer_token_env.is_some() || config.workflow.scope_token_env.is_some() {
+            tracing::warn!(
+                target: "light_pingora::mcp::workflow",
+                "mcp-router workflow bearerTokenEnv/scopeTokenEnv are deprecated and ignored; configure LIGHT_PORTAL_AUTHORIZATION"
+            );
+        }
         ensure_workflow_lifecycle_tools(&mut config)?;
         validate_config(&config)?;
         config.origin_allowlist = config
@@ -1712,7 +1766,6 @@ impl McpRouterRuntime {
                         .invocation_url
                         .trim_end_matches('/')
                         .to_string(),
-                    bearer_token_env: config.workflow.bearer_token_env.clone(),
                     permit_pools: config
                         .workflow
                         .permit_pools
@@ -3856,6 +3909,18 @@ impl McpRouterRuntime {
                 "Workflow binding is unavailable".to_string(),
             ));
         };
+        let user_authorization = match workflow_user_authorization(
+            context.authorization.as_deref(),
+            context.delegation.is_some(),
+        ) {
+            Ok(authorization) => authorization,
+            Err(message) => {
+                return Ok(workflow_error(
+                    ErrorCode::WorkflowPolicyDenied,
+                    message.to_string(),
+                ));
+            }
+        };
         let permit_depth = match context
             .delegation
             .as_ref()
@@ -3948,8 +4013,12 @@ impl McpRouterRuntime {
             .or_else(|| auth.claims.get("userId").and_then(JsonValue::as_str))
             .or_else(|| auth.claims.get("sub").and_then(JsonValue::as_str))
             .unwrap_or(principal_subject);
-        let bearer_token = match std::env::var(&runtime.bearer_token_env) {
-            Ok(token) if token.len() >= 32 => token,
+        let scope_authorization = match std::env::var(LIGHT_PORTAL_AUTHORIZATION_ENV)
+            .ok()
+            .as_deref()
+            .and_then(service_bearer_header)
+        {
+            Some(token) => token,
             _ => {
                 return Ok(workflow_error(
                     ErrorCode::WorkflowInvocationUnavailable,
@@ -4076,7 +4145,8 @@ impl McpRouterRuntime {
         let start_response = self
             .private_target_client
             .post(start_url)
-            .bearer_auth(&bearer_token)
+            .header("authorization", &user_authorization)
+            .header("x-scope-token", &scope_authorization)
             .header("x-host-id", host_id.to_string())
             .header("x-principal-subject", principal_subject)
             .header("x-end-user-subject", end_user_subject)
@@ -4091,7 +4161,8 @@ impl McpRouterRuntime {
                     if let Some(status) = self
                         .recover_workflow_start_status(
                             runtime,
-                            &bearer_token,
+                            &user_authorization,
+                            &scope_authorization,
                             host_id,
                             principal_subject,
                             end_user_subject,
@@ -4116,12 +4187,24 @@ impl McpRouterRuntime {
             Ok(response) => {
                 let http_status = response.status();
                 let body = response.text().await.unwrap_or_default();
+                let upstream_code = serde_json::from_str::<InvocationError>(&body)
+                    .ok()
+                    .and_then(|error| serde_json::to_value(error.code).ok())
+                    .and_then(|code| code.as_str().map(str::to_string));
+                let error_code = workflow_start_error_code(http_status);
+                let prefix = if error_code == ErrorCode::WorkflowInvocationUnavailable {
+                    "WORKFLOW_INVOCATION_UNAVAILABLE"
+                } else {
+                    "WORKFLOW_START_REJECTED"
+                };
+                let upstream_code = upstream_code
+                    .map(|code| format!(" ({code})"))
+                    .unwrap_or_default();
                 return Ok(workflow_error(
-                    ErrorCode::WorkflowStartRejected,
+                    error_code,
                     format!(
-                        "WORKFLOW_START_REJECTED: HTTP {}: {}",
+                        "{prefix}: workflow service returned HTTP {}{upstream_code}",
                         http_status.as_u16(),
-                        truncate_error_message(&body)
                     ),
                 ));
             }
@@ -4129,7 +4212,8 @@ impl McpRouterRuntime {
                 if let Some(status) = self
                     .recover_workflow_start_status(
                         runtime,
-                        &bearer_token,
+                        &user_authorization,
+                        &scope_authorization,
                         host_id,
                         principal_subject,
                         end_user_subject,
@@ -4202,7 +4286,8 @@ impl McpRouterRuntime {
             let response = self
                 .private_target_client
                 .post(wait_url)
-                .bearer_auth(&bearer_token)
+                .header("authorization", &user_authorization)
+                .header("x-scope-token", &scope_authorization)
                 .header("x-host-id", host_id.to_string())
                 .header("x-principal-subject", principal_subject)
                 .header("x-end-user-subject", end_user_subject)
@@ -4296,7 +4381,8 @@ impl McpRouterRuntime {
     async fn recover_workflow_start_status(
         &self,
         runtime: &WorkflowDispatchRuntime,
-        bearer_token: &str,
+        user_authorization: &str,
+        scope_authorization: &str,
         host_id: Uuid,
         principal_subject: &str,
         end_user_subject: &str,
@@ -4310,7 +4396,8 @@ impl McpRouterRuntime {
         let response = self
             .private_target_client
             .get(url)
-            .bearer_auth(bearer_token)
+            .header("authorization", user_authorization)
+            .header("x-scope-token", scope_authorization)
             .header("x-host-id", host_id.to_string())
             .header("x-principal-subject", principal_subject)
             .header("x-end-user-subject", end_user_subject)
@@ -4356,6 +4443,18 @@ impl McpRouterRuntime {
                 "WORKFLOW_POLICY_DENIED: authenticated workflow identity is required".to_string(),
             ));
         };
+        let user_authorization = match workflow_user_authorization(
+            context.authorization.as_deref(),
+            context.delegation.is_some(),
+        ) {
+            Ok(authorization) => authorization,
+            Err(message) => {
+                return Ok(error_result(
+                    ErrorCode::WorkflowPolicyDenied,
+                    message.to_string(),
+                ));
+            }
+        };
         let host_id = auth
             .host
             .as_deref()
@@ -4387,8 +4486,12 @@ impl McpRouterRuntime {
             .or_else(|| auth.claims.get("userId").and_then(JsonValue::as_str))
             .or_else(|| auth.claims.get("sub").and_then(JsonValue::as_str))
             .unwrap_or(principal_subject);
-        let bearer_token = match std::env::var(&runtime.bearer_token_env) {
-            Ok(token) if token.len() >= 32 => token,
+        let scope_authorization = match std::env::var(LIGHT_PORTAL_AUTHORIZATION_ENV)
+            .ok()
+            .as_deref()
+            .and_then(service_bearer_header)
+        {
+            Some(token) => token,
             _ => {
                 return Ok(error_result(
                     ErrorCode::WorkflowInvocationUnavailable,
@@ -4415,7 +4518,8 @@ impl McpRouterRuntime {
             }
         };
         let response = request
-            .bearer_auth(bearer_token)
+            .header("authorization", user_authorization)
+            .header("x-scope-token", scope_authorization)
             .header("x-host-id", host_id.to_string())
             .header("x-principal-subject", principal_subject)
             .header("x-end-user-subject", end_user_subject)
@@ -6536,7 +6640,6 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
                 })?;
             }
             if config.workflow.invocation_url.trim().is_empty()
-                || config.workflow.bearer_token_env.trim().is_empty()
                 || (binding.mode == InvocationMode::Sync
                     && (config.workflow.permit_pools.len()
                         <= usize::from(binding.budget.maximum_delegation_depth)
@@ -8787,6 +8890,79 @@ mod tests {
     use tokio::sync::oneshot;
 
     #[test]
+    fn workflow_bearer_headers_are_normalized_consistently() {
+        assert_eq!(
+            normalize_bearer_header("bearer current-user-jwt").as_deref(),
+            Some("Bearer current-user-jwt")
+        );
+        assert!(normalize_bearer_header("current-user-jwt").is_none());
+
+        let token = "a".repeat(32);
+        assert_eq!(
+            service_bearer_header(&token).as_deref(),
+            Some(format!("Bearer {token}").as_str())
+        );
+        assert_eq!(
+            service_bearer_header(&format!("bEaReR {token}")).as_deref(),
+            Some(format!("Bearer {token}").as_str())
+        );
+        assert!(service_bearer_header("short-token").is_none());
+    }
+
+    #[test]
+    fn workflow_config_accepts_deprecated_token_fields_without_using_them() {
+        let config: McpRouterConfig = serde_yaml::from_str(
+            r#"
+workflow:
+  invocationUrl: http://light-workflow:8436
+  bearerTokenEnv: WORKFLOW_INVOCATION_BEARER_TOKEN
+  scopeTokenEnv: WORKFLOW_INVOCATION_SCOPE_TOKEN
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.workflow.bearer_token_env.as_deref(),
+            Some("WORKFLOW_INVOCATION_BEARER_TOKEN")
+        );
+        assert_eq!(
+            config.workflow.scope_token_env.as_deref(),
+            Some("WORKFLOW_INVOCATION_SCOPE_TOKEN")
+        );
+    }
+
+    #[test]
+    fn workflow_credential_policy_rejects_delegation_and_non_user_authentication() {
+        assert!(
+            workflow_user_authorization(Some("Bearer delegated-envelope"), true)
+                .unwrap_err()
+                .contains("agent-delegated")
+        );
+
+        assert!(
+            workflow_user_authorization(None, false)
+                .unwrap_err()
+                .contains("X-Scope-Token-only")
+        );
+
+        assert_eq!(
+            workflow_user_authorization(Some("bearer user-jwt"), false).unwrap(),
+            "Bearer user-jwt"
+        );
+    }
+
+    #[test]
+    fn workflow_start_classifies_jwks_outage_as_retryable_unavailability() {
+        assert_eq!(
+            workflow_start_error_code(reqwest::StatusCode::SERVICE_UNAVAILABLE),
+            ErrorCode::WorkflowInvocationUnavailable
+        );
+        assert_eq!(
+            workflow_start_error_code(reqwest::StatusCode::UNAUTHORIZED),
+            ErrorCode::WorkflowStartRejected
+        );
+    }
+
+    #[test]
     fn compiled_mask_plan_handles_composition_refs_arrays_and_pattern_properties() {
         let runtime = McpRouterRuntime::new(McpRouterConfig {
             tools: vec![test_tool(
@@ -9849,6 +10025,7 @@ endpointRules:
                         }),
                         ..AuthPrincipal::default()
                     }),
+                    authorization: None,
                     correlation_id: Some("corr-1".to_string()),
                     delegation: None,
                     anonymous_binding: None,
@@ -9954,6 +10131,7 @@ endpointRules:
                         claims: json!({"role": "account-manager"}),
                         ..AuthPrincipal::default()
                     }),
+                    authorization: None,
                     correlation_id: Some("corr-1".to_string()),
                     delegation: None,
                     anonymous_binding: None,
@@ -11686,6 +11864,7 @@ endpointRules:
                         claims: json!({"role": "mcp-reader"}),
                         ..AuthPrincipal::default()
                     }),
+                    authorization: None,
                     correlation_id: Some("corr-1".to_string()),
                     delegation: None,
                     anonymous_binding: None,
@@ -15869,6 +16048,7 @@ endpointRules:
                         claims: json!({"role": "manager"}),
                         ..AuthPrincipal::default()
                     }),
+                    authorization: None,
                     correlation_id: Some("corr-1".to_string()),
                     delegation: None,
                     anonymous_binding: None,
@@ -15964,6 +16144,7 @@ endpointRules:
                         claims: json!({"role": "teller"}),
                         ..AuthPrincipal::default()
                     }),
+                    authorization: None,
                     correlation_id: Some("corr-1".to_string()),
                     delegation: None,
                     anonymous_binding: None,
@@ -16066,6 +16247,7 @@ endpointRules:
                         claims: json!({"role": "manager"}),
                         ..AuthPrincipal::default()
                     }),
+                    authorization: None,
                     correlation_id: Some("corr-1".to_string()),
                     delegation: None,
                     anonymous_binding: None,
@@ -16171,6 +16353,7 @@ endpointRules:
                         claims: json!({"role": "manager"}),
                         ..AuthPrincipal::default()
                     }),
+                    authorization: None,
                     correlation_id: Some("corr-1".to_string()),
                     delegation: None,
                     anonymous_binding: None,
@@ -16276,6 +16459,7 @@ endpointRules:
                         claims: json!({"role": "manager"}),
                         ..AuthPrincipal::default()
                     }),
+                    authorization: None,
                     correlation_id: Some("corr-1".to_string()),
                     delegation: None,
                     anonymous_binding: None,
@@ -16378,6 +16562,7 @@ endpointRules:
                         claims: json!({"role": "teller"}),
                         ..AuthPrincipal::default()
                     }),
+                    authorization: None,
                     correlation_id: Some("corr-1".to_string()),
                     delegation: None,
                     anonymous_binding: None,

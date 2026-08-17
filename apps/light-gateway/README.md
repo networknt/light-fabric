@@ -7,6 +7,11 @@ used by `light-agent`. Delegated MCP requests are signature checked, audience,
 expiry, policy, data-boundary, turn/action, stable-tool, alias, and replay bound,
 then intersected with the gateway's current access-control and tool catalog.
 Delegation does not bypass normal gateway authorization or response filtering.
+Workflow-backed MCP tools are excluded from agent delegation because their
+execution contract requires the original end-user JWT to propagate through the
+workflow and downstream API calls. X-Scope-Token-only, Basic-auth, and API-key
+callers are likewise unsupported for workflow-backed tools; they may continue
+to call non-workflow MCP tools.
 
 When delegation is enabled, configure
 `LIGHT_GATEWAY_DELEGATION_DATABASE_URL` (or `DATABASE_URL`) for the shared
@@ -63,6 +68,13 @@ SERVER_ADVERTISED_ADDRESS="127.0.0.1" \
 Do not leave a blank line inside the continued command. A blank line after a
 trailing `\` ends the first shell command, so `./run.sh` will not receive the
 earlier environment variables.
+
+`LIGHT_PORTAL_AUTHORIZATION` is the gateway service's single generic service
+token. It is used for bootstrap/registration and is forwarded as
+`X-Scope-Token` when the gateway invokes `light-workflow`; the original user's
+JWT remains in `Authorization`. Upgrade `light-gateway`, `light-workflow`, and
+the workflow user-authorization database patch together; mixed versions do not
+share the same invocation authentication contract.
 
 For repeated local runs, keep the token in an ignored env file:
 

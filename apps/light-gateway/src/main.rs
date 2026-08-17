@@ -3579,6 +3579,7 @@ impl ProxyHttp for GatewayProxy {
                             request,
                             McpRequestContext {
                                 auth: ctx.auth.clone(),
+                                authorization: request_header(session, "authorization"),
                                 correlation_id: ctx.correlation.correlation_id.clone(),
                                 delegation: ctx.agent_delegation.clone(),
                                 anonymous_binding: client_ip(session)

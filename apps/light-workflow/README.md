@@ -22,7 +22,9 @@ Run it from this app directory with the portal Postgres URL:
 
 ```bash
 cd /home/steve/workspace/light-fabric/apps/light-workflow
-DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver ./run.sh --debug-binary
+DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver \
+LIGHT_PORTAL_AUTHORIZATION="Bearer <workflow-service-token>" \
+./run.sh --debug-binary
 ```
 
 For a multi-line shell command, either keep the assignments attached to
@@ -30,6 +32,10 @@ For a multi-line shell command, either keep the assignments attached to
 
 ```bash
 DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver \
+LIGHT_PORTAL_AUTHORIZATION="Bearer <workflow-service-token>" \
+SERVER_ENVIRONMENT=dev \
+WORKFLOW_INVOCATION_CALLER_SERVICE_IDS=com.networknt.portal.gateway-1.0.0 \
+LIGHTAPI_ENVIRONMENT=dev \
 LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8436 \
 WORKFLOW_MAXIMUM_PARALLELISM=64 \
 RUST_LOG=light_workflow=debug,info \
@@ -41,6 +47,10 @@ or export the variables before starting the script:
 
 ```bash
 export DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver
+export LIGHT_PORTAL_AUTHORIZATION="Bearer <workflow-service-token>"
+export SERVER_ENVIRONMENT=dev
+export WORKFLOW_INVOCATION_CALLER_SERVICE_IDS=com.networknt.portal.gateway-1.0.0
+export LIGHTAPI_ENVIRONMENT=dev
 export LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8436
 export WORKFLOW_MAXIMUM_PARALLELISM=64
 export RUST_LOG=light_workflow=debug,info
@@ -55,6 +65,10 @@ For repeated local runs, create `light-workflow.env` in this directory:
 
 ```bash
 DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver
+LIGHT_PORTAL_AUTHORIZATION="Bearer <workflow-service-token>"
+SERVER_ENVIRONMENT=dev
+WORKFLOW_INVOCATION_CALLER_SERVICE_IDS=com.networknt.portal.gateway-1.0.0
+LIGHTAPI_ENVIRONMENT=dev
 LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8436
 WORKFLOW_MAXIMUM_PARALLELISM=64
 RUST_LOG=light_workflow=debug,info
@@ -69,8 +83,46 @@ Then start the debug or release binary:
 ```
 
 The script also accepts `--binary PATH` and `--env-file PATH`. `DATABASE_URL`
-is required; `LIGHT_WORKFLOW_DATABASE_URL` and `WORKFLOW_DATABASE_URL` are
-accepted aliases.
+and the workflow service's own `LIGHT_PORTAL_AUTHORIZATION` are required;
+`LIGHT_WORKFLOW_DATABASE_URL` and `WORKFLOW_DATABASE_URL` are accepted database
+aliases.
+
+## Gateway/workflow authentication upgrade
+
+The gateway and workflow service must be deployed together for the two-header
+invocation contract: the initiating user's JWT is sent in `Authorization`, and
+the gateway's own `LIGHT_PORTAL_AUTHORIZATION` is sent in `X-Scope-Token`.
+Each service has exactly one service token under that generic environment name.
+Mixed old/new gateway and workflow versions are intentionally rejected.
+
+Before applying `patch_20260817_02_workflow_user_authorization.sql`, drain or
+cancel every non-terminal row in `workflow_invocation_t`. The original user JWT
+does not exist in pre-upgrade rows and cannot be backfilled safely, so the
+migration fails closed when it finds one. Deploy the database patch, gateway,
+and workflow images in the same maintenance window. New invocation credentials
+are cleared when their invocation becomes terminal.
+
+`SERVER_ENVIRONMENT` validates the gateway service token's `env` claim.
+The workflow service's own `LIGHT_PORTAL_AUTHORIZATION` JWT must carry the same
+`env` claim; startup rejects a missing or mismatched claim before that token can
+be forwarded to a protected API in `X-Scope-Token`.
+`LIGHTAPI_ENVIRONMENT` independently selects the workflow Tool grant and
+LightAPI environment. Keep them explicit even when they currently have the
+same value. `WORKFLOW_INVOCATION_CALLER_SERVICE_IDS` is a required comma-separated
+allowlist of service IDs accepted in the gateway token's `sid` claim.
+
+Workflow invocation JWT verification loads its JWKS during startup and fails
+startup if the OAuth URL, CA certificate, or key response is unavailable.
+The embedded defaults use `https://light-oauth:6881` and `/config/ca.pem`.
+Override them with `CLIENT_TOKENKEYSERVERURL`, `CLIENT_CACERTPATH`, and
+`CLIENT_VERIFYHOSTNAME`; native and Kubernetes deployments must mount the
+configured CA path.
+
+For a long-running asynchronous invocation, an authenticated status, wait, or
+cancellation request refreshes the stored user JWT after checking
+that its subject and disclosure claims still match. There is no safe automatic
+refresh when no user or gateway lifecycle request occurs; callers must resume a
+parked invocation with a current user JWT before its next protected HTTP task.
 
 `WORKFLOW_MAXIMUM_PARALLELISM` is the service-wide hard ceiling for the number
 of branches in a workflow fork. It defaults to 64 and must be between 1 and 64.

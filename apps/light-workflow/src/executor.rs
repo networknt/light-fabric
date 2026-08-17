@@ -360,6 +360,7 @@ impl TaskExecutor {
         let mut tx = self.pool.begin().await?;
         let expired: Vec<(Uuid, Uuid)> = sqlx::query_as(
             "UPDATE workflow_invocation_t SET state='FAILED',terminal_ts=CURRENT_TIMESTAMP,
+                    user_authorization=NULL,user_authorization_exp=NULL,
                     updated_ts=CURRENT_TIMESTAMP,state_version=state_version+1,
                     normalized_error=jsonb_build_object(
                       'code','WORKFLOW_TIMEOUT','message','workflow deadline expired',
@@ -628,6 +629,7 @@ impl TaskExecutor {
         .await?;
         sqlx::query(
             "UPDATE workflow_invocation_t SET state='FAILED',terminal_ts=CURRENT_TIMESTAMP,
+                    user_authorization=NULL,user_authorization_exp=NULL,
                     updated_ts=CURRENT_TIMESTAMP,state_version=state_version+1,
                     normalized_error=jsonb_build_object(
                       'code',CASE WHEN effect_state='confirmed'
@@ -1260,14 +1262,27 @@ impl TaskExecutor {
                 } else {
                     None
                 };
-                let workflow_backed: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM workflow_invocation_t
-                      WHERE host_id=$1 AND process_id=$2)",
+                let invocation_authorization: Option<(Option<String>, String)> = sqlx::query_as(
+                    "SELECT user_authorization,state FROM workflow_invocation_t
+                      WHERE host_id=$1 AND process_id=$2",
                 )
                 .bind(claimed.task.host_id)
                 .bind(claimed.task.process_id)
-                .fetch_one(&self.pool)
+                .fetch_optional(&self.pool)
                 .await?;
+                let workflow_backed = invocation_authorization.is_some();
+                if invocation_authorization.as_ref().is_some_and(|(_, state)| {
+                    matches!(state.as_str(), "CANCELLED" | "COMPLETED" | "FAILED")
+                }) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "workflow invocation became terminal before HTTP task dispatch",
+                    )
+                    .into());
+                }
+                let user_authorization = invocation_authorization
+                    .as_ref()
+                    .and_then(|(authorization, _)| authorization.as_deref());
                 if workflow_http_requires_registered_target(
                     workflow_backed,
                     granted_uri.is_some(),
@@ -1309,6 +1324,15 @@ impl TaskExecutor {
                     http_call.with.headers.as_ref(),
                     &claimed.context_data,
                 );
+                let workflow_authorization = if workflow_backed {
+                    let scope_authorization = env::var("LIGHT_PORTAL_AUTHORIZATION").ok();
+                    Some(workflow_http_authorization_headers(
+                        user_authorization,
+                        scope_authorization.as_deref(),
+                    )?)
+                } else {
+                    None
+                };
                 let effect_claim = if read_only {
                     None
                 } else {
@@ -1346,6 +1370,12 @@ impl TaskExecutor {
                 };
                 let mut req_builder = self.http_client.request(method, validated_uri.clone());
 
+                if let Some((user_authorization, scope_authorization)) = workflow_authorization {
+                    req_builder = req_builder
+                        .header(reqwest::header::AUTHORIZATION, user_authorization)
+                        .header("X-Scope-Token", scope_authorization);
+                }
+
                 if !resolved_query.is_empty() {
                     req_builder = req_builder.query(&resolved_query);
                 }
@@ -1358,7 +1388,7 @@ impl TaskExecutor {
                             )
                         },
                     )?;
-                    if is_protected_workflow_http_header(&name) {
+                    if is_protected_workflow_http_header(&name, workflow_backed) {
                         return Err(io::Error::new(
                             io::ErrorKind::PermissionDenied,
                             format!("workflow HTTP call cannot override protected header '{name}'"),
@@ -3817,6 +3847,7 @@ impl TaskExecutor {
         if !succeeded {
             sqlx::query(
                 "UPDATE workflow_invocation_t SET state='FAILED',terminal_ts=CURRENT_TIMESTAMP,
+                        user_authorization=NULL,user_authorization_exp=NULL,
                         updated_ts=CURRENT_TIMESTAMP,state_version=state_version+1,
                         normalized_error=jsonb_build_object(
                           'code','WORKFLOW_TASK_FAILED','message','workflow compensation failed',
@@ -3850,6 +3881,7 @@ impl TaskExecutor {
         if remaining == 0 {
             sqlx::query(
                 "UPDATE workflow_invocation_t SET state='CANCELLED',terminal_ts=CURRENT_TIMESTAMP,
+                        user_authorization=NULL,user_authorization_exp=NULL,
                         updated_ts=CURRENT_TIMESTAMP,state_version=state_version+1,
                         non_cancellable_reason=NULL
                   WHERE host_id=$1 AND process_id=$2 AND state='COMPENSATING'",
@@ -4300,6 +4332,8 @@ impl TaskExecutor {
             "UPDATE workflow_invocation_t SET state=$1,updated_ts=CURRENT_TIMESTAMP,
                     state_version=state_version+1,
                     terminal_ts=CASE WHEN $2 THEN CURRENT_TIMESTAMP ELSE NULL END,
+                    user_authorization=CASE WHEN $2 THEN NULL ELSE user_authorization END,
+                    user_authorization_exp=CASE WHEN $2 THEN NULL ELSE user_authorization_exp END,
                     public_result=CASE WHEN $1='COMPLETED' THEN $3 ELSE public_result END,
                     normalized_error=CASE WHEN $1='FAILED' THEN $4 ELSE normalized_error END
               WHERE host_id=$5 AND process_id=$6 AND state NOT IN ('CANCELLED','COMPLETED','FAILED')",
@@ -5394,6 +5428,44 @@ fn resolve_lightapi_http_endpoint(
     })
 }
 
+fn workflow_http_authorization_headers(
+    user_authorization: Option<&str>,
+    scope_authorization: Option<&str>,
+) -> Result<(String, String), io::Error> {
+    let user_authorization = user_authorization
+        .and_then(normalize_bearer_header)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "workflow invocation has no current user Authorization token",
+            )
+        })?;
+    let scope_authorization = scope_authorization
+        .and_then(service_bearer_header)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "workflow service X-Scope-Token is unavailable",
+            )
+        })?;
+    Ok((user_authorization, scope_authorization))
+}
+
+fn normalize_bearer_header(value: &str) -> Option<String> {
+    let (scheme, token) = value.trim().split_once(char::is_whitespace)?;
+    let token = token.trim();
+    (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then(|| format!("Bearer {token}"))
+}
+
+fn service_bearer_header(value: &str) -> Option<String> {
+    let value = value.trim();
+    if let Some(header) = normalize_bearer_header(value) {
+        return Some(header);
+    }
+    (!value.is_empty() && !value.chars().any(char::is_whitespace))
+        .then(|| format!("Bearer {value}"))
+}
+
 fn restore_openapi_path_placeholders(mut destination: String, source: &str) -> String {
     for captures in OPENAPI_PATH_PLACEHOLDER_REGEX.captures_iter(source) {
         let Some(placeholder) = captures.get(0) else {
@@ -5406,14 +5478,19 @@ fn restore_openapi_path_placeholders(mut destination: String, source: &str) -> S
     destination
 }
 
-fn is_protected_workflow_http_header(name: &reqwest::header::HeaderName) -> bool {
+fn is_protected_workflow_http_header(
+    name: &reqwest::header::HeaderName,
+    workflow_backed: bool,
+) -> bool {
     matches!(
         name,
         &reqwest::header::HOST
             | &reqwest::header::CONTENT_LENGTH
             | &reqwest::header::TRANSFER_ENCODING
             | &reqwest::header::CONNECTION
-    )
+    ) || (workflow_backed
+        && (name == reqwest::header::AUTHORIZATION
+            || name.as_str().eq_ignore_ascii_case("x-scope-token")))
 }
 
 fn workflow_http_requires_registered_target(
@@ -5701,6 +5778,18 @@ do:
     #[test]
     fn workflow_tool_grant_satisfies_workflow_backed_http_target_authorization() {
         assert!(!workflow_http_requires_registered_target(true, true, false));
+    }
+
+    #[test]
+    fn workflow_http_preserves_user_authorization_and_adds_scope_token() {
+        let headers = workflow_http_authorization_headers(
+            Some("bEaReR current-user-jwt"),
+            Some("workflow-service-token"),
+        )
+        .unwrap();
+        assert_eq!(headers.0, "Bearer current-user-jwt");
+        assert_eq!(headers.1, "Bearer workflow-service-token");
+        assert!(workflow_http_authorization_headers(None, Some("scope-token")).is_err());
     }
 
     #[test]
@@ -6027,12 +6116,28 @@ do:
 
     #[test]
     fn workflow_http_protected_headers_cannot_be_overridden() {
-        for name in ["host", "content-length", "transfer-encoding", "connection"] {
+        for name in [
+            "host",
+            "authorization",
+            "x-scope-token",
+            "content-length",
+            "transfer-encoding",
+            "connection",
+        ] {
             let name = reqwest::header::HeaderName::from_bytes(name.as_bytes()).unwrap();
-            assert!(is_protected_workflow_http_header(&name), "{name}");
+            assert!(is_protected_workflow_http_header(&name, true), "{name}");
         }
         assert!(!is_protected_workflow_http_header(
-            &reqwest::header::HeaderName::from_static("x-request-id")
+            &reqwest::header::HeaderName::from_static("x-request-id"),
+            true,
+        ));
+        assert!(!is_protected_workflow_http_header(
+            &reqwest::header::AUTHORIZATION,
+            false,
+        ));
+        assert!(!is_protected_workflow_http_header(
+            &reqwest::header::HeaderName::from_static("x-scope-token"),
+            false,
         ));
     }
 

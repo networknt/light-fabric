@@ -24,9 +24,13 @@ working directory at apps/light-workflow for local files and future config.
 
 Required environment:
   DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver
+  LIGHT_PORTAL_AUTHORIZATION=Bearer <workflow-service-token>
+  SERVER_ENVIRONMENT=dev
+  WORKFLOW_INVOCATION_CALLER_SERVICE_IDS=com.networknt.portal.gateway-1.0.0
 
 Common optional environment:
   LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8436
+  LIGHTAPI_ENVIRONMENT=dev
   RUST_LOG=light_workflow=debug,info
   WORKFLOW_LOG_ANSI=false
 
@@ -124,6 +128,20 @@ BINARY_PATH="$(absolute_path "$BINARY_PATH")"
 export DATABASE_URL="${DATABASE_URL:-${LIGHT_WORKFLOW_DATABASE_URL:-${WORKFLOW_DATABASE_URL:-}}}"
 if [[ -z "$DATABASE_URL" ]]; then
   fail "DATABASE_URL is required. Put it in light-workflow.env, export it, or keep DATABASE_URL=... on the same command line as ./run.sh."
+fi
+
+export LIGHT_PORTAL_AUTHORIZATION="${LIGHT_PORTAL_AUTHORIZATION:-}"
+if [[ -z "$LIGHT_PORTAL_AUTHORIZATION" ]]; then
+  fail "LIGHT_PORTAL_AUTHORIZATION is required for authenticated outbound service calls. Put it in light-workflow.env or export it before running ./run.sh."
+fi
+
+export SERVER_ENVIRONMENT="${SERVER_ENVIRONMENT:-}"
+if [[ -z "$SERVER_ENVIRONMENT" ]]; then
+  fail "SERVER_ENVIRONMENT is required and must match the gateway service token env claim."
+fi
+export WORKFLOW_INVOCATION_CALLER_SERVICE_IDS="${WORKFLOW_INVOCATION_CALLER_SERVICE_IDS:-}"
+if [[ -z "$WORKFLOW_INVOCATION_CALLER_SERVICE_IDS" ]]; then
+  fail "WORKFLOW_INVOCATION_CALLER_SERVICE_IDS is required and must list authorized gateway service IDs."
 fi
 
 export_if_set LIGHT_WORKFLOW_HTTP_ADDR "${LIGHT_WORKFLOW_HTTP_ADDR:-${WORKFLOW_HTTP_ADDR:-}}"

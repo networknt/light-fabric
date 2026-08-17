@@ -1,0 +1,12 @@
+tls:
+  verifyHostname: ${client.verifyHostname:true}
+  caCertPath: ${client.caCertPath:/config/ca.pem}
+oauth:
+  token:
+    key:
+      server_url: ${client.tokenKeyServerUrl:https://light-oauth:6881}
+      uri: ${client.tokenKeyUri:/oauth2/AZZRJE52eXu3t1hseacnGQ/keys}
+      enableHttp2: ${client.tokenKeyEnableHttp2:true}
+request:
+  connectTimeout: ${client.connectTimeout:2000}
+  timeout: ${client.timeout:4000}

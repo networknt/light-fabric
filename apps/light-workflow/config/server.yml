@@ -1,0 +1,8 @@
+ip: 0.0.0.0
+httpPort: 8436
+enableHttp: true
+httpsPort: 8443
+enableHttps: false
+serviceId: ${server.serviceId:com.networknt.workflow-1.0.0}
+enableRegistry: false
+environment: ${server.environment:dev}

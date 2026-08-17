@@ -17,6 +17,8 @@ pub struct AuthenticatedInvocationContext<'a> {
     pub principal_subject: &'a str,
     pub end_user_subject: &'a str,
     pub update_user: &'a str,
+    pub user_authorization: &'a str,
+    pub user_authorization_exp: i64,
 }
 
 #[derive(Debug)]
@@ -159,10 +161,10 @@ pub async fn accept_invocation(
            host_id,workflow_instance_id,binding_id,process_id,stable_tool_ref,
            wf_def_id,workflow_version,definition_digest,schema_digest,
            policy_digest,response_policy_digest,principal_subject,end_user_subject,
-           subject_claims,input,input_digest,canonical_input_profile,invocation_mode,
+           subject_claims,user_authorization,user_authorization_exp,input,input_digest,canonical_input_profile,invocation_mode,
            execution_class,permit_depth,state,correlation_id,deadline_ts,cancellation_policy,
            response_policy_snapshot)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,'ACCEPTED',$21,$22,$23,$24)",
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,'ACCEPTED',$23,$24,$25,$26)",
     )
     .bind(auth.host_id)
     .bind(request.workflow_instance_id)
@@ -178,6 +180,8 @@ pub async fn accept_invocation(
     .bind(auth.principal_subject)
     .bind(auth.end_user_subject)
     .bind(&subject_claims)
+    .bind(auth.user_authorization)
+    .bind(auth.user_authorization_exp)
     .bind(&request.input)
     .bind(&request.normalized_input_digest)
     .bind(&request.canonical_input_profile)

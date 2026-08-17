@@ -1,5 +1,11 @@
+use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use execution_security::ProtectedPathPolicy;
-use light_runtime::{TracingOptions, init_tracing};
+use light_runtime::{
+    BoundTransport, LightRuntimeBuilder, RuntimeConfig, RuntimeError, TracingOptions,
+    TransportRuntime, init_tracing,
+};
+use light_security::load_security_runtime;
 use light_workflow::agent_job::AgentJobReconciler;
 use light_workflow::artifact_retention::ArtifactRetentionReconciler;
 use light_workflow::artifact_store::DurableArtifactStore;
@@ -20,6 +26,33 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
 
+mod embedded_config {
+    include!(concat!(env!("OUT_DIR"), "/embedded_config.rs"));
+}
+
+const CONFIG_DIR: &str = "config";
+
+#[derive(Debug, Clone, Copy)]
+struct HeadlessTransport;
+
+#[async_trait]
+impl TransportRuntime for HeadlessTransport {
+    type Handle = ();
+
+    async fn bind(
+        &self,
+        _config: &RuntimeConfig,
+    ) -> Result<BoundTransport<Self::Handle>, RuntimeError> {
+        Err(RuntimeError::Unsupported(
+            "light-workflow builds its Axum listener separately".into(),
+        ))
+    }
+
+    async fn stop(&self, _handle: &mut Self::Handle) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _tracing_guard = init_tracing(
@@ -29,6 +62,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     )?;
 
     info!("Light Workflow Engine starting...");
+    let invocation_environment = required_environment("SERVER_ENVIRONMENT")?;
+    validate_service_authorization(&invocation_environment)?;
+    let invocation_caller_service_ids =
+        required_list_environment("WORKFLOW_INVOCATION_CALLER_SERVICE_IDS")?;
+
+    let runtime_config = LightRuntimeBuilder::new(HeadlessTransport)
+        .with_embedded_config(embedded_config::FILES)
+        .with_config_dir(CONFIG_DIR)
+        .build()
+        .prepare_local_config()
+        .await?;
+    let invocation_security = Arc::new(
+        load_security_runtime(&runtime_config, true)?
+            .ok_or_else(|| io::Error::other("workflow JWT verification must be enabled"))?,
+    );
+    invocation_security.bootstrap().await.map_err(|error| {
+        io::Error::other(format!(
+            "workflow JWKS bootstrap failed ({}): {}",
+            error.code, error.message
+        ))
+    })?;
 
     // Database connection
     let db_url = env::var("DATABASE_URL").map_err(|_| {
@@ -81,8 +135,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let agent_job_reconciler = AgentJobReconciler::new(pool.clone(), Arc::clone(&executor));
     let agent_job_handle = tokio::spawn(async move { agent_job_reconciler.run().await });
     let invocation_pool = pool.clone();
-    let rule_api_handle =
-        tokio::spawn(async move { run_rule_api(invocation_pool, maximum_parallelism).await });
+    let rule_api_handle = tokio::spawn(async move {
+        run_rule_api(
+            invocation_pool,
+            maximum_parallelism,
+            invocation_security,
+            invocation_environment,
+            invocation_caller_service_ids,
+        )
+        .await
+    });
     let runner_runtime = if runner_config.enabled {
         let scheduler = RunnerScheduler::new(pool.clone(), runner_config.clone());
         let reconciler = ResultReconciler::new(
@@ -223,4 +285,136 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     )?;
 
     Ok(())
+}
+
+fn validate_service_authorization(expected_environment: &str) -> Result<(), io::Error> {
+    let value = env::var("LIGHT_PORTAL_AUTHORIZATION").map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "LIGHT_PORTAL_AUTHORIZATION is required for authenticated outbound service calls",
+        )
+    })?;
+    validate_service_authorization_value(&value, expected_environment)
+}
+
+fn validate_service_authorization_value(
+    value: &str,
+    expected_environment: &str,
+) -> Result<(), io::Error> {
+    let value = value.trim();
+    let token = value
+        .split_once(char::is_whitespace)
+        .and_then(|(scheme, token)| {
+            scheme
+                .eq_ignore_ascii_case("bearer")
+                .then_some(token.trim())
+        })
+        .unwrap_or(value);
+    if token.len() < 32 || token.chars().any(char::is_whitespace) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "LIGHT_PORTAL_AUTHORIZATION must contain a non-empty service bearer token",
+        ));
+    }
+    let payload = token.split('.').nth(1).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "LIGHT_PORTAL_AUTHORIZATION must be a JWT",
+        )
+    })?;
+    let claims: serde_json::Value =
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "LIGHT_PORTAL_AUTHORIZATION has an invalid JWT payload",
+            )
+        })?)
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "LIGHT_PORTAL_AUTHORIZATION has an invalid JWT claims object",
+            )
+        })?;
+    if claims.get("env").and_then(serde_json::Value::as_str) != Some(expected_environment) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "LIGHT_PORTAL_AUTHORIZATION env claim must match SERVER_ENVIRONMENT ({expected_environment})"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn required_environment(name: &str) -> Result<String, io::Error> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{name} must be explicitly configured and non-empty"),
+            )
+        })
+}
+
+fn required_list_environment(name: &str) -> Result<Vec<String>, io::Error> {
+    parse_required_list(name, &required_environment(name)?)
+}
+
+fn parse_required_list(name: &str, value: &str) -> Result<Vec<String>, io::Error> {
+    let values = value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name} must contain at least one service ID"),
+        ));
+    }
+    Ok(values)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn embedded_security_config_builds_the_workflow_jwt_verifier() {
+        let runtime_config = LightRuntimeBuilder::new(HeadlessTransport)
+            .with_embedded_config(embedded_config::FILES)
+            .with_config_dir(CONFIG_DIR)
+            .build()
+            .prepare_local_config()
+            .await
+            .unwrap();
+        let security = load_security_runtime(&runtime_config, true)
+            .unwrap()
+            .expect("JWT verification enabled");
+
+        assert_eq!(security.config.issuer, "urn:com:networknt:oauth2:v1");
+        assert_eq!(security.config.audience, ["urn:com.networknt"]);
+    }
+
+    #[test]
+    fn service_authorization_is_validated_before_startup() {
+        let payload = URL_SAFE_NO_PAD.encode(br#"{"env":"dev"}"#);
+        let token = format!("header.{payload}.signature-padding-long-enough");
+        assert!(validate_service_authorization_value(&format!("bEaReR {token}"), "dev").is_ok());
+        assert!(validate_service_authorization_value(&token, "loc").is_err());
+        assert!(validate_service_authorization_value("short", "dev").is_err());
+    }
+
+    #[test]
+    fn required_service_id_list_rejects_empty_entries_only() {
+        assert_eq!(
+            parse_required_list("CALLERS", " gateway-a, gateway-b ").unwrap(),
+            ["gateway-a", "gateway-b"]
+        );
+        assert!(parse_required_list("CALLERS", " , ").is_err());
+    }
 }

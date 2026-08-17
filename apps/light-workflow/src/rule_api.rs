@@ -8,15 +8,17 @@ use axum::{
     http::{HeaderMap, StatusCode},
     routing::{get, post},
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use light_rule::{ActionRegistry, Rule, RuleEngine};
+use light_security::{
+    AuthPrincipal, HandlerRejection, JwtExpiryMode, SecurityRuntime, verify_jwt_token,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Row, postgres::PgListener};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use subtle::ConstantTimeEq;
 use tokio::sync::Semaphore;
 use tracing::{error, info};
 use uuid::Uuid;
@@ -26,15 +28,17 @@ use workflow_core::models::workflow::{RuntimeExpressionLanguage, WorkflowDefinit
 use workflow_invocation_contract::{
     CONTRACT_VERSION, CancellationPolicy, EffectState, ErrorCode, InvocationError, InvocationMode,
     InvocationState, InvocationStatus, StartInvocationRequest, canonical_json_bytes,
+    canonical_sha256, stable_subject_claims,
 };
 
 const MAX_WAIT_MS: u64 = 20_000;
-
 #[derive(Clone)]
 pub struct RuleApiState {
     engine: Arc<RuleEngine>,
     pool: PgPool,
-    invocation_bearer_token: Arc<str>,
+    invocation_security: Arc<SecurityRuntime>,
+    invocation_environment: Arc<str>,
+    invocation_caller_service_ids: Arc<[String]>,
     wait_listener_permits: Arc<Semaphore>,
     maximum_parallelism: usize,
 }
@@ -78,6 +82,8 @@ struct InvocationIdentity {
     principal_subject: String,
     end_user_subject: String,
     caller_claims_digest: String,
+    user_authorization: String,
+    user_authorization_exp: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -96,19 +102,19 @@ struct BindingRow {
 pub async fn run_rule_api(
     pool: PgPool,
     maximum_parallelism: usize,
+    invocation_security: Arc<SecurityRuntime>,
+    invocation_environment: String,
+    invocation_caller_service_ids: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = std::env::var("LIGHT_WORKFLOW_HTTP_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:8436".to_string())
         .parse()?;
-    let invocation_bearer_token = std::env::var("WORKFLOW_INVOCATION_BEARER_TOKEN")
-        .map_err(|_| "WORKFLOW_INVOCATION_BEARER_TOKEN is required")?;
-    if invocation_bearer_token.len() < 32 {
-        return Err("WORKFLOW_INVOCATION_BEARER_TOKEN must contain at least 32 bytes".into());
-    }
     let state = RuleApiState {
         engine: Arc::new(RuleEngine::new(Arc::new(ActionRegistry::new()))),
         pool,
-        invocation_bearer_token: invocation_bearer_token.into(),
+        invocation_security,
+        invocation_environment: invocation_environment.into(),
+        invocation_caller_service_ids: invocation_caller_service_ids.into(),
         wait_listener_permits: Arc::new(Semaphore::new(
             std::env::var("WORKFLOW_WAIT_LISTENER_CONNECTIONS")
                 .ok()
@@ -155,7 +161,7 @@ async fn repair_quarantined_event(
     Path(quarantine_id): Path<Uuid>,
     Json(request): Json<QuarantineRepairRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authenticate(&state, &headers)?;
+    let identity = authenticate(&state, &headers).await?;
     let reason = request.reason.trim();
     if reason.is_empty() || reason.len() > 1000 {
         return Err(ApiError::bad_request(
@@ -188,7 +194,7 @@ async fn start_invocation(
     headers: HeaderMap,
     Json(request): Json<StartInvocationRequest>,
 ) -> Result<(StatusCode, Json<InvocationStatus>), ApiError> {
-    let identity = authenticate(&state, &headers)?;
+    let identity = authenticate(&state, &headers).await?;
     request
         .validate(Utc::now())
         .map_err(|error| ApiError::bad_request(error.to_string()))?;
@@ -302,6 +308,8 @@ async fn start_invocation(
         principal_subject: &identity.principal_subject,
         end_user_subject: &identity.end_user_subject,
         update_user: "light-workflow-invocation",
+        user_authorization: &identity.user_authorization,
+        user_authorization_exp: identity.user_authorization_exp,
     };
     let mut tx = state.pool.begin().await.map_err(ApiError::database)?;
     let outcome = accept_invocation(&mut tx, &auth, &request, &prepared)
@@ -579,7 +587,7 @@ async fn get_invocation(
     headers: HeaderMap,
     Path(workflow_instance_id): Path<Uuid>,
 ) -> Result<Json<InvocationStatus>, ApiError> {
-    let identity = authenticate(&state, &headers)?;
+    let identity = authenticate(&state, &headers).await?;
     Ok(Json(
         load_status(&state.pool, &identity, workflow_instance_id).await?,
     ))
@@ -591,7 +599,7 @@ async fn wait_for_invocation(
     Path(workflow_instance_id): Path<Uuid>,
     Json(wait): Json<WaitRequest>,
 ) -> Result<Json<InvocationStatus>, ApiError> {
-    let identity = authenticate(&state, &headers)?;
+    let identity = authenticate(&state, &headers).await?;
     if wait.wait_ms == 0 || wait.wait_ms > MAX_WAIT_MS || wait.observed_version < 0 {
         return Err(ApiError::bad_request("invalid bounded wait request"));
     }
@@ -638,7 +646,7 @@ async fn get_invocation_result(
     headers: HeaderMap,
     Path(workflow_instance_id): Path<Uuid>,
 ) -> Result<Json<Value>, ApiError> {
-    let identity = authenticate(&state, &headers)?;
+    let identity = authenticate(&state, &headers).await?;
     let status = load_status(&state.pool, &identity, workflow_instance_id).await?;
     if status.state != InvocationState::Completed {
         return Err(ApiError::conflict("workflow invocation is not completed"));
@@ -651,7 +659,7 @@ async fn cancel_invocation(
     headers: HeaderMap,
     Path(workflow_instance_id): Path<Uuid>,
 ) -> Result<Json<InvocationStatus>, ApiError> {
-    let identity = authenticate(&state, &headers)?;
+    let identity = authenticate(&state, &headers).await?;
     // Enforce the current-claims/publication-ceiling check before cancellation
     // mutates any durable state.
     let _ = load_status(&state.pool, &identity, workflow_instance_id).await?;
@@ -812,6 +820,7 @@ async fn cancel_invocation(
     }
     sqlx::query(
         "UPDATE workflow_invocation_t SET state='CANCELLED',terminal_ts=CURRENT_TIMESTAMP,
+                user_authorization=NULL,user_authorization_exp=NULL,
                 cancel_requested_ts=CURRENT_TIMESTAMP,updated_ts=CURRENT_TIMESTAMP,
                 state_version=state_version+1,non_cancellable_reason=NULL
           WHERE host_id=$1 AND workflow_instance_id=$2",
@@ -855,6 +864,7 @@ async fn load_status(
     let row = sqlx::query(
         "SELECT stable_tool_ref,definition_digest,state,state_version,accepted_ts,updated_ts,deadline_ts,
                 public_result,normalized_error,correlation_id,effect_state,non_cancellable_reason,
+                user_authorization,user_authorization_exp,
                 response_policy_snapshot->>'acceptedSubjectClaimsDigest' AS accepted_claims_digest
            FROM workflow_invocation_t
           WHERE host_id=$1 AND workflow_instance_id=$2
@@ -878,6 +888,36 @@ async fn load_status(
     }
     let state_value: String = row.try_get("state").map_err(ApiError::database)?;
     let state = parse_state(&state_value)?;
+    let stored_authorization: Option<String> = row
+        .try_get("user_authorization")
+        .map_err(ApiError::database)?;
+    let stored_authorization_exp: Option<i64> = row
+        .try_get("user_authorization_exp")
+        .map_err(ApiError::database)?;
+    let mut refreshed_updated_ts: Option<DateTime<Utc>> = None;
+    if !state.is_terminal()
+        && stored_authorization.as_deref() != Some(identity.user_authorization.as_str())
+        && stored_authorization_exp.is_none_or(|exp| identity.user_authorization_exp > exp)
+    {
+        refreshed_updated_ts = sqlx::query_scalar(
+            "UPDATE workflow_invocation_t SET user_authorization=$1,user_authorization_exp=$2,
+                    updated_ts=CURRENT_TIMESTAMP
+              WHERE host_id=$3 AND workflow_instance_id=$4
+                AND principal_subject=$5 AND end_user_subject=$6
+                AND state NOT IN ('CANCELLED','COMPLETED','FAILED')
+                AND COALESCE(user_authorization_exp,0) < $2
+              RETURNING updated_ts",
+        )
+        .bind(&identity.user_authorization)
+        .bind(identity.user_authorization_exp)
+        .bind(identity.host_id)
+        .bind(workflow_instance_id)
+        .bind(&identity.principal_subject)
+        .bind(&identity.end_user_subject)
+        .fetch_optional(pool)
+        .await
+        .map_err(ApiError::database)?;
+    }
     let normalized_error: Option<Value> = row
         .try_get("normalized_error")
         .map_err(ApiError::database)?;
@@ -892,7 +932,9 @@ async fn load_status(
         state,
         state_version: row.try_get("state_version").map_err(ApiError::database)?,
         accepted_ts: row.try_get("accepted_ts").map_err(ApiError::database)?,
-        updated_ts: row.try_get("updated_ts").map_err(ApiError::database)?,
+        updated_ts: refreshed_updated_ts
+            .map_or_else(|| row.try_get("updated_ts"), Ok)
+            .map_err(ApiError::database)?,
         deadline_ts: row.try_get("deadline_ts").map_err(ApiError::database)?,
         retryable: matches!(
             state,
@@ -925,29 +967,172 @@ async fn load_status(
     })
 }
 
-fn authenticate(state: &RuleApiState, headers: &HeaderMap) -> Result<InvocationIdentity, ApiError> {
+async fn authenticate(
+    state: &RuleApiState,
+    headers: &HeaderMap,
+) -> Result<InvocationIdentity, ApiError> {
     let authorization = header(headers, "authorization")?;
-    let supplied = authorization
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| ApiError::unauthorized("Bearer authentication is required"))?;
-    if supplied
-        .as_bytes()
-        .ct_eq(state.invocation_bearer_token.as_bytes())
-        .unwrap_u8()
-        != 1
-    {
-        return Err(ApiError::unauthorized(
-            "invocation service authentication failed",
-        ));
-    }
+    bearer_token(authorization, "user Bearer authentication is required")?;
+    let scope_authorization = header(headers, "x-scope-token")?;
+    let scope_token = bearer_token(
+        scope_authorization,
+        "X-Scope-Token Bearer authentication is required",
+    )?;
+    let host_id = header(headers, "x-host-id")?
+        .parse()
+        .map_err(|_| ApiError::unauthorized("x-host-id must be a UUID"))?;
+    let scope_principal = verify_jwt_token(
+        &state.invocation_security,
+        scope_token,
+        JwtExpiryMode::Enforce,
+    )
+    .await
+    .map_err(|error| jwt_verification_error("gateway service", error))?;
+    validate_invocation_caller(
+        &scope_principal,
+        host_id,
+        &state.invocation_environment,
+        &state.invocation_caller_service_ids,
+    )?;
+    let user_principal = verify_jwt_token(
+        &state.invocation_security,
+        bearer_token(authorization, "user Bearer authentication is required")?,
+        JwtExpiryMode::Enforce,
+    )
+    .await
+    .map_err(|error| jwt_verification_error("user", error))?;
+    let user_authorization_exp = validate_invocation_user(&user_principal, headers, host_id)?;
+    invocation_identity(headers, host_id, authorization, user_authorization_exp)
+}
+
+fn invocation_identity(
+    headers: &HeaderMap,
+    host_id: Uuid,
+    authorization: &str,
+    user_authorization_exp: i64,
+) -> Result<InvocationIdentity, ApiError> {
+    let user_token = bearer_token(authorization, "user Bearer authentication is required")?;
     Ok(InvocationIdentity {
-        host_id: header(headers, "x-host-id")?
-            .parse()
-            .map_err(|_| ApiError::unauthorized("x-host-id must be a UUID"))?,
+        host_id,
         principal_subject: header(headers, "x-principal-subject")?.to_string(),
         end_user_subject: header(headers, "x-end-user-subject")?.to_string(),
         caller_claims_digest: header(headers, "x-caller-claims-digest")?.to_string(),
+        user_authorization: format!("Bearer {user_token}"),
+        user_authorization_exp,
     })
+}
+
+fn bearer_token<'a>(value: &'a str, error: &'static str) -> Result<&'a str, ApiError> {
+    let (scheme, token) = value
+        .split_once(' ')
+        .ok_or_else(|| ApiError::unauthorized(error))?;
+    if !scheme.eq_ignore_ascii_case("Bearer") || token.trim().is_empty() {
+        return Err(ApiError::unauthorized(error));
+    }
+    Ok(token.trim())
+}
+
+fn validate_invocation_caller(
+    principal: &AuthPrincipal,
+    host_id: Uuid,
+    expected_environment: &str,
+    allowed_service_ids: &[String],
+) -> Result<(), ApiError> {
+    let service_id = principal.claims.get("sid").and_then(Value::as_str);
+    if service_id.is_none_or(|service_id| {
+        !allowed_service_ids
+            .iter()
+            .any(|allowed| allowed == service_id)
+    }) {
+        return Err(ApiError::unauthorized(
+            "X-Scope-Token is not issued for light-gateway",
+        ));
+    }
+    if principal
+        .host
+        .as_deref()
+        .and_then(|host| host.parse::<Uuid>().ok())
+        != Some(host_id)
+    {
+        return Err(ApiError::unauthorized(
+            "X-Scope-Token host does not match the workflow host",
+        ));
+    }
+    if principal.claims.get("env").and_then(Value::as_str) != Some(expected_environment) {
+        return Err(ApiError::unauthorized(
+            "X-Scope-Token environment does not match light-workflow",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_invocation_user(
+    principal: &AuthPrincipal,
+    headers: &HeaderMap,
+    host_id: Uuid,
+) -> Result<i64, ApiError> {
+    let user_host = principal
+        .host
+        .as_deref()
+        .or_else(|| principal.claims.get("hostId").and_then(Value::as_str))
+        .or_else(|| principal.claims.get("host_id").and_then(Value::as_str));
+    if user_host.and_then(|host| host.parse::<Uuid>().ok()) != Some(host_id) {
+        return Err(ApiError::unauthorized(
+            "user Authorization host does not match the workflow host",
+        ));
+    }
+    let principal_subject = principal
+        .client_id
+        .as_deref()
+        .or_else(|| principal.claims.get("client_id").and_then(Value::as_str))
+        .or_else(|| principal.claims.get("sub").and_then(Value::as_str))
+        .ok_or_else(|| ApiError::unauthorized("user Authorization has no principal subject"))?;
+    let end_user_subject = principal
+        .user_id
+        .as_deref()
+        .or_else(|| principal.claims.get("user_id").and_then(Value::as_str))
+        .or_else(|| principal.claims.get("userId").and_then(Value::as_str))
+        .or_else(|| principal.claims.get("sub").and_then(Value::as_str))
+        .unwrap_or(principal_subject);
+    if header(headers, "x-principal-subject")? != principal_subject
+        || header(headers, "x-end-user-subject")? != end_user_subject
+    {
+        return Err(ApiError::unauthorized(
+            "user Authorization subjects do not match the workflow caller",
+        ));
+    }
+    let claims_digest = canonical_sha256(&stable_subject_claims(&principal.claims))
+        .map_err(|_| ApiError::unauthorized("user Authorization claims cannot be canonicalized"))?;
+    if header(headers, "x-caller-claims-digest")? != claims_digest {
+        return Err(ApiError::unauthorized(
+            "user Authorization claims do not match the workflow disclosure ceiling",
+        ));
+    }
+    principal
+        .claims
+        .get("exp")
+        .and_then(Value::as_i64)
+        .filter(|exp| *exp > 0)
+        .ok_or_else(|| ApiError::unauthorized("user Authorization has no valid exp claim"))
+}
+
+fn jwt_verification_error(credential: &str, error: HandlerRejection) -> ApiError {
+    if error.status >= 500 {
+        error!(
+            credential,
+            status = error.status,
+            code = %error.code,
+            detail = %error.message,
+            "workflow JWT verification infrastructure is unavailable"
+        );
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            ErrorCode::WorkflowInvocationUnavailable,
+            "workflow authentication keys are temporarily unavailable",
+        )
+    } else {
+        ApiError::unauthorized(error.message)
+    }
 }
 
 fn header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str, ApiError> {
@@ -1683,5 +1868,110 @@ fork:
         ] {
             assert!(validate_cel_expressions(&engine, &invalid_export).is_err());
         }
+    }
+
+    #[test]
+    fn invocation_authentication_preserves_user_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "bEaReR current-user-jwt".parse().unwrap());
+        headers.insert("x-host-id", Uuid::nil().to_string().parse().unwrap());
+        headers.insert("x-principal-subject", "portal-ui".parse().unwrap());
+        headers.insert("x-end-user-subject", "user-1".parse().unwrap());
+        headers.insert("x-caller-claims-digest", "sha256:claims".parse().unwrap());
+
+        let identity = invocation_identity(
+            &headers,
+            Uuid::nil(),
+            header(&headers, "authorization").unwrap(),
+            2_000_000_000,
+        )
+        .unwrap();
+        assert_eq!(identity.user_authorization, "Bearer current-user-jwt");
+    }
+
+    #[test]
+    fn invocation_scope_claims_must_match_gateway_host_and_environment() {
+        let host_id = Uuid::new_v4();
+        let principal = AuthPrincipal {
+            host: Some(host_id.to_string()),
+            claims: json!({
+                "sid": "com.networknt.portal.gateway-1.0.0",
+                "host": host_id,
+                "env": "dev"
+            }),
+            ..AuthPrincipal::default()
+        };
+        let allowed = vec!["com.networknt.portal.gateway-1.0.0".to_string()];
+        validate_invocation_caller(&principal, host_id, "dev", &allowed).unwrap();
+
+        let mut wrong_service = principal.clone();
+        wrong_service.claims["sid"] = json!("com.networknt.other-1.0.0");
+        assert!(validate_invocation_caller(&wrong_service, host_id, "dev", &allowed).is_err());
+        assert!(validate_invocation_caller(&principal, Uuid::new_v4(), "dev", &allowed).is_err());
+        assert!(validate_invocation_caller(&principal, host_id, "prod", &allowed).is_err());
+    }
+
+    #[test]
+    fn invocation_user_claims_must_match_forwarded_identity() {
+        let host_id = Uuid::new_v4();
+        let claims = json!({
+            "sub": "user-1",
+            "client_id": "portal-ui",
+            "user_id": "user-1",
+            "host": host_id,
+            "exp": 2_000_000_000_i64,
+            "roles": ["user"]
+        });
+        let principal = AuthPrincipal {
+            client_id: Some("portal-ui".to_string()),
+            user_id: Some("user-1".to_string()),
+            host: Some(host_id.to_string()),
+            claims: claims.clone(),
+            ..AuthPrincipal::default()
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("x-principal-subject", "portal-ui".parse().unwrap());
+        headers.insert("x-end-user-subject", "user-1".parse().unwrap());
+        headers.insert(
+            "x-caller-claims-digest",
+            canonical_sha256(&stable_subject_claims(&claims))
+                .unwrap()
+                .parse()
+                .unwrap(),
+        );
+        validate_invocation_user(&principal, &headers, host_id).unwrap();
+
+        headers.insert("x-end-user-subject", "another-user".parse().unwrap());
+        assert!(validate_invocation_user(&principal, &headers, host_id).is_err());
+    }
+
+    #[test]
+    fn bearer_token_accepts_only_non_empty_bearer_credentials() {
+        assert_eq!(bearer_token("Bearer token", "invalid").unwrap(), "token");
+        assert_eq!(bearer_token("bearer token", "invalid").unwrap(), "token");
+        assert!(bearer_token("Basic token", "invalid").is_err());
+        assert!(bearer_token("Bearer ", "invalid").is_err());
+    }
+
+    #[test]
+    fn jwks_infrastructure_failure_is_retryable_not_policy_denial() {
+        let unavailable = jwt_verification_error(
+            "gateway service",
+            HandlerRejection::new(502, "ERR10056", "failed to request JWKS"),
+        );
+        assert_eq!(unavailable.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            unavailable.error.code,
+            ErrorCode::WorkflowInvocationUnavailable
+        );
+        assert!(unavailable.error.retryable);
+
+        let invalid = jwt_verification_error(
+            "user",
+            HandlerRejection::new(401, "ERR10002", "JWT validation failed"),
+        );
+        assert_eq!(invalid.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(invalid.error.code, ErrorCode::WorkflowPolicyDenied);
+        assert!(!invalid.error.retryable);
     }
 }
