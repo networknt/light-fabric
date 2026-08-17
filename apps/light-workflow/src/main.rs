@@ -3,7 +3,7 @@ use light_runtime::{TracingOptions, init_tracing};
 use light_workflow::agent_job::AgentJobReconciler;
 use light_workflow::artifact_retention::ArtifactRetentionReconciler;
 use light_workflow::artifact_store::DurableArtifactStore;
-use light_workflow::configuration::RunnerExecutionConfig;
+use light_workflow::configuration::{RunnerExecutionConfig, maximum_parallelism_from_environment};
 use light_workflow::consumer::EventConsumer;
 use light_workflow::executor::TaskExecutor;
 use light_workflow::fixed_action::{FixedActionExecutor, HttpFixedActionProvider};
@@ -49,6 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     info!("Connected to Postgres");
     let runner_config = RunnerExecutionConfig::load().map_err(io::Error::other)?;
+    let maximum_parallelism = maximum_parallelism_from_environment().map_err(io::Error::other)?;
     let artifact_store = DurableArtifactStore::from_environment().map_err(io::Error::other)?;
     let artifact_retention_days = env::var("WORKFLOW_ARTIFACT_RETENTION_DAYS")
         .ok()
@@ -64,6 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         1,  // total_partitions
         10, // batch_size
     )
+    .with_maximum_parallelism(maximum_parallelism)
     .with_execution_profiles(runner_config.profiles.clone());
 
     // Initialize Executor
@@ -79,7 +81,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let agent_job_reconciler = AgentJobReconciler::new(pool.clone(), Arc::clone(&executor));
     let agent_job_handle = tokio::spawn(async move { agent_job_reconciler.run().await });
     let invocation_pool = pool.clone();
-    let rule_api_handle = tokio::spawn(async move { run_rule_api(invocation_pool).await });
+    let rule_api_handle =
+        tokio::spawn(async move { run_rule_api(invocation_pool, maximum_parallelism).await });
     let runner_runtime = if runner_config.enabled {
         let scheduler = RunnerScheduler::new(pool.clone(), runner_config.clone());
         let reconciler = ResultReconciler::new(

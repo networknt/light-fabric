@@ -934,7 +934,7 @@ binding:
 - correlation ID;
 - immutable effective execution class and current synchronous permit depth;
 - structured invocation budget for deadline, task attempts, nested calls,
-  depth, parallelism, bytes, and cost, plus the identifier and generation of
+  depth, bytes, and cost, plus the identifier and generation of
   the shared durable budget ledger that owns the mutable counters;
 - idempotency context; and
 - remaining delegation depth.
@@ -949,6 +949,11 @@ its root binding's class. Token verification authenticates the immutable
 ceiling and ledger identity; every mutable consumption decision is an atomic
 conditional update against that ledger, never a decrement trusted from token
 contents.
+
+`maximumParallelism` remains in gateway and Tool-binding wire formats for
+backward compatibility, but it is not an enforced invocation-budget dimension.
+For both REST and event-driven starts, fork width is governed only by the
+`light-workflow` service's `WORKFLOW_MAXIMUM_PARALLELISM` setting.
 
 Portal publication builds a dependency graph for every workflow-backed tool.
 It rejects:

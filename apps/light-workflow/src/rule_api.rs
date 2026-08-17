@@ -36,6 +36,7 @@ pub struct RuleApiState {
     pool: PgPool,
     invocation_bearer_token: Arc<str>,
     wait_listener_permits: Arc<Semaphore>,
+    maximum_parallelism: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,7 +93,10 @@ struct BindingRow {
     tool_name: String,
 }
 
-pub async fn run_rule_api(pool: PgPool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn run_rule_api(
+    pool: PgPool,
+    maximum_parallelism: usize,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = std::env::var("LIGHT_WORKFLOW_HTTP_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:8436".to_string())
         .parse()?;
@@ -101,7 +105,6 @@ pub async fn run_rule_api(pool: PgPool) -> Result<(), Box<dyn std::error::Error 
     if invocation_bearer_token.len() < 32 {
         return Err("WORKFLOW_INVOCATION_BEARER_TOKEN must contain at least 32 bytes".into());
     }
-
     let state = RuleApiState {
         engine: Arc::new(RuleEngine::new(Arc::new(ActionRegistry::new()))),
         pool,
@@ -113,6 +116,7 @@ pub async fn run_rule_api(pool: PgPool) -> Result<(), Box<dyn std::error::Error 
                 .unwrap_or(8)
                 .clamp(1, 64),
         )),
+        maximum_parallelism,
     };
 
     let app = Router::new()
@@ -137,7 +141,10 @@ pub async fn run_rule_api(pool: PgPool) -> Result<(), Box<dyn std::error::Error 
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    info!("Light Workflow API listening on {}", addr);
+    info!(
+        "Light Workflow API listening on {} with maximum parallelism {}",
+        addr, maximum_parallelism
+    );
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -211,7 +218,12 @@ async fn start_invocation(
     verify_binding(&request, &binding)?;
     let definition: WorkflowDefinition = serde_yaml::from_str(&binding.definition)
         .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
-    validate_orchestration_definition(&definition, request.mode, &request.budget)?;
+    validate_orchestration_definition(
+        &definition,
+        request.mode,
+        &request.budget,
+        state.maximum_parallelism,
+    )?;
     validate_pinned_dependencies(
         &state.pool,
         identity.host_id,
@@ -966,6 +978,7 @@ fn validate_orchestration_definition(
     definition: &WorkflowDefinition,
     mode: InvocationMode,
     budget: &workflow_invocation_contract::InvocationBudget,
+    maximum_parallelism: usize,
 ) -> Result<(), ApiError> {
     if definition
         .evaluate
@@ -988,7 +1001,7 @@ fn validate_orchestration_definition(
                 "workflow task entry is empty",
             ));
         };
-        validate_phase2_task(task, mode, budget)?;
+        validate_phase2_task(task, mode, maximum_parallelism)?;
     }
     let (task_attempts, nested_calls, cost_units) = phase2_budget_envelope(definition)?;
     if task_attempts > u64::from(budget.maximum_task_attempts)
@@ -1087,20 +1100,20 @@ fn phase2_budget_envelope(definition: &WorkflowDefinition) -> Result<(u64, u64, 
 fn validate_phase2_task(
     task: &TaskDefinition,
     mode: InvocationMode,
-    budget: &workflow_invocation_contract::InvocationBudget,
+    maximum_parallelism: usize,
 ) -> Result<(), ApiError> {
     match task {
         TaskDefinition::Ask(_) if mode == InvocationMode::Async => Ok(()),
         TaskDefinition::Fork(fork) => {
-            if !(1..=64).contains(&fork.fork.branches.entries.len()) {
+            if fork.fork.branches.entries.is_empty() {
                 return Err(ApiError::definition_mismatch(
-                    "fork branch count must be between 1 and 64",
+                    "fork must contain at least one branch",
                 ));
             }
-            if fork.fork.branches.entries.len() > usize::from(budget.maximum_parallelism) {
-                return Err(ApiError::definition_mismatch(
-                    "fork branch count exceeds maximumParallelism",
-                ));
+            if fork.fork.branches.entries.len() > maximum_parallelism {
+                return Err(ApiError::definition_mismatch(format!(
+                    "fork branch count exceeds the configured light-workflow maximum parallelism of {maximum_parallelism}"
+                )));
             }
             for branch in &fork.fork.branches.entries {
                 let Some((_, branch_task)) = branch.iter().next() else {
@@ -1122,7 +1135,7 @@ fn validate_phase2_task(
                         "fork branches cannot declare then or export",
                     ));
                 }
-                validate_phase2_task(branch_task, mode, budget)?;
+                validate_phase2_task(branch_task, mode, maximum_parallelism)?;
             }
             Ok(())
         }
@@ -1469,17 +1482,60 @@ fn bad_request<E: std::fmt::Display>(err: E) -> (StatusCode, Json<Value>) {
 mod tests {
     use super::*;
 
-    fn test_budget(maximum_parallelism: u16) -> workflow_invocation_contract::InvocationBudget {
+    fn test_budget() -> workflow_invocation_contract::InvocationBudget {
         workflow_invocation_contract::InvocationBudget {
             maximum_task_attempts: 10,
             maximum_nested_calls: 10,
             maximum_delegation_depth: 1,
-            maximum_parallelism,
+            maximum_parallelism: 1,
             maximum_request_bytes: 1_048_576,
             maximum_intermediate_bytes: 1_048_576,
             maximum_result_bytes: 1_048_576,
             maximum_cost_units: 100,
         }
+    }
+
+    #[test]
+    fn orchestration_uses_the_service_parallelism_ceiling_not_the_request_budget() {
+        let definition: WorkflowDefinition = serde_yaml::from_str(
+            r#"
+document:
+  dsl: 1.0.3
+  namespace: default
+  name: parallel-test
+  version: 1.0.0
+evaluate:
+  language: cel
+do:
+  - parallel:
+      fork:
+        branches:
+          - one:
+              set: {value: 1}
+          - two:
+              set: {value: 2}
+          - three:
+              set: {value: 3}
+        compete: false
+"#,
+        )
+        .unwrap();
+
+        validate_orchestration_definition(&definition, InvocationMode::Sync, &test_budget(), 3)
+            .expect("the service ceiling should admit all three branches");
+
+        assert!(
+            validate_orchestration_definition(
+                &definition,
+                InvocationMode::Sync,
+                &test_budget(),
+                2,
+            )
+            .unwrap_err()
+            .error
+            .message
+            .contains("configured light-workflow maximum parallelism of 2")
+        );
     }
 
     #[test]
@@ -1524,7 +1580,7 @@ metadata:
 "#,
         )
         .unwrap();
-        validate_phase2_task(&granted, InvocationMode::Sync, &test_budget(3))
+        validate_phase2_task(&granted, InvocationMode::Sync, 3)
             .expect("workflowTool grant should authorize the HTTP target");
 
         let unregistered: TaskDefinition = serde_yaml::from_str(
@@ -1532,7 +1588,7 @@ metadata:
         )
         .unwrap();
         assert!(
-            validate_phase2_task(&unregistered, InvocationMode::Sync, &test_budget(3))
+            validate_phase2_task(&unregistered, InvocationMode::Sync, 3)
                 .unwrap_err()
                 .error
                 .message
@@ -1555,7 +1611,7 @@ fork:
         )
         .unwrap();
         assert!(
-            validate_phase2_task(&transitioning, InvocationMode::Sync, &test_budget(64))
+            validate_phase2_task(&transitioning, InvocationMode::Sync, 64)
                 .unwrap_err()
                 .error
                 .message

@@ -31,6 +31,7 @@ For a multi-line shell command, either keep the assignments attached to
 ```bash
 DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver \
 LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8436 \
+WORKFLOW_MAXIMUM_PARALLELISM=64 \
 RUST_LOG=light_workflow=debug,info \
 WORKFLOW_LOG_ANSI=false \
 ./run.sh --debug-binary
@@ -41,6 +42,7 @@ or export the variables before starting the script:
 ```bash
 export DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver
 export LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8436
+export WORKFLOW_MAXIMUM_PARALLELISM=64
 export RUST_LOG=light_workflow=debug,info
 export WORKFLOW_LOG_ANSI=false
 ./run.sh --debug-binary
@@ -54,6 +56,7 @@ For repeated local runs, create `light-workflow.env` in this directory:
 ```bash
 DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver
 LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8436
+WORKFLOW_MAXIMUM_PARALLELISM=64
 RUST_LOG=light_workflow=debug,info
 WORKFLOW_LOG_ANSI=false
 ```
@@ -68,6 +71,12 @@ Then start the debug or release binary:
 The script also accepts `--binary PATH` and `--env-file PATH`. `DATABASE_URL`
 is required; `LIGHT_WORKFLOW_DATABASE_URL` and `WORKFLOW_DATABASE_URL` are
 accepted aliases.
+
+`WORKFLOW_MAXIMUM_PARALLELISM` is the service-wide hard ceiling for the number
+of branches in a workflow fork. It defaults to 64 and must be between 1 and 64.
+Both REST and event-driven workflow starts enforce this ceiling. A gateway or
+Tool binding's `maximumParallelism` remains accepted on the wire for backward
+compatibility, but it has no effect and is not enforced by `light-workflow`.
 
 After `light-workflow` is running, create a workflow definition in
 light-portal using one of the YAML files under `examples/`, then start the

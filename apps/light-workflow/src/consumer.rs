@@ -1,3 +1,4 @@
+use crate::configuration::DEFAULT_MAXIMUM_PARALLELISM;
 use crate::events::{CloudEventEnvelope, ProcessInfoDeletedPayload, WorkflowStartedPayload};
 use crate::repositories::{NewProcess, NewTask, WorkflowRepository};
 use execution_runner_protocol::canonical_sha256;
@@ -30,6 +31,7 @@ pub struct EventConsumer {
     partition_id: i32,
     total_partitions: i32,
     batch_size: i64,
+    maximum_parallelism: usize,
     execution_profiles: BTreeMap<String, ExecutionProfile>,
 }
 
@@ -56,6 +58,7 @@ fn validate_runtime_task(
     task_name: &str,
     task: &TaskDefinition,
     inside_fork: bool,
+    maximum_parallelism: usize,
 ) -> Result<(), String> {
     match task {
         TaskDefinition::LegacyAgent(_) => {
@@ -143,9 +146,14 @@ fn validate_runtime_task(
                 ));
             }
             let branch_count = fork.fork.branches.entries.len();
-            if !(1..=64).contains(&branch_count) {
+            if branch_count == 0 {
                 return Err(format!(
-                    "task '{task_name}' must have between 1 and 64 fork branches"
+                    "task '{task_name}' must have at least 1 fork branch"
+                ));
+            }
+            if branch_count > maximum_parallelism {
+                return Err(format!(
+                    "task '{task_name}' has {branch_count} fork branches, exceeding the configured light-workflow maximum of {maximum_parallelism}"
                 ));
             }
             for branch in &fork.fork.branches.entries {
@@ -163,7 +171,7 @@ fn validate_runtime_task(
                         "fork branch '{branch_name}' uses then/export, which is not supported inside a fork"
                     ));
                 }
-                validate_runtime_task(branch_name, branch_task, true)?;
+                validate_runtime_task(branch_name, branch_task, true, maximum_parallelism)?;
             }
         }
         TaskDefinition::Do(_) => {
@@ -211,7 +219,10 @@ fn runtime_task_fields(task: &TaskDefinition) -> &TaskDefinitionFields {
     }
 }
 
-fn validate_runtime_definition(definition: &WorkflowDefinition) -> Result<(), String> {
+fn validate_runtime_definition(
+    definition: &WorkflowDefinition,
+    maximum_parallelism: usize,
+) -> Result<(), String> {
     match definition.evaluate.as_ref() {
         Some(evaluate) if evaluate.language == RuntimeExpressionLanguage::CEL => {}
         Some(evaluate) => {
@@ -232,7 +243,7 @@ fn validate_runtime_definition(definition: &WorkflowDefinition) -> Result<(), St
         let Some((task_name, task)) = entry.iter().next() else {
             return Err("workflow task entry is empty".to_string());
         };
-        validate_runtime_task(task_name, task, false)?;
+        validate_runtime_task(task_name, task, false, maximum_parallelism)?;
     }
     Ok(())
 }
@@ -290,8 +301,14 @@ impl EventConsumer {
             partition_id,
             total_partitions,
             batch_size,
+            maximum_parallelism: DEFAULT_MAXIMUM_PARALLELISM,
             execution_profiles: BTreeMap::new(),
         }
+    }
+
+    pub fn with_maximum_parallelism(mut self, maximum_parallelism: usize) -> Self {
+        self.maximum_parallelism = maximum_parallelism;
+        self
     }
 
     pub fn with_execution_profiles(
@@ -698,7 +715,8 @@ impl EventConsumer {
                     .get_workflow_definition(tx, &host_id, &payload.wf_def_id)
                     .await?;
                 let definition: WorkflowDefinition = serde_yaml::from_str(&dsl_yaml)?;
-                validate_runtime_definition(&definition).map_err(sqlx::Error::Protocol)?;
+                validate_runtime_definition(&definition, self.maximum_parallelism)
+                    .map_err(sqlx::Error::Protocol)?;
                 let raw_definition: serde_yaml::Value = serde_yaml::from_str(&dsl_yaml)?;
                 let definition_snapshot: Value = serde_yaml::from_str(&dsl_yaml)?;
                 let definition_digest = canonical_sha256(&definition_snapshot)
@@ -924,7 +942,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            validate_runtime_definition(&jq)
+            validate_runtime_definition(&jq, DEFAULT_MAXIMUM_PARALLELISM)
                 .unwrap_err()
                 .contains("evaluate.language 'cel'")
         );
@@ -934,7 +952,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            validate_runtime_definition(&implicit_jq).unwrap_err(),
+            validate_runtime_definition(&implicit_jq, DEFAULT_MAXIMUM_PARALLELISM).unwrap_err(),
             "light-workflow requires evaluate.language: cel; Open Workflow defaults an omitted evaluate block to jq"
         );
 
@@ -943,7 +961,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            validate_runtime_definition(&wait).unwrap_err(),
+            validate_runtime_definition(&wait, DEFAULT_MAXIMUM_PARALLELISM).unwrap_err(),
             "task 'pause' uses unimplemented task wait"
         );
     }
@@ -954,14 +972,15 @@ mod tests {
             "document: { dsl: 1.0.3, namespace: test, name: mcp-http, version: 1.0.0 }\nevaluate: { language: cel }\ndo:\n  - listTools:\n      call: mcp\n      with:\n        method: tools/list\n        transport:\n          http:\n            endpoint: https://gateway.example/mcp",
         )
         .unwrap();
-        validate_runtime_definition(&http).expect("canonical MCP HTTP is executable");
+        validate_runtime_definition(&http, DEFAULT_MAXIMUM_PARALLELISM)
+            .expect("canonical MCP HTTP is executable");
 
         let stdio: WorkflowDefinition = serde_yaml::from_str(
             "document: { dsl: 1.0.3, namespace: test, name: mcp-stdio, version: 1.0.0 }\nevaluate: { language: cel }\ndo:\n  - listTools:\n      call: mcp\n      with:\n        method: tools/list\n        transport:\n          stdio:\n            command: mcp-server",
         )
         .unwrap();
         assert!(
-            validate_runtime_definition(&stdio)
+            validate_runtime_definition(&stdio, DEFAULT_MAXIMUM_PARALLELISM)
                 .unwrap_err()
                 .contains("MCP stdio")
         );
@@ -985,7 +1004,8 @@ do:
 "#,
         )
         .unwrap();
-        validate_runtime_definition(&fork).expect("one-level fork should be executable");
+        validate_runtime_definition(&fork, DEFAULT_MAXIMUM_PARALLELISM)
+            .expect("one-level fork should be executable");
         let initial_task = fork.do_.entries[0].get("load").unwrap();
         assert_eq!(
             EventConsumer::supported_task_type(initial_task),
@@ -1015,7 +1035,7 @@ do:
         )
         .unwrap();
         assert!(
-            validate_runtime_definition(&nested)
+            validate_runtime_definition(&nested, DEFAULT_MAXIMUM_PARALLELISM)
                 .unwrap_err()
                 .contains("nested fork")
         );
@@ -1040,9 +1060,9 @@ do:
         oversized.push_str("        compete: false\n");
         let oversized: WorkflowDefinition = serde_yaml::from_str(&oversized).unwrap();
         assert!(
-            validate_runtime_definition(&oversized)
+            validate_runtime_definition(&oversized, DEFAULT_MAXIMUM_PARALLELISM)
                 .unwrap_err()
-                .contains("between 1 and 64")
+                .contains("configured light-workflow maximum of 64")
         );
 
         let transitioning: WorkflowDefinition = serde_yaml::from_str(
@@ -1063,9 +1083,38 @@ do:
         )
         .unwrap();
         assert!(
-            validate_runtime_definition(&transitioning)
+            validate_runtime_definition(&transitioning, DEFAULT_MAXIMUM_PARALLELISM)
                 .unwrap_err()
                 .contains("then/export")
+        );
+    }
+
+    #[test]
+    fn runtime_definition_enforces_configured_parallelism_ceiling() {
+        let fork: WorkflowDefinition = serde_yaml::from_str(
+            r#"
+document: { dsl: 1.0.3, namespace: test, name: configured-ceiling, version: 1.0.0 }
+evaluate: { language: cel }
+do:
+  - load:
+      fork:
+        branches:
+          - profile:
+              set: { source: profile }
+          - preferences:
+              set: { source: preferences }
+          - policies:
+              set: { source: policies }
+        compete: false
+"#,
+        )
+        .unwrap();
+
+        validate_runtime_definition(&fork, 3).expect("three branches fit the service ceiling");
+        assert!(
+            validate_runtime_definition(&fork, 2)
+                .unwrap_err()
+                .contains("configured light-workflow maximum of 2")
         );
     }
 }

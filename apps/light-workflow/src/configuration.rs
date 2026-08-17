@@ -4,6 +4,26 @@ use workflow_policy::{CommandTemplate, ExecutionProfile};
 
 use crate::command_template::validate_command_template;
 
+pub const DEFAULT_MAXIMUM_PARALLELISM: usize = 64;
+const ABSOLUTE_MAXIMUM_PARALLELISM: usize = 64;
+
+pub fn maximum_parallelism_from_environment() -> Result<usize, String> {
+    parse_maximum_parallelism(env::var("WORKFLOW_MAXIMUM_PARALLELISM").ok().as_deref())
+}
+
+fn parse_maximum_parallelism(value: Option<&str>) -> Result<usize, String> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(DEFAULT_MAXIMUM_PARALLELISM);
+    };
+    let maximum = value.parse::<usize>().map_err(|_| {
+        "WORKFLOW_MAXIMUM_PARALLELISM must be an integer between 1 and 64".to_string()
+    })?;
+    if !(1..=ABSOLUTE_MAXIMUM_PARALLELISM).contains(&maximum) {
+        return Err("WORKFLOW_MAXIMUM_PARALLELISM must be an integer between 1 and 64".to_string());
+    }
+    Ok(maximum)
+}
+
 #[derive(Debug, Clone)]
 pub struct RunnerExecutionConfig {
     pub enabled: bool,
@@ -111,7 +131,16 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::RunnerExecutionConfigFile;
+    use super::{RunnerExecutionConfigFile, parse_maximum_parallelism};
+
+    #[test]
+    fn maximum_parallelism_configuration_is_bounded() {
+        assert_eq!(parse_maximum_parallelism(None).unwrap(), 64);
+        assert_eq!(parse_maximum_parallelism(Some("3")).unwrap(), 3);
+        assert!(parse_maximum_parallelism(Some("0")).is_err());
+        assert!(parse_maximum_parallelism(Some("65")).is_err());
+        assert!(parse_maximum_parallelism(Some("many")).is_err());
+    }
 
     #[test]
     fn config_rejects_unknown_authority_fields() {
