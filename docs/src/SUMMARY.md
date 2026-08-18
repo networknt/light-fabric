@@ -41,6 +41,7 @@
 - [MSAL Exchange Handler](design/msal-exchange.md)
 - [MSAL Auth Handler](design/msal-auth.md)
 - [Unified Security Handler](design/unified-security.md)
+- [HMAC Webhook Authentication](design/hmac-webhook-authentication.md)
 - [PII Tokenization](design/pii-tokenization.md)
 - [Token Handler](design/token-handler.md)
 - [Service Discovery](design/service-discovery.md)
