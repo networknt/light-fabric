@@ -1102,16 +1102,31 @@ impl TaskExecutor {
             })?;
 
         match task_def {
-            TaskDefinition::Ask(ask_task) => Ok(TaskExecutionResult {
-                status_code: "W",
-                task_output: json!({
-                    "status": "waiting_for_input",
-                    "ask": ask_task.ask,
-                    "message": "Task is waiting for human input"
-                }),
-                next_task: None,
-                context_data: None,
-            }),
+            TaskDefinition::Ask(ask_task) => {
+                let mut ask = serde_json::to_value(&ask_task.ask)?;
+                if let (Some(ask), Some(human_task)) = (
+                    ask.as_object_mut(),
+                    ask_task.common.metadata.as_ref()
+                        .and_then(|metadata| metadata.get("humanTask"))
+                        .and_then(Value::as_object),
+                ) {
+                    for field in ["action", "commentRequired"] {
+                        if let Some(value) = human_task.get(field) {
+                            ask.insert(field.to_string(), value.clone());
+                        }
+                    }
+                }
+                Ok(TaskExecutionResult {
+                    status_code: "W",
+                    task_output: json!({
+                        "status": "waiting_for_input",
+                        "ask": ask,
+                        "message": "Task is waiting for human input"
+                    }),
+                    next_task: None,
+                    context_data: None,
+                })
+            }
             TaskDefinition::Assert(assert_task) => {
                 self.execute_assert_task(&assert_task.assert, &claimed.context_data)
             }
@@ -1162,6 +1177,16 @@ impl TaskExecutor {
                                 "workflow Tool capabilityRef is required",
                             )
                         })?;
+                    let tool_id = pin
+                        .get("toolId")
+                        .and_then(Value::as_str)
+                        .and_then(|value| Uuid::parse_str(value).ok())
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::PermissionDenied,
+                                "workflow Tool toolId is required and must be a UUID",
+                            )
+                        })?;
                     let tool_version =
                         pin.get("version").and_then(Value::as_str).ok_or_else(|| {
                             io::Error::new(
@@ -1196,8 +1221,8 @@ impl TaskExecutor {
                            JOIN api_version_t av ON av.host_id=e.host_id AND av.api_version_id=e.api_version_id
                            JOIN api_t a ON a.host_id=av.host_id AND a.api_id=av.api_id
                           WHERE g.host_id=$1 AND g.wf_def_id=$2 AND g.active
-                            AND (g.workflow_version IS NULL OR g.workflow_version=$3)
-                            AND g.tool_version=$4 AND g.lightapi_digest=$5 AND $6=ANY(g.allowed_environments)
+                            AND g.tool_id=$3 AND g.tool_version=$4 AND g.lightapi_digest=$5
+                            AND $6=ANY(g.allowed_environments)
                             AND t.capability_ref=$7 AND t.version=g.tool_version AND t.lightapi_digest=g.lightapi_digest
                             AND t.lightapi_validation_status='VALID' AND t.active AND t.lifecycle_status='active'
                             AND e.active AND e.lifecycle_status='active' AND av.active AND a.active
@@ -1219,7 +1244,7 @@ impl TaskExecutor {
                     )
                     .bind(claimed.task.host_id)
                     .bind(claimed.wf_def_id)
-                    .bind(&claimed.definition.document.version)
+                    .bind(tool_id)
                     .bind(tool_version)
                     .bind(lightapi_digest)
                     .bind(&environment)
@@ -5747,6 +5772,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn workflow_tool_access_fixture_preserves_typed_approval_contract() {
+        let executor = executor();
+        let claimed = claimed_from_yaml(
+            include_str!("../examples/grant-tools-to-workflow.yaml"),
+            "reviewToolAccess",
+            "ask",
+        );
+
+        let waiting = executor.execute_task(&claimed).await.expect("approval ask is local");
+        assert_eq!(waiting.status_code, "W");
+        assert_eq!(waiting.task_output["ask"]["action"], "workflow-tool-access-decision");
+        assert_eq!(waiting.task_output["ask"]["assignment"]["roleId"], "genai-admin");
+        assert_eq!(waiting.task_output["ask"]["options"][0]["value"], "APPROVE");
+        assert_eq!(waiting.task_output["ask"]["options"][1]["value"], "REJECT");
+    }
+
+    #[tokio::test]
     async fn logical_lightapi_http_call_without_a_tool_pin_fails_before_dispatch() {
         let executor = executor();
         let claimed = claimed_from_yaml(
@@ -5775,9 +5817,64 @@ do:
         assert!(error.to_string().contains("metadata.workflowTool"));
     }
 
+    #[tokio::test]
+    async fn logical_lightapi_http_call_requires_exact_tool_id_before_database_access() {
+        let executor = executor();
+        let claimed = claimed_from_yaml(
+            r#"
+document: { dsl: "1.0.3", namespace: test, name: grant-check, version: "1.0.0" }
+do:
+  - denied:
+      call: http
+      with:
+        method: GET
+        endpoint: { uri: "lightapi://customer-api/customer.get" }
+      metadata:
+        workflowTool:
+          capabilityRef: customer-api/customer.get
+          version: "1.0.0"
+          lightapiDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          allowedEnvironments: [local]
+"#,
+            "denied",
+            "call",
+        );
+
+        let error = match executor.execute_task(&claimed).await {
+            Ok(_) => panic!("missing toolId must fail"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("toolId"));
+    }
+
     #[test]
     fn workflow_tool_grant_satisfies_workflow_backed_http_target_authorization() {
         assert!(!workflow_http_requires_registered_target(true, true, false));
+    }
+
+    #[test]
+    fn workflow_tool_grant_sql_keeps_definition_wide_bind_contract() {
+        let source = include_str!("executor.rs");
+        let start = source.find("SELECT g.grant_id,t.tool_id,t.lightapi_document")
+            .expect("workflow Tool grant SQL must exist");
+        let end = source[start..].find(".fetch_optional(&self.pool)")
+            .map(|offset| start + offset).expect("workflow Tool grant query must execute");
+        let query = &source[start..end];
+        for expected in [
+            "g.host_id=$1", "g.wf_def_id=$2", "g.tool_id=$3", "g.tool_version=$4",
+            "g.lightapi_digest=$5", "$6=ANY(g.allowed_environments)",
+            "t.capability_ref=$7", "upper(e.http_method)=upper($8)",
+        ] {
+            assert!(query.contains(expected), "missing positional predicate {expected}");
+        }
+        for expected in [
+            ".bind(claimed.task.host_id)", ".bind(claimed.wf_def_id)", ".bind(tool_id)",
+            ".bind(tool_version)", ".bind(lightapi_digest)", ".bind(&environment)",
+            ".bind(capability_ref)", ".bind(&http_call.with.method)",
+        ] {
+            assert!(query.contains(expected), "missing positional bind {expected}");
+        }
+        assert!(!query.contains("workflow_version"));
     }
 
     #[test]
