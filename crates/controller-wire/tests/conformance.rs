@@ -254,7 +254,15 @@ fn message_kind_registry_enforces_logical_channels() {
         Err(WireError::InvalidLogicalChannel { .. })
     ));
 
-    let command = encode_rkyv_frame_v1(&samples()[10], LIMIT).unwrap();
+    let command = encode_rkyv_frame_v1(
+        &DecodedMessageV1::CommandRequest(CommandRequestV1 {
+            request_id: "command-1".into(),
+            tool_name: "server/info".into(),
+            arguments_json: br#"{"verbose":true}"#.to_vec(),
+        }),
+        LIMIT,
+    )
+    .unwrap();
     assert!(matches!(
         decode_rkyv_frame_v1_on_channel(&command, LIMIT, LogicalChannel::SessionControl),
         Err(WireError::InvalidLogicalChannel { .. })
@@ -331,6 +339,15 @@ fn samples() -> Vec<DecodedMessageV1> {
         DecodedMessageV1::ServerDraining(ServerDrainingV1 {
             deadline_ms: 1_720_000_030_000,
             reason: "planned replacement".into(),
+        }),
+        DecodedMessageV1::ClientGoodbye(ClientGoodbyeV1 {
+            request_id: "goodbye-1".into(),
+            runtime_instance_id: uuid("018f47f7-5a8e-7bd1-9a18-24ea7f63f001"),
+            reason: "terminate".into(),
+        }),
+        DecodedMessageV1::ServerGoodbye(ServerGoodbyeV1 {
+            request_id: "goodbye-1".into(),
+            runtime_instance_id: uuid("018f47f7-5a8e-7bd1-9a18-24ea7f63f001"),
         }),
         DecodedMessageV1::CommandRequest(CommandRequestV1 {
             request_id: "command-1".into(),

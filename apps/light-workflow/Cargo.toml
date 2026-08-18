@@ -30,6 +30,7 @@ object_store = { version = "0.12.4", features = ["aws"] }
 sqlx = { version = "0.8", features = ["chrono", "json", "postgres", "runtime-tokio-rustls", "uuid"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true }

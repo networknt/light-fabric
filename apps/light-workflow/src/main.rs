@@ -2,8 +2,9 @@ use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use execution_security::ProtectedPathPolicy;
 use light_runtime::{
-    BoundTransport, LightRuntimeBuilder, RuntimeConfig, RuntimeError, TracingOptions,
-    TransportRuntime, init_tracing,
+    AdmissionGate, BoundTransport, LifecycleParticipant, LifecycleRegistrar, LifecycleRegistry,
+    LightRuntimeBuilder, RuntimeConfig, RuntimeError, ShutdownContext, ShutdownMode,
+    ShutdownWatcher, TracingOptions, TransportRuntime, init_tracing,
 };
 use light_security::load_security_runtime;
 use light_workflow::agent_job::AgentJobReconciler;
@@ -18,12 +19,14 @@ use light_workflow::result_reconciler::ResultReconciler;
 use light_workflow::rule_api::run_rule_api;
 use light_workflow::runner_scheduler::RunnerScheduler;
 use light_workflow::session_reconciler::ExecutionSessionReconciler;
+use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use std::env;
 use std::error::Error;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 mod embedded_config {
@@ -42,19 +45,48 @@ impl TransportRuntime for HeadlessTransport {
     async fn bind(
         &self,
         _config: &RuntimeConfig,
+        _lifecycle: &LifecycleRegistrar,
+        _admission: &AdmissionGate,
+        _startup_cancel: CancellationToken,
     ) -> Result<BoundTransport<Self::Handle>, RuntimeError> {
         Err(RuntimeError::Unsupported(
             "light-workflow builds its Axum listener separately".into(),
         ))
     }
 
-    async fn stop(&self, _handle: &mut Self::Handle) -> Result<(), RuntimeError> {
+    async fn stop(
+        &self,
+        _handle: &mut Self::Handle,
+        _context: &ShutdownContext,
+    ) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+}
+
+struct WorkflowDatabase(PgPool);
+
+#[async_trait]
+impl LifecycleParticipant for WorkflowDatabase {
+    fn name(&self) -> &'static str {
+        "light-workflow-database"
+    }
+
+    async fn shutdown(
+        &self,
+        _config: &RuntimeConfig,
+        context: &ShutdownContext,
+    ) -> Result<(), RuntimeError> {
+        let budget = context.remaining();
+        tokio::time::timeout(budget, self.0.close())
+            .await
+            .map_err(|_| RuntimeError::ShutdownDeadlineExceeded(budget))?;
         Ok(())
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut watcher = ShutdownWatcher::install()?;
     let _tracing_guard = init_tracing(
         TracingOptions::new("light-workflow")
             .with_default_filter("light_workflow=debug,info")
@@ -73,6 +105,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .build()
         .prepare_local_config()
         .await?;
+    let shutdown_grace =
+        std::time::Duration::from_millis(runtime_config.server.shutdown_graceful_period);
     let invocation_security = Arc::new(
         load_security_runtime(&runtime_config, true)?
             .ok_or_else(|| io::Error::other("workflow JWT verification must be enabled"))?,
@@ -100,6 +134,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .max_connections(database_max_connections)
         .connect(&db_url)
         .await?;
+    let lifecycle = LifecycleRegistry::default();
+    lifecycle
+        .registrar()
+        .register(Arc::new(WorkflowDatabase(pool.clone())))?;
+    lifecycle.seal();
 
     info!("Connected to Postgres");
     let runner_config = RunnerExecutionConfig::load().map_err(io::Error::other)?;
@@ -127,14 +166,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         TaskExecutor::new(pool.clone()).with_execution_profiles(runner_config.profiles.clone()),
     );
 
-    // Run them concurrently
-    let consumer_handle = tokio::spawn(async move { consumer.run().await });
+    // Stop claiming new work on cancellation; each loop finishes its current database unit first.
+    let shutdown = CancellationToken::new();
+    let consumer_shutdown = shutdown.clone();
+    let consumer_handle = tokio::spawn(async move { consumer.run(consumer_shutdown).await });
 
     let host_executor = Arc::clone(&executor);
-    let executor_handle = tokio::spawn(async move { host_executor.run().await });
+    let executor_shutdown = shutdown.clone();
+    let executor_handle = tokio::spawn(async move { host_executor.run(executor_shutdown).await });
     let agent_job_reconciler = AgentJobReconciler::new(pool.clone(), Arc::clone(&executor));
-    let agent_job_handle = tokio::spawn(async move { agent_job_reconciler.run().await });
+    let agent_shutdown = shutdown.clone();
+    let agent_job_handle =
+        tokio::spawn(async move { agent_job_reconciler.run(agent_shutdown).await });
     let invocation_pool = pool.clone();
+    let rule_shutdown = shutdown.clone();
     let rule_api_handle = tokio::spawn(async move {
         run_rule_api(
             invocation_pool,
@@ -142,6 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             invocation_security,
             invocation_environment,
             invocation_caller_service_ids,
+            rule_shutdown,
         )
         .await
     });
@@ -203,23 +249,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .with_providers(repository_provider, release_provider);
         let retention_store = artifact_store.clone();
+        let retention_pool = pool.clone();
+        let runner_shutdown = shutdown.clone();
         Some(tokio::spawn(async move {
+            let retention_shutdown = runner_shutdown.clone();
             let retention = async move {
                 match retention_store {
                     Some(store) => {
-                        ArtifactRetentionReconciler::new(pool.clone(), store, 100)
-                            .run()
+                        ArtifactRetentionReconciler::new(retention_pool, store, 100)
+                            .run(retention_shutdown)
                             .await
                     }
-                    None => std::future::pending::<Result<(), sqlx::Error>>().await,
+                    None => {
+                        retention_shutdown.cancelled().await;
+                        Ok(())
+                    }
                 }
             };
             tokio::try_join!(
-                scheduler.run(),
-                reconciler.run(),
-                lease_reaper.run(),
-                session_reconciler.run(),
-                fixed_actions.run(),
+                scheduler.run(runner_shutdown.clone()),
+                reconciler.run(runner_shutdown.clone()),
+                lease_reaper.run(runner_shutdown.clone()),
+                session_reconciler.run(runner_shutdown.clone()),
+                fixed_actions.run(runner_shutdown),
                 retention
             )
             .map(|_| ())
@@ -229,62 +281,104 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         None
     };
 
-    tokio::try_join!(
-        async {
-            consumer_handle
-                .await
-                .map_err(|err| -> Box<dyn Error + Send + Sync> {
-                    Box::new(io::Error::other(format!(
-                        "consumer task failed to join: {err}"
-                    )))
-                })?
-                .map_err(|err| Box::new(err) as Box<dyn Error + Send + Sync>)
-        },
-        async {
-            executor_handle
-                .await
-                .map_err(|err| -> Box<dyn Error + Send + Sync> {
-                    Box::new(io::Error::other(format!(
-                        "executor task failed to join: {err}"
-                    )))
-                })?
-                .map_err(|err| err)
-        },
-        async {
-            agent_job_handle
-                .await
-                .map_err(|err| -> Box<dyn Error + Send + Sync> {
-                    Box::new(io::Error::other(format!(
-                        "agent job reconciler failed to join: {err}"
-                    )))
-                })?
-                .map_err(|err| Box::new(err) as Box<dyn Error + Send + Sync>)
-        },
-        async {
-            rule_api_handle
-                .await
-                .map_err(|err| -> Box<dyn Error + Send + Sync> {
-                    Box::new(io::Error::other(format!(
-                        "rule API task failed to join: {err}"
-                    )))
-                })?
-        },
-        async {
-            match runner_runtime {
-                Some(handle) => handle
+    let aborts = [
+        consumer_handle.abort_handle(),
+        executor_handle.abort_handle(),
+        agent_job_handle.abort_handle(),
+        rule_api_handle.abort_handle(),
+    ];
+    let runner_abort = runner_runtime
+        .as_ref()
+        .map(tokio::task::JoinHandle::abort_handle);
+    let disabled_runner_shutdown = shutdown.clone();
+    let tasks = async {
+        tokio::try_join!(
+            async {
+                consumer_handle
                     .await
                     .map_err(|err| -> Box<dyn Error + Send + Sync> {
                         Box::new(io::Error::other(format!(
-                            "runner runtime failed to join: {err}"
+                            "consumer task failed to join: {err}"
                         )))
                     })?
-                    .map_err(|err| Box::new(err) as Box<dyn Error + Send + Sync>),
-                None => std::future::pending::<Result<(), Box<dyn Error + Send + Sync>>>().await,
+                    .map_err(|err| Box::new(err) as Box<dyn Error + Send + Sync>)
+            },
+            async {
+                executor_handle
+                    .await
+                    .map_err(|err| -> Box<dyn Error + Send + Sync> {
+                        Box::new(io::Error::other(format!(
+                            "executor task failed to join: {err}"
+                        )))
+                    })?
+                    .map_err(|err| err)
+            },
+            async {
+                agent_job_handle
+                    .await
+                    .map_err(|err| -> Box<dyn Error + Send + Sync> {
+                        Box::new(io::Error::other(format!(
+                            "agent job reconciler failed to join: {err}"
+                        )))
+                    })?
+                    .map_err(|err| Box::new(err) as Box<dyn Error + Send + Sync>)
+            },
+            async {
+                rule_api_handle
+                    .await
+                    .map_err(|err| -> Box<dyn Error + Send + Sync> {
+                        Box::new(io::Error::other(format!(
+                            "rule API task failed to join: {err}"
+                        )))
+                    })?
+            },
+            async {
+                match runner_runtime {
+                    Some(handle) => handle
+                        .await
+                        .map_err(|err| -> Box<dyn Error + Send + Sync> {
+                            Box::new(io::Error::other(format!(
+                                "runner runtime failed to join: {err}"
+                            )))
+                        })?
+                        .map_err(|err| Box::new(err) as Box<dyn Error + Send + Sync>),
+                    None => {
+                        disabled_runner_shutdown.cancelled().await;
+                        Ok(())
+                    }
+                }
             }
+        )?;
+        Ok::<(), Box<dyn Error + Send + Sync>>(())
+    };
+    tokio::pin!(tasks);
+    tokio::select! {
+        result = &mut tasks => result,
+        reason = watcher.recv() => {
+            info!(?reason, "light-workflow shutdown requested");
+            let deadline = tokio::time::Instant::now() + shutdown_grace;
+            shutdown.cancel();
+            let task_drain_error = if tokio::time::timeout_at(deadline, &mut tasks).await.is_err() {
+                for abort in aborts { abort.abort(); }
+                if let Some(abort) = runner_abort { abort.abort(); }
+                let _ = (&mut tasks).await;
+                Some(io::Error::other("light-workflow task drain deadline exceeded"))
+            } else { None };
+            let context = ShutdownContext {
+                reason,
+                mode: ShutdownMode::Graceful,
+                deadline,
+                cancellation: CancellationToken::new(),
+            };
+            if let Some(error) = lifecycle.shutdown(&runtime_config, &context).await.into_iter().next() {
+                return Err(Box::new(error) as Box<dyn Error + Send + Sync>);
+            }
+            if let Some(error) = task_drain_error {
+                return Err(Box::new(error) as Box<dyn Error + Send + Sync>);
+            }
+            Ok(())
         }
-    )?;
-
-    Ok(())
+    }
 }
 
 fn validate_service_authorization(expected_environment: &str) -> Result<(), io::Error> {

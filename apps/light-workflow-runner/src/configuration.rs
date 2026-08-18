@@ -197,7 +197,7 @@ impl RunnerConfig {
         Self::from_file(file)
     }
 
-    fn from_file(file: RunnerConfigFile) -> Result<Self, String> {
+    fn from_file(mut file: RunnerConfigFile) -> Result<Self, String> {
         if file.version != 1 {
             return Err(format!(
                 "unsupported runner config version {}",
@@ -212,6 +212,14 @@ impl RunnerConfig {
             return Err("controllerUrl must be ws(s) and end at /ws/runner".to_string());
         }
         validate_token_file(&file.jwt_file)?;
+        if file.shutdown_grace_ms > 29_000 {
+            tracing::warn!(
+                configured_ms = file.shutdown_grace_ms,
+                effective_ms = 29_000,
+                "clamping shutdownGraceMs below the 30 second container timeout"
+            );
+            file.shutdown_grace_ms = effective_shutdown_grace_ms(file.shutdown_grace_ms);
+        }
         if file.maximum_concurrency == 0
             || file.heartbeat_interval_ms == 0
             || file.reconnect_maximum_ms == 0
@@ -424,6 +432,10 @@ impl RunnerConfig {
     }
 }
 
+fn effective_shutdown_grace_ms(configured_ms: u64) -> u64 {
+    configured_ms.min(29_000)
+}
+
 fn executable_digest() -> Result<String, String> {
     let path =
         env::current_exe().map_err(|error| format!("resolve current executable: {error}"))?;
@@ -537,6 +549,12 @@ fn validate_secret_file(path: &Path, name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_container_sized_shutdown_grace_is_clamped() {
+        assert_eq!(effective_shutdown_grace_ms(30_000), 29_000);
+        assert_eq!(effective_shutdown_grace_ms(5_000), 5_000);
+    }
 
     #[test]
     fn unknown_config_authority_is_rejected() {

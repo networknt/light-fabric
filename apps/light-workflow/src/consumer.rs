@@ -319,12 +319,18 @@ impl EventConsumer {
         self
     }
 
-    pub async fn run(&self) -> Result<(), sqlx::Error> {
+    pub async fn run(
+        &self,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) -> Result<(), sqlx::Error> {
         self.ensure_consumer_group().await?;
 
         info!("Starting DbEventConsumer loop for group {}", self.group_id);
         loop {
-            match self.run_listen_loop().await {
+            if shutdown.is_cancelled() {
+                return Ok(());
+            }
+            match self.run_listen_loop(&shutdown).await {
                 Ok(_) => {
                     return Err(sqlx::Error::Protocol(
                         "listener loop exited unexpectedly".to_string(),
@@ -332,7 +338,7 @@ impl EventConsumer {
                 }
                 Err(e) => {
                     error!("Error in listener loop: {}, reconnecting in 5s", e);
-                    sleep(Duration::from_secs(5)).await;
+                    tokio::select! { _ = shutdown.cancelled() => return Ok(()), _ = sleep(Duration::from_secs(5)) => {} }
                 }
             }
         }
@@ -353,7 +359,10 @@ impl EventConsumer {
         Ok(())
     }
 
-    async fn run_listen_loop(&self) -> Result<(), sqlx::Error> {
+    async fn run_listen_loop(
+        &self,
+        shutdown: &tokio_util::sync::CancellationToken,
+    ) -> Result<(), sqlx::Error> {
         // Keep the permanent LISTEN connection out of the transaction pool.
         let database_url = std::env::var("DATABASE_URL")
             .map_err(|error| sqlx::Error::Configuration(Box::new(error)))?;
@@ -362,12 +371,16 @@ impl EventConsumer {
         info!("Listening to 'event_channel' on PG connection");
 
         loop {
+            if shutdown.is_cancelled() {
+                return Ok(());
+            }
             let processed = self.process_batch().await?;
             if !processed {
                 // If there were no events processed, we wait for a notification or fallback timeout
-                if let Ok(Ok(_notification)) =
-                    tokio::time::timeout(Duration::from_secs(1), listener.recv()).await
-                {
+                if let Ok(Ok(_notification)) = tokio::select! {
+                    _ = shutdown.cancelled() => return Ok(()),
+                    result = tokio::time::timeout(Duration::from_secs(1), listener.recv()) => result,
+                } {
                     debug!("Received PG notification on event_channel, waking up batch processor.");
                 } else {
                     // Timeout hit (1 second wait period), just loop to poll

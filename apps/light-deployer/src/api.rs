@@ -43,6 +43,22 @@ impl AxumApp for DeployerApp {
     async fn router(&self, _context: ServerContext) -> Result<Router, light_runtime::RuntimeError> {
         Ok(router(self.service.clone()))
     }
+
+    fn control_routes(&self) -> &'static [light_axum::ControlRoute] {
+        use light_axum::{ControlRoute, ControlRouteKind};
+        &[
+            ControlRoute {
+                method: "GET",
+                path: "/health",
+                kind: ControlRouteKind::Liveness,
+            },
+            ControlRoute {
+                method: "GET",
+                path: "/ready",
+                kind: ControlRouteKind::Readiness,
+            },
+        ]
+    }
 }
 
 pub fn router(service: DeployerService) -> Router {

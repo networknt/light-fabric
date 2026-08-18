@@ -270,6 +270,10 @@ struct MetricsCacheEntry {
 }
 
 impl KnowledgeState {
+    pub fn database_pool(&self) -> PgPool {
+        self.pool.clone()
+    }
+
     pub async fn build(
         runtime_config: &RuntimeConfig,
         config: KnowledgeConfig,

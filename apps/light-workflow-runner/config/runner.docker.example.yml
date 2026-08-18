@@ -9,7 +9,7 @@ healthAddress: 127.0.0.1:9444
 maximumConcurrency: 2
 heartbeatIntervalMs: 5000
 reconnectMaximumMs: 30000
-shutdownGraceMs: 30000
+shutdownGraceMs: 29000
 stagingMaximumBytes: 104857600
 orphanReconcileIntervalMs: 60000
 orphanReconcileStartupTimeoutMs: 30000

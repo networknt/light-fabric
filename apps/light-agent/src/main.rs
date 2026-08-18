@@ -17,9 +17,10 @@ use knowledge_client::{
 };
 use knowledge_core::KnowledgeSearchResponse;
 use knowledge_core::RetrieveRequest;
-use light_axum::{AxumApp, AxumTransport, ServerContext};
+use light_axum::{AxumApp, AxumTransport, ControlRoute, ControlRouteKind, ServerContext};
 use light_runtime::{
-    LightRuntimeBuilder, MaskSpec, ModuleKind, RuntimeConfig, RuntimeError, TracingOptions,
+    LifecycleParticipant, LightRuntimeBuilder, MaskSpec, ModuleKind, RuntimeConfig, RuntimeError,
+    ShutdownContext, ShutdownWatcher, TracingOptions,
     config::{BootstrapConfig, ClientConfig, PortalRegistryConfig},
     init_tracing,
 };
@@ -1435,8 +1436,42 @@ struct AgentApp {
 #[async_trait::async_trait]
 impl AxumApp for AgentApp {
     async fn router(&self, context: ServerContext) -> Result<Router, RuntimeError> {
-        let state = build_agent_state(&context.runtime_config, self.catalog_cache.clone()).await?;
+        let state = build_agent_state(
+            &context.runtime_config,
+            self.catalog_cache.clone(),
+            &context.lifecycle,
+        )
+        .await?;
         Ok(agent_router(state))
+    }
+
+    fn control_routes(&self) -> &'static [ControlRoute] {
+        &[ControlRoute {
+            method: "GET",
+            path: "/health",
+            kind: ControlRouteKind::Liveness,
+        }]
+    }
+}
+
+struct AgentDatabase(PgPool);
+
+#[async_trait::async_trait]
+impl LifecycleParticipant for AgentDatabase {
+    fn name(&self) -> &'static str {
+        "light-agent-database"
+    }
+
+    async fn shutdown(
+        &self,
+        _config: &RuntimeConfig,
+        context: &ShutdownContext,
+    ) -> Result<(), RuntimeError> {
+        let budget = context.remaining();
+        tokio::time::timeout(budget, self.0.close())
+            .await
+            .map_err(|_| RuntimeError::ShutdownDeadlineExceeded(budget))?;
+        Ok(())
     }
 }
 
@@ -4578,6 +4613,7 @@ fn is_knowledge_binding_cardinality_error(error: &anyhow::Error) -> bool {
 async fn build_agent_state(
     runtime_config: &RuntimeConfig,
     catalog_cache: AgentCatalogCache,
+    lifecycle: &light_runtime::LifecycleRegistrar,
 ) -> Result<Arc<AgentState>, RuntimeError> {
     let model_provider_config: ModelProviderConfig = load_agent_registered_config(
         runtime_config,
@@ -4636,6 +4672,7 @@ async fn build_agent_state(
     let pool = PgPool::connect(&db_url)
         .await
         .map_err(|e| RuntimeError::Config(format!("failed to connect to database: {e}")))?;
+    lifecycle.register(Arc::new(AgentDatabase(pool.clone())))?;
     let allow_broad_gateway_token = bool_from_env("LIGHT_AGENT_ALLOW_BROAD_GATEWAY_TOKEN", false);
     let delegation_signer = match std::env::var("LIGHT_AGENT_DELEGATION_SECRET") {
         Ok(secret) if !secret.trim().is_empty() => Some(Arc::new(
@@ -4860,6 +4897,7 @@ fn agent_ca_cert_path_from_config(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let watcher = ShutdownWatcher::install().context("failed to install shutdown handlers")?;
     let tracing_guard =
         init_tracing(TracingOptions::new("light-agent").with_legacy_ansi_env("AGENT_LOG_ANSI"))?;
     if config_loader::handle_embedded_config_cli(embedded_config::FILES)? {
@@ -4882,19 +4920,10 @@ async fn main() -> anyhow::Result<()> {
         .with_optional_log_file_access(tracing_guard.log_file_access())
         .build();
 
-    let running = runtime
-        .start()
+    runtime
+        .run_until_shutdown(watcher)
         .await
-        .context("failed to start agent runtime")?;
-
-    tokio::signal::ctrl_c()
-        .await
-        .context("failed to listen for shutdown signal")?;
-
-    running
-        .shutdown()
-        .await
-        .context("failed to shut down agent")?;
+        .context("agent lifecycle failed")?;
 
     Ok(())
 }

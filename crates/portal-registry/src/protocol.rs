@@ -136,3 +136,17 @@ pub struct RegistrationResponse {
     pub runtime_instance_id: Uuid,
     pub status: String,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DeregistrationParams {
+    pub runtime_instance_id: Uuid,
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DeregistrationResponse {
+    pub runtime_instance_id: Uuid,
+    pub status: String,
+}

@@ -198,6 +198,7 @@ impl RkyvWebSocketReader {
                 | MessageKindV1::Pong
                 | MessageKindV1::SessionError
                 | MessageKindV1::ServerDraining
+                | MessageKindV1::ServerGoodbye
                 | MessageKindV1::CommandRequest
         ) {
             return Err(anyhow::anyhow!(

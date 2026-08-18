@@ -313,7 +313,7 @@ impl TaskExecutor {
         self
     }
 
-    pub async fn run(&self) -> Result<(), DynError> {
+    pub async fn run(&self, shutdown: tokio_util::sync::CancellationToken) -> Result<(), DynError> {
         let concurrency = env::var("WORKFLOW_HOST_EXECUTOR_CONCURRENCY")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
@@ -321,13 +321,17 @@ impl TaskExecutor {
             .clamp(1, 128);
         info!(concurrency, "Starting TaskExecutor workers");
         futures_util::future::try_join_all(
-            (0..concurrency).map(|_| self.run_worker(Uuid::now_v7())),
+            (0..concurrency).map(|_| self.run_worker(Uuid::now_v7(), shutdown.clone())),
         )
         .await?;
         Ok(())
     }
 
-    async fn run_worker(&self, worker_id: Uuid) -> Result<(), DynError> {
+    async fn run_worker(
+        &self,
+        worker_id: Uuid,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) -> Result<(), DynError> {
         // LISTEN connections are intentionally kept outside the query pool. A
         // worker retains this connection for its lifetime and must still be
         // able to acquire a pooled connection to claim and commit work.
@@ -335,6 +339,9 @@ impl TaskExecutor {
         let mut listener = PgListener::connect(&database_url).await?;
         listener.listen("workflow_task_ready_v1").await?;
         loop {
+            if shutdown.is_cancelled() {
+                return Ok(());
+            }
             match self.process_next_task(worker_id).await {
                 Ok(true) => {}
                 Ok(false) => {
@@ -343,14 +350,14 @@ impl TaskExecutor {
                             worker_id = %worker_id,
                             "Error expiring interactive workflow deadlines: {error}"
                         );
-                        sleep(Duration::from_millis(250)).await;
+                        tokio::select! { _ = shutdown.cancelled() => return Ok(()), _ = sleep(Duration::from_millis(250)) => {} }
                         continue;
                     }
-                    let _ = tokio::time::timeout(Duration::from_millis(500), listener.recv()).await;
+                    tokio::select! { _ = shutdown.cancelled() => return Ok(()), _ = tokio::time::timeout(Duration::from_millis(500), listener.recv()) => {} }
                 }
                 Err(e) => {
                     error!(worker_id = %worker_id, "Error in TaskExecutor: {}", e);
-                    sleep(Duration::from_millis(250)).await;
+                    tokio::select! { _ = shutdown.cancelled() => return Ok(()), _ = sleep(Duration::from_millis(250)) => {} }
                 }
             }
         }
@@ -1106,7 +1113,10 @@ impl TaskExecutor {
                 let mut ask = serde_json::to_value(&ask_task.ask)?;
                 if let (Some(ask), Some(human_task)) = (
                     ask.as_object_mut(),
-                    ask_task.common.metadata.as_ref()
+                    ask_task
+                        .common
+                        .metadata
+                        .as_ref()
                         .and_then(|metadata| metadata.get("humanTask"))
                         .and_then(Value::as_object),
                 ) {
@@ -5780,10 +5790,19 @@ mod tests {
             "ask",
         );
 
-        let waiting = executor.execute_task(&claimed).await.expect("approval ask is local");
+        let waiting = executor
+            .execute_task(&claimed)
+            .await
+            .expect("approval ask is local");
         assert_eq!(waiting.status_code, "W");
-        assert_eq!(waiting.task_output["ask"]["action"], "workflow-tool-access-decision");
-        assert_eq!(waiting.task_output["ask"]["assignment"]["roleId"], "genai-admin");
+        assert_eq!(
+            waiting.task_output["ask"]["action"],
+            "workflow-tool-access-decision"
+        );
+        assert_eq!(
+            waiting.task_output["ask"]["assignment"]["roleId"],
+            "genai-admin"
+        );
         assert_eq!(waiting.task_output["ask"]["options"][0]["value"], "APPROVE");
         assert_eq!(waiting.task_output["ask"]["options"][1]["value"], "REJECT");
     }
@@ -5855,24 +5874,43 @@ do:
     #[test]
     fn workflow_tool_grant_sql_keeps_definition_wide_bind_contract() {
         let source = include_str!("executor.rs");
-        let start = source.find("SELECT g.grant_id,t.tool_id,t.lightapi_document")
+        let start = source
+            .find("SELECT g.grant_id,t.tool_id,t.lightapi_document")
             .expect("workflow Tool grant SQL must exist");
-        let end = source[start..].find(".fetch_optional(&self.pool)")
-            .map(|offset| start + offset).expect("workflow Tool grant query must execute");
+        let end = source[start..]
+            .find(".fetch_optional(&self.pool)")
+            .map(|offset| start + offset)
+            .expect("workflow Tool grant query must execute");
         let query = &source[start..end];
         for expected in [
-            "g.host_id=$1", "g.wf_def_id=$2", "g.tool_id=$3", "g.tool_version=$4",
-            "g.lightapi_digest=$5", "$6=ANY(g.allowed_environments)",
-            "t.capability_ref=$7", "upper(e.http_method)=upper($8)",
+            "g.host_id=$1",
+            "g.wf_def_id=$2",
+            "g.tool_id=$3",
+            "g.tool_version=$4",
+            "g.lightapi_digest=$5",
+            "$6=ANY(g.allowed_environments)",
+            "t.capability_ref=$7",
+            "upper(e.http_method)=upper($8)",
         ] {
-            assert!(query.contains(expected), "missing positional predicate {expected}");
+            assert!(
+                query.contains(expected),
+                "missing positional predicate {expected}"
+            );
         }
         for expected in [
-            ".bind(claimed.task.host_id)", ".bind(claimed.wf_def_id)", ".bind(tool_id)",
-            ".bind(tool_version)", ".bind(lightapi_digest)", ".bind(&environment)",
-            ".bind(capability_ref)", ".bind(&http_call.with.method)",
+            ".bind(claimed.task.host_id)",
+            ".bind(claimed.wf_def_id)",
+            ".bind(tool_id)",
+            ".bind(tool_version)",
+            ".bind(lightapi_digest)",
+            ".bind(&environment)",
+            ".bind(capability_ref)",
+            ".bind(&http_call.with.method)",
         ] {
-            assert!(query.contains(expected), "missing positional bind {expected}");
+            assert!(
+                query.contains(expected),
+                "missing positional bind {expected}"
+            );
         }
         assert!(!query.contains("workflow_version"));
     }

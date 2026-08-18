@@ -5,7 +5,8 @@ use config_loader::{
     load_config_from_sources, load_values_from_sources,
 };
 use portal_registry::{
-    ControlCandidate, PortalRegistryClient, RegistrationBuilder, RegistrationState, RegistryHandler,
+    ControlCandidate, PortalRegistryClient, RegistrationBuilder, RegistrationState,
+    RegistryHandler, RegistrySession,
 };
 use serde::de::DeserializeOwned;
 use serde_yaml::Value;
@@ -15,10 +16,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
-use tokio::task::JoinHandle;
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout, timeout_at};
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use url::Url;
+use uuid::Uuid;
 
 use crate::cache::CacheRegistry;
 use crate::config::{
@@ -26,10 +28,15 @@ use crate::config::{
     PortalRegistryConfig, RemoteBootstrapResult, RuntimeConfig, ServerConfig, ServiceIdentity,
     default_accept_header, default_environment,
 };
+use crate::lifecycle::{
+    AdmissionGate, LifecycleParticipant, LifecycleRegistry, MANDATORY_CLEANUP_FLOOR,
+    ShutdownContext, ShutdownMode, ShutdownReason,
+};
 use crate::logging::{
     LogFileAccess, LogStreamBroadcaster, LoggingControl, register_logging_module,
 };
 use crate::module_registry::{ModuleRegistry, ReloadContext, RuntimeMcpHandler};
+use crate::signal::ShutdownWatcher;
 use crate::transport::{BoundTransport, TransportRuntime};
 
 const CONFIG_SERVER_CONFIGS_CONTEXT_ROOT: &str = "/config-server/configs";
@@ -55,6 +62,10 @@ pub enum LifecycleState {
     BindListeners,
     RegisterController,
     Ready,
+    AbortingStartup,
+    Quiescing,
+    Draining,
+    CleaningUp,
     Stopped,
 }
 
@@ -80,8 +91,29 @@ pub trait Module: Send + Sync {
         Ok(())
     }
 
-    async fn on_shutdown(&self, _config: &RuntimeConfig) -> Result<(), RuntimeError> {
+    async fn on_shutdown(
+        &self,
+        _config: &RuntimeConfig,
+        _context: &ShutdownContext,
+    ) -> Result<(), RuntimeError> {
         Ok(())
+    }
+}
+
+struct ModuleParticipant(Arc<dyn Module>);
+
+#[async_trait]
+impl LifecycleParticipant for ModuleParticipant {
+    fn name(&self) -> &'static str {
+        self.0.name()
+    }
+
+    async fn shutdown(
+        &self,
+        config: &RuntimeConfig,
+        context: &ShutdownContext,
+    ) -> Result<(), RuntimeError> {
+        self.0.on_shutdown(config, context).await
     }
 }
 
@@ -217,6 +249,8 @@ where
             registration_timeout: self.registration_timeout,
             registry_handler: self.registry_handler,
             registry_client: self.registry_client,
+            admission: AdmissionGate::default(),
+            lifecycle: LifecycleRegistry::default(),
             state: LifecycleState::BootstrapLocal,
         }
     }
@@ -240,6 +274,8 @@ where
     registration_timeout: Duration,
     registry_handler: Arc<dyn RegistryHandler>,
     registry_client: Option<Arc<PortalRegistryClient>>,
+    admission: AdmissionGate,
+    lifecycle: LifecycleRegistry,
     state: LifecycleState,
 }
 
@@ -251,8 +287,10 @@ where
     pub config: RuntimeConfig,
     pub transport: BoundTransport<T::Handle>,
     transport_runtime: T,
-    registration_task: Option<JoinHandle<()>>,
-    modules: Vec<Arc<dyn Module>>,
+    registry_session: Option<Arc<RegistrySession>>,
+    registration_timeout: Duration,
+    admission: AdmissionGate,
+    lifecycle: LifecycleRegistry,
     pub module_registry: Arc<ModuleRegistry>,
     pub cache_registry: Option<Arc<CacheRegistry>>,
 }
@@ -262,20 +300,121 @@ where
     T: TransportRuntime,
 {
     pub async fn shutdown(mut self) -> Result<(), RuntimeError> {
-        if let Some(task) = self.registration_task.take() {
-            task.abort();
+        self.shutdown_inner(ShutdownReason::Programmatic, None)
+            .await
+    }
+
+    async fn shutdown_inner(
+        &mut self,
+        reason: ShutdownReason,
+        mut watcher: Option<&mut ShutdownWatcher>,
+    ) -> Result<(), RuntimeError> {
+        self.state = LifecycleState::Quiescing;
+        self.admission.close();
+        let graceful = Duration::from_millis(self.config.server.shutdown_graceful_period);
+        let cancellation = CancellationToken::new();
+        let context = ShutdownContext {
+            reason,
+            mode: ShutdownMode::Graceful,
+            deadline: Instant::now() + graceful,
+            cancellation: cancellation.clone(),
+        };
+
+        let shutdown = async {
+            if let Some(session) = self.registry_session.take() {
+                let deregistration_budget =
+                    deregistration_shutdown_budget(&context, self.registration_timeout);
+                let outcome = session
+                    .shutdown(context.reason.as_str(), deregistration_budget)
+                    .await;
+                info!(?outcome, "portal-registry terminal shutdown completed");
+            }
+
+            self.state = LifecycleState::Draining;
+            if !self
+                .admission
+                .wait_for_zero(crate::AdmissionKind::Application, &context)
+                .await
+            {
+                return Err(RuntimeError::ShutdownDeadlineExceeded(graceful));
+            }
+            self.transport_runtime
+                .stop(&mut self.transport.handle, &context)
+                .await?;
+
+            self.state = LifecycleState::CleaningUp;
+            let errors = self.lifecycle.shutdown(&self.config, &context).await;
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(RuntimeError::CleanupFailed(
+                    errors.into_iter().map(|error| error.to_string()).collect(),
+                ))
+            }
+        };
+
+        let result = if let Some(watcher) = watcher.as_mut() {
+            tokio::select! {
+                result = timeout_at(context.deadline, shutdown) => result,
+                second = watcher.recv() => {
+                    warn!(?second, "second shutdown signal received; cancelling graceful drain");
+                    cancellation.cancel();
+                    self.emergency_cleanup(reason).await?;
+                    return Err(RuntimeError::ShutdownDeadlineExceeded(graceful));
+                }
+            }
+        } else {
+            timeout_at(context.deadline, shutdown).await
+        };
+
+        match result {
+            Ok(Err(RuntimeError::ShutdownDeadlineExceeded(_))) => {
+                cancellation.cancel();
+                self.emergency_cleanup(reason).await?;
+                Err(RuntimeError::ShutdownDeadlineExceeded(graceful))
+            }
+            Ok(result) => {
+                self.state = LifecycleState::Stopped;
+                result
+            }
+            Err(_) => {
+                cancellation.cancel();
+                self.emergency_cleanup(reason).await?;
+                Err(RuntimeError::ShutdownDeadlineExceeded(graceful))
+            }
         }
+    }
 
-        self.transport_runtime
-            .stop(&mut self.transport.handle)
-            .await?;
-
-        for module in &self.modules {
-            module.on_shutdown(&self.config).await?;
+    async fn emergency_cleanup(&mut self, reason: ShutdownReason) -> Result<(), RuntimeError> {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let context = ShutdownContext {
+            reason,
+            mode: ShutdownMode::Emergency,
+            deadline: Instant::now() + MANDATORY_CLEANUP_FLOOR,
+            cancellation,
+        };
+        if let Some(session) = self.registry_session.take() {
+            let _ = session.shutdown(reason.as_str(), context.remaining()).await;
         }
-
+        let cleanup = async {
+            let _ = self
+                .transport_runtime
+                .stop(&mut self.transport.handle, &context)
+                .await;
+            let _ = self.lifecycle.shutdown(&self.config, &context).await;
+        };
+        let _ = timeout_at(context.deadline, cleanup).await;
+        self.state = LifecycleState::Stopped;
         Ok(())
     }
+}
+
+fn deregistration_shutdown_budget(
+    context: &ShutdownContext,
+    registration_timeout: Duration,
+) -> Duration {
+    context.remaining().min(registration_timeout)
 }
 
 impl RuntimeConfig {
@@ -346,9 +485,56 @@ where
         self.prepare_runtime_config(false).await
     }
 
-    pub async fn start(mut self) -> Result<RunningRuntime<T>, RuntimeError> {
+    /// Starts the runtime for embedding and tests.
+    ///
+    /// The caller must install a [`ShutdownWatcher`] or arrange equivalent
+    /// programmatic cancellation before calling this method, because startup
+    /// may publish readiness before this future returns.
+    pub async fn start(self) -> Result<RunningRuntime<T>, RuntimeError> {
+        self.start_cancellable(CancellationToken::new()).await
+    }
+
+    pub async fn run_until_shutdown(
+        self,
+        mut watcher: ShutdownWatcher,
+    ) -> Result<(), RuntimeError> {
+        let startup_cancel = CancellationToken::new();
+        let startup = self.start_cancellable(startup_cancel.child_token());
+        tokio::pin!(startup);
+        let mut running = tokio::select! {
+            biased;
+            reason = watcher.recv() => {
+                startup_cancel.cancel();
+                info!(?reason, "shutdown received during startup");
+                return match timeout(MANDATORY_CLEANUP_FLOOR, &mut startup).await {
+                    Ok(Err(RuntimeError::StartupAborted)) => Ok(()),
+                    Ok(Err(error)) => Err(error),
+                    Ok(Ok(mut running)) => running.emergency_cleanup(reason).await,
+                    Err(_) => {
+                        eprintln!("light-runtime: startup abort deadline exceeded");
+                        std::process::exit(1);
+                    }
+                };
+            }
+            result = &mut startup => result?,
+        };
+        let reason = watcher.recv().await;
+        info!(?reason, "shutdown signal received");
+        let result = running.shutdown_inner(reason, Some(&mut watcher)).await;
+        if matches!(result, Err(RuntimeError::ShutdownDeadlineExceeded(_))) {
+            eprintln!("light-runtime: graceful shutdown deadline exceeded");
+            std::process::exit(1);
+        }
+        result
+    }
+
+    async fn start_cancellable(
+        mut self,
+        startup_cancel: CancellationToken,
+    ) -> Result<RunningRuntime<T>, RuntimeError> {
         init_rustls_provider();
-        let runtime_config = self.prepare_runtime_config(true).await?;
+        let runtime_config =
+            cancellable(&startup_cancel, self.prepare_runtime_config(true)).await??;
         self.module_registry
             .register_runtime_configs(&runtime_config)?;
         if let Some(logging_control) = self.logging_control.as_ref() {
@@ -360,23 +546,73 @@ where
         }
 
         for module in &self.modules {
-            module.on_runtime_built(&runtime_config).await?;
+            match cancellable(&startup_cancel, module.on_runtime_built(&runtime_config)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) | Err(error) => {
+                    abort_lifecycle(&self.lifecycle, &runtime_config).await;
+                    return Err(error);
+                }
+            }
+            if let Err(error) = self
+                .lifecycle
+                .registrar()
+                .register(Arc::new(ModuleParticipant(Arc::clone(module))))
+            {
+                let context = ShutdownContext {
+                    reason: ShutdownReason::Programmatic,
+                    mode: ShutdownMode::StartupAbort,
+                    deadline: Instant::now() + MANDATORY_CLEANUP_FLOOR,
+                    cancellation: CancellationToken::new(),
+                };
+                let _ = module.on_shutdown(&runtime_config, &context).await;
+                abort_lifecycle(&self.lifecycle, &runtime_config).await;
+                return Err(error);
+            }
         }
 
         self.state = LifecycleState::BindListeners;
-        let transport = self.transport.bind(&runtime_config).await?;
+        let transport = cancellable(
+            &startup_cancel,
+            self.transport.bind(
+                &runtime_config,
+                &self.lifecycle.registrar(),
+                &self.admission,
+                startup_cancel.child_token(),
+            ),
+        )
+        .await??;
 
         for module in &self.modules {
-            module.on_server_bound(&runtime_config).await?;
+            match cancellable(&startup_cancel, module.on_server_bound(&runtime_config)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) | Err(error) => {
+                    let context = startup_abort_context();
+                    let mut handle = transport.handle;
+                    let _ = self.transport.stop(&mut handle, &context).await;
+                    abort_lifecycle(&self.lifecycle, &runtime_config).await;
+                    return Err(error);
+                }
+            }
         }
 
         self.state = LifecycleState::RegisterController;
-        let registration_task = match self
-            .register_controller_if_needed(&runtime_config, &transport.metadata)
+        let registry_session = match self
+            .register_controller_if_needed(
+                &runtime_config,
+                &transport.metadata,
+                startup_cancel.child_token(),
+            )
             .await
         {
             Ok(task) => task,
             // Errors raised before a registration task is spawned leave nothing to retry.
+            Err(RuntimeError::StartupAborted) => {
+                let context = startup_abort_context();
+                let mut transport_handle = transport.handle;
+                let _ = self.transport.stop(&mut transport_handle, &context).await;
+                abort_lifecycle(&self.lifecycle, &runtime_config).await;
+                return Err(RuntimeError::StartupAborted);
+            }
             Err(error) if runtime_config.server.start_on_registry_failure => {
                 warn!(
                     error = %error,
@@ -386,15 +622,31 @@ where
             }
             Err(error) => {
                 let mut transport_handle = transport.handle;
-                self.transport.stop(&mut transport_handle).await?;
+                let context = startup_abort_context();
+                self.transport.stop(&mut transport_handle, &context).await?;
+                abort_lifecycle(&self.lifecycle, &runtime_config).await;
                 return Err(error);
             }
         };
 
         self.state = LifecycleState::Ready;
         for module in &self.modules {
-            module.on_ready(&runtime_config).await?;
+            match cancellable(&startup_cancel, module.on_ready(&runtime_config)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) | Err(error) => {
+                    let context = startup_abort_context();
+                    if let Some(session) = registry_session.as_ref() {
+                        let _ = session.shutdown("programmatic", context.remaining()).await;
+                    }
+                    let mut handle = transport.handle;
+                    let _ = self.transport.stop(&mut handle, &context).await;
+                    abort_lifecycle(&self.lifecycle, &runtime_config).await;
+                    return Err(error);
+                }
+            }
         }
+        self.lifecycle.seal();
+        self.admission.open();
 
         Ok(RunningRuntime {
             state: self.state,
@@ -404,8 +656,10 @@ where
                 metadata: transport.metadata,
             },
             transport_runtime: self.transport,
-            registration_task,
-            modules: self.modules,
+            registry_session,
+            registration_timeout: self.registration_timeout,
+            admission: self.admission,
+            lifecycle: self.lifecycle,
             module_registry: self.module_registry,
             cache_registry: self.cache_registry,
         })
@@ -755,7 +1009,8 @@ where
         &self,
         runtime_config: &RuntimeConfig,
         metadata: &crate::transport::ResolvedServerMetadata,
-    ) -> Result<Option<JoinHandle<()>>, RuntimeError> {
+        startup_cancel: CancellationToken,
+    ) -> Result<Option<Arc<RegistrySession>>, RuntimeError> {
         let policy = RegistrationPolicy {
             enabled: runtime_config.server.enable_registry,
             start_on_failure: runtime_config.server.start_on_registry_failure,
@@ -880,10 +1135,7 @@ where
         let registry_handler: Arc<dyn RegistryHandler> = Arc::new(runtime_handler);
         client.set_handler(registry_handler).await;
         let mut registration_rx = client.subscribe_registration();
-        let task_client = Arc::clone(&client);
-        let registration_task = tokio::spawn(async move {
-            task_client.run().await;
-        });
+        let registry_session = client.start_session();
 
         let wait_for_registration = async {
             loop {
@@ -892,20 +1144,30 @@ where
                     return Ok::<(), RuntimeError>(());
                 }
 
-                registration_rx
-                    .changed()
-                    .await
-                    .map_err(|_| RuntimeError::RegistrationChannelClosed)?;
+                tokio::select! {
+                    biased;
+                    _ = startup_cancel.cancelled() => return Err(RuntimeError::StartupAborted),
+                    changed = registration_rx.changed() => changed
+                        .map_err(|_| RuntimeError::RegistrationChannelClosed)?,
+                }
             }
         };
 
         match timeout(self.registration_timeout, wait_for_registration).await {
-            Ok(result) => result?,
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                let _ = registry_session
+                    .shutdown("programmatic", MANDATORY_CLEANUP_FLOOR)
+                    .await;
+                return Err(error);
+            }
             Err(_) => {
                 if policy.start_on_failure {
                     warn!("controller registration timed out; continuing with background retries");
                 } else {
-                    registration_task.abort();
+                    let _ = registry_session
+                        .shutdown("programmatic", MANDATORY_CLEANUP_FLOOR)
+                        .await;
                     return Err(RuntimeError::RegistrationTimeout(self.registration_timeout));
                 }
             }
@@ -915,7 +1177,7 @@ where
             "controller registration enabled for {}",
             runtime_config.service_identity.service_id
         );
-        Ok(Some(registration_task))
+        Ok(Some(registry_session))
     }
 }
 
@@ -935,7 +1197,7 @@ async fn fetch_remote_bootstrap_if_needed(
     match fetch_remote_values(&client, config_server_uri, &query, bootstrap).await {
         Ok(values_yaml) => {
             let values_path = external_config_dir.join(VALUES_FILE);
-            fs::write(&values_path, values_yaml.as_bytes())?;
+            atomic_cache_write(&values_path, values_yaml.as_bytes())?;
 
             let mut result = RemoteBootstrapResult {
                 values_yaml: Some(values_yaml),
@@ -1003,8 +1265,46 @@ pub enum RuntimeError {
     RegistrationTimeout(Duration),
     #[error("registration channel closed unexpectedly")]
     RegistrationChannelClosed,
+    #[error("startup was cancelled")]
+    StartupAborted,
+    #[error("shutdown deadline exceeded after {0:?}")]
+    ShutdownDeadlineExceeded(Duration),
+    #[error("lifecycle registry is sealed")]
+    LifecycleSealed,
+    #[error("lifecycle participant `{0}` is already registered")]
+    DuplicateLifecycleParticipant(&'static str),
+    #[error("one or more cleanup participants failed: {0:?}")]
+    CleanupFailed(Vec<String>),
     #[error("transport runtime does not support this configuration: {0}")]
     Unsupported(String),
+}
+
+async fn cancellable<F, T>(cancellation: &CancellationToken, future: F) -> Result<T, RuntimeError>
+where
+    F: std::future::Future<Output = T>,
+{
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => Err(RuntimeError::StartupAborted),
+        value = future => Ok(value),
+    }
+}
+
+fn startup_abort_context() -> ShutdownContext {
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    ShutdownContext {
+        reason: ShutdownReason::Programmatic,
+        mode: ShutdownMode::StartupAbort,
+        deadline: Instant::now() + MANDATORY_CLEANUP_FLOOR,
+        cancellation,
+    }
+}
+
+async fn abort_lifecycle(lifecycle: &LifecycleRegistry, config: &RuntimeConfig) {
+    lifecycle.seal();
+    let context = startup_abort_context();
+    let _ = timeout_at(context.deadline, lifecycle.shutdown(config, &context)).await;
 }
 
 impl From<config_loader::ConfigError> for RuntimeError {
@@ -1190,11 +1490,27 @@ async fn fetch_remote_files(
         let content = BASE64
             .decode(encoded_content.as_bytes())
             .map_err(|e| RuntimeError::Unsupported(format!("invalid base64 file payload: {e}")))?;
-        fs::write(&path, content)?;
+        atomic_cache_write(&path, &content)?;
         cached_files.push(path);
     }
 
     Ok(cached_files)
+}
+
+fn atomic_cache_write(path: &Path, content: &[u8]) -> Result<(), RuntimeError> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            RuntimeError::Unsupported(format!("invalid cache path `{}`", path.display()))
+        })?;
+    let staged = path.with_file_name(format!(".{file_name}.{}.tmp", Uuid::new_v4()));
+    fs::write(&staged, content)?;
+    if let Err(error) = fs::rename(&staged, path) {
+        let _ = fs::remove_file(&staged);
+        return Err(error.into());
+    }
+    Ok(())
 }
 
 fn config_server_authorization_header(authorization: Option<&str>) -> String {
@@ -1505,7 +1821,51 @@ mod tests {
 
     static ENV_TEST_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+    #[test]
+    fn deregistration_uses_the_smaller_registration_or_shutdown_budget() {
+        let context = ShutdownContext {
+            reason: ShutdownReason::Programmatic,
+            mode: ShutdownMode::Graceful,
+            deadline: Instant::now() + Duration::from_secs(10),
+            cancellation: CancellationToken::new(),
+        };
+        assert!(
+            deregistration_shutdown_budget(&context, Duration::from_millis(125))
+                <= Duration::from_millis(125)
+        );
+
+        let short_context = ShutdownContext {
+            deadline: Instant::now() + Duration::from_millis(25),
+            ..context
+        };
+        assert!(
+            deregistration_shutdown_budget(&short_context, Duration::from_secs(5))
+                <= Duration::from_millis(25)
+        );
+    }
+
     struct NoopTransport;
+
+    struct DuplicateModule {
+        shutdowns: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Module for DuplicateModule {
+        fn name(&self) -> &'static str {
+            "duplicate-module"
+        }
+
+        async fn on_shutdown(
+            &self,
+            _config: &RuntimeConfig,
+            _context: &ShutdownContext,
+        ) -> Result<(), RuntimeError> {
+            self.shutdowns
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
 
     #[async_trait]
     impl TransportRuntime for NoopTransport {
@@ -1514,6 +1874,9 @@ mod tests {
         async fn bind(
             &self,
             _config: &RuntimeConfig,
+            _lifecycle: &crate::LifecycleRegistrar,
+            _admission: &crate::AdmissionGate,
+            _startup_cancel: CancellationToken,
         ) -> Result<BoundTransport<Self::Handle>, RuntimeError> {
             Ok(BoundTransport {
                 handle: (),
@@ -1521,7 +1884,11 @@ mod tests {
             })
         }
 
-        async fn stop(&self, _handle: &mut Self::Handle) -> Result<(), RuntimeError> {
+        async fn stop(
+            &self,
+            _handle: &mut Self::Handle,
+            _context: &ShutdownContext,
+        ) -> Result<(), RuntimeError> {
             Ok(())
         }
     }
@@ -2271,6 +2638,22 @@ shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
         assert!(external_dir.path().join(VALUES_FILE).exists());
     }
 
+    #[test]
+    fn cache_write_atomically_replaces_content_without_leaving_stage_files() {
+        let directory = TempDir::new().expect("cache directory");
+        let path = directory.path().join(VALUES_FILE);
+        fs::write(&path, "old").expect("seed cache");
+
+        atomic_cache_write(&path, b"new").expect("replace cache");
+
+        assert_eq!(fs::read_to_string(&path).expect("read cache"), "new");
+        let names = fs::read_dir(directory.path())
+            .expect("list cache directory")
+            .map(|entry| entry.expect("cache entry").file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec![VALUES_FILE]);
+    }
+
     #[allow(clippy::await_holding_lock)]
     #[tokio::test(flavor = "current_thread")]
     async fn runtime_start_uses_local_values_when_config_server_is_unreachable() {
@@ -2316,7 +2699,7 @@ shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
         );
         assert!(running.config.server.enable_registry);
         assert!(running.config.server.start_on_registry_failure);
-        assert!(running.registration_task.is_none());
+        assert!(running.registry_session.is_none());
         assert_eq!(
             running.config.resolved_values["server.httpPort"],
             Value::Number(9191.into())
@@ -2355,7 +2738,7 @@ shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
             .expect("start runtime while controller is unreachable");
 
         assert_eq!(running.state, LifecycleState::Ready);
-        assert!(running.registration_task.is_some());
+        assert!(running.registry_session.is_some());
 
         running.shutdown().await.expect("shutdown runtime");
     }
@@ -2732,5 +3115,35 @@ enableRegistry: false
         assert!(module_ids.contains(&"light-runtime/server".to_string()));
 
         running.shutdown().await.expect("shutdown runtime");
+    }
+
+    #[tokio::test]
+    async fn duplicate_module_registration_aborts_every_built_module() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        fs::write(
+            config_dir.path().join(SERVER_FILE),
+            "ip: 127.0.0.1\nhttpPort: 8080\nenableHttp: true\nhttpsPort: 8443\nenableHttps: false\nserviceId: com.networknt.test-1.0.0\nenableRegistry: false\n",
+        )
+        .expect("write server config");
+        let shutdowns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let result = LightRuntimeBuilder::new(NoopTransport)
+            .with_config_dir(config_dir.path())
+            .with_module(Arc::new(DuplicateModule {
+                shutdowns: shutdowns.clone(),
+            }))
+            .with_module(Arc::new(DuplicateModule {
+                shutdowns: shutdowns.clone(),
+            }))
+            .build()
+            .start()
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(RuntimeError::DuplicateLifecycleParticipant(
+                "duplicate-module"
+            ))
+        ));
+        assert_eq!(shutdowns.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 }

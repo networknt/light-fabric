@@ -3,9 +3,10 @@ use rkyv::util::AlignedVec;
 
 use crate::frame::FRAME_HEADER_BYTES;
 use crate::v1::{
-    ClientHelloV1, CommandRequestV1, CommandResponseV1, DiscoveryChangedV1, DiscoveryRequestV1,
-    DiscoveryResponseV1, MetadataUpdateV1, PingV1, PongV1, RuntimeNotificationV1, ServerDrainingV1,
-    ServerHelloV1, SessionErrorV1, ValidateV1,
+    ClientGoodbyeV1, ClientHelloV1, CommandRequestV1, CommandResponseV1, DiscoveryChangedV1,
+    DiscoveryRequestV1, DiscoveryResponseV1, MetadataUpdateV1, PingV1, PongV1,
+    RuntimeNotificationV1, ServerDrainingV1, ServerGoodbyeV1, ServerHelloV1, SessionErrorV1,
+    ValidateV1,
 };
 use crate::{FrameHeaderV1, LogicalChannel, MessageKindV1, WireError};
 
@@ -21,6 +22,8 @@ pub enum DecodedMessageV1 {
     Pong(PongV1),
     SessionError(SessionErrorV1),
     ServerDraining(ServerDrainingV1),
+    ClientGoodbye(ClientGoodbyeV1),
+    ServerGoodbye(ServerGoodbyeV1),
     CommandRequest(CommandRequestV1),
     CommandResponse(CommandResponseV1),
     RuntimeNotification(RuntimeNotificationV1),
@@ -39,6 +42,8 @@ impl DecodedMessageV1 {
             Self::Pong(_) => MessageKindV1::Pong,
             Self::SessionError(_) => MessageKindV1::SessionError,
             Self::ServerDraining(_) => MessageKindV1::ServerDraining,
+            Self::ClientGoodbye(_) => MessageKindV1::ClientGoodbye,
+            Self::ServerGoodbye(_) => MessageKindV1::ServerGoodbye,
             Self::CommandRequest(_) => MessageKindV1::CommandRequest,
             Self::CommandResponse(_) => MessageKindV1::CommandResponse,
             Self::RuntimeNotification(_) => MessageKindV1::RuntimeNotification,
@@ -57,6 +62,8 @@ impl DecodedMessageV1 {
             Self::Pong(value) => value.validate(max_json_bytes),
             Self::SessionError(value) => value.validate(max_json_bytes),
             Self::ServerDraining(value) => value.validate(max_json_bytes),
+            Self::ClientGoodbye(value) => value.validate(max_json_bytes),
+            Self::ServerGoodbye(value) => value.validate(max_json_bytes),
             Self::CommandRequest(value) => value.validate(max_json_bytes),
             Self::CommandResponse(value) => value.validate(max_json_bytes),
             Self::RuntimeNotification(value) => value.validate(max_json_bytes),
@@ -80,6 +87,8 @@ pub fn encode_rkyv_frame_v1(
         DecodedMessageV1::Pong(value) => encode(value)?,
         DecodedMessageV1::SessionError(value) => encode(value)?,
         DecodedMessageV1::ServerDraining(value) => encode(value)?,
+        DecodedMessageV1::ClientGoodbye(value) => encode(value)?,
+        DecodedMessageV1::ServerGoodbye(value) => encode(value)?,
         DecodedMessageV1::CommandRequest(value) => encode(value)?,
         DecodedMessageV1::CommandResponse(value) => encode(value)?,
         DecodedMessageV1::RuntimeNotification(value) => encode(value)?,
@@ -152,6 +161,12 @@ fn decode_rkyv_frame_v1_inner(
         }
         MessageKindV1::ServerDraining => {
             DecodedMessageV1::ServerDraining(decode(&aligned, header.kind)?)
+        }
+        MessageKindV1::ClientGoodbye => {
+            DecodedMessageV1::ClientGoodbye(decode(&aligned, header.kind)?)
+        }
+        MessageKindV1::ServerGoodbye => {
+            DecodedMessageV1::ServerGoodbye(decode(&aligned, header.kind)?)
         }
         MessageKindV1::CommandRequest => {
             DecodedMessageV1::CommandRequest(decode(&aligned, header.kind)?)

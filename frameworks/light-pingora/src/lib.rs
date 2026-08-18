@@ -31,8 +31,8 @@ mod websocket;
 
 use async_trait::async_trait;
 use light_runtime::{
-    BoundTransport, ResolvedServerMetadata, RuntimeConfig, RuntimeError, ServerConfig,
-    TransportRuntime,
+    AdmissionGate, BoundTransport, LifecycleRegistrar, ResolvedServerMetadata, RuntimeConfig,
+    RuntimeError, ServerConfig, ShutdownContext, TransportRuntime,
 };
 use pingora::apps::HttpServerApp;
 use pingora::listeners::tls::TlsSettings;
@@ -48,6 +48,7 @@ use std::path::PathBuf;
 use std::thread::JoinHandle;
 #[cfg(unix)]
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 pub use access_control::{
     ACCESS_CONTROL_CONFIG_NAME, ACCESS_CONTROL_FILE, ACCESS_CONTROL_LEGACY_FILE,
@@ -185,7 +186,12 @@ pub use websocket::{
 pub trait PingoraApp: Send + Sync + 'static {
     type Proxy: ProxyHttp + Send + Sync + 'static;
 
-    fn proxy(&self, config: &RuntimeConfig) -> Result<Self::Proxy, RuntimeError>;
+    fn proxy(
+        &self,
+        config: &RuntimeConfig,
+        lifecycle: &LifecycleRegistrar,
+        admission: &AdmissionGate,
+    ) -> Result<Self::Proxy, RuntimeError>;
 }
 
 pub struct PingoraTransport<A>
@@ -222,7 +228,13 @@ where
     async fn bind(
         &self,
         config: &RuntimeConfig,
+        lifecycle: &LifecycleRegistrar,
+        admission: &AdmissionGate,
+        startup_cancel: CancellationToken,
     ) -> Result<BoundTransport<Self::Handle>, RuntimeError> {
+        if startup_cancel.is_cancelled() {
+            return Err(RuntimeError::StartupAborted);
+        }
         if config.server.dynamic_port {
             return Err(RuntimeError::Unsupported(
                 "light-pingora does not support server.dynamicPort yet".to_string(),
@@ -234,15 +246,17 @@ where
             ));
         }
 
-        let proxy = self.app.proxy(config)?;
+        let proxy = self.app.proxy(config, lifecycle, admission)?;
         let mut server_conf = ServerConf::default();
         server_conf.threads = 1;
         server_conf.daemon = false;
         apply_client_request_config(config, &mut server_conf);
         server_conf.ca_file = upstream_ca_file(config)?;
-        let shutdown_seconds = config.server.shutdown_graceful_period.div_ceil(1000);
         server_conf.grace_period_seconds = Some(0);
-        server_conf.graceful_shutdown_timeout_seconds = Some(shutdown_seconds);
+        // The shared runtime drains application permits against its absolute
+        // deadline before signalling Pingora. Do not restart the original
+        // configured budget inside Pingora after that drain has completed.
+        server_conf.graceful_shutdown_timeout_seconds = Some(0);
 
         let mut server = Server::new_with_opt_and_conf(None, server_conf);
         server.bootstrap();
@@ -304,16 +318,25 @@ where
         })
     }
 
-    async fn stop(&self, handle: &mut Self::Handle) -> Result<(), RuntimeError> {
+    async fn stop(
+        &self,
+        handle: &mut Self::Handle,
+        context: &ShutdownContext,
+    ) -> Result<(), RuntimeError> {
         #[cfg(unix)]
         {
             let _ = handle.shutdown.send(true);
         }
         if let Some(task) = handle.task.take() {
-            tokio::task::spawn_blocking(move || task.join())
-                .await
-                .map_err(|e| RuntimeError::Unsupported(format!("pingora join failed: {e}")))?
-                .map_err(|_| RuntimeError::Unsupported("pingora server panicked".to_string()))?;
+            let shutdown_budget = context.remaining();
+            tokio::time::timeout(
+                shutdown_budget,
+                tokio::task::spawn_blocking(move || task.join()),
+            )
+            .await
+            .map_err(|_| RuntimeError::ShutdownDeadlineExceeded(shutdown_budget))?
+            .map_err(|e| RuntimeError::Unsupported(format!("pingora join failed: {e}")))?
+            .map_err(|_| RuntimeError::Unsupported("pingora server panicked".to_string()))?;
         }
         Ok(())
     }

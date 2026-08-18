@@ -13,6 +13,7 @@ use execution_fixed_action::{
 use execution_security::ProtectedPathPolicy;
 use futures_util::StreamExt;
 use hmac::{Hmac, Mac};
+use light_runtime::ShutdownWatcher;
 use reqwest::Url;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -74,6 +75,7 @@ struct Receipt {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let mut watcher = ShutdownWatcher::install().context("install shutdown handlers")?;
     tracing_subscriber::fmt::init();
     let db_path = PathBuf::from(env::var("GITHUB_ACTION_PROVIDER_DB")?);
     let db = Connection::open(db_path)?;
@@ -138,12 +140,33 @@ async fn main() -> Result<()> {
         .route("/v1/fixed-actions/{operation}", post(execute))
         .route("/v1/fixed-actions/status", get(status))
         .layer(DefaultBodyLimit::max(17 * 1024 * 1024))
-        .with_state(state);
+        .with_state(state.clone());
     let address: SocketAddr = env::var("GITHUB_ACTION_PROVIDER_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:8450".into())
         .parse()?;
     let listener = tokio::net::TcpListener::bind(address).await?;
-    axum::serve(listener, app).await?;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = std::future::IntoFuture::into_future(
+        axum::serve(listener, app).with_graceful_shutdown(async {
+            let _ = shutdown_rx.await;
+        }),
+    );
+    tokio::pin!(server);
+    tokio::select! {
+        result = &mut server => result?,
+        reason = watcher.recv() => {
+            tracing::info!(?reason, "light-github-action-provider shutdown requested");
+            let _ = shutdown_tx.send(());
+            if tokio::time::timeout(Duration::from_secs(2), &mut server).await.is_err() {
+                tracing::warn!("light-github-action-provider drain deadline exceeded");
+            }
+        }
+    }
+    state
+        .db
+        .lock()
+        .await
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
     Ok(())
 }
 

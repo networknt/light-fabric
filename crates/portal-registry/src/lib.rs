@@ -16,11 +16,12 @@ pub fn fuzz_runtime_wire_input(data: &[u8], max_payload_bytes: usize) {
 pub use candidate::ControlCandidate;
 pub use client::{
     PortalRegistryClient, PortalRegistryNotifier, RegistrationState, RegistryHandler,
-    unsupported_method_response,
+    RegistrySession, RegistryShutdownOutcome, unsupported_method_response,
 };
 pub use protocol::{
-    DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, JsonRpcMessage, RegistrationResponse,
-    ServiceMetadataUpdate, ServiceRegistrationParams,
+    DeregistrationParams, DeregistrationResponse, DiscoveryNode, DiscoverySnapshot,
+    DiscoverySubscription, JsonRpcMessage, RegistrationResponse, ServiceMetadataUpdate,
+    ServiceRegistrationParams,
 };
 
 use std::collections::HashMap;

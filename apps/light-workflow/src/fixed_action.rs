@@ -513,10 +513,16 @@ impl FixedActionExecutor {
         Ok(true)
     }
 
-    pub async fn run(self) -> Result<(), sqlx::Error> {
+    pub async fn run(
+        self,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) -> Result<(), sqlx::Error> {
         loop {
+            if shutdown.is_cancelled() {
+                return Ok(());
+            }
             if !self.run_once().await? {
-                tokio::time::sleep(Duration::from_millis(250)).await;
+                tokio::select! { _ = shutdown.cancelled() => return Ok(()), _ = tokio::time::sleep(Duration::from_millis(250)) => {} }
             }
         }
     }

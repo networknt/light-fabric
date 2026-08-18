@@ -42,10 +42,16 @@ impl ExecutionSessionReconciler {
         Ok(rows.len() as u64)
     }
 
-    pub async fn run(&self) -> Result<(), sqlx::Error> {
+    pub async fn run(
+        &self,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) -> Result<(), sqlx::Error> {
         loop {
+            if shutdown.is_cancelled() {
+                return Ok(());
+            }
             if self.reconcile_once().await? == 0 {
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                tokio::select! { _ = shutdown.cancelled() => return Ok(()), _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {} }
             }
         }
     }

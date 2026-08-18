@@ -13,6 +13,7 @@ hmac.workspace=true
 futures-util.workspace=true
 execution-fixed-action={path="../../crates/execution-fixed-action"}
 execution-security={path="../../crates/execution-security"}
+light-runtime={path="../../crates/light-runtime"}
 reqwest.workspace=true
 rusqlite={version="0.32",features=["bundled"]}
 serde.workspace=true

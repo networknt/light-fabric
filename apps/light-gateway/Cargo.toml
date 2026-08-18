@@ -15,7 +15,7 @@ arc-swap = "1.7"
 async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
-pingora = { version = "0.8.0", features = ["proxy", "rustls"] }
+pingora = { version = "=0.8.1", features = ["proxy", "rustls"] }
 rustls-pemfile = "2.2"
 reqwest = { workspace = true }
 serde = { workspace = true }

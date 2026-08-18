@@ -18,7 +18,9 @@ use crate::kube::{KubeExecutor, KubeRsExecutor, NoopKubeExecutor};
 use crate::policy::Policy;
 use anyhow::Context;
 use light_axum::AxumTransport;
-use light_runtime::{LightRuntimeBuilder, ModuleRegistry, TracingOptions, init_tracing};
+use light_runtime::{
+    LightRuntimeBuilder, ModuleRegistry, ShutdownWatcher, TracingOptions, init_tracing,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
@@ -29,6 +31,7 @@ mod embedded_config {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let watcher = ShutdownWatcher::install().context("failed to install shutdown handlers")?;
     let tracing_guard = init_tracing(
         TracingOptions::new("light-deployer").with_default_filter("light_deployer=debug,info"),
     )?;
@@ -78,14 +81,10 @@ async fn main() -> anyhow::Result<()> {
         .with_optional_log_file_access(tracing_guard.log_file_access())
         .build();
 
-    let running = runtime
-        .start()
+    runtime
+        .run_until_shutdown(watcher)
         .await
-        .context("failed to start light-deployer runtime")?;
-    tokio::signal::ctrl_c()
-        .await
-        .context("failed to wait for shutdown signal")?;
-    running.shutdown().await?;
+        .context("light-deployer lifecycle failed")?;
     Ok(())
 }
 

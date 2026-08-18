@@ -129,6 +129,19 @@ pub struct ServerDrainingV1 {
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ClientGoodbyeV1 {
+    pub request_id: String,
+    pub runtime_instance_id: Uuid,
+    pub reason: String,
+}
+
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ServerGoodbyeV1 {
+    pub request_id: String,
+    pub runtime_instance_id: Uuid,
+}
+
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct CommandRequestV1 {
     pub request_id: String,
     pub tool_name: String,
@@ -177,6 +190,30 @@ impl ValidateV1 for ServerHelloV1 {
         nonzero_u32("heartbeat_interval_ms", self.heartbeat_interval_ms)?;
         nonzero_u32("max_control_payload_bytes", self.max_control_payload_bytes)?;
         nonzero_u32("max_command_streams", self.max_command_streams)
+    }
+}
+
+impl ValidateV1 for ClientGoodbyeV1 {
+    fn validate(&self, _: usize) -> Result<(), WireError> {
+        required_string("request_id", &self.request_id, MAX_REQUEST_ID_BYTES)?;
+        nonnil_uuid("runtime_instance_id", self.runtime_instance_id)?;
+        if !matches!(
+            self.reason.as_str(),
+            "interrupt" | "terminate" | "programmatic"
+        ) {
+            return Err(WireError::semantic(
+                "reason",
+                "must be interrupt, terminate, or programmatic",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl ValidateV1 for ServerGoodbyeV1 {
+    fn validate(&self, _: usize) -> Result<(), WireError> {
+        required_string("request_id", &self.request_id, MAX_REQUEST_ID_BYTES)?;
+        nonnil_uuid("runtime_instance_id", self.runtime_instance_id)
     }
 }
 

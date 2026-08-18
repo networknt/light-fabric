@@ -34,8 +34,9 @@ use light_pingora::{
     verify_jwt_request, verify_unified_security, websocket_policy_endpoint,
 };
 use light_runtime::{
-    CacheRegistry, ConfigManager, LightRuntimeBuilder, ModuleKind, ReloadContext, ReloadOutcome,
-    ReloadableModule, RuntimeConfig, RuntimeError, TracingOptions, init_tracing,
+    AdmissionGate, AdmissionKind, AdmissionPermit, CacheRegistry, ConfigManager,
+    LifecycleRegistrar, LightRuntimeBuilder, ModuleKind, ReloadContext, ReloadOutcome,
+    ReloadableModule, RuntimeConfig, RuntimeError, ShutdownWatcher, TracingOptions, init_tracing,
 };
 use llm_gateway::LlmRuntime;
 use llm_gateway::audit::{AuditSinkConfig, AuditSinkTask, ProcessAudit, WalAudit, WalConfig};
@@ -244,12 +245,18 @@ struct GatewayApp;
 impl PingoraApp for GatewayApp {
     type Proxy = GatewayProxy;
 
-    fn proxy(&self, config: &RuntimeConfig) -> Result<Self::Proxy, RuntimeError> {
-        GatewayProxy::from_runtime_config(config)
+    fn proxy(
+        &self,
+        config: &RuntimeConfig,
+        _lifecycle: &LifecycleRegistrar,
+        admission: &AdmissionGate,
+    ) -> Result<Self::Proxy, RuntimeError> {
+        GatewayProxy::from_runtime_config_with_admission(config, admission.clone())
     }
 }
 
 struct GatewayProxy {
+    admission: AdmissionGate,
     agent_delegation: Option<Arc<DelegationVerifier>>,
     workflow_delegation: Option<Arc<DelegationVerifier>>,
     agent_delegation_replay: Option<Arc<dyn DelegationReplayStore>>,
@@ -704,7 +711,17 @@ impl GatewayProxy {
         Some(Ok((principal, claims)))
     }
 
+    #[cfg(test)]
     fn from_runtime_config(config: &RuntimeConfig) -> Result<Self, RuntimeError> {
+        let admission = AdmissionGate::default();
+        admission.open();
+        Self::from_runtime_config_with_admission(config, admission)
+    }
+
+    fn from_runtime_config_with_admission(
+        config: &RuntimeConfig,
+        admission: AdmissionGate,
+    ) -> Result<Self, RuntimeError> {
         let active_handlers = load_active_handlers(config, &gateway_handler_registry())?;
         let correlation_config =
             load_correlation_config(config, active_handlers.is_handler_active("correlation"))?;
@@ -1084,6 +1101,7 @@ impl GatewayProxy {
         };
 
         Ok(Self {
+            admission,
             agent_delegation,
             workflow_delegation,
             agent_delegation_replay,
@@ -2642,6 +2660,25 @@ impl ProxyHttp for GatewayProxy {
         ctx.request_path = request_path.clone();
         if request_path == HEALTH_PATH {
             return self.write_text_response(session, ctx, 200, "ok").await;
+        }
+        match self.admission.try_enter(AdmissionKind::Application) {
+            Ok(permit) => ctx.admission_permit = Some(permit),
+            Err(_) => {
+                return self
+                    .write_bytes_response_with_headers(
+                        session,
+                        ctx,
+                        503,
+                        Some("text/plain; charset=utf-8"),
+                        None,
+                        Bytes::from_static(b"service unavailable"),
+                        &[
+                            ("connection".to_string(), "close".to_string()),
+                            ("retry-after".to_string(), "0".to_string()),
+                        ],
+                    )
+                    .await;
+            }
         }
 
         let method = session.req_header().method.as_str().to_string();
@@ -4243,6 +4280,7 @@ struct UpstreamCircuitState {
 }
 
 struct GatewayRequestContext {
+    admission_permit: Option<AdmissionPermit>,
     proxy_target: Option<ProxyTarget>,
     rewrite_host_header: bool,
     reuse_x_forwarded: bool,
@@ -4291,6 +4329,7 @@ struct GatewayRequestContext {
 impl Default for GatewayRequestContext {
     fn default() -> Self {
         Self {
+            admission_permit: None,
             proxy_target: None,
             rewrite_host_header: false,
             reuse_x_forwarded: false,
@@ -4340,6 +4379,7 @@ impl Default for GatewayRequestContext {
 
 impl GatewayRequestContext {
     fn begin_request(&mut self) {
+        self.admission_permit = None;
         self.proxy_target = None;
         self.rewrite_host_header = false;
         self.reuse_x_forwarded = false;
@@ -4446,6 +4486,7 @@ where
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let watcher = ShutdownWatcher::install().context("failed to install shutdown handlers")?;
     let tracing_guard = init_tracing(
         TracingOptions::new("light-gateway").with_legacy_ansi_env("GATEWAY_LOG_ANSI"),
     )?;
@@ -4494,19 +4535,10 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let running = runtime
-        .start()
+    runtime
+        .run_until_shutdown(watcher)
         .await
-        .context("failed to start light-gateway runtime")?;
-
-    tokio::signal::ctrl_c()
-        .await
-        .context("failed to listen for shutdown signal")?;
-
-    running
-        .shutdown()
-        .await
-        .context("failed to shut down light-gateway")?;
+        .context("light-gateway lifecycle failed")?;
 
     Ok(())
 }

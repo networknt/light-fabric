@@ -19,6 +19,7 @@ futures-util.workspace=true
 anyhow.workspace=true
 hex.workspace=true
 light-agent={path="../light-agent"}
+light-runtime={path="../../crates/light-runtime"}
 agent-core={path="../../crates/agent-core"}
 tracing.workspace=true
 tracing-subscriber.workspace=true

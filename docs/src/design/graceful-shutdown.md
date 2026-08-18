@@ -1,6 +1,6 @@
 # Graceful Service Shutdown
 
-Status: Proposed
+Status: Implemented; deployment qualification pending
 
 ## Purpose
 
@@ -143,9 +143,49 @@ the full configured period sequentially.
 
 There is no fixed pre-drain dwell. Shutdown changes the runtime readiness state
 and closes a shared admission gate synchronously before awaiting network I/O.
-HTTP middleware and worker claim loops must consult that gate and reject new
-application work while shutdown is in progress. Health endpoints may remain
-available long enough to report `not ready`.
+The initial implementation uses one cloneable `AdmissionGate`, created closed
+by the runtime and opened exactly once at the `Ready` transition:
+
+```rust
+pub enum AdmissionKind {
+    Application,
+    Control,
+}
+
+#[derive(Clone)]
+pub struct AdmissionGate { /* atomic state and in-flight counters */ }
+
+impl AdmissionGate {
+    pub fn open(&self);
+    pub fn close(&self);
+    pub fn try_enter(
+        &self,
+        kind: AdmissionKind,
+    ) -> Result<AdmissionPermit, AdmissionClosed>;
+}
+```
+
+`AdmissionPermit` increments the relevant in-flight counter before dispatch and
+decrements it from `Drop`. `Application` admission fails whenever the gate is
+closed. `Control` admission remains available during `Quiescing` only for
+framework-declared liveness, readiness, and shutdown-status handlers; it cannot
+claim work, mutate application state, or start an unbounded operation. Readiness
+reads the same gate and reports `not ready` as soon as `close()` returns.
+
+The default classification is `Application`. An application migration may
+declare an exact method-and-path route as `Control` only in its reviewed route
+inventory; prefix and wildcard bypasses are forbidden. Until such an inventory
+exists, existing health routes also receive the shutdown `503`, which is a
+valid not-ready response. This makes the initial behavior fail closed and keeps
+the admission exception set auditable.
+
+Axum installs the admission layer outside the application router. Pingora calls
+the same gate before handler dispatch. A rejected HTTP application request gets
+`503 Service Unavailable`, `Connection: close`, and `Retry-After: 0`. A worker
+must acquire an `Application` permit before claiming a unit; failure means it
+stops its claim loop. WebSocket and stream upgrades retain the permit for their
+full lifetime. No application may implement a second, unsynchronized shutdown
+flag.
 
 The runtime then sends the bounded deregistration request. Once it is
 acknowledged or its small bound expires, transport drain begins. Upstream
@@ -156,7 +196,12 @@ application deadline.
 For Axum, `Handle::graceful_shutdown` combines listener close and connection
 drain. The observable `Quiescing` phase therefore comes from the runtime state,
 admission gate, deregistration event, and phase metrics, not a distinct Axum
-transport state. The handle is invoked after the bounded deregistration step.
+transport state. During the bounded deregistration step the socket may still
+accept a connection, but new application work receives the defined `503`.
+After deregistration is acknowledged or bounded, the handle is invoked and new
+TCP connections are refused. Transport tests distinguish these two observable
+boundaries instead of treating admission rejection and listener closure as the
+same event.
 
 ### Deadline behavior
 
@@ -176,14 +221,17 @@ For example, with a value of `2000`:
   the component contract
 - cleanup uses only the time remaining in the same deadline
 
-A graceful deadline expiry cancels the shared shutdown context. The supervisor
-then allows only `MANDATORY_CLEANUP_FLOOR` for emergency cleanup that was
-prepared in advance, emits a final deadline-exceeded record to stderr, and
-calls `std::process::exit(1)`. Calling `process::exit` is intentional: merely
-returning an error can still hang while Tokio drops a runtime that owns an
-unbounded `spawn_blocking` task such as Pingora's server-thread join. Exit code
-`1` means application shutdown failure; exit code `137` still means the
-container engine had to send `SIGKILL` and is a stronger qualification failure.
+A graceful deadline expiry cancels the shared shutdown context. The internal
+sequence then allows only `MANDATORY_CLEANUP_FLOOR` for emergency cleanup that
+was prepared in advance and returns `ShutdownOutcome::DeadlineExceeded`. The
+production `run_until_shutdown` supervisor emits the final deadline-exceeded
+record to stderr and calls `std::process::exit(1)`; the lower-level API returns
+the corresponding error. Calling `process::exit` at the production boundary is
+intentional: merely returning an error can still hang while Tokio drops a
+runtime that owns an unbounded `spawn_blocking` task such as Pingora's
+server-thread join. Exit code `1` means application shutdown failure; exit code
+`137` still means the container engine had to send `SIGKILL` and is a stronger
+qualification failure.
 
 `shutdownGracefulPeriod: 0` skips request and worker drain. It does not remove
 the emergency cleanup budget. Define a non-configurable initial
@@ -214,6 +262,7 @@ the handlers:
 pub enum ShutdownReason {
     Interrupt,
     Terminate,
+    Programmatic,
 }
 
 pub struct ShutdownWatcher { /* platform signal streams */ }
@@ -228,6 +277,8 @@ impl ShutdownWatcher {
 On Unix it installs streams for both interrupt and terminate. It must not defer
 registration until the first poll of `recv()`. The non-Unix implementation
 constructs the available platform Ctrl-C stream behind the same API.
+`ShutdownWatcher::recv()` returns only `Interrupt` or `Terminate`;
+`Programmatic` is reserved for the lower-level embedding and test API.
 
 Tokio's Unix signal stream requires an active reactor and panics when created
 outside a runtime context. `ShutdownWatcher::install()` must therefore be the
@@ -257,7 +308,7 @@ let watcher = ShutdownWatcher::install()?;
 runtime.run_until_shutdown(watcher).await?;
 ```
 
-`LightRuntimeBuilder::run_until_shutdown` owns cancellable startup, readiness
+`LightRuntime::run_until_shutdown` owns cancellable startup, readiness
 publication, signal receipt, and shutdown so the ordering is enforced by
 construction. The lower-level `start()` API remains available for embedding
 and tests, but its documentation must require an installed watcher or another
@@ -274,7 +325,7 @@ following pseudocode shows the required concurrency; helper types may package
 the select and deadline handling differently:
 
 ```rust
-impl<T: TransportRuntime> LightRuntimeBuilder<T> {
+impl<T: TransportRuntime> LightRuntime<T> {
     pub async fn run_until_shutdown(
         self,
         mut watcher: ShutdownWatcher,
@@ -312,7 +363,18 @@ runtime.run_until_shutdown(watcher).await?;
 ```
 
 This replaces app-local `ctrl_c()` calls. `RunningRuntime::shutdown()` remains
-available for tests, embedding, and programmatic lifecycle management.
+available for tests, embedding, and programmatic lifecycle management. It
+delegates to the same internal shutdown sequence with
+`ShutdownReason::Programmatic`; it has no second-signal branch. The production
+watcher path calls `shutdown_with_watcher`, which selects between that sequence
+and another accepted signal. Neither public entry point duplicates the
+shutdown implementation. The internal sequence returns a structured
+`ShutdownOutcome`. `RunningRuntime::shutdown()` converts a deadline outcome to
+`RuntimeError::ShutdownDeadlineExceeded` and never terminates its caller's
+process. `LightRuntime::run_until_shutdown()` is the production policy boundary:
+after emergency cleanup and the final stderr record, it converts that same
+outcome to `std::process::exit(1)`. An embedding caller that uses the lower-level
+API owns its own escalation policy.
 
 ### Cancellable startup
 
@@ -328,6 +390,35 @@ progresses, the guard records every resource that requires asynchronous unwind:
 - a partially or fully bound transport handle
 - controller registration state, socket, and reconnect task
 - readiness/admission state
+
+Ownership must reach the guard before the next cancellation point. This is an
+API invariant, not a convention. In particular, controller startup is split
+into two operations:
+
+```rust
+let registry_session = registry_client.start_session(/* ... */)?;
+startup_guard.set_registry_session(registry_session);
+startup_guard
+    .registry_session()
+    .wait_until_registered(startup_cancel.child_token())
+    .await?;
+```
+
+`RegistrySession` owns the client, socket-generation state, reconnect task, and
+task join handle. `start_session()` may spawn the task, but after spawning it
+must return the owning session without another `.await`. Dropping a registration
+wait therefore cannot detach the task; startup abort calls the session's
+deadline-aware shutdown operation through `StartupGuard`.
+
+The same rule applies to transport binding. A `bind()` implementation owns an
+internal `BindingGuard` until it returns `BoundTransport`. A listener, thread,
+or task created inside `bind()` must either remain owned by that guard across
+every `.await`, or be created as the final non-awaiting operation immediately
+before the handle is returned. Cancelling `bind()` must synchronously close any
+listener and cancel any task that has not been handed to `StartupGuard`; if a
+resource requires asynchronous unwind, `bind()` must expose a staged owned
+handle before beginning that operation. A transport implementation that can
+detach work when its future is dropped does not satisfy `TransportRuntime`.
 
 Each startup phase selects between its work and the startup cancellation token.
 Configuration-cache writes and other persistent startup effects must use an
@@ -366,7 +457,7 @@ Add a shared context and pass it into every hook:
 
 ```rust
 pub enum ShutdownMode {
-    Running,
+    Graceful,
     StartupAbort,
     Emergency,
 }
@@ -413,22 +504,76 @@ awaited pool close, durable flush, checkpoint acknowledgement, or observable
 deadline outcome.
 
 Adopting lifecycle participants for durable cleanup is in scope for this
-design, not a prerequisite assumed to exist. Phase 1 must inventory these
-ownership classes and register each concrete resource that is present:
+design, not a prerequisite assumed to exist. Lifecycle registration is
+transport-neutral. Add `LifecycleRegistry`, a cloneable registration-only
+`LifecycleRegistrar`, and one object-safe participant contract to
+`light-runtime`:
 
-- database-pool owners that need an awaited `Pool::close()` rather than only
-  dropping handles
-- gateway and knowledge durable audit, embedding, batch, or write-behind
-  buffers that the inventory proves must flush or checkpoint
-- the portal registry client, after its explicit deregistration acknowledgement,
-  so its reconnect task and socket are closed rather than merely aborted
-- application-owned task supervisors that must cancel and join spawned work
+```rust
+#[async_trait]
+pub trait LifecycleParticipant: Send + Sync {
+    fn name(&self) -> &'static str;
 
-Lifecycle registration must be transport-neutral. Add `LifecycleRegistry` and
-a cloneable, registration-only `LifecycleRegistrar` capability to
-`light-runtime`. The registry owns the ordered participant set; the registrar
-can add a participant during startup but cannot enumerate, invoke, or seal the
-set. Builder-supplied modules are inserted into the same registry.
+    async fn shutdown(
+        &self,
+        config: &RuntimeConfig,
+        context: &ShutdownContext,
+    ) -> Result<(), RuntimeError>;
+}
+
+impl LifecycleRegistrar {
+    pub fn register(
+        &self,
+        participant: Arc<dyn LifecycleParticipant>,
+    ) -> Result<(), RuntimeError>;
+}
+```
+
+Participant names are unique within a runtime; duplicate registration is a
+startup error. The registrar can add a participant but cannot enumerate,
+invoke, or seal the set. The registry invokes participants sequentially in
+reverse registration order, which is also reverse resource-construction order.
+Every hook is attempted even after an earlier error, and the runtime returns an
+aggregate error after the bounded sequence. Phase 1a does not run hooks in
+parallel and does not add dependency declarations; a later optimization may
+add explicit parallel groups without changing the default ordering.
+
+The runtime wraps each builder-supplied `Arc<dyn Module>` in an internal
+`ModuleParticipantAdapter`; `name()` delegates to the module and `shutdown()`
+calls its deadline-aware `on_shutdown()`. `Module` does not extend
+`LifecycleParticipant`. Modules are inserted at their construction position in
+the same registry, while application-owned resources implement
+`LifecycleParticipant` directly.
+Transport handles themselves retain explicit transport ownership and are not
+also registered as participants, which prevents double shutdown.
+
+The reviewed initial ownership inventory is:
+
+| Owner | Resource | Shutdown owner | Delivery phase |
+| --- | --- | --- | --- |
+| `light-runtime` | portal-registry socket, terminal state, reconnect task, and join handle | `RegistrySession::shutdown` before transport drain | Phase 1b |
+| `light-axum` | listener handle and server task | `AxumBoundHandle` through `TransportRuntime::stop` | Phase 1c |
+| `light-pingora` | controlled-shutdown sender and Pingora server thread | `PingoraBoundHandle` through `TransportRuntime::stop` | Phase 1c |
+| builder modules | resources explicitly owned by each module | reverse-order lifecycle participant | Phase 1a and consumer migration |
+| application pools, buffers, leases, and task supervisors | resource identified in that application's migration inventory | application lifecycle participant | Phases 2 and 3 |
+
+Each application migration PR must add a checked inventory table naming every
+pool, durable buffer, lease owner, and spawned-task supervisor and either name
+its participant or state why synchronous `Drop` is sufficient. Phase 1a is not
+blocked on undiscovered application resources, and a later application phase
+cannot claim completion without its reviewed table.
+
+The initial application migration inventory is:
+
+| Service | Owned asynchronous resource | Shutdown ownership |
+| --- | --- | --- |
+| `light-agent` | SQLx application pool | `light-agent-database` participant closes and awaits the pool |
+| `light-knowledge` | SQLx application pool | `light-knowledge-database` participant closes and awaits the pool |
+| `light-workflow` | SQLx pool; consumer, executor, reconciler, rule API, scheduler, lease, fixed-action, and retention tasks | `light-workflow-database` participant closes the pool after the task supervisor cooperatively cancels and joins every task; abort is deadline-only |
+| `light-gateway` | transport-owned listener/server thread; in-memory configuration and bounded caches | transport stop owns the thread; cache/configuration owners require only synchronous `Drop` |
+| `light-deployer` | transport-owned listener/server task; in-memory service state | transport stop owns the task; service state requires only synchronous `Drop` |
+| `light-workflow-runner` | execution supervisor, transport, health/watchdog/reconciler tasks, SQLite journal | its standalone shutdown path drains the supervisor and transport, joins or deadline-aborts tasks, and returns failure on timeout; SQLite cleanup is synchronous `Drop` |
+| `light-knowledge-worker` | command-scoped SQLx pool and bounded command tasks | its standalone shutdown path bounds each command and awaits `PgPool::close`; command tasks do not outlive the selected command |
 
 Both transport construction paths receive the registrar alongside
 `&RuntimeConfig`:
@@ -439,7 +584,15 @@ pub trait TransportRuntime {
         &self,
         config: &RuntimeConfig,
         lifecycle: &LifecycleRegistrar,
+        admission: &AdmissionGate,
+        startup_cancel: CancellationToken,
     ) -> Result<BoundTransport<Self::Handle>, RuntimeError>;
+
+    async fn stop(
+        &self,
+        handle: &mut Self::Handle,
+        context: &ShutdownContext,
+    ) -> Result<(), RuntimeError>;
 }
 
 pub trait PingoraApp: Send + Sync + 'static {
@@ -449,21 +602,25 @@ pub trait PingoraApp: Send + Sync + 'static {
         &self,
         config: &RuntimeConfig,
         lifecycle: &LifecycleRegistrar,
+        admission: &AdmissionGate,
     ) -> Result<Self::Proxy, RuntimeError>;
 }
 ```
 
-Light Axum's `ServerContext` re-exposes a clone of this light-runtime registrar
-to `AxumApp::router()`. It does not own or define the registry contract. Light
-Pingora passes the same registrar to `PingoraApp::proxy()`, which closes the
-construction-order gap for light-gateway proxies that create durable buffers,
-pools, or clients. Standalone applications can construct the same light-runtime
-registry directly without depending on either framework context type.
+Light Axum's `ServerContext` re-exposes clones of the light-runtime registrar
+and admission gate to `AxumApp::router()`. It does not own or define either
+contract. Light Pingora passes the same values to `PingoraApp::proxy()`, which
+closes the construction-order gap for light-gateway proxies that create durable
+buffers, pools, or clients. Standalone applications can construct the same
+light-runtime registry and gate directly without depending on either framework
+context type.
 
-The runtime seals the registry atomically at the transition to `Ready`.
-Registration after sealing is an error. Startup cancellation seals the registry
-against new participants before invoking the already-registered participants'
-abort cleanup.
+The successful startup publication order is fixed: run all `on_ready` hooks
+while admission remains closed, seal the registry, transition the state to
+`Ready`, and open admission as the final synchronous step. Registration after
+sealing is an error. Startup cancellation seals the registry against new
+participants before invoking the already-registered participants' abort
+cleanup.
 
 Each participant owns its concrete resource and implements the deadline-aware
 hook. Standalone applications use the same `ShutdownContext` and participant
@@ -479,7 +636,7 @@ mid-flight hook; the nonzero process exit and component timeout telemetry make
 that failure explicit rather than reporting a graceful stop.
 
 A participant is registered only after its owned resource is internally
-consistent. It must handle both `Running` and `StartupAbort`; the latter may be
+consistent. It must handle both `Graceful` and `StartupAbort`; the latter may be
 called before the overall service reaches readiness. `Emergency` permits only
 the prearranged bounded cleanup described by the mandatory floor.
 
@@ -491,25 +648,73 @@ the prearranged bounded cleanup described by the mandatory floor.
    `ShutdownContext`
 2. transition runtime state to `Quiescing`, mark readiness false, and close the
    admission gate synchronously
-3. send an explicit bounded deregistration/goodbye and wait for acknowledgement
-4. stop the registration reconnect loop and close its WebSocket cleanly
+3. atomically put the registry session in terminal mode so it can never reconnect
+4. send an explicit bounded deregistration/goodbye on the current WebSocket,
+   wait for acknowledgement, close the socket, and join the reconnect task
 5. ask the transport to stop accepting connections and drain existing work
 6. invoke deadline-aware module hooks with the same context
-7. log the duration and final outcome, or enforce process exit on expiry
+7. log the duration and return the structured outcome; the production
+   `run_until_shutdown` boundary enforces process exit on expiry
 
-The current `registration_task.abort()` is not sufficient. Add a
-`PortalRegistryClient::deregister` lifecycle operation and corresponding
-controller protocol support. Receipt must remove the instance from routing
-immediately and return an acknowledgement. Its bound is
+The current `registration_task.abort()` is not sufficient. `RegistrySession`
+uses an atomic `Running -> Stopping -> Stopped` state. `shutdown(context)` wins
+the `Running -> Stopping` transition before sending anything. The reconnect
+loop observes `Stopping` in connection attempts, the active connection loop,
+and retry sleeps. It may finish the current goodbye exchange, but after that
+connection ends it exits instead of sleeping or registering again. Concurrent
+or repeated shutdown calls join the same terminal operation.
+
+The codec-neutral logical request is frozen as:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "shutdown-generated-request-id",
+  "method": "service/deregister",
+  "params": {
+    "runtimeInstanceId": "019...",
+    "reason": "terminate"
+  }
+}
+```
+
+The successful result is:
+
+```json
+{
+  "runtimeInstanceId": "019...",
+  "status": "deregistered"
+}
+```
+
+`reason` uses the lowercase shutdown reason names `interrupt`, `terminate`, or
+`programmatic`. The controller rejects a `runtimeInstanceId` that does not
+match the authenticated session with JSON-RPC `-32602`. For the negotiated
+binary profile, add `ClientGoodbyeV1 { request_id, runtime_instance_id, reason
+}` and `ServerGoodbyeV1 { request_id, runtime_instance_id }` to
+`controller-wire`; assign new message-kind values without changing any existing
+v1 discriminant. The legacy JSON and binary adapters map to the same
+`SessionInput::Deregister` and `SessionOutput::Deregistered` values.
+
+Controller handling is idempotent for a repeated request on the same session.
+On the first valid request it marks the session terminal, removes the instance
+only when the connection id still matches, fails pending commands, emits the
+discovery and MCP removal notifications, records the disconnect event, and
+then queues the acknowledgement. The route must flush that acknowledgement
+before sending the WebSocket close frame; it cannot abort the writer task first.
+The existing connection-id comparison remains the stale-socket protection. A
+normal socket close without goodbye continues to use the same cleanup routine,
+so an old client remains safe.
+
+`RegistrySession::shutdown` returns `Acknowledged`, `Disconnected`, or
+`TimedOut`. Only `Acknowledged` proves the controller removed the instance
+before transport drain. `Disconnected` and `TimedOut` are logged and shutdown
+continues because the controller's ordinary socket cleanup remains the
+fallback. The operation's bound is
 `min(context.remaining(), registration_timeout)`, where the existing builder
 registration timeout defaults to five seconds. For the normal two-second
 shutdown setting, the remaining application deadline is therefore the tighter
-bound. Failure or timeout is logged, the socket is closed, and shutdown
-continues; deregistration never creates an additional deadline.
-
-If a hook needs ordering, the module contract must declare it or the runtime
-must document a stable reverse-startup order. Independent hooks may run
-concurrently when doing so cannot violate resource ownership.
+bound. Deregistration never creates an additional deadline.
 
 Errors from one cleanup hook must not silently prevent the remaining hooks from
 running. The runtime should collect cleanup failures and return a combined
@@ -528,7 +733,9 @@ handle.graceful_shutdown(Some(Duration::from_millis(
 )));
 ```
 
-The listener stops accepting new connections when shutdown starts. Existing
+The listener stops accepting new connections when transport drain starts,
+after bounded deregistration. From the earlier admission-close boundary until
+then, new application requests receive the defined `503`. Existing accepted
 connections drain until they complete or the deadline expires. With no active
 connections, the server task should join immediately.
 
@@ -543,23 +750,18 @@ open indefinitely.
 
 ### Light Pingora
 
-`PingoraTransport` already maps `server.shutdownGracefulPeriod` to Pingora's
-graceful shutdown timeout and uses a controlled shutdown channel. The current
-implementation is not yet capable of the required fast path. In pinned
-`pingora-core 0.8.0`, `GracefulTerminate` calls `shutdown_timeout(...)` and then
-sleeps for the complete configured timeout before joining the shutdown helper
-thread. Consequently a two-second configuration imposes roughly two seconds
-even when there are no active exchanges; this is a fixed sleep, not a polling
-interval.
-
-Phase 1 must resolve that dependency before claiming Pingora conformance. The
-acceptable options are, in preference order:
-
-1. upgrade to a Pingora version that returns as soon as its runtimes drain
-2. upstream or carry a narrowly scoped patch that removes the unconditional
-   post-shutdown sleep while preserving the maximum timeout
-3. implement a drain-aware Light Pingora shutdown path with explicit in-flight
-   tracking
+`PingoraTransport` uses a controlled shutdown channel. The shared runtime first
+closes admission and drains the gateway's application permits against the
+absolute shutdown deadline. Pingora's internal graceful timeout is therefore
+zero: it must not restart the original configured period after the shared drain.
+The transport joins the Pingora thread using `ShutdownContext::remaining()`. The current
+implementation uses the crates.io `0.8.1` release. That release contains a
+redundant sleep after `Runtime::shutdown_timeout` for nonzero internal timeout
+values. Light-Fabric does not exercise that path: the shared admission gate
+owns application draining, and both Pingora internal shutdown periods are set
+to zero before the server starts. The redundant upstream sleep is therefore
+zero-duration, while the outer thread join remains bounded by the shared
+absolute deadline. No vendored Pingora source or Cargo override is required.
 
 Returning Pingora's `FastShutdown` is not an acceptable normal-path workaround
 because it forfeits request draining.
@@ -573,22 +775,15 @@ The migration must verify that:
 - WebSockets and streaming exchanges cannot exceed the deadline
 - the Pingora thread is joined before module cleanup completes
 
-Pingora accepts whole seconds. Keep the current `div_ceil(1000)` behavior rather
-than rejecting existing sub-second configurations; light-gateway tests already
-exercise `shutdownGracefulPeriod: 100`. A 100 ms value has an effective Pingora
-component bound of one second. Log both configured and effective values when
-rounding occurs. The top-level application deadline is still measured in
-milliseconds and may expire before Pingora's rounded bound.
-
-For the pinned `pingora-core 0.8.0`, `Some(0)` becomes a zero-duration runtime
-shutdown and a zero-duration sleep; it does not mean wait forever. A transport
-test must pin this behavior so a dependency upgrade cannot silently change the
-zero case.
+For upstream `pingora-core 0.8.1`, `Some(0)` is a zero-duration runtime shutdown;
+it does not mean wait forever. A transport configuration test must pin both
+zero values so a dependency upgrade cannot silently restart an internal grace
+period after the shared drain.
 
 The separate `grace_period_seconds` setting is equally load-bearing. Pingora
 performs another unconditional sleep before runtime shutdown and defaults a
 missing value to `EXIT_TIMEOUT`, currently five minutes. `light-pingora`
-explicitly sets `grace_period_seconds = Some(0)`; Phase 1 must preserve that
+explicitly sets `grace_period_seconds = Some(0)`; Phase 1c must preserve that
 assignment and pin it in the same configuration and latency tests. Removing it
 must fail a test rather than turn a normal stop into a five-minute pre-drain
 sleep.
@@ -755,23 +950,55 @@ forced `SIGKILL` and fails the graceful-shutdown gate.
 
 ## Migration Plan
 
-### Phase 1: Shared primitive and runtime transports
+### Phase 1a: Shared primitives and compile surface
 
-1. add eagerly installed `ShutdownWatcher`, `ShutdownReason`, and
-   `ShutdownContext` to `light-runtime`
-2. make the low-cost deadline-aware `Module::on_shutdown` trait change, confirm
-   the known implementation set remains empty, inventory durable resources,
-   and register the initial cleanup participants in the transport-neutral
-   `LifecycleRegistry`
-3. pass `LifecycleRegistrar` through both `AxumTransport`/`ServerContext` and
-   `PingoraTransport`/`PingoraApp`, then seal it at `Ready`
-4. add cancellation-aware startup phases, `StartupGuard`, and the top-level
-   `LightRuntimeBuilder::run_until_shutdown` deadline/exit enforcer
-5. add bounded portal deregistration and controller acknowledgement support
-6. apply the shared remaining deadline in `light-axum`
-7. resolve Pingora's unconditional full-timeout sleep and verify its rounded
-   timeout, `grace_period_seconds = Some(0)`, and zero-duration behavior
-8. add signal, startup-abort, lifecycle-registry, runtime, and transport
+1. add eagerly installed `ShutdownWatcher`, `ShutdownReason`,
+   `ShutdownContext`, `AdmissionGate`, `LifecycleRegistry`, and
+   `LifecycleRegistrar` to `light-runtime`
+2. make the deadline-aware `Module::on_shutdown` change and add the fixed
+   reverse-registration `LifecycleParticipant` behavior
+3. update all five known `TransportRuntime` implementations in the same change:
+   `AxumTransport`, `PingoraTransport`, the `light-runtime` test transport, and
+   the headless transports in `light-workflow` and `light-knowledge-worker`;
+   the headless implementations may ignore registrar/admission arguments until
+   their Phase 3 behavioral migration, but the workspace must remain compiling
+4. pass registrar and admission capabilities through `ServerContext` and
+   `PingoraApp`, update the in-repository `GatewayApp` implementation in the
+   same compile change, invoke `on_ready`, seal lifecycle registration,
+   transition to `Ready`, and open admission in the specified order
+5. add cancellation-aware startup phases, binding ownership guards,
+   `StartupGuard`, and `LightRuntime::run_until_shutdown`; preserve
+   `RunningRuntime::shutdown()` through `ShutdownReason::Programmatic`
+6. add signal, admission, startup-abort, lifecycle-order, aggregate-error, and
+   public-API tests
+
+### Phase 1b: Registry terminal protocol
+
+This is an explicitly coordinated `light-fabric` plus `controller-rs` phase,
+not deferred external adoption:
+
+1. add the codec-neutral deregister values and append-only v1 goodbye message
+   kinds to `controller-wire`, including legacy JSON, rkyv, golden-fixture, and
+   invalid-instance tests
+2. split registry startup into owned `RegistrySession` creation followed by a
+   cancellable registration wait
+3. implement terminal/no-reconnect state, bounded goodbye, socket close, and
+   task join in `portal-registry`
+4. implement idempotent connection-matched removal, acknowledgement flush, and
+   close ordering in `controller-rs`
+5. run cross-repository tests for acknowledged shutdown, stale sockets,
+   disconnect fallback, timeout, startup abort, and proof that no registration
+   occurs after terminal state is entered
+
+### Phase 1c: Runtime transports
+
+1. pass the shared remaining deadline into `TransportRuntime::stop`
+2. apply admission and the remaining deadline in `light-axum`
+3. upgrade the Pingora crate family to the crates.io `0.8.1` release and pin
+   Pingora's internal grace and runtime-shutdown periods to zero
+4. verify Pingora rounded timeout, `grace_period_seconds = Some(0)`,
+   zero-duration behavior, active drain, and no-load fast return
+5. add Axum and Pingora request, stream, WebSocket, join, and global-backstop
    integration tests
 
 ### Phase 2: Light Runtime applications
@@ -821,8 +1048,8 @@ cannot be marked complete by a `light-fabric` change alone:
 - demo APIs and MCP servers in the external `light-example-rs` repository
 
 These repositories consume the exported signal API without moving their
-application code. Controller deregistration acknowledgement is also an explicit
-cross-repository dependency on `controller-rs`.
+application code. Phase 1b already delivers the `controller-rs` deregistration
+protocol; this phase migrates the controller process's own server lifecycle.
 
 ### Phase 5: Deployment qualification
 
@@ -874,31 +1101,41 @@ For both Axum and Pingora:
 - with no active request, transport stop completes in less than one second
 - a request completing inside the deadline returns its normal response
 - a request exceeding the deadline is terminated at the bound
-- new connections are rejected after quiescing begins
+- new application requests receive `503` as soon as quiescing begins
+- new TCP connections are refused after bounded deregistration starts
+  transport drain
 - streaming and WebSocket connections obey the bound
 - module shutdown hooks run after listener quiescence
 - the whole runtime reaches its explicit deadline outcome even if transport
   stop or an underlying thread join does not cooperate
 
 The Pingora no-load assertion is a release gate, not an aspirational timing
-description. It must fail against the current unconditional sleep in pinned
-`pingora-core 0.8.0` until Phase 1 resolves that dependency. The test also
-records actual latency so a dependency upgrade cannot introduce a fixed poll
-or sleep near one second. Configuration tests assert both
-`grace_period_seconds == Some(0)` and the intended
-`graceful_shutdown_timeout_seconds`, including its zero case.
+description. The shared admission drain and remaining-budget join must prevent
+a dependency upgrade from introducing a fixed poll or sleep near one second.
+Configuration tests assert both
+`grace_period_seconds == Some(0)` and
+`graceful_shutdown_timeout_seconds == Some(0)`.
 
 ### Module and deregistration tests
 
 - every module receives the same absolute deadline and cancellation token
+- participants run sequentially in reverse registration order; duplicate names
+  fail startup and one hook error does not skip later hooks
 - the production cleanup participant registry matches the reviewed resource
   inventory and is empty only for an explicitly resource-free service
 - a cooperative hook checkpoints before cancellation and returns
 - a deliberately stuck hook triggers the global backstop and exit-code-1 path
 - cleanup errors are aggregated without skipping later bounded hooks
 - the runtime closes admission before sending deregistration
-- the controller acknowledgement removes the instance from routing before
-  transport drain starts
+- entering registry terminal state before goodbye prevents reconnect during
+  send, acknowledgement, close, retry sleep, and concurrent shutdown calls
+- legacy JSON and binary goodbye requests map to the same logical operation
+- a mismatched runtime instance id fails closed and a stale connection cannot
+  remove the replacement instance
+- the controller removes the instance from routing and flushes acknowledgement
+  before the client closes and transport drain starts
+- an already disconnected socket returns the fallback outcome without trying
+  to reconnect
 - deregistration failure consumes only its share of the global remaining time
 - Axum and Pingora resources created during router/proxy construction register
   through the same light-runtime lifecycle registry and are sealed at `Ready`
@@ -937,14 +1174,23 @@ The design is complete when:
 - a signal received during startup cancels and unwinds startup within the
   mandatory cleanup floor rather than waiting for bootstrap or registration
 - no-load shutdown normally completes in less than one second
+- application admission closes synchronously and returns the defined `503`
+  before deregistration performs network I/O; TCP refusal follows bounded
+  deregistration when transport drain starts
 - in-flight HTTP work drains up to `server.shutdownGracefulPeriod`
 - long-lived streams and background workers cannot delay exit beyond the bound
 - `SIGINT` remains functional for interactive development
 - a second signal skips remaining drain and enters mandatory cleanup
-- controller deregistration is acknowledged or bounded before transport drain
+- registry terminal state is entered before controller goodbye, no reconnect or
+  re-registration occurs afterward, and deregistration is acknowledged or
+  bounded before transport drain
 - every inventoried durable resource owner is registered as a cleanup
   participant; an empty set is accepted only when the service inventory
   explicitly proves it owns no asynchronous cleanup
+- lifecycle participants execute in deterministic reverse registration order
+  and cleanup errors are aggregated
+- the Pingora dependency resolves to crates.io `0.8.1`, both internal shutdown
+  periods remain zero, and the outer join observes the shared remaining budget
 - application logs distinguish graceful exit from deadline expiry
 - normal container tests prove exit code zero without forced termination;
   deadline-expiry tests prove exit code `1`

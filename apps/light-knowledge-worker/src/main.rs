@@ -23,7 +23,8 @@ use knowledge_core::{
 };
 use light_client::load_ca_cert_bundle;
 use light_runtime::{
-    BoundTransport, LightRuntimeBuilder, RuntimeConfig, RuntimeError, TransportRuntime,
+    BoundTransport, LightRuntimeBuilder, RuntimeConfig, RuntimeError, ShutdownWatcher,
+    TransportRuntime,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -140,6 +141,8 @@ struct WorkerConfig {
     production_operations_enabled: bool,
     #[serde(default)]
     graph_assisted_enabled: bool,
+    #[serde(skip)]
+    shutdown_grace: Duration,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -192,13 +195,20 @@ impl TransportRuntime for HeadlessTransport {
     async fn bind(
         &self,
         _config: &RuntimeConfig,
+        _lifecycle: &light_runtime::LifecycleRegistrar,
+        _admission: &light_runtime::AdmissionGate,
+        _startup_cancel: tokio_util::sync::CancellationToken,
     ) -> std::result::Result<BoundTransport<Self::Handle>, RuntimeError> {
         Err(RuntimeError::Unsupported(
             "headless Knowledge worker does not bind a listener".into(),
         ))
     }
 
-    async fn stop(&self, _handle: &mut Self::Handle) -> std::result::Result<(), RuntimeError> {
+    async fn stop(
+        &self,
+        _handle: &mut Self::Handle,
+        _context: &light_runtime::ShutdownContext,
+    ) -> std::result::Result<(), RuntimeError> {
         Ok(())
     }
 }
@@ -232,7 +242,8 @@ impl WorkerConfig {
             .prepare_config()
             .await
             .context("bootstrap Knowledge worker configuration")?;
-        let config = runtime
+        let shutdown_grace = Duration::from_millis(runtime.server.shutdown_graceful_period);
+        let mut config = runtime
             .module_registry
             .load_config::<Self>(&runtime, &config_file)
             .with_context(|| {
@@ -241,6 +252,7 @@ impl WorkerConfig {
                     config_dir.join(config_file).display()
                 )
             })?;
+        config.shutdown_grace = shutdown_grace;
         config.validate(command)
     }
 
@@ -426,6 +438,7 @@ enum ProjectionApplyOutcome {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let mut watcher = ShutdownWatcher::install().context("install shutdown handlers")?;
     tracing_subscriber::fmt::init();
     let command = env::args().nth(1).unwrap_or_else(|| "build-loop".into());
     let config = WorkerConfig::load(&command).await?;
@@ -449,18 +462,32 @@ async fn main() -> Result<()> {
         .connect(database_url.trim())
         .await
         .context("connect to Knowledge database")?;
-    match command.as_str() {
-        "build-loop" => build_loop(&pool, &config).await,
-        "project-once" => {
-            let projection = project_once(&pool, &config).await;
-            let heartbeat_result = heartbeat(&pool, &config).await;
-            projection?;
-            heartbeat_result
+    let mut operation = Box::pin(async {
+        match command.as_str() {
+            "build-loop" => build_loop(&pool, &config).await,
+            "project-once" => {
+                let projection = project_once(&pool, &config).await;
+                let heartbeat_result = heartbeat(&pool, &config).await;
+                projection?;
+                heartbeat_result
+            }
+            "project-loop" => project_loop(&pool, &config).await,
+            "heartbeat" => heartbeat(&pool, &config).await,
+            other => bail!("unknown worker command {other}"),
         }
-        "project-loop" => project_loop(&pool, &config).await,
-        "heartbeat" => heartbeat(&pool, &config).await,
-        other => bail!("unknown worker command {other}"),
-    }
+    });
+    let result = tokio::select! {
+        result = &mut operation => result,
+        reason = watcher.recv() => {
+            tracing::info!(?reason, "Knowledge worker shutdown requested");
+            Ok(())
+        }
+    };
+    drop(operation);
+    tokio::time::timeout(config.shutdown_grace, pool.close())
+        .await
+        .context("Knowledge worker database drain deadline exceeded")?;
+    result
 }
 
 async fn build_loop(pool: &PgPool, config: &WorkerConfig) -> Result<()> {

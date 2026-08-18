@@ -1,8 +1,10 @@
 pub mod cache;
 pub mod config;
+pub mod lifecycle;
 pub mod logging;
 pub mod module_registry;
 pub mod runtime;
+pub mod signal;
 pub mod transport;
 
 pub use cache::{CacheRegistry, ClearCacheOutcome, MokaRuntimeCache, RuntimeCache};
@@ -11,6 +13,11 @@ pub use config::{
     RuntimeConfig, ServerConfig, ServiceIdentity,
 };
 pub use config_loader::EmbeddedConfigFile;
+pub use lifecycle::{
+    AdmissionClosed, AdmissionGate, AdmissionKind, AdmissionPermit, LifecycleParticipant,
+    LifecycleRegistrar, LifecycleRegistry, MANDATORY_CLEANUP_FLOOR, ShutdownContext, ShutdownMode,
+    ShutdownReason,
+};
 pub use logging::{
     LOGGING_FILTER_KEY, LOGGING_MODULE_ID, LogFileAccess, LogStreamBroadcaster, LoggingControl,
     LoggingFilterState, TracingGuard, TracingInitError, TracingOptions, init_tracing,
@@ -27,4 +34,5 @@ pub use runtime::{
     LifecycleState, LightRuntime, LightRuntimeBuilder, Module, RegistrationPolicy, RunningRuntime,
     RuntimeError,
 };
+pub use signal::ShutdownWatcher;
 pub use transport::{BoundTransport, ResolvedServerMetadata, TransportRuntime};

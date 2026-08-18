@@ -76,8 +76,14 @@ impl AgentJobReconciler {
     pub fn new(pool: PgPool, executor: Arc<TaskExecutor>) -> Self {
         Self { pool, executor }
     }
-    pub async fn run(&self) -> Result<(), sqlx::Error> {
+    pub async fn run(
+        &self,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) -> Result<(), sqlx::Error> {
         loop {
+            if shutdown.is_cancelled() {
+                return Ok(());
+            }
             let jobs:Vec<(Uuid,Uuid)>=sqlx::query_as("SELECT host_id,job_id FROM agent_job_t
                 WHERE state IN('SUCCEEDED','FAILED','CANCELLED','UNKNOWN') ORDER BY updated_ts LIMIT 100")
                 .fetch_all(&self.pool).await?;
@@ -86,7 +92,7 @@ impl AgentJobReconciler {
                 progressed |= self.executor.reconcile_agent_job(host, job).await?;
             }
             if !progressed {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                tokio::select! { _ = shutdown.cancelled() => return Ok(()), _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {} }
             }
         }
     }

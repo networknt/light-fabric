@@ -7,6 +7,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bytes::Bytes;
+use light_runtime::ShutdownWatcher;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -159,6 +160,7 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut watcher = ShutdownWatcher::install()?;
     if env::args().any(|argument| argument == "--healthcheck") {
         let response = reqwest::get("http://127.0.0.1:8080/health").await?;
         if !response.status().is_success() {
@@ -197,7 +199,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()?;
     tracing::info!(%address, "deterministic LLM provider mock listening");
     let listener = tokio::net::TcpListener::bind(address).await?;
-    axum::serve(listener, app).await?;
+    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+        let reason = watcher.recv().await;
+        tracing::info!(?reason, "LLM provider mock shutdown requested");
+    });
+    match tokio::time::timeout(Duration::from_secs(2), server).await {
+        Ok(result) => result?,
+        Err(_) => tracing::warn!("LLM provider mock graceful shutdown deadline exceeded"),
+    }
     Ok(())
 }
 

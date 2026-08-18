@@ -105,6 +105,7 @@ pub async fn run_rule_api(
     invocation_security: Arc<SecurityRuntime>,
     invocation_environment: String,
     invocation_caller_service_ids: Vec<String>,
+    shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = std::env::var("LIGHT_WORKFLOW_HTTP_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:8436".to_string())
@@ -151,7 +152,9 @@ pub async fn run_rule_api(
         "Light Workflow API listening on {} with maximum parallelism {}",
         addr, maximum_parallelism
     );
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move { shutdown.cancelled().await })
+        .await?;
     Ok(())
 }
 

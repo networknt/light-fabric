@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot, watch};
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tracing::{error, info};
 use url::Url;
@@ -271,6 +272,19 @@ pub enum RegistrationState {
     Registered { runtime_instance_id: Uuid },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistryShutdownOutcome {
+    Acknowledged,
+    Disconnected,
+    TimedOut,
+}
+
+pub struct RegistrySession {
+    client: Arc<PortalRegistryClient>,
+    task: Mutex<Option<JoinHandle<()>>>,
+    shutdown_outcome: Mutex<Option<RegistryShutdownOutcome>>,
+}
+
 #[async_trait::async_trait]
 pub trait RegistryHandler: Send + Sync {
     async fn handle_notification(&self, _method: &str, _params: serde_json::Value) {}
@@ -303,6 +317,7 @@ pub struct PortalRegistryClient {
     control_candidates: Mutex<Vec<ControlCandidate>>,
     connection_generation: AtomicU64,
     connection_generation_tx: watch::Sender<u64>,
+    terminal: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Clone)]
@@ -371,6 +386,7 @@ impl PortalRegistryClient {
             control_candidates: Mutex::new(vec![ControlCandidate::legacy_json()]),
             connection_generation: AtomicU64::new(0),
             connection_generation_tx,
+            terminal: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -443,6 +459,18 @@ impl PortalRegistryClient {
 
     pub fn subscribe_registration(&self) -> watch::Receiver<RegistrationState> {
         self.registration_tx.subscribe()
+    }
+
+    pub fn start_session(self: &Arc<Self>) -> Arc<RegistrySession> {
+        self.terminal.store(false, Ordering::Release);
+        let client = Arc::clone(self);
+        let task_client = Arc::clone(self);
+        let task = tokio::spawn(async move { task_client.run().await });
+        Arc::new(RegistrySession {
+            client,
+            task: Mutex::new(Some(task)),
+            shutdown_outcome: Mutex::new(None),
+        })
     }
 
     pub fn notifier(&self) -> PortalRegistryNotifier {
@@ -541,6 +569,9 @@ impl PortalRegistryClient {
     pub async fn run(&self) {
         let mut retry_delay = Duration::from_secs(1);
         loop {
+            if self.terminal.load(Ordering::Acquire) {
+                break;
+            }
             let connection_start = std::time::Instant::now();
             let result = self.connect_and_loop().await;
             let connection_elapsed = connection_start.elapsed();
@@ -563,6 +594,10 @@ impl PortalRegistryClient {
                 }
             }
 
+            if self.terminal.load(Ordering::Acquire) {
+                break;
+            }
+
             tokio::time::sleep(total_delay).await;
 
             if connection_elapsed > Duration::from_secs(10) {
@@ -571,6 +606,7 @@ impl PortalRegistryClient {
                 retry_delay = std::cmp::min(retry_delay * 2, Duration::from_secs(60));
             }
         }
+        let _ = self.registration_tx.send(RegistrationState::Disconnected);
     }
 
     async fn connect_and_loop(&self) -> anyhow::Result<()> {
@@ -632,6 +668,9 @@ impl PortalRegistryClient {
         let service_jwt = self.registration_params.lock().await.jwt.clone();
         let mut transport = None;
         for (index, candidate) in candidates.iter().copied().enumerate() {
+            if self.terminal.load(Ordering::Acquire) {
+                return Ok(());
+            }
             if self.connection_generation.load(Ordering::Acquire) != generation {
                 return Err(anyhow::anyhow!(
                     "registry connection generation was superseded"
@@ -781,6 +820,83 @@ impl PortalRegistryClient {
     }
 }
 
+impl RegistrySession {
+    pub async fn shutdown(
+        &self,
+        reason: &str,
+        shutdown_timeout: Duration,
+    ) -> RegistryShutdownOutcome {
+        // Serialize terminal calls so concurrent shutdown triggers join the same
+        // deregistration instead of sending competing goodbye requests.
+        let mut completed = self.shutdown_outcome.lock().await;
+        if let Some(outcome) = *completed {
+            return outcome;
+        }
+        let deadline = tokio::time::Instant::now() + shutdown_timeout;
+        let state = self.client.registration_tx.borrow().clone();
+        let runtime_instance_id = match state {
+            RegistrationState::Registered {
+                runtime_instance_id,
+            } => Some(runtime_instance_id),
+            _ => None,
+        };
+        self.client.terminal.store(true, Ordering::Release);
+        let _ = self
+            .client
+            .registration_tx
+            .send(RegistrationState::Disconnected);
+        let mut outcome = if let Some(runtime_instance_id) = runtime_instance_id {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            match self
+                .client
+                .send_request::<_, crate::protocol::DeregistrationResponse>(
+                    "service/deregister",
+                    crate::protocol::DeregistrationParams {
+                        runtime_instance_id,
+                        reason: reason.to_string(),
+                    },
+                    remaining,
+                )
+                .await
+            {
+                Ok(response) if response.runtime_instance_id == runtime_instance_id => {
+                    RegistryShutdownOutcome::Acknowledged
+                }
+                Ok(_) => RegistryShutdownOutcome::Disconnected,
+                Err(error) if error.to_string().contains("timed out") => {
+                    RegistryShutdownOutcome::TimedOut
+                }
+                Err(_) => RegistryShutdownOutcome::Disconnected,
+            }
+        } else {
+            RegistryShutdownOutcome::Disconnected
+        };
+
+        self.client.advance_connection_generation();
+        if let Some(mut task) = self.task.lock().await.take() {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            match timeout(remaining, &mut task).await {
+                Ok(_) => {}
+                Err(_) if outcome != RegistryShutdownOutcome::TimedOut => {
+                    task.abort();
+                    let _ = task.await;
+                    outcome = RegistryShutdownOutcome::TimedOut;
+                }
+                Err(_) => {
+                    task.abort();
+                    let _ = task.await;
+                }
+            }
+        }
+        let _ = self
+            .client
+            .registration_tx
+            .send(RegistrationState::Disconnected);
+        *completed = Some(outcome);
+        outcome
+    }
+}
+
 fn validate_control_candidates(candidates: &[ControlCandidate]) -> anyhow::Result<()> {
     if candidates.is_empty() {
         return Err(anyhow::anyhow!(
@@ -858,6 +974,31 @@ mod tests {
             env_tag: Some("prod".to_string()),
             jwt: "service-jwt".to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn concurrent_shutdown_calls_join_one_terminal_operation() {
+        let client = Arc::new(
+            PortalRegistryClient::new(
+                "ws://127.0.0.1:9/microservice",
+                test_registration_params(),
+                Arc::new(NoopHandler),
+            )
+            .expect("registry client"),
+        );
+        let session = client.start_session();
+        let first = Arc::clone(&session);
+        let second = Arc::clone(&session);
+
+        let (first, second) = tokio::join!(
+            first.shutdown("terminate", Duration::from_millis(100)),
+            second.shutdown("terminate", Duration::from_millis(100)),
+        );
+
+        assert_eq!(first, RegistryShutdownOutcome::Disconnected);
+        assert_eq!(second, first);
+        assert!(client.terminal.load(Ordering::Acquire));
+        assert!(session.task.lock().await.is_none());
     }
 
     fn decode_test_rkyv(frame: &[u8]) -> DecodedMessageV1 {

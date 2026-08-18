@@ -80,18 +80,24 @@ impl<S: ArtifactObjectStore> ArtifactRetentionReconciler<S> {
         Ok(claimed.len() as u64)
     }
 
-    pub async fn run(&self) -> Result<(), sqlx::Error> {
+    pub async fn run(
+        &self,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) -> Result<(), sqlx::Error> {
         loop {
+            if shutdown.is_cancelled() {
+                return Ok(());
+            }
             // A process may die after claiming but before deleting. Requeue such claims.
             sqlx::query("UPDATE workflow_artifact_t SET deletion_state='DELETE_FAILED',deletion_next_retry_ts=now(),deletion_evidence=COALESCE(deletion_evidence,'{}'::jsonb)||jsonb_build_object('reason','stale-delete-claim'),updated_ts=now() WHERE deletion_state='DELETING' AND updated_ts < now()-interval '5 minutes'")
                 .execute(&self.pool).await?;
             let changed = self.reconcile_once().await?;
-            tokio::time::sleep(if changed == 0 {
+            let delay = if changed == 0 {
                 StdDuration::from_secs(30)
             } else {
                 StdDuration::from_millis(100)
-            })
-            .await;
+            };
+            tokio::select! { _ = shutdown.cancelled() => return Ok(()), _ = tokio::time::sleep(delay) => {} }
         }
     }
 

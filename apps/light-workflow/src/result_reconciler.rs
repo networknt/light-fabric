@@ -37,10 +37,16 @@ impl ResultReconciler {
         }
     }
 
-    pub async fn run(&self) -> Result<(), sqlx::Error> {
+    pub async fn run(
+        &self,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) -> Result<(), sqlx::Error> {
         info!("Starting execution result reconciler");
         loop {
-            match self.listen_and_reconcile().await {
+            if shutdown.is_cancelled() {
+                return Ok(());
+            }
+            match self.listen_and_reconcile(&shutdown).await {
                 Ok(()) => {
                     return Err(sqlx::Error::Protocol(
                         "execution result listener exited unexpectedly".to_string(),
@@ -48,19 +54,26 @@ impl ResultReconciler {
                 }
                 Err(error) => {
                     error!("execution result listener failed: {error}; reconnecting");
-                    sleep(Duration::from_secs(2)).await;
+                    tokio::select! { _ = shutdown.cancelled() => return Ok(()), _ = sleep(Duration::from_secs(2)) => {} }
                 }
             }
         }
     }
 
-    async fn listen_and_reconcile(&self) -> Result<(), sqlx::Error> {
+    async fn listen_and_reconcile(
+        &self,
+        shutdown: &tokio_util::sync::CancellationToken,
+    ) -> Result<(), sqlx::Error> {
         let mut listener = PgListener::connect_with(&self.pool).await?;
         listener.listen("execution_result_ready_v1").await?;
         // LISTEN is established before catch-up, closing the commit/subscribe gap.
         self.run_once().await?;
         loop {
-            match timeout(Duration::from_secs(1), listener.recv()).await {
+            let received = tokio::select! {
+                _ = shutdown.cancelled() => return Ok(()),
+                result = timeout(Duration::from_secs(1), listener.recv()) => result,
+            };
+            match received {
                 Ok(Ok(notification)) => {
                     debug!(
                         payload_bytes = notification.payload().len(),

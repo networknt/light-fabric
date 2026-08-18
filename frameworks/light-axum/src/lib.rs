@@ -1,3 +1,5 @@
 mod transport;
 
-pub use transport::{AxumApp, AxumBoundHandle, AxumTransport, ServerContext};
+pub use transport::{
+    AxumApp, AxumBoundHandle, AxumTransport, ControlRoute, ControlRouteKind, ServerContext,
+};

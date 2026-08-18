@@ -5,17 +5,18 @@
 use chrono::{DateTime, Utc};
 use controller_wire::DecodedMessageV1;
 use controller_wire::v1::{
-    ClientHelloV1, CommandRequestV1, CommandResponseV1, DiscoveryChangedV1, DiscoveryNodeV1,
-    DiscoveryRequestV1, DiscoveryResponseV1, DiscoverySnapshotV1, MetadataUpdateV1,
-    RuntimeNotificationV1, ServerDrainingV1, SessionErrorV1, WireErrorV1, WireTagV1,
+    ClientGoodbyeV1, ClientHelloV1, CommandRequestV1, CommandResponseV1, DiscoveryChangedV1,
+    DiscoveryNodeV1, DiscoveryRequestV1, DiscoveryResponseV1, DiscoverySnapshotV1,
+    MetadataUpdateV1, RuntimeNotificationV1, ServerDrainingV1, ServerGoodbyeV1, SessionErrorV1,
+    WireErrorV1, WireTagV1,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
 
 use crate::logical::{RuntimeResponse, RuntimeSessionInput, RuntimeSessionOutput};
 use crate::protocol::{
-    DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, JsonRpcError, ServiceMetadataUpdate,
-    ServiceRegistrationParams,
+    DeregistrationParams, DeregistrationResponse, DiscoveryNode, DiscoverySnapshot,
+    DiscoverySubscription, JsonRpcError, ServiceMetadataUpdate, ServiceRegistrationParams,
 };
 
 #[derive(Debug, Error)]
@@ -78,6 +79,14 @@ pub(crate) fn output_to_wire(
             method,
             params,
         } => {
+            if method == "service/deregister" {
+                let params: DeregistrationParams = serde_json::from_value(params)?;
+                return Ok(DecodedMessageV1::ClientGoodbye(ClientGoodbyeV1 {
+                    request_id: request_id_to_string(&request_id),
+                    runtime_instance_id: params.runtime_instance_id,
+                    reason: params.reason,
+                }));
+            }
             let operation = match method.as_str() {
                 "discovery/lookup" => 1,
                 "discovery/subscribe" => 2,
@@ -134,6 +143,19 @@ pub(crate) fn input_from_wire(
             })
         }
         DecodedMessageV1::CommandRequest(command) => command_request_from_wire(command),
+        DecodedMessageV1::ServerGoodbye(ServerGoodbyeV1 {
+            request_id,
+            runtime_instance_id,
+        }) => Ok(RuntimeSessionInput::Response {
+            request_id,
+            response: RuntimeResponse {
+                result: Some(serde_json::to_value(DeregistrationResponse {
+                    runtime_instance_id,
+                    status: "deregistered".to_string(),
+                })?),
+                error: None,
+            },
+        }),
         DecodedMessageV1::SessionError(SessionErrorV1 { error }) => {
             Ok(RuntimeSessionInput::Notification {
                 method: "session/error".to_string(),
@@ -150,6 +172,9 @@ pub(crate) fn input_from_wire(
         DecodedMessageV1::Pong(_) => Ok(RuntimeSessionInput::Ignored),
         DecodedMessageV1::ClientHello(_) => {
             Err(WireMappingError::UnexpectedMessage("client_hello"))
+        }
+        DecodedMessageV1::ClientGoodbye(_) => {
+            Err(WireMappingError::UnexpectedMessage("client_goodbye"))
         }
         DecodedMessageV1::ServerHello(_) => {
             Err(WireMappingError::UnexpectedMessage("server_hello"))
@@ -374,11 +399,30 @@ mod tests {
             decode_rkyv_frame_v1(&bytes, 1024 * 1024).unwrap();
             count += 1;
         }
-        assert_eq!(count, 13);
+        assert_eq!(count, 15);
     }
 
     #[test]
     fn logical_outputs_map_to_expected_runtime_wire_kinds() {
+        let runtime_instance_id = Uuid::now_v7();
+        let goodbye = output_to_wire(RuntimeSessionOutput::Request {
+            request_id: json!("goodbye-1"),
+            method: "service/deregister".to_string(),
+            params: serde_json::to_value(DeregistrationParams {
+                runtime_instance_id,
+                reason: "terminate".to_string(),
+            })
+            .unwrap(),
+        })
+        .unwrap();
+        assert!(matches!(
+            goodbye,
+            DecodedMessageV1::ClientGoodbye(ClientGoodbyeV1 {
+                runtime_instance_id: id,
+                ..
+            }) if id == runtime_instance_id
+        ));
+
         let discovery = output_to_wire(RuntimeSessionOutput::Request {
             request_id: json!("lookup-1"),
             method: "discovery/lookup".to_string(),

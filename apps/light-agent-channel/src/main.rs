@@ -17,6 +17,7 @@ use light_agent_channel::{
     credential::ConnectorCredentialStore,
     slack::{self, SlackInbound},
 };
+use light_runtime::ShutdownWatcher;
 use serde_json::{Value, json};
 use sha2::Sha256;
 use sqlx::{PgPool, Row, postgres::PgPoolOptions};
@@ -48,6 +49,7 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let mut watcher = ShutdownWatcher::install().context("install shutdown handlers")?;
     tracing_subscriber::fmt::init();
     let pool = PgPoolOptions::new()
         .max_connections(10)
@@ -91,19 +93,42 @@ async fn main() -> Result<()> {
         attachment_scanner_url,
         attachment_scanner_token,
     };
-    tokio::spawn(delivery_loop(state.clone()));
-    tokio::spawn(trigger_loop(state.clone()));
-    tokio::spawn(attachment_recovery_loop(state.clone()));
+    let delivery = tokio::spawn(delivery_loop(state.clone()));
+    let trigger = tokio::spawn(trigger_loop(state.clone()));
+    let attachment_recovery = tokio::spawn(attachment_recovery_loop(state.clone()));
     let app = Router::new()
         .route("/channels/slack/events", post(slack_events))
         .route("/channels/connectors/events", post(connector_events))
         .layer(DefaultBodyLimit::max(1024 * 1024))
-        .with_state(state);
+        .with_state(state.clone());
     let addr: SocketAddr = env::var("LIGHT_AGENT_CHANNEL_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:8440".into())
         .parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = std::future::IntoFuture::into_future(
+        axum::serve(listener, app).with_graceful_shutdown(async {
+            let _ = shutdown_rx.await;
+        }),
+    );
+    tokio::pin!(server);
+    tokio::select! {
+        result = &mut server => result?,
+        reason = watcher.recv() => {
+            tracing::info!(?reason, "light-agent-channel shutdown requested");
+            let _ = shutdown_tx.send(());
+            if tokio::time::timeout(StdDuration::from_secs(2), &mut server).await.is_err() {
+                tracing::warn!("light-agent-channel HTTP drain deadline exceeded");
+            }
+        }
+    }
+    delivery.abort();
+    trigger.abort();
+    attachment_recovery.abort();
+    let _ = delivery.await;
+    let _ = trigger.await;
+    let _ = attachment_recovery.await;
+    state.pool.close().await;
     Ok(())
 }
 

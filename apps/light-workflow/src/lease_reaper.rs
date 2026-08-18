@@ -30,14 +30,20 @@ impl LeaseReaper {
         }
     }
 
-    pub async fn run(&self) -> Result<(), sqlx::Error> {
+    pub async fn run(
+        &self,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) -> Result<(), sqlx::Error> {
         info!("Starting runner lease reaper");
         loop {
+            if shutdown.is_cancelled() {
+                return Ok(());
+            }
             if let Err(error) = self.run_once().await {
                 error!("runner lease reaper pass failed: {error}");
-                sleep(Duration::from_secs(2)).await;
+                tokio::select! { _ = shutdown.cancelled() => return Ok(()), _ = sleep(Duration::from_secs(2)) => {} }
             } else {
-                sleep(Duration::from_secs(1)).await;
+                tokio::select! { _ = shutdown.cancelled() => return Ok(()), _ = sleep(Duration::from_secs(1)) => {} }
             }
         }
     }

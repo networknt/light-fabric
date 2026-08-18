@@ -9,8 +9,14 @@ light-runtime = { path = "../../crates/light-runtime" }
 axum = { workspace = true }
 axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 tower = "0.5"
+http-body = "1"
 tracing = { workspace = true }
 anyhow = { workspace = true }
+
+[dev-dependencies]
+futures-util = { workspace = true }
+reqwest = { workspace = true }
