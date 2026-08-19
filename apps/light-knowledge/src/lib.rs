@@ -460,6 +460,7 @@ fn secret_environment_names(path: &std::path::Path) -> &'static [&'static str] {
         Some("knowledge-heartbeat-secret") => &["LIGHT_KNOWLEDGE_HEARTBEAT_SECRET"],
         Some("knowledge-query-embedding-authorization") => &[
             "KNOWLEDGE_QUERY_EMBEDDING_AUTHORIZATION",
+            "LIGHT_PORTAL_AUTHORIZATION",
             "LIGHT_KNOWLEDGE_AUTHORIZATION",
         ],
         _ => &[],

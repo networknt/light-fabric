@@ -481,6 +481,7 @@ fn secret_environment_names(path: &Path) -> &'static [&'static str] {
         ],
         Some("knowledge-index-embedding-authorization") => &[
             "KNOWLEDGE_INDEX_EMBEDDING_AUTHORIZATION",
+            "LIGHT_PORTAL_AUTHORIZATION",
             "LIGHT_KNOWLEDGE_AUTHORIZATION",
         ],
         Some("knowledge-connector-authorization") => &["KNOWLEDGE_CONNECTOR_AUTHORIZATION"],

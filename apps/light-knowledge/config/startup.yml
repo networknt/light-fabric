@@ -1,5 +1,7 @@
 host: dev.lightapi.net
 serviceId: ${server.serviceId:com.networknt.light-knowledge-1.0.0}
+productId: ${server.productId:lk}
+productVersion: ${server.productVersion:1.0.0}
 envTag: ${server.environment:dev}
 acceptHeader: application/yaml
 timeout: 3000

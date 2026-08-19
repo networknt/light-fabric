@@ -1,41 +1,45 @@
+# Configuration schema version; intentionally fixed by this image.
 version: 1
-databaseUrlFile: /run/secrets/knowledge-database-url
-delegationSecretFile: /run/secrets/agent-delegation-secret
-queryCacheKeyFile: /run/secrets/knowledge-query-cache-key
-heartbeatSecretFile: /run/secrets/knowledge-heartbeat-secret
-delegationIssuer: light-agent
-objectStoreRoot: /var/lib/light-knowledge/objects
-maximumRequestBytes: 1048576
-maximumQueryBytes: 8192
-requestTimeoutMs: 1000
-maximumDatabaseConnections: 20
-projectionLeaseSeconds: 30
-deterministicPilot: true
-embeddingAlias: kb-query
-embeddingSpaceId: light-knowledge-fake-v1
-embeddingSpaceRevision: 1
-embeddingDimension: 32
-queryCacheMaximumEntries: 2048
-queryCacheMaximumBytes: 67108864
-queryCacheTtlSeconds: 300
+databaseUrlFile: ${knowledge.databaseUrlFile:/run/secrets/knowledge-database-url}
+expectedDatabase: ${knowledge.expectedDatabase:knowledge}
+delegationSecretFile: ${knowledge.delegationSecretFile:/run/secrets/agent-delegation-secret}
+queryCacheKeyFile: ${knowledge.queryCacheKeyFile:/run/secrets/knowledge-query-cache-key}
+heartbeatSecretFile: ${knowledge.heartbeatSecretFile:/run/secrets/knowledge-heartbeat-secret}
+delegationIssuer: ${knowledge.delegationIssuer:light-agent}
+objectStoreRoot: ${knowledge.objectStoreRoot:/var/lib/light-knowledge/objects}
+maximumRequestBytes: ${knowledge.maximumRequestBytes:1048576}
+maximumQueryBytes: ${knowledge.maximumQueryBytes:8192}
+requestTimeoutMs: ${knowledge.requestTimeoutMs:1000}
+maximumDatabaseConnections: ${knowledge.maximumDatabaseConnections:20}
+projectionLeaseSeconds: ${knowledge.projectionLeaseSeconds:30}
+deterministicPilot: ${knowledge.deterministicPilot:false}
+embeddingGatewayUrl: ${knowledge.embeddingGatewayUrl:https://llm-gateway:8443/}
+embeddingAuthorizationFile: ${knowledge.embeddingAuthorizationFile:/run/secrets/knowledge-query-embedding-authorization}
+embeddingAlias: ${knowledge.embeddingAlias:kb-query}
+embeddingSpaceId: ${knowledge.embeddingSpaceId:nvidia-nemotron-3-embed-1b-float-v1}
+embeddingSpaceRevision: ${knowledge.embeddingSpaceRevision:1}
+embeddingDimension: ${knowledge.embeddingDimension:2048}
+queryCacheMaximumEntries: ${knowledge.queryCacheMaximumEntries:2048}
+queryCacheMaximumBytes: ${knowledge.queryCacheMaximumBytes:67108864}
+queryCacheTtlSeconds: ${knowledge.queryCacheTtlSeconds:300}
 graphLimits:
-  maximumSeeds: 8
-  maximumPairs: 64
-  maximumFanOut: 16
-  maximumHops: 3
-  maximumVisitedNodes: 128
-  maximumVisitedEdges: 256
-  maximumPaths: 32
-  maximumEvidenceChunks: 20
-  maximumTokenBudget: 4096
-  maximumMemoryBytes: 1048576
-  timeoutMs: 100
+  maximumSeeds: ${knowledge.graphLimits.maximumSeeds:8}
+  maximumPairs: ${knowledge.graphLimits.maximumPairs:64}
+  maximumFanOut: ${knowledge.graphLimits.maximumFanOut:16}
+  maximumHops: ${knowledge.graphLimits.maximumHops:3}
+  maximumVisitedNodes: ${knowledge.graphLimits.maximumVisitedNodes:128}
+  maximumVisitedEdges: ${knowledge.graphLimits.maximumVisitedEdges:256}
+  maximumPaths: ${knowledge.graphLimits.maximumPaths:32}
+  maximumEvidenceChunks: ${knowledge.graphLimits.maximumEvidenceChunks:20}
+  maximumTokenBudget: ${knowledge.graphLimits.maximumTokenBudget:4096}
+  maximumMemoryBytes: ${knowledge.graphLimits.maximumMemoryBytes:1048576}
+  timeoutMs: ${knowledge.graphLimits.timeoutMs:100}
 features:
-  deltaSegments: false
-  uploads: false
-  contextExpansion: false
-  multiKnowledgeBase: false
-  graphAssisted: false
-  enterpriseSourceAcls: false
-  embeddingMigration: false
-  productionOperations: false
+  deltaSegments: ${knowledge.features.deltaSegments:true}
+  uploads: ${knowledge.features.uploads:true}
+  contextExpansion: ${knowledge.features.contextExpansion:false}
+  multiKnowledgeBase: ${knowledge.features.multiKnowledgeBase:true}
+  graphAssisted: ${knowledge.features.graphAssisted:false}
+  enterpriseSourceAcls: ${knowledge.features.enterpriseSourceAcls:false}
+  embeddingMigration: ${knowledge.features.embeddingMigration:false}
+  productionOperations: ${knowledge.features.productionOperations:false}
