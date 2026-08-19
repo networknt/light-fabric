@@ -1,0 +1,29 @@
+version: 1
+projectionMode: embedded
+jobExecutionMode: embedded
+workerDatabaseUrlFile: /run/secrets/knowledge-worker-database-url
+projectorDatabaseUrlFile: /run/secrets/knowledge-projector-database-url
+controlPlaneEventDatabaseUrlFile: /run/secrets/configserver-event-read-url
+heartbeatSecretFile: /run/secrets/knowledge-heartbeat-secret
+portalCommandUrl: https://light-portal-command:8443/portal/command
+portalAuthorizationFile: /run/secrets/knowledge-portal-authorization
+checkoutRoot: /var/lib/light-knowledge/checkouts
+objectStoreRoot: /var/lib/light-knowledge/objects
+projectorId: light-knowledge-runtime
+deterministicPilot: true
+migrationDeterministicPilot: false
+embeddingAlias: kb-index
+embeddingBatchSize: 32
+embeddingMigrationEnabled: false
+productionOperationsEnabled: false
+graphAssistedEnabled: false
+platformCaps:
+  maximumDocuments: ${knowledgeWorker.platformCaps.maximumDocuments:10000}
+  maximumChunks: ${knowledgeWorker.platformCaps.maximumChunks:100000}
+  maximumSourceBytes: ${knowledgeWorker.platformCaps.maximumSourceBytes:268435456}
+  maximumStoredBytes: ${knowledgeWorker.platformCaps.maximumStoredBytes:1073741824}
+  maximumEmbeddingTokens: ${knowledgeWorker.platformCaps.maximumEmbeddingTokens:20000000}
+  maximumSpendMicros: ${knowledgeWorker.platformCaps.maximumSpendMicros:10000000}
+  maximumWallTimeSeconds: ${knowledgeWorker.platformCaps.maximumWallTimeSeconds:900}
+  maximumConcurrency: ${knowledgeWorker.platformCaps.maximumConcurrency:8}
+  maximumProviderCalls: ${knowledgeWorker.platformCaps.maximumProviderCalls:1024}

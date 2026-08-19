@@ -33,6 +33,8 @@ use uuid::Uuid;
 pub struct KnowledgeConfig {
     pub version: u16,
     pub database_url_file: PathBuf,
+    #[serde(default)]
+    pub expected_database: Option<String>,
     pub delegation_secret_file: PathBuf,
     pub query_cache_key_file: PathBuf,
     pub heartbeat_secret_file: PathBuf,
@@ -138,13 +140,35 @@ pub struct FeatureFlags {
 }
 
 impl KnowledgeConfig {
+    pub fn load_from_runtime(runtime: &RuntimeConfig) -> Result<Self, String> {
+        Self::load_from_runtime_file(runtime, "knowledge.yml")
+    }
+
+    pub fn load_from_runtime_file(
+        runtime: &RuntimeConfig,
+        file_name: &str,
+    ) -> Result<Self, String> {
+        let mut config = runtime
+            .module_registry
+            .load_config::<Self>(runtime, file_name)
+            .map_err(|error| format!("load effective Knowledge configuration: {error}"))?;
+        if let Ok(value) = env::var("LIGHT_KNOWLEDGE_EXPECTED_DATABASE") {
+            config.expected_database = Some(value);
+        }
+        config.validate()?;
+        Ok(config)
+    }
+
     pub fn load() -> Result<Self, String> {
         let path = env::var("LIGHT_KNOWLEDGE_CONFIG_FILE")
             .unwrap_or_else(|_| "config/knowledge.yml".to_string());
         let content = fs::read_to_string(&path)
             .map_err(|error| format!("failed to read Knowledge config {path}: {error}"))?;
-        let config: Self = serde_yaml::from_str(&content)
+        let mut config: Self = serde_yaml::from_str(&content)
             .map_err(|error| format!("failed to parse Knowledge config {path}: {error}"))?;
+        if let Ok(value) = env::var("LIGHT_KNOWLEDGE_EXPECTED_DATABASE") {
+            config.expected_database = Some(value);
+        }
         config.validate()?;
         Ok(config)
     }
@@ -161,7 +185,7 @@ impl KnowledgeConfig {
             || self.maximum_query_bytes > self.maximum_request_bytes
             || self.request_timeout_ms == 0
             || self.maximum_database_connections == 0
-            || !self.query_cache_key_file.is_file()
+            || !secret_available(&self.query_cache_key_file)
             || self.projection_lease_seconds != 30
             || self
                 .legacy_delegation_acceptance_deadline
@@ -189,7 +213,7 @@ impl KnowledgeConfig {
                     || self
                         .embedding_authorization_file
                         .as_ref()
-                        .is_none_or(|path| !path.is_file())))
+                        .is_none_or(|path| !secret_available(path))))
         {
             return Err("invalid Phase 1a limits, lease, or embedding-space contract".into());
         }
@@ -226,11 +250,11 @@ impl KnowledgeConfig {
         if self.features.enterprise_source_acls && !self.features.delta_segments {
             return Err("Phase 2 enterprise source ACLs require delta segments".into());
         }
-        if !self.database_url_file.is_file() {
+        if !secret_available(&self.database_url_file) {
             return Err("databaseUrlFile must be a readable regular file".into());
         }
-        if !self.delegation_secret_file.is_file()
-            || !self.heartbeat_secret_file.is_file()
+        if !secret_available(&self.delegation_secret_file)
+            || !secret_available(&self.heartbeat_secret_file)
             || self.delegation_issuer.trim().is_empty()
         {
             return Err("delegation secret and issuer are required".into());
@@ -286,6 +310,42 @@ impl KnowledgeState {
             .connect(&database_url)
             .await
             .map_err(|error| RuntimeError::Config(format!("Knowledge database: {error}")))?;
+        if let Some(expected_database) = config.expected_database.as_deref() {
+            let actual_database = sqlx::query_scalar::<_, String>("SELECT current_database()")
+                .fetch_one(&pool)
+                .await
+                .map_err(|error| {
+                    RuntimeError::Config(format!("Knowledge database identity: {error}"))
+                })?;
+            if actual_database != expected_database {
+                return Err(RuntimeError::Config(format!(
+                    "Knowledge database identity mismatch: expected {expected_database}, got {actual_database}"
+                )));
+            }
+        }
+        let api_contract_available: bool = sqlx::query_scalar(
+            "SELECT to_regclass('knowledge_runtime_authorization_t') IS NOT NULL
+                 AND to_regclass('knowledge_consumer_quota_t') IS NOT NULL
+                 AND to_regclass('knowledge_query_admission_t') IS NOT NULL
+                 AND has_table_privilege(
+                       current_user,'knowledge_runtime_authorization_t','SELECT')
+                 AND has_table_privilege(
+                       current_user,'knowledge_consumer_quota_t','SELECT')
+                 AND has_table_privilege(
+                       current_user,'knowledge_query_admission_t','SELECT')
+                 AND has_table_privilege(
+                       current_user,'knowledge_query_admission_t','INSERT')
+                 AND has_table_privilege(
+                       current_user,'knowledge_query_admission_t','UPDATE')",
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(|error| RuntimeError::Config(format!("Knowledge API schema contract: {error}")))?;
+        if !api_contract_available {
+            return Err(RuntimeError::Config(
+                "Knowledge API schema or privilege contract is unavailable".into(),
+            ));
+        }
         let delegation_secret =
             read_secret_file(&config.delegation_secret_file).map_err(RuntimeError::Config)?;
         let delegation_verifier = DelegationVerifier::new(
@@ -294,13 +354,13 @@ impl KnowledgeState {
             "light-knowledge",
         )
         .map_err(|error| RuntimeError::Config(format!("Knowledge delegation verifier: {error}")))?;
-        let heartbeat_secret = fs::read(&config.heartbeat_secret_file)
-            .map_err(|error| RuntimeError::Config(format!("heartbeat secret: {error}")))?;
+        let heartbeat_secret =
+            read_secret_bytes(&config.heartbeat_secret_file).map_err(RuntimeError::Config)?;
         if heartbeat_secret.is_empty() {
             return Err(RuntimeError::Config("heartbeat secret is empty".into()));
         }
-        let query_cache_key = fs::read(&config.query_cache_key_file)
-            .map_err(|error| RuntimeError::Config(format!("query cache key: {error}")))?;
+        let query_cache_key =
+            read_secret_bytes(&config.query_cache_key_file).map_err(RuntimeError::Config)?;
         if query_cache_key.len() < 32 {
             return Err(RuntimeError::Config(
                 "query cache key must contain at least 32 bytes".into(),
@@ -328,7 +388,18 @@ impl KnowledgeState {
     }
 }
 
-fn read_secret_file(path: &PathBuf) -> Result<String, String> {
+fn read_secret_file(path: &std::path::Path) -> Result<String, String> {
+    for environment_name in secret_environment_names(path) {
+        if let Ok(value) = env::var(environment_name) {
+            let value = value.trim();
+            if value.is_empty() {
+                return Err(format!(
+                    "secret environment variable {environment_name} is empty"
+                ));
+            }
+            return Ok(value.to_string());
+        }
+    }
     let metadata = fs::metadata(path)
         .map_err(|error| format!("failed to inspect secret file {}: {error}", path.display()))?;
     if !metadata.is_file() {
@@ -344,6 +415,55 @@ fn read_secret_file(path: &PathBuf) -> Result<String, String> {
         return Err(format!("secret file is empty: {}", path.display()));
     }
     Ok(value.to_string())
+}
+
+fn read_secret_bytes(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    for environment_name in secret_environment_names(path) {
+        if let Ok(value) = env::var(environment_name) {
+            let value = value.into_bytes();
+            if value.is_empty() {
+                return Err(format!(
+                    "secret environment variable {environment_name} is empty"
+                ));
+            }
+            return Ok(value);
+        }
+    }
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("failed to inspect secret file {}: {error}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "secret path is not a regular file: {}",
+            path.display()
+        ));
+    }
+    let value = fs::read(path)
+        .map_err(|error| format!("failed to read secret file {}: {error}", path.display()))?;
+    if value.is_empty() {
+        return Err(format!("secret file is empty: {}", path.display()));
+    }
+    Ok(value)
+}
+
+fn secret_available(path: &std::path::Path) -> bool {
+    secret_environment_names(path)
+        .iter()
+        .any(|name| env::var(name).is_ok_and(|value| !value.trim().is_empty()))
+        || path.is_file()
+}
+
+fn secret_environment_names(path: &std::path::Path) -> &'static [&'static str] {
+    match path.file_name().and_then(|name| name.to_str()) {
+        Some("knowledge-database-url") => &["LIGHT_KNOWLEDGE_DATABASE_URL"],
+        Some("agent-delegation-secret") => &["LIGHT_AGENT_DELEGATION_SECRET"],
+        Some("knowledge-query-cache-key") => &["LIGHT_KNOWLEDGE_QUERY_CACHE_KEY"],
+        Some("knowledge-heartbeat-secret") => &["LIGHT_KNOWLEDGE_HEARTBEAT_SECRET"],
+        Some("knowledge-query-embedding-authorization") => &[
+            "KNOWLEDGE_QUERY_EMBEDDING_AUTHORIZATION",
+            "LIGHT_KNOWLEDGE_AUTHORIZATION",
+        ],
+        _ => &[],
+    }
 }
 
 pub fn knowledge_router(state: Arc<KnowledgeState>) -> Router {
@@ -2892,6 +3012,15 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[test]
+    fn binary_hmac_secrets_are_not_trimmed_or_utf8_decoded() {
+        let directory = tempfile::tempdir().unwrap();
+        let secret = directory.path().join("binary-secret");
+        let expected = b"\x00 leading and trailing \xff\n";
+        fs::write(&secret, expected).unwrap();
+        assert_eq!(read_secret_bytes(&secret).unwrap(), expected);
+    }
+
     fn test_authenticated_request(
         normalized_claims_present: bool,
     ) -> AuthenticatedKnowledgeRequest {
@@ -2969,6 +3098,7 @@ mod tests {
         let mut config = KnowledgeConfig {
             version: 1,
             database_url_file: database,
+            expected_database: None,
             delegation_secret_file: delegation,
             query_cache_key_file: query_cache_key,
             heartbeat_secret_file: heartbeat,
@@ -3138,6 +3268,7 @@ mod tests {
         let config = KnowledgeConfig {
             version: 1,
             database_url_file: directory.path().join("unused-db"),
+            expected_database: None,
             delegation_secret_file: directory.path().join("unused-delegation"),
             query_cache_key_file: directory.path().join("unused-query-cache-key"),
             heartbeat_secret_file: directory.path().join("unused-heartbeat"),

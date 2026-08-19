@@ -14,7 +14,9 @@ hmac = "0.12"
 config-loader = { path = "../../crates/config-loader" }
 knowledge-core = { path = "../../crates/knowledge-core" }
 light-axum = { path = "../../frameworks/light-axum" }
+light-knowledge-worker = { path = "../light-knowledge-worker" }
 light-runtime = { path = "../../crates/light-runtime" }
+portal-registry = { path = "../../crates/portal-registry" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

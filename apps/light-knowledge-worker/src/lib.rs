@@ -29,18 +29,31 @@ use light_runtime::{
 use serde::Deserialize;
 use serde_json::json;
 use sha2::Sha256;
-use sqlx::postgres::{PgPoolOptions, PgRow};
+use sqlx::postgres::{PgListener, PgPoolOptions, PgRow};
 use sqlx::{PgPool, Postgres, Row, Transaction};
+use tokio::sync::{Mutex, Notify};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct WorkerConfig {
+pub struct WorkerConfig {
     version: u16,
+    #[serde(default = "default_projection_mode")]
+    projection_mode: ProjectionMode,
+    #[serde(default = "default_job_execution_mode")]
+    job_execution_mode: JobExecutionMode,
     #[serde(default)]
     worker_database_url_file: PathBuf,
     #[serde(default)]
     projector_database_url_file: PathBuf,
+    #[serde(default)]
+    control_plane_event_database_url_file: PathBuf,
+    #[serde(default)]
+    expected_knowledge_database: Option<String>,
+    #[serde(default)]
+    expected_control_plane_database: Option<String>,
     heartbeat_secret_file: PathBuf,
     #[serde(default)]
     portal_command_url: Option<String>,
@@ -145,6 +158,30 @@ struct WorkerConfig {
     shutdown_grace: Duration,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProjectionMode {
+    External,
+    Embedded,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum JobExecutionMode {
+    External,
+    Embedded,
+    Disabled,
+}
+
+fn default_projection_mode() -> ProjectionMode {
+    ProjectionMode::Embedded
+}
+
+fn default_job_execution_mode() -> JobExecutionMode {
+    JobExecutionMode::Embedded
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PlatformCaps {
@@ -214,7 +251,7 @@ impl TransportRuntime for HeadlessTransport {
 }
 
 impl WorkerConfig {
-    async fn load(command: &str) -> Result<Self> {
+    pub async fn load(command: &str) -> Result<Self> {
         let (config_dir, config_file) = if let Ok(path) =
             env::var("LIGHT_KNOWLEDGE_WORKER_CONFIG_FILE")
         {
@@ -252,21 +289,53 @@ impl WorkerConfig {
                     config_dir.join(config_file).display()
                 )
             })?;
+        config.apply_database_identity_overrides();
         config.shutdown_grace = shutdown_grace;
+        config.validate(command)
+    }
+
+    pub fn load_from_runtime(
+        runtime: &RuntimeConfig,
+        file_name: &str,
+        command: &str,
+    ) -> Result<Self> {
+        let mut config = runtime
+            .module_registry
+            .load_config::<Self>(runtime, file_name)
+            .with_context(|| {
+                format!("load effective Knowledge worker configuration {file_name}")
+            })?;
+        config.apply_database_identity_overrides();
+        config.shutdown_grace = Duration::from_millis(runtime.server.shutdown_graceful_period);
         config.validate(command)
     }
 
     fn validate(self, command: &str) -> Result<Self> {
         let projector_mode = matches!(command, "project-once" | "project-loop" | "heartbeat");
+        let embedded_mode = command == "embedded";
         let enterprise_connector_configured = self.enterprise_connector_fixture_file.is_some()
             || self.enterprise_connector_page_url.is_some();
         if self.version != 1
             || self.projector_id.trim().is_empty()
-            || !self.heartbeat_secret_file.is_file()
-            || (projector_mode && !self.projector_database_url_file.is_file())
-            || (!projector_mode
-                && (!self.worker_database_url_file.is_file()
-                    || !self.checkout_root.is_dir()
+            || self
+                .expected_knowledge_database
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty())
+            || self
+                .expected_control_plane_database
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty())
+            || !secret_available(&self.heartbeat_secret_file)
+            || ((projector_mode || embedded_mode)
+                && !secret_available(&self.projector_database_url_file))
+            || (!self
+                .control_plane_event_database_url_file
+                .as_os_str()
+                .is_empty()
+                && !secret_available(&self.control_plane_event_database_url_file))
+            || ((!projector_mode || embedded_mode)
+                && (!secret_available(&self.worker_database_url_file)
+                    || self.checkout_root.as_os_str().is_empty()
                     || self.object_store_root.as_os_str().is_empty()
                     || self.embedding_batch_size == 0
                     || self.embedding_batch_size > 128
@@ -284,7 +353,7 @@ impl WorkerConfig {
                         .as_ref()
                         .is_some_and(|path| !path.is_file())
                     || (self.migration_deterministic_pilot && !self.deterministic_pilot)))
-            || (!projector_mode
+            || ((!projector_mode || embedded_mode)
                 && !self.deterministic_pilot
                 && (self
                     .embedding_gateway_url
@@ -293,7 +362,12 @@ impl WorkerConfig {
                     || self
                         .embedding_authorization_file
                         .as_ref()
-                        .is_none_or(|path| !path.is_file())))
+                        .is_none_or(|path| !secret_available(path))))
+            || (self.portal_command_url.is_some()
+                && self
+                    .portal_authorization_file
+                    .as_ref()
+                    .is_none_or(|path| !secret_available(path)))
             || (enterprise_connector_configured
                 != self.enterprise_connector_approved_origin.is_some())
             || (self.enterprise_connector_page_url.is_some()
@@ -307,16 +381,25 @@ impl WorkerConfig {
             || self
                 .enterprise_connector_fixture_file
                 .as_ref()
-                .is_some_and(|path| !path.is_file())
+                .is_some_and(|path| !secret_available(path))
             || self
                 .enterprise_connector_authorization_file
                 .as_ref()
-                .is_some_and(|path| !path.is_file())
+                .is_some_and(|path| !secret_available(path))
         {
             bail!("invalid Phase 1a worker configuration");
         }
         self.platform_caps.validate()?;
         Ok(self)
+    }
+
+    fn apply_database_identity_overrides(&mut self) {
+        if let Ok(value) = env::var("LIGHT_KNOWLEDGE_EXPECTED_DATABASE") {
+            self.expected_knowledge_database = Some(value);
+        }
+        if let Ok(value) = env::var("LIGHT_KNOWLEDGE_EXPECTED_CONTROL_PLANE_DATABASE") {
+            self.expected_control_plane_database = Some(value);
+        }
     }
 }
 
@@ -340,6 +423,69 @@ impl PlatformCaps {
 
 fn default_true() -> bool {
     true
+}
+
+fn secret_available(path: &Path) -> bool {
+    secret_environment_names(path)
+        .iter()
+        .any(|name| env::var(name).is_ok_and(|value| !value.trim().is_empty()))
+        || path.is_file()
+}
+
+fn read_secret_text(path: &Path) -> Result<String> {
+    for name in secret_environment_names(path) {
+        if let Ok(value) = env::var(name) {
+            let value = value.trim();
+            if value.is_empty() {
+                bail!("secret environment variable {name} is empty");
+            }
+            return Ok(value.to_string());
+        }
+    }
+    let value =
+        fs::read_to_string(path).with_context(|| format!("read secret file {}", path.display()))?;
+    let value = value.trim();
+    if value.is_empty() {
+        bail!("secret file is empty: {}", path.display());
+    }
+    Ok(value.to_string())
+}
+
+fn read_secret_bytes(path: &Path) -> Result<Vec<u8>> {
+    for name in secret_environment_names(path) {
+        if let Ok(value) = env::var(name) {
+            let value = value.into_bytes();
+            if value.is_empty() {
+                bail!("secret environment variable {name} is empty");
+            }
+            return Ok(value);
+        }
+    }
+    let value = fs::read(path).with_context(|| format!("read secret file {}", path.display()))?;
+    if value.is_empty() {
+        bail!("secret file is empty: {}", path.display());
+    }
+    Ok(value)
+}
+
+fn secret_environment_names(path: &Path) -> &'static [&'static str] {
+    match path.file_name().and_then(|name| name.to_str()) {
+        Some("knowledge-worker-database-url") => &["LIGHT_KNOWLEDGE_WORKER_DATABASE_URL"],
+        Some("knowledge-projector-database-url") => &["LIGHT_KNOWLEDGE_PROJECTOR_DATABASE_URL"],
+        Some("configserver-event-read-url") => &["LIGHT_KNOWLEDGE_CONTROL_EVENT_DATABASE_URL"],
+        Some("knowledge-heartbeat-secret") => &["LIGHT_KNOWLEDGE_HEARTBEAT_SECRET"],
+        Some("knowledge-portal-authorization") => &[
+            "KNOWLEDGE_PORTAL_AUTHORIZATION",
+            "LIGHT_PORTAL_AUTHORIZATION",
+            "LIGHT_KNOWLEDGE_AUTHORIZATION",
+        ],
+        Some("knowledge-index-embedding-authorization") => &[
+            "KNOWLEDGE_INDEX_EMBEDDING_AUTHORIZATION",
+            "LIGHT_KNOWLEDGE_AUTHORIZATION",
+        ],
+        Some("knowledge-connector-authorization") => &["KNOWLEDGE_CONNECTOR_AUTHORIZATION"],
+        _ => &[],
+    }
 }
 
 fn default_checkout_seconds() -> u64 {
@@ -422,6 +568,7 @@ fn portal_command_http_client(config: &WorkerConfig) -> Result<reqwest::Client> 
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ProjectionEnvelope {
     event_id: Uuid,
+    event_ts: DateTime<Utc>,
     aggregate_type: String,
     aggregate_id: String,
     aggregate_sequence: i64,
@@ -434,19 +581,30 @@ struct ProjectionEnvelope {
 enum ProjectionApplyOutcome {
     AppliedOrDuplicate,
     ParkedGap,
+    DeadLetteredGap,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+pub async fn run_cli() -> Result<()> {
     let mut watcher = ShutdownWatcher::install().context("install shutdown handlers")?;
     tracing_subscriber::fmt::init();
-    let command = env::args().nth(1).unwrap_or_else(|| "build-loop".into());
+    let arguments = env::args().skip(1).collect::<Vec<_>>();
+    let command = if arguments.first().is_some_and(|value| value == "job")
+        && arguments.get(1).is_some_and(|value| value == "run")
+    {
+        "job-run".to_string()
+    } else {
+        arguments
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "build-loop".into())
+    };
     let config = WorkerConfig::load(&command).await?;
     if !matches!(
         command.as_str(),
         "project-once" | "project-loop" | "heartbeat"
     ) {
         fs::create_dir_all(&config.object_store_root)?;
+        fs::create_dir_all(&config.checkout_root)?;
     }
     let database_url_file = if matches!(
         command.as_str(),
@@ -456,46 +614,451 @@ async fn main() -> Result<()> {
     } else {
         &config.worker_database_url_file
     };
-    let database_url = fs::read_to_string(database_url_file)?;
+    let database_url = read_secret_text(database_url_file)?;
     let pool = PgPoolOptions::new()
         .max_connections(4)
         .connect(database_url.trim())
         .await
         .context("connect to Knowledge database")?;
+    if let Some(expected) = config.expected_knowledge_database.as_deref() {
+        verify_database_identity(&pool, expected).await?;
+    }
+    let control_pool = if matches!(command.as_str(), "project-once" | "project-loop")
+        && !config
+            .control_plane_event_database_url_file
+            .as_os_str()
+            .is_empty()
+    {
+        let control_url = read_secret_text(&config.control_plane_event_database_url_file)
+            .context("read Config Server event database URL")?;
+        let control_pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(control_url.trim())
+            .await
+            .context("connect Config Server event database")?;
+        if let Some(expected) = config.expected_control_plane_database.as_deref() {
+            verify_database_identity(&control_pool, expected).await?;
+        }
+        control_pool
+    } else {
+        pool.clone()
+    };
+    let cancellation = CancellationToken::new();
+    let operation_cancellation = cancellation.child_token();
     let mut operation = Box::pin(async {
         match command.as_str() {
-            "build-loop" => build_loop(&pool, &config).await,
+            "build-loop" => build_loop(&pool, &config, operation_cancellation, None).await,
             "project-once" => {
-                let projection = project_once(&pool, &config).await;
+                let projection = project_once(&control_pool, &pool, &config).await;
                 let heartbeat_result = heartbeat(&pool, &config).await;
                 projection?;
                 heartbeat_result
             }
-            "project-loop" => project_loop(&pool, &config).await,
+            "project-loop" => tokio::try_join!(
+                project_loop(
+                    &control_pool,
+                    &pool,
+                    &config,
+                    operation_cancellation.child_token(),
+                    None
+                ),
+                heartbeat_loop(&pool, &config, operation_cancellation)
+            )
+            .map(|_| ()),
             "heartbeat" => heartbeat(&pool, &config).await,
+            "job-run" => {
+                let job_id = arguments
+                    .windows(2)
+                    .find(|pair| pair[0] == "--job-id")
+                    .and_then(|pair| Uuid::parse_str(&pair[1]).ok())
+                    .context("job run requires --job-id <uuid>")?;
+                run_one_job(&pool, &config, job_id).await
+            }
             other => bail!("unknown worker command {other}"),
         }
     });
+    let deadline = tokio::time::Instant::now() + config.shutdown_grace;
     let result = tokio::select! {
         result = &mut operation => result,
         reason = watcher.recv() => {
             tracing::info!(?reason, "Knowledge worker shutdown requested");
-            Ok(())
+            cancellation.cancel();
+            tokio::time::timeout_at(deadline, &mut operation)
+                .await
+                .context("Knowledge worker operation drain deadline exceeded")?
         }
     };
-    drop(operation);
-    tokio::time::timeout(config.shutdown_grace, pool.close())
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    tokio::time::timeout(remaining, control_pool.close())
+        .await
+        .context("Knowledge worker control database drain deadline exceeded")?;
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    tokio::time::timeout(remaining, pool.close())
         .await
         .context("Knowledge worker database drain deadline exceeded")?;
     result
 }
 
-async fn build_loop(pool: &PgPool, config: &WorkerConfig) -> Result<()> {
+/// Supervises the projection and job engines when they are hosted by the
+/// long-running `light-knowledge` process. The compatibility worker binary
+/// calls the same loop functions through `run_cli`.
+pub struct EmbeddedKnowledgeRuntime {
+    cancellation: CancellationToken,
+    handles: Mutex<Vec<JoinHandle<Result<()>>>>,
+    pools: Vec<PgPool>,
+    projection_wake: Arc<Notify>,
+    job_wake: Arc<Notify>,
+    projection_embedded: bool,
+    jobs_embedded: bool,
+}
+
+async fn wait_for_wake(wake: &Option<Arc<Notify>>) {
+    match wake {
+        Some(wake) => wake.notified().await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+impl EmbeddedKnowledgeRuntime {
+    pub async fn start(runtime: &RuntimeConfig, config_file: &str) -> Result<Self> {
+        let config = WorkerConfig::load_from_runtime(runtime, config_file, "embedded")?;
+        fs::create_dir_all(&config.object_store_root)?;
+        fs::create_dir_all(&config.checkout_root)?;
+
+        let projector_url = read_secret_text(&config.projector_database_url_file)
+            .context("read Knowledge projector database URL")?;
+        let worker_url = read_secret_text(&config.worker_database_url_file)
+            .context("read Knowledge worker database URL")?;
+        let control_url = if config
+            .control_plane_event_database_url_file
+            .as_os_str()
+            .is_empty()
+        {
+            projector_url.clone()
+        } else {
+            read_secret_text(&config.control_plane_event_database_url_file)
+                .context("read Config Server event database URL")?
+        };
+        let projector_pool = PgPoolOptions::new()
+            .max_connections(4)
+            .connect(projector_url.trim())
+            .await
+            .context("connect embedded Knowledge projector database")?;
+        let worker_pool = PgPoolOptions::new()
+            .max_connections(4)
+            .connect(worker_url.trim())
+            .await
+            .context("connect embedded Knowledge job database")?;
+        let control_pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(control_url.trim())
+            .await
+            .context("connect Config Server event database")?;
+        if let Some(expected) = config.expected_knowledge_database.as_deref() {
+            verify_database_identity(&projector_pool, expected).await?;
+            verify_database_identity(&worker_pool, expected).await?;
+        }
+        if let Some(expected) = config.expected_control_plane_database.as_deref() {
+            verify_database_identity(&control_pool, expected).await?;
+        }
+        verify_relation_access(
+            &projector_pool,
+            "knowledge_projection_source_cursor_t",
+            &["SELECT", "INSERT", "UPDATE"],
+        )
+        .await?;
+        verify_relation_access(&worker_pool, "knowledge_job_t", &["SELECT", "UPDATE"]).await?;
+        verify_relation_access(&control_pool, "event_store_t", &["SELECT"]).await?;
+
+        let cancellation = CancellationToken::new();
+        let projection_wake = Arc::new(Notify::new());
+        let job_wake = Arc::new(Notify::new());
+        let mut handles = Vec::new();
+        if config.projection_mode == ProjectionMode::Embedded {
+            let pool = projector_pool.clone();
+            let control_pool = control_pool.clone();
+            let task_config = config.clone();
+            let task_cancel = cancellation.child_token();
+            let task_wake = Arc::clone(&projection_wake);
+            handles.push(tokio::spawn(async move {
+                loop {
+                    let result = project_loop(
+                        &control_pool,
+                        &pool,
+                        &task_config,
+                        task_cancel.child_token(),
+                        Some(Arc::clone(&task_wake)),
+                    )
+                    .await;
+                    if task_cancel.is_cancelled() {
+                        return Ok(());
+                    }
+                    if let Err(error) = result {
+                        tracing::error!(%error, "Knowledge projection engine stopped; restarting");
+                    }
+                    tokio::select! {
+                        () = task_cancel.cancelled() => return Ok(()),
+                        () = tokio::time::sleep(Duration::from_secs(2)) => {}
+                    }
+                }
+            }));
+            let pool = projector_pool.clone();
+            let task_config = config.clone();
+            let task_cancel = cancellation.child_token();
+            handles.push(tokio::spawn(async move {
+                heartbeat_loop(&pool, &task_config, task_cancel).await
+            }));
+        }
+        if config.job_execution_mode == JobExecutionMode::Embedded {
+            let listener_pool = worker_pool.clone();
+            let listener_cancel = cancellation.child_token();
+            let listener_wake = Arc::clone(&job_wake);
+            handles.push(tokio::spawn(async move {
+                loop {
+                    let mut listener = match PgListener::connect_with(&listener_pool).await {
+                        Ok(listener) => listener,
+                        Err(error) => {
+                            tracing::warn!(%error, "Knowledge job listener connect failed; retrying");
+                            tokio::select! {
+                                () = listener_cancel.cancelled() => return Ok(()),
+                                () = tokio::time::sleep(Duration::from_secs(2)) => continue,
+                            }
+                        }
+                    };
+                    if let Err(error) = listener.listen("knowledge_job_channel").await {
+                        tracing::warn!(%error, "Knowledge job listener subscribe failed; retrying");
+                        tokio::select! {
+                            () = listener_cancel.cancelled() => return Ok(()),
+                            () = tokio::time::sleep(Duration::from_secs(2)) => continue,
+                        }
+                    }
+                    loop {
+                        tokio::select! {
+                            () = listener_cancel.cancelled() => return Ok(()),
+                            notification = listener.recv() => {
+                                match notification {
+                                    Ok(_) => listener_wake.notify_one(),
+                                    Err(error) => {
+                                        tracing::warn!(%error,
+                                            "Knowledge job listener disconnected; reconnecting");
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }));
+            let pool = worker_pool.clone();
+            let task_config = config.clone();
+            let task_cancel = cancellation.child_token();
+            let task_wake = Arc::clone(&job_wake);
+            handles.push(tokio::spawn(async move {
+                loop {
+                    let result = build_loop(
+                        &pool,
+                        &task_config,
+                        task_cancel.child_token(),
+                        Some(Arc::clone(&task_wake)),
+                    )
+                    .await;
+                    if task_cancel.is_cancelled() {
+                        return Ok(());
+                    }
+                    if let Err(error) = result {
+                        tracing::error!(%error, "Knowledge job engine stopped; restarting");
+                    }
+                    tokio::select! {
+                        () = task_cancel.cancelled() => return Ok(()),
+                        () = tokio::time::sleep(Duration::from_secs(2)) => {}
+                    }
+                }
+            }));
+        }
+        Ok(Self {
+            cancellation,
+            handles: Mutex::new(handles),
+            pools: vec![projector_pool, worker_pool, control_pool],
+            projection_wake,
+            job_wake,
+            projection_embedded: config.projection_mode == ProjectionMode::Embedded,
+            jobs_embedded: config.job_execution_mode == JobExecutionMode::Embedded,
+        })
+    }
+
+    pub fn wake_projection(&self) {
+        self.projection_wake.notify_one();
+    }
+
+    pub fn wake_jobs(&self) {
+        self.job_wake.notify_one();
+    }
+
+    pub async fn status(&self) -> serde_json::Value {
+        let handles = self.handles.lock().await;
+        json!({
+            "projectionMode": if self.projection_embedded { "embedded" } else { "external-or-disabled" },
+            "jobExecutionMode": if self.jobs_embedded { "embedded" } else { "external-or-disabled" },
+            "componentTasks": handles.len(),
+            "runningComponentTasks": handles.iter().filter(|handle| !handle.is_finished()).count(),
+            "stopping": self.cancellation.is_cancelled()
+        })
+    }
+
+    pub async fn retry_job(&self, job_id: Uuid) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE knowledge_job_t
+                SET state='QUEUED',next_attempt_ts=now(),claim_token=NULL,
+                    lease_expires_ts=NULL,update_ts=now()
+              WHERE job_id=$1 AND state='FAILED'
+                AND attempt_count < 5
+                AND COALESCE(result->>'code','') <>
+                    'KNOWLEDGE_JOB_LEASE_RETRY_EXHAUSTED'",
+        )
+        .bind(job_id)
+        .execute(&self.pools[1])
+        .await?;
+        if result.rows_affected() == 1 {
+            self.wake_jobs();
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub async fn retry_projection_event(&self, event_id: Uuid) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE knowledge_projection_inbox_t
+                SET state='GAP',attempt_count=0,next_attempt_ts=now(),
+                    applied_ts=NULL,
+                    last_error=jsonb_build_object(
+                        'code','KNOWLEDGE_PROJECTION_OPERATOR_RETRY')
+              WHERE event_id=$1 AND state='DEAD_LETTER'",
+        )
+        .bind(event_id)
+        .execute(&self.pools[0])
+        .await?;
+        if result.rows_affected() == 1 {
+            self.wake_projection();
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub async fn shutdown(&self, budget: Duration) -> Result<()> {
+        self.cancellation.cancel();
+        let mut handles = self.handles.lock().await;
+        let mut owned = std::mem::take(&mut *handles);
+        drop(handles);
+        let deadline = tokio::time::Instant::now() + budget;
+        while let Some(mut handle) = owned.pop() {
+            match tokio::time::timeout_at(deadline, &mut handle).await {
+                Ok(result) => result.context("embedded Knowledge component panicked")??,
+                Err(_) => {
+                    handle.abort();
+                    for remaining in &owned {
+                        remaining.abort();
+                    }
+                    bail!("embedded Knowledge component drain deadline exceeded");
+                }
+            }
+        }
+        for pool in &self.pools {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            tokio::time::timeout(remaining, pool.close())
+                .await
+                .context("embedded Knowledge database drain deadline exceeded")?;
+        }
+        Ok(())
+    }
+}
+
+async fn verify_database_identity(pool: &PgPool, expected: &str) -> Result<()> {
+    let actual = sqlx::query_scalar::<_, String>("SELECT current_database()")
+        .fetch_one(pool)
+        .await?;
+    if actual != expected {
+        bail!("database identity mismatch: expected {expected}, got {actual}");
+    }
+    Ok(())
+}
+
+async fn verify_relation_access(pool: &PgPool, relation: &str, privileges: &[&str]) -> Result<()> {
+    let relation_available: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+        .bind(relation)
+        .fetch_one(pool)
+        .await?;
+    if !relation_available {
+        bail!("required Knowledge schema or privilege contract is unavailable: {relation}");
+    }
+    for privilege in privileges {
+        let available: bool = sqlx::query_scalar("SELECT has_table_privilege(current_user,$1,$2)")
+            .bind(relation)
+            .bind(privilege)
+            .fetch_one(pool)
+            .await?;
+        if !available {
+            bail!(
+                "required Knowledge privilege contract is unavailable: {privilege} on {relation}"
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn build_loop(
+    pool: &PgPool,
+    config: &WorkerConfig,
+    cancellation: CancellationToken,
+    wake: Option<Arc<Notify>>,
+) -> Result<()> {
     tokio::try_join!(
-        job_loop(pool, config, WorkerLane::Priority),
-        job_loop(pool, config, WorkerLane::Bulk),
+        job_loop(
+            pool,
+            config,
+            WorkerLane::Priority,
+            cancellation.child_token(),
+            wake.clone(),
+            None,
+            false
+        ),
+        job_loop(
+            pool,
+            config,
+            WorkerLane::Bulk,
+            cancellation.child_token(),
+            wake,
+            None,
+            false
+        ),
     )?;
     Ok(())
+}
+
+async fn run_one_job(pool: &PgPool, config: &WorkerConfig, job_id: Uuid) -> Result<()> {
+    let job_type = sqlx::query_scalar::<_, String>(
+        "SELECT job_type FROM knowledge_job_t WHERE job_id=$1 AND state='QUEUED'",
+    )
+    .bind(job_id)
+    .fetch_optional(pool)
+    .await?
+    .context("requested Knowledge job is not queued")?;
+    let lane = if PRIORITY_JOB_TYPES.contains(&job_type.as_str()) {
+        WorkerLane::Priority
+    } else {
+        WorkerLane::Bulk
+    };
+    job_loop(
+        pool,
+        config,
+        lane,
+        CancellationToken::new(),
+        None,
+        Some(job_id),
+        true,
+    )
+    .await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1025,8 +1588,19 @@ fn full_base_source_snapshot(sources: Vec<serde_json::Value>) -> serde_json::Val
     })
 }
 
-async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Result<()> {
+async fn job_loop(
+    pool: &PgPool,
+    config: &WorkerConfig,
+    lane: WorkerLane,
+    cancellation: CancellationToken,
+    wake: Option<Arc<Notify>>,
+    only_job_id: Option<Uuid>,
+    stop_after_one: bool,
+) -> Result<()> {
     loop {
+        if cancellation.is_cancelled() {
+            return Ok(());
+        }
         reclaim_expired_jobs(pool, config).await?;
         let mut tx = pool.begin().await?;
         let lane_types = match lane {
@@ -1041,11 +1615,15 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
                 .collect::<Vec<_>>()
                 .join(",")
         );
+        let job_predicate = only_job_id
+            .map(|job_id| format!("AND job_id='{job_id}'::uuid"))
+            .unwrap_or_default();
         let job = sqlx::query(&format!(
             "SELECT job_id,knowledge_base_id,source_id,job_type,payload
                FROM knowledge_job_t
               WHERE state='QUEUED' AND {lane_predicate}
                 AND (next_attempt_ts IS NULL OR next_attempt_ts<=now())
+                {job_predicate}
               ORDER BY CASE
                 WHEN job_type IN ('SYNC','DELTA_SYNC','CONNECTOR_SYNC','ACL_RECONCILE',
                                   'MIGRATION_PREFLIGHT') THEN 0
@@ -1060,14 +1638,25 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
         .await?;
         let Some(job) = job else {
             tx.rollback().await?;
+            if let Some(job_id) = only_job_id {
+                bail!("requested Knowledge job {job_id} is no longer eligible");
+            }
             if lane == WorkerLane::Priority {
                 schedule_due_acl_reconciliation(pool, config).await?;
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::select! {
+                    () = cancellation.cancelled() => return Ok(()),
+                    () = tokio::time::sleep(Duration::from_secs(5)) => {}
+                    () = wait_for_wake(&wake) => {}
+                }
             } else {
                 publish_promotion_acknowledgements(pool, config).await?;
                 schedule_production_maintenance(pool, config).await?;
                 schedule_graph_build(pool, config).await?;
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                tokio::select! {
+                    () = cancellation.cancelled() => return Ok(()),
+                    () = tokio::time::sleep(Duration::from_secs(5)) => {}
+                    () = wait_for_wake(&wake) => {}
+                }
             }
             continue;
         };
@@ -1187,6 +1776,9 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
                 if updated.rows_affected() != 1 {
                     tracing::warn!(%job_id, %claim_token,
                         "Knowledge job completed after its claim was lost; terminal update skipped");
+                    if stop_after_one {
+                        bail!("requested Knowledge job lost its claim before completion");
+                    }
                     continue;
                 }
                 sqlx::query(
@@ -1210,6 +1802,9 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
                 if updated.rows_affected() != 1 {
                     tracing::warn!(%job_id, %claim_token,
                         "Knowledge job failed after its claim was lost; terminal update skipped");
+                    if stop_after_one {
+                        bail!("requested Knowledge job lost its claim before failure recording");
+                    }
                     continue;
                 }
                 let sync_state = budget_terminal_state(error_code);
@@ -1224,7 +1819,13 @@ async fn job_loop(pool: &PgPool, config: &WorkerConfig, lane: WorkerLane) -> Res
                 ) {
                     record_migration_job_failure(pool, &payload, &error).await?;
                 }
+                if stop_after_one {
+                    return Err(error);
+                }
             }
+        }
+        if stop_after_one {
+            return Ok(());
         }
     }
 }
@@ -2105,7 +2706,7 @@ async fn embed_migration_texts(
         .embedding_gateway_url
         .as_deref()
         .context("migration embedding requires embeddingGatewayUrl")?;
-    let token = fs::read_to_string(
+    let token = read_secret_text(
         config
             .embedding_authorization_file
             .as_ref()
@@ -4337,7 +4938,7 @@ async fn publish_promotion_acknowledgements(pool: &PgPool, config: &WorkerConfig
         "aggregateVersion": row.get::<i64, _>("knowledge_base_version"),
         "scope": if owner_host.is_some() { "TENANT" } else { "GLOBAL" }
     });
-    let token = fs::read_to_string(token_file)?;
+    let token = read_secret_text(token_file)?;
     let response: Result<reqwest::Response> = match portal_command_http_client(config) {
         Ok(client) => client
             .post(endpoint)
@@ -5052,7 +5653,7 @@ async fn test_connector_connection(config: &WorkerConfig) -> Result<()> {
         .enterprise_connector_authorization_file
         .as_ref()
         .context("KNOWLEDGE_ENTERPRISE_CONNECTOR_AUTHORIZATION_REQUIRED")?;
-    let token = fs::read_to_string(token_file)?;
+    let token = read_secret_text(token_file)?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(5))
@@ -5165,7 +5766,7 @@ async fn load_connector_page(
     .fetch_optional(pool)
     .await?
     .flatten();
-    let token = fs::read_to_string(token_file)?;
+    let token = read_secret_text(token_file)?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(10))
@@ -6281,7 +6882,7 @@ async fn apply_configured_embeddings(
         .embedding_gateway_url
         .as_deref()
         .context("protected embedding mode requires embeddingGatewayUrl")?;
-    let token = fs::read_to_string(
+    let token = read_secret_text(
         config
             .embedding_authorization_file
             .as_ref()
@@ -7328,86 +7929,554 @@ fn vector_literal(vector: &[f32]) -> String {
     )
 }
 
-async fn project_once(pool: &PgPool, config: &WorkerConfig) -> Result<()> {
+const PROJECTION_CONSUMER_GROUP: &str = "light-knowledge-runtime-v1";
+const PROJECTION_BATCH_SIZE: i64 = 100;
+const PROJECTION_GAP_MAX_ATTEMPTS: i32 = 8;
+const PROJECTION_GAP_BASE_BACKOFF_SECONDS: u64 = 5;
+const PROJECTION_GAP_MAX_BACKOFF_SECONDS: u64 = 300;
+
+fn projection_gap_backoff_seconds(attempt_count: i32) -> u64 {
+    let exponent = u32::try_from(attempt_count.saturating_sub(1).clamp(0, 6)).unwrap_or_default();
+    PROJECTION_GAP_BASE_BACKOFF_SECONDS
+        .saturating_mul(1_u64 << exponent)
+        .min(PROJECTION_GAP_MAX_BACKOFF_SECONDS)
+}
+
+fn projection_gap_exhausted(attempt_count: i32) -> bool {
+    attempt_count >= PROJECTION_GAP_MAX_ATTEMPTS
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectionGapRetryOutcome {
+    Rescheduled,
+    DeadLettered,
+    NotPending,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectionErrorDisposition {
+    Retry,
+    ParkDependency,
+    DeadLetter,
+}
+
+fn projection_sqlstate_disposition(code: Option<&str>) -> ProjectionErrorDisposition {
+    match code {
+        Some("23503") => ProjectionErrorDisposition::ParkDependency,
+        Some(code) if code.starts_with("22") || code.starts_with("23") => {
+            ProjectionErrorDisposition::DeadLetter
+        }
+        _ => ProjectionErrorDisposition::Retry,
+    }
+}
+
+fn projection_error_disposition(error: &anyhow::Error) -> ProjectionErrorDisposition {
+    for cause in error.chain() {
+        if let Some(database_error) = cause
+            .downcast_ref::<sqlx::Error>()
+            .and_then(|error| error.as_database_error())
+        {
+            return projection_sqlstate_disposition(database_error.code().as_deref());
+        }
+        if cause.downcast_ref::<sqlx::Error>().is_some() {
+            return ProjectionErrorDisposition::Retry;
+        }
+    }
+    ProjectionErrorDisposition::DeadLetter
+}
+
+async fn project_once(
+    control_pool: &PgPool,
+    knowledge_pool: &PgPool,
+    config: &WorkerConfig,
+) -> Result<()> {
+    project_until_caught_up(control_pool, knowledge_pool, config, None).await
+}
+
+async fn project_until_caught_up(
+    control_pool: &PgPool,
+    knowledge_pool: &PgPool,
+    config: &WorkerConfig,
+    cancellation: Option<&CancellationToken>,
+) -> Result<()> {
+    retry_projection_gaps(knowledge_pool, config).await?;
+    loop {
+        if cancellation.is_some_and(|token| token.is_cancelled()) {
+            return Ok(());
+        }
+        let processed = project_batch(control_pool, knowledge_pool, config).await?;
+        if processed < PROJECTION_BATCH_SIZE as usize {
+            return Ok(());
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
+async fn project_batch(
+    control_pool: &PgPool,
+    knowledge_pool: &PgPool,
+    config: &WorkerConfig,
+) -> Result<usize> {
+    let cursor = sqlx::query(
+        "SELECT last_event_ts,last_event_id
+           FROM knowledge_projection_source_cursor_t
+          WHERE consumer_group=$1",
+    )
+    .bind(PROJECTION_CONSUMER_GROUP)
+    .fetch_optional(knowledge_pool)
+    .await?;
+    let (last_event_ts, last_event_id) = cursor
+        .map_or((DateTime::<Utc>::UNIX_EPOCH, Uuid::nil()), |row| {
+            (row.get("last_event_ts"), row.get("last_event_id"))
+        });
     let rows = sqlx::query(
-        "SELECT e.id,e.aggregate_type,e.aggregate_id,e.aggregate_version,
-                e.event_type,e.payload
-           FROM event_store_t e
-           LEFT JOIN knowledge_projection_inbox_t i ON i.event_id=e.id
-          WHERE (e.event_type LIKE 'Knowledge%Event'
-              OR e.event_type LIKE 'AgentKnowledgeBase%Event')
-            AND (i.event_id IS NULL OR (i.state='GAP'
-                 AND (i.next_attempt_ts IS NULL OR i.next_attempt_ts<=now())))
-          ORDER BY e.event_ts,e.id LIMIT 100",
+        "SELECT id,aggregate_type,aggregate_id,aggregate_version,event_type,
+                event_ts,payload
+           FROM event_store_t
+          WHERE (event_ts,id)>($1,$2)
+            AND (event_type LIKE 'Knowledge%'
+                 OR event_type LIKE 'AgentKnowledgeBase%')
+          ORDER BY event_ts,id LIMIT $3",
+    )
+    .bind(last_event_ts)
+    .bind(last_event_id)
+    .bind(PROJECTION_BATCH_SIZE)
+    .fetch_all(control_pool)
+    .await?;
+    let processed = rows.len();
+    for row in rows {
+        let event_id: Uuid = row.get("id");
+        let event_ts: DateTime<Utc> = row.get("event_ts");
+        let event_type: String = row.get("event_type");
+        let mut tx = knowledge_pool.begin().await?;
+        let cloud_event: serde_json::Value = row.get("payload");
+        let event = ProjectionEnvelope {
+            event_id,
+            event_ts,
+            aggregate_type: row.get("aggregate_type"),
+            aggregate_id: row.get("aggregate_id"),
+            aggregate_sequence: row.get("aggregate_version"),
+            event_type,
+            payload_digest: sha256_hex(&serde_json::to_vec(&cloud_event)?),
+            payload: cloud_event
+                .get("data")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+        };
+        let result = if cloud_event.get("data").is_some() {
+            apply_projection_event_in_transaction(&mut tx, config, &event).await
+        } else {
+            Err(anyhow::anyhow!(
+                "Portal Knowledge event requires CloudEvent data"
+            ))
+        };
+        match result {
+            Ok(ProjectionApplyOutcome::ParkedGap) => tracing::warn!(
+                event_id=%event.event_id,
+                "Knowledge projection sequence gap was parked without blocking other aggregates"
+            ),
+            Ok(ProjectionApplyOutcome::DeadLetteredGap) => tracing::warn!(
+                event_id=%event.event_id,
+                "Knowledge projection sequence gap exhausted its retry budget and was dead-lettered"
+            ),
+            Ok(ProjectionApplyOutcome::AppliedOrDuplicate) => {}
+            Err(error) => {
+                tx.rollback().await?;
+                match projection_error_disposition(&error) {
+                    ProjectionErrorDisposition::Retry => {
+                        return Err(error.context(format!(
+                            "transient Knowledge projection failure for event {event_id}"
+                        )));
+                    }
+                    ProjectionErrorDisposition::ParkDependency => {
+                        record_projection_dependency_gap(knowledge_pool, &event).await?;
+                        advance_projection_cursor(knowledge_pool, event.event_ts, event_id).await?;
+                        tracing::warn!(event_id=%event.event_id,
+                            "Knowledge projection dependency gap was parked without blocking the source cursor");
+                    }
+                    ProjectionErrorDisposition::DeadLetter => {
+                        record_projection_dead_letter(knowledge_pool, &event, &error).await?;
+                        advance_projection_cursor(knowledge_pool, event.event_ts, event_id).await?;
+                        tracing::warn!(event_id=%event.event_id, %error,
+                        "invalid Knowledge projection event was dead-lettered without blocking the source cursor");
+                    }
+                }
+                continue;
+            }
+        }
+        advance_projection_cursor_tx(&mut tx, event_ts, event_id).await?;
+        tx.commit().await?;
+    }
+    Ok(processed)
+}
+
+async fn advance_projection_cursor(
+    pool: &PgPool,
+    event_ts: DateTime<Utc>,
+    event_id: Uuid,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    advance_projection_cursor_tx(&mut tx, event_ts, event_id).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn advance_projection_cursor_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    event_ts: DateTime<Utc>,
+    event_id: Uuid,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO knowledge_projection_source_cursor_t(
+             consumer_group,last_event_ts,last_event_id)
+         VALUES($1,$2,$3)
+         ON CONFLICT(consumer_group) DO UPDATE SET
+           last_event_ts=EXCLUDED.last_event_ts,last_event_id=EXCLUDED.last_event_id,
+           update_ts=now()
+         WHERE (knowledge_projection_source_cursor_t.last_event_ts,
+                knowledge_projection_source_cursor_t.last_event_id)
+               <(EXCLUDED.last_event_ts,EXCLUDED.last_event_id)",
+    )
+    .bind(PROJECTION_CONSUMER_GROUP)
+    .bind(event_ts)
+    .bind(event_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn retry_projection_gaps(pool: &PgPool, config: &WorkerConfig) -> Result<()> {
+    let rows = sqlx::query(
+        "SELECT event_id,aggregate_type,aggregate_id,aggregate_sequence,event_type,
+                event_ts,payload_digest,payload
+           FROM knowledge_projection_inbox_t
+          WHERE state='GAP' AND (next_attempt_ts IS NULL OR next_attempt_ts<=now())
+          ORDER BY next_attempt_ts,event_ts,event_id LIMIT 100",
     )
     .fetch_all(pool)
     .await?;
     for row in rows {
-        let cloud_event: serde_json::Value = row.get("payload");
-        let payload = cloud_event
-            .get("data")
-            .cloned()
-            .context("Portal Knowledge event requires CloudEvent data")?;
         let event = ProjectionEnvelope {
-            event_id: row.get("id"),
+            event_id: row.get("event_id"),
+            event_ts: row.get("event_ts"),
             aggregate_type: row.get("aggregate_type"),
             aggregate_id: row.get("aggregate_id"),
-            aggregate_sequence: row.get("aggregate_version"),
+            aggregate_sequence: row.get("aggregate_sequence"),
             event_type: row.get("event_type"),
-            payload_digest: sha256_hex(&serde_json::to_vec(&cloud_event)?),
-            payload,
+            payload_digest: row.get::<String, _>("payload_digest").trim().to_string(),
+            payload: row.get("payload"),
         };
-        match apply_projection_event(pool, config, event).await {
+        match apply_projection_event(pool, config, &event).await {
             Ok(ProjectionApplyOutcome::ParkedGap) => tracing::warn!(
-                "Knowledge projection gap was parked without blocking other aggregates"
+                event_id=%event.event_id,
+                "Knowledge projection sequence gap remains unresolved"
+            ),
+            Ok(ProjectionApplyOutcome::DeadLetteredGap) => tracing::warn!(
+                event_id=%event.event_id,
+                "Knowledge projection sequence gap exhausted its retry budget and was dead-lettered"
             ),
             Ok(ProjectionApplyOutcome::AppliedOrDuplicate) => {}
-            Err(error) => tracing::warn!(%error,
-                "Knowledge projection event failure was isolated from the remaining batch"),
+            Err(error) => match projection_error_disposition(&error) {
+                ProjectionErrorDisposition::Retry => {
+                    let outcome = reschedule_projection_gap(
+                        pool,
+                        event.event_id,
+                        "KNOWLEDGE_PROJECTION_RETRYABLE_FAILURE",
+                    )
+                    .await?;
+                    log_projection_gap_reschedule(
+                        outcome,
+                        event.event_id,
+                        &error,
+                        "Knowledge projection gap retry hit a transient failure",
+                    );
+                }
+                ProjectionErrorDisposition::ParkDependency => {
+                    let outcome = reschedule_projection_gap(
+                        pool,
+                        event.event_id,
+                        "KNOWLEDGE_PROJECTION_DEPENDENCY_GAP",
+                    )
+                    .await?;
+                    log_projection_gap_reschedule(
+                        outcome,
+                        event.event_id,
+                        &error,
+                        "Knowledge projection dependency remains unavailable",
+                    );
+                }
+                ProjectionErrorDisposition::DeadLetter => {
+                    record_projection_dead_letter(pool, &event, &error).await?;
+                    tracing::warn!(event_id=%event.event_id, %error,
+                        "Knowledge projection gap retry was deterministically rejected");
+                }
+            },
         }
     }
     Ok(())
 }
 
-async fn project_loop(pool: &PgPool, config: &WorkerConfig) -> Result<()> {
-    let heartbeat_pool = pool.clone();
-    let heartbeat_config = config.clone();
-    tokio::spawn(async move {
-        loop {
-            if let Err(error) = heartbeat(&heartbeat_pool, &heartbeat_config).await {
-                tracing::error!(%error, "Knowledge projector heartbeat failed closed");
-            }
-            tokio::time::sleep(Duration::from_secs(10)).await;
+async fn record_projection_dependency_gap(pool: &PgPool, event: &ProjectionEnvelope) -> Result<()> {
+    let result = sqlx::query(
+        "INSERT INTO knowledge_projection_inbox_t(
+             event_id,aggregate_type,aggregate_id,aggregate_sequence,event_type,
+             event_ts,payload,payload_digest,state,last_error,attempt_count,
+             next_attempt_ts)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,'GAP',
+                jsonb_build_object('code','KNOWLEDGE_PROJECTION_DEPENDENCY_GAP'),
+                1,now()+make_interval(secs => $9::double precision))
+         ON CONFLICT(event_id) DO NOTHING",
+    )
+    .bind(event.event_id)
+    .bind(&event.aggregate_type)
+    .bind(&event.aggregate_id)
+    .bind(event.aggregate_sequence)
+    .bind(&event.event_type)
+    .bind(event.event_ts)
+    .bind(&event.payload)
+    .bind(&event.payload_digest)
+    .bind(projection_gap_backoff_seconds(1) as i64)
+    .execute(pool)
+    .await?;
+    if result.rows_affected() == 0 {
+        let error = anyhow::anyhow!("Knowledge projection dependency remains unavailable");
+        let outcome =
+            reschedule_projection_gap(pool, event.event_id, "KNOWLEDGE_PROJECTION_DEPENDENCY_GAP")
+                .await?;
+        log_projection_gap_reschedule(
+            outcome,
+            event.event_id,
+            &error,
+            "Knowledge projection dependency remains unavailable",
+        );
+    }
+    Ok(())
+}
+
+async fn reschedule_projection_gap(
+    pool: &PgPool,
+    event_id: Uuid,
+    code: &str,
+) -> Result<ProjectionGapRetryOutcome> {
+    let mut tx = pool.begin().await?;
+    let Some(attempt_count) = sqlx::query_scalar::<_, i32>(
+        "SELECT attempt_count FROM knowledge_projection_inbox_t
+          WHERE event_id=$1 AND state='GAP' FOR UPDATE",
+    )
+    .bind(event_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        tx.commit().await?;
+        return Ok(ProjectionGapRetryOutcome::NotPending);
+    };
+    let attempt_count = attempt_count.saturating_add(1);
+    let exhausted = projection_gap_exhausted(attempt_count);
+    let state = if exhausted { "DEAD_LETTER" } else { "GAP" };
+    sqlx::query(
+        "UPDATE knowledge_projection_inbox_t
+            SET state=$2,attempt_count=$3,
+                next_attempt_ts=CASE WHEN $2='GAP' THEN
+                    now()+make_interval(secs => $4::double precision) END,
+                last_error=jsonb_build_object(
+                    'code',CASE WHEN $2='DEAD_LETTER'
+                        THEN 'KNOWLEDGE_PROJECTION_GAP_RETRY_EXHAUSTED'
+                        ELSE $5 END)
+          WHERE event_id=$1 AND state='GAP'",
+    )
+    .bind(event_id)
+    .bind(state)
+    .bind(attempt_count)
+    .bind(projection_gap_backoff_seconds(attempt_count) as i64)
+    .bind(code)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(if exhausted {
+        ProjectionGapRetryOutcome::DeadLettered
+    } else {
+        ProjectionGapRetryOutcome::Rescheduled
+    })
+}
+
+fn log_projection_gap_reschedule(
+    outcome: ProjectionGapRetryOutcome,
+    event_id: Uuid,
+    error: &anyhow::Error,
+    retry_message: &'static str,
+) {
+    match outcome {
+        ProjectionGapRetryOutcome::Rescheduled => {
+            tracing::warn!(%event_id, %error, "{retry_message}")
         }
-    });
+        ProjectionGapRetryOutcome::DeadLettered => tracing::warn!(
+            %event_id,
+            %error,
+            "Knowledge projection gap exhausted its retry budget and was dead-lettered"
+        ),
+        ProjectionGapRetryOutcome::NotPending => tracing::debug!(
+            %event_id,
+            "Knowledge projection gap was resolved concurrently before it could be rescheduled"
+        ),
+    }
+}
+
+async fn record_projection_dead_letter(
+    pool: &PgPool,
+    event: &ProjectionEnvelope,
+    error: &anyhow::Error,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO knowledge_projection_inbox_t(
+             event_id,aggregate_type,aggregate_id,aggregate_sequence,event_type,
+             event_ts,payload,payload_digest,state,last_error,attempt_count)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,'DEAD_LETTER',
+                jsonb_build_object('code','KNOWLEDGE_PROJECTION_EVENT_REJECTED'),1)
+         ON CONFLICT(event_id) DO UPDATE SET
+           state='DEAD_LETTER',attempt_count=knowledge_projection_inbox_t.attempt_count+1,
+           next_attempt_ts=NULL,last_error=EXCLUDED.last_error",
+    )
+    .bind(event.event_id)
+    .bind(&event.aggregate_type)
+    .bind(&event.aggregate_id)
+    .bind(event.aggregate_sequence)
+    .bind(&event.event_type)
+    .bind(event.event_ts)
+    .bind(&event.payload)
+    .bind(&event.payload_digest)
+    .execute(pool)
+    .await?;
+    tracing::debug!(event_id=%event.event_id, error=%error, "recorded redacted projection dead letter");
+    Ok(())
+}
+
+async fn project_loop(
+    control_pool: &PgPool,
+    knowledge_pool: &PgPool,
+    config: &WorkerConfig,
+    cancellation: CancellationToken,
+    wake: Option<Arc<Notify>>,
+) -> Result<()> {
     loop {
-        if let Err(error) = project_once(pool, config).await {
-            tracing::error!(%error, "Knowledge projection iteration failed closed");
+        if cancellation.is_cancelled() {
+            return Ok(());
         }
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        let mut leadership = knowledge_pool.begin().await?;
+        let leader: bool = sqlx::query_scalar(
+            "SELECT pg_try_advisory_xact_lock(hashtext('light-knowledge-projection-v1'))",
+        )
+        .fetch_one(&mut *leadership)
+        .await?;
+        if !leader {
+            tokio::select! {
+                () = cancellation.cancelled() => return Ok(()),
+                () = tokio::time::sleep(Duration::from_secs(2)) => {}
+            }
+            continue;
+        }
+
+        let mut listener = match PgListener::connect_with(control_pool).await {
+            Ok(listener) => listener,
+            Err(error) => {
+                tracing::warn!(%error, "Knowledge projection listener connect failed; retrying");
+                tokio::select! {
+                    () = cancellation.cancelled() => return Ok(()),
+                    () = tokio::time::sleep(Duration::from_secs(2)) => continue,
+                }
+            }
+        };
+        if let Err(error) = listener.listen("event_channel").await {
+            tracing::warn!(%error, "Knowledge projection listener subscribe failed; retrying");
+            tokio::select! {
+                () = cancellation.cancelled() => return Ok(()),
+                () = tokio::time::sleep(Duration::from_secs(2)) => continue,
+            }
+        }
+        let mut catch_up = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            tokio::select! {
+                () = cancellation.cancelled() => return Ok(()),
+                notification = listener.recv() => {
+                    match notification {
+                        Ok(_) => {
+                            if let Err(error) = project_until_caught_up(
+                                control_pool, knowledge_pool, config, Some(&cancellation)).await {
+                                tracing::error!(%error, "Knowledge projection notification catch-up failed closed");
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "Knowledge projection listener disconnected; reconnecting");
+                            break;
+                        }
+                    }
+                }
+                _ = catch_up.tick() => {
+                    if let Err(error) = project_until_caught_up(
+                        control_pool, knowledge_pool, config, Some(&cancellation)).await {
+                        tracing::error!(%error, "Knowledge projection fallback catch-up failed closed");
+                    }
+                }
+                () = wait_for_wake(&wake) => {
+                    if let Err(error) = project_until_caught_up(
+                        control_pool, knowledge_pool, config, Some(&cancellation)).await {
+                        tracing::error!(%error, "Knowledge projection controller wake failed closed");
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn heartbeat_loop(
+    pool: &PgPool,
+    config: &WorkerConfig,
+    cancellation: CancellationToken,
+) -> Result<()> {
+    let mut tick = tokio::time::interval(Duration::from_secs(10));
+    loop {
+        tokio::select! {
+            () = cancellation.cancelled() => return Ok(()),
+            _ = tick.tick() => {
+                if let Err(error) = heartbeat(pool, config).await {
+                    tracing::error!(%error, "Knowledge projector heartbeat failed closed");
+                }
+            }
+        }
     }
 }
 
 async fn apply_projection_event(
     pool: &PgPool,
     config: &WorkerConfig,
-    event: ProjectionEnvelope,
+    event: &ProjectionEnvelope,
 ) -> Result<ProjectionApplyOutcome> {
     let mut tx = pool.begin().await?;
+    let outcome = apply_projection_event_in_transaction(&mut tx, config, event).await?;
+    tx.commit().await?;
+    Ok(outcome)
+}
+
+async fn apply_projection_event_in_transaction(
+    tx: &mut Transaction<'_, Postgres>,
+    config: &WorkerConfig,
+    event: &ProjectionEnvelope,
+) -> Result<ProjectionApplyOutcome> {
+    let mut prior_attempt_count: i32 = 0;
     if let Some(row) = sqlx::query(
-        "SELECT payload_digest,state FROM knowledge_projection_inbox_t WHERE event_id=$1",
+        "SELECT payload_digest,state,attempt_count
+           FROM knowledge_projection_inbox_t WHERE event_id=$1 FOR UPDATE",
     )
     .bind(event.event_id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?
     {
         if row.get::<String, _>("payload_digest").trim() != event.payload_digest {
             bail!("KNOWLEDGE_PROJECTION_EVENT_CONFLICT");
         }
         if row.get::<String, _>("state") != "GAP" {
-            tx.rollback().await?;
             return Ok(ProjectionApplyOutcome::AppliedOrDuplicate);
         }
+        prior_attempt_count = row.get("attempt_count");
     }
     let previous: i64 = sqlx::query_scalar(
         "SELECT COALESCE(max(aggregate_sequence),0)
@@ -7416,48 +8485,58 @@ async fn apply_projection_event(
     )
     .bind(&event.aggregate_type)
     .bind(&event.aggregate_id)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await?;
-    let state = if event.aggregate_sequence == previous + 1 {
+    let sequence_gap = event.aggregate_sequence != previous + 1;
+    let attempt_count = prior_attempt_count.saturating_add(1);
+    let state = if !sequence_gap {
         "APPLIED"
+    } else if projection_gap_exhausted(attempt_count) {
+        "DEAD_LETTER"
     } else {
         "GAP"
     };
     if state == "APPLIED" {
-        apply_desired_state(&mut tx, config, &event).await?;
+        apply_desired_state(tx, config, event).await?;
     }
     sqlx::query(
         "INSERT INTO knowledge_projection_inbox_t(
            event_id,aggregate_type,aggregate_id,aggregate_sequence,event_type,
-           event_ts,payload,payload_digest,state,applied_ts,last_error
-         ) VALUES($1,$2,$3,$4,$5,now(),$6,$7,$8,
-           CASE WHEN $8='APPLIED' THEN now() END,
-           CASE WHEN $8='GAP' THEN
+           event_ts,payload,payload_digest,state,attempt_count,next_attempt_ts,
+           applied_ts,last_error
+         ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+           CASE WHEN $9='GAP' THEN
+             now()+make_interval(secs => $11::double precision) END,
+           CASE WHEN $9='APPLIED' THEN now() END,
+           CASE WHEN $9='GAP' THEN
              jsonb_build_object('code','KNOWLEDGE_PROJECTION_SEQUENCE_GAP',
-                                'expected',$9) END)
+                                'expected',$12)
+                WHEN $9='DEAD_LETTER' THEN
+             jsonb_build_object(
+               'code','KNOWLEDGE_PROJECTION_GAP_RETRY_EXHAUSTED') END)
          ON CONFLICT(event_id) DO UPDATE SET
            state=EXCLUDED.state,applied_ts=EXCLUDED.applied_ts,
-           last_error=EXCLUDED.last_error,attempt_count=
-             knowledge_projection_inbox_t.attempt_count+1,
-           next_attempt_ts=CASE WHEN EXCLUDED.state='GAP'
-             THEN now()+interval '5 seconds' END",
+           last_error=EXCLUDED.last_error,attempt_count=EXCLUDED.attempt_count,
+           next_attempt_ts=EXCLUDED.next_attempt_ts",
     )
     .bind(event.event_id)
     .bind(&event.aggregate_type)
     .bind(&event.aggregate_id)
     .bind(event.aggregate_sequence)
     .bind(&event.event_type)
+    .bind(event.event_ts)
     .bind(&event.payload)
     .bind(&event.payload_digest)
     .bind(state)
+    .bind(attempt_count)
+    .bind(projection_gap_backoff_seconds(attempt_count) as i64)
     .bind(previous + 1)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
-    tx.commit().await?;
-    Ok(if state == "GAP" {
-        ProjectionApplyOutcome::ParkedGap
-    } else {
-        ProjectionApplyOutcome::AppliedOrDuplicate
+    Ok(match state {
+        "GAP" => ProjectionApplyOutcome::ParkedGap,
+        "DEAD_LETTER" => ProjectionApplyOutcome::DeadLetteredGap,
+        _ => ProjectionApplyOutcome::AppliedOrDuplicate,
     })
 }
 
@@ -7528,9 +8607,9 @@ async fn apply_desired_state(
                    public_alias_id,expected_space_id,expected_space_revision,
                    dimension,normalization,distance_metric,
                    document_input_transform_version,
-                   query_input_transform_version,qualification_digest,
+                   query_input_transform_version,qualification_digest,alias_name,
                    active,update_user)
-                 VALUES($1,$2,NULL,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,TRUE,
+                 VALUES($1,$2,NULL,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,TRUE,
                    'light-knowledge-projector')
                  ON CONFLICT(profile_id,profile_revision) DO NOTHING",
             )
@@ -7546,6 +8625,12 @@ async fn apply_desired_state(
             .bind(text_value(payload, "documentInputTransformVersion")?)
             .bind(text_value(payload, "queryInputTransformVersion")?)
             .bind(text_value(payload, "qualificationDigest")?)
+            .bind(
+                payload
+                    .get("aliasName")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("kb-index"),
+            )
             .execute(&mut **tx)
             .await?;
         }
@@ -7844,7 +8929,7 @@ async fn heartbeat(pool: &PgPool, config: &WorkerConfig) -> Result<()> {
     .await?;
     let config_digest =
         sha256_hex(format!("{}:{}:{sequence}", config.projector_id, config.environment).as_bytes());
-    let secret = fs::read(&config.heartbeat_secret_file)?;
+    let secret = read_secret_bytes(&config.heartbeat_secret_file)?;
     let mut signer = Hmac::<Sha256>::new_from_slice(&secret)
         .context("heartbeat signing secret must be non-empty")?;
     signer.update(config_digest.as_bytes());
@@ -7887,6 +8972,57 @@ async fn heartbeat(pool: &PgPool, config: &WorkerConfig) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn projection_database_failures_are_retried_and_payload_failures_are_rejected() {
+        let database =
+            anyhow::Error::new(sqlx::Error::PoolClosed).context("apply projected Knowledge event");
+        assert_eq!(
+            projection_error_disposition(&database),
+            ProjectionErrorDisposition::Retry
+        );
+        assert_eq!(
+            projection_error_disposition(&anyhow::anyhow!(
+                "projection payload knowledgeBaseId is not a UUID"
+            )),
+            ProjectionErrorDisposition::DeadLetter
+        );
+        assert_eq!(
+            projection_sqlstate_disposition(Some("23503")),
+            ProjectionErrorDisposition::ParkDependency
+        );
+        assert_eq!(
+            projection_sqlstate_disposition(Some("23505")),
+            ProjectionErrorDisposition::DeadLetter
+        );
+        assert_eq!(
+            projection_sqlstate_disposition(Some("23514")),
+            ProjectionErrorDisposition::DeadLetter
+        );
+        assert_eq!(
+            projection_sqlstate_disposition(Some("40001")),
+            ProjectionErrorDisposition::Retry
+        );
+    }
+
+    #[test]
+    fn projection_gap_retry_budget_is_bounded_and_exponential() {
+        let delays = (1..=PROJECTION_GAP_MAX_ATTEMPTS)
+            .map(projection_gap_backoff_seconds)
+            .collect::<Vec<_>>();
+        assert_eq!(delays, vec![5, 10, 20, 40, 80, 160, 300, 300]);
+        assert!(!projection_gap_exhausted(PROJECTION_GAP_MAX_ATTEMPTS - 1));
+        assert!(projection_gap_exhausted(PROJECTION_GAP_MAX_ATTEMPTS));
+    }
+
+    #[test]
+    fn binary_secrets_preserve_whitespace_and_non_utf8_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let secret = directory.path().join("binary-secret");
+        let expected = b"\x00 leading and trailing \xff\n";
+        fs::write(&secret, expected).unwrap();
+        assert_eq!(read_secret_bytes(&secret).unwrap(), expected);
+    }
 
     async fn embedding_gateway_response(
         billed_cost_micros: u64,

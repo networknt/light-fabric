@@ -23,8 +23,10 @@ APPS=(
   "light-workflow"
   "light-workflow-runner"
   "light-knowledge"
-  "light-knowledge-worker"
 )
+
+# Compatibility/CLI image only. It is never part of the default release set.
+OPTIONAL_APPS=("light-knowledge-worker")
 
 show_help() {
   local error="${1:-}"
@@ -48,6 +50,7 @@ show_help() {
   echo "          ./build.sh 0.3.0 --app light-gateway --no-cache"
   echo " "
   echo "    release apps: ${APPS[*]}"
+  echo "    optional compatibility apps: ${OPTIONAL_APPS[*]}"
   echo " "
 }
 
@@ -61,6 +64,11 @@ contains_app() {
   local release_app
 
   for release_app in "${APPS[@]}"; do
+    if [[ "$release_app" == "$candidate" ]]; then
+      return 0
+    fi
+  done
+  for release_app in "${OPTIONAL_APPS[@]}"; do
     if [[ "$release_app" == "$candidate" ]]; then
       return 0
     fi

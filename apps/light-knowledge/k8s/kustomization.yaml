@@ -7,6 +7,7 @@ configMapGenerator:
     files:
       - ../config/client.yml
       - ../config/knowledge.yml
+      - ../config/worker.yml
       - ../config/portal-registry.yml
       - ../config/security.yml
       - ../config/server.yml

@@ -5,11 +5,12 @@ RUN cargo build --locked --release -p light-knowledge
 
 FROM debian:bookworm-slim
 RUN apt-get update \
-  && apt-get install --yes --no-install-recommends ca-certificates curl \
+  && apt-get install --yes --no-install-recommends ca-certificates curl git \
   && rm -rf /var/lib/apt/lists/* \
   && groupadd --system --gid 10001 lightknowledge \
   && useradd --system --uid 10001 --gid 10001 --home /nonexistent lightknowledge \
   && mkdir -p /var/lib/light-knowledge/objects \
+    /var/lib/light-knowledge/checkouts /var/lib/light-knowledge/projection \
   && chown -R 10001:10001 /var/lib/light-knowledge
 COPY --from=build /src/target/release/light-knowledge /usr/local/bin/light-knowledge
 COPY apps/light-knowledge/config /etc/light-knowledge
