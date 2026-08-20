@@ -1,1 +1,0 @@
-model: ${gemini-cli.model:default}

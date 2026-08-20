@@ -30,10 +30,7 @@ use light_security::{
 };
 use mcp_client::{McpContent, McpGatewayClient, McpTool};
 use model_provider::{
-    AnthropicProvider, AzureOpenAiProvider, ChatMessage, ChatRequest, ChatResponse,
-    ClaudeCodeProvider, CodexProvider, CompatibleProvider, CopilotProvider, GeminiCliProvider,
-    GeminiProvider, GlmProvider, KiloCliProvider, OllamaProvider, OpenAiProvider,
-    OpenRouterProvider, Provider, TelnyxProvider, ToolSpec,
+    ChatMessage, ChatRequest, ChatResponse, CompatibleProvider, Provider, ToolSpec,
 };
 use portal_registry::RegistryHandler;
 use serde::{Deserialize, Serialize};
@@ -48,12 +45,17 @@ use tracing::{error, info, warn};
 use url::Url;
 use uuid::Uuid;
 
-use agent_core::{AgentSessionId, sha256_digest};
+use agent_core::{AgentSessionId, PolicySnapshot, sha256_digest};
 use agent_delegation::{DelegationClaims, DelegationKind, DelegationSigner};
 use agent_materializer::{MaterializationManifest, ProductProfile};
 use coding_agent_runtime::{CodingTurnSpec, ImmutableRepositoryInput};
+use light_agent::agent_config::{
+    AGENT_CONFIG_FILE, AGENT_CONFIG_MODULE_ID, AgentConfig, AgentExecutionPolicy,
+    CodingProfilePolicy,
+};
 use light_agent::domain::{
-    AgentRepository, EdgeActionSpec, PiCodingRuntime, SessionSpec, TurnRuntimeResolution,
+    AgentRepository, AgentRuntimeAuthority, EdgeActionSpec, PiCodingRuntime, SessionSpec,
+    TurnRuntimeResolution,
 };
 
 mod embedded_config {
@@ -63,23 +65,8 @@ mod embedded_config {
 const CONFIG_DIR: &str = "config";
 const DEFAULT_CONFIG_DIR: &str = "config-defaults";
 const EXTERNAL_CONFIG_DIR: &str = "config-cache";
-const MODEL_PROVIDER_FILE: &str = "model-provider.yml";
 const MAX_SESSION_MESSAGES: usize = 40;
-const DEFAULT_CATALOG_CACHE_TTL_SECONDS: u64 = 60;
-const DEFAULT_CATALOG_STALE_ON_ERROR_SECONDS: u64 = 300;
 const DEFAULT_CATALOG_SELECTION_LIMIT: usize = 12;
-const DEFAULT_SEMANTIC_CATALOG_LIMIT: usize = 50;
-const DEFAULT_MAX_TURN_SECONDS: u64 = 120;
-const DEFAULT_MAX_MODEL_CALLS: usize = 10;
-const DEFAULT_MAX_ACTION_CALLS: usize = 20;
-const DEFAULT_MAX_USER_MESSAGE_BYTES: usize = 64 * 1024;
-const DEFAULT_MAX_TOOL_ARGUMENT_BYTES: usize = 64 * 1024;
-const DEFAULT_MAX_TOOL_OUTPUT_BYTES: usize = 64 * 1024;
-const DEFAULT_MAX_GATEWAY_RESPONSE_BYTES: usize = 1024 * 1024;
-const DEFAULT_MAX_RESPONSE_BYTES: usize = 64 * 1024;
-const DEFAULT_MAX_OUTPUT_DEPTH: usize = 16;
-const DEFAULT_MAX_OUTPUT_ITEMS: usize = 1024;
-const DEFAULT_MAX_TURN_TOKENS: u64 = 64 * 1024;
 
 #[derive(Debug, Clone)]
 struct AgentLimits {
@@ -97,63 +84,59 @@ struct AgentLimits {
 }
 
 impl AgentLimits {
-    fn from_env() -> Self {
-        Self {
-            turn_timeout: duration_from_env_seconds(
-                "LIGHT_AGENT_MAX_TURN_SECONDS",
-                DEFAULT_MAX_TURN_SECONDS,
-            ),
-            max_model_calls: usize_from_env(
-                "LIGHT_AGENT_MAX_MODEL_CALLS",
-                DEFAULT_MAX_MODEL_CALLS,
-                100,
-            ),
-            max_action_calls: usize_from_env(
-                "LIGHT_AGENT_MAX_ACTION_CALLS",
-                DEFAULT_MAX_ACTION_CALLS,
-                1_000,
-            ),
-            max_user_message_bytes: usize_from_env(
-                "LIGHT_AGENT_MAX_USER_MESSAGE_BYTES",
-                DEFAULT_MAX_USER_MESSAGE_BYTES,
-                1024 * 1024,
-            ),
-            max_tool_argument_bytes: usize_from_env(
-                "LIGHT_AGENT_MAX_TOOL_ARGUMENT_BYTES",
-                DEFAULT_MAX_TOOL_ARGUMENT_BYTES,
-                1024 * 1024,
-            ),
-            max_tool_output_bytes: usize_from_env(
-                "LIGHT_AGENT_MAX_TOOL_OUTPUT_BYTES",
-                DEFAULT_MAX_TOOL_OUTPUT_BYTES,
-                4 * 1024 * 1024,
-            ),
-            max_gateway_response_bytes: usize_from_env(
-                "LIGHT_AGENT_MAX_GATEWAY_RESPONSE_BYTES",
-                DEFAULT_MAX_GATEWAY_RESPONSE_BYTES,
-                8 * 1024 * 1024,
-            ),
-            max_response_bytes: usize_from_env(
-                "LIGHT_AGENT_MAX_RESPONSE_BYTES",
-                DEFAULT_MAX_RESPONSE_BYTES,
-                1024 * 1024,
-            ),
-            max_output_depth: usize_from_env(
-                "LIGHT_AGENT_MAX_OUTPUT_DEPTH",
-                DEFAULT_MAX_OUTPUT_DEPTH,
-                64,
-            ),
-            max_output_items: usize_from_env(
-                "LIGHT_AGENT_MAX_OUTPUT_ITEMS",
-                DEFAULT_MAX_OUTPUT_ITEMS,
-                10_000,
-            ),
-            max_turn_tokens: u64_from_env(
-                "LIGHT_AGENT_MAX_TURN_TOKENS",
-                DEFAULT_MAX_TURN_TOKENS,
-                10_000_000,
-            ),
+    fn from_policy(policy: &AgentExecutionPolicy) -> Result<Self, RuntimeError> {
+        let bounded = |name: &str, value: usize, maximum: usize| {
+            if value == 0 || value > maximum {
+                Err(RuntimeError::Config(format!(
+                    "agentPolicy.execution.{name} must be between 1 and {maximum}"
+                )))
+            } else {
+                Ok(value)
+            }
+        };
+        if policy.maximum_turn_seconds == 0 {
+            return Err(RuntimeError::Config(
+                "agentPolicy.execution.maximumTurnSeconds must be positive".into(),
+            ));
         }
+        if policy.maximum_turn_tokens == 0 || policy.maximum_turn_tokens > 10_000_000 {
+            return Err(RuntimeError::Config(
+                "agentPolicy.execution.maximumTurnTokens must be between 1 and 10000000".into(),
+            ));
+        }
+        Ok(Self {
+            turn_timeout: Duration::from_secs(policy.maximum_turn_seconds),
+            max_model_calls: bounded("maximumModelCalls", policy.maximum_model_calls, 100)?,
+            max_action_calls: bounded("maximumActionCalls", policy.maximum_action_calls, 1_000)?,
+            max_user_message_bytes: bounded(
+                "maximumUserMessageBytes",
+                policy.maximum_user_message_bytes,
+                1024 * 1024,
+            )?,
+            max_tool_argument_bytes: bounded(
+                "maximumToolArgumentBytes",
+                policy.maximum_tool_argument_bytes,
+                1024 * 1024,
+            )?,
+            max_tool_output_bytes: bounded(
+                "maximumToolOutputBytes",
+                policy.maximum_tool_output_bytes,
+                4 * 1024 * 1024,
+            )?,
+            max_gateway_response_bytes: bounded(
+                "maximumGatewayResponseBytes",
+                policy.maximum_gateway_response_bytes,
+                8 * 1024 * 1024,
+            )?,
+            max_response_bytes: bounded(
+                "maximumResponseBytes",
+                policy.maximum_response_bytes,
+                1024 * 1024,
+            )?,
+            max_output_depth: bounded("maximumOutputDepth", policy.maximum_output_depth, 64)?,
+            max_output_items: bounded("maximumOutputItems", policy.maximum_output_items, 10_000)?,
+            max_turn_tokens: policy.maximum_turn_tokens,
+        })
     }
 }
 
@@ -176,17 +159,6 @@ struct AuthenticatedRequest {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OllamaConfig {
-    pub ollama_url: String,
-    pub model: String,
-    #[serde(default)]
-    pub api_key: Option<String>,
-    #[serde(default)]
-    pub reasoning_enabled: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct McpClientConfig {
     pub gateway_url: String,
     pub path: String,
@@ -204,91 +176,6 @@ pub struct ModelProviderConfig {
     pub temperature: f64,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ApiModelProviderConfig {
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub base_url: Option<String>,
-    #[serde(default)]
-    pub api_key: Option<String>,
-    #[serde(default)]
-    pub max_tokens: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AzureOpenAiConfig {
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub credential: Option<String>,
-    #[serde(default)]
-    pub resource_name: Option<String>,
-    #[serde(default)]
-    pub deployment_name: Option<String>,
-    #[serde(default)]
-    pub api_version: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CodexConfig {
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub base_url: Option<String>,
-    #[serde(default)]
-    pub api_key: Option<String>,
-    #[serde(default)]
-    pub account_id: Option<String>,
-    #[serde(default)]
-    pub reasoning_effort: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CompatibleConfig {
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub base_url: Option<String>,
-    #[serde(default)]
-    pub api_key: Option<String>,
-    #[serde(default)]
-    pub max_tokens: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CopilotConfig {
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub github_token: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GlmConfig {
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub api_key: Option<String>,
-    #[serde(default)]
-    pub base_url: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CliModelProviderConfig {
-    #[serde(default)]
-    pub model: Option<String>,
-}
-
 struct ModelProviderSelection {
     provider: Box<dyn Provider>,
     model: String,
@@ -296,41 +183,11 @@ struct ModelProviderSelection {
 }
 
 fn default_model_provider() -> String {
-    "ollama".to_string()
+    "gateway".to_string()
 }
 
 fn default_model_temperature() -> f64 {
     0.7
-}
-
-fn required_uuid_env_var(name: &str) -> anyhow::Result<Uuid> {
-    let raw = std::env::var(name)
-        .with_context(|| format!("Required environment variable {name} is not set"))?;
-    Uuid::parse_str(&raw)
-        .with_context(|| format!("Environment variable {name} must be a valid UUID"))
-}
-
-fn optional_uuid_env_var(names: &[&str]) -> anyhow::Result<Option<Uuid>> {
-    for name in names {
-        if let Ok(raw) = std::env::var(name) {
-            if raw.trim().is_empty() {
-                continue;
-            }
-            return Uuid::parse_str(raw.trim())
-                .with_context(|| format!("Environment variable {name} must be a valid UUID"))
-                .map(Some);
-        }
-    }
-    Ok(None)
-}
-
-fn duration_from_env_seconds(name: &str, default_seconds: u64) -> Duration {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .filter(|seconds| *seconds > 0)
-        .map(Duration::from_secs)
-        .unwrap_or_else(|| Duration::from_secs(default_seconds))
 }
 
 fn bool_from_env(name: &str, default_value: bool) -> bool {
@@ -343,32 +200,6 @@ fn bool_from_env(name: &str, default_value: bool) -> bool {
             )
         })
         .unwrap_or(default_value)
-}
-
-fn usize_from_env(name: &str, default_value: usize, max_value: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .map(|value| value.min(max_value))
-        .unwrap_or(default_value)
-}
-
-fn u64_from_env(name: &str, default_value: u64, max_value: u64) -> u64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .map(|value| value.min(max_value))
-        .unwrap_or(default_value)
-}
-
-fn to_portal_query_url(portal_url: &str) -> anyhow::Result<String> {
-    let mut url = Url::parse(portal_url)
-        .with_context(|| format!("Invalid portal query URL: {portal_url}"))?;
-    url.set_path("/portal/query");
-    url.set_query(None);
-    Ok(url.to_string())
 }
 
 fn to_portal_command_url(portal_url: &str) -> anyhow::Result<String> {
@@ -397,19 +228,6 @@ fn strip_bearer_prefix(token: &str) -> String {
         .or_else(|| token.strip_prefix("bearer "))
         .unwrap_or(token)
         .to_string()
-}
-
-fn portal_query_base_url(config: &PortalRegistryConfig) -> String {
-    std::env::var("LIGHT_AGENT_PORTAL_QUERY_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            config
-                .portal_query_url
-                .clone()
-                .filter(|value| !value.trim().is_empty())
-        })
-        .unwrap_or_else(|| config.portal_url.clone())
 }
 
 #[derive(Clone)]
@@ -554,18 +372,6 @@ fn default_knowledge_binding_priority() -> i32 {
     50
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "camelCase", default)]
-struct AgentKnowledgeBindingsResponse {
-    agent_knowledge_base_bindings: Vec<AgentKnowledgeBinding>,
-}
-
-#[derive(Clone)]
-struct CachedAgentKnowledgeBinding {
-    bindings: Vec<AgentKnowledgeBinding>,
-    expires_at: Instant,
-}
-
 impl Default for EffectiveAgentCatalog {
     fn default() -> Self {
         Self {
@@ -682,45 +488,6 @@ struct CatalogSelection {
 }
 
 #[derive(Clone)]
-struct PortalQueryClient {
-    url: String,
-    token: String,
-    client: reqwest::Client,
-}
-
-fn build_effective_catalog_data(
-    host_id: Uuid,
-    agent_def_id: Uuid,
-    definition_version: i64,
-    policy_digest: String,
-    service_id: &str,
-    env_tag: Option<&str>,
-    semantic_query: Option<&str>,
-    semantic_limit: Option<usize>,
-) -> serde_json::Value {
-    let mut data = serde_json::json!({
-        "hostId": host_id,
-        "agentDefId": agent_def_id,
-        "definitionVersion": definition_version,
-        "policyDigest": policy_digest,
-        "serviceId": service_id,
-    });
-    if let Some(env_tag) = env_tag.filter(|value| !value.trim().is_empty()) {
-        data["envTag"] = serde_json::json!(env_tag);
-    }
-    if let Some(query) = semantic_query
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        data["semanticQuery"] = serde_json::json!(query);
-    }
-    if let Some(limit) = semantic_limit.filter(|value| *value > 0) {
-        data["semanticLimit"] = serde_json::json!(limit);
-    }
-    data
-}
-
-#[derive(Clone)]
 struct PortalCommandClient {
     url: String,
     token: String,
@@ -792,152 +559,6 @@ impl PortalCommandClient {
             bail!("portal command {action} returned an error response: {value}");
         }
         Ok(value)
-    }
-}
-
-impl PortalQueryClient {
-    fn with_options(
-        portal_url: &str,
-        token: String,
-        ca_cert_pem: Option<&[u8]>,
-        verify_hostname: bool,
-        timeout_ms: u64,
-    ) -> Result<Self> {
-        let mut builder = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(timeout_ms))
-            .connect_timeout(std::time::Duration::from_millis(timeout_ms));
-
-        if let Some(pem) = ca_cert_pem {
-            let certificates = light_client::parse_ca_cert_bundle(pem).context(
-                "Invalid ca_cert_pem: failed to parse PEM-encoded CA certificate bundle",
-            )?;
-            let certificate_count = certificates.len();
-            for certificate in certificates {
-                builder = builder.add_root_certificate(certificate);
-            }
-            info!(
-                ca_cert_count = certificate_count,
-                "loaded portal query CA certificate bundle"
-            );
-        }
-
-        if !verify_hostname {
-            builder = builder.danger_accept_invalid_hostnames(true);
-        }
-
-        Ok(Self {
-            url: to_portal_query_url(portal_url)?,
-            token,
-            client: builder
-                .build()
-                .context("Failed to build portal query client")?,
-        })
-    }
-
-    async fn get_effective_agent_catalog(
-        &self,
-        host_id: Uuid,
-        agent_def_id: Uuid,
-        definition_version: i64,
-        policy_digest: &str,
-        service_id: &str,
-        env_tag: Option<&str>,
-        semantic_query: Option<&str>,
-        semantic_limit: Option<usize>,
-    ) -> Result<EffectiveAgentCatalog> {
-        let data = build_effective_catalog_data(
-            host_id,
-            agent_def_id,
-            definition_version,
-            policy_digest.to_string(),
-            service_id,
-            env_tag,
-            semantic_query,
-            semantic_limit,
-        );
-        let request = serde_json::json!({
-            "host": "lightapi.net",
-            "service": "genai",
-            "action": "getEffectiveAgentCatalog",
-            "version": "0.1.0",
-            "data": data
-        });
-
-        let response = self
-            .client
-            .post(&self.url)
-            .bearer_auth(&self.token)
-            .json(&request)
-            .send()
-            .await
-            .context("HTTP request to portal query failed")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            bail!("portal query returned HTTP {status}: {body}");
-        }
-
-        let value: serde_json::Value = response
-            .json()
-            .await
-            .context("Failed to parse portal query response")?;
-        if value.get("statusCode").is_some() || value.get("code").is_some() {
-            bail!("portal query returned an error response: {value}");
-        }
-        serde_json::from_value(value).context("Failed to parse effective agent catalog")
-    }
-
-    async fn get_agent_knowledge_binding(
-        &self,
-        host_id: Uuid,
-        agent_def_id: Uuid,
-        environment: &str,
-    ) -> Result<Vec<AgentKnowledgeBinding>> {
-        let request = serde_json::json!({
-            "host": "lightapi.net",
-            "service": "genai",
-            "action": "getAgentKnowledgeBaseBindings",
-            "version": "0.1.0",
-            "data": {
-                "hostId": host_id,
-                "agentId": agent_def_id,
-                "environment": environment
-            }
-        });
-        let response = self
-            .client
-            .post(&self.url)
-            .bearer_auth(&self.token)
-            .json(&request)
-            .send()
-            .await
-            .context("HTTP request for Agent Knowledge Base bindings failed")?;
-        if !response.status().is_success() {
-            bail!(
-                "Agent Knowledge Base binding query returned {}",
-                response.status()
-            );
-        }
-        let response: AgentKnowledgeBindingsResponse = response
-            .json()
-            .await
-            .context("Agent Knowledge Base binding response was invalid")?;
-        let mut bindings = response
-            .agent_knowledge_base_bindings
-            .into_iter()
-            .filter(|binding| binding.active && binding.agent_id == agent_def_id)
-            .collect::<Vec<_>>();
-        if bindings.len() > 4 {
-            bail!("Phase 1b permits at most four active Knowledge Base bindings per Agent")
-        }
-        bindings.sort_by(|left, right| {
-            right
-                .priority
-                .cmp(&left.priority)
-                .then_with(|| left.knowledge_base_id.cmp(&right.knowledge_base_id))
-        });
-        Ok(bindings)
     }
 }
 
@@ -1146,10 +767,15 @@ impl MemoryStore for PortalCommandMemoryStore {
 }
 
 struct AgentState {
-    runtime_config: RuntimeConfig,
+    agent_config: AgentConfig,
+    system_prompt: String,
+    llm_gateway_token: String,
+    llm_gateway_client: reqwest::Client,
+    policy_snapshot: PolicySnapshot,
     default_temperature: f64,
     mcp_client: McpGatewayClient,
-    portal_query_client: Option<PortalQueryClient>,
+    configured_catalog: Option<EffectiveAgentCatalog>,
+    knowledge_bindings: Vec<AgentKnowledgeBinding>,
     catalog_cache: AgentCatalogCache,
     memory: Arc<dyn MemoryStore>,
     domain: AgentRepository,
@@ -1165,12 +791,9 @@ struct AgentState {
     env_tag: Option<String>,
     catalog_cache_ttl: Duration,
     catalog_stale_on_error: Duration,
-    catalog_semantic_search_enabled: bool,
-    catalog_semantic_limit: usize,
     coding_profile: Option<CodingProfileConfig>,
     personal_profile_digest: Option<String>,
     knowledge_client: Option<KnowledgeClient>,
-    knowledge_binding_cache: Arc<RwLock<HashMap<(Uuid, String), CachedAgentKnowledgeBinding>>>,
 }
 
 #[derive(Clone)]
@@ -1312,21 +935,7 @@ impl AgentState {
         turn: &TurnRuntimeResolution,
         prompt: &str,
     ) -> Option<CatalogSelection> {
-        let catalog = if self.catalog_semantic_search_enabled && !prompt.trim().is_empty() {
-            match self
-                .fetch_turn_catalog(turn, Some(prompt), Some(self.catalog_semantic_limit))
-                .await
-            {
-                Ok(Some(catalog)) => Some(catalog),
-                Ok(None) => self.effective_catalog_for_turn(turn).await,
-                Err(error) => {
-                    warn!(%error, turn_id=%turn.turn_id.0, "semantic turn catalog refresh failed");
-                    self.effective_catalog_for_turn(turn).await
-                }
-            }
-        } else {
-            self.effective_catalog_for_turn(turn).await
-        }?;
+        let catalog = self.effective_catalog_for_turn(turn).await?;
         Some(select_catalog_tools(
             &catalog,
             prompt,
@@ -1345,7 +954,7 @@ impl AgentState {
         {
             return Some(catalog);
         }
-        match self.fetch_turn_catalog(turn, None, None).await {
+        match self.fetch_turn_catalog(turn).await {
             Ok(Some(catalog)) => {
                 self.catalog_cache.set(key, catalog.clone()).await;
                 Some(catalog)
@@ -1362,25 +971,15 @@ impl AgentState {
     async fn fetch_turn_catalog(
         &self,
         turn: &TurnRuntimeResolution,
-        query: Option<&str>,
-        limit: Option<usize>,
     ) -> Result<Option<EffectiveAgentCatalog>> {
-        let Some(client) = self.portal_query_client.as_ref() else {
-            return Ok(None);
-        };
-        client
-            .get_effective_agent_catalog(
-                turn.host_id,
-                turn.agent_def_id,
-                turn.definition_version,
-                &turn.policy_digest,
-                &self.service_id,
-                self.env_tag.as_deref(),
-                query,
-                limit,
-            )
-            .await
-            .map(Some)
+        if turn.host_id != self.host_id
+            || turn.agent_def_id != self.agent_def_id
+            || turn.definition_version != self.definition_version
+            || turn.policy_digest != self.policy_digest
+        {
+            bail!("durable turn is not bound to the loaded Agent configuration");
+        }
+        Ok(self.configured_catalog.clone())
     }
     async fn effective_catalog(&self) -> Option<EffectiveAgentCatalog> {
         let key = self.catalog_cache_key();
@@ -1406,21 +1005,9 @@ impl AgentState {
     }
 
     async fn refresh_effective_catalog(&self) -> Result<Option<EffectiveAgentCatalog>> {
-        let Some(client) = self.portal_query_client.as_ref() else {
+        let Some(catalog) = self.configured_catalog.clone() else {
             return Ok(None);
         };
-        let catalog = client
-            .get_effective_agent_catalog(
-                self.host_id,
-                self.agent_def_id,
-                self.definition_version,
-                &self.policy_digest,
-                &self.service_id,
-                self.env_tag.as_deref(),
-                None,
-                None,
-            )
-            .await?;
         self.catalog_cache
             .set(self.catalog_cache_key(), catalog.clone())
             .await;
@@ -1788,6 +1375,11 @@ async fn authenticate_request(
         &state.service_id,
         state.agent_def_id,
     )?;
+    if owner.agent_def_id != state.agent_def_id {
+        return Err(HandlerRejection::forbidden(
+            "token agent definition is not published to this Agent instance",
+        ));
+    }
     let caller_subject = principal
         .user_id
         .clone()
@@ -2486,369 +2078,40 @@ fn append_search_text(target: &mut String, value: &str) {
 }
 
 fn build_model_provider(
-    runtime_config: &RuntimeConfig,
+    agent_config: &AgentConfig,
     config: &ModelProviderConfig,
+    llm_gateway_token: &str,
+    llm_gateway_client: &reqwest::Client,
 ) -> Result<ModelProviderSelection, RuntimeError> {
     let provider_id = normalize_provider_id(&config.provider);
-    let temperature = config.temperature;
-
-    if is_local_cli_provider(&provider_id)
-        && !bool_from_env("LIGHT_AGENT_ALLOW_LOCAL_CLI_PROVIDERS", false)
-    {
+    if provider_id != "gateway" && provider_id != "light-gateway" {
         return Err(RuntimeError::Unsupported(format!(
-            "local CLI model provider `{provider_id}` is disabled; run it only in an isolated runner profile or explicitly opt in for local development with LIGHT_AGENT_ALLOW_LOCAL_CLI_PROVIDERS=true"
+            "direct model provider {provider_id} is disabled; light-agent model calls must use llm-gateway"
         )));
     }
-
-    let selection = match provider_id.as_str() {
-        "ollama" => {
-            let provider_config: OllamaConfig = load_agent_registered_config(
-                runtime_config,
-                "ollama.yml",
-                "light-agent/ollama",
-                "ollama",
-                provider_secret_masks(),
-            )?;
-            let model = choose_model(config, Some(provider_config.model.as_str()), None, "ollama")?;
-            let provider = OllamaProvider::new_with_reasoning(
-                Some(&provider_config.ollama_url),
-                optional_str(&provider_config.api_key),
-                optional_bool(
-                    &provider_config.reasoning_enabled,
-                    "ollama.reasoningEnabled",
-                )?,
-            )
-            .map_err(|e| RuntimeError::Config(format!("failed to build Ollama provider: {e}")))?;
-            ModelProviderSelection {
-                provider: Box::new(provider),
-                model,
-                temperature,
-            }
-        }
-        "openai" | "open-ai" => {
-            let provider_config: ApiModelProviderConfig =
-                load_provider_config(runtime_config, "openai.yml", "openai")?;
-            let model = choose_model(config, optional_str(&provider_config.model), None, "openai")?;
-            let mut provider = OpenAiProvider::new(
-                optional_str(&provider_config.base_url),
-                optional_str(&provider_config.api_key),
-            )
-            .map_err(|e| RuntimeError::Config(format!("failed to build OpenAI provider: {e}")))?;
-            if let Some(max_tokens) = optional_u32(&provider_config.max_tokens, "openai.maxTokens")?
-            {
-                provider = provider.with_max_tokens(Some(max_tokens));
-            }
-            ModelProviderSelection {
-                provider: Box::new(provider),
-                model,
-                temperature,
-            }
-        }
-        "azure-openai" | "azure" | "azure-open-ai" => {
-            let provider_config: AzureOpenAiConfig =
-                load_provider_config(runtime_config, "azure-openai.yml", "azure-openai")?;
-            let resource_name = required_config_value(
-                optional_str(&provider_config.resource_name),
-                "azure-openai.resourceName",
-            )?;
-            let deployment_name = required_config_value(
-                optional_str(&provider_config.deployment_name),
-                "azure-openai.deploymentName",
-            )?;
-            let model = choose_model(
-                config,
-                optional_str(&provider_config.model),
-                Some(deployment_name),
-                "azure-openai",
-            )?;
-            let provider = AzureOpenAiProvider::new(
-                optional_str(&provider_config.credential),
-                resource_name,
-                deployment_name,
-                optional_str(&provider_config.api_version),
-            )
-            .map_err(|e| {
-                RuntimeError::Config(format!("failed to build Azure OpenAI provider: {e}"))
-            })?;
-            ModelProviderSelection {
-                provider: Box::new(provider),
-                model,
-                temperature,
-            }
-        }
-        "anthropic" | "claude" => {
-            let provider_config: ApiModelProviderConfig =
-                load_provider_config(runtime_config, "anthropic.yml", "anthropic")?;
-            let model = choose_model(
-                config,
-                optional_str(&provider_config.model),
-                None,
-                "anthropic",
-            )?;
-            let mut provider = AnthropicProvider::new(
-                optional_str(&provider_config.base_url),
-                optional_str(&provider_config.api_key),
-            )
-            .map_err(|e| {
-                RuntimeError::Config(format!("failed to build Anthropic provider: {e}"))
-            })?;
-            if let Some(max_tokens) =
-                optional_u32(&provider_config.max_tokens, "anthropic.maxTokens")?
-            {
-                provider = provider.with_max_tokens(max_tokens);
-            }
-            ModelProviderSelection {
-                provider: Box::new(provider),
-                model,
-                temperature,
-            }
-        }
-        "codex" => {
-            let provider_config: CodexConfig =
-                load_provider_config(runtime_config, "codex.yml", "codex")?;
-            let model = choose_model(config, optional_str(&provider_config.model), None, "codex")?;
-            let provider = CodexProvider::new(
-                optional_str(&provider_config.base_url),
-                optional_str(&provider_config.api_key),
-                optional_str(&provider_config.account_id),
-                optional_str(&provider_config.reasoning_effort),
-            )
-            .map_err(|e| RuntimeError::Config(format!("failed to build Codex provider: {e}")))?;
-            ModelProviderSelection {
-                provider: Box::new(provider),
-                model,
-                temperature,
-            }
-        }
-        "compatible" | "openai-compatible" | "open-ai-compatible" => {
-            let provider_config: CompatibleConfig =
-                load_provider_config(runtime_config, "compatible.yml", "compatible")?;
-            let base_url = required_config_value(
-                optional_str(&provider_config.base_url),
-                "compatible.baseUrl",
-            )?;
-            let model = choose_model(
-                config,
-                optional_str(&provider_config.model),
-                None,
-                "compatible",
-            )?;
-            let name = optional_str(&provider_config.name).unwrap_or("compatible");
-            let mut provider =
-                CompatibleProvider::new(name, base_url, optional_str(&provider_config.api_key))
-                    .map_err(|e| {
-                        RuntimeError::Config(format!(
-                            "failed to build OpenAI-compatible provider: {e}"
-                        ))
-                    })?;
-            if let Some(max_tokens) =
-                optional_u32(&provider_config.max_tokens, "compatible.maxTokens")?
-            {
-                provider = provider.with_max_tokens(Some(max_tokens));
-            }
-            ModelProviderSelection {
-                provider: Box::new(provider),
-                model,
-                temperature,
-            }
-        }
-        "gateway" | "light-gateway" => {
-            // The alias comes only from the immutable turn binding resolved
-            // from Portal. Endpoint and service credential remain
-            // application-owned configuration and are never agent fields.
-            let provider_config: CompatibleConfig = load_agent_registered_config(
-                runtime_config,
-                "llm-gateway-client.yml",
-                "light-agent/llm-gateway-client",
-                "llm-gateway-client",
-                provider_secret_masks(),
-            )?;
-            let base_url = required_config_value(
-                optional_str(&provider_config.base_url),
-                "llm-gateway-client.baseUrl",
-            )?;
-            let model = choose_model(config, None, None, "llm-gateway-client")?;
-            let mut provider = CompatibleProvider::new(
-                optional_str(&provider_config.name).unwrap_or("light-gateway"),
-                base_url,
-                optional_str(&provider_config.api_key),
-            )
-            .map_err(|e| RuntimeError::Config(format!("failed to build gateway provider: {e}")))?;
-            if let Some(max_tokens) =
-                optional_u32(&provider_config.max_tokens, "llm-gateway-client.maxTokens")?
-            {
-                provider = provider.with_max_tokens(Some(max_tokens));
-            }
-            ModelProviderSelection {
-                provider: Box::new(provider),
-                model,
-                temperature,
-            }
-        }
-        "gemini" | "google-gemini" => {
-            let provider_config: ApiModelProviderConfig =
-                load_provider_config(runtime_config, "gemini.yml", "gemini")?;
-            let model = choose_model(config, optional_str(&provider_config.model), None, "gemini")?;
-            let mut provider = GeminiProvider::new(
-                optional_str(&provider_config.base_url),
-                optional_str(&provider_config.api_key),
-            )
-            .map_err(|e| RuntimeError::Config(format!("failed to build Gemini provider: {e}")))?;
-            if let Some(max_tokens) = optional_u32(&provider_config.max_tokens, "gemini.maxTokens")?
-            {
-                provider = provider.with_max_tokens(max_tokens);
-            }
-            ModelProviderSelection {
-                provider: Box::new(provider),
-                model,
-                temperature,
-            }
-        }
-        "glm" | "zhipu" | "bigmodel" => {
-            let provider_config: GlmConfig =
-                load_provider_config(runtime_config, "glm.yml", "glm")?;
-            let model = choose_model(config, optional_str(&provider_config.model), None, "glm")?;
-            let provider = GlmProvider::new(
-                optional_str(&provider_config.api_key),
-                optional_str(&provider_config.base_url),
-            )
-            .map_err(|e| RuntimeError::Config(format!("failed to build GLM provider: {e}")))?;
-            ModelProviderSelection {
-                provider: Box::new(provider),
-                model,
-                temperature,
-            }
-        }
-        "openrouter" | "open-router" => {
-            let provider_config: ApiModelProviderConfig =
-                load_provider_config(runtime_config, "openrouter.yml", "openrouter")?;
-            let model = choose_model(
-                config,
-                optional_str(&provider_config.model),
-                None,
-                "openrouter",
-            )?;
-            let mut provider = OpenRouterProvider::new(
-                optional_str(&provider_config.base_url),
-                optional_str(&provider_config.api_key),
-            )
-            .map_err(|e| {
-                RuntimeError::Config(format!("failed to build OpenRouter provider: {e}"))
-            })?;
-            if let Some(max_tokens) =
-                optional_u32(&provider_config.max_tokens, "openrouter.maxTokens")?
-            {
-                provider = provider.with_max_tokens(Some(max_tokens));
-            }
-            ModelProviderSelection {
-                provider: Box::new(provider),
-                model,
-                temperature,
-            }
-        }
-        "telnyx" => {
-            let provider_config: ApiModelProviderConfig =
-                load_provider_config(runtime_config, "telnyx.yml", "telnyx")?;
-            let model = choose_model(config, optional_str(&provider_config.model), None, "telnyx")?;
-            let provider =
-                TelnyxProvider::new(optional_str(&provider_config.api_key)).map_err(|e| {
-                    RuntimeError::Config(format!("failed to build Telnyx provider: {e}"))
-                })?;
-            ModelProviderSelection {
-                provider: Box::new(provider),
-                model,
-                temperature,
-            }
-        }
-        "copilot" | "github-copilot" => {
-            let provider_config: CopilotConfig =
-                load_provider_config(runtime_config, "copilot.yml", "copilot")?;
-            let model = choose_model(
-                config,
-                optional_str(&provider_config.model),
-                Some("gpt-4o"),
-                "copilot",
-            )?;
-            let provider = CopilotProvider::new(optional_str(&provider_config.github_token))
-                .map_err(|e| {
-                    RuntimeError::Config(format!("failed to build Copilot provider: {e}"))
-                })?;
-            ModelProviderSelection {
-                provider: Box::new(provider),
-                model,
-                temperature,
-            }
-        }
-        "claude-code" | "claudecode" => {
-            let provider_config: CliModelProviderConfig =
-                load_provider_config(runtime_config, "claude-code.yml", "claude-code")?;
-            let model = choose_model(
-                config,
-                optional_str(&provider_config.model),
-                Some("default"),
-                "claude-code",
-            )?;
-            ModelProviderSelection {
-                provider: Box::new(ClaudeCodeProvider::new()),
-                model,
-                temperature,
-            }
-        }
-        "gemini-cli" | "geminicli" => {
-            let provider_config: CliModelProviderConfig =
-                load_provider_config(runtime_config, "gemini-cli.yml", "gemini-cli")?;
-            let model = choose_model(
-                config,
-                optional_str(&provider_config.model),
-                Some("default"),
-                "gemini-cli",
-            )?;
-            ModelProviderSelection {
-                provider: Box::new(GeminiCliProvider::new()),
-                model,
-                temperature,
-            }
-        }
-        "kilo-cli" | "kilocli" | "kilo" => {
-            let provider_config: CliModelProviderConfig =
-                load_provider_config(runtime_config, "kilo-cli.yml", "kilo-cli")?;
-            let model = choose_model(
-                config,
-                optional_str(&provider_config.model),
-                Some("default"),
-                "kilo-cli",
-            )?;
-            ModelProviderSelection {
-                provider: Box::new(KiloCliProvider::new()),
-                model,
-                temperature,
-            }
-        }
-        other => {
-            return Err(RuntimeError::Unsupported(format!(
-                "unsupported model provider `{other}`"
-            )));
-        }
-    };
-
-    Ok(selection)
-}
-
-fn load_provider_config<T>(
-    runtime_config: &RuntimeConfig,
-    file_name: &str,
-    config_name: &str,
-) -> Result<T, RuntimeError>
-where
-    T: for<'de> Deserialize<'de> + Serialize,
-{
-    load_agent_registered_config(
-        runtime_config,
-        file_name,
-        format!("light-agent/{config_name}"),
-        config_name,
-        provider_secret_masks(),
+    let model = choose_model(config, None, None, "llm-gateway")?;
+    if model != agent_config.agent_policy.model.alias {
+        return Err(RuntimeError::Config(
+            "turn model alias does not match the loaded immutable Agent policy".into(),
+        ));
+    }
+    let gateway = &agent_config.agent_policy.model.gateway;
+    let provider = CompatibleProvider::new_with_client(
+        gateway.name.as_str(),
+        gateway.base_url.as_str(),
+        Some(llm_gateway_token),
+        llm_gateway_client.clone(),
     )
+    .with_max_tokens(Some(
+        u32::try_from(agent_config.agent_policy.model.maximum_tokens).map_err(|_| {
+            RuntimeError::Config("agentPolicy.model.maximumTokens exceeds u32".into())
+        })?,
+    ));
+    Ok(ModelProviderSelection {
+        provider: Box::new(provider),
+        model,
+        temperature: config.temperature,
+    })
 }
 
 fn load_agent_registered_config<T>(
@@ -2873,18 +2136,6 @@ where
     )
 }
 
-fn provider_secret_masks() -> Vec<MaskSpec> {
-    vec![
-        MaskSpec::key("accessKeyId"),
-        MaskSpec::key("accountId"),
-        MaskSpec::key("apiKey"),
-        MaskSpec::key("credential"),
-        MaskSpec::key("githubToken"),
-        MaskSpec::key("secretAccessKey"),
-        MaskSpec::key("sessionToken"),
-    ]
-}
-
 fn choose_model(
     model_provider_config: &ModelProviderConfig,
     provider_model: Option<&str>,
@@ -2897,7 +2148,7 @@ fn choose_model(
         .map(ToString::to_string)
         .ok_or_else(|| {
             RuntimeError::Config(format!(
-                "model-provider.model or {provider_name}.model is required"
+                "agentPolicy.model.alias or {provider_name}.model is required"
             ))
         })
 }
@@ -2909,43 +2160,11 @@ fn normalize_provider_id(provider: &str) -> String {
         .replace(['_', ' '], "-")
 }
 
-fn is_local_cli_provider(provider_id: &str) -> bool {
-    matches!(
-        provider_id,
-        "claude-code" | "claudecode" | "gemini-cli" | "geminicli" | "kilo-cli" | "kilocli" | "kilo"
-    )
-}
-
 fn optional_str(value: &Option<String>) -> Option<&str> {
     value
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-}
-
-fn required_config_value<'a>(value: Option<&'a str>, key: &str) -> Result<&'a str, RuntimeError> {
-    value.ok_or_else(|| RuntimeError::Config(format!("{key} is required")))
-}
-
-fn optional_u32(value: &Option<String>, key: &str) -> Result<Option<u32>, RuntimeError> {
-    let Some(value) = optional_str(value) else {
-        return Ok(None);
-    };
-    value
-        .parse::<u32>()
-        .map(Some)
-        .map_err(|e| RuntimeError::Config(format!("{key} must be an unsigned integer: {e}")))
-}
-
-fn optional_bool(value: &Option<String>, key: &str) -> Result<Option<bool>, RuntimeError> {
-    let Some(value) = optional_str(value) else {
-        return Ok(None);
-    };
-    match value.to_ascii_lowercase().as_str() {
-        "true" | "1" | "yes" | "on" => Ok(Some(true)),
-        "false" | "0" | "no" | "off" => Ok(Some(false)),
-        _ => Err(RuntimeError::Config(format!("{key} must be true or false"))),
-    }
 }
 
 fn canonical_sha256(value: &str) -> bool {
@@ -2975,53 +2194,41 @@ fn validate_repository_input_uri(value: &str, prefix: &str) -> Result<()> {
     Ok(())
 }
 
-fn coding_profile_from_environment() -> Result<Option<CodingProfileConfig>, RuntimeError> {
-    let names = [
-        "LIGHT_AGENT_CODING_PROFILE_DIGEST",
-        "LIGHT_AGENT_CODING_REPOSITORY_URI_PREFIX",
-        "LIGHT_AGENT_CODING_COMPATIBILITY_DIGEST",
-        "LIGHT_AGENT_PI_TEMPLATE_DIGEST",
-        "LIGHT_AGENT_PI_BINARY_DIGEST",
-        "LIGHT_AGENT_PI_PROVIDER",
-        "LIGHT_AGENT_PI_MODEL",
-    ];
-    let values = names
-        .iter()
-        .map(|name| std::env::var(name).ok().filter(|v| !v.trim().is_empty()))
-        .collect::<Vec<_>>();
-    if values.iter().all(Option::is_none) {
+fn coding_profile_from_policy(
+    policy: Option<&CodingProfilePolicy>,
+) -> Result<Option<CodingProfileConfig>, RuntimeError> {
+    let Some(policy) = policy else {
         return Ok(None);
-    }
-    if values.iter().any(Option::is_none) {
-        return Err(RuntimeError::Config(format!(
-            "coding profile requires all of {}",
-            names.join(", ")
-        )));
-    }
-    let values = values.into_iter().map(Option::unwrap).collect::<Vec<_>>();
+    };
     for (name, value) in [
-        (names[0], values[0].as_str()),
-        (names[2], values[2].as_str()),
-        (names[3], values[3].as_str()),
-        (names[4], values[4].as_str()),
+        (
+            "productProfileDigest",
+            policy.product_profile_digest.as_str(),
+        ),
+        ("compatibilityDigest", policy.compatibility_digest.as_str()),
+        ("templateDigest", policy.template_digest.as_str()),
+        ("binaryDigest", policy.binary_digest.as_str()),
     ] {
         if !canonical_sha256(value) {
             return Err(RuntimeError::Config(format!(
-                "{name} must be canonical SHA-256"
+                "agentPolicy.execution.codingProfile.{name} must be canonical SHA-256"
             )));
         }
     }
-    validate_repository_input_uri(&format!("{}probe", values[1]), &values[1])
-        .map_err(|error| RuntimeError::Config(error.to_string()))?;
+    validate_repository_input_uri(
+        &format!("{}probe", policy.repository_uri_prefix),
+        &policy.repository_uri_prefix,
+    )
+    .map_err(|error| RuntimeError::Config(error.to_string()))?;
     Ok(Some(CodingProfileConfig {
-        product_profile_digest: values[0].clone(),
-        repository_uri_prefix: values[1].clone(),
+        product_profile_digest: policy.product_profile_digest.clone(),
+        repository_uri_prefix: policy.repository_uri_prefix.clone(),
         runtime: PiCodingRuntime {
-            compatibility_digest: values[2].clone(),
-            template_digest: values[3].clone(),
-            pi_digest: values[4].clone(),
-            provider: values[5].clone(),
-            model: values[6].clone(),
+            compatibility_digest: policy.compatibility_digest.clone(),
+            template_digest: policy.template_digest.clone(),
+            pi_digest: policy.binary_digest.clone(),
+            provider: policy.provider.clone(),
+            model: policy.model.clone(),
         },
     }))
 }
@@ -3034,25 +2241,21 @@ async fn handle_socket(
 ) {
     let (mut sender, mut receiver) = socket.split();
     let session_id_string = session_id.to_string();
-    let durable_policy = match state
-        .domain
-        .resolve_published_policy(state.host_id, authenticated.owner.agent_def_id)
-        .await
-    {
-        Ok(policy) => policy,
-        Err(error) => {
-            error!(agent_def_id=%authenticated.owner.agent_def_id, %error, "agent session policy resolution failed closed");
-            let _ = sender
-                .send(Message::Text(
-                    serde_json::to_string(&ServerMessage::Error {
-                        message: "Agent has no active published policy".into(),
-                    })
-                    .unwrap()
-                    .into(),
-                ))
-                .await;
-            return;
-        }
+    let durable_policy = state.policy_snapshot.clone();
+    let session_policy = &state.agent_config.agent_policy.session;
+    let now = chrono::Utc::now();
+    let idle_seconds = i64::try_from(session_policy.idle_seconds).unwrap_or(i64::MAX);
+    let maximum_seconds = i64::try_from(session_policy.maximum_seconds).unwrap_or(i64::MAX);
+    let Some(idle_expires_at) = now.checked_add_signed(chrono::Duration::seconds(idle_seconds))
+    else {
+        error!("Configured Agent idle session lifetime overflows UTC time");
+        return;
+    };
+    let Some(maximum_expires_at) =
+        now.checked_add_signed(chrono::Duration::seconds(maximum_seconds))
+    else {
+        error!("Configured Agent maximum session lifetime overflows UTC time");
+        return;
     };
     if let Err(err) = state
         .domain
@@ -3062,10 +2265,14 @@ async fn handle_socket(
             principal_id: authenticated.owner.principal_id.to_string(),
             user_id: Some(authenticated.owner.principal_id),
             agent_def_id: authenticated.owner.agent_def_id,
+            definition_version: state.definition_version,
+            model_provider: state.agent_config.agent_policy.model.provider.clone(),
+            model_name: state.agent_config.agent_policy.model.alias.clone(),
+            maximum_active_sessions: session_policy.maximum_active_sessions,
             bank_id: None,
             policy: durable_policy,
-            idle_expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
-            maximum_expires_at: chrono::Utc::now() + chrono::Duration::hours(24),
+            idle_expires_at,
+            maximum_expires_at,
             resume_handle_digest: sha256_digest(
                 format!("{}:{}", session_id, authenticated.owner.principal_id).as_bytes(),
             ),
@@ -3198,6 +2405,10 @@ async fn handle_socket(
                     AgentSessionId(session_id),
                     &client_message_id,
                     &user_text,
+                    &state.agent_config.agent_policy.model.provider,
+                    &state.agent_config.agent_policy.model.alias,
+                    state.agent_config.agent_policy.session.maximum_queued_turns,
+                    state.agent_config.agent_policy.model.maximum_tokens,
                 )
                 .await
             {
@@ -3487,31 +2698,35 @@ async fn handle_socket(
                 model: Some(turn_resolution.model_name.clone()),
                 temperature: state.default_temperature,
             };
-            let turn_runtime =
-                match build_model_provider(&state.runtime_config, &turn_provider_config) {
-                    Ok(runtime) => runtime,
-                    Err(error) => {
-                        let _ = state
-                            .domain
-                            .fail_turn(
-                                state.host_id,
-                                AgentSessionId(session_id),
-                                admitted.turn_id,
-                                &error.to_string(),
-                            )
-                            .await;
-                        let _ = sender
-                            .send(Message::Text(
-                                serde_json::to_string(&ServerMessage::Error {
-                                    message: "Turn provider/runtime resolution failed".into(),
-                                })
-                                .unwrap()
-                                .into(),
-                            ))
-                            .await;
-                        continue;
-                    }
-                };
+            let turn_runtime = match build_model_provider(
+                &state.agent_config,
+                &turn_provider_config,
+                &state.llm_gateway_token,
+                &state.llm_gateway_client,
+            ) {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    let _ = state
+                        .domain
+                        .fail_turn(
+                            state.host_id,
+                            AgentSessionId(session_id),
+                            admitted.turn_id,
+                            &error.to_string(),
+                        )
+                        .await;
+                    let _ = sender
+                        .send(Message::Text(
+                            serde_json::to_string(&ServerMessage::Error {
+                                message: "Turn provider/runtime resolution failed".into(),
+                            })
+                            .unwrap()
+                            .into(),
+                        ))
+                        .await;
+                    continue;
+                }
+            };
             let turn = run_agent_loop(
                 &state,
                 history.clone(),
@@ -4161,6 +3376,20 @@ struct TrustedProviderUsage {
     complete: bool,
 }
 
+fn apply_authoritative_system_prompt(
+    messages: &mut Vec<ChatMessage>,
+    system_prompt: &str,
+) -> Result<String> {
+    let user_prompt = messages
+        .last()
+        .filter(|message| message.role == "user")
+        .map(|message| message.content.clone())
+        .context("agent turn requires a trailing user message")?;
+    messages.retain(|message| message.role != "system");
+    messages.insert(0, ChatMessage::system(system_prompt));
+    Ok(user_prompt)
+}
+
 async fn run_agent_loop(
     state: &AgentState,
     mut messages: Vec<ChatMessage>,
@@ -4177,10 +3406,10 @@ async fn run_agent_loop(
     TrustedProviderUsage,
     Option<serde_json::Value>,
 )> {
-    let user_prompt = messages
-        .last()
-        .map(|m| m.content.clone())
-        .unwrap_or_default();
+    // System instructions are compiled only from the immutable Portal
+    // projection. Durable conversation history is never allowed to inject or
+    // retain a competing system role.
+    let user_prompt = apply_authoritative_system_prompt(&mut messages, &state.system_prompt)?;
 
     // 1. Recall Memory (Context Injection)
     // For now, we use a zero-vector since we don't have an embedding service yet.
@@ -4205,57 +3434,17 @@ async fn run_agent_loop(
         }
     }
 
-    // Knowledge evidence remains separate from Hindsight. Portal selects the
-    // one Phase 1a binding, and light-knowledge independently authorizes the
-    // short-lived Agent delegation against its projection.
+    // Knowledge evidence remains separate from Hindsight. The immutable Agent
+    // audience projection selects the bindings, and light-knowledge
+    // independently authorizes the short-lived delegation against its view of
+    // the same publication.
     let mut knowledge_evidence = None;
     if let Some(client) = state.knowledge_client.as_ref() {
         let environment = state
             .env_tag
             .as_deref()
             .context("Knowledge retrieval requires LIGHT_ENV_TAG")?;
-        let portal = state
-            .portal_query_client
-            .as_ref()
-            .context("Knowledge retrieval requires the Portal binding query")?;
-        let cache_key = (turn_resolution.agent_def_id, environment.to_string());
-        let bindings = match portal
-            .get_agent_knowledge_binding(
-                turn_resolution.host_id,
-                turn_resolution.agent_def_id,
-                environment,
-            )
-            .await
-        {
-            Ok(bindings) => {
-                state.knowledge_binding_cache.write().await.insert(
-                    cache_key.clone(),
-                    CachedAgentKnowledgeBinding {
-                        bindings: bindings.clone(),
-                        expires_at: Instant::now() + Duration::from_secs(30),
-                    },
-                );
-                bindings
-            }
-            Err(error) => {
-                if is_knowledge_binding_cardinality_error(&error) {
-                    return Err(error);
-                }
-                let cached = state
-                    .knowledge_binding_cache
-                    .read()
-                    .await
-                    .get(&cache_key)
-                    .filter(|cached| cached.expires_at > Instant::now())
-                    .cloned()
-                    .context(
-                        "Knowledge binding lookup failed and no fresh evidence policy is cached",
-                    )?;
-                warn!(%error,
-                    "Knowledge binding lookup unavailable; applying fresh cached evidence policy");
-                cached.bindings
-            }
-        };
+        let bindings = state.knowledge_bindings.clone();
         if !bindings.is_empty() {
             let delegated = knowledge_authorization(
                 state,
@@ -4274,9 +3463,20 @@ async fn run_agent_loop(
                     .collect(),
                 environment: environment.to_string(),
                 query: user_prompt.clone(),
-                top_k: 5,
-                token_budget: 2_000,
-                filters: None,
+                top_k: state.agent_config.agent_policy.knowledge.retrieval.top_k,
+                token_budget: state
+                    .agent_config
+                    .agent_policy
+                    .knowledge
+                    .retrieval
+                    .token_budget,
+                filters: state
+                    .agent_config
+                    .agent_policy
+                    .knowledge
+                    .retrieval
+                    .filters
+                    .clone(),
             };
             match client.search(&request_id, &delegated, &request).await {
                 Ok(KnowledgeSearchResponse::Single(response)) => {
@@ -4604,24 +3804,30 @@ async fn run_agent_loop(
     Ok((response, trusted_usage, knowledge_evidence))
 }
 
-fn is_knowledge_binding_cardinality_error(error: &anyhow::Error) -> bool {
-    let message = error.to_string();
-    message.contains("active Knowledge Base binding")
-        && (message.contains("at most one") || message.contains("at most four"))
-}
-
 async fn build_agent_state(
     runtime_config: &RuntimeConfig,
     catalog_cache: AgentCatalogCache,
     lifecycle: &light_runtime::LifecycleRegistrar,
 ) -> Result<Arc<AgentState>, RuntimeError> {
-    let model_provider_config: ModelProviderConfig = load_agent_registered_config(
+    let agent_config: AgentConfig = load_agent_registered_config(
         runtime_config,
-        MODEL_PROVIDER_FILE,
-        "light-agent/model-provider",
-        "model-provider",
+        AGENT_CONFIG_FILE,
+        AGENT_CONFIG_MODULE_ID,
+        "agent",
         [],
     )?;
+    agent_config
+        .validate(
+            &runtime_config.service_identity.service_id,
+            runtime_config.service_identity.env_tag.as_deref(),
+            chrono::Utc::now(),
+        )
+        .map_err(RuntimeError::Config)?;
+    let model_provider_config = ModelProviderConfig {
+        provider: agent_config.agent_policy.model.provider.clone(),
+        model: Some(agent_config.agent_policy.model.alias.clone()),
+        temperature: agent_config.agent_policy.model.temperature,
+    };
 
     let mcp_config: McpClientConfig = runtime_config.module_registry.load_registered(
         runtime_config,
@@ -4644,7 +3850,7 @@ async fn build_agent_state(
         mcp_config.gateway_url.trim_end_matches('/'),
         mcp_config.path.trim_start_matches('/')
     );
-    let limits = AgentLimits::from_env();
+    let limits = AgentLimits::from_policy(&agent_config.agent_policy.execution)?;
 
     let ca_cert = read_agent_ca_cert_bundle(runtime_config)?;
     let verify_hostname: bool = runtime_config
@@ -4654,9 +3860,15 @@ async fn build_agent_state(
         .unwrap_or(true);
     if !verify_hostname {
         warn!(
-            "TLS hostname verification is disabled for the MCP gateway and portal query clients; this weakens server identity validation"
+            "TLS hostname verification is disabled for light-agent outbound clients; this weakens server identity validation"
         );
     }
+
+    let llm_gateway_client = build_agent_http_client(
+        ca_cert.as_deref(),
+        verify_hostname,
+        Duration::from_secs(300),
+    )?;
 
     let mcp_client = McpGatewayClient::with_tls_options_and_response_limit(
         &mcp_gateway_url,
@@ -4686,35 +3898,10 @@ async fn build_agent_state(
         _ => return Err(RuntimeError::Config("LIGHT_AGENT_DELEGATION_SECRET is required unless LIGHT_AGENT_ALLOW_BROAD_GATEWAY_TOKEN=true is explicitly set for local compatibility".into())),
     };
 
-    let host_id = required_uuid_env_var("LIGHT_AGENT_HOST_ID")
-        .map_err(|e| RuntimeError::Config(e.to_string()))?;
-    let agent_def_id =
-        optional_uuid_env_var(&["LIGHT_AGENT_AGENT_DEF_ID", "LIGHT_AGENT_API_VERSION_ID"])
-            .map_err(|e| RuntimeError::Config(e.to_string()))?
-            .ok_or_else(|| {
-                RuntimeError::Config(
-                    "LIGHT_AGENT_AGENT_DEF_ID or LIGHT_AGENT_API_VERSION_ID is required"
-                        .to_string(),
-                )
-            })?;
-    let definition_identity: Option<(i64, String)> = sqlx::query_as(
-        "SELECT d.aggregate_version,
-            p.policy_digest FROM agent_definition_t d
-            JOIN agent_policy_snapshot_t p ON p.host_id=d.host_id
-              AND p.policy_snapshot_id=d.policy_snapshot_id AND p.agent_def_id=d.agent_def_id
-              AND p.revoked_ts IS NULL
-            WHERE d.host_id=$1 AND d.agent_def_id=$2 AND d.active=TRUE",
-    )
-    .bind(host_id)
-    .bind(agent_def_id)
-    .fetch_optional(&pool)
-    .await
-    .map_err(|e| RuntimeError::Config(format!("failed to resolve Agent pool identity: {e}")))?;
-    let (definition_version, policy_digest) = definition_identity.ok_or_else(|| {
-        RuntimeError::Config(
-            "configured agent definition has no active published policy snapshot".into(),
-        )
-    })?;
+    let host_id = agent_config.runtime_policy.host_id;
+    let agent_def_id = agent_config.agent_policy.agent_def_id;
+    let definition_version = agent_config.agent_policy.definition_version;
+    let policy_digest = agent_config.runtime_policy.policy_digest.clone();
     let security = load_security_runtime(runtime_config, true)?
         .ok_or_else(|| RuntimeError::Config("JWT verification must be enabled".to_string()))?;
     security.bootstrap().await.map_err(|rejection| {
@@ -4726,15 +3913,23 @@ async fn build_agent_state(
     let env_tag = runtime_config.service_identity.env_tag.clone();
     let portal_token =
         registry_token(&portal_registry_config).ok_or(RuntimeError::MissingPortalToken)?;
-    let memory_write_mode = std::env::var("LIGHT_AGENT_MEMORY_WRITE_MODE")
-        .unwrap_or_else(|_| "portal-command".to_string())
+    let memory_write_mode = agent_config
+        .agent_policy
+        .memory
+        .write_mode
+        .trim()
         .to_ascii_lowercase();
     let memory: Arc<dyn MemoryStore> = match memory_write_mode.as_str() {
         "portal-command" => {
-            let command_url = std::env::var("LIGHT_AGENT_PORTAL_COMMAND_URL")
-                .ok()
+            let command_url = agent_config
+                .agent_policy
+                .memory
+                .portal_command_url
+                .clone()
                 .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| portal_query_base_url(&portal_registry_config));
+                .map(Ok)
+                .unwrap_or_else(|| to_portal_command_url(&portal_registry_config.portal_url))
+                .map_err(|error| RuntimeError::Config(error.to_string()))?;
             let command_client = PortalCommandClient::with_options(
                 &command_url,
                 portal_token.clone(),
@@ -4747,7 +3942,7 @@ async fn build_agent_state(
             })?;
             Arc::new(PortalCommandMemoryStore::new(pool.clone(), command_client))
         }
-        "direct-pg" if bool_from_env("LIGHT_AGENT_ALLOW_DIRECT_PG_MEMORY", false) => {
+        "direct-pg" if agent_config.agent_policy.memory.allow_direct_pg => {
             warn!(
                 "direct PostgreSQL memory writes explicitly enabled; use portal-command in production"
             );
@@ -4755,7 +3950,7 @@ async fn build_agent_state(
         }
         "direct-pg" => {
             return Err(RuntimeError::Config(
-                "direct-pg memory writes require LIGHT_AGENT_ALLOW_DIRECT_PG_MEMORY=true; portal-command is the production default".to_string(),
+                "direct-pg memory writes require agentPolicy.memory.allowDirectPg=true; portal-command is the production default".to_string(),
             ));
         }
         other => {
@@ -4764,55 +3959,45 @@ async fn build_agent_state(
             )));
         }
     };
-    let portal_query_client = Some(
-        PortalQueryClient::with_options(
-            &portal_query_base_url(&portal_registry_config),
-            portal_token.clone(),
-            ca_cert.as_deref(),
-            verify_hostname,
-            mcp_config.timeout_ms,
-        )
-        .map_err(|e| RuntimeError::Config(format!("failed to build portal query client: {e}")))?,
-    );
-
-    let catalog_cache_ttl = duration_from_env_seconds(
-        "LIGHT_AGENT_CATALOG_CACHE_TTL_SECONDS",
-        DEFAULT_CATALOG_CACHE_TTL_SECONDS,
-    );
-    let mut catalog_stale_on_error = duration_from_env_seconds(
-        "LIGHT_AGENT_CATALOG_STALE_ON_ERROR_SECONDS",
-        DEFAULT_CATALOG_STALE_ON_ERROR_SECONDS,
+    let catalog_cache_ttl =
+        Duration::from_secs(agent_config.agent_policy.catalog.cache_ttl_seconds.max(1));
+    let mut catalog_stale_on_error = Duration::from_secs(
+        agent_config
+            .agent_policy
+            .catalog
+            .stale_on_error_seconds
+            .max(1),
     );
     if catalog_stale_on_error < catalog_cache_ttl {
         catalog_stale_on_error = catalog_cache_ttl;
     }
-    let catalog_semantic_search_enabled =
-        bool_from_env("LIGHT_AGENT_ENABLE_SEMANTIC_CATALOG_SEARCH", false);
-    let catalog_semantic_limit = usize_from_env(
-        "LIGHT_AGENT_SEMANTIC_CATALOG_LIMIT",
-        DEFAULT_SEMANTIC_CATALOG_LIMIT,
-        100,
-    );
-    let coding_profile = coding_profile_from_environment()?;
-    let personal_profile_digest = std::env::var("LIGHT_AGENT_PERSONAL_PROFILE_DIGEST")
-        .ok()
+    let coding_profile =
+        coding_profile_from_policy(agent_config.agent_policy.execution.coding_profile.as_ref())?;
+    let personal_profile_digest = agent_config
+        .agent_policy
+        .memory
+        .personal_profile_digest
+        .clone()
         .filter(|value| !value.trim().is_empty());
     if personal_profile_digest
         .as_deref()
         .is_some_and(|value| !canonical_sha256(value))
     {
         return Err(RuntimeError::Config(
-            "LIGHT_AGENT_PERSONAL_PROFILE_DIGEST must be canonical SHA-256".into(),
+            "agentPolicy.memory.personalProfileDigest must be canonical SHA-256".into(),
         ));
     }
-    let knowledge_client = std::env::var("LIGHT_AGENT_KNOWLEDGE_URL")
-        .ok()
+    let knowledge_client = agent_config
+        .agent_policy
+        .knowledge
+        .endpoint
+        .clone()
         .filter(|value| !value.trim().is_empty())
         .map(|endpoint| {
             KnowledgeClient::new(
                 &endpoint,
                 Duration::from_millis(1_000),
-                bool_from_env("LIGHT_AGENT_KNOWLEDGE_ALLOW_PRIVATE_PLAINTEXT", false),
+                agent_config.agent_policy.knowledge.allow_private_plaintext,
             )
         })
         .transpose()
@@ -4820,14 +4005,75 @@ async fn build_agent_state(
             RuntimeError::Config(format!("failed to build Knowledge client: {error}"))
         })?;
 
-    let domain = AgentRepository::new(pool.clone());
+    let configured_catalog = agent_config
+        .agent_policy
+        .catalog
+        .effective_catalog
+        .clone()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| {
+            RuntimeError::Config(format!(
+                "agentPolicy.catalog.effectiveCatalog is invalid: {error}"
+            ))
+        })?;
+    let mut knowledge_bindings = agent_config
+        .agent_policy
+        .knowledge
+        .bindings
+        .iter()
+        .cloned()
+        .map(serde_json::from_value)
+        .collect::<Result<Vec<AgentKnowledgeBinding>, _>>()
+        .map_err(|error| {
+            RuntimeError::Config(format!(
+                "agentPolicy.knowledge.bindings are invalid: {error}"
+            ))
+        })?
+        .into_iter()
+        .filter(|binding| binding.active && binding.agent_id == agent_def_id)
+        .collect::<Vec<_>>();
+    knowledge_bindings.sort_by(|left, right| {
+        right
+            .priority
+            .cmp(&left.priority)
+            .then_with(|| left.knowledge_base_id.cmp(&right.knowledge_base_id))
+    });
+    if knowledge_bindings.len() > 4 {
+        return Err(RuntimeError::Config(
+            "agentPolicy.knowledge.bindings permits at most four active bindings".into(),
+        ));
+    }
+
+    let domain = AgentRepository::with_authority(
+        pool.clone(),
+        AgentRuntimeAuthority {
+            host_id,
+            agent_def_id,
+            definition_version,
+            policy_snapshot_id: agent_config.agent_policy.policy_snapshot.snapshot_id,
+            policy_digest: policy_digest.clone(),
+            data_boundary_digest: agent_config
+                .agent_policy
+                .policy_snapshot
+                .data_boundary_digest
+                .clone(),
+            model_provider: agent_config.agent_policy.model.provider.clone(),
+            model_name: agent_config.agent_policy.model.alias.clone(),
+        },
+    );
     let turn_dispatch = TurnDispatchCoordinator::new(domain.clone());
     turn_dispatch.spawn(host_id);
     let state = Arc::new(AgentState {
-        runtime_config: runtime_config.clone(),
+        policy_snapshot: agent_config.agent_policy.policy_snapshot.clone(),
+        system_prompt: agent_config.compiled_system_prompt(),
+        agent_config,
+        llm_gateway_token: portal_token,
+        llm_gateway_client,
         default_temperature: model_provider_config.temperature,
         mcp_client,
-        portal_query_client,
+        configured_catalog,
+        knowledge_bindings,
         catalog_cache,
         memory,
         domain,
@@ -4843,12 +4089,9 @@ async fn build_agent_state(
         env_tag,
         catalog_cache_ttl,
         catalog_stale_on_error,
-        catalog_semantic_search_enabled,
-        catalog_semantic_limit,
         coding_profile,
         personal_profile_digest,
         knowledge_client,
-        knowledge_binding_cache: Arc::new(RwLock::new(HashMap::new())),
     });
     state.domain.spawn_result_reconciler();
 
@@ -4874,6 +4117,30 @@ fn read_agent_ca_cert_bundle(
         "loaded light-agent outbound CA certificate bundle"
     );
     Ok(Some(bundle))
+}
+
+fn build_agent_http_client(
+    ca_cert_pem: Option<&[u8]>,
+    verify_hostname: bool,
+    timeout: Duration,
+) -> Result<reqwest::Client, RuntimeError> {
+    let mut builder = reqwest::Client::builder()
+        .timeout(timeout)
+        .connect_timeout(Duration::from_secs(10));
+    if let Some(pem) = ca_cert_pem {
+        let certificates = light_client::parse_ca_cert_bundle(pem).map_err(|error| {
+            RuntimeError::Config(format!("invalid outbound CA certificate bundle: {error}"))
+        })?;
+        for certificate in certificates {
+            builder = builder.add_root_certificate(certificate);
+        }
+    }
+    if !verify_hostname {
+        builder = builder.danger_accept_invalid_hostnames(true);
+    }
+    builder
+        .build()
+        .map_err(|error| RuntimeError::Config(format!("failed to build outbound client: {error}")))
 }
 
 fn agent_ca_cert_path(runtime_config: &RuntimeConfig) -> Option<PathBuf> {
@@ -4975,11 +4242,10 @@ mod tests {
         AgentCatalogCache, AgentLimits, CatalogCacheKey, CatalogSkill, CatalogTool,
         CatalogToolPolicy, ChatMessage, EffectiveAgentCatalog, MAX_SESSION_MESSAGES,
         ModelProviderConfig, SessionOwner, TurnDispatchCoordinator, agent_ca_cert_path_from_config,
-        bind_authenticated_principal, bound_untrusted_text, build_effective_catalog_data,
+        apply_authoritative_system_prompt, bind_authenticated_principal, bound_untrusted_text,
         choose_model, collect_catalog_tool_names, collect_policy_diagnostics, filter_gateway_tools,
-        is_knowledge_binding_cardinality_error, is_local_cli_provider, normalize_provider_id,
-        normalized_claim_values, parse_tool_arguments, select_catalog_tools, trim_history,
-        validate_repository_input_uri, validate_session_owner,
+        normalize_provider_id, normalized_claim_values, parse_tool_arguments, select_catalog_tools,
+        trim_history, validate_repository_input_uri, validate_session_owner,
     };
     use light_agent::domain::AgentRepository;
     use light_runtime::config::{BootstrapConfig, ClientConfig};
@@ -5024,16 +4290,23 @@ mod tests {
     }
 
     #[test]
-    fn phase1b_binding_cardinality_failure_is_fail_closed() {
-        assert!(is_knowledge_binding_cardinality_error(&anyhow::anyhow!(
-            "Phase 1b permits at most four active Knowledge Base bindings per Agent"
-        )));
-        assert!(is_knowledge_binding_cardinality_error(&anyhow::anyhow!(
-            "at most one active Knowledge Base binding is permitted"
-        )));
-        assert!(!is_knowledge_binding_cardinality_error(&anyhow::anyhow!(
-            "Portal query temporarily unavailable"
-        )));
+    fn authoritative_system_prompt_requires_and_preserves_a_user_turn() {
+        let mut empty = Vec::new();
+        assert!(apply_authoritative_system_prompt(&mut empty, "policy").is_err());
+
+        let mut messages = vec![
+            ChatMessage::system("untrusted persisted system"),
+            ChatMessage::user("hello"),
+        ];
+        assert_eq!(
+            apply_authoritative_system_prompt(&mut messages, "published policy").unwrap(),
+            "hello"
+        );
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "system");
+        assert_eq!(messages[0].content, "published policy");
+        assert_eq!(messages[1].role, "user");
+        assert_eq!(messages[1].content, "hello");
     }
 
     #[tokio::test]
@@ -5069,41 +4342,6 @@ mod tests {
             history.last().unwrap().content,
             format!("msg-{}", MAX_SESSION_MESSAGES + 4)
         );
-    }
-
-    #[test]
-    fn effective_catalog_request_data_adds_semantic_fields_only_when_enabled() {
-        let host_id = Uuid::parse_str("019ec75c-72c5-702e-8e42-59dcf1e68cc2").unwrap();
-        let agent_def_id = Uuid::parse_str("019ec75c-72c3-71fc-875b-b918d6277702").unwrap();
-
-        let default_data = build_effective_catalog_data(
-            host_id,
-            agent_def_id,
-            1,
-            "policy-digest".to_string(),
-            "com.networknt.agent-1.0.0",
-            None,
-            None,
-            None,
-        );
-
-        assert!(default_data.get("semanticQuery").is_none());
-        assert!(default_data.get("semanticLimit").is_none());
-
-        let semantic_data = build_effective_catalog_data(
-            host_id,
-            agent_def_id,
-            1,
-            "policy-digest".to_string(),
-            "com.networknt.agent-1.0.0",
-            Some("dev"),
-            Some("  find customer preferences  "),
-            Some(25),
-        );
-
-        assert_eq!(semantic_data["envTag"], "dev");
-        assert_eq!(semantic_data["semanticQuery"], "find customer preferences");
-        assert_eq!(semantic_data["semanticLimit"], 25);
     }
 
     #[tokio::test]
@@ -5163,8 +4401,6 @@ mod tests {
     fn provider_id_normalization_accepts_common_spellings() {
         assert_eq!(normalize_provider_id("Azure_OpenAI"), "azure-openai");
         assert_eq!(normalize_provider_id(" gemini cli "), "gemini-cli");
-        assert!(is_local_cli_provider("gemini-cli"));
-        assert!(!is_local_cli_provider("gemini"));
     }
 
     #[test]

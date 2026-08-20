@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Row, Transaction, postgres::PgListener};
+use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::governed_model::GATEWAY_PROVIDER_ID;
@@ -16,81 +17,19 @@ use execution_runner_protocol::{
 #[derive(Clone)]
 pub struct AgentRepository {
     pool: PgPool,
+    authority: Option<Arc<AgentRuntimeAuthority>>,
 }
 
-async fn resolve_agent_model_binding(
-    tx: &mut Transaction<'_, Postgres>,
-    host_id: Uuid,
-    agent_def_id: Uuid,
-    definition_version: i64,
-) -> Result<(String, String)> {
-    let row = sqlx::query(
-        "SELECT d.model_alias_id,d.model_policy_id,d.model_provider,d.model_name,
-                direct.alias_name direct_alias,
-                (SELECT count(*) FROM llm_model_policy_binding_t b
-                   JOIN llm_public_alias_t a ON a.host_id=b.host_id
-                    AND a.public_alias_id=b.public_alias_id
-                  WHERE b.host_id=d.host_id AND b.model_policy_id=d.model_policy_id
-                    AND b.subject_type='AGENT' AND b.subject_id=d.agent_def_id::text
-                    AND b.agent_default IS TRUE AND b.active IS TRUE
-                    AND a.active IS TRUE AND a.lifecycle_status='ACTIVE') policy_default_count,
-                (SELECT max(a.alias_name) FROM llm_model_policy_binding_t b
-                   JOIN llm_public_alias_t a ON a.host_id=b.host_id
-                    AND a.public_alias_id=b.public_alias_id
-                  WHERE b.host_id=d.host_id AND b.model_policy_id=d.model_policy_id
-                    AND b.subject_type='AGENT' AND b.subject_id=d.agent_def_id::text
-                    AND b.agent_default IS TRUE AND b.active IS TRUE
-                    AND a.active IS TRUE AND a.lifecycle_status='ACTIVE') policy_alias
-           FROM agent_definition_t d
-           LEFT JOIN llm_public_alias_t direct ON direct.host_id=d.host_id
-            AND direct.public_alias_id=d.model_alias_id AND direct.active IS TRUE
-            AND direct.lifecycle_status='ACTIVE'
-          WHERE d.host_id=$1 AND d.agent_def_id=$2 AND d.aggregate_version=$3",
-    )
-    .bind(host_id)
-    .bind(agent_def_id)
-    .bind(definition_version)
-    .fetch_one(&mut **tx)
-    .await?;
-    let alias_id: Option<Uuid> = row.try_get("model_alias_id")?;
-    let policy_id: Option<Uuid> = row.try_get("model_policy_id")?;
-    match (alias_id, policy_id) {
-        (Some(_), None) => {
-            let alias: Option<String> = row.try_get("direct_alias")?;
-            Ok((
-                GATEWAY_PROVIDER_ID.to_string(),
-                alias
-                    .filter(|value| !value.trim().is_empty())
-                    .context("governed model alias is inactive or unauthorized")?,
-            ))
-        }
-        (None, Some(_)) => {
-            let count: i64 = row.try_get("policy_default_count")?;
-            let alias: Option<String> = row.try_get("policy_alias")?;
-            if count != 1 {
-                bail!("governed model policy must resolve exactly one agent-default alias")
-            }
-            Ok((
-                GATEWAY_PROVIDER_ID.to_string(),
-                alias
-                    .filter(|value| !value.trim().is_empty())
-                    .context("governed model policy default is inactive or unauthorized")?,
-            ))
-        }
-        (None, None) => {
-            let provider: Option<String> = row.try_get("model_provider")?;
-            let model: Option<String> = row.try_get("model_name")?;
-            let provider = provider.filter(|value| !value.trim().is_empty());
-            let model = model.filter(|value| !value.trim().is_empty());
-            match (provider, model) {
-                (Some(provider), Some(model)) => Ok((provider, model)),
-                _ => {
-                    bail!("agent has neither a governed alias nor a complete legacy model binding")
-                }
-            }
-        }
-        (Some(_), Some(_)) => bail!("agent has conflicting governed model selectors"),
-    }
+#[derive(Debug, Clone)]
+pub struct AgentRuntimeAuthority {
+    pub host_id: Uuid,
+    pub agent_def_id: Uuid,
+    pub definition_version: i64,
+    pub policy_snapshot_id: Uuid,
+    pub policy_digest: String,
+    pub data_boundary_digest: String,
+    pub model_provider: String,
+    pub model_name: String,
 }
 
 pub struct SessionSpec {
@@ -99,6 +38,10 @@ pub struct SessionSpec {
     pub principal_id: String,
     pub user_id: Option<Uuid>,
     pub agent_def_id: Uuid,
+    pub definition_version: i64,
+    pub model_provider: String,
+    pub model_name: String,
+    pub maximum_active_sessions: u64,
     pub bank_id: Option<Uuid>,
     pub policy: PolicySnapshot,
     pub idle_expires_at: DateTime<Utc>,
@@ -549,52 +492,11 @@ fn token_cost_micros(tokens: i64, rate_micros_per_million: i64) -> i64 {
 }
 
 impl AgentRepository {
-    /// Resolves the immutable policy published on the active agent definition.
-    /// Session admission must never manufacture policy component digests from
-    /// request or process-local values.
-    pub async fn resolve_published_policy(
-        &self,
-        host_id: Uuid,
-        agent_def_id: Uuid,
-    ) -> Result<PolicySnapshot> {
-        let row = sqlx::query(
-            "SELECT p.policy_snapshot_id,p.definition_digest,p.product_profile_digest,
-                    p.model_digest,p.catalog_digest,p.memory_digest,p.execution_digest,
-                    p.channel_digest,p.data_boundary_digest,p.resolved_snapshot,p.policy_digest
-             FROM agent_definition_t d
-             JOIN agent_policy_snapshot_t p ON p.host_id=d.host_id
-               AND p.policy_snapshot_id=d.policy_snapshot_id
-               AND p.agent_def_id=d.agent_def_id
-             WHERE d.host_id=$1 AND d.agent_def_id=$2 AND d.active=TRUE
-               AND p.revoked_ts IS NULL",
-        )
-        .bind(host_id)
-        .bind(agent_def_id)
-        .fetch_optional(&self.pool)
-        .await?
-        .context("agent definition has no active published policy snapshot")?;
-        let document: Value = row.try_get("resolved_snapshot")?;
-        let policy: PolicySnapshot = serde_json::from_value(document)
-            .context("published agent policy snapshot document is invalid")?;
-        let expected_digest: String = row.try_get("policy_digest")?;
-        // PolicySnapshot has a closed, stable field order. Hashing the typed
-        // document also avoids depending on PostgreSQL JSONB key ordering.
-        let actual_digest = policy_document_digest(&policy)?;
-        if actual_digest != expected_digest
-            || policy.snapshot_id != row.try_get::<Uuid, _>("policy_snapshot_id")?
-            || policy.definition_digest != row.try_get::<String, _>("definition_digest")?
-            || policy.product_profile_digest
-                != row.try_get::<String, _>("product_profile_digest")?
-            || policy.model_digest != row.try_get::<String, _>("model_digest")?
-            || policy.catalog_digest != row.try_get::<String, _>("catalog_digest")?
-            || policy.memory_digest != row.try_get::<String, _>("memory_digest")?
-            || policy.execution_digest != row.try_get::<String, _>("execution_digest")?
-            || policy.channel_digest != row.try_get::<String, _>("channel_digest")?
-            || policy.data_boundary_digest != row.try_get::<String, _>("data_boundary_digest")?
-        {
-            bail!("published agent policy snapshot failed canonical binding verification")
+    pub fn with_authority(pool: PgPool, authority: AgentRuntimeAuthority) -> Self {
+        Self {
+            pool,
+            authority: Some(Arc::new(authority)),
         }
-        Ok(policy)
     }
 
     pub async fn schedule_edge_action(
@@ -736,7 +638,10 @@ impl AgentRepository {
         Ok(action_attempt_id)
     }
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            authority: None,
+        }
     }
 
     pub fn pool(&self) -> PgPool {
@@ -809,6 +714,10 @@ impl AgentRepository {
     }
 
     pub async fn reconcile_agent_jobs(&self) -> Result<u64> {
+        let authority = self
+            .authority
+            .as_ref()
+            .context("workflow Agent jobs require immutable Config Server authority")?;
         let mut changed = 0;
         changed += sqlx::query("WITH expired AS (UPDATE agent_job_t SET state='FAILED',
                     error=jsonb_build_object('class','deadline_exceeded'),terminal_ts=now(),updated_ts=now()
@@ -821,13 +730,15 @@ impl AgentRepository {
         for _ in 0..100 {
             let mut tx = self.pool.begin().await?;
             let row=sqlx::query("SELECT j.host_id,j.job_id,j.agent_def_id,j.idempotency_key,j.policy_digest,
-                    j.data_boundary_digest,j.deadline_ts,j.token_budget,j.cost_budget_micros,j.delegation_depth,
-                    d.aggregate_version,d.policy_snapshot_id,d.model_provider,d.model_name
-                 FROM agent_job_t j JOIN agent_definition_t d ON d.host_id=j.host_id AND d.agent_def_id=j.agent_def_id
-                 JOIN agent_policy_snapshot_t p ON p.host_id=d.host_id AND p.policy_snapshot_id=d.policy_snapshot_id
-                   AND p.policy_digest=j.policy_digest AND p.data_boundary_digest=j.data_boundary_digest AND p.revoked_ts IS NULL
-                 WHERE j.state='PENDING' AND j.deadline_ts>now() ORDER BY j.created_ts,j.job_id
+                    j.data_boundary_digest,j.deadline_ts,j.token_budget,j.cost_budget_micros,j.delegation_depth
+                 FROM agent_job_t j
+                 WHERE j.state='PENDING' AND j.deadline_ts>now()
+                   AND j.host_id=$1 AND j.agent_def_id=$2 AND j.policy_digest=$3
+                   AND j.data_boundary_digest=$4
+                 ORDER BY j.created_ts,j.job_id
                  LIMIT 1 FOR UPDATE OF j SKIP LOCKED")
+                .bind(authority.host_id).bind(authority.agent_def_id).bind(&authority.policy_digest)
+                .bind(&authority.data_boundary_digest)
                 .fetch_optional(&mut *tx).await?;
             let Some(row) = row else {
                 tx.commit().await?;
@@ -841,8 +752,8 @@ impl AgentRepository {
                     agent_definition_version,policy_snapshot_id,idle_expires_ts,maximum_expires_ts,resume_handle_digest)
                     VALUES($1,$2,$3,$4,$5,$6,$7,$7,$8) ON CONFLICT(host_id,session_id) DO NOTHING")
                 .bind(host).bind(job).bind(format!("workflow-job:{job}"))
-                .bind(row.try_get::<Uuid,_>("agent_def_id")?).bind(row.try_get::<i64,_>("aggregate_version")?)
-                .bind(row.try_get::<Uuid,_>("policy_snapshot_id")?).bind(deadline)
+                .bind(authority.agent_def_id).bind(authority.definition_version)
+                .bind(authority.policy_snapshot_id).bind(deadline)
                 .bind(sha256_digest(format!("workflow-job:{job}").as_bytes())).execute(&mut *tx).await?;
             sqlx::query("INSERT INTO agent_turn_t(host_id,turn_id,session_id,turn_sequence,queue_sequence,
                     origin_kind,origin_ref,client_message_id,idempotency_key,policy_snapshot_id,policy_digest,
@@ -850,9 +761,9 @@ impl AgentRepository {
                     cost_budget_micros,deadline_ts,delegation_depth)
                     VALUES($1,$2,$3,1,1,'workflow',$4,$5,$5,$6,$7,$8,$9,$10,20,$11,$12,$13,$14)")
                 .bind(host).bind(turn).bind(job).bind(job.to_string())
-                .bind(row.try_get::<String,_>("idempotency_key")?).bind(row.try_get::<Uuid,_>("policy_snapshot_id")?)
+                .bind(row.try_get::<String,_>("idempotency_key")?).bind(authority.policy_snapshot_id)
                 .bind(row.try_get::<String,_>("policy_digest")?).bind(row.try_get::<String,_>("data_boundary_digest")?)
-                .bind(row.try_get::<String,_>("model_provider")?).bind(row.try_get::<String,_>("model_name")?)
+                .bind(&authority.model_provider).bind(&authority.model_name)
                 .bind(row.try_get::<i64,_>("token_budget")?).bind(row.try_get::<i64,_>("cost_budget_micros")?)
                 .bind(deadline).bind(row.try_get::<i32,_>("delegation_depth")?).execute(&mut *tx).await?;
             sqlx::query(
@@ -1300,28 +1211,20 @@ impl AgentRepository {
     pub async fn create_or_resume_session(&self, spec: &SessionSpec) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         persist_policy(&mut tx, spec.host_id, spec.agent_def_id, &spec.policy).await?;
-        let policy_digest =
-            sha256_digest(&serde_json::to_vec(&serde_json::to_value(&spec.policy)?)?);
-        let definition_version: i64 = sqlx::query_scalar(
-            "SELECT aggregate_version
-            FROM agent_definition_t WHERE host_id=$1 AND agent_def_id=$2",
-        )
-        .bind(spec.host_id)
-        .bind(spec.agent_def_id)
-        .fetch_one(&mut *tx)
-        .await?;
-        let (provider, _) = resolve_agent_model_binding(
-            &mut tx,
-            spec.host_id,
-            spec.agent_def_id,
-            definition_version,
-        )
-        .await?;
+        let policy_digest = policy_document_digest(&spec.policy)?;
+        if spec.definition_version <= 0
+            || spec.model_provider != GATEWAY_PROVIDER_ID
+            || spec.model_name.trim().is_empty()
+        {
+            bail!(
+                "session authority must contain a positive definition version and governed gateway model alias"
+            )
+        }
         let pool = resolve_pool(
             &mut tx,
             spec.host_id,
             spec.agent_def_id,
-            definition_version,
+            spec.definition_version,
             &policy_digest,
             &spec.policy.data_boundary_digest,
             &spec.policy.product_profile_digest,
@@ -1342,13 +1245,34 @@ impl AgentRepository {
         .fetch_one(&mut *tx)
         .await?;
         if !exists {
+            if spec.maximum_active_sessions == 0 || spec.maximum_active_sessions > i64::MAX as u64 {
+                bail!("configured active-session limit is invalid")
+            }
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+                .bind(format!(
+                    "agent-config-active-sessions:{}:{}",
+                    spec.host_id, spec.agent_def_id
+                ))
+                .execute(&mut *tx)
+                .await?;
+            let active: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM agent_session_t
+                 WHERE host_id=$1 AND agent_def_id=$2 AND state='ACTIVE'",
+            )
+            .bind(spec.host_id)
+            .bind(spec.agent_def_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if active >= spec.maximum_active_sessions as i64 {
+                bail!("configured Agent active-session limit exceeded")
+            }
             enforce_quotas(
                 &mut tx,
                 spec.host_id,
                 &spec.principal_id,
                 spec.agent_def_id,
                 &spec.policy.product_profile_digest,
-                &provider,
+                &spec.model_provider,
                 pool.as_ref().map(|p| p.pool_id),
                 None,
                 true,
@@ -1371,7 +1295,7 @@ impl AgentRepository {
         .bind(&spec.principal_id)
         .bind(spec.user_id)
         .bind(spec.agent_def_id)
-        .bind(definition_version)
+        .bind(spec.definition_version)
         .bind(spec.bank_id)
         .bind(spec.policy.snapshot_id)
         .bind(spec.idle_expires_at)
@@ -1389,7 +1313,7 @@ impl AgentRepository {
             let state: String = row.try_get("state")?;
             if principal != spec.principal_id
                 || definition != spec.agent_def_id
-                || row.try_get::<i64, _>("agent_definition_version")? != definition_version
+                || row.try_get::<i64, _>("agent_definition_version")? != spec.definition_version
                 || row.try_get::<Uuid, _>("policy_snapshot_id")? != spec.policy.snapshot_id
                 || state != "ACTIVE"
                 || row.try_get::<Option<Uuid>, _>("service_pool_id")?
@@ -1436,6 +1360,10 @@ impl AgentRepository {
         session_id: AgentSessionId,
         client_message_id: &str,
         text: &str,
+        model_provider: &str,
+        model_name: &str,
+        maximum_queued_turns: u64,
+        maximum_model_tokens: u64,
     ) -> Result<AdmittedTurn> {
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
@@ -1474,9 +1402,32 @@ impl AgentRepository {
         let agent: Uuid = row.try_get("agent_def_id")?;
         let pool: Option<Uuid> = row.try_get("service_pool_id")?;
         let profile: String = row.try_get("product_profile_digest")?;
-        let definition_version: i64 = row.try_get("agent_definition_version")?;
-        let (model_provider, model_name) =
-            resolve_agent_model_binding(&mut tx, host_id, agent, definition_version).await?;
+        if maximum_queued_turns == 0
+            || maximum_queued_turns > i64::MAX as u64
+            || maximum_model_tokens == 0
+            || maximum_model_tokens > i64::MAX as u64
+        {
+            bail!("configured turn limits are invalid")
+        }
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(format!("agent-config-queued-turns:{host_id}:{agent}"))
+            .execute(&mut *tx)
+            .await?;
+        let queued: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM agent_turn_t t
+             JOIN agent_session_t s ON s.host_id=t.host_id AND s.session_id=t.session_id
+             WHERE t.host_id=$1 AND s.agent_def_id=$2 AND t.state='QUEUED'",
+        )
+        .bind(host_id)
+        .bind(agent)
+        .fetch_one(&mut *tx)
+        .await?;
+        if queued >= maximum_queued_turns as i64 {
+            bail!("configured Agent queued-turn limit exceeded")
+        }
+        if model_provider != GATEWAY_PROVIDER_ID || model_name.trim().is_empty() {
+            bail!("turn authority requires a governed llm-gateway alias")
+        }
         let rate = sqlx::query(
             "SELECT input_cost_micros_per_million,output_cost_micros_per_million
              FROM agent_model_rate_t WHERE host_id=$1 AND provider=$2 AND model=$3
@@ -1485,8 +1436,8 @@ impl AgentRepository {
              ORDER BY effective_ts DESC,rate_id DESC LIMIT 1 FOR SHARE",
         )
         .bind(host_id)
-        .bind(&model_provider)
-        .bind(&model_name)
+        .bind(model_provider)
+        .bind(model_name)
         .fetch_optional(&mut *tx)
         .await?;
         let input_rate = rate
@@ -1500,7 +1451,7 @@ impl AgentRepository {
             .transpose()?
             .unwrap_or(0);
         let turn_id = AgentTurnId::new();
-        let token_reservation = 65_536_i64;
+        let token_reservation = maximum_model_tokens as i64;
         let cost_reservation = token_cost_micros(token_reservation, input_rate.max(output_rate));
         enforce_quotas(
             &mut tx,
@@ -1508,7 +1459,7 @@ impl AgentRepository {
             &principal,
             agent,
             &profile,
-            &model_provider,
+            model_provider,
             pool,
             Some(turn_id.0),
             false,
@@ -1520,7 +1471,7 @@ impl AgentRepository {
         let deadline = std::cmp::min(Utc::now() + Duration::minutes(2), maximum);
         sqlx::query("INSERT INTO agent_turn_t (host_id,turn_id,session_id,turn_sequence,queue_sequence,origin_kind,client_message_id,idempotency_key,policy_snapshot_id,policy_digest,data_boundary_digest,model_provider,model_name,model_action_budget,token_budget,cost_budget_micros,quota_input_cost_micros_per_million,quota_output_cost_micros_per_million,deadline_ts,service_pool_id) VALUES ($1,$2,$3,$4,$5,'user',$6,$6,$7,$8,$9,$10,$11,20,$12,$13,$14,$15,$16,$17)")
             .bind(host_id).bind(turn_id.0).bind(session_id.0).bind(turn_sequence).bind(queue_sequence).bind(client_message_id)
-            .bind(policy_snapshot_id).bind(&policy_digest).bind(&boundary).bind(&model_provider).bind(&model_name)
+            .bind(policy_snapshot_id).bind(&policy_digest).bind(&boundary).bind(model_provider).bind(model_name)
             .bind(token_reservation).bind(cost_reservation).bind(input_rate).bind(output_rate)
             .bind(deadline).bind(pool).execute(&mut *tx).await?;
         sqlx::query("UPDATE agent_session_t SET next_turn_sequence=next_turn_sequence+1,next_queue_sequence=next_queue_sequence+1,updated_ts=now() WHERE host_id=$1 AND session_id=$2")
@@ -2055,6 +2006,8 @@ async fn persist_policy(
 }
 
 fn policy_document_digest(policy: &PolicySnapshot) -> Result<String> {
+    // This byte representation is the deployed Portal/Agent contract. Do not
+    // switch algorithms without a coordinated snapshot backfill.
     Ok(sha256_digest(&serde_json::to_vec(policy)?))
 }
 
@@ -2095,7 +2048,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
-    fn published_policy_digest_is_stable_after_jsonb_key_reordering() {
+    fn published_policy_digest_preserves_deployed_serialization_contract() {
         let policy = PolicySnapshot {
             snapshot_id: Uuid::nil(),
             definition_digest: sha256_digest(b"definition"),
@@ -2124,6 +2077,20 @@ mod tests {
         assert_eq!(
             policy_document_digest(&policy).unwrap(),
             policy_document_digest(&decoded).unwrap()
+        );
+        assert_eq!(
+            policy_document_digest(&policy).unwrap(),
+            "sha256:d37c0b58effd3deb733916bdd88162cfdb53165aa8d170786e36c0eb4a043e2e"
+        );
+        let sorted_value_digest =
+            sha256_digest(&serde_json::to_vec(&serde_json::to_value(&policy).unwrap()).unwrap());
+        assert_eq!(
+            sorted_value_digest,
+            "sha256:113e4df29f38520a8e7bb6c8a799761d4cb7dad2ab9204a17238d62f44b403d7"
+        );
+        assert_ne!(
+            policy_document_digest(&policy).unwrap(),
+            sorted_value_digest
         );
     }
 
@@ -2213,12 +2180,36 @@ mod tests {
         .unwrap();
         sqlx::query("INSERT INTO api_t(host_id,api_id,api_name,api_status) VALUES($1,'agent','agent','Published')").bind(host_id).execute(&mut *setup).await.unwrap();
         sqlx::query("INSERT INTO api_version_t(host_id,api_version_id,api_id,api_version,api_type,service_id) VALUES($1,$2,'agent','1.0.0','mcp','agent-test')").bind(host_id).bind(agent_def_id).execute(&mut *setup).await.unwrap();
-        sqlx::query("INSERT INTO agent_definition_t(host_id,agent_def_id,model_provider,model_name) VALUES($1,$2,'mock','mock')").bind(host_id).bind(agent_def_id).execute(&mut *setup).await.unwrap();
+        sqlx::query("INSERT INTO agent_definition_t(host_id,agent_def_id,model_provider,model_name) VALUES($1,$2,'gateway','mock')").bind(host_id).bind(agent_def_id).execute(&mut *setup).await.unwrap();
         setup.commit().await.unwrap();
-        let repository = AgentRepository::new(pool.clone());
         let session = AgentSessionId::new();
         let principal_id = Uuid::now_v7();
         let digest = |name: &str| sha256_digest(name.as_bytes());
+        let policy = PolicySnapshot {
+            snapshot_id: session.0,
+            definition_digest: digest("definition"),
+            product_profile_digest: digest("profile"),
+            model_digest: digest("model"),
+            catalog_digest: digest("catalog"),
+            memory_digest: digest("memory"),
+            execution_digest: digest("execution"),
+            channel_digest: digest("channel"),
+            data_boundary_digest: digest("boundary"),
+            tools: BTreeMap::new(),
+        };
+        let repository = AgentRepository::with_authority(
+            pool.clone(),
+            AgentRuntimeAuthority {
+                host_id,
+                agent_def_id,
+                definition_version: 1,
+                policy_snapshot_id: policy.snapshot_id,
+                policy_digest: policy_document_digest(&policy).unwrap(),
+                data_boundary_digest: policy.data_boundary_digest.clone(),
+                model_provider: GATEWAY_PROVIDER_ID.to_string(),
+                model_name: "mock".to_string(),
+            },
+        );
         repository
             .create_or_resume_session(&SessionSpec {
                 host_id,
@@ -2226,19 +2217,12 @@ mod tests {
                 principal_id: principal_id.to_string(),
                 user_id: Some(principal_id),
                 agent_def_id,
+                definition_version: 1,
+                model_provider: GATEWAY_PROVIDER_ID.to_string(),
+                model_name: "mock".to_string(),
+                maximum_active_sessions: 10,
                 bank_id: None,
-                policy: PolicySnapshot {
-                    snapshot_id: session.0,
-                    definition_digest: digest("definition"),
-                    product_profile_digest: digest("profile"),
-                    model_digest: digest("model"),
-                    catalog_digest: digest("catalog"),
-                    memory_digest: digest("memory"),
-                    execution_digest: digest("execution"),
-                    channel_digest: digest("channel"),
-                    data_boundary_digest: digest("boundary"),
-                    tools: BTreeMap::new(),
-                },
+                policy: policy.clone(),
                 idle_expires_at: Utc::now() + Duration::hours(1),
                 maximum_expires_at: Utc::now() + Duration::hours(2),
                 resume_handle_digest: digest(&session.to_string()),
@@ -2267,19 +2251,24 @@ mod tests {
                 .await
                 .is_err()
         );
-        sqlx::query("UPDATE agent_definition_t SET policy_snapshot_id=$3 WHERE host_id=$1 AND agent_def_id=$2")
+        let foreign_job = Uuid::now_v7();
+        sqlx::query("INSERT INTO agent_job_t(host_id,job_id,workflow_process_id,workflow_task_id,agent_def_id,
+                idempotency_key,input,input_schema_digest,output_schema,policy_digest,data_boundary_digest,
+                deadline_ts,token_budget,cost_budget_micros,delegation_depth,state,created_ts)
+                VALUES($1,$2,$3,$4,$5,$6,'{}'::jsonb,$7,'{}'::jsonb,$8,$9,$10,1000,1000,0,'PENDING',now()-interval '1 minute')")
             .bind(host_id)
-            .bind(agent_def_id)
-            .bind(session.0)
+            .bind(foreign_job)
+            .bind(Uuid::now_v7())
+            .bind(Uuid::now_v7())
+            .bind(Uuid::now_v7())
+            .bind(format!("foreign-workflow-{foreign_job}"))
+            .bind(digest("foreign-input-schema"))
+            .bind(digest("foreign-policy"))
+            .bind(digest("foreign-boundary"))
+            .bind(Utc::now() + Duration::hours(1))
             .execute(&pool)
             .await
             .unwrap();
-        let published = repository
-            .resolve_published_policy(host_id, agent_def_id)
-            .await
-            .unwrap();
-        assert_eq!(published.snapshot_id, session.0);
-        assert_eq!(published.catalog_digest, digest("catalog"));
         let workflow_job = Uuid::now_v7();
         sqlx::query("INSERT INTO agent_job_t(host_id,job_id,workflow_process_id,workflow_task_id,agent_def_id,
                 idempotency_key,input,input_schema_digest,output_schema,policy_digest,data_boundary_digest,
@@ -2292,13 +2281,21 @@ mod tests {
             .bind(agent_def_id)
             .bind(format!("workflow-bankless-{workflow_job}"))
             .bind(digest("workflow-input-schema"))
-            .bind(policy_document_digest(&published).unwrap())
-            .bind(&published.data_boundary_digest)
+            .bind(policy_document_digest(&policy).unwrap())
+            .bind(&policy.data_boundary_digest)
             .bind(Utc::now() + Duration::hours(1))
             .execute(&pool)
             .await
             .unwrap();
         assert!(repository.reconcile_agent_jobs().await.unwrap() > 0);
+        let foreign_state: String =
+            sqlx::query_scalar("SELECT state FROM agent_job_t WHERE host_id=$1 AND job_id=$2")
+                .bind(host_id)
+                .bind(foreign_job)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(foreign_state, "PENDING");
         let workflow_bank: Option<Uuid> = sqlx::query_scalar(
             "SELECT bank_id FROM agent_session_t WHERE host_id=$1 AND session_id=$2",
         )
@@ -2312,15 +2309,42 @@ mod tests {
             "workflow-job admission must remain bankless"
         );
         let first = repository
-            .admit_user_turn(host_id, session, "message-1", "hello")
+            .admit_user_turn(
+                host_id,
+                session,
+                "message-1",
+                "hello",
+                GATEWAY_PROVIDER_ID,
+                "mock",
+                10,
+                1_000,
+            )
             .await
             .unwrap();
         let duplicate = repository
-            .admit_user_turn(host_id, session, "message-1", "hello")
+            .admit_user_turn(
+                host_id,
+                session,
+                "message-1",
+                "hello",
+                GATEWAY_PROVIDER_ID,
+                "mock",
+                10,
+                1_000,
+            )
             .await
             .unwrap();
         let second = repository
-            .admit_user_turn(host_id, session, "message-2", "again")
+            .admit_user_turn(
+                host_id,
+                session,
+                "message-2",
+                "again",
+                GATEWAY_PROVIDER_ID,
+                "mock",
+                10,
+                1_000,
+            )
             .await
             .unwrap();
         assert_eq!(first.turn_id, duplicate.turn_id);
@@ -2338,7 +2362,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(runtime.agent_def_id, agent_def_id);
-        assert_eq!(runtime.model_provider, "mock");
+        assert_eq!(runtime.model_provider, GATEWAY_PROVIDER_ID);
         assert_eq!(runtime.model_name, "mock");
         repository
             .complete_turn(

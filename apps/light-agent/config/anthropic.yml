@@ -1,4 +1,0 @@
-baseUrl: ${anthropic.baseUrl:https://api.anthropic.com}
-apiKey: ${anthropic.apiKey:}
-model: ${anthropic.model:}
-maxTokens: ${anthropic.maxTokens:}

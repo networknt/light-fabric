@@ -12,6 +12,7 @@ use chrono::{Duration, Timelike, Utc};
 use futures_util::StreamExt;
 use hmac::{Hmac, Mac};
 use light_agent::domain::{AgentRepository, SessionSpec};
+use light_agent::governed_model::GATEWAY_PROVIDER_ID;
 use light_agent_channel::{
     ChannelBinding,
     credential::ConnectorCredentialStore,
@@ -623,12 +624,69 @@ async fn admit_channel_turn(
     text: &str,
     message_id: Uuid,
 ) -> Result<()> {
-    let definition=sqlx::query("SELECT d.aggregate_version,d.policy_snapshot_id,d.model_provider,d.model_name,
-            p.resolved_snapshot FROM agent_definition_t d JOIN agent_policy_snapshot_t p
-              ON p.host_id=d.host_id AND p.policy_snapshot_id=d.policy_snapshot_id AND p.revoked_ts IS NULL
-            WHERE d.host_id=$1 AND d.agent_def_id=$2")
+    let definition=sqlx::query("SELECT d.aggregate_version,d.max_tokens,d.model_alias_id,d.model_policy_id,
+            d.model_provider,d.model_name,direct.alias_name direct_alias,p.resolved_snapshot,
+            (SELECT count(*) FROM llm_model_policy_binding_t model_binding
+              JOIN llm_public_alias_t alias ON alias.host_id=model_binding.host_id
+                AND alias.public_alias_id=model_binding.public_alias_id
+             WHERE model_binding.host_id=d.host_id AND model_binding.model_policy_id=d.model_policy_id
+               AND model_binding.subject_type='AGENT' AND model_binding.subject_id=d.agent_def_id::text
+               AND model_binding.agent_default IS TRUE AND model_binding.active IS TRUE
+               AND alias.active IS TRUE AND alias.lifecycle_status='ACTIVE') policy_default_count,
+            (SELECT max(alias.alias_name) FROM llm_model_policy_binding_t model_binding
+              JOIN llm_public_alias_t alias ON alias.host_id=model_binding.host_id
+                AND alias.public_alias_id=model_binding.public_alias_id
+             WHERE model_binding.host_id=d.host_id AND model_binding.model_policy_id=d.model_policy_id
+               AND model_binding.subject_type='AGENT' AND model_binding.subject_id=d.agent_def_id::text
+               AND model_binding.agent_default IS TRUE AND model_binding.active IS TRUE
+               AND alias.active IS TRUE AND alias.lifecycle_status='ACTIVE') policy_alias
+          FROM agent_definition_t d JOIN agent_policy_snapshot_t p
+            ON p.host_id=d.host_id AND p.agent_def_id=d.agent_def_id
+              AND p.policy_digest=d.policy_digest AND p.revoked_ts IS NULL
+          LEFT JOIN llm_public_alias_t direct ON direct.host_id=d.host_id
+            AND direct.public_alias_id=d.model_alias_id AND direct.active IS TRUE
+            AND direct.lifecycle_status='ACTIVE'
+          WHERE d.host_id=$1 AND d.agent_def_id=$2 AND d.active IS TRUE")
         .bind(state.host_id).bind(binding.agent_def_id).fetch_one(&state.pool).await?;
     let policy: PolicySnapshot = serde_json::from_value(definition.try_get("resolved_snapshot")?)?;
+    let direct_alias_id: Option<Uuid> = definition.try_get("model_alias_id")?;
+    let model_policy_id: Option<Uuid> = definition.try_get("model_policy_id")?;
+    let model_alias = match (direct_alias_id, model_policy_id) {
+        (Some(_), None) => definition
+            .try_get::<Option<String>, _>("direct_alias")?
+            .filter(|value| !value.trim().is_empty())
+            .context("channel Agent direct gateway alias is inactive")?,
+        (None, Some(_)) => {
+            if definition.try_get::<i64, _>("policy_default_count")? != 1 {
+                anyhow::bail!("channel Agent model policy must resolve exactly one default alias")
+            }
+            definition
+                .try_get::<Option<String>, _>("policy_alias")?
+                .filter(|value| !value.trim().is_empty())
+                .context("channel Agent model policy has no active default alias")?
+        }
+        (None, None)
+            if definition
+                .try_get::<Option<String>, _>("model_provider")?
+                .as_deref()
+                .is_some_and(|provider| {
+                    provider.eq_ignore_ascii_case(GATEWAY_PROVIDER_ID)
+                        || provider.eq_ignore_ascii_case("light-gateway")
+                }) =>
+        {
+            definition
+                .try_get::<Option<String>, _>("model_name")?
+                .filter(|value| !value.trim().is_empty())
+                .context("channel Agent gateway alias is missing")?
+        }
+        _ => anyhow::bail!("channel Agent does not have one governed llm-gateway alias"),
+    };
+    let maximum_model_tokens = definition
+        .try_get::<Option<i32>, _>("max_tokens")?
+        .map(u64::try_from)
+        .transpose()
+        .context("channel Agent max_tokens must be positive")?
+        .unwrap_or(65_536);
     let session = AgentSessionId(binding.binding_id);
     state
         .repository
@@ -638,6 +696,10 @@ async fn admit_channel_turn(
             principal_id: binding.principal_id.clone(),
             user_id: None,
             agent_def_id: binding.agent_def_id,
+            definition_version: definition.try_get("aggregate_version")?,
+            model_provider: GATEWAY_PROVIDER_ID.to_string(),
+            model_name: model_alias.clone(),
+            maximum_active_sessions: i64::MAX as u64,
             bank_id: None,
             policy,
             idle_expires_at: Utc::now() + Duration::hours(24),
@@ -647,7 +709,16 @@ async fn admit_channel_turn(
         .await?;
     let turn = state
         .repository
-        .admit_user_turn(state.host_id, session, event_id, text)
+        .admit_user_turn(
+            state.host_id,
+            session,
+            event_id,
+            text,
+            GATEWAY_PROVIDER_ID,
+            &model_alias,
+            i64::MAX as u64,
+            maximum_model_tokens,
+        )
         .await?;
     sqlx::query("UPDATE agent_turn_t SET origin_kind='channel',origin_ref=$1 WHERE host_id=$2 AND turn_id=$3")
         .bind(message_id.to_string()).bind(state.host_id).bind(turn.turn_id.0).execute(&state.pool).await?;

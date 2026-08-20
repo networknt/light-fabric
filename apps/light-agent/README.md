@@ -26,17 +26,30 @@ is a development compatibility mode and is rejected unless
 Apply `portal-db/postgres/patch_20260711_01_light_agent_runtime.sql` after the
 workflow-runner migration before starting this version.
 
-Every active production `agent_definition_t` must publish an immutable policy
-by setting `policy_snapshot_id` to a non-revoked `agent_policy_snapshot_t` for
-the same host and agent definition. Startup fails if the configured default
-definition has no such snapshot, and an authenticated session for any selected
-definition fails closed until its published snapshot exists. Light-Agent
-deserializes the closed policy document, recomputes its SHA-256 digest, and
-checks every component digest against the immutable columns before admission.
-It does not synthesize policy, profile, catalog, model, execution, channel, or
-data-boundary digests from the session or caller identity. Resuming a session
-also requires the exact published snapshot and agent-definition version that
-were originally admitted.
+Light Portal publishes one immutable Agent audience projection to Config Server
+for each Agent runtime instance. `agent.yml` is the typed template and the
+current snapshot's `values.yml` supplies its complete `runtimePolicy` and
+`agentPolicy` namespaces. Startup validates the service/environment binding,
+validity window, policy/content digests, Agent definition/version, policy snapshot,
+model Alias, tools, skills, execution limits, catalog, memory, Knowledge
+bindings, channel, data-boundary, and session policy before accepting work.
+The startup Agent-definition pointer, model binding, effective catalog, and
+Knowledge bindings are no longer resolved from Portal database tables or
+Portal Query calls.
+
+The model provider is always `gateway`. The published model value is an Alias
+understood by `llm-gateway`; provider endpoints, credentials, and provider
+specific configuration are not accepted by Light-Agent. The former
+`model-provider.yml` and provider-specific YAML files have been removed.
+The existing workload bearer from `LIGHT_PORTAL_AUTHORIZATION` authenticates
+the call to `llm-gateway`; it remains secret bootstrap material and is not
+published inside the immutable Agent projection. Portal controls which Alias
+that workload may use through the corresponding gateway audience policy.
+
+PostgreSQL remains the durable operational store for sessions, turns, actions,
+approvals, immutable pinned-policy copies, quota counters, and audit evidence.
+Resuming a session requires the exact policy snapshot and Agent-definition
+version admitted from Config Server.
 
 The process-wide `AgentState` contains only shared infrastructure and caches.
 Provider, model, definition version, policy, data boundary, product profile,
@@ -70,17 +83,21 @@ Coding and personal edge execution use closed, typed payloads and are dispatched
 only after the durable turn acquires its session fence and its published
 `productProfileDigest` matches the operator-enabled profile.
 
-Enable the Pi coding profile with all of the following settings; partial
-configuration fails startup:
+Light Portal enables the Pi coding profile by publishing all of the following
+`agentPolicy.execution.codingProfile` values; partial configuration fails
+startup:
 
-```bash
-LIGHT_AGENT_CODING_PROFILE_DIGEST=sha256:<published-coding-profile-digest>
-LIGHT_AGENT_CODING_REPOSITORY_URI_PREFIX=file:///var/lib/light-agent/repositories/
-LIGHT_AGENT_CODING_COMPATIBILITY_DIGEST=sha256:<approved-cube-compatibility>
-LIGHT_AGENT_PI_TEMPLATE_DIGEST=sha256:<approved-command-template>
-LIGHT_AGENT_PI_BINARY_DIGEST=sha256:<pinned-pi-binary>
-LIGHT_AGENT_PI_PROVIDER=brokered
-LIGHT_AGENT_PI_MODEL=<approved-model-alias>
+```yaml
+agentPolicy:
+  execution:
+    codingProfile:
+      productProfileDigest: sha256:<published-coding-profile-digest>
+      repositoryUriPrefix: file:///var/lib/light-agent/repositories/
+      compatibilityDigest: sha256:<approved-cube-compatibility>
+      templateDigest: sha256:<approved-command-template>
+      binaryDigest: sha256:<pinned-pi-binary>
+      provider: brokered
+      model: <approved-model-alias>
 ```
 
 The repository source adapter must place immutable Git bundles under the
@@ -110,9 +127,9 @@ itself and currently admits no client-selected skill packages.
 }
 ```
 
-Personal edge actions require
-`LIGHT_AGENT_PERSONAL_PROFILE_DIGEST=sha256:<published-profile-digest>`. The
-typed `edgeAction` contains `edgeBindingId`, `action`, `arguments`,
+Personal edge actions require Light Portal to publish
+`agentPolicy.memory.personalProfileDigest`. The typed `edgeAction` contains
+`edgeBindingId`, `action`, `arguments`,
 `schemaDigest`, and an optional `approvalId`. The server revalidates the live
 principal-bound edge runner, exact action schema, effect class, approval, runner
 identity, backend identity, and compatibility digest before enqueueing. Direct
@@ -135,3 +152,17 @@ Deployments with cost quotas must publish an enabled model rate for the exact
 host, provider, and model before admitting a turn. Rates are expressed as
 micro-units per one million input or output tokens and are snapshotted at
 admission so later rate changes cannot alter an in-flight turn.
+
+The immutable projection already reserves
+`agentPolicy.execution.quotaPolicies`, `modelRates`, `servicePools`, and
+`approvalRules`. The current admission implementation still reads those rules
+from PostgreSQL because rule evaluation and transactional usage accounting are
+coupled there. Moving the immutable rule input to `agent.yml` while retaining
+only counters, reservations, sessions, turns, and evidence in PostgreSQL is a
+separate migration; until it is complete, Light-Agent still requires database
+access for these runtime controls.
+
+Runtime Config Server/controller activation is also intentionally not enabled
+by this startup slice. A safe reloader must validate the complete candidate,
+atomically switch admission to it, retain older snapshots for pinned sessions
+and turns, and keep the last-known-good snapshot on rejection.

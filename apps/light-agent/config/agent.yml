@@ -1,0 +1,92 @@
+# Immutable Agent audience projection. Every placeholder is resolved from the
+# current Config Server values.yml snapshot. Light Portal owns these values;
+# light-agent validates the complete document before accepting new work.
+runtimePolicy:
+  publicationId: ${runtimePolicy.publicationId:}
+  releaseVersion: ${runtimePolicy.releaseVersion:0}
+  policySnapshotId: ${runtimePolicy.policySnapshotId:}
+  policyVersion: ${runtimePolicy.policyVersion:0}
+  policyDigest: ${runtimePolicy.policyDigest:}
+  contentDigest: ${runtimePolicy.contentDigest:}
+  audience: ${runtimePolicy.audience:agent}
+  hostId: ${runtimePolicy.hostId:}
+  environment: ${runtimePolicy.environment:}
+  serviceId: ${runtimePolicy.serviceId:}
+  instanceId: ${runtimePolicy.instanceId:}
+  sourceEventSequence: ${runtimePolicy.sourceEventSequence:0}
+  schemaVersion: ${runtimePolicy.schemaVersion:1}
+  createdAt: ${runtimePolicy.createdAt:}
+  validFrom: ${runtimePolicy.validFrom:}
+  refreshAfter: ${runtimePolicy.refreshAfter:}
+  expiresAt: ${runtimePolicy.expiresAt:}
+  revocationEpoch: ${runtimePolicy.revocationEpoch:0}
+  compatibilityGeneration: ${runtimePolicy.compatibilityGeneration:1}
+
+agentPolicy:
+  agentDefId: ${agentPolicy.agentDefId:}
+  definitionVersion: ${agentPolicy.definitionVersion:0}
+  prompt:
+    system: ${agentPolicy.prompt.system:}
+  model:
+    provider: gateway
+    alias: ${agentPolicy.model.alias:}
+    temperature: ${agentPolicy.model.temperature:0.7}
+    maximumTokens: ${agentPolicy.model.maximumTokens:65536}
+    gateway:
+      name: ${agentPolicy.model.gateway.name:llm-gateway}
+      baseUrl: ${agentPolicy.model.gateway.baseUrl:https://llm-gateway:8443/v1}
+  skills: ${agentPolicy.skills:[]}
+  policySnapshot:
+    snapshotId: ${agentPolicy.policySnapshot.snapshotId:}
+    definitionDigest: ${agentPolicy.policySnapshot.definitionDigest:}
+    productProfileDigest: ${agentPolicy.policySnapshot.productProfileDigest:}
+    modelDigest: ${agentPolicy.policySnapshot.modelDigest:}
+    catalogDigest: ${agentPolicy.policySnapshot.catalogDigest:}
+    memoryDigest: ${agentPolicy.policySnapshot.memoryDigest:}
+    executionDigest: ${agentPolicy.policySnapshot.executionDigest:}
+    channelDigest: ${agentPolicy.policySnapshot.channelDigest:}
+    dataBoundaryDigest: ${agentPolicy.policySnapshot.dataBoundaryDigest:}
+    tools: ${agentPolicy.policySnapshot.tools:{}}
+  execution:
+    maximumTurnSeconds: ${agentPolicy.execution.maximumTurnSeconds:120}
+    maximumModelCalls: ${agentPolicy.execution.maximumModelCalls:10}
+    maximumActionCalls: ${agentPolicy.execution.maximumActionCalls:20}
+    maximumUserMessageBytes: ${agentPolicy.execution.maximumUserMessageBytes:65536}
+    maximumToolArgumentBytes: ${agentPolicy.execution.maximumToolArgumentBytes:65536}
+    maximumToolOutputBytes: ${agentPolicy.execution.maximumToolOutputBytes:65536}
+    maximumGatewayResponseBytes: ${agentPolicy.execution.maximumGatewayResponseBytes:1048576}
+    maximumResponseBytes: ${agentPolicy.execution.maximumResponseBytes:65536}
+    maximumOutputDepth: ${agentPolicy.execution.maximumOutputDepth:16}
+    maximumOutputItems: ${agentPolicy.execution.maximumOutputItems:1024}
+    maximumTurnTokens: ${agentPolicy.execution.maximumTurnTokens:65536}
+    quotaPolicies: ${agentPolicy.execution.quotaPolicies:[]}
+    modelRates: ${agentPolicy.execution.modelRates:[]}
+    servicePools: ${agentPolicy.execution.servicePools:[]}
+    approvalRules: ${agentPolicy.execution.approvalRules:[]}
+    codingProfile: ${agentPolicy.execution.codingProfile:null}
+  catalog:
+    cacheTtlSeconds: ${agentPolicy.catalog.cacheTtlSeconds:60}
+    staleOnErrorSeconds: ${agentPolicy.catalog.staleOnErrorSeconds:300}
+    effectiveCatalog: ${agentPolicy.catalog.effectiveCatalog:null}
+  memory:
+    writeMode: ${agentPolicy.memory.writeMode:portal-command}
+    portalCommandUrl: ${agentPolicy.memory.portalCommandUrl:}
+    allowDirectPg: ${agentPolicy.memory.allowDirectPg:false}
+    personalProfileDigest: ${agentPolicy.memory.personalProfileDigest:}
+    rules: ${agentPolicy.memory.rules:{}}
+  knowledge:
+    endpoint: ${agentPolicy.knowledge.endpoint:}
+    allowPrivatePlaintext: ${agentPolicy.knowledge.allowPrivatePlaintext:false}
+    bindings: ${agentPolicy.knowledge.bindings:[]}
+    retrieval:
+      topK: ${agentPolicy.knowledge.retrieval.topK:5}
+      tokenBudget: ${agentPolicy.knowledge.retrieval.tokenBudget:2000}
+      filters: ${agentPolicy.knowledge.retrieval.filters:null}
+  channel: ${agentPolicy.channel:{}}
+  dataBoundary: ${agentPolicy.dataBoundary:{}}
+  gatewayDelegation: ${agentPolicy.gatewayDelegation:{}}
+  session:
+    idleSeconds: ${agentPolicy.session.idleSeconds:3600}
+    maximumSeconds: ${agentPolicy.session.maximumSeconds:86400}
+    maximumActiveSessions: ${agentPolicy.session.maximumActiveSessions:1}
+    maximumQueuedTurns: ${agentPolicy.session.maximumQueuedTurns:100}

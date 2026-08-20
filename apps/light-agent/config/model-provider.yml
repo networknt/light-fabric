@@ -1,3 +1,0 @@
-provider: ${model-provider.provider:ollama}
-model: ${model-provider.model:}
-temperature: ${model-provider.temperature:0.7}

@@ -119,13 +119,22 @@ impl CompatibleProvider {
                 anyhow::anyhow!("Failed to build reqwest Client for CompatibleProvider: {e}")
             })?;
 
-        Ok(Self {
+        Ok(Self::new_with_client(name, base_url, api_key, client))
+    }
+
+    pub fn new_with_client(
+        name: &str,
+        base_url: &str,
+        api_key: Option<&str>,
+        client: Client,
+    ) -> Self {
+        Self {
             name: name.to_string(),
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.map(ToString::to_string),
             max_tokens: None,
             client,
-        })
+        }
     }
 
     pub fn with_max_tokens(mut self, max_tokens: Option<u32>) -> Self {

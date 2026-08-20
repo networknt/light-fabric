@@ -1,5 +1,0 @@
-name: ${compatible.name:compatible}
-baseUrl: ${compatible.baseUrl:}
-apiKey: ${compatible.apiKey:}
-model: ${compatible.model:}
-maxTokens: ${compatible.maxTokens:}

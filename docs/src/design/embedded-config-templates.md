@@ -272,14 +272,11 @@ small `config/values.yml` and any required cert/key files.
 
 ### Light-Agent
 
-`light-agent` should use the same runtime API for all provider templates. The
-embedded set should include `model-provider.yml`, `mcp-client.yml`, and every
-provider-specific template such as `openai.yml`, `bedrock.yml`, `codex.yml`,
-`anthropic.yml`, and `ollama.yml`.
-
-Runtime provider selection should still happen after bootstrap. Embedded
-templates do not mean provider clients are created before config-server values
-are loaded.
+`light-agent` uses the same runtime API for `agent.yml` and `mcp-client.yml`.
+`agent.yml` is the typed immutable Agent-audience projection whose placeholders
+are resolved only after Config Server values have been merged. Its model is an
+`llm-gateway` Alias; Light-Agent does not embed or load provider-specific
+templates such as `openai.yml`, `codex.yml`, or `anthropic.yml`.
 
 ### Light-Deployer
 

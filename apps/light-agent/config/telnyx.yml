@@ -1,2 +1,0 @@
-apiKey: ${telnyx.apiKey:}
-model: ${telnyx.model:}
