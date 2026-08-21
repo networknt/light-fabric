@@ -13,7 +13,8 @@ This guide will help you set up a local development environment for **Light-Fabr
 
 ## Local Development Setup
 
-To run the entire ecosystem locally, we use the `portal-config-loc` and `service-asset` repositories to manage configuration and pre-built assets.
+To run the entire ecosystem locally, use `portal-config-loc`. Its deployment
+script downloads released service and UI archives from the configured CDN.
 
 ### 1. Initialize Workspace
 
@@ -24,9 +25,8 @@ cd ~
 mkdir -p lightapi
 cd lightapi
 
-# Clone configuration and assets
+# Clone the local deployment configuration
 git clone git@github.com:lightapi/portal-config-loc.git
-git clone git@github.com:lightapi/service-asset.git
 ```
 
 ### 2. Deploy Local Services
@@ -40,12 +40,10 @@ cd ~/lightapi/portal-config-loc
 
 ### 3. Import Initial Data
 
-Use the importer script in `service-asset` to populate the local database with initial events, users, and configurations:
-
-```bash
-cd ~/lightapi/service-asset
-./importer.sh -f events.json
-```
+For a full deployment, `deploy-local.sh` downloads `events.zip` from the CDN
+and defaults `IMPORT_EVENTS` to `auto`. It imports the extracted `events.json`
+only when the event store is empty. Set `IMPORT_EVENTS=force` only when you
+intentionally need to replay the released baseline into a non-empty store.
 
 ### 4. Update `/etc/hosts`
 
