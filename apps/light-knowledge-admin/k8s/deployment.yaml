@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: light-knowledge-admin
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: light-knowledge-admin}
+  template:
+    metadata:
+      labels: {app: light-knowledge-admin}
+    spec:
+      containers:
+        - name: light-knowledge-admin
+          image: ghcr.io/networknt/light-knowledge-admin:latest
+          ports:
+            - {name: http-admin, containerPort: 8093}
+          env:
+            - {name: SECURITY_AUDIENCE, value: "[urn:com.networknt]"}
+          readinessProbe:
+            httpGet: {path: /ready, port: http-admin}
+          livenessProbe:
+            httpGet: {path: /health, port: http-admin}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          volumeMounts:
+            - {name: knowledge-database, mountPath: /run/secrets/light-knowledge, readOnly: true}
+            - {name: admin-secrets, mountPath: /run/secrets/light-knowledge-admin, readOnly: true}
+      volumes:
+        - name: knowledge-database
+          secret: {secretName: light-knowledge-database}
+        - name: admin-secrets
+          secret: {secretName: light-knowledge-admin}

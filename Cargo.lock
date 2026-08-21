@@ -4536,6 +4536,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "light-knowledge-admin"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64",
+ "chrono",
+ "config-embed-build",
+ "config-loader",
+ "hmac 0.12.1",
+ "light-axum",
+ "light-runtime",
+ "light-security",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "light-knowledge-worker"
 version = "0.2.1"
 dependencies = [

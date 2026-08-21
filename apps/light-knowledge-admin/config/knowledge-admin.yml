@@ -1,0 +1,9 @@
+version: 1
+databaseUrlFile: /run/secrets/light-knowledge/knowledge-database-url
+expectedDatabase: knowledge
+opaqueActorKeyFile: /run/secrets/light-knowledge-admin/opaque-actor-key
+maximumRequestBytes: 1048576
+maximumResponseBytes: 1048576
+maximumPageSize: 200
+requestTimeoutMs: 2000
+maximumDatabaseConnections: 10

@@ -1,0 +1,7 @@
+tls:
+  verifyHostname: ${client.tls.verifyHostname:true}
+  trustedCertificates: ${client.tls.trustedCertificates:[]}
+keyService:
+  serverUrl: ${client.keyService.serverUrl:}
+  serviceId: ${client.keyService.serviceId:}
+  uri: ${client.keyService.uri:/oauth2/N2CMw0HGQXeLvC1wBfln2A/keys}

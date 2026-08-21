@@ -1,0 +1,14 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: light-knowledge-admin-private
+spec:
+  podSelector:
+    matchLabels: {app: light-knowledge-admin}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app: genai-query}
+      ports:
+        - {protocol: TCP, port: 8093}
