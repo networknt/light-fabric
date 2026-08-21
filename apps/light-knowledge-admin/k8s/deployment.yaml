@@ -9,7 +9,13 @@ spec:
   template:
     metadata:
       labels: {app: light-knowledge-admin}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8093"
+        prometheus.io/path: /metrics
     spec:
+      serviceAccountName: light-knowledge-admin
+      automountServiceAccountToken: false
       containers:
         - name: light-knowledge-admin
           image: ghcr.io/networknt/light-knowledge-admin:latest
@@ -21,6 +27,9 @@ spec:
             httpGet: {path: /ready, port: http-admin}
           livenessProbe:
             httpGet: {path: /health, port: http-admin}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

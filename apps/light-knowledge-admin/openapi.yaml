@@ -3,17 +3,43 @@ info:
   title: Light Knowledge Administration API
   version: 1.0.0
   description: Private delegated-user API for bounded Knowledge operational administration.
+x-field-contract: operational-field-allowlists-v1
+x-cursor-contract: operational-cursor-keys-v1
 servers:
   - url: http://light-knowledge-admin:8093
 tags:
   - name: Administration
 paths:
+  /health:
+    get:
+      operationId: lightKnowledgeAdminHealth
+      security: []
+      responses:
+        '200': {$ref: '#/components/responses/HealthSuccess'}
+  /ready:
+    get:
+      operationId: lightKnowledgeAdminReadiness
+      security: []
+      responses:
+        '200': {$ref: '#/components/responses/HealthSuccess'}
+        '503': {$ref: '#/components/responses/Error'}
+  /metrics:
+    get:
+      operationId: lightKnowledgeAdminMetrics
+      security: []
+      responses:
+        '200':
+          description: Prometheus metrics with fixed route labels only.
+          content:
+            text/plain:
+              schema: {type: string}
   /v1/knowledge/admin/commands:
     post:
       tags: [Administration]
       operationId: submitKnowledgeOperationalCommand
       security: [{delegatedUserBearer: []}]
       parameters:
+        - {$ref: '#/components/parameters/Environment'}
         - name: Idempotency-Key
           in: header
           required: true
@@ -24,57 +50,74 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/OperationalCommand'}
       responses:
-        '200': {$ref: '#/components/responses/JsonSuccess'}
+        '200': {$ref: '#/components/responses/CommandSuccess'}
         '400': {$ref: '#/components/responses/Error'}
         '401': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+        '504': {$ref: '#/components/responses/Error'}
   /v1/knowledge/admin/control-snapshots:apply:
     post:
       tags: [Administration]
       operationId: applyKnowledgeControlSnapshot
       security: [{delegatedUserBearer: []}]
+      parameters: [{$ref: '#/components/parameters/Environment'}]
       requestBody:
         required: true
         content:
           application/json:
             schema: {$ref: '#/components/schemas/ControlSnapshotEnvelope'}
       responses:
-        '200': {$ref: '#/components/responses/JsonSuccess'}
+        '200': {$ref: '#/components/responses/SnapshotSuccess'}
         '400': {$ref: '#/components/responses/Error'}
         '401': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+        '504': {$ref: '#/components/responses/Error'}
   /v1/knowledge/admin/knowledge-base-summaries:batch:
     post:
       tags: [Administration]
       operationId: getKnowledgeBaseSummaries
       security: [{delegatedUserBearer: []}]
+      parameters: [{$ref: '#/components/parameters/Environment'}]
       requestBody:
         required: true
         content:
           application/json:
             schema: {$ref: '#/components/schemas/KnowledgeBaseBatch'}
       responses:
-        '200': {$ref: '#/components/responses/JsonSuccess'}
+        '200': {$ref: '#/components/responses/SummariesSuccess'}
+        '400': {$ref: '#/components/responses/Error'}
         '401': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+        '504': {$ref: '#/components/responses/Error'}
   /v1/knowledge/admin/source-status:batch:
     post:
       tags: [Administration]
       operationId: getKnowledgeSourceStatus
       security: [{delegatedUserBearer: []}]
+      parameters: [{$ref: '#/components/parameters/Environment'}]
       requestBody:
         required: true
         content:
           application/json:
             schema: {$ref: '#/components/schemas/SourceBatch'}
       responses:
-        '200': {$ref: '#/components/responses/JsonSuccess'}
+        '200': {$ref: '#/components/responses/SourceStatusSuccess'}
+        '400': {$ref: '#/components/responses/Error'}
         '401': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+        '504': {$ref: '#/components/responses/Error'}
   /v1/knowledge/admin/knowledge-bases/{id}/sync-runs:
     get: {$ref: '#/components/pathItems/PagedRead'}
   /v1/knowledge/admin/knowledge-bases/{id}/documents:
@@ -89,6 +132,7 @@ paths:
       operationId: getKnowledgeIndexGenerationSegments
       security: [{delegatedUserBearer: []}]
       parameters:
+        - {$ref: '#/components/parameters/Environment'}
         - {$ref: '#/components/parameters/KnowledgeBaseId'}
         - name: generationId
           in: path
@@ -97,10 +141,14 @@ paths:
         - {$ref: '#/components/parameters/PageSize'}
         - {$ref: '#/components/parameters/Cursor'}
       responses:
-        '200': {$ref: '#/components/responses/JsonSuccess'}
+        '200': {$ref: '#/components/responses/OperationalSuccess'}
+        '400': {$ref: '#/components/responses/Error'}
         '401': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+        '504': {$ref: '#/components/responses/Error'}
   /v1/knowledge/admin/knowledge-bases/{id}/incremental-operations:
     get: {$ref: '#/components/pathItems/PagedRead'}
   /v1/knowledge/admin/knowledge-bases/{id}/acl-status:
@@ -114,37 +162,54 @@ paths:
       tags: [Administration]
       operationId: estimateKnowledgeEmbeddingMigration
       security: [{delegatedUserBearer: []}]
-      parameters: [{$ref: '#/components/parameters/KnowledgeBaseId'}]
+      parameters:
+        - {$ref: '#/components/parameters/Environment'}
+        - {$ref: '#/components/parameters/KnowledgeBaseId'}
       requestBody:
         required: true
         content:
           application/json:
             schema: {$ref: '#/components/schemas/EstimateRequest'}
       responses:
-        '200': {$ref: '#/components/responses/JsonSuccess'}
+        '200': {$ref: '#/components/responses/EstimateSuccess'}
+        '400': {$ref: '#/components/responses/Error'}
         '401': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+        '504': {$ref: '#/components/responses/Error'}
   /v1/knowledge/admin/knowledge-bases/{id}/authorization-simulations:
     post:
       tags: [Administration]
       operationId: simulateKnowledgeAuthorization
       security: [{delegatedUserBearer: []}]
-      parameters: [{$ref: '#/components/parameters/KnowledgeBaseId'}]
+      parameters:
+        - {$ref: '#/components/parameters/Environment'}
+        - {$ref: '#/components/parameters/KnowledgeBaseId'}
       requestBody:
         required: true
         content:
           application/json:
             schema: {$ref: '#/components/schemas/SimulationRequest'}
       responses:
-        '200': {$ref: '#/components/responses/JsonSuccess'}
+        '200': {$ref: '#/components/responses/SimulationSuccess'}
+        '400': {$ref: '#/components/responses/Error'}
         '401': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+        '504': {$ref: '#/components/responses/Error'}
 components:
   securitySchemes:
     delegatedUserBearer: {type: http, scheme: bearer, bearerFormat: JWT}
   parameters:
+    Environment:
+      name: X-Knowledge-Environment
+      in: header
+      required: true
+      schema: {type: string, minLength: 1, maxLength: 16}
     KnowledgeBaseId:
       name: id
       in: path
@@ -211,6 +276,213 @@ components:
       properties:
         subjectType: {type: string, enum: [USER, GROUP, ORGANIZATION]}
         subjectId: {type: string, minLength: 1, maxLength: 255}
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: {type: string, const: UP}
+    ConfigurationMetadata:
+      type: object
+      additionalProperties: false
+      required: [snapshotId, publicationSequence, payloadDigest, appliedTs, leaseExpiresTs]
+      properties:
+        snapshotId: {type: string, format: uuid}
+        publicationSequence: {type: integer, format: int64, minimum: 0}
+        payloadDigest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        appliedTs: {type: string, format: date-time}
+        leaseExpiresTs: {type: string, format: date-time}
+    PaginationEntry:
+      type: object
+      additionalProperties: false
+      required: [hasMore, nextCursor]
+      properties:
+        hasMore: {type: boolean}
+        nextCursor: {type: [string, 'null'], maxLength: 2048}
+    SafeOperationalRecord:
+      description: >-
+        A row restricted to the named operational-field-allowlists-v1 contract.
+        The implementation and CI conformance gate reject fields outside the
+        resource-specific allowlist before serialization.
+      type: object
+      maxProperties: 40
+      additionalProperties:
+        oneOf:
+          - {type: string, maxLength: 32768}
+          - {type: integer, format: int64}
+          - {type: number}
+          - {type: boolean}
+          - {type: 'null'}
+          - {type: object, maxProperties: 64}
+          - {type: array, maxItems: 64}
+    OperationalResponse:
+      type: object
+      additionalProperties: false
+      required: [knowledgeBaseId, environment, ownerScope, configuration, asOf, pagination]
+      properties:
+        knowledgeBaseId: {type: string, format: uuid}
+        environment: {type: string, maxLength: 16}
+        ownerScope: {type: string, enum: [TENANT, GLOBAL]}
+        configuration: {$ref: '#/components/schemas/ConfigurationMetadata'}
+        asOf: {type: string, format: date-time}
+        pagination:
+          type: object
+          additionalProperties: {$ref: '#/components/schemas/PaginationEntry'}
+        knowledgeSyncRuns: {$ref: '#/components/schemas/OperationalRows'}
+        knowledgeDocuments: {$ref: '#/components/schemas/OperationalRows'}
+        knowledgeIndexGenerations: {$ref: '#/components/schemas/OperationalRows'}
+        knowledgeIndexSegments: {$ref: '#/components/schemas/OperationalRows'}
+        knowledgeUploads: {$ref: '#/components/schemas/OperationalRows'}
+        knowledgeIncrementalChanges: {$ref: '#/components/schemas/OperationalRows'}
+        knowledgePassageAnchors: {$ref: '#/components/schemas/OperationalRows'}
+        knowledgeCompactionRuns: {$ref: '#/components/schemas/OperationalRows'}
+        knowledgeAntiEntropyRuns: {$ref: '#/components/schemas/OperationalRows'}
+        knowledgeAclFreshness: {$ref: '#/components/schemas/OperationalRows'}
+        knowledgeAclReconciliations: {$ref: '#/components/schemas/OperationalRows'}
+        knowledgeAclTransitions: {$ref: '#/components/schemas/OperationalRows'}
+        knowledgeConnectorObjects: {$ref: '#/components/schemas/OperationalRows'}
+        knowledgeBaseEmbeddingMigrations: {$ref: '#/components/schemas/OperationalRows'}
+        knowledgeMigrationEvaluations: {$ref: '#/components/schemas/OperationalRows'}
+        knowledgeGenerationRetention: {$ref: '#/components/schemas/OperationalRows'}
+        knowledgeBackupCheckpoints: {$ref: '#/components/schemas/OperationalRows'}
+        knowledgePurgeEvidence: {$ref: '#/components/schemas/OperationalRows'}
+        knowledgePromotionReceipts: {$ref: '#/components/schemas/OperationalRows'}
+    OperationalRows:
+      type: array
+      maxItems: 200
+      items: {$ref: '#/components/schemas/SafeOperationalRecord'}
+    CommandResult:
+      type: object
+      additionalProperties: false
+      required: [jobId, jobType, state, createdTs, idempotentReplay]
+      properties:
+        jobId: {type: string, format: uuid}
+        jobType: {type: string, maxLength: 64}
+        state: {type: string, maxLength: 32}
+        createdTs: {type: string, format: date-time}
+        idempotentReplay: {type: boolean}
+    SnapshotResult:
+      type: object
+      additionalProperties: false
+      required: [snapshotId, publicationSequence, state, idempotentReplay]
+      properties:
+        snapshotId: {type: string, format: uuid}
+        publicationSequence: {type: integer, format: int64, minimum: 0}
+        state: {type: string, const: APPLIED}
+        idempotentReplay: {type: boolean}
+    KnowledgeBaseSummary:
+      type: object
+      additionalProperties: false
+      required: [knowledgeBaseId, ownerScope, effectiveState, activeGenerationId, hasActiveSync, activeJobCount]
+      properties:
+        knowledgeBaseId: {type: string, format: uuid}
+        ownerScope: {type: [string, 'null'], enum: [TENANT, GLOBAL, null]}
+        version: {type: integer, format: int64}
+        desiredStatus: {type: string}
+        effectiveState: {type: string, enum: [AVAILABLE, NOT_YET_APPLIED]}
+        activeGenerationId: {type: [string, 'null'], format: uuid}
+        pointerVersion: {type: [integer, 'null'], format: int64}
+        generationState: {type: [string, 'null']}
+        finalWatermark: {type: [integer, 'null'], format: int64}
+        hasActiveSync: {type: boolean}
+        activeJobCount: {type: integer, format: int64, minimum: 0, maximum: 1000}
+        latestJobState: {type: [string, 'null']}
+    SummariesResponse:
+      type: object
+      additionalProperties: false
+      required: [knowledgeBaseSummaries, environment, configuration, asOf]
+      properties:
+        knowledgeBaseSummaries:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: {$ref: '#/components/schemas/KnowledgeBaseSummary'}
+        environment: {type: string, maxLength: 16}
+        configuration: {$ref: '#/components/schemas/ConfigurationMetadata'}
+        asOf: {type: string, format: date-time}
+    SourceStatus:
+      type: object
+      additionalProperties: false
+      required: [sourceId, latestSyncRunId, latestSyncState, lastSuccessfulSyncTs, lastSuccessfulGenerationId, updateTs]
+      properties:
+        sourceId: {type: string, format: uuid}
+        latestSyncRunId: {type: [string, 'null'], format: uuid}
+        latestSyncState: {type: [string, 'null']}
+        lastSuccessfulSyncTs: {type: [string, 'null'], format: date-time}
+        lastSuccessfulGenerationId: {type: [string, 'null'], format: uuid}
+        updateTs: {type: [string, 'null'], format: date-time}
+    SourceStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [knowledgeSourceStatus, knowledgeBaseId, environment, ownerScope, configuration, asOf]
+      properties:
+        knowledgeSourceStatus:
+          type: array
+          maxItems: 200
+          items: {$ref: '#/components/schemas/SourceStatus'}
+        knowledgeBaseId: {type: string, format: uuid}
+        environment: {type: string, maxLength: 16}
+        ownerScope: {type: string, enum: [TENANT, GLOBAL]}
+        configuration: {$ref: '#/components/schemas/ConfigurationMetadata'}
+        asOf: {type: string, format: date-time}
+    EstimateResult:
+      type: object
+      additionalProperties: false
+      required: [sourceGenerationId, targetProfileId, targetProfileRevision, targetSpaceId, targetSpaceRevision, targetDimension, estimatedChunkCount, estimatedTokenCount, estimatedCostMicros, estimatedDurationSeconds, estimatedTemporaryBytes, blockingConditions]
+      properties:
+        sourceGenerationId: {type: string, format: uuid}
+        targetProfileId: {type: string, format: uuid}
+        targetProfileRevision: {type: integer, format: int64}
+        targetSpaceId: {type: string, format: uuid}
+        targetSpaceRevision: {type: integer, format: int64}
+        targetDimension: {type: integer}
+        estimatedChunkCount: {type: integer, format: int64, minimum: 0}
+        estimatedTokenCount: {type: integer, format: int64, minimum: 0}
+        estimatedCostMicros: {type: integer, format: int64, minimum: 0}
+        estimatedDurationSeconds: {type: integer, format: int64, minimum: 1}
+        estimatedTemporaryBytes: {type: integer, format: int64, minimum: 0}
+        blockingConditions: {type: array, maxItems: 32, items: {type: string}}
+    EstimateResponse:
+      unevaluatedProperties: false
+      allOf:
+        - {$ref: '#/components/schemas/ComputationMetadata'}
+        - type: object
+          required: [knowledgeBaseEmbeddingMigrationEstimate]
+          properties:
+            knowledgeBaseEmbeddingMigrationEstimate:
+              type: array
+              minItems: 1
+              maxItems: 1
+              items: {$ref: '#/components/schemas/EstimateResult'}
+    SimulationResult:
+      type: object
+      additionalProperties: false
+      required: [evaluatedDocumentCount, allowedDocumentCount, excludedDocumentCount]
+      properties:
+        evaluatedDocumentCount: {type: integer, format: int64, minimum: 0}
+        allowedDocumentCount: {type: integer, format: int64, minimum: 0}
+        excludedDocumentCount: {type: integer, format: int64, minimum: 0}
+    SimulationResponse:
+      unevaluatedProperties: false
+      allOf:
+        - {$ref: '#/components/schemas/ComputationMetadata'}
+        - type: object
+          required: [knowledgeAuthorizationSimulation]
+          properties:
+            knowledgeAuthorizationSimulation:
+              type: array
+              minItems: 1
+              maxItems: 1
+              items: {$ref: '#/components/schemas/SimulationResult'}
+    ComputationMetadata:
+      type: object
+      required: [knowledgeBaseId, environment, ownerScope, configuration, asOf]
+      properties:
+        knowledgeBaseId: {type: string, format: uuid}
+        environment: {type: string, maxLength: 16}
+        ownerScope: {type: string, enum: [TENANT, GLOBAL]}
+        configuration: {$ref: '#/components/schemas/ConfigurationMetadata'}
+        asOf: {type: string, format: date-time}
     Error:
       type: object
       additionalProperties: false
@@ -219,10 +491,33 @@ components:
         statusCode: {type: integer}
         code: {type: string}
         message: {type: string}
+        field: {type: string}
+        maximumBytes: {type: integer, minimum: 1, maximum: 1048576}
   responses:
-    JsonSuccess:
-      description: Bounded typed administration response.
-      content: {application/json: {schema: {type: object}}}
+    HealthSuccess:
+      description: Process or dependency health.
+      content: {application/json: {schema: {$ref: '#/components/schemas/Health'}}}
+    CommandSuccess:
+      description: Idempotently accepted Knowledge-local operational job.
+      content: {application/json: {schema: {$ref: '#/components/schemas/CommandResult'}}}
+    SnapshotSuccess:
+      description: Atomically applied control-plane snapshot.
+      content: {application/json: {schema: {$ref: '#/components/schemas/SnapshotResult'}}}
+    SummariesSuccess:
+      description: Bounded Knowledge Base summaries.
+      content: {application/json: {schema: {$ref: '#/components/schemas/SummariesResponse'}}}
+    SourceStatusSuccess:
+      description: Bounded source status batch.
+      content: {application/json: {schema: {$ref: '#/components/schemas/SourceStatusResponse'}}}
+    OperationalSuccess:
+      description: Bounded allowlisted operational page or grouped pages.
+      content: {application/json: {schema: {$ref: '#/components/schemas/OperationalResponse'}}}
+    EstimateSuccess:
+      description: Read-only audited embedding migration estimate.
+      content: {application/json: {schema: {$ref: '#/components/schemas/EstimateResponse'}}}
+    SimulationSuccess:
+      description: Read-only audited authorization simulation.
+      content: {application/json: {schema: {$ref: '#/components/schemas/SimulationResponse'}}}
     Error:
       description: Stable error response.
       content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
@@ -231,14 +526,30 @@ components:
       tags: [Administration]
       security: [{delegatedUserBearer: []}]
       parameters:
+        - {$ref: '#/components/parameters/Environment'}
         - {$ref: '#/components/parameters/KnowledgeBaseId'}
         - {$ref: '#/components/parameters/PageSize'}
         - {$ref: '#/components/parameters/Cursor'}
+        - {name: uploadsCursor, in: query, schema: {type: string, maxLength: 2048}}
+        - {name: changesCursor, in: query, schema: {type: string, maxLength: 2048}}
+        - {name: anchorsCursor, in: query, schema: {type: string, maxLength: 2048}}
+        - {name: compactionsCursor, in: query, schema: {type: string, maxLength: 2048}}
+        - {name: antiEntropyCursor, in: query, schema: {type: string, maxLength: 2048}}
+        - {name: aclFreshnessCursor, in: query, schema: {type: string, maxLength: 2048}}
+        - {name: aclReconciliationsCursor, in: query, schema: {type: string, maxLength: 2048}}
+        - {name: aclTransitionsCursor, in: query, schema: {type: string, maxLength: 2048}}
+        - {name: connectorObjectsCursor, in: query, schema: {type: string, maxLength: 2048}}
+        - {name: embeddingMigrationsCursor, in: query, schema: {type: string, maxLength: 2048}}
+        - {name: migrationEvaluationsCursor, in: query, schema: {type: string, maxLength: 2048}}
+        - {name: generationRetentionCursor, in: query, schema: {type: string, maxLength: 2048}}
+        - {name: backupCheckpointsCursor, in: query, schema: {type: string, maxLength: 2048}}
+        - {name: purgeEvidenceCursor, in: query, schema: {type: string, maxLength: 2048}}
       responses:
-        '200': {$ref: '#/components/responses/JsonSuccess'}
+        '200': {$ref: '#/components/responses/OperationalSuccess'}
         '400': {$ref: '#/components/responses/Error'}
         '401': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
         '413': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+        '504': {$ref: '#/components/responses/Error'}

@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{DefaultBodyLimit, MatchedPath, Path, Query, Request, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -27,6 +28,9 @@ use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
 const RESPONSE_CONTENT_TYPE: &str = "application/json";
+const MAXIMUM_CURSOR_BYTES: usize = 2_048;
+const MAXIMUM_ROW_BYTES: usize = 65_536;
+const LATENCY_BUCKETS_MS: [u64; 8] = [10, 50, 100, 250, 500, 1_000, 2_000, u64::MAX];
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -80,6 +84,7 @@ pub struct AdminState {
     cursor_key: Vec<u8>,
     opaque_actor_key: Vec<u8>,
     snapshot_signing_key: Vec<u8>,
+    metrics: AdminMetrics,
 }
 
 impl AdminState {
@@ -133,12 +138,124 @@ impl AdminState {
             cursor_key,
             opaque_actor_key: opaque_actor_key.into_bytes(),
             snapshot_signing_key: snapshot_signing_key.into_bytes(),
+            metrics: AdminMetrics::default(),
         })
     }
 
     pub fn pool(&self) -> PgPool {
         self.pool.clone()
     }
+}
+
+#[derive(Default)]
+struct AdminMetrics {
+    routes: Mutex<BTreeMap<String, RouteMetrics>>,
+}
+
+#[derive(Clone, Default)]
+struct RouteMetrics {
+    requests: u64,
+    denials: u64,
+    redactions: u64,
+    timeouts: u64,
+    results: u64,
+    latency_sum_micros: u64,
+    latency_buckets: [u64; 8],
+}
+
+impl AdminMetrics {
+    fn record(
+        &self,
+        route: &str,
+        status: StatusCode,
+        elapsed: Duration,
+        results: u64,
+        redactions: u64,
+    ) {
+        let mut routes = self
+            .routes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let metric = routes.entry(route.to_string()).or_default();
+        metric.requests = metric.requests.saturating_add(1);
+        metric.results = metric.results.saturating_add(results);
+        metric.redactions = metric.redactions.saturating_add(redactions);
+        metric.latency_sum_micros = metric
+            .latency_sum_micros
+            .saturating_add(u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX));
+        if matches!(
+            status,
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND
+        ) {
+            metric.denials = metric.denials.saturating_add(1);
+        }
+        if status == StatusCode::GATEWAY_TIMEOUT {
+            metric.timeouts = metric.timeouts.saturating_add(1);
+        }
+        let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        for (index, bound) in LATENCY_BUCKETS_MS.iter().enumerate() {
+            if elapsed_ms <= *bound {
+                metric.latency_buckets[index] = metric.latency_buckets[index].saturating_add(1);
+            }
+        }
+    }
+
+    fn prometheus(&self, pool: &PgPool) -> String {
+        let routes = self
+            .routes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut body = String::from(
+            "# HELP light_knowledge_admin_requests_total Bounded administration requests.\n\
+# TYPE light_knowledge_admin_requests_total counter\n",
+        );
+        for (route, metric) in routes.iter() {
+            let label = prometheus_label(route);
+            body.push_str(&format!(
+                "light_knowledge_admin_requests_total{{route=\"{label}\"}} {}\n\
+light_knowledge_admin_denials_total{{route=\"{label}\"}} {}\n\
+light_knowledge_admin_redactions_total{{route=\"{label}\"}} {}\n\
+light_knowledge_admin_timeouts_total{{route=\"{label}\"}} {}\n\
+light_knowledge_admin_results_total{{route=\"{label}\"}} {}\n\
+light_knowledge_admin_latency_seconds_sum{{route=\"{label}\"}} {:.6}\n\
+light_knowledge_admin_latency_seconds_count{{route=\"{label}\"}} {}\n",
+                metric.requests,
+                metric.denials,
+                metric.redactions,
+                metric.timeouts,
+                metric.results,
+                metric.latency_sum_micros as f64 / 1_000_000.0,
+                metric.requests,
+            ));
+            for (index, bound) in LATENCY_BUCKETS_MS.iter().enumerate() {
+                let le = if *bound == u64::MAX {
+                    "+Inf".to_string()
+                } else {
+                    format!("{:.3}", *bound as f64 / 1_000.0)
+                };
+                body.push_str(&format!(
+                    "light_knowledge_admin_latency_seconds_bucket{{route=\"{label}\",le=\"{le}\"}} {}\n",
+                    metric.latency_buckets[index]
+                ));
+            }
+        }
+        body.push_str(&format!(
+            "# TYPE light_knowledge_admin_database_pool_connections gauge\n\
+light_knowledge_admin_database_pool_connections {}\n\
+# TYPE light_knowledge_admin_database_pool_idle gauge\n\
+light_knowledge_admin_database_pool_idle {}\n",
+            pool.size(),
+            pool.num_idle()
+        ));
+        body
+    }
+}
+
+fn prometheus_label(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('"', "\\\"")
 }
 
 fn read_secret(path: &PathBuf, label: &str) -> Result<String, RuntimeError> {
@@ -165,6 +282,7 @@ pub fn admin_router(state: Arc<AdminState>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
+        .route("/metrics", get(metrics))
         .route(
             "/v1/knowledge/admin/knowledge-base-summaries:batch",
             post(summary_batch),
@@ -190,7 +308,7 @@ pub fn admin_router(state: Arc<AdminState>) -> Router {
             get(all_segments),
         )
         .route(
-            "/v1/knowledge/admin/knowledge-bases/{id}/index-generations/{generation_id}/segments",
+            "/v1/knowledge/admin/knowledge-bases/{id}/index-generations/{generationId}/segments",
             get(segments),
         )
         .route(
@@ -223,6 +341,10 @@ pub fn admin_router(state: Arc<AdminState>) -> Router {
             post(apply_control_snapshot),
         )
         .layer(DefaultBodyLimit::max(state.config.maximum_request_bytes))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            observe_request,
+        ))
         .with_state(state)
 }
 
@@ -236,6 +358,77 @@ async fn ready(State(state): State<Arc<AdminState>>) -> Result<Json<Value>, ApiE
         .await
         .map_err(|_| ApiError::unavailable("KNOWLEDGE_ADMIN_DATABASE_UNAVAILABLE"))?;
     Ok(Json(json!({"status":"UP"})))
+}
+
+async fn metrics(State(state): State<Arc<AdminState>>) -> Response {
+    (
+        StatusCode::OK,
+        [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
+        state.metrics.prometheus(&state.pool),
+    )
+        .into_response()
+}
+
+async fn observe_request(
+    State(state): State<Arc<AdminState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(MatchedPath::as_str)
+        .unwrap_or("unmatched")
+        .to_string();
+    let started = Instant::now();
+    let response = match tokio::time::timeout(
+        Duration::from_millis(state.config.request_timeout_ms),
+        next.run(request),
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(_) => ApiError::timeout("KNOWLEDGE_ADMIN_REQUEST_TIMEOUT").into_response(),
+    };
+    let response_is_json = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("application/json"));
+    let response = if !response_is_json && response.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        ApiError::too_large("KNOWLEDGE_ADMIN_REQUEST_TOO_LARGE").into_response()
+    } else if !response_is_json
+        && matches!(
+            response.status(),
+            StatusCode::BAD_REQUEST
+                | StatusCode::UNPROCESSABLE_ENTITY
+                | StatusCode::UNSUPPORTED_MEDIA_TYPE
+        )
+    {
+        ApiError::bad_request("KNOWLEDGE_ADMIN_REQUEST_INVALID").into_response()
+    } else {
+        response
+    };
+    let results = response
+        .headers()
+        .get("x-knowledge-result-count")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    let redactions = response
+        .headers()
+        .get("x-knowledge-redaction-count")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    state.metrics.record(
+        &route,
+        response.status(),
+        started.elapsed(),
+        results,
+        redactions,
+    );
+    response
 }
 
 #[derive(Debug, Deserialize)]
@@ -272,14 +465,14 @@ struct PageQuery {
     purge_evidence_cursor: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct EstimateRequest {
     target_profile_id: Uuid,
     target_profile_revision: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SimulationRequest {
     subject_type: String,
@@ -290,6 +483,80 @@ struct Scope {
     host_id: Uuid,
     environment: String,
     global_read: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfigurationMetadata {
+    snapshot_id: Uuid,
+    publication_sequence: i64,
+    payload_digest: String,
+    applied_ts: DateTime<Utc>,
+    lease_expires_ts: DateTime<Utc>,
+}
+
+#[derive(Clone)]
+struct KnowledgeBaseContext {
+    owner_scope: &'static str,
+    configuration: ConfigurationMetadata,
+}
+
+async fn require_fresh_configuration(
+    state: &AdminState,
+    scope: &Scope,
+) -> Result<ConfigurationMetadata, ApiError> {
+    let row = sqlx::query(
+        "SELECT snapshot_id,publication_sequence,payload_digest,applied_ts,lease_expires_ts
+           FROM knowledge_control_snapshot_t
+          WHERE host_id=$1 AND environment=$2 AND state='APPLIED'
+          ORDER BY publication_sequence DESC LIMIT 1",
+    )
+    .bind(scope.host_id)
+    .bind(&scope.environment)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(ApiError::database)?
+    .ok_or_else(|| ApiError::unavailable("KNOWLEDGE_CONFIGURATION_UNAVAILABLE"))?;
+    let lease_expires_ts: DateTime<Utc> = row.get("lease_expires_ts");
+    if lease_expires_ts <= Utc::now() {
+        return Err(ApiError::unavailable("KNOWLEDGE_CONFIGURATION_STALE"));
+    }
+    Ok(ConfigurationMetadata {
+        snapshot_id: row.get("snapshot_id"),
+        publication_sequence: row.get("publication_sequence"),
+        payload_digest: row.get("payload_digest"),
+        applied_ts: row.get("applied_ts"),
+        lease_expires_ts,
+    })
+}
+
+async fn knowledge_base_context(
+    state: &AdminState,
+    scope: &Scope,
+    knowledge_base_id: Uuid,
+) -> Result<KnowledgeBaseContext, ApiError> {
+    let configuration = require_fresh_configuration(state, scope).await?;
+    let host_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT host_id FROM knowledge_base_t
+          WHERE knowledge_base_id=$1 AND environment=$2
+            AND (host_id=$3 OR (host_id IS NULL AND $4)) AND status<>'DELETED'",
+    )
+    .bind(knowledge_base_id)
+    .bind(&scope.environment)
+    .bind(scope.host_id)
+    .bind(scope.global_read)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(ApiError::database)?
+    .ok_or_else(|| ApiError::not_found("KNOWLEDGE_BASE_NOT_FOUND"))?;
+    Ok(KnowledgeBaseContext {
+        owner_scope: if host_id.is_some() {
+            "TENANT"
+        } else {
+            "GLOBAL"
+        },
+        configuration,
+    })
 }
 
 async fn authorize(
@@ -306,7 +573,21 @@ async fn authorize(
     let principal = verify_jwt_token(&state.security, token, expiry)
         .await
         .map_err(|_| ApiError::unauthorized("KNOWLEDGE_ADMIN_TOKEN_INVALID"))?;
-    validate_delegated_user_claims(headers, &principal, capability.ends_with(".write"))
+    let required_scope = required_scope(capability)
+        .ok_or_else(|| ApiError::forbidden("KNOWLEDGE_ADMIN_CAPABILITY_DENIED"))?;
+    validate_delegated_user_claims(headers, &principal, required_scope)
+}
+
+fn required_scope(capability: &str) -> Option<&'static str> {
+    match capability {
+        "knowledge.admin.summary.read"
+        | "knowledge.admin.source-status.read"
+        | "knowledge.admin.operational.read"
+        | "knowledge.admin.migration-estimate.read"
+        | "knowledge.admin.authorization-simulation.read" => Some("portal.r"),
+        "knowledge.admin.command.write" | "knowledge.admin.snapshot.write" => Some("portal.w"),
+        _ => None,
+    }
 }
 
 fn bearer(headers: &HeaderMap) -> Result<&str, ApiError> {
@@ -321,7 +602,7 @@ fn bearer(headers: &HeaderMap) -> Result<&str, ApiError> {
 fn validate_delegated_user_claims(
     headers: &HeaderMap,
     principal: &AuthPrincipal,
-    write: bool,
+    required_scope: &str,
 ) -> Result<Scope, ApiError> {
     let claims = &principal.claims;
     let host_id = principal
@@ -332,11 +613,18 @@ fn validate_delegated_user_claims(
     let environment = headers
         .get("x-knowledge-environment")
         .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| ApiError::forbidden("KNOWLEDGE_ADMIN_ENVIRONMENT_REQUIRED"))?
-        .to_string();
+        .ok_or_else(|| ApiError::forbidden("KNOWLEDGE_ADMIN_ENVIRONMENT_REQUIRED"))?;
+    if environment.is_empty()
+        || environment.len() > 16
+        || !environment
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(ApiError::forbidden("KNOWLEDGE_ADMIN_ENVIRONMENT_INVALID"));
+    }
+    let environment = environment.to_string();
     let scopes = delegated_scopes(claims);
-    if !scopes.contains(if write { "portal.w" } else { "portal.r" }) {
+    if !scopes.contains(required_scope) {
         return Err(ApiError::forbidden("KNOWLEDGE_ADMIN_SCOPE_DENIED"));
     }
     let roles = delegated_roles(principal);
@@ -725,22 +1013,7 @@ async fn submit_command(
     if environment != scope.environment {
         return Err(ApiError::not_found("KNOWLEDGE_BASE_NOT_FOUND"));
     }
-    let visible: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM knowledge_base_t b
-          WHERE b.knowledge_base_id=$1 AND b.environment=$2
-            AND (b.host_id=$3 OR (b.host_id IS NULL AND $4))
-            AND b.status<>'DELETED')",
-    )
-    .bind(knowledge_base_id)
-    .bind(&scope.environment)
-    .bind(scope.host_id)
-    .bind(scope.global_read)
-    .fetch_one(&state.pool)
-    .await
-    .map_err(ApiError::database)?;
-    if !visible {
-        return Err(ApiError::not_found("KNOWLEDGE_BASE_NOT_FOUND"));
-    }
+    knowledge_base_context(&state, &scope, knowledge_base_id).await?;
     if let Some(source_id) = source_id {
         let source_visible: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM knowledge_source_t
@@ -853,8 +1126,13 @@ fn delegated_roles(principal: &AuthPrincipal) -> BTreeSet<String> {
 }
 
 fn require_ids(_scope: &Scope, ids: &[Uuid]) -> Result<(), ApiError> {
-    if ids.is_empty() || ids.len() > 200 {
-        return Err(ApiError::not_found("KNOWLEDGE_BASE_NOT_FOUND"));
+    if ids.is_empty()
+        || ids.len() > 200
+        || ids.iter().copied().collect::<BTreeSet<_>>().len() != ids.len()
+    {
+        return Err(ApiError::bad_request(
+            "KNOWLEDGE_ADMIN_KNOWLEDGE_BASE_SCOPE_INVALID",
+        ));
     }
     Ok(())
 }
@@ -866,8 +1144,9 @@ async fn summary_batch(
 ) -> Result<Response, ApiError> {
     let scope = authorize(&state, &headers, "knowledge.admin.summary.read").await?;
     require_ids(&scope, &request.knowledge_base_ids)?;
+    let configuration = require_fresh_configuration(&state, &scope).await?;
     let rows = sqlx::query(
-        "SELECT b.knowledge_base_id,b.version,b.status,
+        "SELECT b.knowledge_base_id,b.host_id,b.version,b.status,
                 pointer.index_generation_id AS active_generation_id,pointer.pointer_version,
                 generation.state AS generation_state,generation.final_watermark,
                 EXISTS(SELECT 1 FROM knowledge_sync_run_t run
@@ -908,14 +1187,16 @@ async fn summary_batch(
                 .map(summary_value)
                 .unwrap_or_else(|| {
                     json!({"knowledgeBaseId":id,"effectiveState":"NOT_YET_APPLIED",
-                "activeGenerationId":null,"hasActiveSync":false,"activeJobCount":0})
+                "ownerScope":null,"activeGenerationId":null,
+                "hasActiveSync":false,"activeJobCount":0})
                 })
         })
         .collect::<Vec<_>>();
     debug_assert!(found.len() <= request.knowledge_base_ids.len());
     bounded_response(
         &state,
-        json!({"knowledgeBaseSummaries":summaries,"asOf":Utc::now()}),
+        json!({"knowledgeBaseSummaries":summaries,"environment":scope.environment,
+            "configuration":configuration,"asOf":Utc::now()}),
     )
 }
 
@@ -923,6 +1204,7 @@ fn summary_value(row: &PgRow) -> Value {
     let generation_state: Option<String> = row.try_get("generation_state").ok();
     json!({
         "knowledgeBaseId": row.get::<Uuid, _>("knowledge_base_id"),
+        "ownerScope": if row.try_get::<Uuid,_>("host_id").is_ok() { "TENANT" } else { "GLOBAL" },
         "version": row.get::<i64, _>("version"),
         "desiredStatus": row.get::<String, _>("status"),
         "effectiveState": if generation_state.is_some() { "AVAILABLE" } else { "NOT_YET_APPLIED" },
@@ -943,11 +1225,21 @@ async fn source_status_batch(
 ) -> Result<Response, ApiError> {
     let scope = authorize(&state, &headers, "knowledge.admin.source-status.read").await?;
     require_ids(&scope, &[request.knowledge_base_id])?;
-    if request.source_ids.is_empty() || request.source_ids.len() > 200 {
+    if request.source_ids.is_empty()
+        || request.source_ids.len() > 200
+        || request
+            .source_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .len()
+            != request.source_ids.len()
+    {
         return Err(ApiError::bad_request(
             "KNOWLEDGE_ADMIN_SOURCE_SCOPE_INVALID",
         ));
     }
+    let context = knowledge_base_context(&state, &scope, request.knowledge_base_id).await?;
     let rows = sqlx::query(
         "SELECT source.source_id,run.sync_run_id,run.state,
                 successful.finished_ts AS last_successful_sync_ts,
@@ -987,7 +1279,9 @@ async fn source_status_batch(
         .collect::<Vec<_>>();
     bounded_response(
         &state,
-        json!({"knowledgeSourceStatus":values,"asOf":Utc::now()}),
+        json!({"knowledgeSourceStatus":values,"knowledgeBaseId":request.knowledge_base_id,
+            "environment":scope.environment,"ownerScope":context.owner_scope,
+            "configuration":context.configuration,"asOf":Utc::now()}),
     )
 }
 
@@ -1487,6 +1781,7 @@ async fn segments(
 ) -> Result<Response, ApiError> {
     let scope = authorize(&state, &headers, "knowledge.admin.operational.read").await?;
     require_ids(&scope, &[id])?;
+    let context = knowledge_base_context(&state, &scope, id).await?;
     let page = query_resource(
         &state,
         &scope,
@@ -1497,7 +1792,7 @@ async fn segments(
         Some(generation_id),
     )
     .await?;
-    bounded_response(&state, page_response(&[page]))
+    bounded_response(&state, page_response(&[page], id, &scope, &context))
 }
 
 async fn single(
@@ -1509,6 +1804,7 @@ async fn single(
 ) -> Result<Response, ApiError> {
     let scope = authorize(state, headers, "knowledge.admin.operational.read").await?;
     require_ids(&scope, &[id])?;
+    let context = knowledge_base_context(state, &scope, id).await?;
     let page = query_resource(
         state,
         &scope,
@@ -1519,7 +1815,7 @@ async fn single(
         None,
     )
     .await?;
-    bounded_response(state, page_response(&[page]))
+    bounded_response(state, page_response(&[page], id, &scope, &context))
 }
 
 async fn incremental(
@@ -1603,11 +1899,12 @@ async fn grouped(
 ) -> Result<Response, ApiError> {
     let scope = authorize(state, headers, "knowledge.admin.operational.read").await?;
     require_ids(&scope, &[id])?;
+    let context = knowledge_base_context(state, &scope, id).await?;
     let mut pages = Vec::with_capacity(specs.len());
     for (spec, cursor) in specs {
         pages.push(query_resource(state, &scope, id, *spec, page_size, *cursor, None).await?);
     }
-    bounded_response(state, page_response(&pages))
+    bounded_response(state, page_response(&pages, id, &scope, &context))
 }
 
 struct Page {
@@ -1617,7 +1914,12 @@ struct Page {
     next_cursor: Option<String>,
 }
 
-fn page_response(pages: &[Page]) -> Value {
+fn page_response(
+    pages: &[Page],
+    knowledge_base_id: Uuid,
+    scope: &Scope,
+    context: &KnowledgeBaseContext,
+) -> Value {
     let mut root = Map::new();
     let mut pagination = Map::new();
     for page in pages {
@@ -1628,6 +1930,10 @@ fn page_response(pages: &[Page]) -> Value {
         );
     }
     root.insert("pagination".into(), Value::Object(pagination));
+    root.insert("knowledgeBaseId".into(), json!(knowledge_base_id));
+    root.insert("environment".into(), json!(scope.environment));
+    root.insert("ownerScope".into(), json!(context.owner_scope));
+    root.insert("configuration".into(), json!(context.configuration));
     root.insert("asOf".into(), json!(Utc::now()));
     Value::Object(root)
 }
@@ -1635,6 +1941,9 @@ fn page_response(pages: &[Page]) -> Value {
 #[derive(Debug, Serialize, Deserialize)]
 struct CursorPayload {
     resource: String,
+    knowledge_base_id: Uuid,
+    environment: String,
+    generation_id: Option<Uuid>,
     timestamp: DateTime<Utc>,
     ids: Vec<Uuid>,
 }
@@ -1648,11 +1957,18 @@ async fn query_resource(
     cursor: Option<&str>,
     generation_id: Option<Uuid>,
 ) -> Result<Page, ApiError> {
-    let size = page_size
-        .unwrap_or(state.config.maximum_page_size)
-        .min(state.config.maximum_page_size);
+    let size = resolve_page_size(page_size, state.config.maximum_page_size)?;
     let decoded = cursor
-        .map(|value| decode_cursor(state, spec, value))
+        .map(|value| {
+            decode_cursor(
+                state,
+                spec,
+                value,
+                knowledge_base_id,
+                &scope.environment,
+                generation_id,
+            )
+        })
         .transpose()?;
     let mut builder = QueryBuilder::<Postgres>::new("SELECT to_jsonb(o) AS row FROM ");
     builder.push(spec.table).push(" o JOIN knowledge_base_t b ON b.knowledge_base_id=o.knowledge_base_id WHERE o.knowledge_base_id=")
@@ -1721,7 +2037,16 @@ async fn query_resource(
     }
     let next_cursor = if has_more {
         raw.get(usize::from(size) - 1)
-            .map(|row| cursor_from_row(state, spec, row.get("row")))
+            .map(|row| {
+                cursor_from_row(
+                    state,
+                    spec,
+                    row.get("row"),
+                    knowledge_base_id,
+                    &scope.environment,
+                    generation_id,
+                )
+            })
             .transpose()?
     } else {
         None
@@ -1734,7 +2059,14 @@ async fn query_resource(
     })
 }
 
-fn cursor_from_row(state: &AdminState, spec: ResourceSpec, row: Value) -> Result<String, ApiError> {
+fn cursor_from_row(
+    state: &AdminState,
+    spec: ResourceSpec,
+    row: Value,
+    knowledge_base_id: Uuid,
+    environment: &str,
+    generation_id: Option<Uuid>,
+) -> Result<String, ApiError> {
     let timestamp = DateTime::parse_from_rfc3339(
         row.get(spec.timestamp)
             .and_then(Value::as_str)
@@ -1756,6 +2088,9 @@ fn cursor_from_row(state: &AdminState, spec: ResourceSpec, row: Value) -> Result
         state,
         &CursorPayload {
             resource: spec.name.into(),
+            knowledge_base_id,
+            environment: environment.to_string(),
+            generation_id,
             timestamp,
             ids,
         },
@@ -1763,9 +2098,13 @@ fn cursor_from_row(state: &AdminState, spec: ResourceSpec, row: Value) -> Result
 }
 
 fn encode_cursor(state: &AdminState, payload: &CursorPayload) -> Result<String, ApiError> {
+    encode_cursor_with_key(&state.cursor_key, payload)
+}
+
+fn encode_cursor_with_key(key: &[u8], payload: &CursorPayload) -> Result<String, ApiError> {
     let bytes = serde_json::to_vec(payload)
         .map_err(|_| ApiError::internal("KNOWLEDGE_ADMIN_CURSOR_ENCODING_FAILED"))?;
-    let mut mac = HmacSha256::new_from_slice(&state.cursor_key)
+    let mut mac = HmacSha256::new_from_slice(key)
         .map_err(|_| ApiError::internal("KNOWLEDGE_ADMIN_CURSOR_ENCODING_FAILED"))?;
     mac.update(&bytes);
     Ok(format!(
@@ -1779,25 +2118,63 @@ fn decode_cursor(
     state: &AdminState,
     spec: ResourceSpec,
     value: &str,
+    knowledge_base_id: Uuid,
+    environment: &str,
+    generation_id: Option<Uuid>,
 ) -> Result<CursorPayload, ApiError> {
+    decode_cursor_with_key(
+        &state.cursor_key,
+        spec,
+        value,
+        knowledge_base_id,
+        environment,
+        generation_id,
+    )
+}
+
+fn decode_cursor_with_key(
+    key: &[u8],
+    spec: ResourceSpec,
+    value: &str,
+    knowledge_base_id: Uuid,
+    environment: &str,
+    generation_id: Option<Uuid>,
+) -> Result<CursorPayload, ApiError> {
+    if value.len() > MAXIMUM_CURSOR_BYTES {
+        return Err(ApiError::bad_request("KNOWLEDGE_ADMIN_CURSOR_INVALID"));
+    }
     let (body, signature) = value
         .split_once('.')
         .ok_or_else(|| ApiError::bad_request("KNOWLEDGE_ADMIN_CURSOR_INVALID"))?;
     let bytes = URL_SAFE_NO_PAD
         .decode(body)
         .map_err(|_| ApiError::bad_request("KNOWLEDGE_ADMIN_CURSOR_INVALID"))?;
-    let mut mac = HmacSha256::new_from_slice(&state.cursor_key)
+    let mut mac = HmacSha256::new_from_slice(key)
         .map_err(|_| ApiError::internal("KNOWLEDGE_ADMIN_CURSOR_ENCODING_FAILED"))?;
     mac.update(&bytes);
-    if hex(&mac.finalize().into_bytes()) != signature {
-        return Err(ApiError::bad_request("KNOWLEDGE_ADMIN_CURSOR_INVALID"));
-    }
+    let signature = decode_hex(signature)
+        .ok_or_else(|| ApiError::bad_request("KNOWLEDGE_ADMIN_CURSOR_INVALID"))?;
+    mac.verify_slice(&signature)
+        .map_err(|_| ApiError::bad_request("KNOWLEDGE_ADMIN_CURSOR_INVALID"))?;
     let payload: CursorPayload = serde_json::from_slice(&bytes)
         .map_err(|_| ApiError::bad_request("KNOWLEDGE_ADMIN_CURSOR_INVALID"))?;
-    if payload.resource != spec.name || payload.ids.len() != spec.primary_keys.len() {
+    if payload.resource != spec.name
+        || payload.knowledge_base_id != knowledge_base_id
+        || payload.environment != environment
+        || payload.generation_id != generation_id
+        || payload.ids.len() != spec.primary_keys.len()
+    {
         return Err(ApiError::bad_request("KNOWLEDGE_ADMIN_CURSOR_INVALID"));
     }
     Ok(payload)
+}
+
+fn resolve_page_size(requested: Option<u16>, maximum: u16) -> Result<u16, ApiError> {
+    match requested {
+        Some(value) if value > 0 && value <= maximum => Ok(value),
+        Some(_) => Err(ApiError::bad_request("KNOWLEDGE_ADMIN_PAGE_SIZE_INVALID")),
+        None => Ok(maximum),
+    }
 }
 
 fn normalize_row(state: &AdminState, spec: ResourceSpec, row: Value) -> Result<Value, ApiError> {
@@ -1825,6 +2202,7 @@ fn normalize_row(state: &AdminState, spec: ResourceSpec, row: Value) -> Result<V
             value = safe_error_summary(value, &mut redacted);
         }
         let maximum = match *field {
+            "error_summary" => 1_024,
             "metrics"
             | "evidence"
             | "strategy_projections"
@@ -1834,14 +2212,18 @@ fn normalize_row(state: &AdminState, spec: ResourceSpec, row: Value) -> Result<V
             _ => 0,
         };
         if maximum > 0 {
-            value = safe_json(value, maximum, &camel, &mut redacted);
+            value = safe_json(value, maximum, &camel, &mut redacted)?;
         }
         target.insert(camel, value);
     }
     if !redacted.is_empty() {
         target.insert("redactedFields".into(), json!(redacted));
     }
-    Ok(Value::Object(target))
+    let normalized = Value::Object(target);
+    if serde_json::to_vec(&normalized).map_or(true, |bytes| bytes.len() > MAXIMUM_ROW_BYTES) {
+        return Err(ApiError::field_too_large(spec.name, MAXIMUM_ROW_BYTES));
+    }
+    Ok(normalized)
 }
 
 fn safe_error_summary(value: Value, redacted: &mut Vec<String>) -> Value {
@@ -1849,30 +2231,40 @@ fn safe_error_summary(value: Value, redacted: &mut Vec<String>) -> Value {
         redacted.push("errorSummary".into());
         return Value::Null;
     };
-    let code = object
+    let raw_code = object
         .get("code")
         .and_then(Value::as_str)
-        .unwrap_or("UNKNOWN")
-        .chars()
-        .take(64)
-        .collect::<String>();
-    let message = object
-        .get("message")
-        .and_then(Value::as_str)
-        .map(|value| value.chars().take(512).collect::<String>());
+        .unwrap_or("UNKNOWN");
+    let code = raw_code.chars().take(64).collect::<String>();
+    if raw_code.chars().count() > 64 {
+        redacted.push("errorSummary.code".into());
+    }
+    let raw_message = object.get("message").and_then(Value::as_str);
+    let message = raw_message.map(|value| value.chars().take(512).collect::<String>());
+    if raw_message.is_some_and(|value| value.chars().count() > 512) {
+        redacted.push("errorSummary.message".into());
+    }
     if object.len() > 2 {
         redacted.push("errorSummary.*".into());
     }
-    json!({"code":code,"message":message})
+    let mut safe = Map::from_iter([("code".into(), json!(code))]);
+    if let Some(message) = message {
+        safe.insert("message".into(), json!(message));
+    }
+    Value::Object(safe)
 }
 
-fn safe_json(value: Value, maximum: usize, field: &str, redacted: &mut Vec<String>) -> Value {
-    let mut scrubbed = scrub_json(value, 0, redacted, field);
+fn safe_json(
+    value: Value,
+    maximum: usize,
+    field: &str,
+    redacted: &mut Vec<String>,
+) -> Result<Value, ApiError> {
+    let scrubbed = scrub_json(value, 0, redacted, field);
     if serde_json::to_vec(&scrubbed).map_or(true, |bytes| bytes.len() > maximum) {
-        redacted.push(format!("{field}.*"));
-        scrubbed = json!({"redacted":true,"reason":"FIELD_SIZE_LIMIT","maximumBytes":maximum});
+        return Err(ApiError::field_too_large(field, maximum));
     }
-    scrubbed
+    Ok(scrubbed)
 }
 
 fn scrub_json(value: Value, depth: usize, redacted: &mut Vec<String>, path: &str) -> Value {
@@ -1881,46 +2273,61 @@ fn scrub_json(value: Value, depth: usize, redacted: &mut Vec<String>, path: &str
         return Value::Null;
     }
     match value {
-        Value::Object(object) => Value::Object(
-            object
-                .into_iter()
-                .take(64)
-                .filter_map(|(key, value)| {
-                    let lowered = key.to_ascii_lowercase();
-                    if [
-                        "provider",
-                        "principal",
-                        "content",
-                        "locator",
-                        "filename",
-                        "secret",
-                        "token",
-                    ]
-                    .iter()
-                    .any(|part| lowered.contains(part))
-                    {
-                        redacted.push(format!("{path}.{key}"));
-                        None
-                    } else {
-                        Some((
-                            key.clone(),
-                            scrub_json(value, depth + 1, redacted, &format!("{path}.{key}")),
-                        ))
-                    }
-                })
-                .collect(),
-        ),
-        Value::Array(values) => Value::Array(
-            values
-                .into_iter()
-                .take(64)
-                .enumerate()
-                .map(|(index, value)| {
-                    scrub_json(value, depth + 1, redacted, &format!("{path}[{index}]"))
-                })
-                .collect(),
-        ),
-        Value::String(value) => Value::String(value.chars().take(512).collect()),
+        Value::Object(object) => {
+            if object.len() > 64 {
+                redacted.push(format!("{path}.*"));
+            }
+            Value::Object(
+                object
+                    .into_iter()
+                    .take(64)
+                    .filter_map(|(key, value)| {
+                        let lowered = key.to_ascii_lowercase();
+                        if [
+                            "provider",
+                            "principal",
+                            "content",
+                            "locator",
+                            "filename",
+                            "secret",
+                            "token",
+                        ]
+                        .iter()
+                        .any(|part| lowered.contains(part))
+                        {
+                            redacted.push(format!("{path}.{key}"));
+                            None
+                        } else {
+                            Some((
+                                key.clone(),
+                                scrub_json(value, depth + 1, redacted, &format!("{path}.{key}")),
+                            ))
+                        }
+                    })
+                    .collect(),
+            )
+        }
+        Value::Array(values) => {
+            if values.len() > 64 {
+                redacted.push(format!("{path}.*"));
+            }
+            Value::Array(
+                values
+                    .into_iter()
+                    .take(64)
+                    .enumerate()
+                    .map(|(index, value)| {
+                        scrub_json(value, depth + 1, redacted, &format!("{path}[{index}]"))
+                    })
+                    .collect(),
+            )
+        }
+        Value::String(value) => {
+            if value.chars().count() > 512 {
+                redacted.push(path.to_string());
+            }
+            Value::String(value.chars().take(512).collect())
+        }
         scalar => scalar,
     }
 }
@@ -1971,15 +2378,33 @@ async fn estimate(
     Path(id): Path<Uuid>,
     Json(request): Json<EstimateRequest>,
 ) -> Result<Response, ApiError> {
+    let started = Instant::now();
     let scope = authorize(&state, &headers, "knowledge.admin.migration-estimate.read").await?;
     require_ids(&scope, &[id])?;
+    let context = knowledge_base_context(&state, &scope, id).await?;
     let row=sqlx::query("SELECT pointer.index_generation_id AS source_generation_id,target.profile_id AS target_profile_id,target.profile_revision AS target_profile_revision,target.expected_space_id AS target_space_id,target.expected_space_revision AS target_space_revision,target.dimension AS target_dimension,count(chunk.chunk_id)::bigint AS estimated_chunk_count,COALESCE(sum(chunk.token_count),0)::bigint AS estimated_token_count,ceil(COALESCE(sum(chunk.token_count),0)*COALESCE(policy.migration_cost_per_token_micros,0))::bigint AS estimated_cost_micros,GREATEST(1,ceil(count(chunk.chunk_id)::numeric/32))::bigint AS estimated_duration_seconds,(COALESCE(sum(length(chunk.chunk_text)),0)+count(chunk.chunk_id)*target.dimension*4)::bigint AS estimated_temporary_bytes,CASE WHEN source.space_id=target.expected_space_id AND source.space_revision=target.expected_space_revision AND source.dimension=target.dimension THEN jsonb_build_array('TARGET_SPACE_UNCHANGED') WHEN EXISTS(SELECT 1 FROM knowledge_embedding_migration_t active WHERE active.knowledge_base_id=b.knowledge_base_id AND active.state IN ('REQUESTED','PREFLIGHTED','BACKFILLING','PAUSED','CATCHING_UP','VALIDATING','READY','PROMOTED','SOAKING')) THEN jsonb_build_array('ACTIVE_MIGRATION_EXISTS') ELSE '[]'::jsonb END AS blocking_conditions FROM knowledge_base_t b JOIN knowledge_index_pointer_t pointer ON pointer.knowledge_base_id=b.knowledge_base_id AND pointer.environment=b.environment JOIN knowledge_index_generation_t source ON source.index_generation_id=pointer.index_generation_id JOIN knowledge_embedding_profile_runtime_v target ON target.profile_id=$1 AND target.profile_revision=$2 LEFT JOIN knowledge_operational_policy_t policy ON policy.knowledge_base_id=b.knowledge_base_id LEFT JOIN knowledge_document_t document ON document.knowledge_base_id=b.knowledge_base_id AND document.lifecycle_state='ACTIVE' LEFT JOIN knowledge_chunk_t chunk ON chunk.document_version_id=document.current_document_version_id WHERE b.knowledge_base_id=$3 AND b.environment=$4 AND (b.host_id=$5 OR (b.host_id IS NULL AND $6)) GROUP BY pointer.index_generation_id,target.profile_id,target.profile_revision,target.expected_space_id,target.expected_space_revision,target.dimension,policy.migration_cost_per_token_micros,source.space_id,source.space_revision,source.dimension,b.knowledge_base_id")
         .bind(request.target_profile_id).bind(request.target_profile_revision).bind(id).bind(&scope.environment).bind(scope.host_id).bind(scope.global_read)
         .fetch_optional(&state.pool).await.map_err(ApiError::database)?
         .ok_or_else(||ApiError::not_found("KNOWLEDGE_BASE_NOT_FOUND"))?;
+    write_admin_audit(
+        &state,
+        &headers,
+        &scope,
+        id,
+        "EMBEDDING_MIGRATION_ESTIMATE",
+        &serde_json::to_value(&request)
+            .map_err(|_| ApiError::internal("KNOWLEDGE_ADMIN_AUDIT_ENCODING_FAILED"))?,
+        None,
+        1,
+        started.elapsed(),
+    )
+    .await?;
     bounded_response(
         &state,
-        json!({"knowledgeBaseEmbeddingMigrationEstimate":[row_to_camel_json(&row)?]}),
+        json!({"knowledgeBaseEmbeddingMigrationEstimate":[row_to_camel_json(&row)?],
+            "knowledgeBaseId":id,"environment":scope.environment,
+            "ownerScope":context.owner_scope,"configuration":context.configuration,
+            "asOf":Utc::now()}),
     )
 }
 
@@ -1989,6 +2414,7 @@ async fn simulate(
     Path(id): Path<Uuid>,
     Json(request): Json<SimulationRequest>,
 ) -> Result<Response, ApiError> {
+    let started = Instant::now();
     let scope = authorize(
         &state,
         &headers,
@@ -1996,6 +2422,7 @@ async fn simulate(
     )
     .await?;
     require_ids(&scope, &[id])?;
+    let context = knowledge_base_context(&state, &scope, id).await?;
     if !["USER", "GROUP", "ORGANIZATION"].contains(&request.subject_type.as_str())
         || request.subject_id.is_empty()
         || request.subject_id.len() > 255
@@ -2005,10 +2432,82 @@ async fn simulate(
     let row=sqlx::query("WITH documents AS (SELECT d.document_id,s.acl_mode,acl.acl_revision_id,acl.completeness_state,acl.observed_ts,acl.fresh_until_ts,acl.provider_effective_decision,state.state AS source_acl_state,state.fresh_until_ts AS source_fresh_until,state.unresolved_subject_count FROM knowledge_document_t d JOIN knowledge_source_t s ON s.source_id=d.source_id JOIN knowledge_base_t b ON b.knowledge_base_id=d.knowledge_base_id JOIN LATERAL (SELECT revision.* FROM knowledge_document_acl_t revision WHERE revision.document_id=d.document_id ORDER BY revision.acl_sequence DESC LIMIT 1) acl ON TRUE LEFT JOIN knowledge_source_acl_state_t state ON state.source_id=s.source_id WHERE d.knowledge_base_id=$1 AND b.environment=$2 AND (b.host_id=$3 OR (b.host_id IS NULL AND $4)) AND d.lifecycle_state='ACTIVE'),decisions AS (SELECT document.*,EXISTS(SELECT 1 FROM knowledge_acl_subject_t subject WHERE subject.acl_revision_id=document.acl_revision_id AND subject.effect='ALLOW' AND subject.mapping_complete AND ((subject.normalized_subject_type=$5 AND subject.normalized_subject_id=$6) OR (subject.normalized_subject_type='EVERYONE' AND subject.normalized_subject_id='*'))) AS has_allow,EXISTS(SELECT 1 FROM knowledge_acl_subject_t subject WHERE subject.acl_revision_id=document.acl_revision_id AND subject.effect='DENY' AND subject.mapping_complete AND ((subject.normalized_subject_type=$5 AND subject.normalized_subject_id=$6) OR (subject.normalized_subject_type='EVERYONE' AND subject.normalized_subject_id='*'))) AS has_deny,EXISTS(SELECT 1 FROM knowledge_acl_subject_t subject WHERE subject.acl_revision_id=document.acl_revision_id AND NOT subject.mapping_complete) AS has_unresolved FROM documents document) SELECT count(*) AS evaluated_document_count,count(*) FILTER (WHERE acl_mode='UNIFORM_SCOPE' OR (completeness_state='COMPLETE' AND provider_effective_decision AND fresh_until_ts>now() AND source_acl_state='COMPLETE' AND source_fresh_until>now() AND unresolved_subject_count=0 AND NOT has_unresolved AND NOT has_deny AND has_allow)) AS allowed_document_count,count(*) FILTER (WHERE acl_mode='MIRROR_SOURCE_ACL' AND (completeness_state<>'COMPLETE' OR NOT provider_effective_decision OR fresh_until_ts<=now() OR source_acl_state IS DISTINCT FROM 'COMPLETE' OR source_fresh_until<=now() OR unresolved_subject_count<>0 OR has_unresolved OR has_deny OR NOT has_allow)) AS excluded_document_count FROM decisions")
         .bind(id).bind(&scope.environment).bind(scope.host_id).bind(scope.global_read).bind(&request.subject_type).bind(&request.subject_id)
         .fetch_one(&state.pool).await.map_err(ApiError::database)?;
+    let evaluated_document_count: i64 = row.get("evaluated_document_count");
+    write_admin_audit(
+        &state,
+        &headers,
+        &scope,
+        id,
+        "AUTHORIZATION_SIMULATION",
+        &serde_json::to_value(&request)
+            .map_err(|_| ApiError::internal("KNOWLEDGE_ADMIN_AUDIT_ENCODING_FAILED"))?,
+        Some(&format!("{}:{}", request.subject_type, request.subject_id)),
+        u64::try_from(evaluated_document_count).unwrap_or(0),
+        started.elapsed(),
+    )
+    .await?;
     bounded_response(
         &state,
-        json!({"knowledgeAuthorizationSimulation":[row_to_camel_json(&row)?]}),
+        json!({"knowledgeAuthorizationSimulation":[row_to_camel_json(&row)?],
+            "knowledgeBaseId":id,"environment":scope.environment,
+            "ownerScope":context.owner_scope,"configuration":context.configuration,
+            "asOf":Utc::now()}),
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn write_admin_audit(
+    state: &AdminState,
+    headers: &HeaderMap,
+    scope: &Scope,
+    knowledge_base_id: Uuid,
+    operation: &str,
+    input: &Value,
+    subject: Option<&str>,
+    result_count: u64,
+    elapsed: Duration,
+) -> Result<(), ApiError> {
+    let request_id = headers
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 128
+                && value.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':')
+                })
+        })
+        .map(str::to_string)
+        .unwrap_or_else(|| Uuid::now_v7().to_string());
+    let input_bytes = serde_json::to_vec(input)
+        .map_err(|_| ApiError::internal("KNOWLEDGE_ADMIN_AUDIT_ENCODING_FAILED"))?;
+    let subject_ref = subject
+        .map(|value| opaque_actor(state, value))
+        .transpose()?;
+    sqlx::query(
+        "INSERT INTO knowledge_admin_audit_t(
+           admin_audit_id,request_id,knowledge_base_id,consumer_host_id,
+           environment,operation,input_digest,subject_ref,result_count,latency_ms)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(request_id)
+    .bind(knowledge_base_id)
+    .bind(scope.host_id)
+    .bind(&scope.environment)
+    .bind(operation)
+    .bind(hex(&Sha256::digest(input_bytes)))
+    .bind(subject_ref)
+    .bind(i64::try_from(result_count).unwrap_or(i64::MAX))
+    .bind(
+        i64::try_from(elapsed.as_millis())
+            .unwrap_or(2_000)
+            .min(2_000),
+    )
+    .execute(&state.pool)
+    .await
+    .map_err(ApiError::database)?;
+    Ok(())
 }
 
 fn row_to_camel_json(row: &PgRow) -> Result<Value, ApiError> {
@@ -2036,27 +2535,74 @@ fn row_to_camel_json(row: &PgRow) -> Result<Value, ApiError> {
 }
 
 fn bounded_response(state: &AdminState, value: Value) -> Result<Response, ApiError> {
+    let result_count = top_level_result_count(&value);
+    let redaction_count = redaction_count(&value);
     let bytes = serde_json::to_vec(&value)
         .map_err(|_| ApiError::internal("KNOWLEDGE_ADMIN_RESPONSE_ENCODING_FAILED"))?;
     if bytes.len() > state.config.maximum_response_bytes {
         return Err(ApiError::too_large("KNOWLEDGE_ADMIN_RESPONSE_TOO_LARGE"));
     }
-    Ok((
+    let mut response = (
         StatusCode::OK,
         [("content-type", RESPONSE_CONTENT_TYPE)],
         Bytes::from(bytes),
     )
-        .into_response())
+        .into_response();
+    response.headers_mut().insert(
+        "x-knowledge-result-count",
+        HeaderValue::from_str(&result_count.to_string())
+            .map_err(|_| ApiError::internal("KNOWLEDGE_ADMIN_METRICS_INVALID"))?,
+    );
+    response.headers_mut().insert(
+        "x-knowledge-redaction-count",
+        HeaderValue::from_str(&redaction_count.to_string())
+            .map_err(|_| ApiError::internal("KNOWLEDGE_ADMIN_METRICS_INVALID"))?,
+    );
+    Ok(response)
+}
+
+fn top_level_result_count(value: &Value) -> usize {
+    value
+        .as_object()
+        .map(|object| {
+            object
+                .iter()
+                .filter(|(key, _)| !matches!(key.as_str(), "redactedFields"))
+                .filter_map(|(_, value)| value.as_array())
+                .map(Vec::len)
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+fn redaction_count(value: &Value) -> usize {
+    match value {
+        Value::Object(object) => {
+            object
+                .get("redactedFields")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0)
+                + object.values().map(redaction_count).sum::<usize>()
+        }
+        Value::Array(values) => values.iter().map(redaction_count).sum(),
+        _ => 0,
+    }
 }
 
 #[derive(Debug)]
 struct ApiError {
     status: StatusCode,
     code: &'static str,
+    details: Map<String, Value>,
 }
 impl ApiError {
     fn new(status: StatusCode, code: &'static str) -> Self {
-        Self { status, code }
+        Self {
+            status,
+            code,
+            details: Map::new(),
+        }
     }
     fn bad_request(code: &'static str) -> Self {
         Self::new(StatusCode::BAD_REQUEST, code)
@@ -2076,6 +2622,9 @@ impl ApiError {
     fn conflict(code: &'static str) -> Self {
         Self::new(StatusCode::CONFLICT, code)
     }
+    fn timeout(code: &'static str) -> Self {
+        Self::new(StatusCode::GATEWAY_TIMEOUT, code)
+    }
     fn unavailable(code: &'static str) -> Self {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, code)
     }
@@ -2086,14 +2635,20 @@ impl ApiError {
         tracing::error!(error=%error,"Knowledge administration query failed");
         Self::unavailable("KNOWLEDGE_ADMIN_DATABASE_UNAVAILABLE")
     }
+    fn field_too_large(field: &str, maximum: usize) -> Self {
+        let mut error = Self::too_large("KNOWLEDGE_ADMIN_FIELD_TOO_LARGE");
+        error.details.insert("field".into(), json!(field));
+        error.details.insert("maximumBytes".into(), json!(maximum));
+        error
+    }
 }
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (
-            self.status,
-            Json(json!({"statusCode":self.status.as_u16(),"code":self.code,"message":self.code})),
-        )
-            .into_response()
+        let mut body = self.details;
+        body.insert("statusCode".into(), json!(self.status.as_u16()));
+        body.insert("code".into(), json!(self.code));
+        body.insert("message".into(), json!(self.code));
+        (self.status, Json(Value::Object(body))).into_response()
     }
 }
 
@@ -2119,6 +2674,86 @@ mod tests {
         assert!(roles.contains("host-admin"));
         assert!(roles.contains("platformKnowledgeBaseAdmin"));
         assert!(!roles.contains("admin"));
+    }
+
+    #[test]
+    fn delegated_scope_derives_tenant_and_global_visibility_from_signed_claims() {
+        let host_id = Uuid::now_v7();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-knowledge-environment", HeaderValue::from_static("dev"));
+        let tenant = AuthPrincipal {
+            host: Some(host_id.to_string()),
+            role: Some("host-admin".into()),
+            claims: json!({"scp":["portal.r"]}),
+            ..AuthPrincipal::default()
+        };
+        let tenant_scope = validate_delegated_user_claims(&headers, &tenant, "portal.r")
+            .expect("tenant administrator");
+        assert_eq!(tenant_scope.host_id, host_id);
+        assert!(!tenant_scope.global_read);
+
+        let global = AuthPrincipal {
+            role: Some("platformKnowledgeBaseAdmin".into()),
+            ..tenant
+        };
+        assert!(
+            validate_delegated_user_claims(&headers, &global, "portal.r")
+                .expect("global administrator")
+                .global_read
+        );
+    }
+
+    #[test]
+    fn delegated_scope_rejects_wrong_scope_role_host_and_environment() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-knowledge-environment", HeaderValue::from_static("dev"));
+        let valid = AuthPrincipal {
+            host: Some(Uuid::now_v7().to_string()),
+            role: Some("host-admin".into()),
+            claims: json!({"scp":["portal.r"]}),
+            ..AuthPrincipal::default()
+        };
+        assert!(validate_delegated_user_claims(&headers, &valid, "portal.w").is_err());
+        assert!(
+            validate_delegated_user_claims(
+                &headers,
+                &AuthPrincipal {
+                    role: Some("user".into()),
+                    ..valid.clone()
+                },
+                "portal.r"
+            )
+            .is_err()
+        );
+        assert!(
+            validate_delegated_user_claims(
+                &headers,
+                &AuthPrincipal {
+                    host: None,
+                    ..valid.clone()
+                },
+                "portal.r"
+            )
+            .is_err()
+        );
+        headers.insert(
+            "x-knowledge-environment",
+            HeaderValue::from_static("dev' OR true--"),
+        );
+        assert!(validate_delegated_user_claims(&headers, &valid, "portal.r").is_err());
+    }
+
+    #[test]
+    fn route_capabilities_are_explicit_and_fail_closed() {
+        assert_eq!(
+            required_scope("knowledge.admin.operational.read"),
+            Some("portal.r")
+        );
+        assert_eq!(
+            required_scope("knowledge.admin.command.write"),
+            Some("portal.w")
+        );
+        assert_eq!(required_scope("knowledge.admin.unregistered.read"), None);
     }
 
     #[test]
@@ -2157,6 +2792,9 @@ mod tests {
         let admin_openapi = include_str!("../openapi.yaml");
         assert!(admin_openapi.contains("/v1/knowledge/admin/commands:"));
         assert!(admin_openapi.contains("/v1/knowledge/admin/control-snapshots:apply:"));
+        assert!(admin_openapi.contains("OperationalResponse:"));
+        assert!(admin_openapi.contains("'504':"));
+        assert!(admin_openapi.contains("x-field-contract: operational-field-allowlists-v1"));
     }
 
     #[test]
@@ -2230,10 +2868,116 @@ mod tests {
             32_768,
             "evidence",
             &mut redacted,
-        );
+        )
+        .expect("safe JSON");
         assert_eq!(value["passed"], true);
         assert!(value.get("providerEvidence").is_none());
         assert_eq!(value["note"].as_str().unwrap().len(), 512);
-        assert_eq!(redacted, vec!["evidence.providerEvidence"]);
+        assert_eq!(redacted, vec!["evidence.note", "evidence.providerEvidence"]);
+    }
+
+    #[test]
+    fn safe_json_rejects_a_field_that_remains_oversize() {
+        let mut redacted = Vec::new();
+        let error = safe_json(
+            json!(
+                (0..64)
+                    .map(|index| (format!("k{index}"), Value::String("x".repeat(512))))
+                    .collect::<Map<_, _>>()
+            ),
+            1_024,
+            "metrics",
+            &mut redacted,
+        )
+        .expect_err("oversize field must fail instead of starving the response");
+        assert_eq!(error.status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(error.code, "KNOWLEDGE_ADMIN_FIELD_TOO_LARGE");
+        assert_eq!(error.details.get("maximumBytes"), Some(&json!(1_024)));
+    }
+
+    #[test]
+    fn page_size_is_strictly_bounded() {
+        assert_eq!(resolve_page_size(None, 200).expect("default"), 200);
+        assert_eq!(resolve_page_size(Some(1), 200).expect("minimum"), 1);
+        assert!(resolve_page_size(Some(0), 200).is_err());
+        assert!(resolve_page_size(Some(201), 200).is_err());
+    }
+
+    #[test]
+    fn cursor_is_signed_and_bound_to_resource_scope_and_generation() {
+        let key = b"a fixed test-only cursor key with enough entropy";
+        let knowledge_base_id = Uuid::now_v7();
+        let generation_id = Uuid::now_v7();
+        let payload = CursorPayload {
+            resource: SEGMENTS.name.into(),
+            knowledge_base_id,
+            environment: "dev".into(),
+            generation_id: Some(generation_id),
+            timestamp: Utc::now(),
+            ids: vec![Uuid::now_v7()],
+        };
+        let cursor = encode_cursor_with_key(key, &payload).expect("cursor");
+        let decoded = decode_cursor_with_key(
+            key,
+            SEGMENTS,
+            &cursor,
+            knowledge_base_id,
+            "dev",
+            Some(generation_id),
+        )
+        .expect("bound cursor");
+        assert_eq!(decoded.ids, payload.ids);
+        assert!(
+            decode_cursor_with_key(
+                key,
+                SEGMENTS,
+                &cursor,
+                Uuid::now_v7(),
+                "dev",
+                Some(generation_id)
+            )
+            .is_err()
+        );
+        assert!(
+            decode_cursor_with_key(
+                key,
+                SEGMENTS,
+                &format!("{}0", cursor),
+                knowledge_base_id,
+                "dev",
+                Some(generation_id)
+            )
+            .is_err()
+        );
+        assert!(
+            decode_cursor_with_key(
+                key,
+                SEGMENTS,
+                &"x".repeat(MAXIMUM_CURSOR_BYTES + 1),
+                knowledge_base_id,
+                "dev",
+                Some(generation_id)
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn metrics_use_fixed_route_labels_without_tenant_identifiers() {
+        let metrics = AdminMetrics::default();
+        metrics.record(
+            "/v1/knowledge/admin/knowledge-bases/{id}/documents",
+            StatusCode::OK,
+            Duration::from_millis(12),
+            2,
+            1,
+        );
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1/unused")
+            .expect("lazy pool");
+        let output = metrics.prometheus(&pool);
+        assert!(output.contains("route=\"/v1/knowledge/admin/knowledge-bases/{id}/documents\""));
+        assert!(!output.contains("knowledge_base_id"));
+        assert!(!output.contains("host_id"));
     }
 }

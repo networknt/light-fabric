@@ -40,6 +40,11 @@ impl AxumApp for AdminApp {
                 path: "/ready",
                 kind: ControlRouteKind::Readiness,
             },
+            ControlRoute {
+                method: "GET",
+                path: "/metrics",
+                kind: ControlRouteKind::Metrics,
+            },
         ]
     }
 }
