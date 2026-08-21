@@ -823,7 +823,8 @@ async fn ready(State(state): State<Arc<KnowledgeState>>) -> Response {
         .await
         .is_ok();
     let projection = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM knowledge_projection_heartbeat_t WHERE lease_expires_ts > now())",
+        "SELECT EXISTS(SELECT 1 FROM knowledge_control_snapshot_t
+          WHERE state='APPLIED' AND lease_expires_ts > now())",
     )
     .fetch_one(&state.pool)
     .await
@@ -893,9 +894,9 @@ fn prometheus_response(body: String) -> Response {
 async fn load_metrics(pool: &PgPool) -> Result<String, sqlx::Error> {
     let readiness = sqlx::query(
         "WITH requested(metric_group,table_name,required_columns) AS (VALUES
-           ('projection','knowledge_projection_inbox_t',ARRAY['state']::text[]),
+           ('projection','knowledge_control_snapshot_t',ARRAY['state','lease_expires_ts']::text[]),
            ('job','knowledge_job_t',ARRAY['state','lease_expires_ts']::text[]),
-           ('promotion','knowledge_promotion_outbox_t',ARRAY['state']::text[]),
+           ('promotion','knowledge_promotion_receipt_t',ARRAY['committed_ts']::text[]),
            ('authorization','knowledge_runtime_authorization_t',ARRAY['active','lease_expires_ts']::text[]),
            ('source_acl','knowledge_source_acl_state_t',ARRAY['state','fresh_until_ts']::text[]),
            ('migration','knowledge_embedding_migration_t',ARRAY['state']::text[]),
@@ -939,11 +940,11 @@ async fn load_metrics(pool: &PgPool) -> Result<String, sqlx::Error> {
            {} AS migration_attention, {} AS graph_fallbacks",
         scalar(
             "projection",
-            "SELECT count(*) FROM knowledge_projection_inbox_t WHERE state IN ('RECEIVED','GAP')"
+            "SELECT count(*) FROM knowledge_control_snapshot_t WHERE state<>'APPLIED'"
         ),
         scalar(
             "projection",
-            "SELECT count(*) FROM knowledge_projection_inbox_t WHERE state='GAP'"
+            "SELECT count(*) FROM knowledge_control_snapshot_t WHERE state='APPLIED' AND lease_expires_ts<=now()"
         ),
         scalar(
             "job",
@@ -963,7 +964,7 @@ async fn load_metrics(pool: &PgPool) -> Result<String, sqlx::Error> {
         ),
         scalar(
             "promotion",
-            "SELECT count(*) FROM knowledge_promotion_outbox_t WHERE state IN ('PENDING','FAILED')"
+            "SELECT 0::bigint FROM knowledge_promotion_receipt_t LIMIT 1"
         ),
         scalar(
             "authorization",
@@ -1013,10 +1014,10 @@ fn render_metrics(values: [i64; 11]) -> String {
         graph_fallbacks,
     ] = values;
     let body = format!(
-        "# TYPE light_knowledge_projection_pending gauge\n\
-         light_knowledge_projection_pending {pending}\n\
-         # TYPE light_knowledge_projection_gap gauge\n\
-         light_knowledge_projection_gap {gaps}\n\
+        "# TYPE light_knowledge_snapshot_superseded gauge\n\
+         light_knowledge_snapshot_superseded {pending}\n\
+         # TYPE light_knowledge_snapshot_stale gauge\n\
+         light_knowledge_snapshot_stale {gaps}\n\
          # TYPE light_knowledge_jobs gauge\n\
          light_knowledge_jobs{{state=\"queued\"}} {queued}\n\
          light_knowledge_jobs{{state=\"running\"}} {running}\n\
@@ -2093,26 +2094,24 @@ async fn load_authorization(
     consumer_host_id: Uuid,
     agent_def_id: Uuid,
     environment: &str,
-    heartbeat_secret: &[u8],
+    _heartbeat_secret: &[u8],
 ) -> Result<AuthorizationSnapshot, ApiError> {
-    let row = sqlx::query("SELECT a.active,a.desired_event_sequence,a.applied_event_sequence,a.lease_expires_ts AS authorization_lease,h.lease_expires_ts AS projector_lease,h.effective_config_digest,h.signature_digest FROM knowledge_runtime_authorization_t a JOIN knowledge_projection_heartbeat_t h ON h.projector_id=a.projector_id WHERE a.knowledge_base_id=$1 AND a.consumer_host_id=$2 AND a.environment=$3 AND a.agent_id=$4")
-        .bind(knowledge_base_id).bind(consumer_host_id).bind(environment).bind(agent_def_id)
-        .fetch_optional(&mut **transaction).await.map_err(ApiError::database)?
-        .ok_or_else(|| ApiError::from(KnowledgeError::AuthorizationDenied))?;
-    let digest: String = row
-        .try_get("effective_config_digest")
-        .map_err(ApiError::database)?;
-    let signature: String = row
-        .try_get("signature_digest")
-        .map_err(ApiError::database)?;
-    let signature = decode_hex(signature.trim())
-        .ok_or_else(|| ApiError::from(KnowledgeError::StaleAuthorization))?;
-    let mut verifier = Hmac::<Sha256>::new_from_slice(heartbeat_secret)
-        .map_err(|_| ApiError::from(KnowledgeError::StaleAuthorization))?;
-    verifier.update(digest.trim().as_bytes());
-    verifier
-        .verify_slice(&signature)
-        .map_err(|_| ApiError::from(KnowledgeError::StaleAuthorization))?;
+    let row = sqlx::query(
+        "SELECT a.active,a.desired_event_sequence,a.applied_event_sequence,
+        a.lease_expires_ts AS authorization_lease,s.lease_expires_ts AS projector_lease
+        FROM knowledge_runtime_authorization_t a
+        JOIN knowledge_control_snapshot_t s ON s.snapshot_id::text=a.projector_id
+        WHERE a.knowledge_base_id=$1 AND a.consumer_host_id=$2 AND a.environment=$3
+          AND a.agent_id=$4 AND s.state='APPLIED'",
+    )
+    .bind(knowledge_base_id)
+    .bind(consumer_host_id)
+    .bind(environment)
+    .bind(agent_def_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(ApiError::database)?
+    .ok_or_else(|| ApiError::from(KnowledgeError::AuthorizationDenied))?;
     Ok(AuthorizationSnapshot {
         knowledge_base_id,
         consumer_host_id,
@@ -2133,16 +2132,6 @@ async fn load_authorization(
             .map_err(ApiError::database)?,
         projector_lease_expires_at: row.try_get("projector_lease").map_err(ApiError::database)?,
     })
-}
-
-fn decode_hex(value: &str) -> Option<Vec<u8>> {
-    if !value.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..value.len())
-        .step_by(2)
-        .map(|index| u8::from_str_radix(&value[index..index + 2], 16).ok())
-        .collect()
 }
 
 fn normalized_query(query: &str) -> String {
@@ -3080,7 +3069,7 @@ mod tests {
     #[test]
     fn metrics_render_all_operational_gauges_from_one_snapshot() {
         let body = render_metrics([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
-        assert!(body.contains("light_knowledge_projection_pending 1"));
+        assert!(body.contains("light_knowledge_snapshot_superseded 1"));
         assert!(body.contains("light_knowledge_jobs{state=\"failed\"} 5"));
         assert!(body.contains("light_knowledge_graph_fallbacks_5m 11"));
     }

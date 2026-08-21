@@ -1,20 +1,10 @@
 # Configuration schema version; intentionally fixed by this image.
 version: 1
-projectionMode: ${knowledgeWorker.projectionMode:embedded}
 jobExecutionMode: ${knowledgeWorker.jobExecutionMode:embedded}
 workerDatabaseUrlFile: ${knowledgeWorker.workerDatabaseUrlFile:/run/secrets/knowledge-worker-database-url}
-projectorDatabaseUrlFile: ${knowledgeWorker.projectorDatabaseUrlFile:/run/secrets/knowledge-projector-database-url}
-controlPlaneEventDatabaseUrlFile: ${knowledgeWorker.controlPlaneEventDatabaseUrlFile:/run/secrets/configserver-event-read-url}
 expectedKnowledgeDatabase: ${knowledgeWorker.expectedKnowledgeDatabase:knowledge}
-expectedControlPlaneDatabase: ${knowledgeWorker.expectedControlPlaneDatabase:configserver}
-heartbeatSecretFile: ${knowledgeWorker.heartbeatSecretFile:/run/secrets/knowledge-heartbeat-secret}
-portalCommandUrl: ${knowledgeWorker.portalCommandUrl:https://hybrid-command:8439/portal/command}
-portalAuthorizationFile: ${knowledgeWorker.portalAuthorizationFile:/run/secrets/knowledge-portal-authorization}
-portalCommandCaCertFile: ${knowledgeWorker.portalCommandCaCertFile:/keystore/ca.pem}
-portalCommandVerifyHostname: ${knowledgeWorker.portalCommandVerifyHostname:true}
 checkoutRoot: ${knowledgeWorker.checkoutRoot:/var/lib/light-knowledge/checkouts}
 objectStoreRoot: ${knowledgeWorker.objectStoreRoot:/var/lib/light-knowledge/objects}
-projectorId: ${knowledgeWorker.projectorId:light-knowledge-runtime}
 deterministicPilot: ${knowledgeWorker.deterministicPilot:false}
 migrationDeterministicPilot: ${knowledgeWorker.migrationDeterministicPilot:false}
 embeddingGatewayUrl: ${knowledgeWorker.embeddingGatewayUrl:https://llm-gateway:8443/v1/embeddings}

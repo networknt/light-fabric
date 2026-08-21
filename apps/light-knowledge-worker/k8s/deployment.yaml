@@ -26,7 +26,7 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
-          args: ["project-loop"]
+          args: ["build-loop"]
           env:
             - name: LIGHT_KNOWLEDGE_CONFIG_DIR
               value: /config

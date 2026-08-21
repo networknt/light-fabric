@@ -10,5 +10,9 @@ spec:
     - from:
         - podSelector:
             matchLabels: {app: genai-query}
+        - podSelector:
+            matchLabels: {app: genai-command}
+        - podSelector:
+            matchLabels: {app: knowledge-control-snapshot-sync}
       ports:
         - {protocol: TCP, port: 8093}

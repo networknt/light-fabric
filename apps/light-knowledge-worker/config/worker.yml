@@ -1,16 +1,7 @@
 version: 1
 workerDatabaseUrlFile: /run/secrets/knowledge-worker-database-url
-projectorDatabaseUrlFile: /run/secrets/knowledge-projector-database-url
-heartbeatSecretFile: /run/secrets/knowledge-heartbeat-secret
-portalCommandUrl: https://light-portal-command:8443/portal/command
-portalAuthorizationFile: /run/secrets/knowledge-portal-authorization
-# Production deployments may add their private Portal CA bundle here. Hostname
-# verification defaults to true and requires the Portal DNS name in its SAN.
-# portalCommandCaCertFile: /keystore/portal-ca.pem
-# portalCommandVerifyHostname: true
 checkoutRoot: /var/lib/light-knowledge/checkouts
 objectStoreRoot: /var/lib/light-knowledge/objects
-projectorId: light-knowledge-worker-dev
 deterministicPilot: true
 migrationDeterministicPilot: false
 embeddingAlias: kb-index

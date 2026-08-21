@@ -179,7 +179,6 @@ impl RegistryHandler for KnowledgeRegistryHandler {
             return;
         };
         match method {
-            "knowledge.wake_projection" => runtime.wake_projection(),
             "knowledge.wake_jobs" => runtime.wake_jobs(),
             _ => {}
         }
@@ -195,10 +194,6 @@ impl RegistryHandler for KnowledgeRegistryHandler {
         };
         match method {
             "knowledge.get_runtime_status" => runtime.status().await,
-            "knowledge.wake_projection" => {
-                runtime.wake_projection();
-                serde_json::json!({"status": "accepted"})
-            }
             "knowledge.wake_jobs" => {
                 runtime.wake_jobs();
                 serde_json::json!({"status": "accepted"})
@@ -226,33 +221,6 @@ impl RegistryHandler for KnowledgeRegistryHandler {
                     None => serde_json::json!({
                         "status": "rejected",
                         "error": {"code": "knowledge_job_id_invalid"}
-                    }),
-                }
-            }
-            "knowledge.retry_projection_event" => {
-                let event_id = params
-                    .get("eventId")
-                    .and_then(serde_json::Value::as_str)
-                    .and_then(|value| Uuid::parse_str(value).ok());
-                match event_id {
-                    Some(event_id) => match runtime.retry_projection_event(event_id).await {
-                        Ok(true) => serde_json::json!({"status": "accepted", "eventId": event_id}),
-                        Ok(false) => serde_json::json!({
-                            "status": "rejected",
-                            "error": {"code": "knowledge_projection_event_not_retryable"}
-                        }),
-                        Err(error) => {
-                            tracing::warn!(%error, %event_id,
-                                "Knowledge projection event retry command failed");
-                            serde_json::json!({
-                                "status": "failed",
-                                "error": {"code": "knowledge_projection_event_retry_failed"}
-                            })
-                        }
-                    },
-                    None => serde_json::json!({
-                        "status": "rejected",
-                        "error": {"code": "knowledge_projection_event_id_invalid"}
                     }),
                 }
             }

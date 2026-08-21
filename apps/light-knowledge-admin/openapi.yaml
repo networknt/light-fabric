@@ -8,6 +8,45 @@ servers:
 tags:
   - name: Administration
 paths:
+  /v1/knowledge/admin/commands:
+    post:
+      tags: [Administration]
+      operationId: submitKnowledgeOperationalCommand
+      security: [{delegatedUserBearer: []}]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 128}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/OperationalCommand'}
+      responses:
+        '200': {$ref: '#/components/responses/JsonSuccess'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /v1/knowledge/admin/control-snapshots:apply:
+    post:
+      tags: [Administration]
+      operationId: applyKnowledgeControlSnapshot
+      security: [{delegatedUserBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ControlSnapshotEnvelope'}
+      responses:
+        '200': {$ref: '#/components/responses/JsonSuccess'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
   /v1/knowledge/admin/knowledge-base-summaries:batch:
     post:
       tags: [Administration]
@@ -68,6 +107,8 @@ paths:
     get: {$ref: '#/components/pathItems/PagedRead'}
   /v1/knowledge/admin/knowledge-bases/{id}/production-operations:
     get: {$ref: '#/components/pathItems/PagedRead'}
+  /v1/knowledge/admin/knowledge-bases/{id}/promotion-receipts:
+    get: {$ref: '#/components/pathItems/PagedRead'}
   /v1/knowledge/admin/knowledge-bases/{id}/embedding-migration-estimates:
     post:
       tags: [Administration]
@@ -118,6 +159,21 @@ components:
       in: query
       schema: {type: string, maxLength: 2048}
   schemas:
+    OperationalCommand:
+      type: object
+      additionalProperties: false
+      required: [action, data]
+      properties:
+        action: {type: string, minLength: 1, maxLength: 128}
+        data: {type: object}
+    ControlSnapshotEnvelope:
+      type: object
+      additionalProperties: false
+      required: [payload, payloadDigest, signature]
+      properties:
+        payload: {type: string, contentEncoding: base64url}
+        payloadDigest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        signature: {type: string, pattern: '^[a-f0-9]{64}$'}
     KnowledgeBaseBatch:
       type: object
       additionalProperties: false

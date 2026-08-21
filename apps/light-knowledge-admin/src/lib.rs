@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -35,11 +35,14 @@ pub struct AdminConfig {
     pub database_url_file: PathBuf,
     pub expected_database: String,
     pub opaque_actor_key_file: PathBuf,
+    pub snapshot_signing_key_file: PathBuf,
     pub maximum_request_bytes: usize,
     pub maximum_response_bytes: usize,
     pub maximum_page_size: u16,
     pub request_timeout_ms: u64,
     pub maximum_database_connections: u32,
+    #[serde(default)]
+    pub ignore_jwt_expiry: bool,
 }
 
 impl AdminConfig {
@@ -76,15 +79,20 @@ pub struct AdminState {
     config: AdminConfig,
     cursor_key: Vec<u8>,
     opaque_actor_key: Vec<u8>,
+    snapshot_signing_key: Vec<u8>,
 }
 
 impl AdminState {
     pub async fn build(runtime: &RuntimeConfig, config: AdminConfig) -> Result<Self, RuntimeError> {
         let database_url = read_secret(&config.database_url_file, "Knowledge database URL")?;
         let opaque_actor_key = read_secret(&config.opaque_actor_key_file, "opaque actor key")?;
-        if opaque_actor_key.len() < 32 {
+        let snapshot_signing_key = read_secret(
+            &config.snapshot_signing_key_file,
+            "Knowledge control snapshot signing key",
+        )?;
+        if opaque_actor_key.len() < 32 || snapshot_signing_key.len() < 32 {
             return Err(RuntimeError::Config(
-                "opaque actor key must contain at least 32 bytes".into(),
+                "administration HMAC keys must contain at least 32 bytes".into(),
             ));
         }
         let pool = PgPoolOptions::new()
@@ -124,6 +132,7 @@ impl AdminState {
             config,
             cursor_key,
             opaque_actor_key: opaque_actor_key.into_bytes(),
+            snapshot_signing_key: snapshot_signing_key.into_bytes(),
         })
     }
 
@@ -136,6 +145,9 @@ fn read_secret(path: &PathBuf, label: &str) -> Result<String, RuntimeError> {
     let environment = match path.file_name().and_then(|name| name.to_str()) {
         Some("knowledge-database-url") => Some("LIGHT_KNOWLEDGE_DATABASE_URL"),
         Some("opaque-actor-key") => Some("LIGHT_KNOWLEDGE_ADMIN_OPAQUE_ACTOR_KEY"),
+        Some("control-snapshot-signing-key") => {
+            Some("LIGHT_KNOWLEDGE_CONTROL_SNAPSHOT_SIGNING_KEY")
+        }
         _ => None,
     };
     let value = environment
@@ -194,12 +206,21 @@ pub fn admin_router(state: Arc<AdminState>) -> Router {
             get(production),
         )
         .route(
+            "/v1/knowledge/admin/knowledge-bases/{id}/promotion-receipts",
+            get(promotion_receipts),
+        )
+        .route(
             "/v1/knowledge/admin/knowledge-bases/{id}/embedding-migration-estimates",
             post(estimate),
         )
         .route(
             "/v1/knowledge/admin/knowledge-bases/{id}/authorization-simulations",
             post(simulate),
+        )
+        .route("/v1/knowledge/admin/commands", post(submit_command))
+        .route(
+            "/v1/knowledge/admin/control-snapshots:apply",
+            post(apply_control_snapshot),
         )
         .layer(DefaultBodyLimit::max(state.config.maximum_request_bytes))
         .with_state(state)
@@ -274,13 +295,18 @@ struct Scope {
 async fn authorize(
     state: &AdminState,
     headers: &HeaderMap,
-    _capability: &str,
+    capability: &str,
 ) -> Result<Scope, ApiError> {
     let token = bearer(headers)?;
-    let principal = verify_jwt_token(&state.security, token, JwtExpiryMode::Enforce)
+    let expiry = if state.config.ignore_jwt_expiry {
+        JwtExpiryMode::Ignore
+    } else {
+        JwtExpiryMode::Enforce
+    };
+    let principal = verify_jwt_token(&state.security, token, expiry)
         .await
         .map_err(|_| ApiError::unauthorized("KNOWLEDGE_ADMIN_TOKEN_INVALID"))?;
-    validate_delegated_user_claims(headers, &principal)
+    validate_delegated_user_claims(headers, &principal, capability.ends_with(".write"))
 }
 
 fn bearer(headers: &HeaderMap) -> Result<&str, ApiError> {
@@ -295,6 +321,7 @@ fn bearer(headers: &HeaderMap) -> Result<&str, ApiError> {
 fn validate_delegated_user_claims(
     headers: &HeaderMap,
     principal: &AuthPrincipal,
+    write: bool,
 ) -> Result<Scope, ApiError> {
     let claims = &principal.claims;
     let host_id = principal
@@ -309,7 +336,7 @@ fn validate_delegated_user_claims(
         .ok_or_else(|| ApiError::forbidden("KNOWLEDGE_ADMIN_ENVIRONMENT_REQUIRED"))?
         .to_string();
     let scopes = delegated_scopes(claims);
-    if !scopes.contains("portal.r") {
+    if !scopes.contains(if write { "portal.w" } else { "portal.r" }) {
         return Err(ApiError::forbidden("KNOWLEDGE_ADMIN_SCOPE_DENIED"));
     }
     let roles = delegated_roles(principal);
@@ -326,6 +353,481 @@ fn validate_delegated_user_claims(
         environment,
         global_read: roles.contains("admin") || roles.contains("platformKnowledgeBaseAdmin"),
     })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OperationalCommandRequest {
+    action: String,
+    data: Value,
+}
+
+const SNAPSHOT_TABLES: &[&str] = &[
+    "knowledge_embedding_profile_t",
+    "knowledge_ingestion_policy_t",
+    "knowledge_retrieval_profile_t",
+    "knowledge_base_t",
+    "knowledge_source_t",
+    "agent_knowledge_base_t",
+];
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ControlSnapshotEnvelope {
+    payload: String,
+    payload_digest: String,
+    signature: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ControlSnapshotPayload {
+    contract_version: u16,
+    compatibility_generation: u32,
+    snapshot_id: Uuid,
+    publication_sequence: i64,
+    source_event_watermark: Value,
+    host_id: Uuid,
+    environment: String,
+    complete: bool,
+    replica_inventory: BTreeMap<String, usize>,
+    tables: BTreeMap<String, Vec<Value>>,
+    tombstones: BTreeMap<String, Vec<Value>>,
+}
+
+async fn apply_control_snapshot(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Json(envelope): Json<ControlSnapshotEnvelope>,
+) -> Result<Response, ApiError> {
+    let scope = authorize(&state, &headers, "knowledge.admin.snapshot.write").await?;
+    let payload_bytes = URL_SAFE_NO_PAD
+        .decode(&envelope.payload)
+        .map_err(|_| ApiError::bad_request("KNOWLEDGE_SNAPSHOT_PAYLOAD_INVALID"))?;
+    let payload_digest = hex(&Sha256::digest(&payload_bytes));
+    if payload_digest != envelope.payload_digest {
+        return Err(ApiError::bad_request("KNOWLEDGE_SNAPSHOT_DIGEST_INVALID"));
+    }
+    let signature = decode_hex(&envelope.signature)
+        .ok_or_else(|| ApiError::bad_request("KNOWLEDGE_SNAPSHOT_SIGNATURE_INVALID"))?;
+    let mut mac = HmacSha256::new_from_slice(&state.snapshot_signing_key)
+        .map_err(|_| ApiError::internal("KNOWLEDGE_SNAPSHOT_VERIFIER_UNAVAILABLE"))?;
+    mac.update(&payload_bytes);
+    mac.verify_slice(&signature)
+        .map_err(|_| ApiError::bad_request("KNOWLEDGE_SNAPSHOT_SIGNATURE_INVALID"))?;
+    let payload: ControlSnapshotPayload = serde_json::from_slice(&payload_bytes)
+        .map_err(|_| ApiError::bad_request("KNOWLEDGE_SNAPSHOT_PAYLOAD_INVALID"))?;
+    let expected_tables = SNAPSHOT_TABLES
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<BTreeSet<_>>();
+    if payload.contract_version != 1
+        || payload.compatibility_generation != 1
+        || !payload.complete
+        || payload.publication_sequence < 0
+        || payload.host_id != scope.host_id
+        || payload.environment != scope.environment
+        || payload.tables.keys().cloned().collect::<BTreeSet<_>>() != expected_tables
+        || payload
+            .replica_inventory
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            != expected_tables
+        || payload.tombstones.keys().cloned().collect::<BTreeSet<_>>() != expected_tables
+        || payload
+            .replica_inventory
+            .iter()
+            .any(|(table, count)| payload.tables.get(table).map(Vec::len) != Some(*count))
+        || !payload
+            .tombstones
+            .values()
+            .all(|entries| entries.iter().all(Value::is_object))
+        || !snapshot_tombstones_match_rows(&payload)
+        || !payload.source_event_watermark.is_object()
+    {
+        return Err(ApiError::bad_request("KNOWLEDGE_SNAPSHOT_CONTRACT_INVALID"));
+    }
+
+    let mut transaction = state.pool.begin().await.map_err(ApiError::database)?;
+    let current = sqlx::query(
+        "SELECT publication_sequence,payload_digest FROM knowledge_control_snapshot_t
+          WHERE host_id=$1 AND environment=$2 AND state='APPLIED'
+          ORDER BY publication_sequence DESC LIMIT 1 FOR UPDATE",
+    )
+    .bind(payload.host_id)
+    .bind(&payload.environment)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(ApiError::database)?;
+    if let Some(current) = current {
+        let sequence: i64 = current.get("publication_sequence");
+        let digest: String = current.get("payload_digest");
+        if sequence > payload.publication_sequence {
+            return Err(ApiError::conflict("KNOWLEDGE_SNAPSHOT_DOWNGRADE_REJECTED"));
+        }
+        if sequence == payload.publication_sequence {
+            if digest != envelope.payload_digest {
+                return Err(ApiError::conflict("KNOWLEDGE_SNAPSHOT_SEQUENCE_CONFLICT"));
+            }
+            sqlx::query(
+                "UPDATE knowledge_control_snapshot_t SET applied_ts=now(),
+                   lease_expires_ts=now()+interval '5 minutes'
+                 WHERE host_id=$1 AND environment=$2 AND publication_sequence=$3",
+            )
+            .bind(payload.host_id)
+            .bind(&payload.environment)
+            .bind(sequence)
+            .execute(&mut *transaction)
+            .await
+            .map_err(ApiError::database)?;
+            sqlx::query(
+                "UPDATE knowledge_runtime_authorization_t
+                    SET lease_expires_ts=now()+interval '5 minutes',update_ts=now()
+                  WHERE consumer_host_id=$1 AND environment=$2 AND projector_id=$3",
+            )
+            .bind(payload.host_id)
+            .bind(&payload.environment)
+            .bind(payload.snapshot_id.to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(ApiError::database)?;
+            transaction.commit().await.map_err(ApiError::database)?;
+            return bounded_response(
+                &state,
+                json!({"snapshotId":payload.snapshot_id,"publicationSequence":sequence,
+                    "state":"APPLIED","idempotentReplay":true}),
+            );
+        }
+    }
+    for table in SNAPSHOT_TABLES {
+        materialize_snapshot_table(
+            &mut transaction,
+            table,
+            payload
+                .tables
+                .get(*table)
+                .expect("validated table inventory"),
+        )
+        .await?;
+    }
+    sqlx::query(
+        "INSERT INTO knowledge_control_snapshot_t(
+           snapshot_id,host_id,environment,publication_sequence,
+           source_event_watermark,compatibility_generation,payload_digest,
+           signature_digest,state)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,'APPLIED')",
+    )
+    .bind(payload.snapshot_id)
+    .bind(payload.host_id)
+    .bind(&payload.environment)
+    .bind(payload.publication_sequence)
+    .bind(&payload.source_event_watermark)
+    .bind(i32::try_from(payload.compatibility_generation).unwrap_or(1))
+    .bind(&envelope.payload_digest)
+    .bind(hex(&Sha256::digest(signature)))
+    .execute(&mut *transaction)
+    .await
+    .map_err(ApiError::database)?;
+    sqlx::query(
+        "UPDATE knowledge_control_snapshot_t SET state='SUPERSEDED'
+          WHERE host_id=$1 AND environment=$2 AND snapshot_id<>$3 AND state='APPLIED'",
+    )
+    .bind(payload.host_id)
+    .bind(&payload.environment)
+    .bind(payload.snapshot_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(ApiError::database)?;
+    sqlx::query(
+        "INSERT INTO knowledge_runtime_authorization_t(
+           knowledge_base_id,consumer_host_id,environment,agent_id,
+           retrieval_profile_id,active,desired_event_sequence,
+           applied_event_sequence,projector_id,lease_expires_ts,
+           authorization_digest)
+         SELECT binding.knowledge_base_id,binding.host_id,binding.environment,
+           binding.agent_id,binding.retrieval_profile_id,binding.active,
+           binding.version,binding.version,$1::text,now()+interval '5 minutes',
+           encode(digest(concat_ws('|',binding.knowledge_base_id::text,
+             binding.host_id::text,binding.environment,binding.agent_id::text,
+             binding.retrieval_profile_id::text,binding.version::text,
+             binding.active::text,$2),'sha256'),'hex')
+         FROM agent_knowledge_base_t binding
+         WHERE binding.host_id=$3 AND binding.environment=$4
+         ON CONFLICT(knowledge_base_id,consumer_host_id,environment,agent_id)
+         DO UPDATE SET retrieval_profile_id=EXCLUDED.retrieval_profile_id,
+           active=EXCLUDED.active,
+           desired_event_sequence=EXCLUDED.desired_event_sequence,
+           applied_event_sequence=EXCLUDED.applied_event_sequence,
+           projector_id=EXCLUDED.projector_id,
+           lease_expires_ts=EXCLUDED.lease_expires_ts,
+           authorization_digest=EXCLUDED.authorization_digest,update_ts=now()",
+    )
+    .bind(payload.snapshot_id)
+    .bind(&envelope.payload_digest)
+    .bind(payload.host_id)
+    .bind(&payload.environment)
+    .execute(&mut *transaction)
+    .await
+    .map_err(ApiError::database)?;
+    transaction.commit().await.map_err(ApiError::database)?;
+    bounded_response(
+        &state,
+        json!({"snapshotId":payload.snapshot_id,
+            "publicationSequence":payload.publication_sequence,
+            "state":"APPLIED","idempotentReplay":false}),
+    )
+}
+
+fn snapshot_tombstones_match_rows(payload: &ControlSnapshotPayload) -> bool {
+    payload.tombstones.iter().all(|(table, tombstones)| {
+        let Some(rows) = payload.tables.get(table) else {
+            return false;
+        };
+        tombstones.iter().all(|tombstone| {
+            let Some(tombstone) = tombstone.as_object() else {
+                return false;
+            };
+            let Some(version) = tombstone.get("version") else {
+                return false;
+            };
+            rows.iter().any(|row| {
+                let Some(row) = row.as_object() else {
+                    return false;
+                };
+                let identity_matches = snapshot_primary_keys(table).iter().all(|key| {
+                    tombstone
+                        .get(*key)
+                        .is_some_and(|value| row.get(*key) == Some(value))
+                });
+                let terminal = match table.as_str() {
+                    "knowledge_base_t" | "knowledge_source_t" => {
+                        row.get("status").and_then(Value::as_str) == Some("DELETED")
+                    }
+                    _ => row.get("active").and_then(Value::as_bool) == Some(false),
+                };
+                identity_matches && row.get("version") == Some(version) && terminal
+            })
+        })
+    })
+}
+
+fn snapshot_primary_keys(table: &str) -> &'static [&'static str] {
+    match table {
+        "knowledge_embedding_profile_t" => &["profile_id", "profile_revision"],
+        "knowledge_ingestion_policy_t" => &["ingestion_policy_id"],
+        "knowledge_retrieval_profile_t" => &["profile_id"],
+        "knowledge_base_t" => &["knowledge_base_id"],
+        "knowledge_source_t" => &["source_id"],
+        "agent_knowledge_base_t" => &["host_id", "environment", "agent_id", "knowledge_base_id"],
+        _ => &[],
+    }
+}
+
+async fn materialize_snapshot_table(
+    transaction: &mut sqlx::Transaction<'_, Postgres>,
+    table: &str,
+    rows: &[Value],
+) -> Result<(), ApiError> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    if !rows.iter().all(Value::is_object) {
+        return Err(ApiError::bad_request("KNOWLEDGE_SNAPSHOT_ROW_INVALID"));
+    }
+    let columns: Vec<String> = sqlx::query_scalar(
+        "SELECT column_name FROM information_schema.columns
+          WHERE table_schema='public' AND table_name=$1 AND is_generated='NEVER'
+          ORDER BY ordinal_position",
+    )
+    .bind(table)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(ApiError::database)?;
+    if columns.is_empty() {
+        return Err(ApiError::unavailable(
+            "KNOWLEDGE_SNAPSHOT_SCHEMA_UNAVAILABLE",
+        ));
+    }
+    let keys = snapshot_primary_keys(table);
+    let updates = columns
+        .iter()
+        .filter(|column| !keys.contains(&column.as_str()))
+        .map(|column| format!("{column}=EXCLUDED.{column}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "INSERT INTO {table} SELECT * FROM jsonb_populate_recordset(NULL::{table},$1::jsonb)
+         ON CONFLICT({}) DO UPDATE SET {updates}",
+        keys.join(",")
+    );
+    sqlx::query(&sql)
+        .bind(Value::Array(rows.to_vec()))
+        .execute(&mut **transaction)
+        .await
+        .map_err(ApiError::database)?;
+    Ok(())
+}
+
+fn operational_job_type(action: &str) -> Option<&'static str> {
+    Some(match action {
+        "testKnowledgeSource" => "CONNECTIVITY_TEST",
+        "requestKnowledgeSourceSync" => "SYNC",
+        "requestKnowledgeSourceAclReconciliation" => "ACL_RECONCILE",
+        "receiveKnowledgeSourceProviderNotification" => "PROVIDER_NOTIFICATION",
+        "requestKnowledgeBaseReindex" => "FULL_REINDEX",
+        "requestKnowledgeBaseCompaction" => "COMPACTION",
+        "promoteKnowledgeBaseIndexGeneration" => "PROMOTE",
+        "requestKnowledgeBasePurge" => "PURGE",
+        "testKnowledgeRetrieval" => "RETRIEVAL_TEST",
+        "requestKnowledgeBaseEmbeddingMigration" => "MIGRATION_PREFLIGHT",
+        "pauseKnowledgeBaseEmbeddingMigration" => "MIGRATION_PAUSE",
+        "resumeKnowledgeBaseEmbeddingMigration" => "MIGRATION_BACKFILL",
+        "cancelKnowledgeBaseEmbeddingMigration" => "MIGRATION_CANCEL",
+        "rollbackKnowledgeBaseIndexGeneration" => "MIGRATION_ROLLBACK",
+        "retireKnowledgeBaseIndexGeneration" => "MIGRATION_RETIRE",
+        "requestKnowledgeBaseBackupCheckpoint" => "BACKUP_CHECKPOINT",
+        "verifyKnowledgeBasePhysicalRestore" => "RESTORE_VERIFY",
+        _ => return None,
+    })
+}
+
+async fn submit_command(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Json(request): Json<OperationalCommandRequest>,
+) -> Result<Response, ApiError> {
+    let scope = authorize(&state, &headers, "knowledge.admin.command.write").await?;
+    let idempotency_key = headers
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty() && value.len() <= 128)
+        .ok_or_else(|| ApiError::bad_request("KNOWLEDGE_IDEMPOTENCY_KEY_REQUIRED"))?;
+    let job_type = operational_job_type(&request.action)
+        .ok_or_else(|| ApiError::bad_request("KNOWLEDGE_OPERATIONAL_ACTION_INVALID"))?;
+    let data = request
+        .data
+        .as_object()
+        .ok_or_else(|| ApiError::bad_request("KNOWLEDGE_COMMAND_DATA_INVALID"))?;
+    let knowledge_base_id = data
+        .get("knowledgeBaseId")
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .ok_or_else(|| ApiError::bad_request("KNOWLEDGE_BASE_ID_REQUIRED"))?;
+    let source_id = data
+        .get("sourceId")
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok());
+    let environment = data
+        .get("environment")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::bad_request("KNOWLEDGE_ENVIRONMENT_REQUIRED"))?;
+    if environment != scope.environment {
+        return Err(ApiError::not_found("KNOWLEDGE_BASE_NOT_FOUND"));
+    }
+    let visible: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM knowledge_base_t b
+          WHERE b.knowledge_base_id=$1 AND b.environment=$2
+            AND (b.host_id=$3 OR (b.host_id IS NULL AND $4))
+            AND b.status<>'DELETED')",
+    )
+    .bind(knowledge_base_id)
+    .bind(&scope.environment)
+    .bind(scope.host_id)
+    .bind(scope.global_read)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(ApiError::database)?;
+    if !visible {
+        return Err(ApiError::not_found("KNOWLEDGE_BASE_NOT_FOUND"));
+    }
+    if let Some(source_id) = source_id {
+        let source_visible: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM knowledge_source_t
+              WHERE source_id=$1 AND knowledge_base_id=$2 AND status<>'DELETED')",
+        )
+        .bind(source_id)
+        .bind(knowledge_base_id)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(ApiError::database)?;
+        if !source_visible {
+            return Err(ApiError::not_found("KNOWLEDGE_SOURCE_NOT_FOUND"));
+        }
+    }
+    let subject = bearer(&headers)?;
+    let actor = opaque_actor(&state, subject)?;
+    if data.keys().any(|key| {
+        matches!(
+            key.as_str(),
+            "authorizedBy" | "requestedBy" | "authenticatedPrincipal" | "principalClaims"
+        )
+    }) {
+        return Err(ApiError::bad_request(
+            "KNOWLEDGE_COMMAND_PRINCIPAL_FIELD_FORBIDDEN",
+        ));
+    }
+    let mut payload = request.data.clone();
+    payload
+        .as_object_mut()
+        .expect("validated command data")
+        .insert("authorizedBy".into(), Value::String(actor.clone()));
+    let job_id = Uuid::now_v7();
+    let inserted = sqlx::query(
+        "INSERT INTO knowledge_job_t(job_id,knowledge_base_id,source_id,job_type,
+           idempotency_key,requested_by,payload)
+         VALUES($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT(knowledge_base_id,idempotency_key) DO NOTHING",
+    )
+    .bind(job_id)
+    .bind(knowledge_base_id)
+    .bind(source_id)
+    .bind(job_type)
+    .bind(idempotency_key)
+    .bind(actor)
+    .bind(payload)
+    .execute(&state.pool)
+    .await
+    .map_err(ApiError::database)?;
+    let row = sqlx::query(
+        "SELECT job_id,job_type,state,created_ts,payload FROM knowledge_job_t
+          WHERE knowledge_base_id=$1 AND idempotency_key=$2",
+    )
+    .bind(knowledge_base_id)
+    .bind(idempotency_key)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(ApiError::database)?;
+    if inserted.rows_affected() == 0
+        && !same_operational_command(
+            job_type,
+            &request.data,
+            row.get("job_type"),
+            row.get("payload"),
+        )
+    {
+        return Err(ApiError::conflict("KNOWLEDGE_COMMAND_IDEMPOTENCY_CONFLICT"));
+    }
+    bounded_response(
+        &state,
+        json!({"jobId":row.get::<Uuid,_>("job_id"),
+            "jobType":row.get::<String,_>("job_type"),
+            "state":row.get::<String,_>("state"),
+            "createdTs":row.get::<DateTime<Utc>,_>("created_ts"),
+            "idempotentReplay":inserted.rows_affected()==0}),
+    )
+}
+
+fn same_operational_command(
+    requested_job_type: &str,
+    requested_data: &Value,
+    existing_job_type: String,
+    mut existing_payload: Value,
+) -> bool {
+    if let Some(object) = existing_payload.as_object_mut() {
+        object.remove("authorizedBy");
+    }
+    requested_job_type == existing_job_type && requested_data == &existing_payload
 }
 
 fn delegated_scopes(claims: &Value) -> BTreeSet<String> {
@@ -917,6 +1419,23 @@ const PURGE_EVIDENCE: ResourceSpec = spec!(
         "finished_ts"
     ]
 );
+const PROMOTION_RECEIPTS: ResourceSpec = spec!(
+    "promotionReceipts",
+    "knowledge_promotion_receipt_t",
+    "knowledgePromotionReceipts",
+    "committed_ts",
+    ["promotion_id"],
+    [
+        "promotion_id",
+        "knowledge_base_id",
+        "environment",
+        "index_generation_id",
+        "pointer_version",
+        "evidence_digest",
+        "authorized_by",
+        "committed_ts"
+    ]
+);
 
 async fn sync_runs(
     State(s): State<Arc<AdminState>>,
@@ -949,6 +1468,15 @@ async fn all_segments(
     Query(q): Query<PageQuery>,
 ) -> Result<Response, ApiError> {
     single(&s, &h, id, SEGMENTS, &q).await
+}
+
+async fn promotion_receipts(
+    State(s): State<Arc<AdminState>>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Query(q): Query<PageQuery>,
+) -> Result<Response, ApiError> {
+    single(&s, &h, id, PROMOTION_RECEIPTS, &q).await
 }
 
 async fn segments(
@@ -1285,8 +1813,12 @@ fn normalize_row(state: &AdminState, spec: ResourceSpec, row: Value) -> Result<V
         let camel = snake_to_camel(field);
         if *field == "authorized_by" {
             if let Some(raw) = value.as_str() {
-                value = Value::String(opaque_actor(state, raw)?);
-                redacted.push(format!("{camel}.rawPrincipal"));
+                if raw.starts_with("actor:v1:") && raw.len() <= 128 {
+                    value = Value::String(raw.to_string());
+                } else {
+                    value = Value::String(opaque_actor(state, raw)?);
+                    redacted.push(format!("{camel}.rawPrincipal"));
+                }
             }
         }
         if *field == "error_summary" {
@@ -1423,6 +1955,16 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+fn decode_hex(value: &str) -> Option<Vec<u8>> {
+    if !value.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..value.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&value[index..index + 2], 16).ok())
+        .collect()
+}
+
 async fn estimate(
     State(state): State<Arc<AdminState>>,
     headers: HeaderMap,
@@ -1531,6 +2073,9 @@ impl ApiError {
     fn too_large(code: &'static str) -> Self {
         Self::new(StatusCode::PAYLOAD_TOO_LARGE, code)
     }
+    fn conflict(code: &'static str) -> Self {
+        Self::new(StatusCode::CONFLICT, code)
+    }
     fn unavailable(code: &'static str) -> Self {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, code)
     }
@@ -1583,6 +2128,65 @@ mod tests {
     }
 
     #[test]
+    fn phase2_snapshot_inventory_and_command_map_are_frozen() {
+        assert_eq!(SNAPSHOT_TABLES.len(), 6);
+        for table in SNAPSHOT_TABLES {
+            assert!(!snapshot_primary_keys(table).is_empty());
+        }
+        for action in [
+            "testKnowledgeSource",
+            "requestKnowledgeSourceSync",
+            "requestKnowledgeSourceAclReconciliation",
+            "receiveKnowledgeSourceProviderNotification",
+            "requestKnowledgeBaseReindex",
+            "requestKnowledgeBaseCompaction",
+            "promoteKnowledgeBaseIndexGeneration",
+            "requestKnowledgeBasePurge",
+            "testKnowledgeRetrieval",
+            "requestKnowledgeBaseEmbeddingMigration",
+            "pauseKnowledgeBaseEmbeddingMigration",
+            "resumeKnowledgeBaseEmbeddingMigration",
+            "cancelKnowledgeBaseEmbeddingMigration",
+            "rollbackKnowledgeBaseIndexGeneration",
+            "retireKnowledgeBaseIndexGeneration",
+            "requestKnowledgeBaseBackupCheckpoint",
+            "verifyKnowledgeBasePhysicalRestore",
+        ] {
+            assert!(operational_job_type(action).is_some(), "{action}");
+        }
+        let admin_openapi = include_str!("../openapi.yaml");
+        assert!(admin_openapi.contains("/v1/knowledge/admin/commands:"));
+        assert!(admin_openapi.contains("/v1/knowledge/admin/control-snapshots:apply:"));
+    }
+
+    #[test]
+    fn idempotency_replay_requires_the_same_action_and_payload() {
+        let requested = json!({"knowledgeBaseId":"00000000-0000-0000-0000-000000000001"});
+        let stored = json!({
+            "knowledgeBaseId":"00000000-0000-0000-0000-000000000001",
+            "authorizedBy":"actor:v1:opaque"
+        });
+        assert!(same_operational_command(
+            "SYNC",
+            &requested,
+            "SYNC".into(),
+            stored.clone()
+        ));
+        assert!(!same_operational_command(
+            "PURGE",
+            &requested,
+            "SYNC".into(),
+            stored.clone()
+        ));
+        assert!(!same_operational_command(
+            "SYNC",
+            &json!({"knowledgeBaseId":"00000000-0000-0000-0000-000000000002"}),
+            "SYNC".into(),
+            stored
+        ));
+    }
+
+    #[test]
     fn frozen_resources_have_unique_fields_and_stable_keys() {
         for spec in [
             SYNC_RUNS,
@@ -1603,6 +2207,7 @@ mod tests {
             GENERATION_RETENTION,
             BACKUP_CHECKPOINTS,
             PURGE_EVIDENCE,
+            PROMOTION_RECEIPTS,
         ] {
             assert_eq!(
                 spec.fields.iter().copied().collect::<BTreeSet<_>>().len(),
