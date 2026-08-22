@@ -929,7 +929,7 @@ async fn load_metrics(pool: &PgPool) -> Result<String, sqlx::Error> {
            {} AS migration_attention, {} AS graph_fallbacks",
         scalar(
             "projection",
-            "SELECT count(*) FROM knowledge_control_snapshot_t WHERE state<>'APPLIED'"
+            "SELECT count(*) FROM knowledge_control_snapshot_t WHERE state='SUPERSEDED'"
         ),
         scalar(
             "projection",
@@ -1004,8 +1004,8 @@ fn render_metrics(values: [i64; 11]) -> String {
         graph_fallbacks,
     ] = values;
     let body = format!(
-        "# TYPE light_knowledge_snapshot_superseded gauge\n\
-         light_knowledge_snapshot_superseded {pending}\n\
+        "# TYPE light_knowledge_snapshot_history_retained gauge\n\
+         light_knowledge_snapshot_history_retained {pending}\n\
          # TYPE light_knowledge_snapshot_stale gauge\n\
          light_knowledge_snapshot_stale {gaps}\n\
          # TYPE light_knowledge_jobs gauge\n\
@@ -3054,7 +3054,7 @@ mod tests {
     #[test]
     fn metrics_render_all_operational_gauges_from_one_snapshot() {
         let body = render_metrics([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
-        assert!(body.contains("light_knowledge_snapshot_superseded 1"));
+        assert!(body.contains("light_knowledge_snapshot_history_retained 1"));
         assert!(body.contains("light_knowledge_jobs{state=\"failed\"} 5"));
         assert!(body.contains("light_knowledge_graph_fallbacks_5m 11"));
     }

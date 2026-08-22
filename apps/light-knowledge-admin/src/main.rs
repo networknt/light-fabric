@@ -25,7 +25,7 @@ impl AxumApp for AdminApp {
         context
             .lifecycle
             .register(Arc::new(AdminDatabase(state.pool())))?;
-        if let Some(refresh) = ControlSnapshotRefresh::start(Arc::clone(&state)).await? {
+        if let Some(refresh) = ControlSnapshotRefresh::start(Arc::clone(&state))? {
             context.lifecycle.register(Arc::new(refresh))?;
         }
         Ok(admin_router(state))

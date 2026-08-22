@@ -4,6 +4,9 @@ workerDatabaseUrlFile: ${knowledgeWorker.workerDatabaseUrlFile:/run/secrets/know
 expectedKnowledgeDatabase: ${knowledgeWorker.expectedKnowledgeDatabase:knowledge}
 checkoutRoot: ${knowledgeWorker.checkoutRoot:/var/lib/light-knowledge/checkouts}
 objectStoreRoot: ${knowledgeWorker.objectStoreRoot:/var/lib/light-knowledge/objects}
+# The build loop is a real external-embedding worker. Kubernetes explicitly
+# mounts the database credential, embedding credential, CA, and writable roots
+# required by this fail-closed configuration.
 deterministicPilot: ${knowledgeWorker.deterministicPilot:false}
 migrationDeterministicPilot: ${knowledgeWorker.migrationDeterministicPilot:false}
 embeddingGatewayUrl: ${knowledgeWorker.embeddingGatewayUrl:https://llm-gateway:8443/v1/embeddings}

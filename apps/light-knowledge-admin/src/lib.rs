@@ -229,7 +229,7 @@ struct ControlSnapshotClient {
 }
 
 impl ControlSnapshotRefresh {
-    pub async fn start(state: Arc<AdminState>) -> Result<Option<Self>, RuntimeError> {
+    pub fn start(state: Arc<AdminState>) -> Result<Option<Self>, RuntimeError> {
         if !state.config.snapshot_source.enabled {
             return Ok(None);
         }
@@ -241,54 +241,61 @@ impl ControlSnapshotRefresh {
             client,
             authorization,
         });
-        let mut last_error = String::new();
-        for attempt in 1..=state.config.snapshot_source.bootstrap_attempts {
-            match source.sync_once().await {
-                Ok(snapshot_id) => {
-                    tracing::info!(%snapshot_id, attempt, "Knowledge control snapshot bootstrap applied");
-                    last_error.clear();
-                    break;
-                }
-                Err(error) => {
-                    last_error = error;
-                    tracing::warn!(
-                        attempt,
-                        maximum_attempts = state.config.snapshot_source.bootstrap_attempts,
-                        error = %last_error,
-                        "Knowledge control snapshot bootstrap failed; retrying"
-                    );
-                    if attempt < state.config.snapshot_source.bootstrap_attempts {
-                        tokio::time::sleep(Duration::from_millis(
-                            state.config.snapshot_source.retry_delay_ms,
-                        ))
-                        .await;
-                    }
-                }
-            }
-        }
-        if !last_error.is_empty() {
-            return Err(RuntimeError::Config(format!(
-                "Knowledge control snapshot bootstrap failed: {last_error}"
-            )));
-        }
-
         let cancellation = CancellationToken::new();
         let refresh_cancellation = cancellation.child_token();
         let refresh_seconds = state.config.snapshot_source.refresh_seconds;
+        let retry_delay_ms = state.config.snapshot_source.retry_delay_ms;
+        let bootstrap_attempts = u64::from(state.config.snapshot_source.bootstrap_attempts);
         let handle = tokio::spawn(async move {
+            let mut bootstrapped = false;
+            let mut consecutive_failures = 0_u64;
+            let mut delay = Duration::ZERO;
             loop {
                 tokio::select! {
                     () = refresh_cancellation.cancelled() => break,
-                    () = tokio::time::sleep(Duration::from_secs(refresh_seconds)) => {
+                    () = tokio::time::sleep(delay) => {
                         match source.sync_once().await {
-                            Ok(snapshot_id) => tracing::debug!(
-                                %snapshot_id,
-                                "Knowledge control snapshot lease refreshed"
-                            ),
-                            Err(error) => tracing::error!(
-                                error = %error,
-                                "Knowledge control snapshot refresh failed"
-                            ),
+                            Ok(snapshot_id) => {
+                                if bootstrapped {
+                                    tracing::debug!(
+                                        %snapshot_id,
+                                        "Knowledge control snapshot lease refreshed"
+                                    );
+                                } else {
+                                    tracing::info!(
+                                        %snapshot_id,
+                                        attempts = consecutive_failures.saturating_add(1),
+                                        "Knowledge control snapshot bootstrap applied"
+                                    );
+                                    bootstrapped = true;
+                                }
+                                consecutive_failures = 0;
+                                delay = Duration::from_secs(refresh_seconds);
+                            }
+                            Err(error) => {
+                                consecutive_failures = consecutive_failures.saturating_add(1);
+                                if !bootstrapped && consecutive_failures < bootstrap_attempts {
+                                    tracing::warn!(
+                                        attempt = consecutive_failures,
+                                        maximum_attempts = bootstrap_attempts,
+                                        error = %error,
+                                        "Knowledge control snapshot bootstrap failed; retrying"
+                                    );
+                                } else if !bootstrapped {
+                                    tracing::error!(
+                                        attempts = consecutive_failures,
+                                        error = %error,
+                                        "Knowledge control snapshot bootstrap remains unavailable; retrying"
+                                    );
+                                } else {
+                                    tracing::error!(
+                                        consecutive_failures,
+                                        error = %error,
+                                        "Knowledge control snapshot refresh failed; retrying before the lease expires"
+                                    );
+                                }
+                                delay = Duration::from_millis(retry_delay_ms);
+                            }
                         }
                     }
                 }
@@ -669,7 +676,29 @@ async fn ready(State(state): State<Arc<AdminState>>) -> Result<Json<Value>, ApiE
         .fetch_one(&state.pool)
         .await
         .map_err(|_| ApiError::unavailable("KNOWLEDGE_ADMIN_DATABASE_UNAVAILABLE"))?;
+    if !configuration_is_fresh(&state.pool)
+        .await
+        .map_err(|_| ApiError::unavailable("KNOWLEDGE_ADMIN_DATABASE_UNAVAILABLE"))?
+    {
+        return Err(ApiError::unavailable("KNOWLEDGE_CONFIGURATION_UNAVAILABLE"));
+    }
     Ok(Json(json!({"status":"UP"})))
+}
+
+/// Readiness requires a control snapshot that is applied and still leased, so a
+/// pod reports ready only once it can actually serve. Reading the lease rather
+/// than an in-process bootstrap flag also covers restarts onto an existing
+/// snapshot, snapshots applied through the API, and later lease expiry.
+async fn configuration_is_fresh<'c, E>(executor: E) -> Result<bool, sqlx::Error>
+where
+    E: sqlx::Executor<'c, Database = Postgres>,
+{
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM knowledge_control_snapshot_t
+           WHERE state='APPLIED' AND lease_expires_ts>now())",
+    )
+    .fetch_one(executor)
+    .await
 }
 
 async fn metrics(State(state): State<Arc<AdminState>>) -> Response {
@@ -964,7 +993,7 @@ fn validate_delegated_user_claims(
     Ok(Scope {
         host_id,
         environment,
-        global_read: roles.contains("admin") || roles.contains("platformKnowledgeBaseAdmin"),
+        global_read: roles.contains("platformKnowledgeBaseAdmin"),
     })
 }
 
@@ -1070,6 +1099,7 @@ async fn apply_control_snapshot(
         &envelope.payload_digest,
         &signature,
         state.config.snapshot_history_retention_days,
+        snapshot_lease_seconds(&state.config),
     )
     .await?;
     let audit_input = json!({
@@ -1106,6 +1136,7 @@ async fn persist_control_snapshot(
     payload_digest: &str,
     signature: &[u8],
     retention_days: u16,
+    lease_seconds: i32,
 ) -> Result<bool, ApiError> {
     let mut transaction = pool.begin().await.map_err(ApiError::database)?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
@@ -1135,26 +1166,23 @@ async fn persist_control_snapshot(
             }
             sqlx::query(
                 "UPDATE knowledge_control_snapshot_t SET applied_ts=now(),
-                   lease_expires_ts=now()+interval '5 minutes'
+                   lease_expires_ts=now()+make_interval(secs => $4)
                  WHERE host_id=$1 AND environment=$2 AND publication_sequence=$3",
             )
             .bind(payload.host_id)
             .bind(&payload.environment)
             .bind(sequence)
+            .bind(lease_seconds)
             .execute(&mut *transaction)
             .await
             .map_err(ApiError::database)?;
-            sqlx::query(
-                "UPDATE knowledge_runtime_authorization_t
-                    SET lease_expires_ts=now()+interval '5 minutes',update_ts=now()
-                  WHERE consumer_host_id=$1 AND environment=$2 AND projector_id=$3",
+            refresh_runtime_authorizations(
+                &mut transaction,
+                payload,
+                payload_digest,
+                lease_seconds,
             )
-            .bind(payload.host_id)
-            .bind(&payload.environment)
-            .bind(payload.snapshot_id.to_string())
-            .execute(&mut *transaction)
-            .await
-            .map_err(ApiError::database)?;
+            .await?;
             transaction.commit().await.map_err(ApiError::database)?;
             return Ok(true);
         }
@@ -1198,6 +1226,29 @@ async fn persist_control_snapshot(
     .execute(&mut *transaction)
     .await
     .map_err(ApiError::database)?;
+    refresh_runtime_authorizations(&mut transaction, payload, payload_digest, lease_seconds)
+        .await?;
+    sqlx::query(
+        "DELETE FROM knowledge_control_snapshot_t
+          WHERE host_id=$1 AND environment=$2 AND state='SUPERSEDED'
+            AND applied_ts < now()-make_interval(days => $3)",
+    )
+    .bind(payload.host_id)
+    .bind(&payload.environment)
+    .bind(i32::from(retention_days))
+    .execute(&mut *transaction)
+    .await
+    .map_err(ApiError::database)?;
+    transaction.commit().await.map_err(ApiError::database)?;
+    Ok(false)
+}
+
+async fn refresh_runtime_authorizations(
+    transaction: &mut sqlx::Transaction<'_, Postgres>,
+    payload: &ControlSnapshotPayload,
+    payload_digest: &str,
+    lease_seconds: i32,
+) -> Result<(), ApiError> {
     sqlx::query(
         "INSERT INTO knowledge_runtime_authorization_t(
            knowledge_base_id,consumer_host_id,environment,agent_id,
@@ -1206,7 +1257,7 @@ async fn persist_control_snapshot(
            authorization_digest)
          SELECT binding.knowledge_base_id,binding.host_id,binding.environment,
            binding.agent_id,binding.retrieval_profile_id,qualification.strategies,binding.active,
-           binding.version,binding.version,$1::text,now()+interval '5 minutes',
+           binding.version,binding.version,$1::text,now()+make_interval(secs => $5),
            encode(digest(concat_ws('|',binding.knowledge_base_id::text,
              binding.host_id::text,binding.environment,binding.agent_id::text,
              binding.retrieval_profile_id::text,binding.version::text,
@@ -1237,22 +1288,20 @@ async fn persist_control_snapshot(
     .bind(payload_digest)
     .bind(payload.host_id)
     .bind(&payload.environment)
-    .execute(&mut *transaction)
+    .bind(lease_seconds)
+    .execute(&mut **transaction)
     .await
     .map_err(ApiError::database)?;
-    sqlx::query(
-        "DELETE FROM knowledge_control_snapshot_t
-          WHERE host_id=$1 AND environment=$2 AND state='SUPERSEDED'
-            AND applied_ts < now()-make_interval(days => $3)",
-    )
-    .bind(payload.host_id)
-    .bind(&payload.environment)
-    .bind(i32::from(retention_days))
-    .execute(&mut *transaction)
-    .await
-    .map_err(ApiError::database)?;
-    transaction.commit().await.map_err(ApiError::database)?;
-    Ok(false)
+    Ok(())
+}
+
+fn snapshot_lease_seconds(config: &AdminConfig) -> i32 {
+    let refresh_seconds = if config.snapshot_source.enabled {
+        config.snapshot_source.refresh_seconds
+    } else {
+        60
+    };
+    i32::try_from(refresh_seconds.saturating_mul(2).max(300)).unwrap_or(300)
 }
 
 fn snapshot_tombstones_match_rows(payload: &ControlSnapshotPayload) -> bool {
@@ -1316,7 +1365,7 @@ async fn materialize_snapshot_table(
     if !rows.iter().all(Value::is_object) {
         return Err(ApiError::bad_request("KNOWLEDGE_SNAPSHOT_ROW_INVALID"));
     }
-    let columns: Vec<String> = sqlx::query_scalar(
+    let local_columns: Vec<String> = sqlx::query_scalar(
         "SELECT column_name FROM information_schema.columns
           WHERE table_schema='public' AND table_name=$1 AND is_generated='NEVER'
           ORDER BY ordinal_position",
@@ -1325,20 +1374,23 @@ async fn materialize_snapshot_table(
     .fetch_all(&mut **transaction)
     .await
     .map_err(ApiError::database)?;
-    if columns.is_empty() {
+    if local_columns.is_empty() {
         return Err(ApiError::unavailable(
             "KNOWLEDGE_SNAPSHOT_SCHEMA_UNAVAILABLE",
         ));
     }
     let keys = snapshot_primary_keys(table);
+    let columns = published_snapshot_columns(rows, &local_columns, keys)?;
     let updates = columns
         .iter()
         .filter(|column| !keys.contains(&column.as_str()))
         .map(|column| format!("{column}=EXCLUDED.{column}"))
         .collect::<Vec<_>>()
         .join(",");
+    let published_columns = columns.join(",");
     let sql = format!(
-        "INSERT INTO {table} SELECT * FROM jsonb_populate_recordset(NULL::{table},$1::jsonb)
+        "INSERT INTO {table}({published_columns})
+         SELECT {published_columns} FROM jsonb_populate_recordset(NULL::{table},$1::jsonb)
          ON CONFLICT({}) DO UPDATE SET {updates}",
         keys.join(",")
     );
@@ -1348,6 +1400,44 @@ async fn materialize_snapshot_table(
         .await
         .map_err(ApiError::database)?;
     Ok(())
+}
+
+fn published_snapshot_columns(
+    rows: &[Value],
+    local_columns: &[String],
+    keys: &[&str],
+) -> Result<Vec<String>, ApiError> {
+    let mut columns = rows[0]
+        .as_object()
+        .expect("validated snapshot object")
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    columns.sort();
+    let expected_columns = columns.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    if rows.iter().any(|row| {
+        row.as_object()
+            .map(|object| object.keys().map(String::as_str).collect::<BTreeSet<_>>())
+            .is_none_or(|actual_columns| actual_columns != expected_columns)
+    }) {
+        return Err(ApiError::bad_request(
+            "KNOWLEDGE_SNAPSHOT_ROW_SCHEMA_INVALID",
+        ));
+    }
+    let local_columns = local_columns
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if columns
+        .iter()
+        .any(|column| !local_columns.contains(column.as_str()))
+        || keys.iter().any(|key| !expected_columns.contains(key))
+    {
+        return Err(ApiError::unavailable(
+            "KNOWLEDGE_SNAPSHOT_SCHEMA_UNAVAILABLE",
+        ));
+    }
+    Ok(columns)
 }
 
 fn operational_job_type(action: &str) -> Option<&'static str> {
@@ -3194,6 +3284,16 @@ mod tests {
         assert_eq!(tenant_scope.host_id, host_id);
         assert!(!tenant_scope.global_read);
 
+        let tenant_admin = AuthPrincipal {
+            role: Some("admin".into()),
+            ..tenant.clone()
+        };
+        assert!(
+            !validate_delegated_user_claims(&headers, &tenant_admin, "portal.r")
+                .expect("tenant admin")
+                .global_read
+        );
+
         let global = AuthPrincipal {
             role: Some("platformKnowledgeBaseAdmin".into()),
             ..tenant
@@ -3297,6 +3397,44 @@ mod tests {
         assert!(admin_openapi.contains("OperationalResponse:"));
         assert!(admin_openapi.contains("'504':"));
         assert!(admin_openapi.contains("x-field-contract: operational-field-allowlists-v1"));
+        for path in [
+            "incremental-operations:",
+            "acl-status:",
+            "production-operations:",
+        ] {
+            let operation = admin_openapi
+                .split_once(path)
+                .expect("grouped operation")
+                .1
+                .split("\n  /v1/")
+                .next()
+                .expect("grouped operation body");
+            assert!(!operation.contains("#/components/parameters/Cursor"));
+        }
+    }
+
+    #[test]
+    fn snapshot_materialization_updates_only_the_complete_published_field_set() {
+        let local_columns = vec!["id".into(), "name".into(), "local_default".into()];
+        let rows = vec![json!({"id":1,"name":"one"}), json!({"id":2,"name":"two"})];
+        assert_eq!(
+            published_snapshot_columns(&rows, &local_columns, &["id"]).unwrap(),
+            vec!["id", "name"]
+        );
+        let inconsistent = vec![json!({"id":1,"name":"one"}), json!({"id":2})];
+        assert_eq!(
+            published_snapshot_columns(&inconsistent, &local_columns, &["id"])
+                .unwrap_err()
+                .code,
+            "KNOWLEDGE_SNAPSHOT_ROW_SCHEMA_INVALID"
+        );
+        let unknown = vec![json!({"id":1,"unknown":"value"})];
+        assert_eq!(
+            published_snapshot_columns(&unknown, &local_columns, &["id"])
+                .unwrap_err()
+                .code,
+            "KNOWLEDGE_SNAPSHOT_SCHEMA_UNAVAILABLE"
+        );
     }
 
     #[test]
@@ -3387,6 +3525,10 @@ mod tests {
             },
         };
         assert!(config.validate().is_ok());
+        assert_eq!(snapshot_lease_seconds(&config), 300);
+        let mut slow_refresh = config.clone();
+        slow_refresh.snapshot_source.refresh_seconds = 240;
+        assert_eq!(snapshot_lease_seconds(&slow_refresh), 480);
         let mut invalid = config.clone();
         invalid.snapshot_source.refresh_seconds = 300;
         assert!(invalid.validate().is_err());
@@ -3507,7 +3649,7 @@ mod tests {
         let digest_11 = "d".repeat(64);
         assert!(snapshot_tombstones_match_rows(&first));
         assert!(
-            !persist_control_snapshot(&pool, &first, &digest_10, b"signature-10", 30)
+            !persist_control_snapshot(&pool, &first, &digest_10, b"signature-10", 30, 300)
                 .await
                 .expect("first snapshot")
         );
@@ -3520,6 +3662,30 @@ mod tests {
         .await
         .expect("materialized strategy authorization");
         assert_eq!(qualified_strategies, json!(["GRAPH_ASSISTED", "HYBRID"]));
+        assert!(
+            configuration_is_fresh(&pool)
+                .await
+                .expect("readiness after bootstrap"),
+            "an applied, leased snapshot must report ready"
+        );
+        let mut expiry_probe = pool.begin().await.expect("readiness expiry probe");
+        sqlx::query(
+            "UPDATE knowledge_control_snapshot_t
+                SET lease_expires_ts=now()-interval '1 second' WHERE state='APPLIED'",
+        )
+        .execute(&mut *expiry_probe)
+        .await
+        .expect("expire leases inside the probe transaction");
+        assert!(
+            !configuration_is_fresh(&mut *expiry_probe)
+                .await
+                .expect("readiness with an expired lease"),
+            "an expired lease must fail readiness"
+        );
+        expiry_probe
+            .rollback()
+            .await
+            .expect("restore leases for the rest of the lifecycle");
         sqlx::query(
             "INSERT INTO knowledge_admin_audit_t(
                admin_audit_id,request_id,knowledge_base_id,consumer_host_id,
@@ -3537,19 +3703,38 @@ mod tests {
         .execute(&pool)
         .await
         .expect("write-operation audit contract");
+        sqlx::query(
+            "UPDATE knowledge_base_strategy_qualification_t
+                SET expires_at=now()-interval '1 second'
+              WHERE knowledge_base_id=$1 AND strategy='GRAPH_ASSISTED'",
+        )
+        .bind(knowledge_base_id)
+        .execute(&pool)
+        .await
+        .expect("expire strategy qualification before lease refresh");
         assert!(
-            persist_control_snapshot(&pool, &first, &digest_10, b"signature-10", 30)
+            persist_control_snapshot(&pool, &first, &digest_10, b"signature-10", 30, 300)
                 .await
                 .expect("lost-response retry")
         );
+        let refreshed_strategies: Value = sqlx::query_scalar(
+            "SELECT qualified_strategies FROM knowledge_runtime_authorization_t
+              WHERE knowledge_base_id=$1",
+        )
+        .bind(knowledge_base_id)
+        .fetch_one(&pool)
+        .await
+        .expect("refreshed strategy authorization");
+        assert_eq!(refreshed_strategies, json!(["HYBRID"]));
 
-        let conflict = persist_control_snapshot(&pool, &first, &digest_conflict, b"signature", 30)
-            .await
-            .expect_err("same sequence with different content must fail");
+        let conflict =
+            persist_control_snapshot(&pool, &first, &digest_conflict, b"signature", 30, 300)
+                .await
+                .expect_err("same sequence with different content must fail");
         assert_eq!(conflict.code, "KNOWLEDGE_SNAPSHOT_SEQUENCE_CONFLICT");
         let downgrade =
             lifecycle_snapshot(host_id, knowledge_base_id, Uuid::now_v7(), 9, "QUALIFIED");
-        let error = persist_control_snapshot(&pool, &downgrade, &digest_9, b"signature-9", 30)
+        let error = persist_control_snapshot(&pool, &downgrade, &digest_9, b"signature-9", 30, 300)
             .await
             .expect_err("snapshot downgrade must fail");
         assert_eq!(error.code, "KNOWLEDGE_SNAPSHOT_DOWNGRADE_REJECTED");
@@ -3573,7 +3758,7 @@ mod tests {
         let revoked = lifecycle_snapshot(host_id, knowledge_base_id, Uuid::now_v7(), 11, "REVOKED");
         assert!(snapshot_tombstones_match_rows(&revoked));
         assert!(
-            !persist_control_snapshot(&pool, &revoked, &digest_11, b"signature-11", 30)
+            !persist_control_snapshot(&pool, &revoked, &digest_11, b"signature-11", 30, 300)
                 .await
                 .expect("replacement snapshot")
         );
@@ -3623,8 +3808,22 @@ mod tests {
         let concurrent_digest_a = "f".repeat(64);
         let concurrent_digest_b = "0".repeat(64);
         let (concurrent_a, concurrent_b) = tokio::join!(
-            persist_control_snapshot(&pool, &concurrent_a, &concurrent_digest_a, b"first", 30),
-            persist_control_snapshot(&pool, &concurrent_b, &concurrent_digest_b, b"second", 30),
+            persist_control_snapshot(
+                &pool,
+                &concurrent_a,
+                &concurrent_digest_a,
+                b"first",
+                30,
+                300,
+            ),
+            persist_control_snapshot(
+                &pool,
+                &concurrent_b,
+                &concurrent_digest_b,
+                b"second",
+                30,
+                300,
+            ),
         );
         let results = [concurrent_a, concurrent_b];
         assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);

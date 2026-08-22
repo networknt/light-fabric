@@ -60,9 +60,17 @@ spec:
         - name: secrets
           secret:
             secretName: light-knowledge-secrets
+            items:
+              - key: knowledge-worker-database-url
+                path: knowledge-worker-database-url
+              - key: knowledge-index-embedding-authorization
+                path: knowledge-index-embedding-authorization
         - name: embedding-ca
           secret:
             secretName: light-knowledge-embedding-ca
+            items:
+              - key: ca.pem
+                path: ca.pem
         - name: config-cache
           emptyDir: {}
         - name: checkouts

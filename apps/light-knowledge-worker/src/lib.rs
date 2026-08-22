@@ -7600,6 +7600,21 @@ mod tests {
         assert_eq!(read_secret_bytes(&secret).unwrap(), expected);
     }
 
+    #[test]
+    fn readonly_worker_deployment_mounts_every_required_runtime_path() {
+        let deployment = include_str!("../k8s/deployment.yaml");
+        for required in [
+            "readOnlyRootFilesystem: true",
+            "mountPath: /var/lib/light-knowledge/checkouts",
+            "mountPath: /var/lib/light-knowledge/objects",
+            "key: knowledge-worker-database-url",
+            "key: knowledge-index-embedding-authorization",
+            "key: ca.pem",
+        ] {
+            assert!(deployment.contains(required), "missing {required}");
+        }
+    }
+
     async fn embedding_gateway_response(
         billed_cost_micros: u64,
         vector_count: usize,

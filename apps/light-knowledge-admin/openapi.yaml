@@ -227,7 +227,6 @@ paths:
         - {$ref: '#/components/parameters/Environment'}
         - {$ref: '#/components/parameters/KnowledgeBaseId'}
         - {$ref: '#/components/parameters/PageSize'}
-        - {$ref: '#/components/parameters/Cursor'}
         - {name: uploadsCursor, in: query, schema: {type: string, maxLength: 2048}}
         - {name: changesCursor, in: query, schema: {type: string, maxLength: 2048}}
         - {name: anchorsCursor, in: query, schema: {type: string, maxLength: 2048}}
@@ -251,7 +250,6 @@ paths:
         - {$ref: '#/components/parameters/Environment'}
         - {$ref: '#/components/parameters/KnowledgeBaseId'}
         - {$ref: '#/components/parameters/PageSize'}
-        - {$ref: '#/components/parameters/Cursor'}
         - {name: aclFreshnessCursor, in: query, schema: {type: string, maxLength: 2048}}
         - {name: aclReconciliationsCursor, in: query, schema: {type: string, maxLength: 2048}}
         - {name: aclTransitionsCursor, in: query, schema: {type: string, maxLength: 2048}}
@@ -274,7 +272,6 @@ paths:
         - {$ref: '#/components/parameters/Environment'}
         - {$ref: '#/components/parameters/KnowledgeBaseId'}
         - {$ref: '#/components/parameters/PageSize'}
-        - {$ref: '#/components/parameters/Cursor'}
         - {name: embeddingMigrationsCursor, in: query, schema: {type: string, maxLength: 2048}}
         - {name: migrationEvaluationsCursor, in: query, schema: {type: string, maxLength: 2048}}
         - {name: generationRetentionCursor, in: query, schema: {type: string, maxLength: 2048}}

@@ -44,6 +44,10 @@ spec:
               readOnly: true
             - name: config-cache
               mountPath: /tmp/light-knowledge-config-cache
+            - name: checkouts
+              mountPath: /var/lib/light-knowledge/checkouts
+            - name: objects
+              mountPath: /var/lib/light-knowledge/objects
           resources:
             requests:
               cpu: 100m
@@ -58,8 +62,22 @@ spec:
         - name: secrets
           secret:
             secretName: light-knowledge-secrets
+            items:
+              - key: knowledge-worker-database-url
+                path: knowledge-worker-database-url
+              - key: knowledge-index-embedding-authorization
+                path: knowledge-index-embedding-authorization
         - name: embedding-ca
           secret:
             secretName: light-knowledge-embedding-ca
+            items:
+              - key: ca.pem
+                path: ca.pem
         - name: config-cache
           emptyDir: {}
+        - name: checkouts
+          emptyDir:
+            sizeLimit: 4Gi
+        - name: objects
+          persistentVolumeClaim:
+            claimName: light-knowledge-objects
