@@ -4,7 +4,6 @@ databaseUrlFile: ${knowledge.databaseUrlFile:/run/secrets/knowledge-database-url
 expectedDatabase: ${knowledge.expectedDatabase:knowledge}
 delegationSecretFile: ${knowledge.delegationSecretFile:/run/secrets/agent-delegation-secret}
 queryCacheKeyFile: ${knowledge.queryCacheKeyFile:/run/secrets/knowledge-query-cache-key}
-heartbeatSecretFile: ${knowledge.heartbeatSecretFile:/run/secrets/knowledge-heartbeat-secret}
 delegationIssuer: ${knowledge.delegationIssuer:light-agent}
 objectStoreRoot: ${knowledge.objectStoreRoot:/var/lib/light-knowledge/objects}
 maximumRequestBytes: ${knowledge.maximumRequestBytes:1048576}

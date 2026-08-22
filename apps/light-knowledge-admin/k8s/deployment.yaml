@@ -23,6 +23,14 @@ spec:
             - {name: http-admin, containerPort: 8093}
           env:
             - {name: SECURITY_AUDIENCE, value: "[urn:com.networknt]"}
+            - {name: KNOWLEDGE_ADMIN_SNAPSHOT_SOURCE_ENABLED, value: "true"}
+            - {name: KNOWLEDGE_ADMIN_SNAPSHOT_QUERY_URL, value: "https://hybrid-query:8440/portal/query"}
+            - {name: KNOWLEDGE_ADMIN_SNAPSHOT_ENVIRONMENT, value: dev}
+            - {name: KNOWLEDGE_ADMIN_SNAPSHOT_REFRESH_SECONDS, value: "60"}
+            - {name: KNOWLEDGE_ADMIN_SNAPSHOT_CA_CERT_FILE, value: /etc/portal-ca/ca.pem}
+            - name: LIGHT_KNOWLEDGE_SNAPSHOT_AUTHORIZATION
+              valueFrom:
+                secretKeyRef: {name: light-knowledge-admin, key: snapshot-authorization}
           readinessProbe:
             httpGet: {path: /ready, port: http-admin}
           livenessProbe:
@@ -37,8 +45,11 @@ spec:
           volumeMounts:
             - {name: knowledge-database, mountPath: /run/secrets/light-knowledge, readOnly: true}
             - {name: admin-secrets, mountPath: /run/secrets/light-knowledge-admin, readOnly: true}
+            - {name: portal-ca, mountPath: /etc/portal-ca, readOnly: true}
       volumes:
         - name: knowledge-database
           secret: {secretName: light-knowledge-database}
         - name: admin-secrets
           secret: {secretName: light-knowledge-admin}
+        - name: portal-ca
+          secret: {secretName: portal-ca}

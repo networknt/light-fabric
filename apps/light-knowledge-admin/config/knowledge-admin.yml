@@ -4,8 +4,22 @@ expectedDatabase: knowledge
 opaqueActorKeyFile: /run/secrets/light-knowledge-admin/opaque-actor-key
 snapshotSigningKeyFile: /run/secrets/light-knowledge-admin/control-snapshot-signing-key
 maximumRequestBytes: 1048576
+maximumSnapshotRequestBytes: 67108864
 maximumResponseBytes: 1048576
 maximumPageSize: 200
 requestTimeoutMs: 2000
+snapshotRequestTimeoutMs: 120000
+snapshotHistoryRetentionDays: 30
 maximumDatabaseConnections: 10
 ignoreJwtExpiry: ${knowledgeAdmin.ignoreJwtExpiry:false}
+snapshotSource:
+  enabled: ${KNOWLEDGE_ADMIN_SNAPSHOT_SOURCE_ENABLED:false}
+  queryUrl: ${KNOWLEDGE_ADMIN_SNAPSHOT_QUERY_URL:}
+  environment: ${KNOWLEDGE_ADMIN_SNAPSHOT_ENVIRONMENT:dev}
+  refreshSeconds: ${KNOWLEDGE_ADMIN_SNAPSHOT_REFRESH_SECONDS:60}
+  bootstrapAttempts: ${KNOWLEDGE_ADMIN_SNAPSHOT_BOOTSTRAP_ATTEMPTS:30}
+  retryDelayMs: ${KNOWLEDGE_ADMIN_SNAPSHOT_RETRY_DELAY_MS:2000}
+  connectTimeoutMs: ${KNOWLEDGE_ADMIN_SNAPSHOT_CONNECT_TIMEOUT_MS:2000}
+  verifyHostname: ${KNOWLEDGE_ADMIN_SNAPSHOT_VERIFY_HOSTNAME:true}
+  caCertFile: ${KNOWLEDGE_ADMIN_SNAPSHOT_CA_CERT_FILE:}
+  authorizationFile: ${KNOWLEDGE_ADMIN_SNAPSHOT_AUTHORIZATION_FILE:/run/secrets/light-knowledge-admin/snapshot-authorization}

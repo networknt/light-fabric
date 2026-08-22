@@ -1,5 +1,0 @@
-version: 1
-projectorDatabaseUrlFile: /run/secrets/knowledge-projector-database-url
-heartbeatSecretFile: /run/secrets/knowledge-heartbeat-secret
-projectorId: light-knowledge-projector-dev
-

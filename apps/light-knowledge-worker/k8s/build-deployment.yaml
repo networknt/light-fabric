@@ -37,6 +37,9 @@ spec:
             - name: secrets
               mountPath: /run/secrets
               readOnly: true
+            - name: embedding-ca
+              mountPath: /keystore
+              readOnly: true
             - name: config-cache
               mountPath: /tmp/light-knowledge-config-cache
             - name: checkouts
@@ -57,6 +60,9 @@ spec:
         - name: secrets
           secret:
             secretName: light-knowledge-secrets
+        - name: embedding-ca
+          secret:
+            secretName: light-knowledge-embedding-ca
         - name: config-cache
           emptyDir: {}
         - name: checkouts

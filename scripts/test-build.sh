@@ -24,6 +24,11 @@ chmod +x "${TEST_ROOT}/bin/docker"
 export PATH="${TEST_ROOT}/bin:${PATH}"
 export DOCKER_LOG="${TEST_ROOT}/docker.log"
 
+grep -Fxq '!target/release/light-knowledge-admin' "${REPO_ROOT}/.dockerignore" || {
+  echo "FAIL: light-knowledge-admin release binary is excluded from the Docker build context" >&2
+  exit 1
+}
+
 APPS=(
   "light-agent"
   "light-deployer"
@@ -31,7 +36,7 @@ APPS=(
   "light-workflow"
   "light-workflow-runner"
   "light-knowledge"
-  "light-knowledge-worker"
+  "light-knowledge-admin"
 )
 
 dockerfile_for_app() {
@@ -72,6 +77,11 @@ done
 : > "$DOCKER_LOG"
 "${REPO_ROOT}/apps/light-gateway/build.sh" 9.8.8 --local --skip-latest
 assert_line "build --tag networknt/light-gateway:9.8.8 --file apps/light-gateway/docker/Dockerfile ."
+[[ "$(wc -l < "$DOCKER_LOG")" -eq 1 ]]
+
+: > "$DOCKER_LOG"
+"${REPO_ROOT}/apps/light-knowledge-admin/build.sh" 9.8.8 --local --skip-latest
+assert_line "build --tag networknt/light-knowledge-admin:9.8.8 --file apps/light-knowledge-admin/docker/Dockerfile ."
 [[ "$(wc -l < "$DOCKER_LOG")" -eq 1 ]]
 
 : > "$DOCKER_LOG"

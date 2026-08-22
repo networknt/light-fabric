@@ -25,8 +25,8 @@ TARGETS=(
   "x86_64-unknown-linux-musl"
 )
 
-[[ "${#APPS[@]}" -eq 7 ]] || {
-  echo "FAIL: expected seven release binaries, found ${#APPS[@]}" >&2
+[[ "${#APPS[@]}" -eq 8 ]] || {
+  echo "FAIL: expected eight release binaries, found ${#APPS[@]}" >&2
   exit 1
 }
 

@@ -37,7 +37,6 @@ pub struct KnowledgeConfig {
     pub expected_database: Option<String>,
     pub delegation_secret_file: PathBuf,
     pub query_cache_key_file: PathBuf,
-    pub heartbeat_secret_file: PathBuf,
     pub delegation_issuer: String,
     pub object_store_root: PathBuf,
     pub maximum_request_bytes: usize,
@@ -254,7 +253,6 @@ impl KnowledgeConfig {
             return Err("databaseUrlFile must be a readable regular file".into());
         }
         if !secret_available(&self.delegation_secret_file)
-            || !secret_available(&self.heartbeat_secret_file)
             || self.delegation_issuer.trim().is_empty()
         {
             return Err("delegation secret and issuer are required".into());
@@ -268,7 +266,6 @@ impl KnowledgeConfig {
 pub struct KnowledgeState {
     pool: PgPool,
     delegation_verifier: DelegationVerifier,
-    heartbeat_secret: Vec<u8>,
     query_cache_key: Vec<u8>,
     query_cache: Mutex<QueryEmbeddingCache>,
     metrics_cache: Mutex<Option<MetricsCacheEntry>>,
@@ -354,11 +351,6 @@ impl KnowledgeState {
             "light-knowledge",
         )
         .map_err(|error| RuntimeError::Config(format!("Knowledge delegation verifier: {error}")))?;
-        let heartbeat_secret =
-            read_secret_bytes(&config.heartbeat_secret_file).map_err(RuntimeError::Config)?;
-        if heartbeat_secret.is_empty() {
-            return Err(RuntimeError::Config("heartbeat secret is empty".into()));
-        }
         let query_cache_key =
             read_secret_bytes(&config.query_cache_key_file).map_err(RuntimeError::Config)?;
         if query_cache_key.len() < 32 {
@@ -378,7 +370,6 @@ impl KnowledgeState {
         Ok(Self {
             pool,
             delegation_verifier,
-            heartbeat_secret,
             query_cache_key,
             query_cache: Mutex::new(QueryEmbeddingCache::default()),
             metrics_cache: Mutex::new(None),
@@ -457,7 +448,6 @@ fn secret_environment_names(path: &std::path::Path) -> &'static [&'static str] {
         Some("knowledge-database-url") => &["LIGHT_KNOWLEDGE_DATABASE_URL"],
         Some("agent-delegation-secret") => &["LIGHT_AGENT_DELEGATION_SECRET"],
         Some("knowledge-query-cache-key") => &["LIGHT_KNOWLEDGE_QUERY_CACHE_KEY"],
-        Some("knowledge-heartbeat-secret") => &["LIGHT_KNOWLEDGE_HEARTBEAT_SECRET"],
         Some("knowledge-query-embedding-authorization") => &[
             "KNOWLEDGE_QUERY_EMBEDDING_AUTHORIZATION",
             "LIGHT_PORTAL_AUTHORIZATION",
@@ -895,8 +885,7 @@ async fn load_metrics(pool: &PgPool) -> Result<String, sqlx::Error> {
     let readiness = sqlx::query(
         "WITH requested(metric_group,table_name,required_columns) AS (VALUES
            ('projection','knowledge_control_snapshot_t',ARRAY['state','lease_expires_ts']::text[]),
-           ('job','knowledge_job_t',ARRAY['state','lease_expires_ts']::text[]),
-           ('promotion','knowledge_promotion_receipt_t',ARRAY['committed_ts']::text[]),
+           ('job','knowledge_job_t',ARRAY['state','lease_expires_ts','job_type']::text[]),
            ('authorization','knowledge_runtime_authorization_t',ARRAY['active','lease_expires_ts']::text[]),
            ('source_acl','knowledge_source_acl_state_t',ARRAY['state','fresh_until_ts']::text[]),
            ('migration','knowledge_embedding_migration_t',ARRAY['state']::text[]),
@@ -963,8 +952,9 @@ async fn load_metrics(pool: &PgPool) -> Result<String, sqlx::Error> {
             "SELECT count(*) FROM knowledge_job_t WHERE state='RUNNING' AND (lease_expires_ts IS NULL OR lease_expires_ts<=now())"
         ),
         scalar(
-            "promotion",
-            "SELECT 0::bigint FROM knowledge_promotion_receipt_t LIMIT 1"
+            "job",
+            "SELECT count(*) FROM knowledge_job_t
+               WHERE job_type='PROMOTE' AND state IN ('QUEUED','RUNNING')"
         ),
         scalar(
             "authorization",
@@ -1514,7 +1504,6 @@ async fn preauthorize_request(
         authenticated.host_id,
         authenticated.agent_def_id,
         environment,
-        &state.heartbeat_secret,
     )
     .await?;
     authorization.validate_fresh_active(Utc::now())?;
@@ -1588,7 +1577,6 @@ async fn retrieve_snapshot(
         authenticated.host_id,
         authenticated.agent_def_id,
         &request.environment,
-        &state.heartbeat_secret,
     )
     .await?;
     let (
@@ -2094,7 +2082,6 @@ async fn load_authorization(
     consumer_host_id: Uuid,
     agent_def_id: Uuid,
     environment: &str,
-    _heartbeat_secret: &[u8],
 ) -> Result<AuthorizationSnapshot, ApiError> {
     let row = sqlx::query(
         "SELECT a.active,a.desired_event_sequence,a.applied_event_sequence,
@@ -2769,7 +2756,6 @@ async fn passage_anchor_handler(
         authenticated.host_id,
         authenticated.agent_def_id,
         &authenticated.environment,
-        &state.heartbeat_secret,
     )
     .await?
     .validate_fresh_active(Utc::now())?;
@@ -2865,7 +2851,6 @@ async fn load_document_version(
         authenticated.host_id,
         authenticated.agent_def_id,
         &environment,
-        &state.heartbeat_secret,
     )
     .await?;
     authorization.validate_fresh_active(Utc::now())?;
@@ -3080,18 +3065,15 @@ mod tests {
         let database = directory.path().join("database-url");
         let delegation = directory.path().join("delegation-secret");
         let query_cache_key = directory.path().join("query-cache-key");
-        let heartbeat = directory.path().join("heartbeat-secret");
         fs::write(&database, "postgresql://localhost/test").unwrap();
         fs::write(&delegation, "01234567890123456789012345678901").unwrap();
         fs::write(&query_cache_key, "abcdefghijklmnopqrstuvwxyz012345").unwrap();
-        fs::write(&heartbeat, "01234567890123456789012345678901").unwrap();
         let mut config = KnowledgeConfig {
             version: 1,
             database_url_file: database,
             expected_database: None,
             delegation_secret_file: delegation,
             query_cache_key_file: query_cache_key,
-            heartbeat_secret_file: heartbeat,
             delegation_issuer: "light-agent".into(),
             object_store_root: directory.path().join("objects"),
             maximum_request_bytes: 1024,
@@ -3261,7 +3243,6 @@ mod tests {
             expected_database: None,
             delegation_secret_file: directory.path().join("unused-delegation"),
             query_cache_key_file: directory.path().join("unused-query-cache-key"),
-            heartbeat_secret_file: directory.path().join("unused-heartbeat"),
             delegation_issuer: "light-agent".into(),
             object_store_root: directory.path().join("objects"),
             maximum_request_bytes: 1024,
@@ -3299,7 +3280,6 @@ mod tests {
                 .unwrap(),
             delegation_verifier: DelegationVerifier::new(secret, "light-agent", "light-knowledge")
                 .unwrap(),
-            heartbeat_secret: secret.to_vec(),
             query_cache_key: secret.to_vec(),
             query_cache: Mutex::new(QueryEmbeddingCache::default()),
             metrics_cache: Mutex::new(None),

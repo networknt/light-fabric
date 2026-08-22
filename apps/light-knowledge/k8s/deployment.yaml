@@ -37,6 +37,8 @@ spec:
               value: configserver
             - name: LIGHT_KNOWLEDGE_LOG_ANSI
               value: "false"
+            - name: knowledgeWorker.jobExecutionMode
+              value: external
           readinessProbe:
             httpGet:
               path: /ready

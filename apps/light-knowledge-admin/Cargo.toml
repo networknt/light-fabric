@@ -15,12 +15,14 @@ hmac.workspace = true
 light-axum = { path = "../../frameworks/light-axum" }
 light-runtime = { path = "../../crates/light-runtime" }
 light-security = { path = "../../crates/light-security" }
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 sha2.workspace = true
 sqlx = { version = "0.8", features = ["chrono", "json", "postgres", "runtime-tokio-rustls", "uuid"] }
 tokio.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 

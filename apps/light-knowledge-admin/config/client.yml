@@ -1,7 +1,17 @@
 tls:
-  verifyHostname: ${client.tls.verifyHostname:true}
-  trustedCertificates: ${client.tls.trustedCertificates:[]}
-keyService:
-  serverUrl: ${client.keyService.serverUrl:}
-  serviceId: ${client.keyService.serviceId:}
-  uri: ${client.keyService.uri:/oauth2/N2CMw0HGQXeLvC1wBfln2A/keys}
+  verifyHostname: ${client.verifyHostname:true}
+  caCertPath: ${client.caCertPath:}
+oauth:
+  token:
+    key:
+      server_url: ${client.tokenKeyServerUrl:https://light-oauth:6881}
+      serviceId: ${client.tokenKeyServiceId:}
+      uri: ${client.tokenKeyUri:/oauth2/AZZRJE52eXu3t1hseacnGQ/keys}
+      client_id: ${client.tokenKeyClientId:}
+      client_secret: ${client.tokenKeyClientSecret:}
+      serviceIdAuthServers: ${client.tokenKeyServiceIdAuthServers:{}}
+      enableHttp2: ${client.tokenKeyEnableHttp2:true}
+      audience: ${client.tokenKeyAudience:}
+request:
+  connectTimeout: ${client.connectTimeout:2000}
+  timeout: ${client.timeout:4000}

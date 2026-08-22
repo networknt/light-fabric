@@ -1,18 +1,20 @@
 version: 1
-workerDatabaseUrlFile: /run/secrets/knowledge-worker-database-url
-checkoutRoot: /var/lib/light-knowledge/checkouts
-objectStoreRoot: /var/lib/light-knowledge/objects
-deterministicPilot: true
-migrationDeterministicPilot: false
-embeddingAlias: kb-index
-embeddingBatchSize: 32
-# Production deployments may add their private CA bundle here. Hostname
-# verification remains enabled by default and requires a matching DNS SAN.
-# embeddingGatewayCaCertFile: /keystore/ca.pem
-# embeddingGatewayVerifyHostname: true
-embeddingMigrationEnabled: false
-productionOperationsEnabled: false
-graphAssistedEnabled: false
+jobExecutionMode: ${knowledgeWorker.jobExecutionMode:external}
+workerDatabaseUrlFile: ${knowledgeWorker.workerDatabaseUrlFile:/run/secrets/knowledge-worker-database-url}
+expectedKnowledgeDatabase: ${knowledgeWorker.expectedKnowledgeDatabase:knowledge}
+checkoutRoot: ${knowledgeWorker.checkoutRoot:/var/lib/light-knowledge/checkouts}
+objectStoreRoot: ${knowledgeWorker.objectStoreRoot:/var/lib/light-knowledge/objects}
+deterministicPilot: ${knowledgeWorker.deterministicPilot:false}
+migrationDeterministicPilot: ${knowledgeWorker.migrationDeterministicPilot:false}
+embeddingGatewayUrl: ${knowledgeWorker.embeddingGatewayUrl:https://llm-gateway:8443/v1/embeddings}
+embeddingAuthorizationFile: ${knowledgeWorker.embeddingAuthorizationFile:/run/secrets/knowledge-index-embedding-authorization}
+embeddingGatewayCaCertFile: ${knowledgeWorker.embeddingGatewayCaCertFile:/keystore/ca.pem}
+embeddingGatewayVerifyHostname: ${knowledgeWorker.embeddingGatewayVerifyHostname:true}
+embeddingAlias: ${knowledgeWorker.embeddingAlias:kb-index}
+embeddingBatchSize: ${knowledgeWorker.embeddingBatchSize:32}
+embeddingMigrationEnabled: ${knowledgeWorker.embeddingMigrationEnabled:false}
+productionOperationsEnabled: ${knowledgeWorker.productionOperationsEnabled:false}
+graphAssistedEnabled: ${knowledgeWorker.graphAssistedEnabled:false}
 # Config-server may lower these operational hard caps. Source-selected policy
 # values remain authoritative below these ceilings.
 platformCaps:

@@ -1372,7 +1372,16 @@ async fn job_loop(
         let job_type: String = job.get("job_type");
         let payload: serde_json::Value = job.get("payload");
         if matches!(job_type.as_str(), "SYNC" | "DELTA_SYNC" | "FULL_REINDEX") {
-            sqlx::query("SELECT 1 FROM knowledge_base_t WHERE knowledge_base_id=$1 FOR UPDATE")
+            // Serialize build claims without requiring UPDATE authority on the
+            // projector-owned Knowledge Base control replica. PostgreSQL row
+            // locks require UPDATE privilege even when no row is modified.
+            sqlx::query(
+                "SELECT pg_advisory_xact_lock(hashtextextended('knowledge-base:'||$1::uuid::text,0))",
+            )
+                .bind(knowledge_base_id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("SELECT 1 FROM knowledge_base_t WHERE knowledge_base_id=$1")
                 .bind(knowledge_base_id)
                 .fetch_one(&mut *tx)
                 .await?;
@@ -1573,7 +1582,7 @@ async fn job_policy_concurrency_available(
                      WHERE source.knowledge_base_id=$1
                        AND source.ingestion_policy_id=policy.ingestion_policy_id
                        AND source.status IN ('DRAFT','ACTIVE'))
-              ORDER BY policy.ingestion_policy_id FOR UPDATE",
+              ORDER BY policy.ingestion_policy_id",
         )
         .bind(knowledge_base_id)
         .fetch_all(&mut **tx)
@@ -1585,7 +1594,7 @@ async fn job_policy_concurrency_available(
                JOIN knowledge_source_t source
                  ON source.ingestion_policy_id=policy.ingestion_policy_id
               WHERE source.source_id=$1 AND policy.active
-              ORDER BY policy.ingestion_policy_id FOR UPDATE OF policy",
+              ORDER BY policy.ingestion_policy_id",
         )
         .bind(source_id)
         .fetch_all(&mut **tx)
@@ -1595,6 +1604,15 @@ async fn job_policy_concurrency_available(
     };
     for policy in policies {
         let ingestion_policy_id: Uuid = policy.get("ingestion_policy_id");
+        // Policies are published control replicas. Serialize the concurrency
+        // check by stable policy identity without acquiring a row lock that
+        // would require UPDATE authority on the replica.
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtextextended('knowledge-policy:'||$1::uuid::text,0))",
+        )
+        .bind(ingestion_policy_id)
+        .execute(&mut **tx)
+        .await?;
         let maximum_concurrency = cap(
             u32::try_from(policy.get::<i32, _>("max_concurrency"))?,
             config.platform_caps.maximum_concurrency,

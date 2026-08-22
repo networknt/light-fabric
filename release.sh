@@ -29,6 +29,7 @@ APPS=(
   "light-workflow"
   "light-workflow-runner"
   "light-knowledge"
+  "light-knowledge-admin"
   "light-knowledge-worker"
 )
 

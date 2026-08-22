@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use light_axum::{AxumApp, AxumTransport, ControlRoute, ControlRouteKind, ServerContext};
-use light_knowledge_admin::{AdminConfig, AdminState, admin_router};
+use light_knowledge_admin::{AdminConfig, AdminState, ControlSnapshotRefresh, admin_router};
 use light_runtime::{
     LifecycleParticipant, LightRuntimeBuilder, RuntimeConfig, RuntimeError, ShutdownContext,
     ShutdownWatcher, TracingOptions, init_tracing,
@@ -21,11 +21,14 @@ struct AdminApp;
 impl AxumApp for AdminApp {
     async fn router(&self, context: ServerContext) -> Result<axum::Router, RuntimeError> {
         let config = AdminConfig::load(&context.runtime_config)?;
-        let state = AdminState::build(&context.runtime_config, config).await?;
+        let state = Arc::new(AdminState::build(&context.runtime_config, config).await?);
         context
             .lifecycle
             .register(Arc::new(AdminDatabase(state.pool())))?;
-        Ok(admin_router(Arc::new(state)))
+        if let Some(refresh) = ControlSnapshotRefresh::start(Arc::clone(&state)).await? {
+            context.lifecycle.register(Arc::new(refresh))?;
+        }
+        Ok(admin_router(state))
     }
 
     fn control_routes(&self) -> &'static [ControlRoute] {

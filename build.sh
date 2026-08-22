@@ -23,6 +23,7 @@ APPS=(
   "light-workflow"
   "light-workflow-runner"
   "light-knowledge"
+  "light-knowledge-admin"
 )
 
 # Compatibility/CLI image only. It is never part of the default release set.
@@ -78,7 +79,7 @@ contains_app() {
 
 dockerfile_for_app() {
   case "$1" in
-    light-agent|light-gateway|light-workflow)
+    light-agent|light-gateway|light-workflow|light-knowledge-admin)
       printf 'apps/%s/docker/Dockerfile\n' "$1"
       ;;
     light-deployer)
