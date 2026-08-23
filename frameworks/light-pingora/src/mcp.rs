@@ -157,12 +157,17 @@ impl Default for McpRouterConfig {
 pub struct McpWorkflowRuntimeConfig {
     #[serde(default)]
     pub invocation_url: String,
-    /// Deprecated compatibility-only fields. They are accepted so a stale
-    /// config-server document does not prevent a lockstep rollout, but are
-    /// never read; LIGHT_PORTAL_AUTHORIZATION is the only service token.
+    /// Deprecated compatibility-only field. The original end-user bearer
+    /// token is always preserved from the inbound Authorization header.
     #[serde(default, skip_serializing)]
     pub bearer_token_env: Option<String>,
-    #[serde(default, skip_serializing)]
+    /// Optional environment variable containing the service credential sent
+    /// to light-workflow as X-Scope-Token. When omitted,
+    /// a non-empty WORKFLOW_INVOCATION_SCOPE_TOKEN is preferred, followed by
+    /// LIGHT_PORTAL_AUTHORIZATION for legacy deployments. An invalid non-empty
+    /// dedicated credential disables workflow dispatch rather than falling
+    /// back to a different service identity.
+    #[serde(default)]
     pub scope_token_env: Option<String>,
     #[serde(default = "default_workflow_permit_pools")]
     pub permit_pools: Vec<usize>,
@@ -180,6 +185,7 @@ impl Default for McpWorkflowRuntimeConfig {
 }
 
 const LIGHT_PORTAL_AUTHORIZATION_ENV: &str = "LIGHT_PORTAL_AUTHORIZATION";
+const WORKFLOW_INVOCATION_SCOPE_TOKEN_ENV: &str = "WORKFLOW_INVOCATION_SCOPE_TOKEN";
 
 fn normalize_bearer_header(value: &str) -> Option<String> {
     let (scheme, token) = value.trim().split_once(char::is_whitespace)?;
@@ -196,6 +202,67 @@ fn service_bearer_header(value: &str) -> Option<String> {
         .unwrap_or(value);
     (token.len() >= 32 && !token.chars().any(char::is_whitespace))
         .then(|| format!("Bearer {token}"))
+}
+
+fn workflow_scope_authorization(
+    configured_env: Option<&str>,
+) -> Result<Option<String>, RuntimeError> {
+    workflow_scope_authorization_with(configured_env, |name| std::env::var(name).ok())
+}
+
+fn workflow_scope_authorization_with(
+    configured_env: Option<&str>,
+    read_env: impl Fn(&str) -> Option<String>,
+) -> Result<Option<String>, RuntimeError> {
+    let configured_env = configured_env
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let (env_name, value, required, explicit) = if let Some(env_name) = configured_env {
+        (env_name, read_env(env_name), true, true)
+    } else {
+        match read_env(WORKFLOW_INVOCATION_SCOPE_TOKEN_ENV).filter(|value| !value.trim().is_empty())
+        {
+            Some(value) => (
+                WORKFLOW_INVOCATION_SCOPE_TOKEN_ENV,
+                Some(value),
+                true,
+                false,
+            ),
+            None => (
+                LIGHT_PORTAL_AUTHORIZATION_ENV,
+                read_env(LIGHT_PORTAL_AUTHORIZATION_ENV),
+                false,
+                false,
+            ),
+        }
+    };
+    let Some(value) = value else {
+        if !required {
+            return Ok(None);
+        }
+        let source = if explicit {
+            "mcp-router workflow scopeTokenEnv"
+        } else {
+            "workflow invocation environment variable"
+        };
+        return Err(RuntimeError::Unsupported(format!(
+            "{source} `{env_name}` is unavailable"
+        )));
+    };
+    match service_bearer_header(&value) {
+        Some(authorization) => Ok(Some(authorization)),
+        None if !required => Ok(None),
+        None => {
+            let source = if explicit {
+                "mcp-router workflow scopeTokenEnv"
+            } else {
+                "workflow invocation environment variable"
+            };
+            Err(RuntimeError::Unsupported(format!(
+                "{source} `{env_name}` does not contain a valid service bearer token"
+            )))
+        }
+    }
 }
 
 fn workflow_start_error_code(status: reqwest::StatusCode) -> ErrorCode {
@@ -1491,6 +1558,7 @@ pub struct McpRouterRuntime {
 
 struct WorkflowDispatchRuntime {
     invocation_url: String,
+    scope_authorization: Option<String>,
     permit_pools: Vec<Arc<Semaphore>>,
 }
 
@@ -1686,10 +1754,10 @@ impl McpRouterRuntime {
         direct_registry: DirectRegistryConfig,
         client_config: ClientConfig,
     ) -> Result<Self, RuntimeError> {
-        if config.workflow.bearer_token_env.is_some() || config.workflow.scope_token_env.is_some() {
+        if config.workflow.bearer_token_env.is_some() {
             tracing::warn!(
                 target: "light_pingora::mcp::workflow",
-                "mcp-router workflow bearerTokenEnv/scopeTokenEnv are deprecated and ignored; configure LIGHT_PORTAL_AUTHORIZATION"
+                "mcp-router workflow bearerTokenEnv is deprecated and ignored; the original user Authorization token is preserved automatically"
             );
         }
         ensure_workflow_lifecycle_tools(&mut config)?;
@@ -1755,25 +1823,38 @@ impl McpRouterRuntime {
                     "invalid MCP HTTP client for approved private targets: {error}"
                 ))
             })?;
-        let workflow_dispatch = config
+        let workflow_dispatch = if config
             .tools
             .iter()
             .any(|tool| tool.execution_placement == McpExecutionPlacement::Workflow)
-            .then(|| {
-                Arc::new(WorkflowDispatchRuntime {
+        {
+            match workflow_scope_authorization(config.workflow.scope_token_env.as_deref()) {
+                Ok(scope_authorization) => Some(Arc::new(WorkflowDispatchRuntime {
                     invocation_url: config
                         .workflow
                         .invocation_url
                         .trim_end_matches('/')
                         .to_string(),
+                    scope_authorization,
                     permit_pools: config
                         .workflow
                         .permit_pools
                         .iter()
                         .map(|capacity| Arc::new(Semaphore::new(*capacity)))
                         .collect(),
-                })
-            });
+                })),
+                Err(error) => {
+                    tracing::error!(
+                        target: "light_pingora::mcp::workflow",
+                        error = %error,
+                        "workflow dispatch disabled because its service credential is unavailable"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let tools_list_cache_entries = policy
             .as_ref()
             .map(|policy| policy.tools_list_access_control().max_cache_entries)
@@ -4013,13 +4094,9 @@ impl McpRouterRuntime {
             .or_else(|| auth.claims.get("userId").and_then(JsonValue::as_str))
             .or_else(|| auth.claims.get("sub").and_then(JsonValue::as_str))
             .unwrap_or(principal_subject);
-        let scope_authorization = match std::env::var(LIGHT_PORTAL_AUTHORIZATION_ENV)
-            .ok()
-            .as_deref()
-            .and_then(service_bearer_header)
-        {
-            Some(token) => token,
-            _ => {
+        let scope_authorization = match runtime.scope_authorization.as_deref() {
+            Some(authorization) => authorization,
+            None => {
                 return Ok(workflow_error(
                     ErrorCode::WorkflowInvocationUnavailable,
                     "Workflow invocation authentication is unavailable".to_string(),
@@ -4146,7 +4223,7 @@ impl McpRouterRuntime {
             .private_target_client
             .post(start_url)
             .header("authorization", &user_authorization)
-            .header("x-scope-token", &scope_authorization)
+            .header("x-scope-token", scope_authorization)
             .header("x-host-id", host_id.to_string())
             .header("x-principal-subject", principal_subject)
             .header("x-end-user-subject", end_user_subject)
@@ -4287,7 +4364,7 @@ impl McpRouterRuntime {
                 .private_target_client
                 .post(wait_url)
                 .header("authorization", &user_authorization)
-                .header("x-scope-token", &scope_authorization)
+                .header("x-scope-token", scope_authorization)
                 .header("x-host-id", host_id.to_string())
                 .header("x-principal-subject", principal_subject)
                 .header("x-end-user-subject", end_user_subject)
@@ -4486,13 +4563,9 @@ impl McpRouterRuntime {
             .or_else(|| auth.claims.get("userId").and_then(JsonValue::as_str))
             .or_else(|| auth.claims.get("sub").and_then(JsonValue::as_str))
             .unwrap_or(principal_subject);
-        let scope_authorization = match std::env::var(LIGHT_PORTAL_AUTHORIZATION_ENV)
-            .ok()
-            .as_deref()
-            .and_then(service_bearer_header)
-        {
-            Some(token) => token,
-            _ => {
+        let scope_authorization = match runtime.scope_authorization.as_deref() {
+            Some(authorization) => authorization,
+            None => {
                 return Ok(error_result(
                     ErrorCode::WorkflowInvocationUnavailable,
                     "WORKFLOW_INVOCATION_UNAVAILABLE: workflow invocation authentication is unavailable"
@@ -8910,7 +8983,7 @@ mod tests {
     }
 
     #[test]
-    fn workflow_config_accepts_deprecated_token_fields_without_using_them() {
+    fn workflow_config_preserves_active_scope_token_env_and_deprecated_bearer_env() {
         let config: McpRouterConfig = serde_yaml::from_str(
             r#"
 workflow:
@@ -8928,6 +9001,92 @@ workflow:
             config.workflow.scope_token_env.as_deref(),
             Some("WORKFLOW_INVOCATION_SCOPE_TOKEN")
         );
+        assert_eq!(
+            serde_json::to_value(&config).unwrap()["workflow"]["scopeTokenEnv"],
+            "WORKFLOW_INVOCATION_SCOPE_TOKEN"
+        );
+        assert!(
+            serde_json::to_value(&config).unwrap()["workflow"]
+                .get("bearerTokenEnv")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn workflow_scope_token_selection_handles_explicit_blank_and_legacy_values() {
+        const EXPLICIT_ENV: &str = "LIGHT_PINGORA_TEST_WORKFLOW_SCOPE_AUTHORIZATION";
+        let token = "s".repeat(32);
+        assert_eq!(
+            workflow_scope_authorization_with(Some(EXPLICIT_ENV), |name| {
+                (name == EXPLICIT_ENV).then(|| token.clone())
+            })
+            .unwrap()
+            .as_deref(),
+            Some(format!("Bearer {token}").as_str())
+        );
+        let error = workflow_scope_authorization_with(Some(EXPLICIT_ENV), |_| None).unwrap_err();
+        assert!(error.to_string().contains("is unavailable"));
+
+        let legacy = "l".repeat(32);
+        assert_eq!(
+            workflow_scope_authorization_with(None, |name| match name {
+                WORKFLOW_INVOCATION_SCOPE_TOKEN_ENV => Some("  ".to_string()),
+                LIGHT_PORTAL_AUTHORIZATION_ENV => Some(legacy.clone()),
+                _ => None,
+            })
+            .unwrap()
+            .as_deref(),
+            Some(format!("Bearer {legacy}").as_str())
+        );
+
+        let error = workflow_scope_authorization_with(None, |name| {
+            (name == WORKFLOW_INVOCATION_SCOPE_TOKEN_ENV).then(|| "invalid".to_string())
+        })
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("workflow invocation environment variable")
+        );
+    }
+
+    #[test]
+    fn workflow_credential_error_disables_dispatch_without_rejecting_runtime() {
+        let config: McpRouterConfig = serde_yaml::from_str(
+            r#"
+workflow:
+  invocationUrl: http://light-workflow:8436
+  scopeTokenEnv: LIGHT_PINGORA_TEST_MISSING_WORKFLOW_SCOPE_TOKEN
+tools:
+  - name: customer_summary
+    executionPlacement: workflow
+    inputSchema: {type: object}
+    outputSchema: {type: object}
+    toolMetadata: {readOnly: true, destructive: false}
+    workflowBinding:
+      stableToolRef: 15000000-0000-0000-0000-000000000001
+      workflowDefinitionId: 15000000-0000-0000-0000-000000000002
+      workflowVersion: 1.0.0
+      definitionDigest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      schemaDigest: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      policyDigest: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+      responsePolicyDigest: sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+      budget:
+        maximumTaskAttempts: 8
+        maximumNestedCalls: 4
+        maximumDelegationDepth: 0
+        maximumParallelism: 1
+        maximumRequestBytes: 65536
+        maximumIntermediateBytes: 262144
+        maximumResultBytes: 131072
+        maximumCostUnits: 0
+"#,
+        )
+        .expect("workflow config");
+
+        let runtime = McpRouterRuntime::new(config)
+            .expect("workflow credential errors must not reject the gateway runtime");
+        assert!(runtime.workflow_dispatch.is_none());
     }
 
     #[test]
