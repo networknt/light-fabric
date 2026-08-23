@@ -1,4 +1,4 @@
-FROM rust:1-bookworm AS builder
+FROM rust:1.98.0-bookworm AS builder
 WORKDIR /usr/src/light-fabric
 COPY . .
 RUN cargo build --locked --release -p llm-provider-mock --bin llm-provider-mock
@@ -9,4 +9,3 @@ COPY --from=builder /usr/src/light-fabric/target/release/llm-provider-mock /usr/
 USER mock
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/llm-provider-mock"]
-

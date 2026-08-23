@@ -1,6 +1,6 @@
 # Stage 1: Build the Rust binary
 # Pin to a specific version for reproducibility as suggested by Copilot
-FROM rust:1.94.1-bookworm AS builder
+FROM rust:1.98.0-bookworm AS builder
 
 # Install musl tools for static linking
 RUN apt-get update && \

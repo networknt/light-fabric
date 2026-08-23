@@ -1,4 +1,4 @@
-FROM rust:1.94.1-bookworm AS build
+FROM rust:1.98.0-bookworm AS build
 WORKDIR /src
 COPY . .
 RUN cargo build --locked --release -p light-knowledge

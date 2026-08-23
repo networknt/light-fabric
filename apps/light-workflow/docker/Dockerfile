@@ -1,5 +1,5 @@
 # Stage 1: Build the Rust binary
-FROM rust:1.94.1-bookworm AS builder
+FROM rust:1.98.0-bookworm AS builder
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends cmake g++ pkg-config && \
