@@ -14,6 +14,7 @@ RUN apt-get update \
   && chown -R 10001:10001 /var/lib/light-knowledge
 COPY --from=build /src/target/release/light-knowledge /usr/local/bin/light-knowledge
 COPY apps/light-knowledge/config /etc/light-knowledge
+WORKDIR /var/lib/light-knowledge
 USER 10001
 ENV LIGHT_KNOWLEDGE_CONFIG_FILE=/etc/light-knowledge/knowledge.yml
 EXPOSE 8092
