@@ -29,11 +29,16 @@ const REQUEST_ACCESS: &str = "req-acc";
 const RESPONSE_FILTER: &str = "res-fil";
 const RESPONSE_BODY: &str = "responseBody";
 const RESPONSE_BODY_JSON: &str = "responseBodyJson";
+const RESPONSE_TARGET: &str = "responseTarget";
 const RESPONSE_ROW_FILTER_DENIED: &str = "responseRowFilterDenied";
 const RESPONSE_COLUMN_FILTER_ACTION: &str = "ResponseColumnFilterAction";
 const RESPONSE_ROW_FILTER_ACTION: &str = "ResponseRowFilterAction";
 const RESPONSE_CEL_ROW_FILTER_ACTION: &str = "ResponseCelRowFilterAction";
 const ROLE_BASED_ACCESS_CONTROL_ACTION: &str = "RoleBasedAccessControlAction";
+const PUBLIC_ACCESS_RULE_ID: &str = "allow-public-access";
+const PUBLIC_ACCESS_EFFECT: &str = "public";
+const MAX_RESPONSE_TARGET_LENGTH: usize = 1024;
+const MAX_RESPONSE_TARGET_SEGMENTS: usize = 16;
 const CREDENTIAL_HEADERS: &[&str] = &[
     "authorization",
     "proxy-authorization",
@@ -432,6 +437,9 @@ impl AccessControlRuntime {
                 ToolVisibility::Visible
             };
         }
+        if !self.request_rule_set_valid(&rule_ids) {
+            return ToolVisibility::Hidden;
+        }
 
         let permission = permission_for(endpoint_rules)
             .map(JsonValue::Object)
@@ -509,6 +517,11 @@ impl AccessControlRuntime {
             } else {
                 AccessDecision::Allowed
             };
+        }
+        if !self.request_rule_set_valid(&rule_ids) {
+            return AccessDecision::Denied(format!(
+                "Access denied by invalid public access rule for {endpoint}"
+            ));
         }
         let permission = permission_for(endpoint_rules)
             .map(JsonValue::Object)
@@ -839,6 +852,9 @@ impl AccessControlRuntime {
         if rule_ids.is_empty() {
             return true;
         }
+        if !self.request_rule_set_valid(rule_ids) {
+            return false;
+        }
         if logic.eq_ignore_ascii_case("all") {
             for rule_id in rule_ids {
                 if !self.execute_rule_id(rule_id, context).await {
@@ -856,6 +872,21 @@ impl AccessControlRuntime {
             }
         }
         false
+    }
+
+    fn request_rule_set_valid(&self, rule_ids: &[String]) -> bool {
+        if !rule_ids
+            .iter()
+            .any(|rule_id| rule_id == PUBLIC_ACCESS_RULE_ID)
+        {
+            return true;
+        }
+        rule_ids.len() == 1
+            && self
+                .rules
+                .rule_bodies
+                .get(PUBLIC_ACCESS_RULE_ID)
+                .is_some_and(is_canonical_public_rule)
     }
 
     async fn execute_rule_id(&self, rule_id: &str, context: &mut JsonValue) -> bool {
@@ -1276,6 +1307,9 @@ fn rule_visibility_match(
     if !rule_has_authorizing_effect(rule) {
         return RuleVisibilityMatch::Ignored;
     }
+    if is_canonical_public_rule(rule) {
+        return RuleVisibilityMatch::Matched(true);
+    }
     if is_role_access_rule(rule) {
         let claim_names = claim_names_for_permission("roles", claim_mappings);
         return RuleVisibilityMatch::Matched(permission_dimension_matches(
@@ -1295,6 +1329,18 @@ fn rule_visibility_match(
         ));
     }
     RuleVisibilityMatch::Unknown
+}
+
+fn is_canonical_public_rule(rule: &Rule) -> bool {
+    rule.rule_id == PUBLIC_ACCESS_RULE_ID
+        && rule.rule_type == REQUEST_ACCESS
+        && rule.common.eq_ignore_ascii_case("y")
+        && rule.access_control_effect.as_deref() == Some(PUBLIC_ACCESS_EFFECT)
+        && rule.condition_language.as_deref() == Some("cel")
+        && rule.condition_security_profile.as_deref() == Some("strict")
+        && rule.expression.as_deref().map(str::trim) == Some("true")
+        && rule.conditions.as_ref().is_none_or(Vec::is_empty)
+        && rule.actions.as_ref().is_none_or(Vec::is_empty)
 }
 
 fn rule_has_authorizing_effect(rule: &Rule) -> bool {
@@ -1611,7 +1657,7 @@ impl RuleActionPlugin for ResponseColumnFilterAction {
             return Ok(false);
         };
         let filter_specs = matching_column_filters(rule_context, &col_config, &self.claim_mappings);
-        let Some(body) = response_body_json_mut(rule_context) else {
+        let Some(body) = response_filter_target_mut(rule_context) else {
             return Ok(false);
         };
         Ok(apply_column_filter_specs(body, &filter_specs))
@@ -1638,7 +1684,7 @@ impl RuleActionPlugin for ResponseRowFilterAction {
             .and_then(JsonValue::as_bool)
             .unwrap_or(false);
         let denied = {
-            let Some(body) = response_body_json_mut(rule_context) else {
+            let Some(body) = response_filter_target_mut(rule_context) else {
                 return Ok(false);
             };
             if !row_filter_root_supported(body) {
@@ -1694,7 +1740,7 @@ impl RuleActionPlugin for ResponseCelRowFilterAction {
             .and_then(JsonValue::as_str);
         let base_context = row_expression_base_context(rule_context);
         let denied = {
-            let Some(body) = response_body_json_mut(rule_context) else {
+            let Some(body) = response_filter_target_mut(rule_context) else {
                 return Ok(false);
             };
             apply_cel_row_filter(
@@ -1714,6 +1760,31 @@ impl RuleActionPlugin for ResponseCelRowFilterAction {
 
 fn response_body_json_mut(context: &mut JsonValue) -> Option<&mut JsonValue> {
     context.as_object_mut()?.get_mut(RESPONSE_BODY_JSON)
+}
+
+fn response_filter_target_mut(context: &mut JsonValue) -> Option<&mut JsonValue> {
+    let target = context
+        .get(RESPONSE_TARGET)
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+    if target.len() > MAX_RESPONSE_TARGET_LENGTH
+        || (!target.is_empty() && !target.starts_with('/'))
+        || target
+            .split('/')
+            .skip(1)
+            .count()
+            .gt(&MAX_RESPONSE_TARGET_SEGMENTS)
+    {
+        return None;
+    }
+    let body = response_body_json_mut(context)?;
+    if target.is_empty() {
+        Some(body)
+    } else {
+        body.pointer_mut(target.as_str())
+    }
 }
 
 fn mark_response_row_filter_denied(context: &mut JsonValue) {
@@ -3413,6 +3484,122 @@ endpointRules:
         );
     }
 
+    #[tokio::test]
+    async fn canonical_public_rule_is_visible_and_callable_without_claims() {
+        let policy = AccessControlRuntime::new(
+            Some(AccessControlConfig {
+                tools_list_access_control: ToolsListAccessControlConfig {
+                    mode: ToolsListAccessControlMode::Permission,
+                    ..ToolsListAccessControlConfig::default()
+                },
+                ..AccessControlConfig::default()
+            }),
+            serde_yaml::from_str::<RuleFileConfig>(
+                r#"
+ruleBodies:
+  allow-public-access:
+    common: Y
+    ruleId: allow-public-access
+    ruleName: Allow public access
+    ruleType: req-acc
+    accessControlEffect: public
+    expression: "true"
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+endpointRules:
+  public-tool@call:
+    req-acc:
+      - allow-public-access
+"#,
+            )
+            .expect("rule config"),
+        );
+
+        assert_eq!(
+            policy.tool_visible("public-tool", "public-tool@call", None),
+            ToolVisibility::Visible
+        );
+        assert_eq!(
+            policy.authorize_tool_by_claims("public-tool", "public-tool@call", None),
+            AccessDecision::Allowed
+        );
+        assert_eq!(
+            policy
+                .authorize_tool(
+                    "public-tool",
+                    "public-tool@call",
+                    &[],
+                    None,
+                    &json!({}),
+                    None,
+                )
+                .await,
+            AccessDecision::Allowed
+        );
+    }
+
+    #[tokio::test]
+    async fn modified_or_mixed_public_rule_fails_closed() {
+        for endpoint_rules in [
+            "req-acc: [allow-public-access]",
+            "req-acc: [allow-public-access, allow-role]",
+        ] {
+            let rules = format!(
+                r#"
+ruleBodies:
+  allow-public-access:
+    common: Y
+    ruleId: allow-public-access
+    ruleName: Allow public access
+    ruleType: req-acc
+    accessControlEffect: public
+    expression: "false"
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+  allow-role:
+    common: Y
+    ruleId: allow-role
+    ruleName: Allow role
+    ruleType: req-acc
+    expression: "true"
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+endpointRules:
+  public-tool@call:
+    {endpoint_rules}
+"#
+            );
+            let policy = AccessControlRuntime::new(
+                Some(AccessControlConfig {
+                    tools_list_access_control: ToolsListAccessControlConfig {
+                        mode: ToolsListAccessControlMode::Permission,
+                        ..ToolsListAccessControlConfig::default()
+                    },
+                    ..AccessControlConfig::default()
+                }),
+                serde_yaml::from_str::<RuleFileConfig>(&rules).expect("rule config"),
+            );
+
+            assert_eq!(
+                policy.tool_visible("public-tool", "public-tool@call", None),
+                ToolVisibility::Hidden
+            );
+            assert!(matches!(
+                policy
+                    .authorize_tool(
+                        "public-tool",
+                        "public-tool@call",
+                        &[],
+                        None,
+                        &json!({}),
+                        None,
+                    )
+                    .await,
+                AccessDecision::Denied(_)
+            ));
+        }
+    }
+
     #[test]
     fn tool_visibility_uses_configured_claim_mappings() {
         let policy = AccessControlRuntime::new(
@@ -3698,6 +3885,95 @@ allow-account-role:
             result["content"][0]["text"],
             JsonValue::String("{\"items\":[{\"id\":1}]}".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn response_column_filter_handles_bounded_nested_target() {
+        let policy = policy_for_filter(
+            "col",
+            json!({
+                "responseTarget": "/data/accounts",
+                "col": {
+                    "role": {
+                        "mcp-reader": "id"
+                    }
+                }
+            }),
+        );
+
+        let result = policy
+            .filter_mcp_response(
+                "accounts",
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("mcp-reader")),
+                &json!({}),
+                None,
+                json!({
+                    "content": [{
+                        "type": "text",
+                        "text": "{\"data\":{\"accounts\":[{\"id\":1,\"secret\":\"x\"}]},\"trace\":\"keep\"}"
+                    }],
+                    "structuredContent": {
+                        "data": {
+                            "accounts": [{"id": 1, "secret": "x"}]
+                        },
+                        "trace": "keep"
+                    }
+                }),
+            )
+            .await;
+
+        assert_eq!(result["structuredContent"]["data"]["accounts"][0]["id"], 1);
+        assert!(
+            result["structuredContent"]["data"]["accounts"][0]
+                .get("secret")
+                .is_none()
+        );
+        assert_eq!(result["structuredContent"]["trace"], "keep");
+        assert_eq!(
+            result["content"][0]["text"],
+            JsonValue::String(
+                "{\"data\":{\"accounts\":[{\"id\":1}]},\"trace\":\"keep\"}".to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn response_filter_missing_nested_target_fails_closed() {
+        let policy = policy_for_filter(
+            "col",
+            json!({
+                "responseTarget": "/data/missing",
+                "col": {
+                    "role": {
+                        "mcp-reader": "id"
+                    }
+                }
+            }),
+        );
+
+        let result = policy
+            .filter_mcp_response(
+                "accounts",
+                "/v1/accounts@get",
+                &[],
+                Some(&auth("mcp-reader")),
+                &json!({}),
+                None,
+                json!({
+                    "content": [{"type": "text", "text": "{\"data\":{}}"}],
+                    "structuredContent": {"data": {}}
+                }),
+            )
+            .await;
+
+        assert_eq!(result["isError"], true);
+        assert_eq!(
+            result["content"][0]["text"],
+            "Access control response filter failed"
+        );
+        assert!(result.get("structuredContent").is_none());
     }
 
     #[tokio::test]

@@ -27,7 +27,7 @@ pub struct LimitConfig {
     pub enabled: bool,
     #[serde(default)]
     pub concurrent_request: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_legacy_queue_size")]
     pub queue_size: u64,
     #[serde(default = "default_error_code")]
     pub error_code: u16,
@@ -585,6 +585,19 @@ fn default_error_code() -> u16 {
     429
 }
 
+fn deserialize_legacy_queue_size<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match i64::deserialize(deserializer)? {
+        -1 => Ok(0),
+        value if value >= 0 => Ok(value as u64),
+        value => Err(D::Error::custom(format!(
+            "limit queueSize must be -1 or nonnegative, got {value}"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -605,5 +618,18 @@ server:
         assert_eq!(config.rate_limit[0].limit, 10);
         assert_eq!(config.rate_limit[1].window_seconds, 60);
         assert_eq!(config.server["/api"][0].limit, 5);
+    }
+
+    #[test]
+    fn legacy_disabled_queue_size_maps_to_zero() {
+        let config: LimitConfig =
+            serde_yaml::from_str("queueSize: -1\n").expect("parse legacy disabled queue size");
+        assert_eq!(0, config.queue_size);
+
+        let configured: LimitConfig =
+            serde_yaml::from_str("queueSize: 32\n").expect("parse configured queue size");
+        assert_eq!(32, configured.queue_size);
+
+        assert!(serde_yaml::from_str::<LimitConfig>("queueSize: -2\n").is_err());
     }
 }

@@ -27,13 +27,14 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{info, warn};
 
 mod embedded_config {
     include!(concat!(env!("OUT_DIR"), "/embedded_config.rs"));
 }
 
 const CONFIG_DIR: &str = "config";
+const IGNORE_USER_JWT_EXPIRY_ENV: &str = "WORKFLOW_IGNORE_USER_JWT_EXPIRY";
 
 #[derive(Debug, Clone, Copy)]
 struct HeadlessTransport;
@@ -95,6 +96,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     info!("Light Workflow Engine starting...");
     let invocation_environment = required_environment("SERVER_ENVIRONMENT")?;
+    let ignore_user_jwt_expiry = parse_ignore_user_jwt_expiry(
+        env::var(IGNORE_USER_JWT_EXPIRY_ENV).ok().as_deref(),
+        &invocation_environment,
+    )?;
+    if ignore_user_jwt_expiry {
+        warn!(
+            environment = %invocation_environment,
+            "expired workflow user JWTs are accepted; this development-only override must not be enabled in production"
+        );
+    }
     validate_service_authorization(&invocation_environment)?;
     let invocation_caller_service_ids =
         required_list_environment("WORKFLOW_INVOCATION_CALLER_SERVICE_IDS")?;
@@ -187,6 +198,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             invocation_security,
             invocation_environment,
             invocation_caller_service_ids,
+            ignore_user_jwt_expiry,
             rule_shutdown,
         )
         .await
@@ -457,6 +469,32 @@ fn required_list_environment(name: &str) -> Result<Vec<String>, io::Error> {
     parse_required_list(name, &required_environment(name)?)
 }
 
+fn parse_ignore_user_jwt_expiry(
+    configured: Option<&str>,
+    environment: &str,
+) -> Result<bool, io::Error> {
+    let enabled = match configured.map(str::trim) {
+        None | Some("") => false,
+        Some(value) if value.eq_ignore_ascii_case("true") => true,
+        Some(value) if value.eq_ignore_ascii_case("false") => false,
+        Some(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{IGNORE_USER_JWT_EXPIRY_ENV} must be true or false"),
+            ));
+        }
+    };
+    if enabled && !environment.eq_ignore_ascii_case("dev") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{IGNORE_USER_JWT_EXPIRY_ENV}=true is permitted only when SERVER_ENVIRONMENT=dev"
+            ),
+        ));
+    }
+    Ok(enabled)
+}
+
 fn parse_required_list(name: &str, value: &str) -> Result<Vec<String>, io::Error> {
     let values = value
         .split(',')
@@ -510,5 +548,15 @@ mod tests {
             ["gateway-a", "gateway-b"]
         );
         assert!(parse_required_list("CALLERS", " , ").is_err());
+    }
+
+    #[test]
+    fn user_jwt_expiry_override_is_explicit_and_dev_only() {
+        assert!(!parse_ignore_user_jwt_expiry(None, "dev").unwrap());
+        assert!(!parse_ignore_user_jwt_expiry(Some("  "), "dev").unwrap());
+        assert!(!parse_ignore_user_jwt_expiry(Some("false"), "prod").unwrap());
+        assert!(parse_ignore_user_jwt_expiry(Some("TrUe"), "dev").unwrap());
+        assert!(parse_ignore_user_jwt_expiry(Some("true"), "prod").is_err());
+        assert!(parse_ignore_user_jwt_expiry(Some("yes"), "dev").is_err());
     }
 }

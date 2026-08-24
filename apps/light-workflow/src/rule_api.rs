@@ -39,6 +39,7 @@ pub struct RuleApiState {
     invocation_security: Arc<SecurityRuntime>,
     invocation_environment: Arc<str>,
     invocation_caller_service_ids: Arc<[String]>,
+    ignore_user_jwt_expiry: bool,
     wait_listener_permits: Arc<Semaphore>,
     maximum_parallelism: usize,
 }
@@ -105,6 +106,7 @@ pub async fn run_rule_api(
     invocation_security: Arc<SecurityRuntime>,
     invocation_environment: String,
     invocation_caller_service_ids: Vec<String>,
+    ignore_user_jwt_expiry: bool,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = std::env::var("LIGHT_WORKFLOW_HTTP_ADDR")
@@ -116,6 +118,7 @@ pub async fn run_rule_api(
         invocation_security,
         invocation_environment: invocation_environment.into(),
         invocation_caller_service_ids: invocation_caller_service_ids.into(),
+        ignore_user_jwt_expiry,
         wait_listener_permits: Arc::new(Semaphore::new(
             std::env::var("WORKFLOW_WAIT_LISTENER_CONNECTIONS")
                 .ok()
@@ -1000,12 +1003,20 @@ async fn authenticate(
     let user_principal = verify_jwt_token(
         &state.invocation_security,
         bearer_token(authorization, "user Bearer authentication is required")?,
-        JwtExpiryMode::Enforce,
+        user_jwt_expiry_mode(state.ignore_user_jwt_expiry),
     )
     .await
     .map_err(|error| jwt_verification_error("user", error))?;
     let user_authorization_exp = validate_invocation_user(&user_principal, headers, host_id)?;
     invocation_identity(headers, host_id, authorization, user_authorization_exp)
+}
+
+fn user_jwt_expiry_mode(ignore_user_jwt_expiry: bool) -> JwtExpiryMode {
+    if ignore_user_jwt_expiry {
+        JwtExpiryMode::Ignore
+    } else {
+        JwtExpiryMode::Enforce
+    }
 }
 
 fn invocation_identity(
@@ -1890,6 +1901,12 @@ fork:
         )
         .unwrap();
         assert_eq!(identity.user_authorization, "Bearer current-user-jwt");
+    }
+
+    #[test]
+    fn user_jwt_expiry_override_does_not_change_the_default() {
+        assert_eq!(user_jwt_expiry_mode(false), JwtExpiryMode::Enforce);
+        assert_eq!(user_jwt_expiry_mode(true), JwtExpiryMode::Ignore);
     }
 
     #[test]

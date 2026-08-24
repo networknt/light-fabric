@@ -6668,9 +6668,13 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
                 ))
             })?;
             if binding.mode == InvocationMode::Sync
-                && (tool_metadata_bool(tool, &["readOnly"]) != Some(true)
+                && (tool_metadata_bool(tool, &["readOnly", "read_only"]) != Some(true)
                     || tool_metadata_bool(tool, &["destructive"]).unwrap_or(false)
-                    || tool_metadata_bool(tool, &["humanApprovalRequired"]).unwrap_or(false))
+                    || tool_metadata_bool(
+                        tool,
+                        &["humanApprovalRequired", "human_approval_required"],
+                    )
+                    .unwrap_or(false))
             {
                 return Err(RuntimeError::Unsupported(format!(
                     "mcp-router workflow tool `{name}` must be read-only and headless"
@@ -16795,6 +16799,43 @@ tools:
         let mut missing_depth_pool = config;
         missing_depth_pool.workflow.permit_pools.truncate(1);
         assert!(validate_config(&missing_depth_pool).is_err());
+    }
+
+    #[test]
+    fn workflow_tool_configuration_accepts_legacy_safety_metadata_names() {
+        let yaml = r#"
+enabled: true
+workflow:
+  invocationUrl: http://light-workflow:8436
+  permitPools: [8, 4]
+tools:
+  - name: customer_summary
+    executionPlacement: workflow
+    inputSchema: {type: object}
+    toolMetadata: {read_only: true, destructive: false, human_approval_required: false}
+    workflowBinding:
+      stableToolRef: 15000000-0000-0000-0000-000000000001
+      workflowDefinitionId: 15000000-0000-0000-0000-000000000002
+      workflowVersion: 1.0.0
+      definitionDigest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      schemaDigest: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      policyDigest: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+      responsePolicyDigest: sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+      waitTimeoutMs: 20000
+      totalDeadlineMs: 30000
+      resultTextMode: compact-json
+      budget:
+        maximumTaskAttempts: 8
+        maximumNestedCalls: 4
+        maximumDelegationDepth: 1
+        maximumParallelism: 1
+        maximumRequestBytes: 65536
+        maximumIntermediateBytes: 262144
+        maximumResultBytes: 131072
+        maximumCostUnits: 0
+"#;
+        let config: McpRouterConfig = serde_yaml::from_str(yaml).expect("workflow config");
+        validate_config(&config).expect("legacy workflow safety metadata remains compatible");
     }
 
     #[test]
