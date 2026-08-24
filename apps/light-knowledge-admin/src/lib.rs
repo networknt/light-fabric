@@ -1014,6 +1014,10 @@ const SNAPSHOT_TABLES: &[&str] = &[
     "agent_knowledge_base_t",
 ];
 
+const SNAPSHOT_TABLE_COLUMNS_SQL: &str = "SELECT column_name FROM information_schema.columns
+      WHERE table_schema=current_schema() AND table_name=$1 AND is_generated='NEVER'
+      ORDER BY ordinal_position";
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ControlSnapshotEnvelope {
@@ -1365,15 +1369,11 @@ async fn materialize_snapshot_table(
     if !rows.iter().all(Value::is_object) {
         return Err(ApiError::bad_request("KNOWLEDGE_SNAPSHOT_ROW_INVALID"));
     }
-    let local_columns: Vec<String> = sqlx::query_scalar(
-        "SELECT column_name FROM information_schema.columns
-          WHERE table_schema='public' AND table_name=$1 AND is_generated='NEVER'
-          ORDER BY ordinal_position",
-    )
-    .bind(table)
-    .fetch_all(&mut **transaction)
-    .await
-    .map_err(ApiError::database)?;
+    let local_columns: Vec<String> = sqlx::query_scalar(SNAPSHOT_TABLE_COLUMNS_SQL)
+        .bind(table)
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(ApiError::database)?;
     if local_columns.is_empty() {
         return Err(ApiError::unavailable(
             "KNOWLEDGE_SNAPSHOT_SCHEMA_UNAVAILABLE",
@@ -3435,6 +3435,12 @@ mod tests {
                 .code,
             "KNOWLEDGE_SNAPSHOT_SCHEMA_UNAVAILABLE"
         );
+    }
+
+    #[test]
+    fn snapshot_materialization_resolves_columns_from_the_active_schema() {
+        assert!(SNAPSHOT_TABLE_COLUMNS_SQL.contains("table_schema=current_schema()"));
+        assert!(!SNAPSHOT_TABLE_COLUMNS_SQL.contains("table_schema='public'"));
     }
 
     #[test]
