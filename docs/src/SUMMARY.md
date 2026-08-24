@@ -104,6 +104,7 @@
   - [IPv6 Support](product/light-gateway/ipv6-support.md)
   - [Call MCP Server with Curl](product/light-gateway/curl-mcp.md)
   - [MCP Tools Access Control](product/light-gateway/mcp-tools-access-control.md)
+  - [Portal-Managed MCP Tool Access Control](product/light-gateway/portal-managed-mcp-tool-access-control.md)
   - [MCP Tools List Access Control](product/light-gateway/mcp-tools-list-access-control.md)
   - [MCP Tool Metadata Usage](product/light-gateway/mcp-tool-metadata-usage.md)
   - [Workflow-Backed MCP Tools](product/light-gateway/workflow-backed-mcp-tools.md)
