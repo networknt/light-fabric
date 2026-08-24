@@ -21,8 +21,16 @@ fi
 STUB
 chmod +x "${TEST_ROOT}/bin/docker"
 
+cat > "${TEST_ROOT}/bin/cargo" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${CARGO_LOG:?}"
+STUB
+chmod +x "${TEST_ROOT}/bin/cargo"
+
 export PATH="${TEST_ROOT}/bin:${PATH}"
 export DOCKER_LOG="${TEST_ROOT}/docker.log"
+export CARGO_LOG="${TEST_ROOT}/cargo.log"
 
 grep -Fxq '!target/release/light-knowledge-admin' "${REPO_ROOT}/.dockerignore" || {
   echo "FAIL: light-knowledge-admin release binary is excluded from the Docker build context" >&2
@@ -59,32 +67,42 @@ assert_line() {
 }
 
 : > "$DOCKER_LOG"
+: > "$CARGO_LOG"
 (
   cd "$TEST_ROOT"
   "${REPO_ROOT}/build.sh" 9.8.7 --local --no-cache
 )
 
 [[ "$(grep -c '^build ' "$DOCKER_LOG")" -eq "${#APPS[@]}" ]]
+[[ "$(wc -l < "$CARGO_LOG")" -eq "${#APPS[@]}" ]]
 if grep -q '^push ' "$DOCKER_LOG"; then
   echo "FAIL: --local attempted to push an image" >&2
   exit 1
 fi
 for app in "${APPS[@]}"; do
   dockerfile="$(dockerfile_for_app "$app")"
+  grep -Fxq -- "build --locked --release --package ${app} --bin ${app}" "$CARGO_LOG"
   assert_line "build --no-cache --tag networknt/${app}:9.8.7 --tag networknt/${app}:latest --file ${dockerfile} ."
 done
 
 : > "$DOCKER_LOG"
+: > "$CARGO_LOG"
 "${REPO_ROOT}/apps/light-gateway/build.sh" 9.8.8 --local --skip-latest
+grep -Fxq -- "build --locked --release --package light-gateway --bin light-gateway" "$CARGO_LOG"
+[[ "$(wc -l < "$CARGO_LOG")" -eq 1 ]]
 assert_line "build --tag networknt/light-gateway:9.8.8 --file apps/light-gateway/docker/Dockerfile ."
 [[ "$(wc -l < "$DOCKER_LOG")" -eq 1 ]]
 
 : > "$DOCKER_LOG"
+: > "$CARGO_LOG"
 "${REPO_ROOT}/apps/light-knowledge-admin/build.sh" 9.8.8 --local --skip-latest
+grep -Fxq -- "build --locked --release --package light-knowledge-admin --bin light-knowledge-admin" "$CARGO_LOG"
+[[ "$(wc -l < "$CARGO_LOG")" -eq 1 ]]
 assert_line "build --tag networknt/light-knowledge-admin:9.8.8 --file apps/light-knowledge-admin/docker/Dockerfile ."
 [[ "$(wc -l < "$DOCKER_LOG")" -eq 1 ]]
 
 : > "$DOCKER_LOG"
+: > "$CARGO_LOG"
 "${REPO_ROOT}/build.sh" 9.8.9
 [[ "$(grep -c '^build ' "$DOCKER_LOG")" -eq "${#APPS[@]}" ]]
 [[ "$(grep -c '^push networknt/.*:9\.8\.9$' "$DOCKER_LOG")" -eq "${#APPS[@]}" ]]

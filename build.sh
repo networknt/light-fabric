@@ -138,6 +138,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$VERSION" ]] || fail "[VERSION] parameter is missing"
+command -v cargo >/dev/null 2>&1 || fail "Missing required command: cargo"
 command -v docker >/dev/null 2>&1 || fail "Missing required command: docker"
 
 if [[ "$APP" == "all" ]]; then
@@ -159,6 +160,9 @@ cd "$REPO_ROOT"
 for release_app in "${BUILD_APPS[@]}"; do
   dockerfile="$(dockerfile_for_app "$release_app")"
   [[ -f "$dockerfile" ]] || fail "Missing Dockerfile: $dockerfile"
+
+  echo "Compiling ${release_app} release binary"
+  cargo build --locked --release --package "$release_app" --bin "$release_app"
 
   version_image="${IMAGE_NAMESPACE}/${release_app}:${VERSION}"
   docker_args=(build "${BUILD_ARGS[@]}" --tag "$version_image")
