@@ -1,6 +1,5 @@
 host: ${LIGHT_WORKFLOW_STARTUP_HOST:dev.lightapi.net}
 serviceId: ${LIGHT_WORKFLOW_SERVICE_ID:com.networknt.workflow-1.0.0}
-instanceId: ${LIGHT_WORKFLOW_CONFIG_INSTANCE_ID:}
 envTag: ${LIGHT_WORKFLOW_ENVIRONMENT:dev}
 acceptHeader: application/yaml
 timeout: ${LIGHT_WORKFLOW_STARTUP_TIMEOUT:3000}

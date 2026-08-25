@@ -176,7 +176,7 @@ async fn prepare_workflow_config_with(
         Ok(prepared) if prepared.provenance.source == ConfigSource::Remote => {
             let validation = (|| {
                 validate_identity(&prepared.runtime_config, invocation_environment)?;
-                validate_remote_metadata(&prepared.runtime_config, &prepared.provenance)?;
+                validate_remote_metadata(&prepared.provenance)?;
                 validate_no_secret_properties(&prepared.runtime_config.resolved_values)
             })();
             if let Err(error) = validation {
@@ -300,7 +300,7 @@ pub(crate) fn validate_remote_reload(
         );
     }
     validate_identity(runtime_config, invocation_environment)?;
-    validate_remote_metadata(runtime_config, provenance)?;
+    validate_remote_metadata(provenance)?;
     validate_no_secret_properties(&runtime_config.resolved_values)
 }
 
@@ -373,10 +373,7 @@ fn validate_identity(config: &RuntimeConfig, environment: &str) -> anyhow::Resul
     Ok(())
 }
 
-fn validate_remote_metadata(
-    config: &RuntimeConfig,
-    provenance: &ConfigProvenance,
-) -> anyhow::Result<()> {
+fn validate_remote_metadata(provenance: &ConfigProvenance) -> anyhow::Result<()> {
     for (name, value) in [
         ("host", provenance.host_id.as_deref()),
         ("snapshot", provenance.snapshot_id.as_deref()),
@@ -387,10 +384,6 @@ fn validate_remote_metadata(
         Uuid::parse_str(value)
             .map_err(|_| anyhow::anyhow!("Config Server returned invalid {name} identity"))?;
     }
-    anyhow::ensure!(
-        provenance.instance_id.as_deref() == config.bootstrap.instance_id.as_deref(),
-        "Config Server returned a snapshot for a different Portal/config instance"
-    );
     anyhow::ensure!(
         provenance.content_digest.len() == 64,
         "Config Server returned invalid content digest"
@@ -419,11 +412,6 @@ fn validate_lkg(
     anyhow::ensure!(
         lkg.service_id == SERVICE_ID,
         "last-known-good service mismatch"
-    );
-    anyhow::ensure!(
-        Some(lkg.portal_config_instance_id.as_str())
-            == bootstrap_config.bootstrap.instance_id.as_deref(),
-        "last-known-good Portal/config instance mismatch"
     );
     Uuid::parse_str(&lkg.snapshot_id)?;
     Uuid::parse_str(&lkg.host_id)?;
@@ -503,6 +491,7 @@ mod tests {
                 let mut request = [0_u8; 4096];
                 let count = stream.read(&mut request).await.unwrap();
                 let request = String::from_utf8_lossy(&request[..count]);
+                assert!(!request.contains("instanceId="));
                 let (status, body, extra) = if request.starts_with("GET /config-server/configs") {
                     (
                         "200 OK",
@@ -529,7 +518,7 @@ mod tests {
         fs::write(
             config_dir.join("startup.yml"),
             format!(
-                "host: dev.lightapi.net\nserviceId: {SERVICE_ID}\ninstanceId: 01a00000-0000-7000-8000-000000000002\nenvTag: dev\nacceptHeader: application/yaml\ntimeout: 100\nconnectTimeout: 100\nconfigServerUri: {uri}\n"
+                "host: dev.lightapi.net\nserviceId: {SERVICE_ID}\nenvTag: dev\nacceptHeader: application/yaml\ntimeout: 100\nconnectTimeout: 100\nconfigServerUri: {uri}\n"
             ),
         )
         .unwrap();
@@ -541,7 +530,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_boot_then_lkg_outage_recovery_is_identity_bound() {
+    async fn remote_boot_then_lkg_outage_recovery_is_logically_identity_bound() {
         let root = TempDir::new().unwrap();
         let config_dir = root.path().join("config");
         let cache_dir = root.path().join("cache");
@@ -554,6 +543,10 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(remote.provenance.source, ConfigSource::Remote);
+        assert_eq!(
+            remote.provenance.instance_id.as_deref(),
+            Some("01a00000-0000-7000-8000-000000000002")
+        );
         assert!(!remote.degraded);
         let remote_materialized = remote.runtime_config.external_config_dir.clone();
         assert!(remote_materialized.join("values.yml").is_file());
@@ -595,23 +588,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wrong_remote_instance_is_rejected_without_lkg_fallback() {
+    async fn wrong_remote_logical_identity_is_rejected_without_lkg_fallback() {
         let root = TempDir::new().unwrap();
         let config_dir = root.path().join("config");
         let cache_dir = root.path().join("cache");
-        let values = "server.serviceId: com.networknt.workflow-1.0.0\nserver.environment: dev\n";
-        let (uri, server) =
-            config_server_for_instance(values, "01a00000-0000-7000-8000-000000000099").await;
+        let values = "server.serviceId: com.networknt.workflow-1.0.0\nserver.environment: loc\n";
+        let (uri, server) = config_server(values).await;
         write_startup(&config_dir, &uri);
+
         let error =
             prepare_workflow_config_with(ConfigMode::Managed, &config_dir, &cache_dir, "dev")
                 .await
                 .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("different Portal/config instance")
-        );
+
+        assert!(error.to_string().contains("workflow environment mismatch"));
         assert!(!cache_dir.join(LKG_FILE).exists());
         server.await.unwrap();
     }

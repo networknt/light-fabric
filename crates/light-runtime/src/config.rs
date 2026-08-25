@@ -14,7 +14,6 @@ pub struct BootstrapConfig {
     #[serde(default = "default_host")]
     pub host: String,
     pub service_id: Option<String>,
-    pub instance_id: Option<String>,
     pub product_id: Option<String>,
     pub product_version: Option<String>,
     pub api_id: Option<String>,
@@ -40,7 +39,6 @@ impl std::fmt::Debug for BootstrapConfig {
         f.debug_struct("BootstrapConfig")
             .field("host", &self.host)
             .field("service_id", &self.service_id)
-            .field("instance_id", &self.instance_id)
             .field("product_id", &self.product_id)
             .field("product_version", &self.product_version)
             .field("api_id", &self.api_id)

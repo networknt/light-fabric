@@ -1548,9 +1548,6 @@ fn build_query_params(bootstrap: &BootstrapConfig) -> Vec<(String, String)> {
     if let Some(value) = &bootstrap.service_id {
         params.push(("serviceId".to_string(), value.clone()));
     }
-    if let Some(value) = &bootstrap.instance_id {
-        params.push(("instanceId".to_string(), value.clone()));
-    }
     if let Some(value) = &bootstrap.product_id {
         params.push(("productId".to_string(), value.clone()));
     }
@@ -2366,6 +2363,7 @@ controlCandidates:
             "serviceId".to_string(),
             "com.networknt.petstore-1.0.0".to_string()
         )));
+        assert!(query.iter().all(|(name, _)| name != "instanceId"));
         assert!(query.contains(&("productId".to_string(), "agent".to_string())));
         assert!(query.contains(&("productVersion".to_string(), "1.0.0".to_string())));
         assert!(query.contains(&("apiId".to_string(), "petstore".to_string())));

@@ -6,7 +6,9 @@ environment:
   managedRule: all present values match and no value defaults silently
 identities:
   portalConfigInstance:
-    scope: configuration authority
+    scope: resolved configuration instance and provenance correlation
+    requestSelector: [host, serviceId, envTag]
+    source: Config Server response metadata
     stability: stable across snapshot promotion and service restart
     replicaRule: may be shared by replicas
   runnerOrigin:

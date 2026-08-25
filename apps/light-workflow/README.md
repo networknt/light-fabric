@@ -296,15 +296,17 @@ model, registration metadata contract, observability names, characterization
 matrix, and equivalent local/remote fixtures are in
 [`config-contract/`](config-contract/README.md). They pin current behavior and
 Phase 1 authority decisions. Phase 1a now boots through the promoted Config
-Server snapshot selected by `startup.yml` `host`, `serviceId`, `envTag`, and
-`instanceId`. The Config Server response carries the selected snapshot ID,
-instance ID, and content digest; Light Workflow rejects missing/mismatched
-metadata before application state is constructed.
+Server snapshot selected by `startup.yml` `host`, `serviceId`, and `envTag`.
+The Config Server resolves that logical identity to its internal instance and
+returns the selected host ID, snapshot ID, instance ID, and content digest as
+provenance. Light Workflow rejects missing or invalid response metadata before
+application state is constructed.
 
 Managed mode is the default. It stages remote values, validates the complete
 candidate, and atomically replaces `config-cache/light-workflow-lkg.json` with
-owner-only permissions. During a later Config Server outage, only that
-identity-bound, digest-verified cache may start the service. A fresh managed
+owner-only permissions. During a later Config Server outage, only a cache bound
+to the same Config Server authority, host, service, and environment and
+verified by digest may start the service. A fresh managed
 boot without a current snapshot/cache and a corrupt or cross-identity cache
 fail closed. Tests that intentionally avoid Config Server must set:
 

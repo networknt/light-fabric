@@ -13,6 +13,29 @@ cd "$workspace_root/portal-service"
 cargo test -p portal-core config_values --lib
 cargo check -p config-server
 
+set +e
+rg -n '^instanceId:' \
+  "$repo_root/apps/light-workflow/config/startup.yml" \
+  "$workspace_root/portal-config-dev/light-workflow-rust/config/startup.yml" \
+  "$workspace_root/portal-config-loc/all-in-lt/light-workflow-rust/config/startup.yml" \
+  "$workspace_root/light-portal-install/light-workflow-rust/config/startup.yml"
+instance_id_search_status=$?
+set -e
+if (( instance_id_search_status == 0 )); then
+  echo "Config Server bootstrap must use host, serviceId, and envTag; instanceId is response provenance only." >&2
+  exit 1
+elif (( instance_id_search_status != 1 )); then
+  echo "Unable to verify that Config Server bootstrap files omit instanceId." >&2
+  exit "$instance_id_search_status"
+fi
+
+rg -q '^envTag: .*:loc}' \
+  "$workspace_root/portal-config-loc/all-in-lt/light-workflow-rust/config/startup.yml"
+rg -q '^envTag: .*:dev}' \
+  "$workspace_root/portal-config-dev/light-workflow-rust/config/startup.yml"
+rg -q '^envTag: .*:demo}' \
+  "$workspace_root/light-portal-install/light-workflow-rust/config/startup.yml"
+
 events="$workspace_root/light-portal-event/workflow/20260824-light-workflow-phase1a-config.json"
 jq -e '
   type == "array" and
