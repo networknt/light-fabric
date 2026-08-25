@@ -26,10 +26,9 @@ Required environment:
   DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver
   LIGHT_PORTAL_AUTHORIZATION=Bearer <workflow-service-token>
   SERVER_ENVIRONMENT=dev
-  WORKFLOW_INVOCATION_CALLER_SERVICE_IDS=com.networknt.portal.gateway-1.0.0
 
 Common optional environment:
-  LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8436
+  LIGHT_WORKFLOW_CONFIG_MODE=local
   LIGHTAPI_ENVIRONMENT=dev
   RUST_LOG=light_workflow=debug,info
   WORKFLOW_LOG_ANSI=false
@@ -139,19 +138,14 @@ export SERVER_ENVIRONMENT="${SERVER_ENVIRONMENT:-}"
 if [[ -z "$SERVER_ENVIRONMENT" ]]; then
   fail "SERVER_ENVIRONMENT is required and must match the gateway service token env claim."
 fi
-export WORKFLOW_INVOCATION_CALLER_SERVICE_IDS="${WORKFLOW_INVOCATION_CALLER_SERVICE_IDS:-}"
-if [[ -z "$WORKFLOW_INVOCATION_CALLER_SERVICE_IDS" ]]; then
-  fail "WORKFLOW_INVOCATION_CALLER_SERVICE_IDS is required and must list authorized gateway service IDs."
-fi
-
-export_if_set LIGHT_WORKFLOW_HTTP_ADDR "${LIGHT_WORKFLOW_HTTP_ADDR:-${WORKFLOW_HTTP_ADDR:-}}"
+export LIGHT_WORKFLOW_CONFIG_MODE="${LIGHT_WORKFLOW_CONFIG_MODE:-local}"
 export_if_set RUST_LOG "${RUST_LOG:-}"
 export_if_set WORKFLOW_LOG_ANSI "${WORKFLOW_LOG_ANSI:-}"
 
 echo "Starting light-workflow"
 echo "  binary: ${BINARY_PATH}"
 echo "  database: ${DATABASE_URL}"
-echo "  http addr: ${LIGHT_WORKFLOW_HTTP_ADDR:-0.0.0.0:8436}"
+echo "  configuration mode: ${LIGHT_WORKFLOW_CONFIG_MODE}"
 echo "  rust log: ${RUST_LOG:-light_workflow=debug,info}"
 
 cd "$SCRIPT_DIR"

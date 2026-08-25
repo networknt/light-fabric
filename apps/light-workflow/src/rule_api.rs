@@ -1,3 +1,4 @@
+use crate::configuration::{WorkflowConfigGeneration, WorkflowConfigManager};
 use crate::invocation::{
     AcceptOutcome, AuthenticatedInvocationContext, InvocationAcceptError, PreparedInvocationStart,
     accept_invocation,
@@ -10,17 +11,17 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use light_rule::{ActionRegistry, Rule, RuleEngine};
+use light_runtime::{ConfigProvenance, ConfigSource};
 use light_security::{
     AuthPrincipal, HandlerRejection, JwtExpiryMode, SecurityRuntime, verify_jwt_token,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Row, postgres::PgListener};
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::Semaphore;
-use tracing::{error, info};
+use tracing::error;
 use uuid::Uuid;
 use workflow_core::models::retry::OneOfRetryPolicyDefinitionOrReference;
 use workflow_core::models::task::{CallTaskDefinition, TaskDefinition, TaskDefinitionFields};
@@ -38,10 +39,224 @@ pub struct RuleApiState {
     pool: PgPool,
     invocation_security: Arc<SecurityRuntime>,
     invocation_environment: Arc<str>,
-    invocation_caller_service_ids: Arc<[String]>,
-    ignore_user_jwt_expiry: bool,
-    wait_listener_permits: Arc<Semaphore>,
-    maximum_parallelism: usize,
+    runtime_config: Arc<WorkflowConfigManager>,
+    database_url: Arc<str>,
+    health: WorkflowHealth,
+}
+
+#[derive(Clone)]
+pub struct WorkflowHealth {
+    failure: Arc<Mutex<Option<String>>>,
+    controller_state: Arc<Mutex<String>>,
+    configuration: Arc<Mutex<ConfigurationHealth>>,
+    config_refresh_successes: Arc<AtomicU64>,
+    config_candidate_rejections: Arc<AtomicU64>,
+    config_lkg_uses: Arc<AtomicU64>,
+    config_last_success_unix_seconds: Arc<AtomicI64>,
+    drain_state: Arc<Mutex<String>>,
+}
+
+#[derive(Clone)]
+struct ConfigurationHealth {
+    status: String,
+    reason: String,
+    generation: u64,
+    digest: String,
+    restart_required_paths: Vec<String>,
+    rejected_snapshot_id: Option<String>,
+    rejected_digest: Option<String>,
+    source: String,
+    snapshot_id: Option<String>,
+    rejected_reason_code: Option<String>,
+}
+
+impl Default for WorkflowHealth {
+    fn default() -> Self {
+        Self {
+            failure: Arc::new(Mutex::new(None)),
+            controller_state: Arc::new(Mutex::new("connecting".to_string())),
+            configuration: Arc::new(Mutex::new(ConfigurationHealth {
+                status: "active".to_string(),
+                reason: "ready".to_string(),
+                generation: 1,
+                digest: String::new(),
+                restart_required_paths: Vec::new(),
+                rejected_snapshot_id: None,
+                rejected_digest: None,
+                source: "local".to_string(),
+                snapshot_id: None,
+                rejected_reason_code: None,
+            })),
+            config_refresh_successes: Arc::new(AtomicU64::new(0)),
+            config_candidate_rejections: Arc::new(AtomicU64::new(0)),
+            config_lkg_uses: Arc::new(AtomicU64::new(0)),
+            config_last_success_unix_seconds: Arc::new(AtomicI64::new(0)),
+            drain_state: Arc::new(Mutex::new("active".to_string())),
+        }
+    }
+}
+
+impl WorkflowHealth {
+    pub fn mark_failed(&self, reason: impl Into<String>) {
+        *self.failure.lock().expect("workflow health lock") = Some(reason.into());
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.failure.lock().expect("workflow health lock").is_none()
+    }
+
+    pub fn set_controller_state(&self, state: impl Into<String>) {
+        *self
+            .controller_state
+            .lock()
+            .expect("workflow controller health lock") = state.into();
+    }
+
+    fn controller_state(&self) -> String {
+        self.controller_state
+            .lock()
+            .expect("workflow controller health lock")
+            .clone()
+    }
+
+    fn failure(&self) -> Option<String> {
+        self.failure.lock().expect("workflow health lock").clone()
+    }
+
+    pub fn record_config_active(
+        &self,
+        generation: u64,
+        digest: impl Into<String>,
+        provenance: &ConfigProvenance,
+        refresh: bool,
+    ) {
+        if refresh {
+            self.config_refresh_successes
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        if !refresh && provenance.source == ConfigSource::Cache {
+            self.config_lkg_uses.fetch_add(1, Ordering::Relaxed);
+        }
+        self.config_last_success_unix_seconds
+            .store(Utc::now().timestamp(), Ordering::Relaxed);
+        *self
+            .configuration
+            .lock()
+            .expect("workflow config health lock") = ConfigurationHealth {
+            status: "active".to_string(),
+            reason: "ready".to_string(),
+            generation,
+            digest: digest.into(),
+            restart_required_paths: Vec::new(),
+            rejected_snapshot_id: None,
+            rejected_digest: None,
+            source: match provenance.source {
+                ConfigSource::Remote => "remote",
+                ConfigSource::Cache => "cache",
+                ConfigSource::Local => "local",
+            }
+            .to_string(),
+            snapshot_id: provenance.snapshot_id.clone(),
+            rejected_reason_code: None,
+        };
+    }
+
+    pub fn record_config_rejected(
+        &self,
+        reason: impl Into<String>,
+        reason_code: impl Into<String>,
+        restart_required_paths: Vec<String>,
+        provenance: Option<&ConfigProvenance>,
+    ) {
+        self.config_candidate_rejections
+            .fetch_add(1, Ordering::Relaxed);
+        let mut configuration = self
+            .configuration
+            .lock()
+            .expect("workflow config health lock");
+        configuration.status = if restart_required_paths.is_empty() {
+            "candidate-rejected".to_string()
+        } else {
+            "restart-required".to_string()
+        };
+        configuration.reason = reason.into();
+        configuration.restart_required_paths = restart_required_paths;
+        configuration.rejected_snapshot_id = provenance.and_then(|value| value.snapshot_id.clone());
+        configuration.rejected_digest = provenance.map(|value| value.content_digest.clone());
+        configuration.rejected_reason_code = Some(reason_code.into());
+    }
+
+    pub fn set_drain_state(&self, state: impl Into<String>) {
+        *self.drain_state.lock().expect("workflow drain health lock") = state.into();
+    }
+
+    pub fn metrics(&self, runtime_config: &WorkflowConfigManager) -> String {
+        let configuration = self
+            .configuration
+            .lock()
+            .expect("workflow config health lock")
+            .clone();
+        let controller_connected = u8::from(self.controller_state() == "connected");
+        let drain_state = self
+            .drain_state
+            .lock()
+            .expect("workflow drain health lock")
+            .clone();
+        let generation = runtime_config.load();
+        let snapshot_id = configuration.snapshot_id.as_deref().unwrap_or("local");
+        let reason_code = configuration
+            .rejected_reason_code
+            .as_deref()
+            .unwrap_or("none");
+        format!(
+            concat!(
+                "light_workflow_config_active_info{{source=\"{}\",snapshot_id=\"{}\",digest=\"{}\"}} 1\n",
+                "light_workflow_config_refresh_total{{result=\"success\",source=\"{}\"}} {}\n",
+                "light_workflow_config_refresh_total{{result=\"rejected\",source=\"{}\"}} {}\n",
+                "light_workflow_config_candidate_rejections_total{{reason_code=\"{}\"}} {}\n",
+                "light_workflow_config_lkg_uses_total{{reason_code=\"startup_remote_unavailable\"}} {}\n",
+                "light_workflow_config_last_success_unixtime_seconds {}\n",
+                "light_workflow_registry_connected {}\n",
+                "light_workflow_lifecycle_drain_state{{state=\"{}\"}} 1\n",
+                "light_workflow_capacity_configured{{subsystem=\"http\"}} {}\n",
+                "light_workflow_capacity_configured{{subsystem=\"wait_listeners\"}} {}\n",
+                "light_workflow_capacity_configured{{subsystem=\"task_executor\"}} {}\n"
+            ),
+            configuration.source,
+            snapshot_id,
+            configuration.digest,
+            configuration.source,
+            self.config_refresh_successes.load(Ordering::Relaxed),
+            configuration.source,
+            self.config_candidate_rejections.load(Ordering::Relaxed),
+            reason_code,
+            self.config_candidate_rejections.load(Ordering::Relaxed),
+            self.config_lkg_uses.load(Ordering::Relaxed),
+            self.config_last_success_unix_seconds
+                .load(Ordering::Relaxed),
+            controller_connected,
+            drain_state,
+            generation.config.maximum_parallelism,
+            generation.config.wait_listener_connections,
+            generation.config.host_executor_concurrency,
+        )
+    }
+
+    fn configuration_health(&self) -> Value {
+        let configuration = self
+            .configuration
+            .lock()
+            .expect("workflow config health lock");
+        json!({
+            "status": configuration.status,
+            "reason": configuration.reason,
+            "generation": configuration.generation,
+            "digest": configuration.digest,
+            "restartRequiredPaths": configuration.restart_required_paths,
+            "rejectedSnapshotId": configuration.rejected_snapshot_id,
+            "rejectedDigest": configuration.rejected_digest,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,36 +315,29 @@ struct BindingRow {
     tool_name: String,
 }
 
-pub async fn run_rule_api(
+#[allow(clippy::too_many_arguments)]
+pub fn build_rule_api_router(
     pool: PgPool,
-    maximum_parallelism: usize,
+    database_url: String,
+    runtime_config: Arc<WorkflowConfigManager>,
     invocation_security: Arc<SecurityRuntime>,
     invocation_environment: String,
-    invocation_caller_service_ids: Vec<String>,
-    ignore_user_jwt_expiry: bool,
-    shutdown: tokio_util::sync::CancellationToken,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let addr: SocketAddr = std::env::var("LIGHT_WORKFLOW_HTTP_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0:8436".to_string())
-        .parse()?;
+    health: WorkflowHealth,
+) -> Router {
     let state = RuleApiState {
         engine: Arc::new(RuleEngine::new(Arc::new(ActionRegistry::new()))),
         pool,
         invocation_security,
         invocation_environment: invocation_environment.into(),
-        invocation_caller_service_ids: invocation_caller_service_ids.into(),
-        ignore_user_jwt_expiry,
-        wait_listener_permits: Arc::new(Semaphore::new(
-            std::env::var("WORKFLOW_WAIT_LISTENER_CONNECTIONS")
-                .ok()
-                .and_then(|value| value.parse::<usize>().ok())
-                .unwrap_or(8)
-                .clamp(1, 64),
-        )),
-        maximum_parallelism,
+        runtime_config,
+        database_url: database_url.into(),
+        health,
     };
 
-    let app = Router::new()
+    Router::new()
+        .route("/health", get(liveness))
+        .route("/ready", get(readiness))
+        .route("/metrics", get(metrics))
         .route("/rule/test", post(run_rule_test))
         .route("/v1/workflow-invocations", post(start_invocation))
         .route(
@@ -148,17 +356,44 @@ pub async fn run_rule_api(
             "/v1/workflow-event-quarantine/{quarantine_id}/repair",
             post(repair_quarantined_event),
         )
-        .with_state(state);
+        .with_state(state)
+}
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    info!(
-        "Light Workflow API listening on {} with maximum parallelism {}",
-        addr, maximum_parallelism
-    );
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move { shutdown.cancelled().await })
-        .await?;
-    Ok(())
+async fn liveness() -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::OK,
+        Json(json!({"status": "alive", "service": "light-workflow"})),
+    )
+}
+
+async fn readiness(State(state): State<RuleApiState>) -> (StatusCode, Json<Value>) {
+    readiness_response(&state.health)
+}
+
+async fn metrics(State(state): State<RuleApiState>) -> ([(&'static str, &'static str); 1], String) {
+    (
+        [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
+        state.health.metrics(&state.runtime_config),
+    )
+}
+
+fn readiness_response(health: &WorkflowHealth) -> (StatusCode, Json<Value>) {
+    let controller = health.controller_state();
+    let configuration = health.configuration_health();
+    match health.failure() {
+        Some(reason) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(
+                json!({"status": "not-ready", "reason": reason, "controller": controller, "configuration": configuration}),
+            ),
+        ),
+        None => (
+            StatusCode::OK,
+            Json(
+                json!({"status": "ready", "service": "light-workflow", "controller": controller, "configuration": configuration}),
+            ),
+        ),
+    }
 }
 
 async fn repair_quarantined_event(
@@ -167,7 +402,7 @@ async fn repair_quarantined_event(
     Path(quarantine_id): Path<Uuid>,
     Json(request): Json<QuarantineRepairRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let identity = authenticate(&state, &headers).await?;
+    let (identity, _) = authenticate(&state, &headers).await?;
     let reason = request.reason.trim();
     if reason.is_empty() || reason.len() > 1000 {
         return Err(ApiError::bad_request(
@@ -200,7 +435,7 @@ async fn start_invocation(
     headers: HeaderMap,
     Json(request): Json<StartInvocationRequest>,
 ) -> Result<(StatusCode, Json<InvocationStatus>), ApiError> {
-    let identity = authenticate(&state, &headers).await?;
+    let (identity, generation) = authenticate(&state, &headers).await?;
     request
         .validate(Utc::now())
         .map_err(|error| ApiError::bad_request(error.to_string()))?;
@@ -234,7 +469,7 @@ async fn start_invocation(
         &definition,
         request.mode,
         &request.budget,
-        state.maximum_parallelism,
+        generation.config.maximum_parallelism,
     )?;
     validate_pinned_dependencies(
         &state.pool,
@@ -258,6 +493,9 @@ async fn start_invocation(
             identity.host_id,
             &request,
             definition.do_.entries.len(),
+            u64::try_from(generation.config.host_executor_concurrency)
+                .expect("validated executor concurrency fits u64"),
+            generation.config.interactive_estimated_task_ms,
         )
         .await?;
     }
@@ -550,6 +788,8 @@ async fn enforce_deadline_aware_admission(
     host_id: Uuid,
     request: &StartInvocationRequest,
     task_count: usize,
+    concurrency: u64,
+    estimated_task_ms: u64,
 ) -> Result<(), ApiError> {
     let queued: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM task_info_t
@@ -562,16 +802,6 @@ async fn enforce_deadline_aware_admission(
     .fetch_one(pool)
     .await
     .map_err(ApiError::database)?;
-    let concurrency = std::env::var("WORKFLOW_HOST_EXECUTOR_CONCURRENCY")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(8)
-        .clamp(1, 128);
-    let estimated_task_ms = std::env::var("WORKFLOW_INTERACTIVE_ESTIMATED_TASK_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(500)
-        .clamp(1, 30_000);
     let queued = u64::try_from(queued).unwrap_or(u64::MAX);
     let waves = queued.div_ceil(concurrency);
     let estimated_ms = waves
@@ -593,7 +823,7 @@ async fn get_invocation(
     headers: HeaderMap,
     Path(workflow_instance_id): Path<Uuid>,
 ) -> Result<Json<InvocationStatus>, ApiError> {
-    let identity = authenticate(&state, &headers).await?;
+    let (identity, _) = authenticate(&state, &headers).await?;
     Ok(Json(
         load_status(&state.pool, &identity, workflow_instance_id).await?,
     ))
@@ -605,17 +835,19 @@ async fn wait_for_invocation(
     Path(workflow_instance_id): Path<Uuid>,
     Json(wait): Json<WaitRequest>,
 ) -> Result<Json<InvocationStatus>, ApiError> {
-    let identity = authenticate(&state, &headers).await?;
+    let (identity, generation) = authenticate(&state, &headers).await?;
     if wait.wait_ms == 0 || wait.wait_ms > MAX_WAIT_MS || wait.observed_version < 0 {
         return Err(ApiError::bad_request("invalid bounded wait request"));
     }
     // LISTEN connections stay outside the query pool, but are globally bounded.
     // Excess waiters use durable polling instead of opening another connection.
-    let listener_permit = state.wait_listener_permits.clone().try_acquire_owned().ok();
+    let listener_permit = generation
+        .wait_listener_permits
+        .clone()
+        .try_acquire_owned()
+        .ok();
     let mut listener = if listener_permit.is_some() {
-        let database_url = std::env::var("DATABASE_URL")
-            .map_err(|error| ApiError::database(sqlx::Error::Configuration(Box::new(error))))?;
-        let mut listener = PgListener::connect(&database_url)
+        let mut listener = PgListener::connect(state.database_url.as_ref())
             .await
             .map_err(ApiError::database)?;
         listener
@@ -652,7 +884,7 @@ async fn get_invocation_result(
     headers: HeaderMap,
     Path(workflow_instance_id): Path<Uuid>,
 ) -> Result<Json<Value>, ApiError> {
-    let identity = authenticate(&state, &headers).await?;
+    let (identity, _) = authenticate(&state, &headers).await?;
     let status = load_status(&state.pool, &identity, workflow_instance_id).await?;
     if status.state != InvocationState::Completed {
         return Err(ApiError::conflict("workflow invocation is not completed"));
@@ -665,7 +897,7 @@ async fn cancel_invocation(
     headers: HeaderMap,
     Path(workflow_instance_id): Path<Uuid>,
 ) -> Result<Json<InvocationStatus>, ApiError> {
-    let identity = authenticate(&state, &headers).await?;
+    let (identity, _) = authenticate(&state, &headers).await?;
     // Enforce the current-claims/publication-ceiling check before cancellation
     // mutates any durable state.
     let _ = load_status(&state.pool, &identity, workflow_instance_id).await?;
@@ -976,7 +1208,8 @@ async fn load_status(
 async fn authenticate(
     state: &RuleApiState,
     headers: &HeaderMap,
-) -> Result<InvocationIdentity, ApiError> {
+) -> Result<(InvocationIdentity, Arc<WorkflowConfigGeneration>), ApiError> {
+    let generation = state.runtime_config.load();
     let authorization = header(headers, "authorization")?;
     bearer_token(authorization, "user Bearer authentication is required")?;
     let scope_authorization = header(headers, "x-scope-token")?;
@@ -998,17 +1231,20 @@ async fn authenticate(
         &scope_principal,
         host_id,
         &state.invocation_environment,
-        &state.invocation_caller_service_ids,
+        &generation.config.invocation_caller_service_ids,
     )?;
     let user_principal = verify_jwt_token(
         &state.invocation_security,
         bearer_token(authorization, "user Bearer authentication is required")?,
-        user_jwt_expiry_mode(state.ignore_user_jwt_expiry),
+        user_jwt_expiry_mode(generation.config.ignore_user_jwt_expiry),
     )
     .await
     .map_err(|error| jwt_verification_error("user", error))?;
     let user_authorization_exp = validate_invocation_user(&user_principal, headers, host_id)?;
-    invocation_identity(headers, host_id, authorization, user_authorization_exp)
+    Ok((
+        invocation_identity(headers, host_id, authorization, user_authorization_exp)?,
+        generation,
+    ))
 }
 
 fn user_jwt_expiry_mode(ignore_user_jwt_expiry: bool) -> JwtExpiryMode {
@@ -1680,6 +1916,58 @@ fn bad_request<E: std::fmt::Display>(err: E) -> (StatusCode, Json<Value>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readiness_reports_background_failure_without_changing_liveness() {
+        let health = WorkflowHealth::default();
+        assert_eq!(readiness_response(&health).0, StatusCode::OK);
+
+        health.mark_failed("consumer failed");
+
+        assert_eq!(
+            readiness_response(&health).0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn rejected_configuration_keeps_the_active_generation_ready() {
+        let health = WorkflowHealth::default();
+        let active = ConfigProvenance {
+            source: ConfigSource::Remote,
+            host_id: Some("host".to_string()),
+            snapshot_id: Some("snapshot-active".to_string()),
+            instance_id: Some("instance".to_string()),
+            content_digest: "digest-active".to_string(),
+        };
+        health.record_config_active(7, "digest-active", &active, false);
+        health.record_config_rejected(
+            "workflow reload requires restart",
+            "RESTART_REQUIRED",
+            vec!["workflow.database.maxConnections".to_string()],
+            Some(&ConfigProvenance {
+                source: light_runtime::ConfigSource::Remote,
+                host_id: Some("host".to_string()),
+                snapshot_id: Some("snapshot-rejected".to_string()),
+                instance_id: Some("instance".to_string()),
+                content_digest: "digest-rejected".to_string(),
+            }),
+        );
+
+        assert_eq!(readiness_response(&health).0, StatusCode::OK);
+        assert_eq!(
+            health.configuration_health(),
+            json!({
+                "status": "restart-required",
+                "reason": "workflow reload requires restart",
+                "generation": 7,
+                "digest": "digest-active",
+                "restartRequiredPaths": ["workflow.database.maxConnections"],
+                "rejectedSnapshotId": "snapshot-rejected",
+                "rejectedDigest": "digest-rejected",
+            })
+        );
+    }
 
     fn test_budget() -> workflow_invocation_contract::InvocationBudget {
         workflow_invocation_contract::InvocationBudget {

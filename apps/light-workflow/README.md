@@ -24,6 +24,8 @@ Run it from this app directory with the portal Postgres URL:
 cd /home/steve/workspace/light-fabric/apps/light-workflow
 DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver \
 LIGHT_PORTAL_AUTHORIZATION="Bearer <workflow-service-token>" \
+LIGHT_WORKFLOW_CONFIG_MODE=local \
+SERVER_ENVIRONMENT=dev \
 ./run.sh --debug-binary
 ```
 
@@ -34,10 +36,7 @@ For a multi-line shell command, either keep the assignments attached to
 DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver \
 LIGHT_PORTAL_AUTHORIZATION="Bearer <workflow-service-token>" \
 SERVER_ENVIRONMENT=dev \
-WORKFLOW_INVOCATION_CALLER_SERVICE_IDS=com.networknt.portal.gateway-1.0.0 \
-LIGHTAPI_ENVIRONMENT=dev \
-LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8436 \
-WORKFLOW_MAXIMUM_PARALLELISM=64 \
+LIGHT_WORKFLOW_CONFIG_MODE=local \
 RUST_LOG=light_workflow=debug,info \
 WORKFLOW_LOG_ANSI=false \
 ./run.sh --debug-binary
@@ -49,10 +48,7 @@ or export the variables before starting the script:
 export DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver
 export LIGHT_PORTAL_AUTHORIZATION="Bearer <workflow-service-token>"
 export SERVER_ENVIRONMENT=dev
-export WORKFLOW_INVOCATION_CALLER_SERVICE_IDS=com.networknt.portal.gateway-1.0.0
-export LIGHTAPI_ENVIRONMENT=dev
-export LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8436
-export WORKFLOW_MAXIMUM_PARALLELISM=64
+export LIGHT_WORKFLOW_CONFIG_MODE=local
 export RUST_LOG=light_workflow=debug,info
 export WORKFLOW_LOG_ANSI=false
 ./run.sh --debug-binary
@@ -67,10 +63,7 @@ For repeated local runs, create `light-workflow.env` in this directory:
 DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver
 LIGHT_PORTAL_AUTHORIZATION="Bearer <workflow-service-token>"
 SERVER_ENVIRONMENT=dev
-WORKFLOW_INVOCATION_CALLER_SERVICE_IDS=com.networknt.portal.gateway-1.0.0
-LIGHTAPI_ENVIRONMENT=dev
-LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8436
-WORKFLOW_MAXIMUM_PARALLELISM=64
+LIGHT_WORKFLOW_CONFIG_MODE=local
 RUST_LOG=light_workflow=debug,info
 WORKFLOW_LOG_ANSI=false
 ```
@@ -102,13 +95,15 @@ migration fails closed when it finds one. Deploy the database patch, gateway,
 and workflow images in the same maintenance window. New invocation credentials
 are cleared when their invocation becomes terminal.
 
-`SERVER_ENVIRONMENT` validates the gateway service token's `env` claim.
+The typed `server.environment` value validates the gateway service token's
+`env` claim. `SERVER_ENVIRONMENT` remains a required bootstrap compatibility
+input and must match it.
 The workflow service's own `LIGHT_PORTAL_AUTHORIZATION` JWT must carry the same
 `env` claim; startup rejects a missing or mismatched claim before that token can
 be forwarded to a protected API in `X-Scope-Token`.
-`LIGHTAPI_ENVIRONMENT` independently selects the workflow Tool grant and
-LightAPI environment. Keep them explicit even when they currently have the
-same value. `WORKFLOW_INVOCATION_CALLER_SERVICE_IDS` is a required comma-separated
+The same typed environment selects workflow Tool grants. A compatibility
+`LIGHTAPI_ENVIRONMENT`, when present, must match; it no longer defaults to
+`local`. `workflow.invocation.allowedCallerServiceIds` is the Config Server
 allowlist of service IDs accepted in the gateway token's `sid` claim.
 
 Workflow invocation JWT verification loads its JWKS during startup and fails
@@ -124,11 +119,22 @@ that its subject and disclosure claims still match. There is no safe automatic
 refresh when no user or gateway lifecycle request occurs; callers must resume a
 parked invocation with a current user JWT before its next protected HTTP task.
 
-`WORKFLOW_MAXIMUM_PARALLELISM` is the service-wide hard ceiling for the number
+`workflow.execution.maximumParallelism` is the service-wide hard ceiling for the number
 of branches in a workflow fork. It defaults to 64 and must be between 1 and 64.
 Both REST and event-driven workflow starts enforce this ceiling. A gateway or
 Tool binding's `maximumParallelism` remains accepted on the wire for backward
 compatibility, but it has no effect and is not enforced by `light-workflow`.
+REST starts pin the configuration generation accepted with the invocation.
+Legacy `WorkflowStartedEvent` projection applies the current generation when
+the event is claimed because that historical event contract carries no accepted
+configuration generation; this claim-time behavior is explicit until the event
+schema gains a durable generation field.
+
+Runtime refresh must target only `light-workflow/runtime-config`. A broad
+`Reload All` request is rejected before any runtime module is changed. The
+serialized refresh lock covers snapshot fetch through activation, and the exact
+values document used to construct a candidate is digest-checked and persisted
+with that candidate rather than reread from the shared cache path.
 
 After `light-workflow` is running, create a workflow definition in
 light-portal using one of the YAML files under `examples/`, then start the
@@ -165,7 +171,8 @@ kept parseable by `workflow-core`.
 - `examples/run-shell-mock-v1.yaml`: schedules the operator-approved
   `print-message` template through the isolated runner. Its matching local
   policy and template are in `config/runner-execution.mock.yml`; runner
-  execution remains disabled unless `LIGHT_WORKFLOW_RUNNER_ENABLED=true`.
+  execution remains disabled unless `workflow.runner.enabled=true` is in the
+  active typed configuration.
 
 The versioned workflow execution policy schema and its valid/invalid
 conformance fixtures are published under
@@ -176,16 +183,17 @@ conformance fixtures are published under
 Runner artifact acceptance is fail-closed. When a terminal result declares an
 artifact, `light-workflow` requires an S3-compatible object store and verifies
 the runner's staging object before accepting the attempt. Configure it with
-the standard AWS credential/workload-identity variables plus:
+the standard AWS credential/workload-identity variables plus these Config
+Server properties:
 
-```bash
-WORKFLOW_ARTIFACT_S3_BUCKET=workflow-artifacts
-WORKFLOW_ARTIFACT_PREFIX=light-workflow
-WORKFLOW_ARTIFACT_RETENTION_DAYS=30
+```yaml
+workflow.artifact.s3Bucket: workflow-artifacts
+workflow.artifact.prefix: light-workflow
+workflow.artifact.retentionDays: 30
 # Optional for MinIO or another S3-compatible service:
-WORKFLOW_ARTIFACT_S3_ENDPOINT=https://minio.example.net
+workflow.artifact.s3Endpoint: https://minio.example.net
 # Development only:
-# WORKFLOW_ARTIFACT_S3_ALLOW_HTTP=true
+# workflow.artifact.allowHttp: true
 ```
 
 The store uses tenant-scoped `staging/<host_id>/` paths for short-lived uploads
@@ -212,12 +220,17 @@ verified artifact rows before approval creation or task transition.
 checkout. Branch/PR and publish/sign operations are sent as typed requests to
 dedicated credential-owning services; no platform or signing credential is
 placed in workflow context, a runner, an agent, or a sandbox. Configure one or
-both providers:
+both typed endpoints:
+
+```yaml
+workflow.fixedActions.repositoryUrl: https://repository-actions.example.net/v1/
+workflow.fixedActions.releaseUrl: https://release-actions.example.net/v1/
+```
+
+Keep only the provider tokens in secret environment variables:
 
 ```bash
-WORKFLOW_REPOSITORY_FIXED_ACTION_URL=https://repository-actions.example.net/v1/
 WORKFLOW_REPOSITORY_FIXED_ACTION_TOKEN=<service-to-service-token>
-WORKFLOW_RELEASE_FIXED_ACTION_URL=https://release-actions.example.net/v1/
 WORKFLOW_RELEASE_FIXED_ACTION_TOKEN=<service-to-service-token>
 ```
 
@@ -275,3 +288,117 @@ and returns:
   "riskBand": "low"
 }
 ```
+
+## Config Server bootstrap and recovery
+
+The checked configuration inventory, dynamic resolver rules, three-identity
+model, registration metadata contract, observability names, characterization
+matrix, and equivalent local/remote fixtures are in
+[`config-contract/`](config-contract/README.md). They pin current behavior and
+Phase 1 authority decisions. Phase 1a now boots through the promoted Config
+Server snapshot selected by `startup.yml` `host`, `serviceId`, `envTag`, and
+`instanceId`. The Config Server response carries the selected snapshot ID,
+instance ID, and content digest; Light Workflow rejects missing/mismatched
+metadata before application state is constructed.
+
+Managed mode is the default. It stages remote values, validates the complete
+candidate, and atomically replaces `config-cache/light-workflow-lkg.json` with
+owner-only permissions. During a later Config Server outage, only that
+identity-bound, digest-verified cache may start the service. A fresh managed
+boot without a current snapshot/cache and a corrupt or cross-identity cache
+fail closed. Tests that intentionally avoid Config Server must set:
+
+```bash
+LIGHT_WORKFLOW_CONFIG_MODE=local
+```
+
+Deployments mount one named cache volume per replica and inject the Config
+Server bearer only through `LIGHT_PORTAL_AUTHORIZATION`; snapshots and the LKG
+file contain no credential values.
+
+Phase 1b resolves `workflow.yml` into one typed candidate before opening the
+database pool or starting listeners and workers. Non-secret operational values
+use `workflow.*` Config Server properties. Database URLs, service and provider
+tokens, delegation secrets, object-store credentials, and mounted runner
+profiles remain secret environment/provider/file inputs. The candidate rejects
+invalid ranges and identity relationships together with property paths;
+managed agent records also reject `literal:` API-key references. The typed
+development exception `workflow.invocation.ignoreUserJwtExpiry` affects only
+the forwarded user token. The workflow service scope token always enforces
+both its environment and expiration.
+
+Phase 2 runs the rule and invocation API through the shared Light Runtime Axum
+transport. `GET /health` is process liveness; `GET /ready` is traffic
+readiness and returns `503` while startup is incomplete, admission is draining,
+or a critical background task has failed. The runtime closes application
+admission, quiesces every workflow claimer/listener, drains accepted HTTP
+requests, stops the listener, joins the managed tasks, and closes PostgreSQL in
+that order. A startup failure after any task is registered unwinds the same
+participants in reverse registration order.
+
+Phase 3 registers managed deployments with controller-rs through the shared
+Light Runtime registry client after the listener and workflow readiness
+prerequisites are established. Registration carries the typed Cargo build
+version and one complete `light.workflow.*` tag map containing the effective
+configuration digest and snapshot identity, configuration source and refresh
+time, readiness/degraded reasons, controller connection state, drain state,
+and subsystem-specific capacity. Metadata updates replace the complete map;
+they are also retained as reconnect registration state, so a reconnect cannot
+restore stale values or create a second workflow-specific controller session.
+
+`light.workflow.lifecycle.drainState=draining` is published before application admission
+and the listener close. It is operational visibility, not a typed controller
+routing instruction; deregistration remains the discovery-removal boundary.
+An outage after successful startup is reported through controller metadata and
+logs but does not bypass workflow authorization or stop already-authorized
+execution. Managed dev/loc/installer deployments use fail-closed controller
+startup (`server.startOnRegistryFailure: false`). Controller events and the
+Portal `runtime_instance_t` projection persist the build version and complete
+metadata map, and the Control Pane displays build, readiness, and drain state
+after a controller or browser restart.
+
+The v1 event projection remains one logical partition: consumer group
+`workflow-engine-group`, topic `1`, partition `0`, `totalPartitions: 1`, and a
+batch size of 10. Replicas contend on the same `consumer_offsets` row, so its
+transaction lock serializes claims and a surviving replica resumes from the
+committed `next_offset`; no event ownership is held only in process memory.
+This provides failover but intentionally caps projection throughput at one
+ordered partition. Add explicit partition assignment only after measured lag
+shows that this serialized contract is insufficient, because changing
+`totalPartitions` changes the offset-to-partition mapping and needs a migration
+and replay plan.
+
+Phase 4 adds live refresh for the six properties classified `reloadable` in
+`config-contract/configuration-inventory.yml`. In Portal, open the running
+Light Workflow instance in the Control Pane, choose **Modules**, select only
+`light-workflow/runtime-config`, and invoke **Reload**. The authenticated
+controller operation fetches the current promoted Config Server snapshot; it
+does not accept property values in the request. All six values validate and
+activate as one immutable generation. Accepted requests retain their captured
+request/invocation policy, while executor worker capacity intentionally tracks
+the current generation. A bad candidate or any restart-required difference
+leaves the prior generation serving and is reported by `/ready`, controller
+metadata, and the module reload result.
+
+For rollback, set a previously reviewed snapshot current with the deployment's
+`light-workflow-rust/rollback-current-snapshot.sh`, then reload the same single
+module. If the review reports a restart-required property, restore the
+snapshot and restart Light Workflow instead. The rollback script accepts an
+existing snapshot ID for the configured Light Workflow instance and never
+accepts or writes arbitrary property bodies. Config Server failure during a
+refresh also leaves the prior generation active.
+
+Run the deterministic gate with:
+
+```bash
+./scripts/run-light-workflow-config-controller-phase0-gate.sh
+./scripts/run-light-workflow-config-controller-phase1a-gate.sh
+./scripts/run-light-workflow-config-controller-phase1b-gate.sh
+./scripts/run-light-workflow-config-controller-phase2-gate.sh
+./scripts/run-light-workflow-config-controller-phase3-gate.sh
+./scripts/run-light-workflow-config-controller-phase4-gate.sh
+```
+
+Pass a disposable PostgreSQL URL to include the origin-restart and fencing
+characterization cases. The workspace CI already executes the deterministic
+Rust contract test through `cargo test --workspace --locked`.

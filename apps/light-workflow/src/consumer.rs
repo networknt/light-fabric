@@ -1,4 +1,5 @@
 use crate::configuration::DEFAULT_MAXIMUM_PARALLELISM;
+use crate::configuration::WorkflowConfigManager;
 use crate::events::{CloudEventEnvelope, ProcessInfoDeletedPayload, WorkflowStartedPayload};
 use crate::repositories::{NewProcess, NewTask, WorkflowRepository};
 use execution_runner_protocol::canonical_sha256;
@@ -7,7 +8,7 @@ use serde_yaml;
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction, postgres::PgListener};
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
 use tracing::{debug, error, info};
 use uuid::Uuid;
@@ -32,7 +33,9 @@ pub struct EventConsumer {
     total_partitions: i32,
     batch_size: i64,
     maximum_parallelism: usize,
+    runtime_config: Option<Arc<WorkflowConfigManager>>,
     execution_profiles: BTreeMap<String, ExecutionProfile>,
+    database_url: Option<String>,
 }
 
 fn retryable_event_infrastructure_error(
@@ -302,12 +305,24 @@ impl EventConsumer {
             total_partitions,
             batch_size,
             maximum_parallelism: DEFAULT_MAXIMUM_PARALLELISM,
+            runtime_config: None,
             execution_profiles: BTreeMap::new(),
+            database_url: None,
         }
     }
 
     pub fn with_maximum_parallelism(mut self, maximum_parallelism: usize) -> Self {
         self.maximum_parallelism = maximum_parallelism;
+        self
+    }
+
+    pub fn with_runtime_config(mut self, runtime_config: Arc<WorkflowConfigManager>) -> Self {
+        self.runtime_config = Some(runtime_config);
+        self
+    }
+
+    pub fn with_database_url(mut self, database_url: String) -> Self {
+        self.database_url = Some(database_url);
         self
     }
 
@@ -323,7 +338,7 @@ impl EventConsumer {
         &self,
         shutdown: tokio_util::sync::CancellationToken,
     ) -> Result<(), sqlx::Error> {
-        self.ensure_consumer_group().await?;
+        self.initialize().await?;
 
         info!("Starting DbEventConsumer loop for group {}", self.group_id);
         loop {
@@ -342,6 +357,10 @@ impl EventConsumer {
                 }
             }
         }
+    }
+
+    pub async fn initialize(&self) -> Result<(), sqlx::Error> {
+        self.ensure_consumer_group().await
     }
 
     async fn ensure_consumer_group(&self) -> Result<(), sqlx::Error> {
@@ -364,9 +383,10 @@ impl EventConsumer {
         shutdown: &tokio_util::sync::CancellationToken,
     ) -> Result<(), sqlx::Error> {
         // Keep the permanent LISTEN connection out of the transaction pool.
-        let database_url = std::env::var("DATABASE_URL")
-            .map_err(|error| sqlx::Error::Configuration(Box::new(error)))?;
-        let mut listener = PgListener::connect(&database_url).await?;
+        let database_url = self.database_url.as_deref().ok_or_else(|| {
+            sqlx::Error::Protocol("consumer database URL is not configured".to_string())
+        })?;
+        let mut listener = PgListener::connect(database_url).await?;
         listener.listen("event_channel").await?;
         info!("Listening to 'event_channel' on PG connection");
 
@@ -728,7 +748,13 @@ impl EventConsumer {
                     .get_workflow_definition(tx, &host_id, &payload.wf_def_id)
                     .await?;
                 let definition: WorkflowDefinition = serde_yaml::from_str(&dsl_yaml)?;
-                validate_runtime_definition(&definition, self.maximum_parallelism)
+                let maximum_parallelism = self
+                    .runtime_config
+                    .as_ref()
+                    .map_or(self.maximum_parallelism, |manager| {
+                        manager.load().config.maximum_parallelism
+                    });
+                validate_runtime_definition(&definition, maximum_parallelism)
                     .map_err(sqlx::Error::Protocol)?;
                 let raw_definition: serde_yaml::Value = serde_yaml::from_str(&dsl_yaml)?;
                 let definition_snapshot: Value = serde_yaml::from_str(&dsl_yaml)?;

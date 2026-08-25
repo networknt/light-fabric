@@ -1,0 +1,51 @@
+version: 1
+moduleId: light-workflow/runtime-config
+refreshOperation:
+  controllerTool: reload_modules
+  requestModules: [light-workflow/runtime-config]
+  source: currentPromotedSnapshot
+  acceptsPropertyBodies: false
+activation:
+  unit: WorkflowRuntimeConfig
+  serialization: fetchThroughActivationLock
+  commit: oneAtomicArcSwap
+  invalidCandidate: retainPreviousGeneration
+  lastKnownGoodWrite: afterValidationBeforeCommit
+  sourceBytes: candidateOwnedAndDigestVerified
+  broadReload: rejectedBeforeAnyModuleMutation
+settings:
+  workflow.invocation.allowedCallerServiceIds:
+    class: invocationPinned
+    capture: authenticatedRequest
+  workflow.invocation.waitListenerConnections:
+    class: requestPinned
+    capture: authenticatedRequest
+  workflow.invocation.ignoreUserJwtExpiry:
+    class: invocationPinned
+    capture: authenticatedRequest
+  workflow.execution.maximumParallelism:
+    class: invocationPinned
+    capture: workflowStart
+    legacyEventProjection:
+      class: claimTimeCurrent
+      capture: workflowStartedEventProjection
+      reason: legacy events do not carry an accepted configuration generation
+  workflow.execution.hostExecutorConcurrency:
+    class: claimTimeCurrent
+    capture: executorWorkerCapacity
+  workflow.execution.interactiveEstimatedTaskMs:
+    class: invocationPinned
+    capture: workflowStart
+generationPersistence:
+  required: false
+  reason: >-
+    No first-release retry or resume decision consumes these settings after
+    invocation admission. Request and invocation settings are retained by the
+    accepted operation; executor capacity intentionally follows current policy.
+restartRequired:
+  handling: rejectWholeCandidate
+  visibility: [ready.configuration, controllerMetadata, moduleReloadResult]
+rollback:
+  source: previouslyReviewedSnapshot
+  sequence: [promotePreviousSnapshot, refreshOrRestart]
+  invalidRollbackCandidate: retainPreviousGeneration

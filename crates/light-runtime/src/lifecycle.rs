@@ -69,22 +69,51 @@ pub struct AdmissionGate {
 #[derive(Default)]
 struct AdmissionInner {
     open: std::sync::atomic::AtomicBool,
+    failed: std::sync::atomic::AtomicBool,
     application: std::sync::atomic::AtomicUsize,
     control: std::sync::atomic::AtomicUsize,
     changed: tokio::sync::Notify,
 }
 
 impl AdmissionGate {
+    /// Opens application admission unless a critical startup/runtime
+    /// participant has permanently failed.
     pub fn open(&self) {
+        let _ = self.try_open();
+    }
+
+    /// Attempts to open application admission and reports whether it opened.
+    pub fn try_open(&self) -> bool {
+        if self.has_failed() {
+            return false;
+        }
         self.inner
             .open
             .store(true, std::sync::atomic::Ordering::Release);
+        if self.has_failed() {
+            self.close();
+            return false;
+        }
+        true
     }
 
     pub fn close(&self) {
         self.inner
             .open
             .store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Permanently fails this gate. Unlike close(), a later startup open()
+    /// cannot undo a critical participant failure.
+    pub fn fail(&self) {
+        self.inner
+            .failed
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.close();
+    }
+
+    pub fn has_failed(&self) -> bool {
+        self.inner.failed.load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub fn is_open(&self) -> bool {
@@ -156,6 +185,16 @@ impl Drop for AdmissionPermit {
 pub trait LifecycleParticipant: Send + Sync {
     fn name(&self) -> &'static str;
 
+    /// Stops admission to participant-owned background work before the
+    /// transport drains requests that were already accepted.
+    async fn quiesce(
+        &self,
+        _config: &RuntimeConfig,
+        _context: &ShutdownContext,
+    ) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
     async fn shutdown(
         &self,
         config: &RuntimeConfig,
@@ -218,6 +257,27 @@ impl LifecycleRegistry {
         }
         errors
     }
+
+    pub async fn quiesce(
+        &self,
+        config: &RuntimeConfig,
+        context: &ShutdownContext,
+    ) -> Vec<RuntimeError> {
+        let participants = self
+            .registrar
+            .inner
+            .lock()
+            .expect("lifecycle lock")
+            .participants
+            .clone();
+        let mut errors = Vec::new();
+        for participant in participants.into_iter().rev() {
+            if let Err(error) = participant.quiesce(config, context).await {
+                errors.push(error);
+            }
+        }
+        errors
+    }
 }
 
 impl LifecycleRegistrar {
@@ -247,12 +307,29 @@ mod tests {
         name: &'static str,
         calls: Arc<Mutex<Vec<&'static str>>>,
         fail: bool,
+        quiesce_fail: bool,
     }
 
     #[async_trait]
     impl LifecycleParticipant for Recorder {
         fn name(&self) -> &'static str {
             self.name
+        }
+
+        async fn quiesce(
+            &self,
+            _config: &RuntimeConfig,
+            _context: &ShutdownContext,
+        ) -> Result<(), RuntimeError> {
+            self.calls.lock().unwrap().push(self.name);
+            if self.quiesce_fail {
+                Err(RuntimeError::Unsupported(format!(
+                    "{} quiesce failed",
+                    self.name
+                )))
+            } else {
+                Ok(())
+            }
         }
 
         async fn shutdown(
@@ -305,6 +382,17 @@ mod tests {
         assert_eq!(gate.active(AdmissionKind::Control), 0);
     }
 
+    #[test]
+    fn critical_failure_permanently_prevents_admission_reopen() {
+        let gate = AdmissionGate::default();
+        assert!(gate.try_open());
+        gate.fail();
+        assert!(gate.has_failed());
+        assert!(!gate.try_open());
+        assert!(!gate.is_open());
+        assert!(gate.try_enter(AdmissionKind::Application).is_err());
+    }
+
     #[tokio::test]
     async fn admission_wait_for_zero_tracks_the_full_permit_lifetime() {
         let gate = AdmissionGate::default();
@@ -338,6 +426,7 @@ mod tests {
                     name,
                     calls: Arc::clone(&calls),
                     fail,
+                    quiesce_fail: false,
                 }))
                 .unwrap();
         }
@@ -347,6 +436,7 @@ mod tests {
                 name: "late",
                 calls: Arc::clone(&calls),
                 fail: false,
+                quiesce_fail: false,
             })),
             Err(RuntimeError::LifecycleSealed)
         ));
@@ -370,8 +460,38 @@ mod tests {
                 name: "duplicate",
                 calls: Arc::clone(&calls),
                 fail: false,
+                quiesce_fail: false,
             }));
             assert_eq!(result.is_ok(), expected_ok);
         }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_quiesces_in_reverse_order_and_aggregates_errors() {
+        let registry = LifecycleRegistry::default();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        for (name, quiesce_fail) in [("first", true), ("second", false), ("third", true)] {
+            registry
+                .registrar()
+                .register(Arc::new(Recorder {
+                    name,
+                    calls: Arc::clone(&calls),
+                    fail: false,
+                    quiesce_fail,
+                }))
+                .unwrap();
+        }
+        registry.seal();
+        let context = ShutdownContext {
+            reason: ShutdownReason::Programmatic,
+            mode: ShutdownMode::Graceful,
+            deadline: Instant::now() + Duration::from_secs(1),
+            cancellation: CancellationToken::new(),
+        };
+
+        let errors = registry.quiesce(&config(), &context).await;
+
+        assert_eq!(*calls.lock().unwrap(), vec!["third", "second", "first"]);
+        assert_eq!(errors.len(), 2);
     }
 }

@@ -1,8 +1,12 @@
 use std::time::Duration;
 
+use execution_runner_protocol::{
+    ExecutionRequirements, HostExposure, IsolationBoundary, SchedulingRequestId,
+};
 use light_workflow::executor::TaskExecutor;
 use light_workflow::lease_reaper::LeaseReaper;
 use light_workflow::repositories::NewProcess;
+use light_workflow::repositories::NewSchedulingRequest;
 use light_workflow::repositories::ReservedRequest;
 use light_workflow::repositories::WorkflowRepository;
 use serde_json::json;
@@ -275,6 +279,86 @@ async fn terminal_result_survives_origin_restart_and_is_accepted_once() {
     .await
     .unwrap();
     assert_eq!(state, "SATISFIED");
+}
+
+#[tokio::test]
+async fn runner_origin_scope_changes_scheduling_idempotency_namespace() {
+    let Some(pool) = pool().await else {
+        return;
+    };
+    let service_id = format!("workflow-{}", Uuid::new_v4());
+    let fixture = insert_terminal_fixture(&pool, &service_id).await;
+    let policy_digest = format!("{:064x}", 1);
+    let requirements = ExecutionRequirements {
+        action_kind: "run.shell".to_string(),
+        minimum_boundary: IsolationBoundary::Container,
+        maximum_host_exposure: HostExposure::None,
+        network_enabled: false,
+        credential_classes: Vec::new(),
+        persistent_workspace: false,
+        required_features: Vec::new(),
+        policy_digest: policy_digest.clone(),
+        compatibility_digest: "compat".to_string(),
+    };
+    let execution_spec = json!({});
+
+    let shared_request = NewSchedulingRequest {
+        host_id: fixture.host_id,
+        request_id: SchedulingRequestId::new(),
+        origin_service_id: &service_id,
+        origin_instance_id: "old-instance",
+        process_id: fixture.process_id,
+        task_id: fixture.task_id,
+        policy_snapshot_id: fixture.policy_snapshot_id,
+        policy_digest: &policy_digest,
+        requirements: &requirements,
+        execution_spec: &execution_spec,
+        fairness_key: "phase0-origin-scope",
+        priority: 1,
+    };
+
+    let mut tx = pool.begin().await.unwrap();
+    let shared_origin = WorkflowRepository::create_scheduling_request(&mut tx, &shared_request)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(shared_origin.0, fixture.request_id);
+
+    let replica_request = NewSchedulingRequest {
+        host_id: fixture.host_id,
+        request_id: SchedulingRequestId::new(),
+        origin_service_id: &service_id,
+        origin_instance_id: "replica-b",
+        process_id: fixture.process_id,
+        task_id: fixture.task_id,
+        policy_snapshot_id: fixture.policy_snapshot_id,
+        policy_digest: &policy_digest,
+        requirements: &requirements,
+        execution_spec: &execution_spec,
+        fairness_key: "phase0-origin-scope",
+        priority: 1,
+    };
+    let mut tx = pool.begin().await.unwrap();
+    let replica_origin = WorkflowRepository::create_scheduling_request(&mut tx, &replica_request)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_ne!(replica_origin.0, fixture.request_id);
+
+    let requests: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM runner_scheduling_request_t
+         WHERE host_id=$1 AND origin_service_id=$2 AND idempotency_key=$3",
+    )
+    .bind(fixture.host_id)
+    .bind(&service_id)
+    .bind(format!("workflow-task:{}", fixture.task_id))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        requests, 2,
+        "replica-specific origins create separate durable requests"
+    );
 }
 
 #[tokio::test]

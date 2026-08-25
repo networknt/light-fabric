@@ -1,0 +1,56 @@
+version: 1
+serviceId: com.networknt.workflow-1.0.0
+environment:
+  authority: typedEffectiveEnvironment
+  compatibilityInputs: [SERVER_ENVIRONMENT, LIGHTAPI_ENVIRONMENT, server.environment]
+  managedRule: all present values match and no value defaults silently
+identities:
+  portalConfigInstance:
+    scope: configuration authority
+    stability: stable across snapshot promotion and service restart
+    replicaRule: may be shared by replicas
+  runnerOrigin:
+    scope: scheduling idempotency and fencing namespace
+    stability: stable across restarts of one managed deployment
+    replicaRule: shared by replicas of one managed deployment
+    rationale: replica-specific values create separate durable scheduling requests for the same workflow task
+    forbiddenManagedValues: [light-workflow-1]
+  controllerRuntime:
+    scope: advertised endpoint registration and discovery
+    source: controller-rs registration response
+    businessKey: [host, serviceId, environment, protocol, address, port]
+correlation:
+  equalityRequired: false
+  channels: [structuredLogs, controllerMetadata]
+registration:
+  protocol: http
+  routingEffect: visibilityOnly
+  existingCallerRouting: static
+  advertisedEndpoint: workflowRuleApi
+  excludedEndpoints: [postgresConsumer, runnerBackend]
+  registerAfter:
+    - configuration validated
+    - trust material ready
+    - PostgreSQL connected
+    - workflow recovery complete
+    - HTTP listener bound
+  metadata:
+    versionField: buildVersion
+    tagUpdateSemantics: replaceCompleteMap
+    tags:
+      - config.digest
+      - config.snapshotId
+      - config.source
+      - config.lastRefreshUnixSeconds
+      - readiness.state
+      - readiness.reason
+      - lifecycle.drainState
+      - capacity.httpAvailable
+      - capacity.taskExecutorAvailable
+      - capacity.runnerSchedulerAvailable
+      - capacity.eventProjectionAvailable
+    durableProjectionRequired: true
+drain:
+  metadataTagIsInformational: true
+  earlyDeregistrationRemovesDiscoveryEligibility: true
+  typedServiceToControllerSignal: missing

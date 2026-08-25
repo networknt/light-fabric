@@ -1,5 +1,5 @@
 use crate::cache::CacheRegistry;
-use crate::config::RuntimeConfig;
+use crate::config::{ConfigProvenance, RuntimeConfig};
 use crate::logging::{LogFileAccess, LogStreamBroadcaster, LogStreamEvent, LoggingControl};
 use crate::runtime::{RuntimeError, load_merged_config};
 use async_trait::async_trait;
@@ -116,11 +116,40 @@ pub struct ReloadModulesResult {
 #[derive(Debug, Clone)]
 pub struct ReloadContext {
     pub runtime_config: RuntimeConfig,
+    pub provenance: Option<ConfigProvenance>,
+    /// Exact values document used to build this candidate. Keeping it on the
+    /// candidate prevents a later overlapping fetch from changing the bytes
+    /// persisted as this candidate's last-known-good configuration.
+    pub source_values_yaml: Option<Arc<str>>,
 }
 
 impl ReloadContext {
     pub fn new(runtime_config: RuntimeConfig) -> Self {
-        Self { runtime_config }
+        Self {
+            runtime_config,
+            provenance: None,
+            source_values_yaml: None,
+        }
+    }
+
+    pub fn with_provenance(runtime_config: RuntimeConfig, provenance: ConfigProvenance) -> Self {
+        Self {
+            runtime_config,
+            provenance: Some(provenance),
+            source_values_yaml: None,
+        }
+    }
+
+    pub fn with_provenance_and_source(
+        runtime_config: RuntimeConfig,
+        provenance: ConfigProvenance,
+        source_values_yaml: Option<String>,
+    ) -> Self {
+        Self {
+            runtime_config,
+            provenance: Some(provenance),
+            source_values_yaml: source_values_yaml.map(Arc::from),
+        }
     }
 }
 
@@ -139,6 +168,13 @@ impl ReloadOutcome {
 
 #[async_trait]
 pub trait ReloadableModule: Send + Sync {
+    /// Exclusive reloaders must be invoked as the only requested module. This
+    /// prevents a broad Reload All operation from mutating unrelated modules
+    /// before an application-owned candidate can be validated atomically.
+    fn requires_exclusive_reload(&self) -> bool {
+        false
+    }
+
     async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError>;
 }
 
@@ -275,6 +311,27 @@ impl ModuleRegistry {
         if let Some(entry) = self.entries_write().get_mut(&module_id) {
             entry.reloadable = true;
         }
+    }
+
+    pub fn update_registered_config<T>(
+        &self,
+        module_id: &str,
+        config: &T,
+    ) -> Result<(), RuntimeError>
+    where
+        T: Serialize,
+    {
+        let mut config = serde_json::to_value(config)?;
+        let mut entries = self.entries_write();
+        let entry = entries.get_mut(module_id).ok_or_else(|| {
+            RuntimeError::Unsupported(format!("module `{module_id}` is not registered"))
+        })?;
+        if *self.mask_read() {
+            apply_masks(&mut config, &entry.masks);
+        }
+        entry.config = config;
+        entry.loaded_at = Utc::now();
+        Ok(())
     }
 
     pub fn load_config<T>(
@@ -527,31 +584,6 @@ impl ModuleRegistry {
         ctx: ReloadContext,
         requested_modules: &[String],
     ) -> ReloadModulesResult {
-        // Update direct-registry config if present in the fresh context.
-        if let Ok(direct_val) = serde_json::to_value(&ctx.runtime_config.direct_registry) {
-            if let Some(entry) = self
-                .entries_write()
-                .get_mut("light-runtime/direct-registry")
-            {
-                entry.config = direct_val;
-                entry.enabled = Some(!ctx.runtime_config.direct_registry.direct_urls.is_empty());
-                entry.loaded_at = Utc::now();
-            }
-        }
-
-        // Update client config if present in the fresh context.
-        if let Some(client) = &ctx.runtime_config.client {
-            if let Ok(mut client_val) = serde_json::to_value(client) {
-                if let Some(entry) = self.entries_write().get_mut(CLIENT_MODULE_ID) {
-                    if *self.mask_read() {
-                        apply_masks(&mut client_val, &entry.masks);
-                    }
-                    entry.config = client_val;
-                    entry.loaded_at = Utc::now();
-                }
-            }
-        }
-
         let module_ids = self.module_ids();
         let target_modules = if requested_modules.is_empty()
             || requested_modules
@@ -562,6 +594,66 @@ impl ModuleRegistry {
         } else {
             requested_modules.to_vec()
         };
+
+        let exclusive_modules = target_modules
+            .iter()
+            .filter(|module_id| {
+                self.reloader(module_id)
+                    .is_some_and(|reloader| reloader.requires_exclusive_reload())
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !exclusive_modules.is_empty() && target_modules.len() != 1 {
+            let message = format!(
+                "exclusive targeted reload required for {}; Reload All was not applied",
+                exclusive_modules.join(", ")
+            );
+            let mut result = ReloadModulesResult::default();
+            for module_id in target_modules {
+                if exclusive_modules.contains(&module_id) {
+                    self.set_last_reload(&module_id, "failed", Some(message.clone()));
+                    result.failed.push(ReloadFailed {
+                        module_id,
+                        message: message.clone(),
+                    });
+                } else {
+                    let reason = "blockedByExclusiveReload".to_string();
+                    self.set_last_reload(&module_id, "skipped", Some(reason.clone()));
+                    result.skipped.push(ReloadSkipped { module_id, reason });
+                }
+            }
+            return result;
+        }
+
+        // Refresh only the requested modules. A targeted application reload
+        // must not mutate unrelated runtime module state from the fetched
+        // candidate before that module has been selected and validated.
+        if target_modules
+            .iter()
+            .any(|module| module == "light-runtime/direct-registry")
+            && let Ok(direct_val) = serde_json::to_value(&ctx.runtime_config.direct_registry)
+            && let Some(entry) = self
+                .entries_write()
+                .get_mut("light-runtime/direct-registry")
+        {
+            entry.config = direct_val;
+            entry.enabled = Some(!ctx.runtime_config.direct_registry.direct_urls.is_empty());
+            entry.loaded_at = Utc::now();
+        }
+
+        if target_modules
+            .iter()
+            .any(|module| module == CLIENT_MODULE_ID)
+            && let Some(client) = &ctx.runtime_config.client
+            && let Ok(mut client_val) = serde_json::to_value(client)
+            && let Some(entry) = self.entries_write().get_mut(CLIENT_MODULE_ID)
+        {
+            if *self.mask_read() {
+                apply_masks(&mut client_val, &entry.masks);
+            }
+            entry.config = client_val;
+            entry.loaded_at = Utc::now();
+        }
 
         let mut result = ReloadModulesResult::default();
         for module_id in target_modules {
@@ -674,6 +766,7 @@ pub struct RuntimeMcpHandler {
     log_file_access: Option<Arc<LogFileAccess>>,
     notifier: Option<PortalRegistryNotifier>,
     log_stream_task: Mutex<Option<LogStreamSession>>,
+    reload_lock: Mutex<()>,
 }
 
 struct LogStreamSession {
@@ -701,6 +794,7 @@ impl RuntimeMcpHandler {
             log_file_access: None,
             notifier: None,
             log_stream_task: Mutex::new(None),
+            reload_lock: Mutex::new(()),
         }
     }
 
@@ -766,6 +860,11 @@ impl RegistryHandler for RuntimeMcpHandler {
                     "stop_logs" => self.stop_logs().await,
                     "reload_modules" => match parse_reload_modules(params.get("arguments")) {
                         Ok(modules) => {
+                            // The lock deliberately covers both fetch and
+                            // activation. Locking only inside a module reloader
+                            // permits an older fetch to activate after a newer
+                            // candidate and lets shared cache files be replaced.
+                            let _reload_guard = self.reload_lock.lock().await;
                             let result = match self.config.reload_context().await {
                                 Ok(ctx) => self.registry.reload_modules(ctx, &modules).await,
                                 Err(error) => reload_context_failure(&modules, error.to_string()),
@@ -2007,6 +2106,41 @@ mod tests {
         }
     }
 
+    struct ExclusiveTestReloader(Arc<std::sync::atomic::AtomicBool>);
+
+    #[async_trait]
+    impl ReloadableModule for ExclusiveTestReloader {
+        fn requires_exclusive_reload(&self) -> bool {
+            true
+        }
+
+        async fn reload(&self, _ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(ReloadOutcome::success("exclusive reloaded"))
+        }
+    }
+
+    struct ConcurrentTestReloader {
+        active: Arc<std::sync::atomic::AtomicUsize>,
+        maximum: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ReloadableModule for ConcurrentTestReloader {
+        async fn reload(&self, _ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+            let active = self
+                .active
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            self.maximum
+                .fetch_max(active, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            self.active
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(ReloadOutcome::success("serialized"))
+        }
+    }
+
     #[tokio::test]
     async fn reload_modules_reports_success_skipped_and_failed_modules() {
         let registry = ModuleRegistry::new();
@@ -2062,6 +2196,112 @@ mod tests {
                     .as_ref()
                     .is_some_and(|status| status.status == "success")
         }));
+    }
+
+    #[tokio::test]
+    async fn targeted_reload_does_not_mutate_unrequested_runtime_modules() {
+        let registry = ModuleRegistry::new();
+        let active = runtime_config();
+        registry
+            .register_runtime_configs(&active)
+            .expect("register runtime configs");
+        registry.register_config(
+            "test/reloadable",
+            "reloadable",
+            ModuleKind::Application,
+            json!({ "generation": 1 }),
+            [],
+            true,
+            Some(true),
+            true,
+        );
+        registry.register_reloader("test/reloadable", Arc::new(TestReloader));
+        let client_before = registry
+            .entry(CLIENT_MODULE_ID)
+            .expect("client module")
+            .config;
+
+        let mut candidate = runtime_config();
+        candidate
+            .client
+            .as_mut()
+            .expect("client")
+            .tls
+            .verify_hostname = true;
+        let result = registry
+            .reload_modules(
+                ReloadContext::new(candidate),
+                &["test/reloadable".to_string()],
+            )
+            .await;
+
+        assert_eq!(result.reloaded, vec!["test/reloadable"]);
+        assert_eq!(
+            registry
+                .entry(CLIENT_MODULE_ID)
+                .expect("client module")
+                .config,
+            client_before
+        );
+    }
+
+    #[tokio::test]
+    async fn reload_all_is_rejected_before_any_module_mutates_when_target_is_exclusive() {
+        let registry = ModuleRegistry::new();
+        let active = runtime_config();
+        registry
+            .register_runtime_configs(&active)
+            .expect("register runtime configs");
+        registry.register_config(
+            "test/exclusive",
+            "exclusive",
+            ModuleKind::Application,
+            json!({ "generation": 1 }),
+            [],
+            true,
+            Some(true),
+            true,
+        );
+        let invoked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        registry.register_reloader(
+            "test/exclusive",
+            Arc::new(ExclusiveTestReloader(Arc::clone(&invoked))),
+        );
+        let client_before = registry
+            .entry(CLIENT_MODULE_ID)
+            .expect("client module")
+            .config;
+        let mut candidate = runtime_config();
+        candidate
+            .client
+            .as_mut()
+            .expect("client")
+            .tls
+            .verify_hostname = true;
+
+        let result = registry
+            .reload_modules(ReloadContext::new(candidate), &["ALL".to_string()])
+            .await;
+
+        assert!(result.reloaded.is_empty());
+        assert!(!invoked.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(result.failed.iter().any(|failed| {
+            failed.module_id == "test/exclusive"
+                && failed
+                    .message
+                    .contains("exclusive targeted reload required")
+        }));
+        assert!(result.skipped.iter().any(|skipped| {
+            skipped.module_id == CLIENT_MODULE_ID && skipped.reason == "blockedByExclusiveReload"
+        }));
+        assert_eq!(result.failed.len(), 1);
+        assert_eq!(
+            registry
+                .entry(CLIENT_MODULE_ID)
+                .expect("client module")
+                .config,
+            client_before
+        );
     }
 
     #[tokio::test]
@@ -2204,6 +2444,55 @@ mod tests {
                 .as_array()
                 .is_some_and(|items| !items.is_empty())
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_mcp_handler_serializes_overlapping_reload_operations() {
+        let registry = Arc::new(ModuleRegistry::new());
+        registry.register_config(
+            "test/concurrent",
+            "concurrent",
+            ModuleKind::Application,
+            json!({}),
+            [],
+            true,
+            Some(true),
+            true,
+        );
+        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let maximum = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        registry.register_reloader(
+            "test/concurrent",
+            Arc::new(ConcurrentTestReloader {
+                active: Arc::clone(&active),
+                maximum: Arc::clone(&maximum),
+            }),
+        );
+        let handler = Arc::new(RuntimeMcpHandler::new(
+            Arc::clone(&registry),
+            runtime_config(),
+            Arc::new(DelegateHandler),
+        ));
+        let request = || {
+            json!({
+                "name": "reload_modules",
+                "arguments": { "modules": ["test/concurrent"] }
+            })
+        };
+        let mut requests = Vec::new();
+        for _ in 0..100 {
+            let handler = Arc::clone(&handler);
+            requests.push(tokio::spawn(async move {
+                handler.handle_request("tools/call", request()).await
+            }));
+        }
+        for response in requests {
+            assert_eq!(
+                response.await.unwrap()["reloaded"],
+                json!(["test/concurrent"])
+            );
+        }
+        assert_eq!(maximum.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

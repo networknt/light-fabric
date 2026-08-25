@@ -1,0 +1,407 @@
+version: 1
+service: com.networknt.workflow-1.0.0
+
+# This is the Phase 0 source-of-truth inventory. `currentSource` describes the
+# code today; `finalAuthority` is the Phase 1 ownership decision.
+staticEnvironment:
+  - key: LIGHT_WORKFLOW_CONFIG_MODE
+    currentSource: environment
+    finalAuthority: deploymentBootstrap
+    valueType: enum
+    default: managed
+    validation: managed or local; local must be explicitly selected
+    sensitivity: public
+    reloadClass: restartRequired
+    consumers: [configBootstrap]
+  - key: LIGHT_WORKFLOW_CONFIG_CACHE_DIR
+    currentSource: environment
+    finalAuthority: deploymentBootstrap
+    valueType: directoryPath
+    default: config-cache
+    validation: writable service-owned directory
+    sensitivity: internal
+    reloadClass: restartRequired
+    consumers: [configBootstrap]
+  - key: DATABASE_URL
+    currentSource: environment
+    finalAuthority: secretEnvironment
+    valueType: postgresUrl
+    default: null
+    validation: required and parseable by sqlx
+    sensitivity: secret
+    reloadClass: restartRequired
+    consumers: [main, consumer, executor, ruleApiWait]
+  - key: SERVER_ENVIRONMENT
+    currentSource: bootstrapCompatibilityEnvironment
+    finalAuthority: configServer
+    valueType: environmentName
+    default: null
+    validation: required, non-empty, and equal to every compatibility environment value
+    sensitivity: internal
+    reloadClass: restartRequired
+    consumers: [startup, userJwtExpiryGuard, serviceAuthorization]
+  - key: LIGHTAPI_ENVIRONMENT
+    currentSource: optionalCompatibilityEnvironment
+    finalAuthority: configServer
+    valueType: environmentName
+    default: local
+    validation: Phase 1 removes the default and collapses this into the typed effective environment
+    sensitivity: internal
+    reloadClass: restartRequired
+    consumers: [workflowToolGrant]
+  - key: LIGHT_PORTAL_AUTHORIZATION
+    currentSource: environment
+    finalAuthority: secretEnvironment
+    valueType: bearerJwt
+    default: null
+    validation: required at startup; JWT env claim must equal effective environment
+    sensitivity: secret
+    reloadClass: restartRequired
+    consumers: [startup, workflowBackedHttp]
+  - key: WORKFLOW_IGNORE_USER_JWT_EXPIRY
+    currentSource: typedConfigWithEnvironmentCompatibility
+    finalAuthority: configServer
+    valueType: boolean
+    default: false
+    validation: strict boolean; true only in dev; affects user JWT only
+    sensitivity: internal
+    reloadClass: reloadable
+    consumers: [startup, ruleApiAuthentication]
+  - key: WORKFLOW_INVOCATION_CALLER_SERVICE_IDS
+    currentSource: typedConfig
+    finalAuthority: configServer
+    valueType: stringList
+    default: null
+    validation: required and at least one non-empty service ID
+    sensitivity: internal
+    reloadClass: reloadable
+    consumers: [ruleApiAuthentication]
+  - key: LIGHT_WORKFLOW_HTTP_ADDR
+    currentSource: typedServerConfig
+    finalAuthority: configServer
+    valueType: socketAddress
+    default: 0.0.0.0:8436
+    validation: valid socket address; superseded by server.ip and server.httpPort
+    sensitivity: public
+    reloadClass: restartRequired
+    consumers: [ruleApiListener]
+  - key: WORKFLOW_DATABASE_MAX_CONNECTIONS
+    currentSource: typedConfig
+    finalAuthority: configServer
+    valueType: integer
+    default: 32
+    validation: clamped to 8..512 in current code; Phase 1 rejects out-of-range values
+    sensitivity: public
+    reloadClass: restartRequired
+    consumers: [databasePool]
+  - key: WORKFLOW_MAXIMUM_PARALLELISM
+    currentSource: typedConfig
+    finalAuthority: configServer
+    valueType: integer
+    default: 64
+    validation: integer in 1..64
+    sensitivity: public
+    reloadClass: reloadable
+    consumers: [consumer, ruleApi]
+  - key: WORKFLOW_HOST_EXECUTOR_CONCURRENCY
+    currentSource: typedConfig
+    finalAuthority: configServer
+    valueType: integer
+    default: 8
+    validation: clamped to 1..128 in current code; Phase 1 parses once and rejects invalid values
+    sensitivity: public
+    reloadClass: reloadable
+    consumers: [executor, ruleApiAdmission]
+  - key: WORKFLOW_INTERACTIVE_ESTIMATED_TASK_MS
+    currentSource: typedConfig
+    finalAuthority: configServer
+    valueType: durationMilliseconds
+    default: 500
+    validation: clamped to 1..30000 in current code; Phase 1 rejects invalid values
+    sensitivity: public
+    reloadClass: reloadable
+    consumers: [ruleApiAdmission]
+  - key: WORKFLOW_WAIT_LISTENER_CONNECTIONS
+    currentSource: typedConfig
+    finalAuthority: configServer
+    valueType: integer
+    default: 8
+    validation: clamped to 1..64 in current code; must fit the database connection budget
+    sensitivity: public
+    reloadClass: reloadable
+    consumers: [ruleApiWait]
+  - key: WORKFLOW_LOG_ANSI
+    currentSource: environment
+    finalAuthority: deploymentBootstrap
+    valueType: boolean
+    default: null
+    validation: tracing legacy boolean contract
+    sensitivity: public
+    reloadClass: restartRequired
+    consumers: [tracing]
+  - key: LIGHT_WORKFLOW_RUNNER_ENABLED
+    currentSource: typedConfig
+    finalAuthority: configServer
+    valueType: boolean
+    default: false
+    validation: strict boolean; enabled requires profiles and command templates
+    sensitivity: internal
+    reloadClass: restartRequired
+    consumers: [runnerTopology]
+  - key: LIGHT_WORKFLOW_ORIGIN_SERVICE_ID
+    currentSource: typedConfig
+    finalAuthority: configServer
+    valueType: serviceId
+    default: com.networknt.light-workflow-1.0.0
+    validation: non-empty and pinned as the durable runner origin service
+    sensitivity: internal
+    reloadClass: restartRequired
+    consumers: [runnerScheduling, approvals, reconciliation]
+  - key: LIGHT_WORKFLOW_INSTANCE_ID
+    currentSource: typedConfig
+    finalAuthority: configServer
+    valueType: runnerOriginId
+    default: light-workflow-1
+    validation: non-empty; placeholder default rejected in managed environments; stable and shared by replicas of one deployment
+    sensitivity: internal
+    reloadClass: restartRequired
+    consumers: [runnerScheduling, approvals, sessionReconciliation]
+  - key: LIGHT_WORKFLOW_RUNNER_CONFIG_FILE
+    currentSource: typedConfigMountedFileReference
+    finalAuthority: mountedFile
+    valueType: filePath
+    default: null
+    validation: version 1 YAML with unique profiles and command templates
+    sensitivity: internal
+    reloadClass: restartRequired
+    consumers: [runnerConfiguration]
+  - key: WORKFLOW_DELEGATION_SECRET
+    currentSource: environment
+    finalAuthority: secretEnvironment
+    valueType: secretBytes
+    default: null
+    validation: non-empty value accepted by DelegationSigner; invalid disables nested delegation
+    sensitivity: secret
+    reloadClass: restartRequired
+    consumers: [nestedMcpDelegation]
+  - key: WORKFLOW_ARTIFACT_S3_BUCKET
+    currentSource: typedConfig
+    finalAuthority: configServer
+    valueType: bucketName
+    default: null
+    validation: absent disables durable object storage; otherwise object-store builder must accept it
+    sensitivity: internal
+    reloadClass: restartRequired
+    consumers: [artifactStore]
+  - key: WORKFLOW_ARTIFACT_S3_ENDPOINT
+    currentSource: typedConfig
+    finalAuthority: configServer
+    valueType: url
+    default: null
+    validation: valid object-store endpoint
+    sensitivity: internal
+    reloadClass: restartRequired
+    consumers: [artifactStore]
+  - key: WORKFLOW_ARTIFACT_S3_ALLOW_HTTP
+    currentSource: typedConfig
+    finalAuthority: configServer
+    valueType: boolean
+    default: false
+    validation: true permitted only by an explicit development transport policy
+    sensitivity: internal
+    reloadClass: restartRequired
+    consumers: [artifactStore]
+  - key: WORKFLOW_ARTIFACT_PREFIX
+    currentSource: typedConfig
+    finalAuthority: configServer
+    valueType: objectPrefix
+    default: light-workflow
+    validation: non-empty path without empty or parent segments
+    sensitivity: internal
+    reloadClass: restartRequired
+    consumers: [artifactStore]
+  - key: WORKFLOW_ARTIFACT_RETENTION_DAYS
+    currentSource: typedConfig
+    finalAuthority: configServer
+    valueType: integer
+    default: 30
+    validation: clamped to 1..3650 in current code; Phase 1 rejects invalid values
+    sensitivity: public
+    reloadClass: restartRequired
+    consumers: [artifactRetention]
+  - key: WORKFLOW_FIXED_ACTION_ROOT
+    currentSource: typedConfig
+    finalAuthority: configServer
+    valueType: directoryPath
+    default: /var/lib/light-workflow/fixed-actions
+    validation: absolute service-owned directory
+    sensitivity: internal
+    reloadClass: restartRequired
+    consumers: [fixedActions]
+  - key: WORKFLOW_FIXED_ACTION_ARTIFACT_ROOT
+    currentSource: typedConfig
+    finalAuthority: configServer
+    valueType: directoryPath
+    default: /var/lib/light-workflow/artifacts
+    validation: absolute service-owned directory
+    sensitivity: internal
+    reloadClass: restartRequired
+    consumers: [fixedActions]
+  - key: WORKFLOW_FIXED_ACTION_BRANCH_PREFIX
+    currentSource: typedConfig
+    finalAuthority: configServer
+    valueType: string
+    default: agent/
+    validation: non-empty provider-compatible branch prefix
+    sensitivity: internal
+    reloadClass: restartRequired
+    consumers: [fixedActions]
+  - key: WORKFLOW_REPOSITORY_FIXED_ACTION_URL
+    currentSource: typedConfig
+    finalAuthority: configServer
+    valueType: url
+    default: null
+    validation: valid URL; requires corresponding token secret
+    sensitivity: internal
+    reloadClass: restartRequired
+    consumers: [fixedActions]
+  - key: WORKFLOW_REPOSITORY_FIXED_ACTION_TOKEN
+    currentSource: environment
+    finalAuthority: secretEnvironment
+    valueType: bearerToken
+    default: null
+    validation: required and non-empty when repository provider URL is configured
+    sensitivity: secret
+    reloadClass: restartRequired
+    consumers: [fixedActions]
+  - key: WORKFLOW_RELEASE_FIXED_ACTION_URL
+    currentSource: typedConfig
+    finalAuthority: configServer
+    valueType: url
+    default: null
+    validation: valid URL; requires corresponding token secret
+    sensitivity: internal
+    reloadClass: restartRequired
+    consumers: [fixedActions]
+  - key: WORKFLOW_RELEASE_FIXED_ACTION_TOKEN
+    currentSource: environment
+    finalAuthority: secretEnvironment
+    valueType: bearerToken
+    default: null
+    validation: required and non-empty when release provider URL is configured
+    sensitivity: secret
+    reloadClass: restartRequired
+    consumers: [fixedActions]
+  - key: OPENAI_API_KEY
+    currentSource: environment
+    finalAuthority: secretEnvironment
+    valueType: apiKey
+    default: null
+    validation: non-empty when selected by an agent provider
+    sensitivity: secret
+    reloadClass: restartRequired
+    consumers: [agentProviderResolver]
+  - key: ANTHROPIC_API_KEY
+    currentSource: environment
+    finalAuthority: secretEnvironment
+    valueType: apiKey
+    default: null
+    validation: non-empty when selected by an agent provider
+    sensitivity: secret
+    reloadClass: restartRequired
+    consumers: [agentProviderResolver]
+  - key: GEMINI_API_KEY
+    currentSource: environment
+    finalAuthority: secretEnvironment
+    valueType: apiKey
+    default: null
+    validation: non-empty when selected by an agent provider
+    sensitivity: secret
+    reloadClass: restartRequired
+    consumers: [agentProviderResolver]
+  - key: GOOGLE_API_KEY
+    currentSource: environment
+    finalAuthority: secretEnvironment
+    valueType: apiKey
+    default: null
+    validation: non-empty when selected by an agent provider
+    sensitivity: secret
+    reloadClass: restartRequired
+    consumers: [agentProviderResolver]
+  - key: OLLAMA_API_KEY
+    currentSource: environment
+    finalAuthority: secretEnvironment
+    valueType: apiKey
+    default: null
+    validation: optional non-empty provider credential
+    sensitivity: secret
+    reloadClass: restartRequired
+    consumers: [agentProviderResolver]
+  - key: OPENROUTER_API_KEY
+    currentSource: environment
+    finalAuthority: secretEnvironment
+    valueType: apiKey
+    default: null
+    validation: non-empty when selected by an agent provider
+    sensitivity: secret
+    reloadClass: restartRequired
+    consumers: [agentProviderResolver]
+  - key: COMPATIBLE_API_KEY
+    currentSource: environment
+    finalAuthority: secretEnvironment
+    valueType: apiKey
+    default: null
+    validation: non-empty when selected by an OpenAI-compatible provider
+    sensitivity: secret
+    reloadClass: restartRequired
+    consumers: [agentProviderResolver]
+
+yamlProperties:
+  - {file: server.yml, path: ip, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: server.yml, path: httpPort, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: server.yml, path: enableHttp, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: server.yml, path: httpsPort, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: server.yml, path: enableHttps, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: server.yml, path: serviceId, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: server.yml, path: enableRegistry, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: server.yml, path: startOnRegistryFailure, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: server.yml, path: advertisedAddress, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: server.yml, path: dynamicPort, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: server.yml, path: environment, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: server.yml, path: shutdownGracefulPeriod, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: security.yml, path: enableVerifyJwt, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: security.yml, path: enableVerifyScope, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: security.yml, path: ignoreJwtExpiry, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: security.yml, path: enableRelaxedKeyValidation, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: security.yml, path: issuer, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: security.yml, path: audience, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: security.yml, path: jwt.clockSkewInSeconds, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: security.yml, path: bootstrapFromKeyService, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: tls.verifyHostname, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: tls.caCertPath, finalAuthority: deploymentBootstrap, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.key.server_url, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.key.uri, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.key.enableHttp2, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: request.connectTimeout, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: client.yml, path: request.timeout, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: workflow.yml, path: invocation.allowedCallerServiceIds, finalAuthority: configServer, reloadClass: reloadable, sensitivity: internal}
+  - {file: workflow.yml, path: invocation.waitListenerConnections, finalAuthority: configServer, reloadClass: reloadable, sensitivity: public}
+  - {file: workflow.yml, path: invocation.ignoreUserJwtExpiry, finalAuthority: configServer, reloadClass: reloadable, sensitivity: internal}
+  - {file: workflow.yml, path: execution.maximumParallelism, finalAuthority: configServer, reloadClass: reloadable, sensitivity: public}
+  - {file: workflow.yml, path: execution.hostExecutorConcurrency, finalAuthority: configServer, reloadClass: reloadable, sensitivity: public}
+  - {file: workflow.yml, path: execution.interactiveEstimatedTaskMs, finalAuthority: configServer, reloadClass: reloadable, sensitivity: public}
+  - {file: workflow.yml, path: database.maxConnections, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: workflow.yml, path: runner.enabled, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: runner.originServiceId, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: runner.originId, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: runner.configFile, finalAuthority: mountedFile, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: artifact.s3Bucket, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: artifact.s3Endpoint, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: artifact.allowHttp, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: artifact.prefix, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: artifact.retentionDays, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: workflow.yml, path: fixedActions.root, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: fixedActions.artifactRoot, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: fixedActions.branchPrefix, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: fixedActions.repositoryUrl, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: fixedActions.releaseUrl, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}

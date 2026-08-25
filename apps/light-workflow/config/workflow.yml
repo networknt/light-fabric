@@ -1,0 +1,27 @@
+invocation:
+  allowedCallerServiceIds: ${workflow.invocation.allowedCallerServiceIds:[com.networknt.portal.gateway-1.0.0]}
+  waitListenerConnections: ${workflow.invocation.waitListenerConnections:8}
+  ignoreUserJwtExpiry: ${workflow.invocation.ignoreUserJwtExpiry:false}
+execution:
+  maximumParallelism: ${workflow.execution.maximumParallelism:64}
+  hostExecutorConcurrency: ${workflow.execution.hostExecutorConcurrency:8}
+  interactiveEstimatedTaskMs: ${workflow.execution.interactiveEstimatedTaskMs:500}
+database:
+  maxConnections: ${workflow.database.maxConnections:32}
+runner:
+  enabled: ${workflow.runner.enabled:false}
+  originServiceId: ${workflow.runner.originServiceId:com.networknt.light-workflow-1.0.0}
+  originId: ${workflow.runner.originId:workflow-dev}
+  configFile: ${workflow.runner.configFile:}
+artifact:
+  s3Bucket: ${workflow.artifact.s3Bucket:}
+  s3Endpoint: ${workflow.artifact.s3Endpoint:}
+  allowHttp: ${workflow.artifact.allowHttp:false}
+  prefix: ${workflow.artifact.prefix:light-workflow}
+  retentionDays: ${workflow.artifact.retentionDays:30}
+fixedActions:
+  root: ${workflow.fixedActions.root:/var/lib/light-workflow/fixed-actions}
+  artifactRoot: ${workflow.fixedActions.artifactRoot:/var/lib/light-workflow/artifacts}
+  branchPrefix: ${workflow.fixedActions.branchPrefix:agent/}
+  repositoryUrl: ${workflow.fixedActions.repositoryUrl:}
+  releaseUrl: ${workflow.fixedActions.releaseUrl:}

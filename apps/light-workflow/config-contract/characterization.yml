@@ -1,0 +1,46 @@
+version: 1
+cases:
+  - id: embedded-security-config
+    layer: startup
+    evidence: embedded_security_config_builds_the_workflow_jwt_verifier
+    postgresRequired: false
+  - id: service-authorization-before-startup
+    layer: authorization
+    evidence: invocation_scope_token_expiry_is_enforced_at_startup_but_not_reaged_on_reload
+    postgresRequired: false
+  - id: user-expiry-dev-only
+    layer: authorization
+    evidence: user_expiry_exception_is_typed_and_dev_only
+    postgresRequired: false
+  - id: scope-token-host-environment-binding
+    layer: authorization
+    evidence: invocation_scope_claims_must_match_gateway_host_and_environment
+    postgresRequired: false
+  - id: forwarded-user-identity-binding
+    layer: authorization
+    evidence: invocation_user_claims_must_match_forwarded_identity
+    postgresRequired: false
+  - id: runtime-owned-task-shutdown-order
+    layer: lifecycle
+    evidence: phase0_source_characterizes_current_manual_lifecycle
+    postgresRequired: false
+  - id: independent-readiness-surface
+    layer: readiness
+    evidence: phase0_source_characterizes_current_readiness_surface
+    postgresRequired: false
+  - id: terminal-result-origin-restart
+    layer: runnerRecovery
+    evidence: terminal_result_survives_origin_restart_and_is_accepted_once
+    postgresRequired: true
+  - id: runner-origin-idempotency-scope
+    layer: runnerRecovery
+    evidence: runner_origin_scope_changes_scheduling_idempotency_namespace
+    postgresRequired: true
+  - id: concurrent-scheduler-fencing
+    layer: runnerRecovery
+    evidence: concurrent_scheduler_claims_create_one_fenced_attempt
+    postgresRequired: true
+  - id: stale-result-fencing
+    layer: runnerRecovery
+    evidence: stale_terminal_result_cannot_cross_a_newer_fencing_token
+    postgresRequired: true

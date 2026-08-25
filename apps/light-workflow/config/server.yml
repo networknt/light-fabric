@@ -1,8 +1,12 @@
 ip: 0.0.0.0
+advertisedAddress: ${server.advertisedAddress:light-workflow}
 httpPort: 8436
 enableHttp: true
 httpsPort: 8443
 enableHttps: false
 serviceId: ${server.serviceId:com.networknt.workflow-1.0.0}
-enableRegistry: false
+enableRegistry: ${server.enableRegistry:false}
+startOnRegistryFailure: ${server.startOnRegistryFailure:false}
+dynamicPort: false
 environment: ${server.environment:dev}
+shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:30000}

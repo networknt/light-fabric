@@ -480,6 +480,25 @@ impl PortalRegistryClient {
     }
 
     pub async fn send_metadata_update(&self, update: ServiceMetadataUpdate) -> anyhow::Result<()> {
+        // Keep the reconnect registration snapshot in sync with every complete
+        // metadata update. If the current socket is unavailable, the caller
+        // still gets an error, but the next registration advertises the latest
+        // state instead of replaying stale tags from process startup.
+        {
+            let mut registration = self.registration_params.lock().await;
+            if let Some(version) = &update.version {
+                registration.version = version.clone();
+            }
+            if let Some(protocol) = &update.protocol {
+                registration.protocol = protocol.clone();
+            }
+            if let Some(port) = update.port {
+                registration.port = port;
+            }
+            if let Some(tags) = &update.tags {
+                registration.tags = tags.clone();
+            }
+        }
         let payload = RuntimeSessionOutput::Notification {
             method: "service/update_metadata".to_string(),
             params: serde_json::to_value(update)?,
@@ -974,6 +993,41 @@ mod tests {
             env_tag: Some("prod".to_string()),
             jwt: "service-jwt".to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn metadata_update_refreshes_reconnect_registration_while_disconnected() {
+        let client = PortalRegistryClient::new(
+            "ws://127.0.0.1:1",
+            test_registration_params(),
+            Arc::new(NoopHandler),
+        )
+        .expect("build client");
+        let tags = HashMap::from([
+            (
+                "light.workflow.readiness".to_string(),
+                "not-ready".to_string(),
+            ),
+            (
+                "light.workflow.drainState".to_string(),
+                "draining".to_string(),
+            ),
+        ]);
+
+        assert!(
+            client
+                .send_metadata_update(ServiceMetadataUpdate {
+                    version: Some("0.2.1".to_string()),
+                    tags: Some(tags.clone()),
+                    ..Default::default()
+                })
+                .await
+                .is_err()
+        );
+
+        let registration = client.registration_params.lock().await;
+        assert_eq!(registration.version, "0.2.1");
+        assert_eq!(registration.tags, tags);
     }
 
     #[tokio::test]

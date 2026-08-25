@@ -70,7 +70,7 @@ pub struct AuthPrincipal {
     pub claims: JsonValue,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SecurityConfig {
     #[serde(default = "default_true")]
@@ -148,7 +148,7 @@ impl Default for SecurityConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SecurityJwtConfig {
     #[serde(default = "default_clock_skew_seconds")]

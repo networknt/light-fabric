@@ -1,0 +1,11 @@
+host: ${LIGHT_WORKFLOW_STARTUP_HOST:dev.lightapi.net}
+serviceId: ${LIGHT_WORKFLOW_SERVICE_ID:com.networknt.workflow-1.0.0}
+instanceId: ${LIGHT_WORKFLOW_CONFIG_INSTANCE_ID:}
+envTag: ${LIGHT_WORKFLOW_ENVIRONMENT:dev}
+acceptHeader: application/yaml
+timeout: ${LIGHT_WORKFLOW_STARTUP_TIMEOUT:3000}
+connectTimeout: ${LIGHT_WORKFLOW_STARTUP_CONNECT_TIMEOUT:3000}
+configServerUri: ${LIGHT_CONFIG_SERVER_URI:https://local.lightapi.net}
+authorization: ${LIGHT_PORTAL_AUTHORIZATION:}
+bootstrapCaCertPath: ${LIGHT_WORKFLOW_BOOTSTRAP_CA_CERT_PATH:config/ca.pem}
+externalConfigDir: ${LIGHT_WORKFLOW_CONFIG_CACHE_DIR:config-cache}

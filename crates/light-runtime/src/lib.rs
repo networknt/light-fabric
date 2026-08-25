@@ -9,8 +9,8 @@ pub mod transport;
 
 pub use cache::{CacheRegistry, ClearCacheOutcome, MokaRuntimeCache, RuntimeCache};
 pub use config::{
-    BootstrapConfig, DirectRegistryConfig, PortalRegistryConfig, RemoteBootstrapResult,
-    RuntimeConfig, ServerConfig, ServiceIdentity,
+    BootstrapConfig, ConfigProvenance, ConfigSource, DirectRegistryConfig, PortalRegistryConfig,
+    PreparedConfig, RemoteBootstrapResult, RuntimeConfig, ServerConfig, ServiceIdentity,
 };
 pub use config_loader::EmbeddedConfigFile;
 pub use lifecycle::{
@@ -29,6 +29,7 @@ pub use module_registry::{
 };
 pub use portal_registry::{
     DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, PortalRegistryClient,
+    RegistrationState, ServiceMetadataUpdate,
 };
 pub use runtime::{
     LifecycleState, LightRuntime, LightRuntimeBuilder, Module, RegistrationPolicy, RunningRuntime,

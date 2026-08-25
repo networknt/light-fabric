@@ -1,0 +1,26 @@
+version: 1
+metrics:
+  - {name: light_workflow_config_active_info, type: gauge, labels: [source, snapshot_id, digest]}
+  - {name: light_workflow_config_refresh_total, type: counter, labels: [result, source]}
+  - {name: light_workflow_config_candidate_rejections_total, type: counter, labels: [reason_code]}
+  - {name: light_workflow_config_lkg_uses_total, type: counter, labels: [reason_code]}
+  - {name: light_workflow_config_last_success_unixtime_seconds, type: gauge, labels: []}
+  - {name: light_workflow_registry_connected, type: gauge, labels: []}
+  - {name: light_workflow_lifecycle_drain_state, type: gauge, labels: [state]}
+  - {name: light_workflow_capacity_configured, type: gauge, labels: [subsystem]}
+events:
+  - name: workflow.config.activated
+    requiredFields: [source, snapshotId, digest, hostId, environment, serviceId, portalConfigInstanceId]
+  - name: workflow.config.refresh_failed
+    requiredFields: [source, reasonCode, retryable]
+  - name: workflow.config.candidate_rejected
+    requiredFields: [snapshotId, digest, reasonCode, propertyPaths]
+  - name: workflow.config.lkg_activated
+    requiredFields: [snapshotId, digest, reasonCode, cacheAgeSeconds]
+  - name: workflow.registry.state_changed
+    requiredFields: [state, controllerRuntimeInstanceId, connectionGeneration, reasonCode]
+  - name: workflow.lifecycle.drain_changed
+    requiredFields: [state, reasonCode, deadlineUnixSeconds]
+redaction:
+  strategy: sensitivityClassification
+  forbiddenFields: [credentialValue, bearerToken, apiKey, databaseUrl, privateKey]

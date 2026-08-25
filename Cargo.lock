@@ -4680,6 +4680,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -4712,6 +4713,7 @@ name = "light-workflow"
 version = "0.2.1"
 dependencies = [
  "agent-delegation",
+ "anyhow",
  "async-trait",
  "axum",
  "base64",
@@ -4724,6 +4726,7 @@ dependencies = [
  "futures-util",
  "hex",
  "jsonschema",
+ "light-axum",
  "light-rule",
  "light-runtime",
  "light-security",
@@ -4736,6 +4739,7 @@ dependencies = [
  "serde_yaml",
  "sha2 0.10.9",
  "sqlx",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",

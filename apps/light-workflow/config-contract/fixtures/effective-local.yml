@@ -1,0 +1,22 @@
+server:
+  serviceId: com.networknt.workflow-1.0.0
+  environment: dev
+  ip: 0.0.0.0
+  httpPort: 8436
+  enableRegistry: false
+security:
+  issuer: urn:com:networknt:oauth2:v1
+  audience: [urn:com.networknt]
+  ignoreUserJwtExpiry: false
+workflow:
+  invocation:
+    allowedCallerServiceIds: [com.networknt.portal.gateway-1.0.0]
+    waitListenerConnections: 8
+  execution:
+    maximumParallelism: 64
+    hostExecutorConcurrency: 8
+    interactiveEstimatedTaskMs: 500
+  runner:
+    enabled: false
+    originServiceId: com.networknt.light-workflow-1.0.0
+    originId: workflow-dev

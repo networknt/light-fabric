@@ -1,0 +1,42 @@
+version: 1
+resolvers:
+  - id: agent-api-key-reference
+    source: database agent api_key_ref
+    acceptedReferences: ["env:NAME", "NAME"]
+    rejectedManagedReferences: ["literal:VALUE"]
+    valueAuthority: secretEnvironment
+    sourceAnchor: "src/executor.rs:2536"
+    validation: environment name is non-empty and resolved value is non-empty
+  - id: agent-provider-default-api-key
+    source: normalized agent provider name
+    patterns:
+      - OPENAI_API_KEY
+      - ANTHROPIC_API_KEY
+      - GEMINI_API_KEY
+      - GOOGLE_API_KEY
+      - OLLAMA_API_KEY
+      - OPENROUTER_API_KEY
+      - COMPATIBLE_API_KEY
+    valueAuthority: secretEnvironment
+    sourceAnchor: "src/executor.rs:2592"
+    validation: selected value is non-empty
+  - id: agent-provider-base-url
+    source: normalized agent provider name
+    patterns:
+      - LIGHT_WORKFLOW_AGENT_{PROVIDER}_BASE_URL
+      - "{PROVIDER}_BASE_URL"
+    valueAuthority: configServer
+    sourceAnchor: "src/executor.rs:2568"
+    validation: selected value is a non-empty provider URL
+  - id: object-store-provider-environment
+    source: object_store AmazonS3Builder::from_env
+    patterns:
+      - AWS_*
+      - AWS_ENDPOINT
+      - AWS_REGION
+      - AWS_ACCESS_KEY_ID
+      - AWS_SECRET_ACCESS_KEY
+      - AWS_SESSION_TOKEN
+    valueAuthority: providerEnvironment
+    sourceAnchor: "src/artifact_store.rs:24"
+    validation: provider builder validates the resolved credential and endpoint contract

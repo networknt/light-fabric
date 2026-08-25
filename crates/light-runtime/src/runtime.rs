@@ -10,6 +10,7 @@ use portal_registry::{
 };
 use serde::de::DeserializeOwned;
 use serde_yaml::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,9 +25,9 @@ use uuid::Uuid;
 
 use crate::cache::CacheRegistry;
 use crate::config::{
-    BootstrapConfig, ClientConfig, ControlCandidateConfig, DirectRegistryConfig,
-    PortalRegistryConfig, RemoteBootstrapResult, RuntimeConfig, ServerConfig, ServiceIdentity,
-    default_accept_header, default_environment,
+    BootstrapConfig, ClientConfig, ConfigProvenance, ConfigSource, ControlCandidateConfig,
+    DirectRegistryConfig, PortalRegistryConfig, PreparedConfig, RemoteBootstrapResult,
+    RuntimeConfig, ServerConfig, ServiceIdentity, default_accept_header, default_environment,
 };
 use crate::lifecycle::{
     AdmissionGate, LifecycleParticipant, LifecycleRegistry, MANDATORY_CLEANUP_FLOOR,
@@ -135,6 +136,7 @@ where
     registration_timeout: Duration,
     registry_handler: Arc<dyn RegistryHandler>,
     registry_client: Option<Arc<PortalRegistryClient>>,
+    prepared_config: Option<RuntimeConfig>,
 }
 
 impl<T> LightRuntimeBuilder<T>
@@ -157,6 +159,7 @@ where
             registration_timeout: Duration::from_secs(5),
             registry_handler: Arc::new(NoopRegistryHandler),
             registry_client: None,
+            prepared_config: None,
         }
     }
 
@@ -233,6 +236,14 @@ where
         self
     }
 
+    /// Starts from a configuration candidate that the embedding application
+    /// has already fetched and validated. Runtime-owned registries are rebound
+    /// when startup begins so the candidate cannot inject runtime state.
+    pub fn with_prepared_config(mut self, config: RuntimeConfig) -> Self {
+        self.prepared_config = Some(config);
+        self
+    }
+
     pub fn build(self) -> LightRuntime<T> {
         LightRuntime {
             transport: self.transport,
@@ -249,6 +260,7 @@ where
             registration_timeout: self.registration_timeout,
             registry_handler: self.registry_handler,
             registry_client: self.registry_client,
+            prepared_config: self.prepared_config,
             admission: AdmissionGate::default(),
             lifecycle: LifecycleRegistry::default(),
             state: LifecycleState::BootstrapLocal,
@@ -274,6 +286,7 @@ where
     registration_timeout: Duration,
     registry_handler: Arc<dyn RegistryHandler>,
     registry_client: Option<Arc<PortalRegistryClient>>,
+    prepared_config: Option<RuntimeConfig>,
     admission: AdmissionGate,
     lifecycle: LifecycleRegistry,
     state: LifecycleState,
@@ -321,6 +334,7 @@ where
         };
 
         let shutdown = async {
+            let mut errors = self.lifecycle.quiesce(&self.config, &context).await;
             if let Some(session) = self.registry_session.take() {
                 let deregistration_budget =
                     deregistration_shutdown_budget(&context, self.registration_timeout);
@@ -343,7 +357,7 @@ where
                 .await?;
 
             self.state = LifecycleState::CleaningUp;
-            let errors = self.lifecycle.shutdown(&self.config, &context).await;
+            errors.extend(self.lifecycle.shutdown(&self.config, &context).await);
             if errors.is_empty() {
                 Ok(())
             } else {
@@ -425,6 +439,17 @@ impl RuntimeConfig {
             &self.external_config_dir,
         )
         .await?;
+        let source = if remote_result.values_yaml.is_some() {
+            ConfigSource::Remote
+        } else if self.external_config_dir.join(VALUES_FILE).is_file() {
+            ConfigSource::Cache
+        } else {
+            ConfigSource::Local
+        };
+        let source_content = remote_result
+            .values_yaml
+            .clone()
+            .or_else(|| fs::read_to_string(self.external_config_dir.join(VALUES_FILE)).ok());
         let values = load_values_from_sources(
             self.embedded_config,
             self.default_config_dir.as_deref(),
@@ -441,27 +466,74 @@ impl RuntimeConfig {
         validate_direct_registry_config(&runtime_config.direct_registry)?;
         runtime_config.resolved_values = values;
 
-        if runtime_config.client.is_some() {
-            let password = std::env::var(CONFIG_PASSWORD_ENV).ok();
-            let loader = ConfigLoader::from_values(
-                runtime_config.resolved_values.clone(),
-                password.as_deref(),
-                None,
-            )?;
-            if let Some(merged) = load_config_from_sources(
-                &loader,
-                runtime_config.embedded_config,
-                runtime_config.default_config_dir.as_deref(),
-                &runtime_config.config_dir,
-                Some(&runtime_config.external_config_dir),
-                CLIENT_FILE,
-            )? {
-                let client = serde_yaml::from_value::<ClientConfig>(merged)?;
-                runtime_config.client = Some(client);
-            }
+        let password = std::env::var(CONFIG_PASSWORD_ENV).ok();
+        let loader = ConfigLoader::from_values(
+            runtime_config.resolved_values.clone(),
+            password.as_deref(),
+            None,
+        )?;
+        if let Some(server) = load_config_from_sources(
+            &loader,
+            runtime_config.embedded_config,
+            runtime_config.default_config_dir.as_deref(),
+            &runtime_config.config_dir,
+            Some(&runtime_config.external_config_dir),
+            SERVER_FILE,
+        )? {
+            runtime_config.server = serde_yaml::from_value(server)?;
         }
+        if let Some(client) = load_config_from_sources(
+            &loader,
+            runtime_config.embedded_config,
+            runtime_config.default_config_dir.as_deref(),
+            &runtime_config.config_dir,
+            Some(&runtime_config.external_config_dir),
+            CLIENT_FILE,
+        )? {
+            runtime_config.client = Some(serde_yaml::from_value::<ClientConfig>(client)?);
+        }
+        if let Some(portal_registry) = load_config_from_sources(
+            &loader,
+            runtime_config.embedded_config,
+            runtime_config.default_config_dir.as_deref(),
+            &runtime_config.config_dir,
+            Some(&runtime_config.external_config_dir),
+            PORTAL_REGISTRY_FILE,
+        )? {
+            runtime_config.portal_registry = Some(serde_yaml::from_value::<PortalRegistryConfig>(
+                portal_registry,
+            )?);
+        }
+        let service_id = runtime_config
+            .bootstrap
+            .service_id
+            .clone()
+            .unwrap_or_else(|| runtime_config.server.service_id.clone());
+        runtime_config.service_identity.service_id = service_id.clone();
+        runtime_config.service_identity.version = derive_service_version(&service_id);
+        runtime_config.service_identity.env_tag = runtime_config
+            .bootstrap
+            .env_tag
+            .clone()
+            .or_else(|| Some(runtime_config.server.environment.clone()));
 
-        Ok(ReloadContext::new(runtime_config))
+        let content_digest = match source_content.as_ref() {
+            Some(content) => format!("{:x}", Sha256::digest(content.as_bytes())),
+            None => sha256_values(&runtime_config.resolved_values)?,
+        };
+        let provenance = ConfigProvenance {
+            source,
+            host_id: remote_result.host_id,
+            snapshot_id: remote_result.snapshot_id,
+            instance_id: remote_result.instance_id,
+            content_digest,
+        };
+
+        Ok(ReloadContext::with_provenance_and_source(
+            runtime_config,
+            provenance,
+            source_content,
+        ))
     }
 }
 
@@ -474,6 +546,13 @@ where
     pub async fn prepare_config(mut self) -> Result<RuntimeConfig, RuntimeError> {
         init_rustls_provider();
         self.prepare_runtime_config(true).await
+    }
+
+    /// Loads effective configuration and reports whether its values came from
+    /// the current Config Server snapshot, a local cache, or local sources.
+    pub async fn prepare_config_with_provenance(mut self) -> Result<PreparedConfig, RuntimeError> {
+        init_rustls_provider();
+        self.prepare_runtime_config_with_provenance(true).await
     }
 
     /// Loads configuration only from local, default, embedded, and locally
@@ -533,8 +612,15 @@ where
         startup_cancel: CancellationToken,
     ) -> Result<RunningRuntime<T>, RuntimeError> {
         init_rustls_provider();
-        let runtime_config =
-            cancellable(&startup_cancel, self.prepare_runtime_config(true)).await??;
+        let mut runtime_config = match self.prepared_config.take() {
+            Some(config) => config,
+            None => cancellable(&startup_cancel, self.prepare_runtime_config(true)).await??,
+        };
+        runtime_config.module_registry = Arc::clone(&self.module_registry);
+        runtime_config.cache_registry = self.cache_registry.clone();
+        if self.registry_client.is_some() {
+            runtime_config.registry_client = self.registry_client.clone();
+        }
         self.module_registry
             .register_runtime_configs(&runtime_config)?;
         if let Some(logging_control) = self.logging_control.as_ref() {
@@ -571,7 +657,7 @@ where
         }
 
         self.state = LifecycleState::BindListeners;
-        let transport = cancellable(
+        let transport = match cancellable(
             &startup_cancel,
             self.transport.bind(
                 &runtime_config,
@@ -580,7 +666,14 @@ where
                 startup_cancel.child_token(),
             ),
         )
-        .await??;
+        .await
+        {
+            Ok(Ok(transport)) => transport,
+            Ok(Err(error)) | Err(error) => {
+                abort_lifecycle(&self.lifecycle, &runtime_config).await;
+                return Err(error);
+            }
+        };
 
         for module in &self.modules {
             match cancellable(&startup_cancel, module.on_server_bound(&runtime_config)).await {
@@ -646,7 +739,18 @@ where
             }
         }
         self.lifecycle.seal();
-        self.admission.open();
+        if !self.admission.try_open() {
+            let context = startup_abort_context();
+            if let Some(session) = registry_session.as_ref() {
+                let _ = session.shutdown("programmatic", context.remaining()).await;
+            }
+            let mut handle = transport.handle;
+            let _ = self.transport.stop(&mut handle, &context).await;
+            abort_lifecycle(&self.lifecycle, &runtime_config).await;
+            return Err(RuntimeError::Unsupported(
+                "a critical lifecycle participant failed during startup".to_string(),
+            ));
+        }
 
         Ok(RunningRuntime {
             state: self.state,
@@ -669,6 +773,16 @@ where
         &mut self,
         include_remote: bool,
     ) -> Result<RuntimeConfig, RuntimeError> {
+        Ok(self
+            .prepare_runtime_config_with_provenance(include_remote)
+            .await?
+            .runtime_config)
+    }
+
+    async fn prepare_runtime_config_with_provenance(
+        &mut self,
+        include_remote: bool,
+    ) -> Result<PreparedConfig, RuntimeError> {
         self.state = LifecycleState::BootstrapLocal;
         let (bootstrap, bootstrap_client) = self.load_bootstrap_config()?;
         let external_config_dir = self.resolve_external_config_dir(&bootstrap);
@@ -686,12 +800,40 @@ where
         };
 
         self.state = LifecycleState::BuildRuntime;
-        self.build_runtime_config(
+        let source = if remote_result.values_yaml.is_some() {
+            ConfigSource::Remote
+        } else if external_config_dir.join(VALUES_FILE).is_file() {
+            ConfigSource::Cache
+        } else {
+            ConfigSource::Local
+        };
+        let snapshot_id = remote_result.snapshot_id.clone();
+        let host_id = remote_result.host_id.clone();
+        let instance_id = remote_result.instance_id.clone();
+        let source_content = remote_result
+            .values_yaml
+            .clone()
+            .or_else(|| fs::read_to_string(external_config_dir.join(VALUES_FILE)).ok());
+        let runtime_config = self.build_runtime_config(
             bootstrap,
             bootstrap_client,
             external_config_dir,
             remote_result,
-        )
+        )?;
+        let content_digest = match source_content {
+            Some(content) => format!("{:x}", Sha256::digest(content.as_bytes())),
+            None => sha256_values(&runtime_config.resolved_values)?,
+        };
+        Ok(PreparedConfig {
+            runtime_config,
+            provenance: ConfigProvenance {
+                source,
+                host_id,
+                snapshot_id,
+                instance_id,
+                content_digest,
+            },
+        })
     }
 
     fn load_bootstrap_config(
@@ -857,6 +999,9 @@ where
         .with_jwt(&token);
         if let Some(env_tag) = service_identity.env_tag.as_deref() {
             registration = registration.with_env(env_tag);
+        }
+        for (key, value) in &service_identity.tags {
+            registration = registration.with_tag(key, value);
         }
         let mut client =
             PortalRegistryClient::new(&ws_url, registration.build(), Arc::new(NoopRegistryHandler))
@@ -1039,6 +1184,12 @@ where
         if let Some(env_tag) = runtime_config.service_identity.env_tag.as_deref() {
             registration = registration.with_env(env_tag);
         }
+        for (key, value) in &runtime_config.service_identity.tags {
+            registration = registration.with_tag(key, value);
+        }
+        for (key, value) in &metadata.tags {
+            registration = registration.with_tag(key, value);
+        }
 
         let registration = registration.build();
         let ca_certificate = read_portal_registry_ca_certificate(
@@ -1195,15 +1346,23 @@ async fn fetch_remote_bootstrap_if_needed(
     let query = build_query_params(bootstrap);
 
     match fetch_remote_values(&client, config_server_uri, &query, bootstrap).await {
-        Ok(values_yaml) => {
+        Ok((values_yaml, host_id, snapshot_id, instance_id, content_digest)) => {
             let values_path = external_config_dir.join(VALUES_FILE);
             atomic_cache_write(&values_path, values_yaml.as_bytes())?;
 
             let mut result = RemoteBootstrapResult {
                 values_yaml: Some(values_yaml),
                 cached_files: vec![values_path],
+                host_id,
+                snapshot_id,
+                instance_id,
+                content_digest,
             };
 
+            let mut file_query = query.clone();
+            if let Some(snapshot_id) = result.snapshot_id.as_ref() {
+                file_query.push(("snapshotId".to_string(), snapshot_id.clone()));
+            }
             for context_root in [
                 CONFIG_SERVER_CERTS_CONTEXT_ROOT,
                 CONFIG_SERVER_FILES_CONTEXT_ROOT,
@@ -1212,7 +1371,7 @@ async fn fetch_remote_bootstrap_if_needed(
                     &client,
                     config_server_uri,
                     context_root,
-                    &query,
+                    &file_query,
                     bootstrap,
                     external_config_dir,
                 )
@@ -1389,6 +1548,9 @@ fn build_query_params(bootstrap: &BootstrapConfig) -> Vec<(String, String)> {
     if let Some(value) = &bootstrap.service_id {
         params.push(("serviceId".to_string(), value.clone()));
     }
+    if let Some(value) = &bootstrap.instance_id {
+        params.push(("instanceId".to_string(), value.clone()));
+    }
     if let Some(value) = &bootstrap.product_id {
         params.push(("productId".to_string(), value.clone()));
     }
@@ -1417,7 +1579,16 @@ async fn fetch_remote_values(
     config_server_uri: &str,
     query: &[(String, String)],
     bootstrap: &BootstrapConfig,
-) -> Result<String, RuntimeError> {
+) -> Result<
+    (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ),
+    RuntimeError,
+> {
     let response = client
         .get(format!(
             "{config_server_uri}{CONFIG_SERVER_CONFIGS_CONTEXT_ROOT}"
@@ -1432,6 +1603,10 @@ async fn fetch_remote_values(
         .await?;
 
     let response = response.error_for_status()?;
+    let host_id = response_header(&response, "x-light-config-host-id");
+    let snapshot_id = response_header(&response, "x-light-config-snapshot-id");
+    let instance_id = response_header(&response, "x-light-config-instance-id");
+    let advertised_digest = response_header(&response, "x-light-config-content-digest");
     let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -1439,17 +1614,44 @@ async fn fetch_remote_values(
         .unwrap_or_default()
         .to_string();
     let body = response.text().await?;
+    if let Some(advertised) = advertised_digest {
+        let calculated = format!("{:x}", Sha256::digest(body.as_bytes()));
+        if advertised != calculated {
+            return Err(RuntimeError::Unsupported(format!(
+                "config server content digest mismatch: advertised {advertised}, calculated {calculated}"
+            )));
+        }
+    }
 
     if content_type.starts_with("application/yaml") || content_type.starts_with("text/yaml") {
-        Ok(body)
+        let digest = format!("{:x}", Sha256::digest(body.as_bytes()));
+        Ok((body, host_id, snapshot_id, instance_id, Some(digest)))
     } else if content_type.starts_with("application/json") {
         let json: serde_json::Value = serde_json::from_str(&body)?;
-        Ok(serde_yaml::to_string(&json)?)
+        let yaml = serde_yaml::to_string(&json)?;
+        let digest = format!("{:x}", Sha256::digest(yaml.as_bytes()));
+        Ok((yaml, host_id, snapshot_id, instance_id, Some(digest)))
     } else {
         Err(RuntimeError::Unsupported(format!(
             "unsupported config server content type `{content_type}`"
         )))
     }
+}
+
+fn response_header(response: &reqwest::Response, name: &str) -> Option<String> {
+    response
+        .headers()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn sha256_values(values: &HashMap<String, Value>) -> Result<String, RuntimeError> {
+    let ordered = values.iter().collect::<BTreeMap<_, _>>();
+    let bytes = serde_json::to_vec(&ordered)?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 async fn fetch_remote_files(
@@ -1846,6 +2048,8 @@ mod tests {
 
     struct NoopTransport;
 
+    struct StartupCriticalFailureTransport;
+
     struct DuplicateModule {
         shutdowns: Arc<std::sync::atomic::AtomicUsize>,
     }
@@ -1878,6 +2082,33 @@ mod tests {
             _admission: &crate::AdmissionGate,
             _startup_cancel: CancellationToken,
         ) -> Result<BoundTransport<Self::Handle>, RuntimeError> {
+            Ok(BoundTransport {
+                handle: (),
+                metadata: ResolvedServerMetadata::default(),
+            })
+        }
+
+        async fn stop(
+            &self,
+            _handle: &mut Self::Handle,
+            _context: &ShutdownContext,
+        ) -> Result<(), RuntimeError> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl TransportRuntime for StartupCriticalFailureTransport {
+        type Handle = ();
+
+        async fn bind(
+            &self,
+            _config: &RuntimeConfig,
+            _lifecycle: &crate::LifecycleRegistrar,
+            admission: &crate::AdmissionGate,
+            _startup_cancel: CancellationToken,
+        ) -> Result<BoundTransport<Self::Handle>, RuntimeError> {
+            admission.fail();
             Ok(BoundTransport {
                 handle: (),
                 metadata: ResolvedServerMetadata::default(),
@@ -2080,6 +2311,43 @@ controlCandidates:
         );
     }
 
+    #[tokio::test]
+    async fn config_server_rejects_an_advertised_digest_that_does_not_match_the_body() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind config server");
+        let addr = listener.local_addr().expect("config server address");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let mut buffer = [0_u8; 4096];
+            let _ = stream.read(&mut buffer).await.expect("read request");
+            let body = "server.httpPort: 8436\n";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/yaml\r\nx-light-config-content-digest: definitely-wrong\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+        });
+
+        let bootstrap = BootstrapConfig {
+            accept_header: default_accept_header(),
+            ..BootstrapConfig::default()
+        };
+        let error = fetch_remote_values(
+            &reqwest::Client::new(),
+            &format!("http://{addr}"),
+            &[],
+            &bootstrap,
+        )
+        .await
+        .expect_err("mismatched digest must fail closed");
+        assert!(error.to_string().contains("content digest mismatch"));
+        server.await.expect("config server task");
+    }
+
     #[test]
     fn builds_light_4j_style_query_parameters() {
         let bootstrap = BootstrapConfig {
@@ -2179,6 +2447,7 @@ shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
                             .to_string(),
                     ),
                     cached_files: Vec::new(),
+                    ..RemoteBootstrapResult::default()
                 },
             )
             .expect("runtime config");
@@ -2319,6 +2588,7 @@ direct-registry.directUrls:
                 RemoteBootstrapResult {
                     values_yaml: Some("shared: remote\nremoteOnly: 42\n".to_string()),
                     cached_files: Vec::new(),
+                    ..RemoteBootstrapResult::default()
                 },
             )
             .expect("build runtime config");
@@ -2380,6 +2650,7 @@ shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
                             .to_string(),
                     ),
                     cached_files: Vec::new(),
+                    ..RemoteBootstrapResult::default()
                 },
             )
             .expect("build runtime config");
@@ -2447,6 +2718,7 @@ shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
                             .to_string(),
                     ),
                     cached_files: Vec::new(),
+                    ..RemoteBootstrapResult::default()
                 },
             )
             .expect("build runtime config");
@@ -2499,7 +2771,10 @@ shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
                 let bytes = stream.read(&mut buffer).await.expect("read request");
                 let request = String::from_utf8_lossy(&buffer[..bytes]);
                 let (content_type, body) = if request.starts_with("GET /config-server/configs") {
-                    ("application/yaml", "gateway.healthPath: /remote\n")
+                    (
+                        "application/yaml",
+                        "gateway.healthPath: /remote\nserver.httpPort: 9999\n",
+                    )
                 } else {
                     ("application/json", "{}")
                 };
@@ -2516,10 +2791,13 @@ shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
 
         let config_dir = TempDir::new().expect("config temp dir");
         let external_dir = TempDir::new().expect("external temp dir");
+        write_server_template(config_dir.path());
         let runtime_config = RuntimeConfig {
             bootstrap: BootstrapConfig {
                 config_server_uri: Some(format!("http://{addr}")),
                 authorization: Some("Bearer token".to_string()),
+                service_id: Some("com.networknt.bootstrap-3.1.4".to_string()),
+                env_tag: Some("bootstrap-env".to_string()),
                 accept_header: default_accept_header(),
                 timeout: crate::config::default_timeout_ms(),
                 connect_timeout: crate::config::default_connect_timeout_ms(),
@@ -2558,7 +2836,30 @@ shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
             ctx.runtime_config.direct_registry.direct_urls["com.networknt.controller-1.0.0"],
             "https://controller:8438"
         );
+        assert_eq!(ctx.runtime_config.server.http_port, 9999);
+        assert_eq!(
+            ctx.runtime_config.service_identity.service_id,
+            "com.networknt.bootstrap-3.1.4"
+        );
+        assert_eq!(ctx.runtime_config.service_identity.version, "3.1.4");
+        assert_eq!(
+            ctx.runtime_config.service_identity.env_tag.as_deref(),
+            Some("bootstrap-env")
+        );
         assert!(external_dir.path().join(VALUES_FILE).exists());
+        assert_eq!(
+            ctx.source_values_yaml.as_deref(),
+            Some("gateway.healthPath: /remote\nserver.httpPort: 9999\n")
+        );
+        let provenance = ctx.provenance.expect("reload provenance");
+        assert_eq!(provenance.source, ConfigSource::Remote);
+        assert_eq!(
+            provenance.content_digest,
+            format!(
+                "{:x}",
+                Sha256::digest(b"gateway.healthPath: /remote\nserver.httpPort: 9999\n")
+            )
+        );
         server.await.expect("config server task");
     }
 
@@ -2741,6 +3042,44 @@ shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
         assert!(running.registry_session.is_some());
 
         running.shutdown().await.expect("shutdown runtime");
+    }
+
+    #[tokio::test]
+    async fn registry_failure_is_fail_closed_when_tolerant_start_is_disabled() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind unused controller port");
+        let addr = listener.local_addr().expect("controller addr");
+        drop(listener);
+
+        let config_dir = TempDir::new().expect("config temp dir");
+        write_server_template(config_dir.path());
+        fs::write(
+            config_dir.path().join(PORTAL_REGISTRY_FILE),
+            format!("portalUrl: http://{addr}\nportalToken: test-token\n"),
+        )
+        .expect("write portal registry config");
+        fs::write(
+            config_dir.path().join(VALUES_FILE),
+            "server.enableRegistry: true\nserver.startOnRegistryFailure: false\n",
+        )
+        .expect("write local values");
+
+        let result = LightRuntimeBuilder::new(NoopTransport)
+            .with_config_dir(config_dir.path())
+            .with_registration_timeout(Duration::from_millis(50))
+            .build()
+            .start()
+            .await;
+        let error = match result {
+            Ok(_) => panic!("registry failure must reject startup"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.to_string().contains("registration timed out"),
+            "unexpected startup error: {error}"
+        );
     }
 
     #[tokio::test]
@@ -3115,6 +3454,53 @@ enableRegistry: false
         assert!(module_ids.contains(&"light-runtime/server".to_string()));
 
         running.shutdown().await.expect("shutdown runtime");
+    }
+
+    #[tokio::test]
+    async fn start_accepts_an_already_validated_configuration_candidate() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        write_server_template(config_dir.path());
+        let prepared = LightRuntimeBuilder::new(NoopTransport)
+            .with_config_dir(config_dir.path())
+            .build()
+            .prepare_local_config()
+            .await
+            .expect("prepare runtime configuration");
+
+        let running = LightRuntimeBuilder::new(NoopTransport)
+            .with_config_dir(config_dir.path().join("must-not-be-read"))
+            .with_prepared_config(prepared)
+            .build()
+            .start()
+            .await
+            .expect("start from prepared configuration");
+
+        assert_eq!(running.state, LifecycleState::Ready);
+        assert!(Arc::ptr_eq(
+            &running.config.module_registry,
+            &running.module_registry
+        ));
+        running.shutdown().await.expect("shutdown runtime");
+    }
+
+    #[tokio::test]
+    async fn startup_fails_if_a_critical_participant_failed_before_admission_opens() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        write_server_template(config_dir.path());
+        let error = match LightRuntimeBuilder::new(StartupCriticalFailureTransport)
+            .with_config_dir(config_dir.path())
+            .build()
+            .start()
+            .await
+        {
+            Ok(_) => panic!("failed startup participant must prevent readiness"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("critical lifecycle participant failed during startup")
+        );
     }
 
     #[tokio::test]

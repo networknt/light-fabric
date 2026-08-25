@@ -12,6 +12,7 @@ use light_runtime::{
     AdmissionGate, AdmissionKind, BoundTransport, LifecycleRegistrar, ResolvedServerMetadata,
     RuntimeConfig, RuntimeError, ShutdownContext, TransportRuntime,
 };
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -44,6 +45,12 @@ pub struct ControlRoute {
 #[async_trait]
 pub trait AxumApp: Send + Sync + 'static {
     async fn router(&self, context: ServerContext) -> Result<Router, RuntimeError>;
+
+    /// Returns the complete controller-registration tag map after router
+    /// construction has validated and initialized the application.
+    fn registration_tags(&self) -> HashMap<String, String> {
+        HashMap::new()
+    }
 
     fn control_routes(&self) -> &'static [ControlRoute] {
         &[]
@@ -192,7 +199,7 @@ where
                 protocol: protocol.to_string(),
                 address: advertised_address,
                 port: local_addr.port(),
-                tags: Default::default(),
+                tags: self.app.registration_tags(),
             },
         })
     }
@@ -336,20 +343,52 @@ mod tests {
     };
     use futures_util::stream;
     use light_runtime::{
-        AdmissionGate, AdmissionKind, BootstrapConfig, DirectRegistryConfig, LifecycleRegistry,
-        ModuleRegistry, RuntimeConfig, RuntimeError, ServerConfig, ServiceIdentity,
-        ShutdownContext, ShutdownMode, ShutdownReason, TransportRuntime,
+        AdmissionGate, AdmissionKind, BootstrapConfig, DirectRegistryConfig, LifecycleParticipant,
+        LifecycleRegistry, LightRuntimeBuilder, ModuleRegistry, RuntimeConfig, RuntimeError,
+        ServerConfig, ServiceIdentity, ShutdownContext, ShutdownMode, ShutdownReason,
+        TransportRuntime,
     };
     use std::convert::Infallible;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
     use std::path::PathBuf;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
     use tokio::time::Instant;
     use tokio_util::sync::CancellationToken;
 
     struct StreamingTestApp {
         finish: Arc<tokio::sync::Notify>,
+    }
+
+    struct StartupParticipant(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl LifecycleParticipant for StartupParticipant {
+        fn name(&self) -> &'static str {
+            "axum-startup-participant"
+        }
+
+        async fn shutdown(
+            &self,
+            _config: &RuntimeConfig,
+            _context: &ShutdownContext,
+        ) -> Result<(), RuntimeError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    struct RegisteringTestApp(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl AxumApp for RegisteringTestApp {
+        async fn router(&self, context: ServerContext) -> Result<Router, RuntimeError> {
+            context
+                .lifecycle
+                .register(Arc::new(StartupParticipant(Arc::clone(&self.0))))?;
+            Ok(Router::new())
+        }
     }
 
     #[async_trait]
@@ -570,5 +609,30 @@ mod tests {
             .stop(&mut bound.handle, &context)
             .await
             .expect("stop test server");
+    }
+
+    #[tokio::test]
+    async fn listener_bind_failure_unwinds_participants_started_by_the_app() {
+        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("occupy test port");
+        let mut config = runtime_config();
+        config.server.ip = "127.0.0.1".to_string();
+        config.server.enable_http = true;
+        config.server.enable_https = false;
+        config.server.dynamic_port = false;
+        config.server.http_port = occupied.local_addr().unwrap().port();
+        let shutdowns = Arc::new(AtomicUsize::new(0));
+
+        let result = LightRuntimeBuilder::new(AxumTransport::new(RegisteringTestApp(Arc::clone(
+            &shutdowns,
+        ))))
+        .with_prepared_config(config)
+        .build()
+        .start()
+        .await;
+
+        assert!(matches!(result, Err(RuntimeError::Io(_))));
+        assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
     }
 }

@@ -2,11 +2,12 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use object_store::{ObjectStore, PutPayload, aws::AmazonS3Builder, path::Path};
 use sha2::{Digest, Sha256};
-use std::{env, sync::Arc};
+use std::sync::Arc;
 
 use crate::{
     artifact_publish::ArtifactPublisherStore,
     artifact_retention::{ArtifactObjectStore, ArtifactStoreError},
+    configuration::ArtifactSettings,
 };
 
 #[derive(Clone)]
@@ -16,23 +17,21 @@ pub struct DurableArtifactStore {
 }
 
 impl DurableArtifactStore {
-    pub fn from_environment() -> Result<Option<Self>, ArtifactStoreError> {
-        let bucket = match env::var("WORKFLOW_ARTIFACT_S3_BUCKET") {
-            Ok(value) if !value.is_empty() => value,
-            _ => return Ok(None),
+    pub fn from_configuration(
+        configuration: &ArtifactSettings,
+    ) -> Result<Option<Self>, ArtifactStoreError> {
+        let Some(bucket) = configuration.bucket.as_deref() else {
+            return Ok(None);
         };
         let mut builder = AmazonS3Builder::from_env().with_bucket_name(bucket);
-        if let Ok(endpoint) = env::var("WORKFLOW_ARTIFACT_S3_ENDPOINT") {
+        if let Some(endpoint) = configuration.endpoint.as_deref() {
             builder = builder.with_endpoint(endpoint);
         }
-        if env::var("WORKFLOW_ARTIFACT_S3_ALLOW_HTTP").as_deref() == Ok("true") {
+        if configuration.allow_http {
             builder = builder.with_allow_http(true);
         }
         let store = builder.build().map_err(store_error)?;
-        let prefix = env::var("WORKFLOW_ARTIFACT_PREFIX")
-            .unwrap_or_else(|_| "light-workflow".into())
-            .trim_matches('/')
-            .to_string();
+        let prefix = configuration.prefix.clone();
         if prefix.is_empty()
             || prefix
                 .split('/')

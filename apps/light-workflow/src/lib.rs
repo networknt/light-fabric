@@ -16,4 +16,5 @@ pub mod repositories;
 pub mod result_reconciler;
 pub mod rule_api;
 pub mod runner_scheduler;
+pub mod service_runtime;
 pub mod session_reconciler;

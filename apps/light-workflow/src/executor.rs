@@ -1,3 +1,4 @@
+use crate::configuration::WorkflowConfigManager;
 use crate::repositories::{NewTask, TerminalAttempt, WorkflowRepository};
 use agent_delegation::{DelegationClaims, DelegationKind, DelegationSigner};
 use chrono::Utc;
@@ -154,6 +155,12 @@ pub struct TaskExecutor {
     value_engine: Arc<RuleEngine>,
     workflow_delegation_signer: Option<Arc<DelegationSigner>>,
     execution_profiles: BTreeMap<String, ExecutionProfile>,
+    database_url: Option<String>,
+    host_executor_concurrency: usize,
+    environment: String,
+    service_authorization: Option<String>,
+    agent_provider_base_urls: BTreeMap<String, String>,
+    managed_configuration: bool,
 }
 
 impl TaskExecutor {
@@ -284,25 +291,46 @@ impl TaskExecutor {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("failed to build reqwest HTTP client with timeouts and redirects disabled");
-        let workflow_delegation_signer = env::var("WORKFLOW_DELEGATION_SECRET")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .and_then(|secret| match DelegationSigner::new(secret.as_bytes(), "light-workflow") {
-                Ok(signer) => Some(Arc::new(signer)),
-                Err(error) => {
-                    error!(%error, "WORKFLOW_DELEGATION_SECRET is invalid; nested MCP delegation is disabled");
-                    None
-                }
-            });
-
         Self {
             pool,
             http_client,
             rule_executor,
             value_engine: engine,
-            workflow_delegation_signer,
+            workflow_delegation_signer: None,
             execution_profiles: BTreeMap::new(),
+            database_url: None,
+            host_executor_concurrency: DEFAULT_HOST_EXECUTOR_CONCURRENCY,
+            environment: "local".to_string(),
+            service_authorization: None,
+            agent_provider_base_urls: BTreeMap::new(),
+            managed_configuration: false,
         }
+    }
+
+    pub fn with_runtime_configuration(
+        mut self,
+        database_url: String,
+        host_executor_concurrency: usize,
+        environment: String,
+        service_authorization: String,
+        delegation_secret: Option<String>,
+        agent_provider_base_urls: BTreeMap<String, String>,
+        managed_configuration: bool,
+    ) -> Result<Self, String> {
+        self.database_url = Some(database_url);
+        self.host_executor_concurrency = host_executor_concurrency;
+        self.environment = environment;
+        self.service_authorization = Some(service_authorization);
+        self.agent_provider_base_urls = agent_provider_base_urls;
+        self.managed_configuration = managed_configuration;
+        self.workflow_delegation_signer = delegation_secret
+            .map(|secret| {
+                DelegationSigner::new(secret.as_bytes(), "light-workflow")
+                    .map(Arc::new)
+                    .map_err(|error| format!("WORKFLOW_DELEGATION_SECRET is invalid: {error}"))
+            })
+            .transpose()?;
+        Ok(self)
     }
 
     pub fn with_execution_profiles(
@@ -314,17 +342,84 @@ impl TaskExecutor {
     }
 
     pub async fn run(&self, shutdown: tokio_util::sync::CancellationToken) -> Result<(), DynError> {
-        let concurrency = env::var("WORKFLOW_HOST_EXECUTOR_CONCURRENCY")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(DEFAULT_HOST_EXECUTOR_CONCURRENCY)
-            .clamp(1, 128);
+        let concurrency = self.host_executor_concurrency;
         info!(concurrency, "Starting TaskExecutor workers");
         futures_util::future::try_join_all(
             (0..concurrency).map(|_| self.run_worker(Uuid::now_v7(), shutdown.clone())),
         )
         .await?;
         Ok(())
+    }
+
+    pub async fn run_dynamic(
+        self: Arc<Self>,
+        runtime_config: Arc<WorkflowConfigManager>,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) -> Result<(), DynError> {
+        let mut updates = runtime_config.subscribe();
+        let mut workers = HashMap::<Uuid, tokio_util::sync::CancellationToken>::new();
+        let mut joins = tokio::task::JoinSet::<(Uuid, Result<(), DynError>)>::new();
+
+        loop {
+            let desired = runtime_config.load().config.host_executor_concurrency;
+            let active = workers
+                .values()
+                .filter(|token| !token.is_cancelled())
+                .count();
+            if active < desired {
+                for _ in active..desired {
+                    let worker_id = Uuid::now_v7();
+                    let worker_shutdown = shutdown.child_token();
+                    workers.insert(worker_id, worker_shutdown.clone());
+                    let executor = Arc::clone(&self);
+                    joins.spawn(async move {
+                        let result = executor.run_worker(worker_id, worker_shutdown).await;
+                        (worker_id, result)
+                    });
+                }
+                info!(desired, "TaskExecutor worker capacity activated");
+            } else if active > desired {
+                for token in workers
+                    .values()
+                    .filter(|token| !token.is_cancelled())
+                    .take(active - desired)
+                {
+                    token.cancel();
+                }
+                info!(desired, "TaskExecutor worker capacity draining");
+            }
+
+            tokio::select! {
+                _ = shutdown.cancelled() => {
+                    for token in workers.values() {
+                        token.cancel();
+                    }
+                    while let Some(joined) = joins.join_next().await {
+                        let (_, result) = joined.map_err(|error| -> DynError { Box::new(error) })?;
+                        result?;
+                    }
+                    return Ok(());
+                }
+                changed = updates.changed() => {
+                    if changed.is_err() {
+                        return Err(io::Error::new(io::ErrorKind::BrokenPipe, "workflow runtime configuration channel closed").into());
+                    }
+                }
+                joined = joins.join_next(), if !workers.is_empty() => {
+                    let (worker_id, result) = joined
+                        .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "workflow executor worker set closed"))?
+                        .map_err(|error| -> DynError { Box::new(error) })?;
+                    let expected_stop = workers
+                        .remove(&worker_id)
+                        .is_some_and(|token| token.is_cancelled());
+                    if !expected_stop {
+                        result?;
+                        return Err(io::Error::other(format!("TaskExecutor worker {worker_id} exited unexpectedly")).into());
+                    }
+                    result?;
+                }
+            }
+        }
     }
 
     async fn run_worker(
@@ -335,8 +430,13 @@ impl TaskExecutor {
         // LISTEN connections are intentionally kept outside the query pool. A
         // worker retains this connection for its lifetime and must still be
         // able to acquire a pooled connection to claim and commit work.
-        let database_url = env::var("DATABASE_URL")?;
-        let mut listener = PgListener::connect(&database_url).await?;
+        let database_url = self.database_url.as_deref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "executor database URL is not configured",
+            )
+        })?;
+        let mut listener = PgListener::connect(database_url).await?;
         listener.listen("workflow_task_ready_v1").await?;
         loop {
             if shutdown.is_cancelled() {
@@ -1220,8 +1320,7 @@ impl TaskExecutor {
                         )
                         .into());
                     }
-                    let environment =
-                        env::var("LIGHTAPI_ENVIRONMENT").unwrap_or_else(|_| "local".to_string());
+                    let environment = self.environment.clone();
                     let resolved: Option<(Uuid, Uuid, Value, String)> = sqlx::query_as(
                         "SELECT g.grant_id,t.tool_id,t.lightapi_document,
                                 (av.protocol || '://' || av.target_host) AS base_uri
@@ -1360,10 +1459,10 @@ impl TaskExecutor {
                     &claimed.context_data,
                 );
                 let workflow_authorization = if workflow_backed {
-                    let scope_authorization = env::var("LIGHT_PORTAL_AUTHORIZATION").ok();
+                    let scope_authorization = self.service_authorization.as_deref();
                     Some(workflow_http_authorization_headers(
                         user_authorization,
-                        scope_authorization.as_deref(),
+                        scope_authorization,
                     )?)
                 } else {
                     None
@@ -2405,7 +2504,7 @@ impl TaskExecutor {
         &self,
         agent: &AgentDefinitionRecord,
     ) -> Result<Box<dyn Provider>, DynError> {
-        let api_key = self.resolve_agent_api_key(agent);
+        let api_key = self.resolve_agent_api_key(agent)?;
         let base_url = self.provider_base_url(&agent.model_provider);
         let max_tokens = agent
             .max_tokens
@@ -2444,7 +2543,7 @@ impl TaskExecutor {
                 let base_url = base_url.ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "compatible agent provider requires LIGHT_WORKFLOW_AGENT_COMPATIBLE_BASE_URL or COMPATIBLE_BASE_URL",
+                        "compatible agent provider requires workflow.agentProviders.compatible.baseUrl",
                     )
                 })?;
                 Ok(Box::new(
@@ -2533,7 +2632,10 @@ impl TaskExecutor {
         ])
     }
 
-    fn resolve_agent_api_key(&self, agent: &AgentDefinitionRecord) -> Option<String> {
+    fn resolve_agent_api_key(
+        &self,
+        agent: &AgentDefinitionRecord,
+    ) -> Result<Option<String>, DynError> {
         if let Some(api_key_ref) = agent
             .api_key_ref
             .as_deref()
@@ -2541,12 +2643,19 @@ impl TaskExecutor {
             .filter(|value| !value.is_empty())
         {
             if let Some(value) = api_key_ref.strip_prefix("literal:") {
-                return Some(value.to_string());
+                if self.managed_configuration {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "managed workflow agent api_key_ref must not use literal: credentials",
+                    )
+                    .into());
+                }
+                return Ok(Some(value.to_string()));
             }
 
             let env_name = api_key_ref.strip_prefix("env:").unwrap_or(api_key_ref);
             match env::var(env_name) {
-                Ok(value) if !value.trim().is_empty() => return Some(value),
+                Ok(value) if !value.trim().is_empty() => return Ok(Some(value)),
                 _ => warn!(
                     "Agent api_key_ref '{}' was not found as an environment variable",
                     api_key_ref
@@ -2557,36 +2666,18 @@ impl TaskExecutor {
         for env_name in Self::provider_api_key_env_names(&agent.model_provider) {
             if let Ok(value) = env::var(env_name) {
                 if !value.trim().is_empty() {
-                    return Some(value);
+                    return Ok(Some(value));
                 }
             }
         }
 
-        None
+        Ok(None)
     }
 
     fn provider_base_url(&self, provider: &str) -> Option<String> {
-        let normalized = provider
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() {
-                    c.to_ascii_uppercase()
-                } else {
-                    '_'
-                }
-            })
-            .collect::<String>();
-        let keys = [
-            format!("LIGHT_WORKFLOW_AGENT_{}_BASE_URL", normalized),
-            format!("{}_BASE_URL", normalized),
-        ];
-
-        keys.iter().find_map(|key| {
-            env::var(key)
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-        })
+        self.agent_provider_base_urls
+            .get(&provider.to_ascii_lowercase())
+            .cloned()
     }
 
     fn provider_api_key_env_names(provider: &str) -> Vec<&'static str> {
@@ -5640,6 +5731,26 @@ mod tests {
             .connect_lazy("postgres://characterization:characterization@localhost/characterization")
             .expect("test URL is syntactically valid");
         TaskExecutor::new(pool)
+    }
+
+    #[tokio::test]
+    async fn managed_agent_credentials_reject_literal_references() {
+        let mut executor = executor();
+        executor.managed_configuration = true;
+        let agent = AgentDefinitionRecord {
+            agent_def_id: Uuid::nil(),
+            agent_name: Some("test".to_string()),
+            model_provider: "openai".to_string(),
+            model_name: "test".to_string(),
+            api_key_ref: Some("literal:must-not-enter-config".to_string()),
+            temperature: 0.0,
+            max_tokens: None,
+            aggregate_version: 1,
+        };
+        let error = executor
+            .resolve_agent_api_key(&agent)
+            .expect_err("managed literal credential must fail");
+        assert!(error.to_string().contains("must not use literal:"));
     }
 
     fn claimed_from_yaml(yaml: &str, task_name: &str, task_type: &str) -> ClaimedTask {

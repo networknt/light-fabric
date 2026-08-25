@@ -46,7 +46,9 @@ cargo build -p light-workflow --locked
 
 cd apps/light-workflow
 DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver \
-LIGHT_WORKFLOW_HTTP_ADDR=0.0.0.0:8436 \
+LIGHT_PORTAL_AUTHORIZATION="Bearer <workflow-service-token>" \
+SERVER_ENVIRONMENT=dev \
+LIGHT_WORKFLOW_CONFIG_MODE=local \
 RUST_LOG=light_workflow=debug,info \
 WORKFLOW_LOG_ANSI=false \
 ./run.sh --debug-binary

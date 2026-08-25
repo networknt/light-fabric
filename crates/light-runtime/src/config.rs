@@ -14,6 +14,7 @@ pub struct BootstrapConfig {
     #[serde(default = "default_host")]
     pub host: String,
     pub service_id: Option<String>,
+    pub instance_id: Option<String>,
     pub product_id: Option<String>,
     pub product_version: Option<String>,
     pub api_id: Option<String>,
@@ -39,6 +40,7 @@ impl std::fmt::Debug for BootstrapConfig {
         f.debug_struct("BootstrapConfig")
             .field("host", &self.host)
             .field("service_id", &self.service_id)
+            .field("instance_id", &self.instance_id)
             .field("product_id", &self.product_id)
             .field("product_version", &self.product_version)
             .field("api_id", &self.api_id)
@@ -203,6 +205,32 @@ pub struct ServiceIdentity {
 pub struct RemoteBootstrapResult {
     pub values_yaml: Option<String>,
     pub cached_files: Vec<PathBuf>,
+    pub host_id: Option<String>,
+    pub snapshot_id: Option<String>,
+    pub instance_id: Option<String>,
+    pub content_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigSource {
+    Remote,
+    Cache,
+    Local,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigProvenance {
+    pub source: ConfigSource,
+    pub host_id: Option<String>,
+    pub snapshot_id: Option<String>,
+    pub instance_id: Option<String>,
+    pub content_digest: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedConfig {
+    pub runtime_config: RuntimeConfig,
+    pub provenance: ConfigProvenance,
 }
 
 pub(crate) fn default_host() -> String {
