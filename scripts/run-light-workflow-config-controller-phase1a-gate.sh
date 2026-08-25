@@ -13,7 +13,7 @@ cd "$workspace_root/portal-service"
 cargo test -p portal-core config_values --lib
 cargo check -p config-server
 
-events="$workspace_root/event-importer/events/local/12-workflow-phase1a-config.json"
+events="$workspace_root/light-portal-event/workflow/20260824-light-workflow-phase1a-config.json"
 jq -e '
   type == "array" and
   length == 22 and

@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 workspace_root=$(cd "$repo_root/.." && pwd)
-event_file="$workspace_root/event-importer/events/local/13-workflow-phase1b-typed-config.json"
+event_file="$workspace_root/light-portal-event/workflow/20260824-light-workflow-phase1b-typed-config.json"
 
 cd "$repo_root"
 ./scripts/run-light-workflow-config-controller-phase0-gate.sh
