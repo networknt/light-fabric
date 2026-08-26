@@ -63,11 +63,11 @@ agentPolicy:
     modelRates: ${agentPolicy.execution.modelRates:[]}
     servicePools: ${agentPolicy.execution.servicePools:[]}
     approvalRules: ${agentPolicy.execution.approvalRules:[]}
-    codingProfile: ${agentPolicy.execution.codingProfile:null}
+    codingProfile: ${agentPolicy.execution.codingProfile:{}}
   catalog:
     cacheTtlSeconds: ${agentPolicy.catalog.cacheTtlSeconds:60}
     staleOnErrorSeconds: ${agentPolicy.catalog.staleOnErrorSeconds:300}
-    effectiveCatalog: ${agentPolicy.catalog.effectiveCatalog:null}
+    effectiveCatalog: ${agentPolicy.catalog.effectiveCatalog:{}}
   memory:
     writeMode: ${agentPolicy.memory.writeMode:portal-command}
     portalCommandUrl: ${agentPolicy.memory.portalCommandUrl:}
@@ -81,7 +81,7 @@ agentPolicy:
     retrieval:
       topK: ${agentPolicy.knowledge.retrieval.topK:5}
       tokenBudget: ${agentPolicy.knowledge.retrieval.tokenBudget:2000}
-      filters: ${agentPolicy.knowledge.retrieval.filters:null}
+      filters: ${agentPolicy.knowledge.retrieval.filters:{}}
   channel: ${agentPolicy.channel:{}}
   dataBoundary: ${agentPolicy.dataBoundary:{}}
   gatewayDelegation: ${agentPolicy.gatewayDelegation:{}}

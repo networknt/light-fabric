@@ -24,6 +24,7 @@ tracing = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 reqwest = { workspace = true }
 futures-util = { workspace = true }
 url = { workspace = true }
@@ -40,6 +41,3 @@ thiserror = { workspace = true }
 
 [build-dependencies]
 config-embed-build = { path = "../../crates/config-embed-build" }
-
-[dev-dependencies]
-serde_yaml = { workspace = true }

@@ -4366,6 +4366,12 @@ security.skipPathPrefixes: [/health]
             agent.runtime_policy.publication_id,
             Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("publication id")
         );
+        assert!(agent.agent_policy.execution.coding_profile.is_none());
+        assert_eq!(
+            agent.agent_policy.catalog.effective_catalog,
+            Some(serde_json::json!({}))
+        );
+        assert!(agent.agent_policy.knowledge.retrieval.filters.is_none());
         assert_eq!(
             overridden_client.tls.ca_cert_path,
             Some(PathBuf::from("config/customer-ca.pem"))

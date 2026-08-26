@@ -2,6 +2,7 @@ use agent_core::{PolicySnapshot, sha256_digest};
 use agent_runtime_protocol::canonical_digest;
 use chrono::{DateTime, Utc};
 use knowledge_core::RetrievalFilters;
+use serde::de::{DeserializeOwned, Error as DeError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -118,7 +119,7 @@ pub struct AgentExecutionPolicy {
     pub service_pools: Vec<Value>,
     #[serde(default)]
     pub approval_rules: Vec<Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_non_empty_map")]
     pub coding_profile: Option<CodingProfilePolicy>,
 }
 
@@ -172,8 +173,38 @@ pub struct AgentKnowledgePolicy {
 pub struct AgentKnowledgeRetrievalPolicy {
     pub top_k: usize,
     pub token_budget: usize,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_non_empty_map")]
     pub filters: Option<RetrievalFilters>,
+}
+
+fn deserialize_optional_non_empty_map<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let value = Value::deserialize(deserializer)?;
+    let value = match value {
+        Value::Null => return Ok(None),
+        Value::String(value) => {
+            let value = value.trim();
+            if value.is_empty() {
+                return Ok(None);
+            }
+            serde_yaml::from_str::<Value>(value).map_err(D::Error::custom)?
+        }
+        value => value,
+    };
+
+    match &value {
+        Value::Null => Ok(None),
+        Value::Object(entries) if entries.is_empty() => Ok(None),
+        Value::Object(_) => serde_json::from_value(value)
+            .map(Some)
+            .map_err(D::Error::custom),
+        _ => Err(D::Error::custom(
+            "expected null, an empty value, or a JSON/YAML map",
+        )),
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -530,5 +561,74 @@ mod tests {
                 .unwrap_err()
                 .contains("retrieval limits")
         );
+    }
+
+    #[test]
+    fn optional_structured_policy_maps_accept_disabled_and_populated_forms() {
+        #[derive(Deserialize)]
+        struct CodingProfileValue {
+            #[serde(default, deserialize_with = "deserialize_optional_non_empty_map")]
+            value: Option<CodingProfilePolicy>,
+        }
+
+        #[derive(Deserialize, Serialize)]
+        struct CatalogValue {
+            #[serde(default)]
+            value: Option<Value>,
+        }
+
+        #[derive(Deserialize)]
+        struct FiltersValue {
+            #[serde(default, deserialize_with = "deserialize_optional_non_empty_map")]
+            value: Option<RetrievalFilters>,
+        }
+
+        for yaml in ["{}", "value: null", "value: ''", "value: {}"] {
+            let parsed: CodingProfileValue = serde_yaml::from_str(yaml).unwrap();
+            assert!(parsed.value.is_none(), "{yaml}");
+        }
+
+        let coding: CodingProfileValue = serde_yaml::from_str(
+            r#"
+value:
+  productProfileDigest: sha256:profile
+  repositoryUriPrefix: file:///var/lib/light-agent/repositories/
+  compatibilityDigest: sha256:compatibility
+  templateDigest: sha256:template
+  binaryDigest: sha256:binary
+  provider: gateway
+  model: coding-model
+"#,
+        )
+        .unwrap();
+        let coding = coding.value.unwrap();
+        assert_eq!(coding.provider, "gateway");
+        assert_eq!(coding.model, "coding-model");
+
+        let missing_catalog: CatalogValue = serde_yaml::from_str("{}").unwrap();
+        assert!(missing_catalog.value.is_none());
+        let catalog: CatalogValue = serde_yaml::from_str("value: {}").unwrap();
+        assert_eq!(catalog.value, Some(serde_json::json!({})));
+        assert_eq!(
+            serde_json::to_value(catalog).unwrap(),
+            serde_json::json!({"value": {}})
+        );
+
+        let filters: FiltersValue =
+            serde_yaml::from_str("value: {languages: [en], sourceIds: []}").unwrap();
+        let filters = filters.value.unwrap();
+        assert_eq!(filters.languages, ["en"]);
+        assert!(filters.source_ids.is_empty());
+
+        let quoted_filters: FiltersValue =
+            serde_yaml::from_str("value: '{languages: [en], sourceIds: []}'").unwrap();
+        assert_eq!(quoted_filters.value.unwrap().languages, ["en"]);
+
+        let quoted_null: FiltersValue = serde_yaml::from_str("value: 'null'").unwrap();
+        assert!(quoted_null.value.is_none());
+
+        assert!(serde_yaml::from_str::<CodingProfileValue>("value: []").is_err());
+        assert!(serde_yaml::from_str::<CodingProfileValue>("value: enabled").is_err());
+        assert!(serde_yaml::from_str::<CodingProfileValue>("value: {provider: gateway}").is_err());
     }
 }
