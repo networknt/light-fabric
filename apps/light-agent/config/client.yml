@@ -1,7 +1,48 @@
 tls:
-  verifyHostname: ${client.verifyHostname:false}
+  verifyHostname: ${client.verifyHostname:true}
+  caCertPath: ${client.caCertPath:}
+  clientCertPath: ${client.clientCertPath:}
+  clientKeyPath: ${client.clientKeyPath:}
+  tlsVersion: ${client.tlsVersion:null}
 oauth:
+  multipleAuthServers: ${client.multipleAuthServers:false}
   token:
+    cache:
+      capacity: ${client.tokenCacheCapacity:200}
+    tokenRenewBeforeExpired: ${client.tokenRenewBeforeExpired:60000}
+    expiredRefreshRetryDelay: ${client.expiredRefreshRetryDelay:2000}
+    earlyRefreshRetryDelay: ${client.earlyRefreshRetryDelay:4000}
+    server_url: ${client.tokenServerUrl:}
+    serviceId: ${client.tokenServiceId:}
+    proxyHost: ${client.tokenProxyHost:}
+    proxyPort: ${client.tokenProxyPort:}
+    enableHttp2: ${client.tokenEnableHttp2:true}
+    client_credentials:
+      uri: ${client.tokenCcUri:/oauth2/token}
+      client_id: ${client.tokenCcClientId:}
+      client_secret: ${client.tokenCcClientSecret:}
+      scope: ${client.tokenCcScope:[]}
+      serviceIdAuthServers: ${client.tokenCcServiceIdAuthServers:{}}
+    authorization_code:
+      uri: ${client.tokenAcUri:/oauth2/token}
+      client_id: ${client.tokenAcClientId:}
+      client_secret: ${client.tokenAcClientSecret:}
+      redirect_uri: ${client.tokenAcRedirectUri:}
+      scope: ${client.tokenAcScope:[]}
+    refresh_token:
+      uri: ${client.tokenRtUri:/oauth2/token}
+      client_id: ${client.tokenRtClientId:}
+      client_secret: ${client.tokenRtClientSecret:}
+      scope: ${client.tokenRtScope:[]}
+    token_exchange:
+      uri: ${client.tokenExUri:/oauth2/token}
+      client_id: ${client.tokenExClientId:}
+      client_secret: ${client.tokenExClientSecret:}
+      scope: ${client.tokenExScope:[]}
+      subjectToken: ${client.subjectToken:}
+      subjectTokenType: ${client.subjectTokenType:}
+      requestedTokenType: ${client.requestedTokenType:}
+      audience: ${client.tokenExAudience:}
     key:
       server_url: ${client.tokenKeyServerUrl:}
       serviceId: ${client.tokenKeyServiceId:}
@@ -11,3 +52,51 @@ oauth:
       serviceIdAuthServers: ${client.tokenKeyServiceIdAuthServers:{}}
       enableHttp2: ${client.tokenKeyEnableHttp2:true}
       audience: ${client.tokenKeyAudience:}
+  sign:
+    server_url: ${client.signServerUrl:}
+    serviceId: ${client.signServiceId:}
+    uri: ${client.signUri:/oauth2/sign}
+    timeout: ${client.signTimeout:2000}
+    client_id: ${client.signClientId:}
+    client_secret: ${client.signClientSecret:}
+    proxyHost: ${client.signProxyHost:}
+    proxyPort: ${client.signProxyPort:}
+    enableHttp2: ${client.signEnableHttp2:true}
+    key:
+      server_url: ${client.signKeyServerUrl:}
+      serviceId: ${client.signKeyServiceId:}
+      uri: ${client.signKeyUri:/oauth2/key}
+      client_id: ${client.signKeyClientId:}
+      client_secret: ${client.signKeyClientSecret:}
+      enableHttp2: ${client.signKeyEnableHttp2:true}
+      audience: ${client.signKeyAudience:}
+  deref:
+    server_url: ${client.derefServerUrl:}
+    serviceId: ${client.derefServiceId:}
+    uri: ${client.derefUri:/oauth2/deref}
+    client_id: ${client.derefClientId:}
+    client_secret: ${client.derefClientSecret:}
+    proxyHost: ${client.derefProxyHost:}
+    proxyPort: ${client.derefProxyPort:}
+    enableHttp2: ${client.derefEnableHttp2:true}
+pathPrefixServices: ${client.pathPrefixServices:{}}
+request:
+  errorThreshold: ${client.errorThreshold:2}
+  connectTimeout: ${client.connectTimeout:2000}
+  timeout: ${client.timeout:3000}
+  resetTimeout: ${client.resetTimeout:7000}
+  injectOpenTracing: ${client.injectOpenTracing:false}
+  injectCallerId: ${client.injectCallerId:false}
+  enableHttp2: ${client.enableHttp2:true}
+  connectionPoolSize: ${client.connectionPoolSize:1000}
+  connectionExpireTime: ${client.connectionExpireTime:1800000}
+  maxReqPerConn: ${client.maxReqPerConn:1000000}
+  maxConnectionNumPerHost: ${client.maxConnectionNumPerHost:1000}
+  minConnectionNumPerHost: ${client.minConnectionNumPerHost:250}
+  maxRequestRetry: ${client.maxRequestRetry:3}
+  requestRetryDelay: ${client.requestRetryDelay:1000}
+  poolMetricsEnabled: ${client.poolMetricsEnabled:false}
+  poolWarmUpEnabled: ${client.poolWarmUpEnabled:false}
+  poolWarmUpSize: ${client.poolWarmUpSize:1}
+  healthCheckEnabled: ${client.healthCheckEnabled:true}
+  healthCheckIntervalMs: ${client.healthCheckIntervalMs:30000}

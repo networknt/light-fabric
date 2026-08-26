@@ -1,10 +1,23 @@
 enableVerifyJwt: ${security.enableVerifyJwt:true}
+enableVerifySwt: ${security.enableVerifySwt:false}
+swtClientIdHeader: ${security.swtClientIdHeader:swt-client-id}
+swtClientSecretHeader: ${security.swtClientSecretHeader:swt-client-secret}
+enableExtractScopeToken: ${security.enableExtractScopeToken:true}
 enableVerifyScope: ${security.enableVerifyScope:false}
+skipVerifyScopeWithoutSpec: ${security.skipVerifyScopeWithoutSpec:false}
 ignoreJwtExpiry: ${security.ignoreJwtExpiry:false}
+enableH2c: ${security.enableH2c:false}
+enableMockJwt: ${security.enableMockJwt:false}
 enableRelaxedKeyValidation: ${security.enableRelaxedKeyValidation:false}
-issuer: ${security.issuer:}
-audience: ${security.audience:[]}
 jwt:
   clockSkewInSeconds: ${security.jwt.clockSkewInSeconds:60}
+logJwtToken: ${security.logJwtToken:false}
+logClientUserScope: ${security.logClientUserScope:false}
+enableJwtCache: ${security.enableJwtCache:true}
+jwtCacheFullSize: ${security.jwtCacheFullSize:1000}
 bootstrapFromKeyService: ${security.bootstrapFromKeyService:false}
 providerId: ${security.providerId:}
+issuer: ${security.issuer:}
+audience: ${security.audience:[]}
+skipPathPrefixes: ${security.skipPathPrefixes:[]}
+passThroughClaims: ${security.passThroughClaims:{}}

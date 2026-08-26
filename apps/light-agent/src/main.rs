@@ -4241,16 +4241,22 @@ mod tests {
     use super::{
         AgentCatalogCache, AgentLimits, CatalogCacheKey, CatalogSkill, CatalogTool,
         CatalogToolPolicy, ChatMessage, EffectiveAgentCatalog, MAX_SESSION_MESSAGES,
-        ModelProviderConfig, SessionOwner, TurnDispatchCoordinator, agent_ca_cert_path_from_config,
-        apply_authoritative_system_prompt, bind_authenticated_principal, bound_untrusted_text,
-        choose_model, collect_catalog_tool_names, collect_policy_diagnostics, filter_gateway_tools,
+        McpClientConfig, ModelProviderConfig, SessionOwner, TurnDispatchCoordinator,
+        agent_ca_cert_path_from_config, apply_authoritative_system_prompt,
+        bind_authenticated_principal, bound_untrusted_text, choose_model,
+        collect_catalog_tool_names, collect_policy_diagnostics, filter_gateway_tools,
         normalize_provider_id, normalized_claim_values, parse_tool_arguments, select_catalog_tools,
         trim_history, validate_repository_input_uri, validate_session_owner,
     };
+    use config_loader::{ConfigLoader, EmbeddedConfigFile};
+    use light_agent::agent_config::AgentConfig;
     use light_agent::domain::AgentRepository;
-    use light_runtime::config::{BootstrapConfig, ClientConfig};
-    use light_security::AuthPrincipal;
+    use light_runtime::config::{
+        BootstrapConfig, ClientConfig, PortalRegistryConfig, ServerConfig,
+    };
+    use light_security::{AuthPrincipal, SecurityConfig};
     use mcp_client::McpTool;
+    use serde::de::DeserializeOwned;
     use sqlx::postgres::PgPoolOptions;
     use std::path::PathBuf;
     use std::time::Duration;
@@ -4270,6 +4276,106 @@ mod tests {
             max_output_items: 8,
             max_turn_tokens: 100,
         }
+    }
+
+    #[test]
+    fn embedded_runtime_templates_resolve_and_match_typed_configs() {
+        fn resolve<T: DeserializeOwned>(
+            name: &'static str,
+            content: &'static str,
+            values: &str,
+        ) -> T {
+            let loader = ConfigLoader::new(values, None, None).expect("config loader");
+            let mut value = loader
+                .load_embedded_file(&EmbeddedConfigFile { name, content })
+                .unwrap_or_else(|error| panic!("load {name}: {error}"));
+            loader
+                .resolve_value(&mut value)
+                .unwrap_or_else(|error| panic!("resolve {name}: {error}"));
+            serde_yaml::from_value(value)
+                .unwrap_or_else(|error| panic!("deserialize {name}: {error}"))
+        }
+
+        let startup: BootstrapConfig =
+            resolve("startup.yml", include_str!("../config/startup.yml"), "");
+        let client: ClientConfig = resolve("client.yml", include_str!("../config/client.yml"), "");
+        let server: ServerConfig = resolve("server.yml", include_str!("../config/server.yml"), "");
+        let portal_registry: PortalRegistryConfig = resolve(
+            "portal-registry.yml",
+            include_str!("../config/portal-registry.yml"),
+            "",
+        );
+        let security: SecurityConfig =
+            resolve("security.yml", include_str!("../config/security.yml"), "");
+        let mcp_client: McpClientConfig = resolve(
+            "mcp-client.yml",
+            include_str!("../config/mcp-client.yml"),
+            "",
+        );
+        let agent: AgentConfig = resolve(
+            "agent.yml",
+            include_str!("../config/agent.yml"),
+            r#"
+runtimePolicy.publicationId: 00000000-0000-0000-0000-000000000001
+runtimePolicy.policySnapshotId: 00000000-0000-0000-0000-000000000002
+runtimePolicy.hostId: 00000000-0000-0000-0000-000000000003
+runtimePolicy.serviceId: com.networknt.agent.account-1.0.0
+runtimePolicy.instanceId: 00000000-0000-0000-0000-000000000004
+runtimePolicy.createdAt: 2026-08-26T12:00:00Z
+runtimePolicy.validFrom: 2026-08-26T12:00:00Z
+runtimePolicy.refreshAfter: 2026-08-26T12:30:00Z
+runtimePolicy.expiresAt: 2026-08-26T13:00:00Z
+agentPolicy.agentDefId: 00000000-0000-0000-0000-000000000005
+agentPolicy.policySnapshot.snapshotId: 00000000-0000-0000-0000-000000000002
+"#,
+        );
+        let override_values = r#"
+client.caCertPath: config/customer-ca.pem
+client.verifyHostname: false
+server.tlsCertPath: config/server.pem
+security.skipPathPrefixes: [/health]
+"#;
+        let overridden_client: ClientConfig = resolve(
+            "client.yml",
+            include_str!("../config/client.yml"),
+            override_values,
+        );
+        let overridden_server: ServerConfig = resolve(
+            "server.yml",
+            include_str!("../config/server.yml"),
+            override_values,
+        );
+        let overridden_security: SecurityConfig = resolve(
+            "security.yml",
+            include_str!("../config/security.yml"),
+            override_values,
+        );
+
+        assert!(startup.external_config_dir.is_none());
+        assert!(client.tls.verify_hostname);
+        assert_eq!(client.request.timeout, 3_000);
+        assert_eq!(client.oauth.token.early_refresh_retry_delay, 4_000);
+        assert_eq!(client.oauth.sign.uri, "/oauth2/sign");
+        assert_eq!(client.oauth.deref.uri, "/oauth2/deref");
+        assert!(server.tls_cert_path.is_none());
+        assert!(portal_registry.control_candidates.is_none());
+        assert_eq!(security.swt_client_id_header, "swt-client-id");
+        assert_eq!(security.jwt_cache_full_size, 1_000);
+        assert_eq!(mcp_client.timeout_ms, 5_000);
+        assert_eq!(
+            agent.runtime_policy.publication_id,
+            Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("publication id")
+        );
+        assert_eq!(
+            overridden_client.tls.ca_cert_path,
+            Some(PathBuf::from("config/customer-ca.pem"))
+        );
+        assert!(!overridden_client.tls.verify_hostname);
+        assert_eq!(
+            overridden_server.tls_cert_path,
+            Some(PathBuf::from("config/server.pem"))
+        );
+        assert_eq!(overridden_security.skip_path_prefixes, ["/health"]);
     }
 
     #[test]

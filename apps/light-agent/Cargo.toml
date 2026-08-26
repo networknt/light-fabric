@@ -40,3 +40,6 @@ thiserror = { workspace = true }
 
 [build-dependencies]
 config-embed-build = { path = "../../crates/config-embed-build" }
+
+[dev-dependencies]
+serde_yaml = { workspace = true }
