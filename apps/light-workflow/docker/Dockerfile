@@ -9,6 +9,7 @@ WORKDIR /usr/src/app
 
 # This Dockerfile expects the workspace root as the build context.
 COPY Cargo.toml Cargo.lock ./
+COPY patches/ patches/
 COPY crates/ crates/
 COPY frameworks/ frameworks/
 COPY apps/ apps/

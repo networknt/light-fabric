@@ -1,6 +1,7 @@
 FROM rust:1.98.0-bookworm AS builder
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
+COPY patches/ patches/
 COPY crates/ crates/
 COPY frameworks/ frameworks/
 COPY apps/ apps/

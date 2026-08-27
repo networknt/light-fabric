@@ -12,6 +12,7 @@ WORKDIR /usr/src/app
 
 # Copy workspace root configuration
 COPY Cargo.toml Cargo.lock ./
+COPY patches/ patches/
 
 # Copy the required crates, frameworks, and apps
 # Note: This Dockerfile expects to be built from the workspace root context.

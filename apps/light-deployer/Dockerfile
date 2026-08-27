@@ -8,6 +8,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY Cargo.toml Cargo.lock ./
+COPY patches patches
 COPY crates crates
 COPY frameworks frameworks
 COPY apps apps
