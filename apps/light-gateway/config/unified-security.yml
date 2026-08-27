@@ -38,6 +38,7 @@ anonymousPrefixes: ${unified-security.anonymousPrefixes:[]}
 #
 # Each rule supports:
 #   prefix:         (string)  Required. URI path prefix to match.
+#   methods:        (list)    Optional HTTP methods; absent/empty means all.
 #   basic:          (bool)    Accept HTTP Basic authentication for this prefix.
 #   jwt:            (bool)    Accept Bearer JWT. JWKs fetched via client.yml.
 #   sjwt:           (bool)    Accept Simple-JWT (JWT with no scope/scp claim).
@@ -52,6 +53,8 @@ anonymousPrefixes: ${unified-security.anonymousPrefixes:[]}
 #                             to the default key server when empty.
 #   sjwkServiceIds: (list)    Same as jwkServiceIds but for sjwt verification.
 #   swtServiceIds:  (list)    Service IDs for SWT introspection endpoints. [NOT YET IMPLEMENTED - Gap 3]
+#   authentication: (object)  Composed allOf policy. Version 1 requires one
+#                             HMAC factor and permits one jwt or apiKey factor.
 #
 # Example (YAML format):
 #
@@ -68,6 +71,15 @@ anonymousPrefixes: ${unified-security.anonymousPrefixes:[]}
 #     basic: true
 #   - prefix: /webhook
 #     apikey: true
+#   - prefix: /partner-webhook
+#     methods: [POST]
+#     authentication:
+#       allOf:
+#         - type: hmac
+#           profile: partner
+#         - type: jwt
+#           jwkServiceIds:
+#             - com.networknt.oauth2-partner-1.0.0
 #   - prefix: /
 #     jwt: true
 #

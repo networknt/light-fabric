@@ -30,6 +30,9 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 futures-util = { workspace = true }
+hmac = { workspace = true }
+hex = { workspace = true }
+http = { workspace = true }
 portal-registry = { path = "../../crates/portal-registry" }
 socket2 = "0.6"
 tempfile = "3"

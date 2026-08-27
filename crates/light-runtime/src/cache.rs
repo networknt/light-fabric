@@ -10,7 +10,13 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 #[async_trait]
 pub trait RuntimeCache: Send + Sync {
     async fn len(&self) -> usize;
+    async fn is_empty(&self) -> bool {
+        self.len().await == 0
+    }
     async fn entries_summary(&self) -> JsonValue;
+    fn clear_supported(&self) -> bool {
+        true
+    }
     async fn clear(&self);
 }
 
@@ -79,12 +85,18 @@ impl CacheRegistry {
     pub async fn clear(&self, name: &str) -> Option<ClearCacheOutcome> {
         let cache = self.cache(name)?;
         let before_size = cache.len().await;
-        cache.clear().await;
+        if cache.clear_supported() {
+            cache.clear().await;
+        }
         let after_size = cache.len().await;
         Some(ClearCacheOutcome {
             before_size,
             after_size,
         })
+    }
+
+    pub fn clear_supported(&self, name: &str) -> Option<bool> {
+        self.cache(name).map(|cache| cache.clear_supported())
     }
 
     fn caches_read(&self) -> RwLockReadGuard<'_, BTreeMap<String, Arc<dyn RuntimeCache>>> {

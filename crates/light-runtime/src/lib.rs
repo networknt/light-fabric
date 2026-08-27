@@ -29,7 +29,7 @@ pub use module_registry::{
 };
 pub use portal_registry::{
     DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, PortalRegistryClient,
-    RegistrationState, ServiceMetadataUpdate,
+    RegistrationState, RegistryHandler, ServiceMetadataUpdate,
 };
 pub use runtime::{
     LifecycleState, LightRuntime, LightRuntimeBuilder, Module, RegistrationPolicy, RunningRuntime,

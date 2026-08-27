@@ -2,41 +2,45 @@ use agent_delegation::{DelegationClaims, DelegationVerifier, TOKEN_PREFIX};
 use anyhow::{Context, Result};
 use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use chrono::{DateTime, Utc};
 use light_gateway::model_provider_sidecar;
 use light_pingora::{
     AccessControlRuntime, AccessDecision, ActiveHandlerSet, ApiKeyConfig, AuthPrincipal,
     BasicAuthConfig, CorrelationConfig, CorrelationState, CorsConfig, CorsRequestOutcome,
     CorsResponseHeaders, HandlerBuildContext, HandlerMetricsLogLevel, HandlerRejection,
-    HeaderConfig, McpHttpRequest, McpHttpResponse, McpRequestContext, McpResponseBody,
-    McpResponseStream, McpRouterRuntime, MetricsConfig, MetricsRecorder, MsalAuthRuntime,
-    MsalExchangeOutcome, MsalExchangeRuntime, PathPrefixServiceConfig, PiiTokenizationRuntime,
-    PingoraApp, PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerKind,
-    PingoraHandlerRegistry, PingoraTransport, ProxyRoute, ProxyTarget, RateLimitHeaders,
-    RateLimitRuntime, RouterDecision, RouterRoute, SecurityRuntime, SpaAuthLegacyEndpoint,
-    SpaAuthResponse, StatelessAuthOutcome, StatelessAuthRuntime, StaticResolution,
-    StaticResourceSet, TokenRuntime, UnifiedSecurityConfig, WebSocketConnectionPermit,
-    WebSocketHandshake, WebSocketRouteDecision, WebSocketRouteError, WebSocketRouterRuntime,
-    apply_browser_websocket_upstream_credentials, apply_correlation_request,
-    apply_correlation_response, apply_cors_response, apply_header_request, apply_header_response,
-    apply_path_prefix_service, apply_rate_limit_headers, apply_router_upstream_request,
-    apply_token_request, apply_websocket_upstream_request, build_metrics_event, check_rate_limit,
+    HeaderConfig, HmacReplayAttempt, HmacRuntime, HmacVerificationError, McpHttpRequest,
+    McpHttpResponse, McpRequestContext, McpResponseBody, McpResponseStream, McpRouterRuntime,
+    MetricsConfig, MetricsRecorder, MsalAuthRuntime, MsalExchangeOutcome, MsalExchangeRuntime,
+    PathPrefixServiceConfig, PiiTokenizationRuntime, PingoraApp, PingoraHandler,
+    PingoraHandlerDescriptor, PingoraHandlerKind, PingoraHandlerRegistry, PingoraTransport,
+    ProxyRoute, ProxyTarget, RateLimitHeaders, RateLimitRuntime, ReplayReservation, ReserveOutcome,
+    RouterDecision, RouterRoute, SecurityRuntime, SpaAuthLegacyEndpoint, SpaAuthResponse,
+    StatelessAuthOutcome, StatelessAuthRuntime, StaticResolution, StaticResourceSet, TokenRuntime,
+    UnifiedSecurityConfig, WebSocketConnectionPermit, WebSocketHandshake, WebSocketRouteDecision,
+    WebSocketRouteError, WebSocketRouterRuntime, apply_browser_websocket_upstream_credentials,
+    apply_correlation_request, apply_correlation_response, apply_cors_response,
+    apply_header_request, apply_header_response, apply_path_prefix_service,
+    apply_rate_limit_headers, apply_router_upstream_request, apply_token_request,
+    apply_websocket_upstream_request, build_metrics_event, check_rate_limit,
     correlation_id_for_upstream, evaluate_cors_request, load_access_control_runtime,
     load_active_handlers, load_api_key_config, load_basic_auth_config, load_correlation_config,
-    load_cors_config, load_header_config, load_mcp_router_runtime, load_metrics_config,
-    load_msal_auth_runtime, load_msal_exchange_runtime, load_path_prefix_service_config,
-    load_pii_tokenization_runtime, load_proxy_route, load_rate_limit_runtime, load_router_route,
-    load_security_runtime, load_stateless_auth_runtime, load_static_resources, load_token_runtime,
+    load_cors_config, load_header_config, load_hmac_runtime, load_hmac_runtime_preserving,
+    load_mcp_router_runtime, load_metrics_config, load_msal_auth_runtime,
+    load_msal_exchange_runtime, load_path_prefix_service_config, load_pii_tokenization_runtime,
+    load_proxy_route, load_rate_limit_runtime, load_router_route, load_security_runtime,
+    load_stateless_auth_runtime, load_static_resources, load_token_runtime,
     load_unified_security_config, load_websocket_router_runtime_with_policy,
     merge_extra_response_headers, record_mcp_router_reload_rejection, record_spa_auth_legacy_get,
-    select_router_target, validate_mcp_router_runtime_config, verify_api_key, verify_basic_auth,
-    verify_jwt_request, verify_unified_security, websocket_policy_endpoint,
+    select_router_target, validate_mcp_router_runtime_config, validate_unified_security_config,
+    verify_api_key, verify_basic_auth, verify_jwt_request, verify_unified_security,
+    websocket_policy_endpoint,
 };
 use light_runtime::{
     AdmissionGate, AdmissionKind, AdmissionPermit, CacheRegistry, ConfigManager,
-    LifecycleRegistrar, LightRuntimeBuilder, ModuleKind, ReloadContext, ReloadOutcome,
-    ReloadableModule, RuntimeConfig, RuntimeError, ShutdownWatcher, TracingOptions, init_tracing,
+    LifecycleRegistrar, LightRuntimeBuilder, ModuleKind, RegistryHandler, ReloadContext,
+    ReloadOutcome, ReloadableModule, RuntimeConfig, RuntimeError, ShutdownWatcher, TracingOptions,
+    init_tracing,
 };
 use llm_gateway::LlmRuntime;
 use llm_gateway::audit::{AuditSinkConfig, AuditSinkTask, ProcessAudit, WalAudit, WalConfig};
@@ -49,19 +53,20 @@ use llm_gateway::http::{
 use llm_gateway::runtime::{
     LlmCompiler, LlmSnapshotStore, ReadinessControllerTask, start_readiness_controller,
 };
-use pingora::http::ResponseHeader;
+use pingora::http::{HMap, ResponseHeader};
 use pingora::prelude::{HttpPeer, ProxyHttp, Session};
 use pingora::utils::tls::CertKey;
 use pingora::{Error, ErrorType};
 use serde_json::{Value as JsonValue, json};
 use sqlx::postgres::PgPoolOptions;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::BufReader;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
 use tokio::sync::Semaphore;
+use tokio::time::timeout;
 use tracing::{debug, info, warn};
 use url::form_urlencoded;
 
@@ -239,8 +244,10 @@ fn buffered_embedding_drain_deadline(
     write_timeout.saturating_add(Duration::from_millis(rate_ms))
 }
 
-#[derive(Clone)]
-struct GatewayApp;
+#[derive(Clone, Default)]
+struct GatewayApp {
+    hmac_replay_admin: Arc<HmacReplayAdmin>,
+}
 
 impl PingoraApp for GatewayApp {
     type Proxy = GatewayProxy;
@@ -251,7 +258,121 @@ impl PingoraApp for GatewayApp {
         _lifecycle: &LifecycleRegistrar,
         admission: &AdmissionGate,
     ) -> Result<Self::Proxy, RuntimeError> {
-        GatewayProxy::from_runtime_config_with_admission(config, admission.clone())
+        GatewayProxy::from_runtime_config_with_admission_and_admin(
+            config,
+            admission.clone(),
+            Arc::clone(&self.hmac_replay_admin),
+        )
+    }
+}
+
+#[derive(Default)]
+struct HmacReplayAdmin {
+    runtime: RwLock<Option<HmacRuntime>>,
+}
+
+impl HmacReplayAdmin {
+    fn replace(&self, runtime: Option<HmacRuntime>) {
+        *self
+            .runtime
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = runtime;
+    }
+
+    fn runtime(&self) -> Option<HmacRuntime> {
+        self.runtime
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+}
+
+struct HmacReplayRegistryHandler {
+    admin: Arc<HmacReplayAdmin>,
+}
+
+#[async_trait]
+impl RegistryHandler for HmacReplayRegistryHandler {
+    async fn handle_request(&self, method: &str, params: JsonValue) -> JsonValue {
+        if method == "tools/list" {
+            let tools = self.admin.runtime().map_or_else(Vec::new, |_| {
+                vec![json!({
+                    "name": "remove_webhook_replay",
+                    "description": "Administratively remove one HMAC webhook replay reservation before redelivery.",
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["profile", "selector", "deliveryId"],
+                        "properties": {
+                            "profile": { "type": "string" },
+                            "selector": { "type": "string" },
+                            "deliveryId": { "type": "string" }
+                        }
+                    }
+                })]
+            });
+            return json!({ "tools": tools });
+        }
+        if method != "tools/call"
+            || params.get("name").and_then(JsonValue::as_str) != Some("remove_webhook_replay")
+        {
+            return json!({
+                "supported": false,
+                "status": "unsupported",
+                "error": {
+                    "code": "unsupported_method",
+                    "message": format!("registry method `{method}` is not supported")
+                }
+            });
+        }
+        let arguments = params.get("arguments").and_then(JsonValue::as_object);
+        let field = |name: &str| {
+            arguments
+                .and_then(|arguments| arguments.get(name))
+                .and_then(JsonValue::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        };
+        let (Some(profile), Some(selector), Some(delivery_id)) =
+            (field("profile"), field("selector"), field("deliveryId"))
+        else {
+            return json!({
+                "status": "error",
+                "message": "profile, selector, and deliveryId must be non-empty strings"
+            });
+        };
+        let Some(runtime) = self.admin.runtime() else {
+            return json!({ "status": "error", "message": "HMAC replay administration is unavailable" });
+        };
+        match runtime
+            .force_remove_replay(profile, selector, delivery_id)
+            .await
+        {
+            Ok(outcome) => {
+                info!(
+                    target: "light_gateway::hmac_audit",
+                    event = "webhook_replay_removed",
+                    profile,
+                    removed = outcome.removed,
+                    scope = outcome.scope.as_str(),
+                    "administrative webhook replay removal completed"
+                );
+                json!({
+                    "status": "success",
+                    "removed": outcome.removed,
+                    "scope": outcome.scope.as_str()
+                })
+            }
+            Err(error) => {
+                warn!(
+                    target: "light_gateway::hmac_audit",
+                    event = "webhook_replay_removal_failed",
+                    profile,
+                    error = %error,
+                    "administrative webhook replay removal failed"
+                );
+                json!({ "status": "error", "message": error.to_string() })
+            }
+        }
     }
 }
 
@@ -265,10 +386,11 @@ struct GatewayProxy {
     cors_config: Arc<ConfigManager<Option<CorsConfig>>>,
     metrics_config: Arc<ConfigManager<Option<MetricsConfig>>>,
     header_config: Arc<ConfigManager<Option<HeaderConfig>>>,
-    api_key_config: Arc<ConfigManager<Option<ApiKeyConfig>>>,
-    basic_auth_config: Arc<ConfigManager<Option<BasicAuthConfig>>>,
-    security_runtime: Arc<ConfigManager<Option<SecurityRuntime>>>,
-    unified_security_config: Arc<ConfigManager<Option<UnifiedSecurityConfig>>>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    hmac_runtime: Arc<ConfigManager<Option<HmacRuntime>>>,
+    security_execution: Arc<ConfigManager<GatewaySecurityExecutionSnapshot>>,
+    hmac_body_bytes: Arc<AtomicUsize>,
+    hmac_metrics: Arc<HmacMetricsRecorder>,
     rate_limit_runtime: Arc<ConfigManager<Option<RateLimitRuntime>>>,
     path_prefix_service_config: Arc<ConfigManager<Option<PathPrefixServiceConfig>>>,
     token_runtime: Arc<ConfigManager<Option<TokenRuntime>>>,
@@ -293,6 +415,188 @@ struct GatewayProxy {
     upstream_circuits: Mutex<BTreeMap<String, UpstreamCircuitState>>,
     server_scheme: String,
     server_port: u16,
+}
+
+#[derive(Clone)]
+struct GatewaySecurityExecutionSnapshot {
+    generation: u64,
+    active_handlers: Arc<ActiveHandlerSet>,
+    api_key: Arc<Option<ApiKeyConfig>>,
+    basic_auth: Arc<Option<BasicAuthConfig>>,
+    security: Arc<Option<SecurityRuntime>>,
+    unified_security: Arc<Option<UnifiedSecurityConfig>>,
+    hmac: Arc<Option<HmacRuntime>>,
+}
+
+impl GatewaySecurityExecutionSnapshot {
+    fn new(
+        generation: u64,
+        active_handlers: ActiveHandlerSet,
+        api_key: Option<ApiKeyConfig>,
+        basic_auth: Option<BasicAuthConfig>,
+        security: Option<SecurityRuntime>,
+        unified_security: Option<UnifiedSecurityConfig>,
+        hmac: Option<HmacRuntime>,
+    ) -> Self {
+        Self {
+            generation,
+            active_handlers: Arc::new(active_handlers),
+            api_key: Arc::new(api_key),
+            basic_auth: Arc::new(basic_auth),
+            security: Arc::new(security),
+            unified_security: Arc::new(unified_security),
+            hmac: Arc::new(hmac),
+        }
+    }
+}
+
+#[derive(Default)]
+struct HmacMetricsRecorder {
+    requests: Mutex<BTreeMap<(String, &'static str), u64>>,
+    body_bytes: Mutex<BTreeMap<String, u64>>,
+    verification_micros: Mutex<BTreeMap<String, (u64, u64)>>,
+    replay_operations: Mutex<BTreeMap<(&'static str, &'static str, &'static str), u64>>,
+}
+
+impl HmacMetricsRecorder {
+    fn request(&self, profile: &str, outcome: &'static str) {
+        let mut values = self
+            .requests
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let value = values.entry((profile.to_string(), outcome)).or_default();
+        *value = value.saturating_add(1);
+        let value = *value;
+        drop(values);
+        info!(
+            target: "light_pingora::metrics",
+            metric = "hmac_webhook_requests_total",
+            profile,
+            outcome,
+            value,
+            "HMAC metric"
+        );
+    }
+
+    fn body(&self, profile: &str, bytes: usize) {
+        let mut values = self
+            .body_bytes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let value = values.entry(profile.to_string()).or_default();
+        *value = value.saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
+        let total_bytes = *value;
+        drop(values);
+        info!(
+            target: "light_pingora::metrics",
+            metric = "hmac_webhook_body_bytes",
+            profile,
+            observed_bytes = bytes,
+            total_bytes,
+            "HMAC metric"
+        );
+    }
+
+    fn verification(&self, profile: &str, duration: Duration) {
+        let mut values = self
+            .verification_micros
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let value = values.entry(profile.to_string()).or_default();
+        value.0 = value
+            .0
+            .saturating_add(u64::try_from(duration.as_micros()).unwrap_or(u64::MAX));
+        value.1 = value.1.saturating_add(1);
+        let (total_micros, count) = *value;
+        drop(values);
+        info!(
+            target: "light_pingora::metrics",
+            metric = "hmac_webhook_verification_duration_seconds",
+            profile,
+            observed_micros = u64::try_from(duration.as_micros()).unwrap_or(u64::MAX),
+            total_micros,
+            count,
+            "HMAC metric"
+        );
+    }
+
+    fn replay(&self, store_type: &'static str, operation: &'static str, outcome: &'static str) {
+        let mut values = self
+            .replay_operations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let value = values.entry((store_type, operation, outcome)).or_default();
+        *value = value.saturating_add(1);
+        let value = *value;
+        drop(values);
+        info!(
+            target: "light_pingora::metrics",
+            metric = "hmac_replay_operations_total",
+            store_type,
+            operation,
+            outcome,
+            value,
+            "HMAC metric"
+        );
+    }
+
+    fn local_entries(&self, entries: usize) {
+        info!(
+            target: "light_pingora::metrics",
+            metric = "hmac_replay_local_entries",
+            value = entries,
+            "HMAC metric"
+        );
+    }
+}
+
+struct HmacBodyPermit {
+    used: Arc<AtomicUsize>,
+    bytes: usize,
+}
+
+impl HmacBodyPermit {
+    fn acquire(used: Arc<AtomicUsize>, bytes: usize, limit: usize) -> Result<Self, ()> {
+        let mut current = used.load(Ordering::Acquire);
+        loop {
+            let Some(next) = current.checked_add(bytes) else {
+                return Err(());
+            };
+            if next > limit {
+                return Err(());
+            }
+            match used.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return Ok(Self { used, bytes }),
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    fn grow(&mut self, bytes: usize, limit: usize) -> Result<(), ()> {
+        let added = Self::acquire(Arc::clone(&self.used), bytes, limit)?;
+        self.bytes = self.bytes.saturating_add(added.bytes);
+        std::mem::forget(added);
+        Ok(())
+    }
+}
+
+impl Drop for HmacBodyPermit {
+    fn drop(&mut self) {
+        self.used.fetch_sub(self.bytes, Ordering::AcqRel);
+    }
+}
+
+#[derive(Default)]
+enum WebhookReplayState {
+    #[default]
+    NotRequired,
+    Reserved {
+        store: Arc<dyn light_pingora::WebhookReplayStore>,
+        reservation: ReplayReservation,
+    },
+    Committed2xx,
+    Releasing,
+    Released,
 }
 
 struct LlmGatewayModule {
@@ -718,9 +1022,22 @@ impl GatewayProxy {
         Self::from_runtime_config_with_admission(config, admission)
     }
 
+    #[cfg(test)]
     fn from_runtime_config_with_admission(
         config: &RuntimeConfig,
         admission: AdmissionGate,
+    ) -> Result<Self, RuntimeError> {
+        Self::from_runtime_config_with_admission_and_admin(
+            config,
+            admission,
+            Arc::new(HmacReplayAdmin::default()),
+        )
+    }
+
+    fn from_runtime_config_with_admission_and_admin(
+        config: &RuntimeConfig,
+        admission: AdmissionGate,
+        hmac_replay_admin: Arc<HmacReplayAdmin>,
     ) -> Result<Self, RuntimeError> {
         let active_handlers = load_active_handlers(config, &gateway_handler_registry())?;
         let correlation_config =
@@ -757,6 +1074,22 @@ impl GatewayProxy {
             config,
             handler_active(&active_handlers, &["unified-security", "unified"]),
         )?;
+        let hmac_runtime = load_hmac_runtime(
+            config,
+            active_handlers.is_handler_active("hmac")
+                || unified_security_config
+                    .as_ref()
+                    .is_some_and(UnifiedSecurityConfig::requires_hmac),
+        )?;
+        if let Some(unified) = unified_security_config.as_ref() {
+            validate_unified_security_config(unified, hmac_runtime.as_ref())?;
+        }
+        if let (Some(runtime), Some(cache_registry)) =
+            (hmac_runtime.as_ref(), config.cache_registry.as_ref())
+        {
+            runtime.register_local_replay_caches(cache_registry);
+        }
+        hmac_replay_admin.replace(hmac_runtime.clone());
         let rate_limit_runtime = load_rate_limit_runtime(
             config,
             handler_active(&active_handlers, &["limit", "rate-limit"]),
@@ -800,6 +1133,21 @@ impl GatewayProxy {
         let router_route = load_router_route(config, active_handlers.is_handler_active("router"))?;
         let proxy_route = load_proxy_route(config)?;
         let static_resources = load_static_resources(config)?;
+        validate_hmac_effective_chains(
+            &active_handlers,
+            hmac_runtime.as_ref(),
+            unified_security_config.as_ref(),
+        )?;
+        let security_execution =
+            Arc::new(ConfigManager::new(GatewaySecurityExecutionSnapshot::new(
+                1,
+                active_handlers.clone(),
+                api_key_config.clone(),
+                basic_auth_config.clone(),
+                security_runtime.clone(),
+                unified_security_config.clone(),
+                hmac_runtime.clone(),
+            )));
         let active_handlers = Arc::new(ConfigManager::new(active_handlers));
         let correlation_config = Arc::new(ConfigManager::new(correlation_config));
         let cors_config = Arc::new(ConfigManager::new(cors_config));
@@ -809,6 +1157,7 @@ impl GatewayProxy {
         let basic_auth_config = Arc::new(ConfigManager::new(basic_auth_config));
         let security_runtime = Arc::new(ConfigManager::new(security_runtime));
         let unified_security_config = Arc::new(ConfigManager::new(unified_security_config));
+        let hmac_runtime = Arc::new(ConfigManager::new(hmac_runtime));
         let rate_limit_runtime = Arc::new(ConfigManager::new(rate_limit_runtime));
         let path_prefix_service_config = Arc::new(ConfigManager::new(path_prefix_service_config));
         let token_runtime = Arc::new(ConfigManager::new(token_runtime));
@@ -837,6 +1186,9 @@ impl GatewayProxy {
                 basic_auth_config: Arc::clone(&basic_auth_config),
                 security_runtime: Arc::clone(&security_runtime),
                 unified_security_config: Arc::clone(&unified_security_config),
+                hmac_runtime: Arc::clone(&hmac_runtime),
+                security_execution: Arc::clone(&security_execution),
+                hmac_replay_admin: Arc::clone(&hmac_replay_admin),
                 rate_limit_runtime: Arc::clone(&rate_limit_runtime),
                 path_prefix_service_config: Arc::clone(&path_prefix_service_config),
                 token_runtime: Arc::clone(&token_runtime),
@@ -884,6 +1236,7 @@ impl GatewayProxy {
             Arc::new(ApiKeyReloader {
                 active_handlers: Arc::clone(&active_handlers),
                 api_key_config: Arc::clone(&api_key_config),
+                security_execution: Arc::clone(&security_execution),
             }),
         );
         config.module_registry.register_reloader(
@@ -891,6 +1244,7 @@ impl GatewayProxy {
             Arc::new(BasicAuthReloader {
                 active_handlers: Arc::clone(&active_handlers),
                 basic_auth_config: Arc::clone(&basic_auth_config),
+                security_execution: Arc::clone(&security_execution),
             }),
         );
         config.module_registry.register_reloader(
@@ -901,6 +1255,7 @@ impl GatewayProxy {
                 stateless_auth: Arc::clone(&stateless_auth),
                 msal_exchange: Arc::clone(&msal_exchange),
                 msal_auth: Arc::clone(&msal_auth),
+                security_execution: Arc::clone(&security_execution),
             }),
         );
         config.module_registry.register_reloader(
@@ -908,6 +1263,18 @@ impl GatewayProxy {
             Arc::new(UnifiedSecurityReloader {
                 active_handlers: Arc::clone(&active_handlers),
                 unified_security_config: Arc::clone(&unified_security_config),
+                hmac_runtime: Arc::clone(&hmac_runtime),
+                security_execution: Arc::clone(&security_execution),
+            }),
+        );
+        config.module_registry.register_reloader(
+            light_pingora::HMAC_MODULE_ID,
+            Arc::new(HmacReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                unified_security_config: Arc::clone(&unified_security_config),
+                hmac_runtime: Arc::clone(&hmac_runtime),
+                hmac_replay_admin: Arc::clone(&hmac_replay_admin),
+                security_execution: Arc::clone(&security_execution),
             }),
         );
         config.module_registry.register_reloader(
@@ -1110,10 +1477,10 @@ impl GatewayProxy {
             cors_config,
             metrics_config,
             header_config,
-            api_key_config,
-            basic_auth_config,
-            security_runtime,
-            unified_security_config,
+            hmac_runtime,
+            security_execution,
+            hmac_body_bytes: Arc::new(AtomicUsize::new(0)),
+            hmac_metrics: Arc::new(HmacMetricsRecorder::default()),
             rate_limit_runtime,
             path_prefix_service_config,
             token_runtime,
@@ -1823,9 +2190,23 @@ impl GatewayProxy {
     }
 
     fn log_handler_durations(&self, ctx: &mut GatewayRequestContext) {
-        if ctx.handler_timings_logged
-            || ctx.handler_timings.is_empty()
-            || !self.active_handlers.load().config().report_handler_duration
+        let (report_handler_duration, handler_metrics_log_level) = ctx
+            .security_execution
+            .as_ref()
+            .map(|snapshot| {
+                (
+                    snapshot.active_handlers.config().report_handler_duration,
+                    snapshot.active_handlers.config().handler_metrics_log_level,
+                )
+            })
+            .unwrap_or_else(|| {
+                let active = self.active_handlers.load();
+                (
+                    active.config().report_handler_duration,
+                    active.config().handler_metrics_log_level,
+                )
+            });
+        if ctx.handler_timings_logged || ctx.handler_timings.is_empty() || !report_handler_duration
         {
             return;
         }
@@ -1837,12 +2218,7 @@ impl GatewayProxy {
             .collect::<Vec<_>>()
             .join(", ");
 
-        match self
-            .active_handlers
-            .load()
-            .config()
-            .handler_metrics_log_level
-        {
+        match handler_metrics_log_level {
             HandlerMetricsLogLevel::Trace => {
                 tracing::trace!(target: "light_pingora::handler", %durations, "handler durations")
             }
@@ -1860,6 +2236,13 @@ impl GatewayProxy {
             }
         }
         ctx.handler_timings_logged = true;
+    }
+
+    fn request_handler_active(&self, ctx: &GatewayRequestContext, handler_id: &str) -> bool {
+        ctx.security_execution.as_ref().map_or_else(
+            || self.active_handlers.load().is_handler_active(handler_id),
+            |snapshot| snapshot.active_handlers.is_handler_active(handler_id),
+        )
     }
 
     fn prepare_response_handlers(
@@ -1941,6 +2324,16 @@ impl GatewayProxy {
     }
 
     #[cfg(test)]
+    fn current_hmac_runtime(&self) -> Arc<Option<HmacRuntime>> {
+        self.hmac_runtime.load()
+    }
+
+    #[cfg(test)]
+    fn current_security_execution(&self) -> Arc<GatewaySecurityExecutionSnapshot> {
+        self.security_execution.load()
+    }
+
+    #[cfg(test)]
     fn active_handler_ids(&self) -> Vec<String> {
         self.active_handlers.load().active_handler_ids().to_vec()
     }
@@ -1956,6 +2349,9 @@ struct HandlerReloader {
     basic_auth_config: Arc<ConfigManager<Option<BasicAuthConfig>>>,
     security_runtime: Arc<ConfigManager<Option<SecurityRuntime>>>,
     unified_security_config: Arc<ConfigManager<Option<UnifiedSecurityConfig>>>,
+    hmac_runtime: Arc<ConfigManager<Option<HmacRuntime>>>,
+    security_execution: Arc<ConfigManager<GatewaySecurityExecutionSnapshot>>,
+    hmac_replay_admin: Arc<HmacReplayAdmin>,
     rate_limit_runtime: Arc<ConfigManager<Option<RateLimitRuntime>>>,
     path_prefix_service_config: Arc<ConfigManager<Option<PathPrefixServiceConfig>>>,
     token_runtime: Arc<ConfigManager<Option<TokenRuntime>>>,
@@ -2016,6 +2412,18 @@ impl ReloadableModule for HandlerReloader {
             &ctx.runtime_config,
             handler_active(&active_handlers, &["unified-security", "unified"]),
         )?;
+        let previous_hmac = self.hmac_runtime.load();
+        let hmac_runtime = load_hmac_runtime_preserving(
+            &ctx.runtime_config,
+            active_handlers.is_handler_active("hmac")
+                || unified_security_config
+                    .as_ref()
+                    .is_some_and(UnifiedSecurityConfig::requires_hmac),
+            previous_hmac.as_ref().as_ref(),
+        )?;
+        if let Some(unified) = unified_security_config.as_ref() {
+            validate_unified_security_config(unified, hmac_runtime.as_ref())?;
+        }
         let rate_limit_runtime = load_rate_limit_runtime(
             &ctx.runtime_config,
             handler_active(&active_handlers, &["limit", "rate-limit"]),
@@ -2080,6 +2488,21 @@ impl ReloadableModule for HandlerReloader {
             &ctx.runtime_config,
             active_handlers.is_handler_active("router"),
         )?;
+        validate_hmac_effective_chains(
+            &active_handlers,
+            hmac_runtime.as_ref(),
+            unified_security_config.as_ref(),
+        )?;
+        let generation = self.security_execution.load().generation.saturating_add(1);
+        let security_execution = GatewaySecurityExecutionSnapshot::new(
+            generation,
+            active_handlers.clone(),
+            api_key_config.clone(),
+            basic_auth_config.clone(),
+            security_runtime.clone(),
+            unified_security_config.clone(),
+            hmac_runtime.clone(),
+        );
         self.active_handlers.store(active_handlers);
         self.correlation_config.store(correlation_config);
         self.cors_config.store(cors_config);
@@ -2089,6 +2512,16 @@ impl ReloadableModule for HandlerReloader {
         self.basic_auth_config.store(basic_auth_config);
         self.security_runtime.store(security_runtime);
         self.unified_security_config.store(unified_security_config);
+        if let Some(cache_registry) = ctx.runtime_config.cache_registry.as_ref() {
+            if let Some(previous) = previous_hmac.as_ref().as_ref() {
+                previous.unregister_local_replay_caches(cache_registry);
+            }
+            if let Some(runtime) = hmac_runtime.as_ref() {
+                runtime.register_local_replay_caches(cache_registry);
+            }
+        }
+        self.hmac_replay_admin.replace(hmac_runtime.clone());
+        self.hmac_runtime.store(hmac_runtime);
         self.rate_limit_runtime.store(rate_limit_runtime);
         self.path_prefix_service_config
             .store(path_prefix_service_config);
@@ -2102,6 +2535,7 @@ impl ReloadableModule for HandlerReloader {
         self.websocket_router.store(websocket_router);
         self.llm_gateway.store(llm_gateway);
         self.router_route.store(router_route);
+        self.security_execution.store(security_execution);
         Ok(ReloadOutcome::success("handler.yml reloaded"))
     }
 }
@@ -2193,6 +2627,7 @@ impl ReloadableModule for HeaderReloader {
 struct ApiKeyReloader {
     active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
     api_key_config: Arc<ConfigManager<Option<ApiKeyConfig>>>,
+    security_execution: Arc<ConfigManager<GatewaySecurityExecutionSnapshot>>,
 }
 
 #[async_trait]
@@ -2204,7 +2639,18 @@ impl ReloadableModule for ApiKeyReloader {
             &["api-key", "apikey", "unified-security", "unified"],
         );
         let config = load_api_key_config(&ctx.runtime_config, active)?;
-        self.api_key_config.store(config);
+        self.api_key_config.store(config.clone());
+        let previous = self.security_execution.load();
+        self.security_execution
+            .store(GatewaySecurityExecutionSnapshot {
+                generation: previous.generation.saturating_add(1),
+                active_handlers: Arc::clone(&previous.active_handlers),
+                api_key: Arc::new(config),
+                basic_auth: Arc::clone(&previous.basic_auth),
+                security: Arc::clone(&previous.security),
+                unified_security: Arc::clone(&previous.unified_security),
+                hmac: Arc::clone(&previous.hmac),
+            });
         Ok(ReloadOutcome::success("apikey.yml reloaded"))
     }
 }
@@ -2212,6 +2658,7 @@ impl ReloadableModule for ApiKeyReloader {
 struct BasicAuthReloader {
     active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
     basic_auth_config: Arc<ConfigManager<Option<BasicAuthConfig>>>,
+    security_execution: Arc<ConfigManager<GatewaySecurityExecutionSnapshot>>,
 }
 
 #[async_trait]
@@ -2223,7 +2670,18 @@ impl ReloadableModule for BasicAuthReloader {
             &["basic-auth", "basic", "unified-security", "unified"],
         );
         let config = load_basic_auth_config(&ctx.runtime_config, active)?;
-        self.basic_auth_config.store(config);
+        self.basic_auth_config.store(config.clone());
+        let previous = self.security_execution.load();
+        self.security_execution
+            .store(GatewaySecurityExecutionSnapshot {
+                generation: previous.generation.saturating_add(1),
+                active_handlers: Arc::clone(&previous.active_handlers),
+                api_key: Arc::clone(&previous.api_key),
+                basic_auth: Arc::new(config),
+                security: Arc::clone(&previous.security),
+                unified_security: Arc::clone(&previous.unified_security),
+                hmac: Arc::clone(&previous.hmac),
+            });
         Ok(ReloadOutcome::success("basic-auth.yml reloaded"))
     }
 }
@@ -2234,6 +2692,7 @@ struct SecurityReloader {
     stateless_auth: Arc<ConfigManager<Option<StatelessAuthRuntime>>>,
     msal_exchange: Arc<ConfigManager<Option<MsalExchangeRuntime>>>,
     msal_auth: Arc<ConfigManager<Option<MsalAuthRuntime>>>,
+    security_execution: Arc<ConfigManager<GatewaySecurityExecutionSnapshot>>,
 }
 
 #[async_trait]
@@ -2290,10 +2749,21 @@ impl ReloadableModule for SecurityReloader {
                 );
             }
         }
-        self.security_runtime.store(config);
+        self.security_runtime.store(config.clone());
         self.stateless_auth.store(stateless_auth);
         self.msal_exchange.store(msal_exchange);
         self.msal_auth.store(msal_auth);
+        let previous = self.security_execution.load();
+        self.security_execution
+            .store(GatewaySecurityExecutionSnapshot {
+                generation: previous.generation.saturating_add(1),
+                active_handlers: Arc::clone(&previous.active_handlers),
+                api_key: Arc::clone(&previous.api_key),
+                basic_auth: Arc::clone(&previous.basic_auth),
+                security: Arc::new(config),
+                unified_security: Arc::clone(&previous.unified_security),
+                hmac: Arc::clone(&previous.hmac),
+            });
         Ok(ReloadOutcome::success("security.yml reloaded"))
     }
 }
@@ -2301,6 +2771,8 @@ impl ReloadableModule for SecurityReloader {
 struct UnifiedSecurityReloader {
     active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
     unified_security_config: Arc<ConfigManager<Option<UnifiedSecurityConfig>>>,
+    hmac_runtime: Arc<ConfigManager<Option<HmacRuntime>>>,
+    security_execution: Arc<ConfigManager<GatewaySecurityExecutionSnapshot>>,
 }
 
 #[async_trait]
@@ -2309,8 +2781,85 @@ impl ReloadableModule for UnifiedSecurityReloader {
         let active_handlers = self.active_handlers.load();
         let active = handler_active(&active_handlers, &["unified-security", "unified"]);
         let config = load_unified_security_config(&ctx.runtime_config, active)?;
-        self.unified_security_config.store(config);
+        if let Some(config) = config.as_ref() {
+            let hmac = self.hmac_runtime.load();
+            validate_unified_security_config(config, hmac.as_ref().as_ref())?;
+        }
+        let previous = self.security_execution.load();
+        validate_hmac_effective_chains(
+            previous.active_handlers.as_ref(),
+            previous.hmac.as_ref().as_ref(),
+            config.as_ref(),
+        )?;
+        self.unified_security_config.store(config.clone());
+        self.security_execution
+            .store(GatewaySecurityExecutionSnapshot {
+                generation: previous.generation.saturating_add(1),
+                active_handlers: Arc::clone(&previous.active_handlers),
+                api_key: Arc::clone(&previous.api_key),
+                basic_auth: Arc::clone(&previous.basic_auth),
+                security: Arc::clone(&previous.security),
+                unified_security: Arc::new(config),
+                hmac: Arc::clone(&previous.hmac),
+            });
         Ok(ReloadOutcome::success("unified-security.yml reloaded"))
+    }
+}
+
+struct HmacReloader {
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    unified_security_config: Arc<ConfigManager<Option<UnifiedSecurityConfig>>>,
+    hmac_runtime: Arc<ConfigManager<Option<HmacRuntime>>>,
+    hmac_replay_admin: Arc<HmacReplayAdmin>,
+    security_execution: Arc<ConfigManager<GatewaySecurityExecutionSnapshot>>,
+}
+
+#[async_trait]
+impl ReloadableModule for HmacReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let active_handlers = self.active_handlers.load();
+        let unified = self.unified_security_config.load();
+        let required = active_handlers.is_handler_active("hmac")
+            || unified
+                .as_ref()
+                .as_ref()
+                .is_some_and(UnifiedSecurityConfig::requires_hmac);
+        let previous = self.hmac_runtime.load();
+        let runtime = load_hmac_runtime_preserving(
+            &ctx.runtime_config,
+            required,
+            previous.as_ref().as_ref(),
+        )?;
+        if let Some(unified) = unified.as_ref().as_ref() {
+            validate_unified_security_config(unified, runtime.as_ref())?;
+        }
+        validate_hmac_effective_chains(
+            active_handlers.as_ref(),
+            runtime.as_ref(),
+            unified.as_ref().as_ref(),
+        )?;
+        if let Some(cache_registry) = ctx.runtime_config.cache_registry.as_ref() {
+            if let Some(previous) = previous.as_ref().as_ref() {
+                previous.unregister_local_replay_caches(cache_registry);
+            }
+            if let Some(runtime) = runtime.as_ref() {
+                runtime.register_local_replay_caches(cache_registry);
+            }
+        }
+        self.hmac_replay_admin.replace(runtime.clone());
+        self.hmac_runtime.store(runtime.clone());
+        let previous_execution = self.security_execution.load();
+        self.security_execution
+            .store(GatewaySecurityExecutionSnapshot {
+                generation: previous_execution.generation.saturating_add(1),
+                active_handlers: Arc::clone(&previous_execution.active_handlers),
+                api_key: Arc::clone(&previous_execution.api_key),
+                basic_auth: Arc::clone(&previous_execution.basic_auth),
+                security: Arc::clone(&previous_execution.security),
+                unified_security: Arc::clone(&previous_execution.unified_security),
+                hmac: Arc::new(runtime),
+            });
+        Ok(ReloadOutcome::success("hmac.yml reloaded"))
     }
 }
 
@@ -2639,12 +3188,318 @@ impl ReloadableModule for StaticResourceReloader {
     }
 }
 
+enum HmacCaptureFailure {
+    TooLarge,
+    BufferUnavailable,
+}
+
+fn content_length(headers: &HMap) -> Option<usize> {
+    let mut values = headers.get_all("content-length").iter();
+    let value = values.next()?;
+    if values.next().is_some() {
+        return None;
+    }
+    value.to_str().ok()?.trim().parse().ok()
+}
+
+fn identity_content_encoding(headers: &HMap) -> bool {
+    headers.get_all("content-encoding").iter().all(|value| {
+        value
+            .to_str()
+            .ok()
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("identity"))
+    })
+}
+
+impl GatewayProxy {
+    async fn capture_hmac_body(
+        &self,
+        session: &mut Session,
+        max_body_bytes: usize,
+        max_buffered_body_bytes: usize,
+    ) -> pingora::Result<Result<(Bytes, HmacBodyPermit), HmacCaptureFailure>> {
+        let advertised = content_length(&session.req_header().headers);
+        if advertised.is_some_and(|length| length > max_body_bytes) {
+            return Ok(Err(HmacCaptureFailure::TooLarge));
+        }
+        let initial = advertised.unwrap_or(0);
+        let mut permit = match HmacBodyPermit::acquire(
+            Arc::clone(&self.hmac_body_bytes),
+            initial,
+            max_buffered_body_bytes,
+        ) {
+            Ok(permit) => permit,
+            Err(()) => return Ok(Err(HmacCaptureFailure::BufferUnavailable)),
+        };
+        let mut output = BytesMut::with_capacity(initial);
+        loop {
+            let Some(chunk) = session.read_request_body().await? else {
+                return Ok(Ok((output.freeze(), permit)));
+            };
+            let Some(next_len) = output.len().checked_add(chunk.len()) else {
+                return Ok(Err(HmacCaptureFailure::TooLarge));
+            };
+            if next_len > max_body_bytes {
+                return Ok(Err(HmacCaptureFailure::TooLarge));
+            }
+            if next_len > permit.bytes
+                && permit
+                    .grow(next_len - permit.bytes, max_buffered_body_bytes)
+                    .is_err()
+            {
+                return Ok(Err(HmacCaptureFailure::BufferUnavailable));
+            }
+            output.extend_from_slice(&chunk);
+        }
+    }
+
+    async fn enter_hmac_gate(
+        &self,
+        session: &mut Session,
+        ctx: &mut GatewayRequestContext,
+        entry: &'static str,
+        profile: &str,
+    ) -> pingora::Result<Option<bool>> {
+        if ctx.hmac_entry.is_some() {
+            self.hmac_metrics.request(profile, "chain_error");
+            return self
+                .write_rejection_response(
+                    session,
+                    ctx,
+                    HandlerRejection::new(503, "ERR10001", "HMAC authentication entered twice"),
+                )
+                .await
+                .map(Some);
+        }
+        ctx.hmac_entry = Some(entry);
+        let snapshot = ctx.security_execution.as_ref().ok_or_else(|| {
+            pingora_internal_error(RuntimeError::Config(
+                "HMAC request has no security execution snapshot".to_string(),
+            ))
+        })?;
+        let Some(runtime) = snapshot.hmac.as_ref() else {
+            self.hmac_metrics.request(profile, "chain_error");
+            return self
+                .write_rejection_response(
+                    session,
+                    ctx,
+                    HandlerRejection::new(503, "ERR10001", "HMAC runtime is unavailable"),
+                )
+                .await
+                .map(Some);
+        };
+        let Some((max_body_bytes, timeout_millis)) = runtime.profile_limits(profile) else {
+            self.hmac_metrics.request(profile, "chain_error");
+            return self
+                .write_rejection_response(
+                    session,
+                    ctx,
+                    HandlerRejection::new(503, "ERR10001", "HMAC profile is unavailable"),
+                )
+                .await
+                .map(Some);
+        };
+        if !identity_content_encoding(&session.req_header().headers) {
+            self.hmac_metrics.request(profile, "unsupported_encoding");
+            return self
+                .write_rejection_response(
+                    session,
+                    ctx,
+                    HandlerRejection::new(
+                        415,
+                        "ERR10001",
+                        "encoded webhook bodies are not supported",
+                    )
+                    .with_header("connection", "close"),
+                )
+                .await
+                .map(Some);
+        }
+        let headers = session.req_header().headers.clone();
+        let capture = timeout(
+            Duration::from_millis(timeout_millis),
+            self.capture_hmac_body(session, max_body_bytes, runtime.max_buffered_body_bytes()),
+        )
+        .await;
+        let (body, permit) = match capture {
+            Err(_) => {
+                self.hmac_metrics.request(profile, "timeout");
+                return self
+                    .write_rejection_response(
+                        session,
+                        ctx,
+                        HandlerRejection::new(408, "ERR10001", "webhook body read timed out")
+                            .with_header("connection", "close"),
+                    )
+                    .await
+                    .map(Some);
+            }
+            Ok(Err(error)) => {
+                self.hmac_metrics.request(profile, "runtime_error");
+                warn!(profile, error = %error, "HMAC body capture failed");
+                return Err(error);
+            }
+            Ok(Ok(Err(HmacCaptureFailure::TooLarge))) => {
+                self.hmac_metrics.request(profile, "too_large");
+                return self
+                    .write_rejection_response(
+                        session,
+                        ctx,
+                        HandlerRejection::new(413, "ERR10001", "webhook body is too large")
+                            .with_header("connection", "close"),
+                    )
+                    .await
+                    .map(Some);
+            }
+            Ok(Ok(Err(HmacCaptureFailure::BufferUnavailable))) => {
+                self.hmac_metrics.request(profile, "buffer_unavailable");
+                return self
+                    .write_rejection_response(
+                        session,
+                        ctx,
+                        HandlerRejection::new(
+                            503,
+                            "ERR10001",
+                            "webhook body buffer is unavailable",
+                        )
+                        .with_header("connection", "close"),
+                    )
+                    .await
+                    .map(Some);
+            }
+            Ok(Ok(Ok(value))) => value,
+        };
+        let started = Instant::now();
+        let evidence = match runtime.verify(profile, &headers, body.as_ref()) {
+            Ok(evidence) => evidence,
+            Err(HmacVerificationError::Invalid) => {
+                self.hmac_metrics.verification(profile, started.elapsed());
+                self.hmac_metrics.request(profile, "invalid");
+                return self
+                    .write_rejection_response(
+                        session,
+                        ctx,
+                        HandlerRejection::new(401, "ERR10001", "invalid webhook authentication"),
+                    )
+                    .await
+                    .map(Some);
+            }
+            Err(HmacVerificationError::BodyTooLarge) => {
+                self.hmac_metrics.verification(profile, started.elapsed());
+                self.hmac_metrics.request(profile, "too_large");
+                return self
+                    .write_rejection_response(
+                        session,
+                        ctx,
+                        HandlerRejection::new(413, "ERR10001", "webhook body is too large"),
+                    )
+                    .await
+                    .map(Some);
+            }
+        };
+        self.hmac_metrics.verification(profile, started.elapsed());
+        let replay = match runtime.replay_attempt(&evidence, &headers) {
+            Ok(replay) => replay,
+            Err(_) => {
+                self.hmac_metrics.request(profile, "invalid");
+                return self
+                    .write_rejection_response(
+                        session,
+                        ctx,
+                        HandlerRejection::new(401, "ERR10001", "invalid webhook authentication"),
+                    )
+                    .await
+                    .map(Some);
+            }
+        };
+        if let Some(HmacReplayAttempt {
+            key,
+            retention,
+            store,
+        }) = replay
+        {
+            let store_type = store.scope().as_str();
+            let metrics_store = Arc::clone(&store);
+            match store.reserve(&key, retention).await {
+                Ok(ReserveOutcome::Reserved(reservation)) => {
+                    self.hmac_metrics.replay(store_type, "reserve", "reserved");
+                    ctx.hmac_replay = WebhookReplayState::Reserved { store, reservation };
+                }
+                Ok(ReserveOutcome::Duplicate) => {
+                    self.hmac_metrics.replay(store_type, "reserve", "duplicate");
+                    self.hmac_metrics.request(profile, "duplicate");
+                    if let Some(entries) = metrics_store.local_entries().await {
+                        self.hmac_metrics.local_entries(entries);
+                    }
+                    return self.write_empty_response(session, ctx, 200).await.map(Some);
+                }
+                Err(error) => {
+                    self.hmac_metrics
+                        .replay(store_type, "reserve", "unavailable");
+                    self.hmac_metrics.request(profile, "store_unavailable");
+                    warn!(profile, error = %error, "HMAC replay reservation failed");
+                    return self
+                        .write_rejection_response(
+                            session,
+                            ctx,
+                            HandlerRejection::new(
+                                503,
+                                "ERR10001",
+                                "webhook replay store is unavailable",
+                            ),
+                        )
+                        .await
+                        .map(Some);
+                }
+            }
+            if let Some(entries) = metrics_store.local_entries().await {
+                self.hmac_metrics.local_entries(entries);
+            }
+        }
+        self.hmac_metrics.body(profile, body.len());
+        self.hmac_metrics.request(profile, "accepted");
+        ctx.hmac_profile = Some(profile.to_string());
+        ctx.hmac_verified_body = Some(body);
+        ctx.hmac_body_permit = Some(permit);
+        Ok(None)
+    }
+
+    async fn release_hmac_reservation(&self, ctx: &mut GatewayRequestContext) {
+        let state = std::mem::replace(&mut ctx.hmac_replay, WebhookReplayState::Releasing);
+        let WebhookReplayState::Reserved { store, reservation } = state else {
+            ctx.hmac_replay = state;
+            return;
+        };
+        let store_type = store.scope().as_str();
+        let metrics_store = Arc::clone(&store);
+        match store.release(&reservation).await {
+            Ok(()) => {
+                self.hmac_metrics.replay(store_type, "release", "released");
+                ctx.hmac_replay = WebhookReplayState::Released;
+            }
+            Err(error) => {
+                self.hmac_metrics
+                    .replay(store_type, "release", "unavailable");
+                warn!(profile = ctx.hmac_profile.as_deref().unwrap_or("unknown"), error = %error, "HMAC replay release failed");
+                ctx.hmac_replay = WebhookReplayState::Reserved { store, reservation };
+            }
+        }
+        if let Some(entries) = metrics_store.local_entries().await {
+            self.hmac_metrics.local_entries(entries);
+        }
+    }
+}
+
 #[async_trait]
 impl ProxyHttp for GatewayProxy {
     type CTX = GatewayRequestContext;
 
     fn new_ctx(&self) -> Self::CTX {
         GatewayRequestContext::default()
+    }
+
+    fn prebuffered_request_body(&self, _session: &Session, ctx: &Self::CTX) -> Option<Bytes> {
+        ctx.hmac_verified_body.clone()
     }
 
     async fn request_filter(
@@ -2683,7 +3538,9 @@ impl ProxyHttp for GatewayProxy {
 
         let method = session.req_header().method.as_str().to_string();
         ctx.method = method.clone();
-        let active_handlers = self.active_handlers.load();
+        let security_execution = self.security_execution.load();
+        ctx.security_execution = Some(Arc::clone(&security_execution));
+        let active_handlers = Arc::clone(&security_execution.active_handlers);
         let spa_session_endpoint = self
             .active_spa_session_endpoint(&active_handlers, &request_path)
             .map_err(pingora_internal_error)?;
@@ -2767,7 +3624,7 @@ impl ProxyHttp for GatewayProxy {
                     }
                 }
                 "api-key" | "apikey" => {
-                    if let Some(config) = self.api_key_config.load().as_ref().as_ref() {
+                    if let Some(config) = security_execution.api_key.as_ref() {
                         if let Err(rejection) = verify_api_key(session, config, &request_path) {
                             ctx.record_handler_duration(&handler_id, started.elapsed());
                             return self.write_rejection_response(session, ctx, rejection).await;
@@ -2775,7 +3632,7 @@ impl ProxyHttp for GatewayProxy {
                     }
                 }
                 "basic-auth" | "basic" => {
-                    if let Some(config) = self.basic_auth_config.load().as_ref().as_ref() {
+                    if let Some(config) = security_execution.basic_auth.as_ref() {
                         if let Err(rejection) = verify_basic_auth(session, config, &request_path) {
                             ctx.record_handler_duration(&handler_id, started.elapsed());
                             return self.write_rejection_response(session, ctx, rejection).await;
@@ -2797,7 +3654,7 @@ impl ProxyHttp for GatewayProxy {
                             }
                         }
                     }
-                    if let Some(runtime) = self.security_runtime.load().as_ref().as_ref() {
+                    if let Some(runtime) = security_execution.security.as_ref() {
                         match verify_jwt_request(session, runtime, &request_path).await {
                             Ok(auth) => {
                                 if auth.is_some() {
@@ -2814,37 +3671,50 @@ impl ProxyHttp for GatewayProxy {
                     }
                 }
                 "unified-security" | "unified" => {
-                    if let Some(result) = self.authenticate_agent_delegation(session).await {
-                        match result {
-                            Ok((principal, delegation)) => {
-                                ctx.auth = Some(principal);
-                                ctx.agent_delegation = Some(delegation);
-                                continue;
-                            }
-                            Err(rejection) => {
-                                return self
-                                    .write_rejection_response(session, ctx, rejection)
-                                    .await;
+                    let unified_config = Arc::clone(&security_execution.unified_security);
+                    let hmac_required = unified_config.as_ref().as_ref().is_some_and(|config| {
+                        config.hmac_profile_for(&request_path, &method).is_some()
+                    });
+                    if !hmac_required {
+                        if let Some(result) = self.authenticate_agent_delegation(session).await {
+                            match result {
+                                Ok((principal, delegation)) => {
+                                    ctx.auth = Some(principal);
+                                    ctx.agent_delegation = Some(delegation);
+                                    continue;
+                                }
+                                Err(rejection) => {
+                                    return self
+                                        .write_rejection_response(session, ctx, rejection)
+                                        .await;
+                                }
                             }
                         }
                     }
-                    if let Some(config) = self.unified_security_config.load().as_ref().as_ref() {
-                        let basic_config = self.basic_auth_config.load();
-                        let api_key_config = self.api_key_config.load();
-                        let security_runtime = self.security_runtime.load();
+                    if let Some(config) = unified_config.as_ref().as_ref() {
                         match verify_unified_security(
                             session,
                             config,
-                            basic_config.as_ref().as_ref(),
-                            api_key_config.as_ref().as_ref(),
-                            security_runtime.as_ref().as_ref(),
+                            security_execution.basic_auth.as_ref().as_ref(),
+                            security_execution.api_key.as_ref().as_ref(),
+                            security_execution.security.as_ref().as_ref(),
                             &request_path,
+                            &method,
                         )
                         .await
                         {
-                            Ok(auth) => {
-                                if auth.is_some() {
-                                    ctx.auth = auth;
+                            Ok(outcome) => {
+                                if outcome.principal.is_some() {
+                                    ctx.auth = outcome.principal;
+                                }
+                                if let Some(profile) = outcome.hmac_profile {
+                                    ctx.record_handler_duration(&handler_id, started.elapsed());
+                                    if let Some(response) = self
+                                        .enter_hmac_gate(session, ctx, "unified-security", &profile)
+                                        .await?
+                                    {
+                                        return Ok(response);
+                                    }
                                 }
                             }
                             Err(rejection) => {
@@ -2854,6 +3724,30 @@ impl ProxyHttp for GatewayProxy {
                                     .await;
                             }
                         }
+                    }
+                }
+                "hmac" => {
+                    let profile = security_execution
+                        .hmac
+                        .as_ref()
+                        .as_ref()
+                        .and_then(|runtime| runtime.standalone_profile(&request_path, &method))
+                        .map(str::to_string);
+                    ctx.record_handler_duration(&handler_id, started.elapsed());
+                    let Some(profile) = profile else {
+                        self.hmac_metrics.request("unmatched", "chain_error");
+                        return self
+                            .write_rejection_response(
+                                session,
+                                ctx,
+                                HandlerRejection::new(503, "ERR10001", "request path is not configured for standalone HMAC authentication"),
+                            )
+                            .await;
+                    };
+                    if let Some(response) =
+                        self.enter_hmac_gate(session, ctx, "hmac", &profile).await?
+                    {
+                        return Ok(response);
                     }
                 }
                 "limit" | "rate-limit" => {
@@ -3814,11 +4708,7 @@ impl ProxyHttp for GatewayProxy {
         if let Some(timeout) = self.upstream_connect_timeout {
             peer.options.connection_timeout = Some(timeout);
         }
-        if self
-            .active_handlers
-            .load()
-            .is_handler_active(model_provider_sidecar::SIDECAR_IDENTITY_HANDLER)
-        {
+        if self.request_handler_active(ctx, model_provider_sidecar::SIDECAR_IDENTITY_HANDLER) {
             let (connect_ms, _, idle_ms, _, _) = model_provider_sidecar::sidecar_limits()
                 .map_err(|error| pingora_internal_error(RuntimeError::Config(error)))?;
             peer.options.connection_timeout = Some(Duration::from_millis(connect_ms));
@@ -3883,11 +4773,7 @@ impl ProxyHttp for GatewayProxy {
         if ctx.access_control_active || ctx.access_control_response_active {
             upstream_request.remove_header("accept-encoding");
         }
-        if self
-            .active_handlers
-            .load()
-            .is_handler_active(model_provider_sidecar::SIDECAR_IDENTITY_HANDLER)
-        {
+        if self.request_handler_active(ctx, model_provider_sidecar::SIDECAR_IDENTITY_HANDLER) {
             model_provider_sidecar::apply_sidecar_upstream_headers(upstream_request)
                 .await
                 .map_err(|error| pingora_internal_error(RuntimeError::Config(error)))?;
@@ -3935,14 +4821,18 @@ impl ProxyHttp for GatewayProxy {
     where
         Self::CTX: Send + Sync,
     {
+        if let Some(verified) = ctx.hmac_verified_body.as_ref() {
+            if !end_of_stream || body.as_ref() != Some(verified) {
+                return Err(Error::explain(
+                    ErrorType::InternalError,
+                    "verified HMAC body was not re-injected as one exact final chunk",
+                ));
+            }
+        }
         if ctx.websocket_decision.is_some() && session.was_upgraded() {
             enforce_websocket_tunnel_limits(ctx, body)?;
         }
-        if self
-            .active_handlers
-            .load()
-            .is_handler_active(model_provider_sidecar::SIDECAR_IDENTITY_HANDLER)
-        {
+        if self.request_handler_active(ctx, model_provider_sidecar::SIDECAR_IDENTITY_HANDLER) {
             let (_, _, _, request_limit, _) = model_provider_sidecar::sidecar_limits()
                 .map_err(|error| pingora_internal_error(RuntimeError::Config(error)))?;
             ctx.sidecar_request_bytes = ctx
@@ -4090,11 +4980,7 @@ impl ProxyHttp for GatewayProxy {
         if ctx.websocket_decision.is_some() && session.was_upgraded() {
             enforce_websocket_tunnel_limits(ctx, body)?;
         }
-        if self
-            .active_handlers
-            .load()
-            .is_handler_active(model_provider_sidecar::SIDECAR_IDENTITY_HANDLER)
-        {
+        if self.request_handler_active(ctx, model_provider_sidecar::SIDECAR_IDENTITY_HANDLER) {
             let (_, _, _, _, response_limit) = model_provider_sidecar::sidecar_limits()
                 .map_err(|error| pingora_internal_error(RuntimeError::Config(error)))?;
             ctx.sidecar_response_bytes = ctx
@@ -4184,12 +5070,16 @@ impl ProxyHttp for GatewayProxy {
     where
         Self::CTX: Send + Sync,
     {
-        ctx.upstream_status = Some(upstream_response.status.as_u16());
-        if self
-            .active_handlers
-            .load()
-            .is_handler_active(model_provider_sidecar::SIDECAR_IDENTITY_HANDLER)
-        {
+        let upstream_status = upstream_response.status.as_u16();
+        ctx.upstream_status = Some(upstream_status);
+        if matches!(ctx.hmac_replay, WebhookReplayState::Reserved { .. }) {
+            if (200..300).contains(&upstream_status) {
+                ctx.hmac_replay = WebhookReplayState::Committed2xx;
+            } else {
+                self.release_hmac_reservation(ctx).await;
+            }
+        }
+        if self.request_handler_active(ctx, model_provider_sidecar::SIDECAR_IDENTITY_HANDLER) {
             let (_, setup_ms, _, _, _) = model_provider_sidecar::sidecar_limits()
                 .map_err(|error| pingora_internal_error(RuntimeError::Config(error)))?;
             let upstream_connected_at = ctx.upstream_connected_at.ok_or_else(|| {
@@ -4266,6 +5156,10 @@ impl ProxyHttp for GatewayProxy {
     where
         Self::CTX: Send + Sync,
     {
+        if matches!(ctx.hmac_replay, WebhookReplayState::Reserved { .. }) {
+            self.release_hmac_reservation(ctx).await;
+        }
+        ctx.hmac_body_permit = None;
         if error.is_some() {
             self.record_metrics(ctx, 500);
         }
@@ -4324,6 +5218,12 @@ struct GatewayRequestContext {
     metrics_recorded: bool,
     handler_timings: Vec<HandlerTiming>,
     handler_timings_logged: bool,
+    security_execution: Option<Arc<GatewaySecurityExecutionSnapshot>>,
+    hmac_entry: Option<&'static str>,
+    hmac_profile: Option<String>,
+    hmac_verified_body: Option<Bytes>,
+    hmac_body_permit: Option<HmacBodyPermit>,
+    hmac_replay: WebhookReplayState,
 }
 
 impl Default for GatewayRequestContext {
@@ -4373,6 +5273,12 @@ impl Default for GatewayRequestContext {
             metrics_recorded: false,
             handler_timings: Vec::new(),
             handler_timings_logged: false,
+            security_execution: None,
+            hmac_entry: None,
+            hmac_profile: None,
+            hmac_verified_body: None,
+            hmac_body_permit: None,
+            hmac_replay: WebhookReplayState::NotRequired,
         }
     }
 }
@@ -4421,6 +5327,12 @@ impl GatewayRequestContext {
         self.metrics_recorded = false;
         self.handler_timings.clear();
         self.handler_timings_logged = false;
+        self.security_execution = None;
+        self.hmac_entry = None;
+        self.hmac_profile = None;
+        self.hmac_verified_body = None;
+        self.hmac_body_permit = None;
+        self.hmac_replay = WebhookReplayState::NotRequired;
     }
 
     fn record_handler_duration(&mut self, handler_id: &str, duration: Duration) {
@@ -4508,12 +5420,19 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     let cache_registry = Arc::new(CacheRegistry::new());
-    let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp))
+    let hmac_replay_admin = Arc::new(HmacReplayAdmin::default());
+    let gateway_app = GatewayApp {
+        hmac_replay_admin: Arc::clone(&hmac_replay_admin),
+    };
+    let runtime = LightRuntimeBuilder::new(PingoraTransport::new(gateway_app))
         .with_embedded_config(embedded_config::FILES)
         .with_default_config_dir(DEFAULT_CONFIG_DIR)
         .with_config_dir(CONFIG_DIR)
         .with_external_config_dir(EXTERNAL_CONFIG_DIR)
         .with_cache_registry(cache_registry)
+        .with_registry_handler(Arc::new(HmacReplayRegistryHandler {
+            admin: hmac_replay_admin,
+        }))
         .with_logging_control(tracing_guard.logging_control())
         .with_log_stream(tracing_guard.log_stream())
         .with_optional_log_file_access(tracing_guard.log_file_access())
@@ -5296,6 +6215,173 @@ fn handler_active(active_handlers: &ActiveHandlerSet, ids: &[&str]) -> bool {
     ids.iter().any(|id| active_handlers.is_handler_active(id))
 }
 
+fn validate_hmac_chain(
+    location: &str,
+    chain: &[String],
+    standalone_profile: Option<&str>,
+    composed_profile: Option<&str>,
+) -> Result<(), RuntimeError> {
+    let hmac_positions = chain
+        .iter()
+        .enumerate()
+        .filter(|(_, id)| id.as_str() == "hmac")
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let unified_positions = chain
+        .iter()
+        .enumerate()
+        .filter(|(_, id)| matches!(id.as_str(), "unified-security" | "unified"))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if hmac_positions.len() > 1 || unified_positions.len() > 1 {
+        return Err(RuntimeError::Config(format!(
+            "HMAC route `{location}` has a duplicate authentication entry point"
+        )));
+    }
+    if !hmac_positions.is_empty() && !unified_positions.is_empty() {
+        return Err(RuntimeError::Config(format!(
+            "HMAC route `{location}` cannot execute both hmac and unified-security"
+        )));
+    }
+    if standalone_profile.is_some() != (hmac_positions.len() == 1) {
+        return Err(RuntimeError::Config(format!(
+            "standalone HMAC policy and effective handler chain disagree for `{location}`"
+        )));
+    }
+    if composed_profile.is_some() && unified_positions.len() != 1 {
+        return Err(RuntimeError::Config(format!(
+            "composed HMAC policy for `{location}` requires exactly one unified-security handler"
+        )));
+    }
+    if standalone_profile.is_some() || composed_profile.is_some() {
+        let entry = hmac_positions
+            .first()
+            .copied()
+            .or_else(|| unified_positions.first().copied())
+            .expect("validated HMAC entry point");
+        let router = chain.iter().position(|id| id == "router").ok_or_else(|| {
+            RuntimeError::Config(format!(
+                "HMAC route `{location}` must use a proxy/router chain"
+            ))
+        })?;
+        if entry >= router {
+            return Err(RuntimeError::Config(format!(
+                "HMAC authentication must precede router for `{location}`"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_hmac_effective_chains(
+    active_handlers: &ActiveHandlerSet,
+    hmac: Option<&HmacRuntime>,
+    unified: Option<&UnifiedSecurityConfig>,
+) -> Result<(), RuntimeError> {
+    let representative_methods = [
+        "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD", "TRACE", "CONNECT",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .chain(
+        active_handlers
+            .config()
+            .paths
+            .iter()
+            .map(|path| path.method.to_ascii_uppercase()),
+    )
+    .collect::<BTreeSet<_>>();
+    if let Some(runtime) = hmac {
+        for rule in runtime.standalone_routes() {
+            let methods = if rule.methods.is_empty() {
+                representative_methods.iter().cloned().collect::<Vec<_>>()
+            } else {
+                rule.methods
+            };
+            for method in methods {
+                let chain = active_handlers.resolve_handler_ids(rule.prefix.as_str(), &method)?;
+                validate_hmac_chain(
+                    format!("{}@{}", rule.prefix, method.to_ascii_lowercase()).as_str(),
+                    &chain,
+                    Some(rule.profile.as_str()),
+                    unified
+                        .and_then(|config| config.hmac_profile_for(rule.prefix.as_str(), &method)),
+                )?;
+            }
+        }
+    }
+    if let Some(config) = unified {
+        for rule in &config.path_prefix_auths {
+            let methods = if rule.methods.is_empty() {
+                representative_methods.iter().cloned().collect()
+            } else {
+                rule.methods.clone()
+            };
+            for method in methods {
+                let Some(profile) = config.hmac_profile_for(rule.prefix.as_str(), &method) else {
+                    continue;
+                };
+                let chain = active_handlers.resolve_handler_ids(rule.prefix.as_str(), &method)?;
+                validate_hmac_chain(
+                    format!("{}@{}", rule.prefix, method.to_ascii_lowercase()).as_str(),
+                    &chain,
+                    hmac.and_then(|runtime| {
+                        runtime.standalone_profile(rule.prefix.as_str(), &method)
+                    }),
+                    Some(profile),
+                )?;
+            }
+        }
+    }
+    for path in &active_handlers.config().paths {
+        let request_path = hmac_handler_path_probe(path.path.as_str());
+        let chain = active_handlers.materialized_path_handler_ids(path)?;
+        let standalone_profile =
+            hmac.and_then(|runtime| runtime.standalone_profile(&request_path, &path.method));
+        let composed_profile =
+            unified.and_then(|config| config.hmac_profile_for(&request_path, &path.method));
+        if standalone_profile.is_some()
+            || composed_profile.is_some()
+            || chain.iter().any(|id| id == "hmac")
+        {
+            validate_hmac_chain(
+                format!("{}@{}", path.path, path.method.to_ascii_lowercase()).as_str(),
+                &chain,
+                standalone_profile,
+                composed_profile,
+            )?;
+        }
+    }
+    let default_chain = active_handlers.materialized_default_handler_ids()?;
+    for method in &representative_methods {
+        let chain = &default_chain;
+        if chain.iter().any(|id| id == "hmac") {
+            validate_hmac_chain(
+                format!("default@{}", method.to_ascii_lowercase()).as_str(),
+                chain,
+                hmac.and_then(|runtime| runtime.standalone_profile("/", method)),
+                unified.and_then(|config| config.hmac_profile_for("/", method)),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn hmac_handler_path_probe(path: &str) -> String {
+    path.split('/')
+        .map(|segment| {
+            if segment == "*" {
+                "__hmac_wildcard_probe__"
+            } else if segment.starts_with('{') && segment.ends_with('}') {
+                "__hmac_parameter_probe__"
+            } else {
+                segment
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 fn upstream_verify_hostname(config: &RuntimeConfig) -> bool {
     config
         .client
@@ -5477,6 +6563,7 @@ const GATEWAY_HANDLER_DESCRIPTORS: &[(&str, PingoraHandlerKind)] = &[
     ("basic", PingoraHandlerKind::Security),
     ("unified-security", PingoraHandlerKind::Security),
     ("unified", PingoraHandlerKind::Security),
+    ("hmac", PingoraHandlerKind::Security),
     ("access-control", PingoraHandlerKind::Security),
     ("body", PingoraHandlerKind::Traffic),
     ("audit", PingoraHandlerKind::Observability),
@@ -6367,7 +7454,7 @@ aliases: {}
         )
         .expect("write invalid LLM config");
 
-        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp))
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp::default()))
             .with_config_dir(config_dir.path())
             .with_external_config_dir(external_dir.path())
             .build();
@@ -6400,6 +7487,315 @@ aliases: {}
         assert!(response.contains("LLM routing is unavailable"));
 
         running.shutdown().await.expect("shutdown gateway");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn phase3_hmac_route_rejects_invalid_signature_before_upstream_selection() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        let gateway_port = free_tcp_port();
+        let gateway_address = format!("127.0.0.1:{gateway_port}")
+            .parse::<std::net::SocketAddr>()
+            .expect("gateway address");
+        std::fs::write(
+            config_dir.path().join("server.yml"),
+            format!(
+                "ip: 127.0.0.1\nadvertisedAddress: 127.0.0.1\nhttpPort: {gateway_port}\nenableHttp: true\nhttpsPort: 8443\nenableHttps: false\nserviceId: com.networknt.light-gateway-1.0.0\nenableRegistry: false\nstartOnRegistryFailure: true\ndynamicPort: false\nenvironment: dev\nshutdownGracefulPeriod: 100\n"
+            ),
+        )
+        .expect("write server config");
+        write_hmac_phase1_fixture(config_dir.path(), 1024);
+
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp::default()))
+            .with_config_dir(config_dir.path())
+            .with_external_config_dir(external_dir.path())
+            .build();
+        let running = runtime.start().await.expect("start Phase 1 HMAC gateway");
+        wait_for_tcp(gateway_address).await;
+
+        let response = raw_http_exchange(
+            gateway_address,
+            &format!(
+                "POST /webhook HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+            ),
+        )
+        .await;
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.starts_with("HTTP/1.1 401"), "response: {response}");
+        assert!(response.contains("invalid webhook authentication"));
+
+        running.shutdown().await.expect("shutdown gateway");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn phase4_github_to_counting_jenkins_preserves_body_and_replay_lifecycle() {
+        use hmac::{Hmac, Mac};
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind HMAC upstream");
+        let upstream_address = upstream.local_addr().expect("HMAC upstream address");
+        let upstream_requests = Arc::new(AtomicUsize::new(0));
+        let upstream_bodies = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let upstream_saw_github_event = Arc::new(AtomicBool::new(false));
+        let upstream_failed_once = Arc::new(AtomicBool::new(false));
+        let upstream_task = tokio::spawn({
+            let upstream_requests = Arc::clone(&upstream_requests);
+            let upstream_bodies = Arc::clone(&upstream_bodies);
+            let upstream_saw_github_event = Arc::clone(&upstream_saw_github_event);
+            let upstream_failed_once = Arc::clone(&upstream_failed_once);
+            async move {
+                while let Ok((mut socket, _)) = upstream.accept().await {
+                    let request = read_complete_http_request(&mut socket).await;
+                    upstream_requests.fetch_add(1, Ordering::SeqCst);
+                    let header_end = request
+                        .windows(4)
+                        .position(|value| value == b"\r\n\r\n")
+                        .expect("complete upstream headers");
+                    let body = request[header_end + 4..].to_vec();
+                    if String::from_utf8_lossy(&request[..header_end])
+                        .to_ascii_lowercase()
+                        .contains("x-github-event: push")
+                    {
+                        upstream_saw_github_event.store(true, Ordering::SeqCst);
+                    }
+                    upstream_bodies
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .push(body.clone());
+                    let status =
+                        if body == b"fail" && !upstream_failed_once.swap(true, Ordering::SeqCst) {
+                            500
+                        } else {
+                            204
+                        };
+                    let response = format!(
+                        "HTTP/1.1 {status} Test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                }
+            }
+        });
+
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        let gateway_port = free_tcp_port();
+        let gateway_address = format!("127.0.0.1:{gateway_port}")
+            .parse::<std::net::SocketAddr>()
+            .expect("gateway address");
+        std::fs::write(
+            config_dir.path().join("server.yml"),
+            format!(
+                "ip: 127.0.0.1\nadvertisedAddress: 127.0.0.1\nhttpPort: {gateway_port}\nenableHttp: true\nhttpsPort: 8443\nenableHttps: false\nserviceId: com.networknt.light-gateway-1.0.0\nenableRegistry: false\nstartOnRegistryFailure: true\ndynamicPort: false\nenvironment: dev\nshutdownGracefulPeriod: 100\n"
+            ),
+        )
+        .expect("write server config");
+        write_hmac_phase1_fixture(config_dir.path(), 1024);
+        std::fs::write(
+            config_dir.path().join(light_pingora::ROUTER_FILE),
+            "hostWhitelist: ['127\\.0\\.0\\.1']\n",
+        )
+        .expect("write router config");
+
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp::default()))
+            .with_config_dir(config_dir.path())
+            .with_external_config_dir(external_dir.path())
+            .build();
+        let running = runtime.start().await.expect("start Phase 3 HMAC gateway");
+        wait_for_tcp(gateway_address).await;
+        let secret = std::env::var("PATH").expect("PATH test secret");
+        let sign = |body: &[u8]| {
+            let mut mac =
+                Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC test key");
+            mac.update(body);
+            format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
+        };
+        let send = |delivery: &str, body: &[u8]| {
+            let signature = sign(body);
+            let request = format!(
+                "POST /webhook HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nservice_url: http://{upstream_address}\r\nX-Hub-Signature-256: {signature}\r\nX-GitHub-Delivery: {delivery}\r\nX-GitHub-Event: push\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                String::from_utf8_lossy(body)
+            );
+            async move { raw_http_exchange(gateway_address, &request).await }
+        };
+
+        let body = b"{ \"event\": \"push\" }";
+        let accepted = send("delivery-accepted", body).await;
+        assert!(String::from_utf8_lossy(&accepted).starts_with("HTTP/1.1 204"));
+        let duplicate = send("delivery-accepted", body).await;
+        assert!(String::from_utf8_lossy(&duplicate).starts_with("HTTP/1.1 200"));
+        assert_eq!(upstream_requests.load(Ordering::SeqCst), 1);
+        assert!(upstream_saw_github_event.load(Ordering::SeqCst));
+
+        let failed = send("delivery-retry", b"fail").await;
+        assert!(String::from_utf8_lossy(&failed).starts_with("HTTP/1.1 500"));
+        let retried = send("delivery-retry", b"fail").await;
+        assert!(String::from_utf8_lossy(&retried).starts_with("HTTP/1.1 204"));
+        assert_eq!(upstream_requests.load(Ordering::SeqCst), 3);
+
+        let locally_rejected_body = b"local-rejection";
+        let locally_rejected_request = format!(
+            "POST /webhook HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nX-Hub-Signature-256: {}\r\nX-GitHub-Delivery: delivery-local-rejection\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            sign(locally_rejected_body),
+            locally_rejected_body.len(),
+            String::from_utf8_lossy(locally_rejected_body)
+        );
+        let locally_rejected = raw_http_exchange(gateway_address, &locally_rejected_request).await;
+        assert!(String::from_utf8_lossy(&locally_rejected).starts_with("HTTP/1.1 502"));
+        assert_eq!(upstream_requests.load(Ordering::SeqCst), 3);
+        let locally_retried = send("delivery-local-rejection", locally_rejected_body).await;
+        assert!(String::from_utf8_lossy(&locally_retried).starts_with("HTTP/1.1 204"));
+
+        let unavailable_port = free_tcp_port();
+        let transport_body = b"transport-retry";
+        let transport_request = format!(
+            "POST /webhook HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nservice_url: http://127.0.0.1:{unavailable_port}\r\nX-Hub-Signature-256: {}\r\nX-GitHub-Delivery: delivery-transport-retry\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            sign(transport_body),
+            transport_body.len(),
+            String::from_utf8_lossy(transport_body)
+        );
+        let transport_failure = raw_http_exchange(gateway_address, &transport_request).await;
+        assert!(String::from_utf8_lossy(&transport_failure).starts_with("HTTP/1.1 502"));
+        let transport_retried = send("delivery-transport-retry", transport_body).await;
+        assert!(String::from_utf8_lossy(&transport_retried).starts_with("HTTP/1.1 204"));
+        assert_eq!(upstream_requests.load(Ordering::SeqCst), 5);
+        assert_eq!(
+            upstream_bodies
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_slice(),
+            &[
+                body.to_vec(),
+                b"fail".to_vec(),
+                b"fail".to_vec(),
+                locally_rejected_body.to_vec(),
+                transport_body.to_vec(),
+            ]
+        );
+
+        running.shutdown().await.expect("shutdown gateway");
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn phase4_composed_api_key_and_hmac_reach_upstream_only_when_both_verify() {
+        use hmac::{Hmac, Mac};
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind composed-auth upstream");
+        let upstream_address = upstream.local_addr().expect("composed upstream address");
+        let upstream_requests = Arc::new(AtomicUsize::new(0));
+        let upstream_body = Arc::new(Mutex::new(Vec::new()));
+        let upstream_task = tokio::spawn({
+            let upstream_requests = Arc::clone(&upstream_requests);
+            let upstream_body = Arc::clone(&upstream_body);
+            async move {
+                while let Ok((mut socket, _)) = upstream.accept().await {
+                    let request = read_complete_http_request(&mut socket).await;
+                    upstream_requests.fetch_add(1, Ordering::SeqCst);
+                    let header_end = request
+                        .windows(4)
+                        .position(|value| value == b"\r\n\r\n")
+                        .expect("complete composed upstream headers");
+                    *upstream_body
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()) =
+                        request[header_end + 4..].to_vec();
+                    let _ = socket
+                        .write_all(
+                            b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await;
+                }
+            }
+        });
+
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        let gateway_port = free_tcp_port();
+        let gateway_address = format!("127.0.0.1:{gateway_port}")
+            .parse::<std::net::SocketAddr>()
+            .expect("gateway address");
+        std::fs::write(
+            config_dir.path().join("server.yml"),
+            format!(
+                "ip: 127.0.0.1\nadvertisedAddress: 127.0.0.1\nhttpPort: {gateway_port}\nenableHttp: true\nhttpsPort: 8443\nenableHttps: false\nserviceId: com.networknt.light-gateway-1.0.0\nenableRegistry: false\nstartOnRegistryFailure: true\ndynamicPort: false\nenvironment: dev\nshutdownGracefulPeriod: 100\n"
+            ),
+        )
+        .expect("write composed server config");
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            "handlers: [unified-security, router]\npaths:\n  - path: /partner\n    method: POST\n    exec: [unified-security, router]\ndefaultHandlers: []\n",
+        )
+        .expect("write composed handler config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::HMAC_FILE),
+            "enabled: true\npathPrefixAuths: []\nprofiles:\n  partner:\n    maxBodyBytes: 1024\n    secrets:\n      defaultEnvNames: [PATH]\n",
+        )
+        .expect("write composed HMAC config");
+        std::fs::write(
+            config_dir
+                .path()
+                .join(light_pingora::UNIFIED_SECURITY_FILE),
+            "enabled: true\nanonymousPrefixes: []\npathPrefixAuths:\n  - prefix: /partner\n    methods: [POST]\n    authentication:\n      allOf:\n        - type: apiKey\n        - type: hmac\n          profile: partner\n",
+        )
+        .expect("write composed security config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::APIKEY_FILE),
+            "enabled: true\nhashEnabled: false\npathPrefixAuths:\n  - pathPrefix: /partner\n    headerName: X-Partner-Key\n    apiKey: partner-key\n",
+        )
+        .expect("write API-key config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::ROUTER_FILE),
+            "hostWhitelist: ['127\\.0\\.0\\.1']\n",
+        )
+        .expect("write composed router config");
+
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp::default()))
+            .with_config_dir(config_dir.path())
+            .with_external_config_dir(external_dir.path())
+            .build();
+        let running = runtime.start().await.expect("start composed HMAC gateway");
+        wait_for_tcp(gateway_address).await;
+        let body = b"{\"event\":\"partner\"}";
+        let secret = std::env::var("PATH").expect("PATH test secret");
+        let mut mac =
+            Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC test key");
+        mac.update(body);
+        let signature = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+        let send = |api_key: Option<&str>, signature: &str| {
+            let api_key = api_key
+                .map(|value| format!("X-Partner-Key: {value}\r\n"))
+                .unwrap_or_default();
+            let request = format!(
+                "POST /partner HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nservice_url: http://{upstream_address}\r\n{api_key}X-Hub-Signature-256: {signature}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                String::from_utf8_lossy(body)
+            );
+            async move { raw_http_exchange(gateway_address, &request).await }
+        };
+
+        let missing_api_key = send(None, &signature).await;
+        assert!(String::from_utf8_lossy(&missing_api_key).starts_with("HTTP/1.1 401"));
+        let invalid_hmac = send(Some("partner-key"), "sha256=00").await;
+        assert!(String::from_utf8_lossy(&invalid_hmac).starts_with("HTTP/1.1 401"));
+        assert_eq!(upstream_requests.load(Ordering::SeqCst), 0);
+
+        let accepted = send(Some("partner-key"), &signature).await;
+        assert!(String::from_utf8_lossy(&accepted).starts_with("HTTP/1.1 204"));
+        assert_eq!(upstream_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            upstream_body
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_slice(),
+            body
+        );
+
+        running.shutdown().await.expect("shutdown composed gateway");
+        upstream_task.abort();
     }
 
     async fn read_complete_http_request(socket: &mut TcpStream) -> Vec<u8> {
@@ -6587,7 +7983,7 @@ aliases: {}
         // and the value is removed after the runtime is shut down.
         unsafe { std::env::set_var("MODEL_PROVIDER_SIDECAR_MANIFEST", &manifest_path) };
 
-        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp))
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp::default()))
             .with_config_dir(config_dir.path())
             .with_external_config_dir(external_dir.path())
             .build();
@@ -6873,6 +8269,477 @@ handler.defaultHandlers: []
                 .module_summaries()
                 .iter()
                 .any(|entry| entry.module_id == light_pingora::HANDLER_MODULE_ID && entry.active)
+        );
+    }
+
+    fn write_hmac_phase1_fixture(config_dir: &std::path::Path, max_body_bytes: usize) {
+        std::fs::write(
+            config_dir.join("handler.yml"),
+            r#"
+handlers: [hmac, router]
+paths:
+  - path: /webhook
+    method: POST
+    exec: [hmac, router]
+defaultHandlers: []
+"#,
+        )
+        .expect("write HMAC handler config");
+        std::fs::write(
+            config_dir.join(light_pingora::HMAC_FILE),
+            format!(
+                r#"
+enabled: true
+pathPrefixAuths:
+  - prefix: /webhook
+    methods: [POST]
+    profile: github
+profiles:
+  github:
+    maxBodyBytes: {max_body_bytes}
+    secrets:
+      defaultEnvNames: [PATH]
+    replay:
+      enabled: true
+      idHeader: X-GitHub-Delivery
+      store: local
+      retentionSeconds: 60
+replayStores:
+  local:
+    type: local
+    maxEntries: 4
+"#
+            ),
+        )
+        .expect("write HMAC config");
+    }
+
+    #[test]
+    fn gateway_compiles_standalone_hmac_runtime_when_handler_is_active() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        write_hmac_phase1_fixture(config_dir.path(), 1024);
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+
+        let proxy = GatewayProxy::from_runtime_config(&config).expect("build HMAC gateway");
+        let runtime = proxy.current_hmac_runtime();
+        let runtime = runtime.as_ref().as_ref().expect("compiled HMAC runtime");
+        assert_eq!(
+            runtime.standalone_profile("/webhook/github", "POST"),
+            Some("github")
+        );
+        assert_eq!(runtime.profile_limits("github"), Some((1024, 10_000)));
+        let public = config.module_registry.component_configs();
+        assert!(!public["hmac"].to_string().contains("PATH"));
+    }
+
+    #[test]
+    fn hmac_body_budget_is_weighted_and_released_by_request_ownership() {
+        let used = Arc::new(AtomicUsize::new(0));
+        let mut first = HmacBodyPermit::acquire(Arc::clone(&used), 5, 8).expect("first permit");
+        assert!(HmacBodyPermit::acquire(Arc::clone(&used), 4, 8).is_err());
+        first.grow(3, 8).expect("grow to budget boundary");
+        assert_eq!(used.load(Ordering::Acquire), 8);
+        drop(first);
+        assert_eq!(used.load(Ordering::Acquire), 0);
+        assert!(HmacBodyPermit::acquire(used, 8, 8).is_ok());
+    }
+
+    #[test]
+    fn hmac_effective_chain_rejects_authentication_after_router() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        write_hmac_phase1_fixture(config_dir.path(), 1024);
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            r#"
+handlers: [hmac, router]
+paths:
+  - path: /webhook
+    method: POST
+    exec: [router, hmac]
+defaultHandlers: []
+"#,
+        )
+        .expect("write invalid HMAC handler order");
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+        let error = GatewayProxy::from_runtime_config(&config)
+            .err()
+            .expect("invalid materialized HMAC chain must fail");
+        assert!(error.to_string().contains("must precede router"));
+    }
+
+    #[test]
+    fn hmac_effective_chain_rejects_more_specific_route_without_standalone_entry() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        write_hmac_phase1_fixture(config_dir.path(), 1024);
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            r#"
+handlers: [hmac, router]
+paths:
+  - path: /webhook
+    method: POST
+    exec: [hmac, router]
+  - path: /webhook/special
+    method: POST
+    exec: [router]
+defaultHandlers: []
+"#,
+        )
+        .expect("write route override fixture");
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+        let error = GatewayProxy::from_runtime_config(&config)
+            .err()
+            .expect("more-specific route must not bypass standalone HMAC");
+        assert!(error.to_string().contains("/webhook/special@post"));
+        assert!(
+            error
+                .to_string()
+                .contains("standalone HMAC policy and effective handler chain disagree")
+        );
+    }
+
+    #[test]
+    fn hmac_effective_chain_checks_all_method_composed_policy_on_every_configured_method() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            r#"
+handlers: [unified-security, router]
+paths:
+  - path: /partner/special
+    method: PUT
+    exec: [router]
+defaultHandlers: [unified-security, router]
+"#,
+        )
+        .expect("write composed route override fixture");
+        std::fs::write(
+            config_dir.path().join(light_pingora::HMAC_FILE),
+            r#"
+enabled: true
+pathPrefixAuths: []
+profiles:
+  partner:
+    secrets:
+      defaultEnvNames: [PATH]
+"#,
+        )
+        .expect("write composed HMAC config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::UNIFIED_SECURITY_FILE),
+            r#"
+enabled: true
+anonymousPrefixes: []
+pathPrefixAuths:
+  - prefix: /partner
+    authentication:
+      allOf:
+        - type: hmac
+          profile: partner
+"#,
+        )
+        .expect("write all-method composed policy");
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+        let error = GatewayProxy::from_runtime_config(&config)
+            .err()
+            .expect("method-specific route must not bypass composed HMAC");
+        assert!(
+            error.to_string().contains("/partner/special@put"),
+            "unexpected validation error: {error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("requires exactly one unified-security handler")
+        );
+    }
+
+    #[test]
+    fn hmac_chain_probe_materializes_wildcard_and_parameter_paths() {
+        assert_eq!(
+            hmac_handler_path_probe("/webhook/{delivery}/*"),
+            "/webhook/__hmac_parameter_probe__/__hmac_wildcard_probe__"
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_admin_tool_removes_only_the_requested_logical_key() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        write_hmac_phase1_fixture(config_dir.path(), 1024);
+        std::fs::write(
+            config_dir.path().join(light_pingora::HMAC_FILE),
+            r#"
+enabled: true
+pathPrefixAuths:
+  - prefix: /webhook
+    methods: [POST]
+    profile: github
+profiles:
+  github:
+    secrets:
+      defaultEnvNames: [PATH]
+    replay:
+      enabled: true
+      idHeader: X-GitHub-Delivery
+      store: local
+      retentionSeconds: 60
+replayStores:
+  local:
+    type: local
+    maxEntries: 4
+"#,
+        )
+        .expect("write replay config");
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+        let admin = Arc::new(HmacReplayAdmin::default());
+        let _proxy = GatewayProxy::from_runtime_config_with_admission_and_admin(
+            &config,
+            AdmissionGate::default(),
+            Arc::clone(&admin),
+        )
+        .expect("build HMAC replay gateway");
+        let runtime = admin.runtime().expect("admin runtime snapshot");
+        let key = light_pingora::WebhookReplayKey::new("github", "shared", "delivery-1")
+            .expect("replay key");
+        runtime
+            .replay_store("github")
+            .unwrap()
+            .reserve(&key, Duration::from_secs(60))
+            .await
+            .expect("reserve replay key");
+
+        let handler = HmacReplayRegistryHandler { admin };
+        let tools = handler.handle_request("tools/list", json!({})).await;
+        assert_eq!(tools["tools"][0]["name"], "remove_webhook_replay");
+        let removed = handler
+            .handle_request(
+                "tools/call",
+                json!({
+                    "name": "remove_webhook_replay",
+                    "arguments": {
+                        "profile": "github",
+                        "selector": "shared",
+                        "deliveryId": "delivery-1"
+                    }
+                }),
+            )
+            .await;
+        assert_eq!(removed["status"], "success");
+        assert_eq!(removed["removed"], true);
+        assert_eq!(removed["scope"], "local");
+        assert!(!removed.to_string().contains("delivery-1"));
+        let absent = handler
+            .handle_request(
+                "tools/call",
+                json!({
+                    "name": "remove_webhook_replay",
+                    "arguments": {
+                        "profile": "github",
+                        "selector": "shared",
+                        "deliveryId": "delivery-1"
+                    }
+                }),
+            )
+            .await;
+        assert_eq!(absent["removed"], false);
+    }
+
+    #[tokio::test]
+    async fn hmac_reload_swaps_only_a_fully_compiled_candidate() {
+        use hmac::{Hmac, Mac};
+
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        write_hmac_phase1_fixture(config_dir.path(), 1024);
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+        let proxy = GatewayProxy::from_runtime_config(&config).expect("build HMAC gateway");
+        let pinned_execution = proxy.current_security_execution();
+        let body = b"secret-rotation-exercise";
+        let signature = |secret: &str| {
+            let mut mac =
+                Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC test key");
+            mac.update(body);
+            format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
+        };
+        let headers = |value: String| {
+            let mut headers = http::HeaderMap::new();
+            headers.insert(
+                "x-hub-signature-256",
+                HeaderValue::from_str(&value).expect("test signature header"),
+            );
+            headers
+        };
+        let path_secret = std::env::var("PATH").expect("PATH test secret");
+        let home_secret = std::env::var("HOME").expect("HOME rotation test secret");
+        let path_headers = headers(signature(&path_secret));
+        let home_headers = headers(signature(&home_secret));
+        let initial_runtime = pinned_execution
+            .hmac
+            .as_ref()
+            .as_ref()
+            .expect("initial HMAC runtime");
+        assert!(
+            initial_runtime
+                .verify("github", &path_headers, body)
+                .is_ok()
+        );
+        assert!(
+            initial_runtime
+                .verify("github", &home_headers, body)
+                .is_err()
+        );
+        let replay_key =
+            light_pingora::WebhookReplayKey::new("github", "shared", "reload-preserved-delivery")
+                .unwrap();
+        let initial_store = proxy
+            .current_hmac_runtime()
+            .as_ref()
+            .as_ref()
+            .and_then(|runtime| runtime.replay_store("github"))
+            .expect("initial replay store");
+        assert!(matches!(
+            initial_store
+                .reserve(&replay_key, Duration::from_secs(60))
+                .await,
+            Ok(light_pingora::ReserveOutcome::Reserved(_))
+        ));
+
+        std::fs::write(
+            external_dir.path().join(light_pingora::HMAC_FILE),
+            r#"
+enabled: true
+pathPrefixAuths:
+  - prefix: /webhook
+    methods: [POST]
+    profile: github
+profiles:
+  github:
+    maxBodyBytes: 2048
+    secrets:
+      defaultEnvNames: [HOME, PATH]
+    replay:
+      enabled: true
+      idHeader: X-GitHub-Delivery
+      store: local
+      retentionSeconds: 60
+replayStores:
+  local:
+    type: local
+    maxEntries: 4
+"#,
+        )
+        .expect("write reloaded HMAC config");
+        let result = config
+            .module_registry
+            .reload_modules(
+                ReloadContext::new(config.clone()),
+                &[light_pingora::HMAC_MODULE_ID.to_string()],
+            )
+            .await;
+        assert!(result.failed.is_empty(), "valid HMAC reload failed");
+        assert_eq!(
+            proxy
+                .current_hmac_runtime()
+                .as_ref()
+                .as_ref()
+                .and_then(|runtime| runtime.profile_limits("github")),
+            Some((2048, 10_000))
+        );
+        let reloaded_execution = proxy.current_security_execution();
+        assert!(reloaded_execution.generation > pinned_execution.generation);
+        let reloaded_runtime = reloaded_execution
+            .hmac
+            .as_ref()
+            .as_ref()
+            .expect("reloaded HMAC runtime");
+        assert!(
+            reloaded_runtime
+                .verify("github", &home_headers, body)
+                .is_ok()
+        );
+        assert!(
+            reloaded_runtime
+                .verify("github", &path_headers, body)
+                .is_ok()
+        );
+        assert!(
+            initial_runtime
+                .verify("github", &path_headers, body)
+                .is_ok()
+        );
+        assert!(
+            initial_runtime
+                .verify("github", &home_headers, body)
+                .is_err()
+        );
+        assert_eq!(
+            pinned_execution
+                .hmac
+                .as_ref()
+                .as_ref()
+                .and_then(|runtime| runtime.profile_limits("github")),
+            Some((1024, 10_000))
+        );
+        assert_eq!(
+            reloaded_execution
+                .hmac
+                .as_ref()
+                .as_ref()
+                .and_then(|runtime| runtime.profile_limits("github")),
+            Some((2048, 10_000))
+        );
+        let reloaded_store = proxy
+            .current_hmac_runtime()
+            .as_ref()
+            .as_ref()
+            .and_then(|runtime| runtime.replay_store("github"))
+            .expect("reloaded replay store");
+        assert_eq!(
+            reloaded_store
+                .reserve(&replay_key, Duration::from_secs(60))
+                .await
+                .unwrap(),
+            light_pingora::ReserveOutcome::Duplicate,
+            "valid HMAC reload reset local replay history"
+        );
+
+        std::fs::write(
+            external_dir.path().join(light_pingora::HMAC_FILE),
+            r#"
+enabled: true
+pathPrefixAuths:
+  - prefix: /webhook
+    methods: [POST]
+    profile: github
+profiles:
+  github:
+    maxBodyBytes: 4096
+    secrets:
+      defaultEnvNames: [LIGHT_HMAC_TEST_SECRET_THAT_DOES_NOT_EXIST]
+"#,
+        )
+        .expect("write invalid HMAC reload");
+        let result = config
+            .module_registry
+            .reload_modules(
+                ReloadContext::new(config.clone()),
+                &[light_pingora::HMAC_MODULE_ID.to_string()],
+            )
+            .await;
+        assert_eq!(result.failed.len(), 1);
+        assert_eq!(
+            proxy
+                .current_hmac_runtime()
+                .as_ref()
+                .as_ref()
+                .and_then(|runtime| runtime.profile_limits("github")),
+            Some((2048, 10_000)),
+            "failed HMAC reload replaced the active runtime"
         );
     }
 
@@ -8278,7 +10145,7 @@ pathPrefixService:
         )
         .expect("write websocket config");
 
-        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp))
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp::default()))
             .with_config_dir(config_dir.path())
             .with_external_config_dir(external_dir.path())
             .with_registry_client(Arc::clone(&registry_client))
@@ -8455,7 +10322,7 @@ tools: []
         )
         .expect("write mcp config");
 
-        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp))
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp::default()))
             .with_config_dir(config_dir.path())
             .with_external_config_dir(external_dir.path())
             .build();
@@ -8638,7 +10505,7 @@ aliases:
         // SAFETY: the test uses a unique process-local variable and removes it
         // immediately after off-path client construction.
         unsafe { std::env::set_var("LIGHT_GATEWAY_LF6B_TEST_KEY", "test-key") };
-        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp))
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp::default()))
             .with_config_dir(config_dir.path())
             .with_external_config_dir(external_dir.path())
             .build();

@@ -1,0 +1,13 @@
+# HMAC webhook authentication is loaded only when the standalone `hmac`
+# handler is active or Unified Security references an HMAC factor.
+enabled: ${hmac.enabled:false}
+maxBufferedBodyBytes: ${hmac.maxBufferedBodyBytes:268435456}
+pathPrefixAuths: ${hmac.pathPrefixAuths:[]}
+profiles: ${hmac.profiles:{}}
+replayStores: ${hmac.replayStores:{}}
+
+# A replay-enabled profile must explicitly reference one named provider.
+# Local example:  { development: { type: local, maxEntries: 100000 } }
+# Redis example:  { shared: { type: redis, urlEnv: HMAC_REDIS_URL,
+#                   keyPrefix: "light:hmac-replay:", connectTimeoutMillis: 1000,
+#                   operationTimeoutMillis: 1000 } }

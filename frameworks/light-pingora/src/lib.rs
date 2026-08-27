@@ -7,6 +7,8 @@ mod cors;
 mod direct_registry;
 mod handler;
 mod header;
+mod hmac;
+mod hmac_replay;
 mod llm_sse;
 mod mcp;
 mod mcp_protocol;
@@ -83,6 +85,17 @@ pub use handler::{
 pub use header::{
     HEADER_CONFIG_NAME, HEADER_FILE, HEADER_MODULE_ID, HeaderConfig, HeaderMutation,
     HeaderPathPrefixConfig, apply_header_request, apply_header_response, load_header_config,
+};
+pub use hmac::{
+    EnvironmentHmacSecretResolver, HMAC_CONFIG_NAME, HMAC_FILE, HMAC_MODULE_ID, HmacConfig,
+    HmacEvidence, HmacProfileConfig, HmacReplayAttempt, HmacReplayConfig, HmacRuntime,
+    HmacSecretResolver, HmacSignatureEncoding, HmacStandaloneRule, HmacVerificationError,
+    ReplayStoreConfig, StandaloneHmacRoute, load_hmac_runtime, load_hmac_runtime_preserving,
+};
+pub use hmac_replay::{
+    HMAC_REPLAY_CACHE_PREFIX, LocalWebhookReplayStore, ReplayAdminError, ReplayRemovalOutcome,
+    ReplayReservation, ReplayStoreError, ReplayStoreScope, ReserveOutcome, WebhookReplayKey,
+    WebhookReplayStore,
 };
 pub use llm_sse::write_llm_sse_response;
 pub use mcp::{
@@ -170,7 +183,9 @@ pub use token::{
 };
 pub use unified_security::{
     UNIFIED_SECURITY_CONFIG_NAME, UNIFIED_SECURITY_FILE, UNIFIED_SECURITY_MODULE_ID,
-    UnifiedPathAuth, UnifiedSecurityConfig, load_unified_security_config, verify_unified_security,
+    UnifiedAuthFactor, UnifiedAuthFactorType, UnifiedAuthentication, UnifiedPathAuth,
+    UnifiedSecurityConfig, UnifiedSecurityOutcome, load_unified_security_config,
+    validate_unified_security_config, verify_unified_security,
 };
 pub use websocket::{
     CONTROLLER_MCP_CONNECT_ENDPOINT, CONTROLLER_MCP_PATH, WEBSOCKET_ROUTER_CONFIG_NAME,

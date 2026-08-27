@@ -837,7 +837,7 @@ impl RegistryHandler for RuntimeMcpHandler {
                 "features": {
                     "logStreamLeaseV1": self.log_stream.is_some() && self.notifier.is_some()
                 },
-                "tools": self.available_runtime_tools()
+                "tools": self.available_runtime_tools().await
             }),
             "tools/call" => {
                 let Some(name) = params.get("name").and_then(JsonValue::as_str) else {
@@ -890,7 +890,7 @@ impl RegistryHandler for RuntimeMcpHandler {
 }
 
 impl RuntimeMcpHandler {
-    fn available_runtime_tools(&self) -> JsonValue {
+    async fn available_runtime_tools(&self) -> JsonValue {
         let mut tools = runtime_tools().as_array().cloned().unwrap_or_default();
         tools.retain(|tool| match tool.get("name").and_then(JsonValue::as_str) {
             Some("get_service_info" | "get_modules" | "reload_modules") => true,
@@ -904,6 +904,23 @@ impl RuntimeMcpHandler {
             }
             _ => false,
         });
+        let delegated = self.delegate.handle_request("tools/list", json!({})).await;
+        let delegated_tools = delegated
+            .get("tools")
+            .and_then(JsonValue::as_array)
+            .cloned()
+            .or_else(|| delegated.as_array().cloned())
+            .unwrap_or_default();
+        for tool in delegated_tools {
+            let name = tool.get("name").and_then(JsonValue::as_str);
+            if name.is_some_and(|name| {
+                !tools
+                    .iter()
+                    .any(|existing| existing.get("name").and_then(JsonValue::as_str) == Some(name))
+            }) {
+                tools.push(tool);
+            }
+        }
         JsonValue::Array(tools)
     }
 
@@ -957,6 +974,18 @@ impl RuntimeMcpHandler {
         let Some(cache_registry) = self.cache_registry.as_ref() else {
             return unsupported_cache_response(Some(&name));
         };
+
+        if cache_registry.clear_supported(&name) == Some(false) {
+            let size = cache_registry.len(&name).await.unwrap_or_default();
+            return json!({
+                "supported": false,
+                "status": "unsupported",
+                "name": name,
+                "beforeSize": size,
+                "afterSize": size,
+                "message": "this cache does not support bulk clearing"
+            });
+        }
 
         match cache_registry.clear(&name).await {
             Some(outcome) => json!({
@@ -1848,7 +1877,7 @@ impl ReloadableModule for DirectRegistryReloader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{CacheRegistry, MokaRuntimeCache};
+    use crate::cache::{CacheRegistry, MokaRuntimeCache, RuntimeCache};
     use crate::config::{
         BootstrapConfig, ClientConfig, DirectRegistryConfig, PortalRegistryConfig, ServerConfig,
         ServiceIdentity,
@@ -2868,6 +2897,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_mcp_handler_refuses_bulk_clear_for_read_only_cache() {
+        struct ReadOnlyCache;
+
+        #[async_trait]
+        impl RuntimeCache for ReadOnlyCache {
+            async fn len(&self) -> usize {
+                1
+            }
+
+            async fn entries_summary(&self) -> JsonValue {
+                json!({ "entries": 1, "clearSupported": false })
+            }
+
+            fn clear_supported(&self) -> bool {
+                false
+            }
+
+            async fn clear(&self) {
+                panic!("read-only cache must never be cleared")
+            }
+        }
+
+        let cache_registry = Arc::new(CacheRegistry::new());
+        cache_registry.register("webhook-replay", ReadOnlyCache);
+        let handler = RuntimeMcpHandler::new(
+            Arc::new(ModuleRegistry::new()),
+            runtime_config(),
+            Arc::new(DelegateHandler),
+        )
+        .with_cache_registry(cache_registry);
+        let response = handler
+            .handle_request(
+                "tools/call",
+                json!({
+                    "name": "clear_cache",
+                    "arguments": { "name": "webhook-replay" }
+                }),
+            )
+            .await;
+        assert_eq!(response["supported"], false);
+        assert_eq!(response["status"], "unsupported");
+        assert_eq!(response["beforeSize"], 1);
+        assert_eq!(response["afterSize"], 1);
+    }
+
+    #[tokio::test]
     async fn runtime_mcp_handler_all_providers_publish_exact_available_tools() {
         let registry = Arc::new(ModuleRegistry::new());
         let cache_registry = Arc::new(CacheRegistry::new());
@@ -2945,5 +3020,46 @@ mod tests {
             assert_eq!(response["status"], "unsupported");
             assert_eq!(response["error"]["code"], "unsupported_method");
         }
+    }
+
+    #[tokio::test]
+    async fn runtime_mcp_handler_merges_delegate_tools_without_overriding_builtins() {
+        struct ToolDelegate;
+
+        #[async_trait]
+        impl RegistryHandler for ToolDelegate {
+            async fn handle_request(&self, method: &str, _params: JsonValue) -> JsonValue {
+                if method == "tools/list" {
+                    json!({
+                        "tools": [
+                            { "name": "remove_webhook_replay", "inputSchema": { "type": "object" } },
+                            { "name": "get_modules", "description": "must not replace builtin" }
+                        ]
+                    })
+                } else {
+                    json!({ "status": "delegated" })
+                }
+            }
+        }
+
+        let handler = RuntimeMcpHandler::new(
+            Arc::new(ModuleRegistry::new()),
+            runtime_config(),
+            Arc::new(ToolDelegate),
+        );
+        let response = handler.handle_request("tools/list", json!({})).await;
+        let tools = response["tools"].as_array().unwrap();
+        assert_eq!(
+            tools
+                .iter()
+                .filter(|tool| tool["name"] == "get_modules")
+                .count(),
+            1
+        );
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool["name"] == "remove_webhook_replay")
+        );
     }
 }

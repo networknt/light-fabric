@@ -18,11 +18,13 @@ bytes = { workspace = true }
 chrono = { workspace = true }
 hmac = { workspace = true }
 hex = { workspace = true }
+http = { workspace = true }
 jsonwebtoken = "9.3"
 jsonschema = { workspace = true }
 pbkdf2 = "0.12"
 pingora = { version = "=0.8.1", features = ["proxy", "rustls"] }
 rand = "0.8"
+redis = { version = "1.4.0", default-features = false, features = ["connection-manager", "tokio-rustls-comp"] }
 regex = "1"
 reqwest = { workspace = true }
 ring = "0.17"
@@ -37,6 +39,7 @@ sqlx = { version = "0.8", features = ["chrono", "json", "postgres", "runtime-tok
 subtle = "2.6"
 tokio = { workspace = true }
 tokio-util = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }

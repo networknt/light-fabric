@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "signatureVectors": [
+    {
+      "name": "github-published-hello-world",
+      "secretUtf8": "It's a Secret to Everybody",
+      "bodyBase64": "SGVsbG8sIFdvcmxkIQ==",
+      "signatureHeader": "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17"
+    },
+    {
+      "name": "unicode-and-embedded-null",
+      "secretUtf8": "shared-secret",
+      "bodyBase64": "6Leo6L+Q6KGM5pe2AHBheWxvYWQ=",
+      "signatureHeader": "sha256=4ebf5fb3b212e02657687ad0ef9dab62b392eb254ea7ff8519af3f0e791895be"
+    }
+  ],
+  "replayKeyVectors": [
+    {
+      "name": "ascii",
+      "profile": "github",
+      "selector": "shared",
+      "deliveryId": "delivery-1",
+      "digest": "292d360acd5de602b9e8a99f73d63a1df6ac20b606382a173289c2ea8b5a3501"
+    },
+    {
+      "name": "unicode-and-embedded-separator",
+      "profile": "github",
+      "selector": "客户|一",
+      "deliveryId": "delivery\u0000id",
+      "digest": "f348265a48b1272a91a25427da11a99e4beaee119bdd3583c62a4462546195ae"
+    }
+  ]
+}

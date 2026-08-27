@@ -6,6 +6,9 @@ members = [
 ]
 resolver = "2"
 
+[patch.crates-io]
+pingora-proxy = { path = "patches/pingora-proxy" }
+
 [workspace.package]
 version = "0.2.1"
 edition = "2024"

@@ -304,6 +304,26 @@ impl ActiveHandlerSet {
         })
     }
 
+    pub fn materialized_path_handler_ids(
+        &self,
+        path: &HandlerPath,
+    ) -> Result<Vec<String>, RuntimeError> {
+        let mut resolved = Vec::new();
+        resolve_exec_handlers(&path.exec, &self.config, &mut Vec::new(), &mut resolved)?;
+        Ok(resolved)
+    }
+
+    pub fn materialized_default_handler_ids(&self) -> Result<Vec<String>, RuntimeError> {
+        let mut resolved = Vec::new();
+        resolve_exec_handlers(
+            &self.config.default_handlers,
+            &self.config,
+            &mut Vec::new(),
+            &mut resolved,
+        )?;
+        Ok(resolved)
+    }
+
     pub fn is_handler_active(&self, handler_id: &str) -> bool {
         self.active_handler_ids.iter().any(|id| id == handler_id)
     }
