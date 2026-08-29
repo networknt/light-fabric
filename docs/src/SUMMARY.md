@@ -98,6 +98,7 @@
     - [Phase 0 ADR: Secret Materialization](adr/llm-gateway/0005-secret-materialization.md)
     - [Phase 0 ADR: Accounting Circuit Replay](adr/llm-gateway/0006-accounting-circuit-replay.md)
     - [Phase 0 ADR: Audit Durability](adr/llm-gateway/0007-audit-durability.md)
+  - [A2A Gateway](product/light-gateway/a2a-gateway.md)
   - [Deploy Native](product/light-gateway/deploy-native.md)
   - [Deploy Kubernetes](product/light-gateway/deploy-kubernetes.md)
   - [Kubernetes Gateway API](product/light-gateway/k8s-gateway-api.md)
