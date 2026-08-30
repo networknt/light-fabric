@@ -525,7 +525,6 @@ impl RuntimeConfig {
             source,
             host_id: remote_result.host_id,
             snapshot_id: remote_result.snapshot_id,
-            instance_id: remote_result.instance_id,
             content_digest,
         };
 
@@ -809,7 +808,6 @@ where
         };
         let snapshot_id = remote_result.snapshot_id.clone();
         let host_id = remote_result.host_id.clone();
-        let instance_id = remote_result.instance_id.clone();
         let source_content = remote_result
             .values_yaml
             .clone()
@@ -830,7 +828,6 @@ where
                 source,
                 host_id,
                 snapshot_id,
-                instance_id,
                 content_digest,
             },
         })
@@ -1346,7 +1343,7 @@ async fn fetch_remote_bootstrap_if_needed(
     let query = build_query_params(bootstrap);
 
     match fetch_remote_values(&client, config_server_uri, &query, bootstrap).await {
-        Ok((values_yaml, host_id, snapshot_id, instance_id, content_digest)) => {
+        Ok((values_yaml, host_id, snapshot_id, content_digest)) => {
             let values_path = external_config_dir.join(VALUES_FILE);
             atomic_cache_write(&values_path, values_yaml.as_bytes())?;
 
@@ -1355,7 +1352,6 @@ async fn fetch_remote_bootstrap_if_needed(
                 cached_files: vec![values_path],
                 host_id,
                 snapshot_id,
-                instance_id,
                 content_digest,
             };
 
@@ -1548,18 +1544,6 @@ fn build_query_params(bootstrap: &BootstrapConfig) -> Vec<(String, String)> {
     if let Some(value) = &bootstrap.service_id {
         params.push(("serviceId".to_string(), value.clone()));
     }
-    if let Some(value) = &bootstrap.product_id {
-        params.push(("productId".to_string(), value.clone()));
-    }
-    if let Some(value) = &bootstrap.product_version {
-        params.push(("productVersion".to_string(), value.clone()));
-    }
-    if let Some(value) = &bootstrap.api_id {
-        params.push(("apiId".to_string(), value.clone()));
-    }
-    if let Some(value) = &bootstrap.api_version {
-        params.push(("apiVersion".to_string(), value.clone()));
-    }
 
     params.push((
         "envTag".to_string(),
@@ -1576,16 +1560,7 @@ async fn fetch_remote_values(
     config_server_uri: &str,
     query: &[(String, String)],
     bootstrap: &BootstrapConfig,
-) -> Result<
-    (
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    ),
-    RuntimeError,
-> {
+) -> Result<(String, Option<String>, Option<String>, Option<String>), RuntimeError> {
     let response = client
         .get(format!(
             "{config_server_uri}{CONFIG_SERVER_CONFIGS_CONTEXT_ROOT}"
@@ -1602,7 +1577,6 @@ async fn fetch_remote_values(
     let response = response.error_for_status()?;
     let host_id = response_header(&response, "x-light-config-host-id");
     let snapshot_id = response_header(&response, "x-light-config-snapshot-id");
-    let instance_id = response_header(&response, "x-light-config-instance-id");
     let advertised_digest = response_header(&response, "x-light-config-content-digest");
     let content_type = response
         .headers()
@@ -1622,12 +1596,12 @@ async fn fetch_remote_values(
 
     if content_type.starts_with("application/yaml") || content_type.starts_with("text/yaml") {
         let digest = format!("{:x}", Sha256::digest(body.as_bytes()));
-        Ok((body, host_id, snapshot_id, instance_id, Some(digest)))
+        Ok((body, host_id, snapshot_id, Some(digest)))
     } else if content_type.starts_with("application/json") {
         let json: serde_json::Value = serde_json::from_str(&body)?;
         let yaml = serde_yaml::to_string(&json)?;
         let digest = format!("{:x}", Sha256::digest(yaml.as_bytes()));
-        Ok((yaml, host_id, snapshot_id, instance_id, Some(digest)))
+        Ok((yaml, host_id, snapshot_id, Some(digest)))
     } else {
         Err(RuntimeError::Unsupported(format!(
             "unsupported config server content type `{content_type}`"
@@ -2346,7 +2320,7 @@ controlCandidates:
     }
 
     #[test]
-    fn builds_light_4j_style_query_parameters() {
+    fn builds_snapshot_identity_query_parameters() {
         let bootstrap = BootstrapConfig {
             host: "lightapi.net".to_string(),
             service_id: Some("com.networknt.petstore-1.0.0".to_string()),
@@ -2359,16 +2333,22 @@ controlCandidates:
         };
 
         let query = build_query_params(&bootstrap);
+        assert!(query.contains(&("host".to_string(), "lightapi.net".to_string())));
         assert!(query.contains(&(
             "serviceId".to_string(),
             "com.networknt.petstore-1.0.0".to_string()
         )));
-        assert!(query.iter().all(|(name, _)| name != "instanceId"));
-        assert!(query.contains(&("productId".to_string(), "agent".to_string())));
-        assert!(query.contains(&("productVersion".to_string(), "1.0.0".to_string())));
-        assert!(query.contains(&("apiId".to_string(), "petstore".to_string())));
-        assert!(query.contains(&("apiVersion".to_string(), "1.0.0".to_string())));
         assert!(query.contains(&("envTag".to_string(), "dev".to_string())));
+        assert_eq!(query.len(), 3);
+        for obsolete in [
+            "instanceId",
+            "productId",
+            "productVersion",
+            "apiId",
+            "apiVersion",
+        ] {
+            assert!(query.iter().all(|(name, _)| name != obsolete));
+        }
     }
 
     #[test]
