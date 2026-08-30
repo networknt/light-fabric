@@ -4,6 +4,8 @@ set -euo pipefail
 control_url_file="${PORTAL_CONTROL_DATABASE_URL_FILE:?PORTAL_CONTROL_DATABASE_URL_FILE is required}"
 command_url="${PORTAL_COMMAND_URL:?PORTAL_COMMAND_URL is required}"
 token_file="${PORTAL_COMMAND_TOKEN_FILE:?PORTAL_COMMAND_TOKEN_FILE is required}"
+command_ca_file="${PORTAL_COMMAND_CA_FILE:-}"
+command_connect_to="${PORTAL_COMMAND_CONNECT_TO:-}"
 secret_root="${OPERATIONAL_PROVISIONING_SECRET_ROOT:?OPERATIONAL_PROVISIONING_SECRET_ROOT is required}"
 worker_id="${OPERATIONAL_PROVISIONER_ID:-$(hostname)-$$}"
 poll_seconds="${OPERATIONAL_PROVISIONER_POLL_SECONDS:-5}"
@@ -24,18 +26,36 @@ for file in "$control_url_file" "$token_file"; do
   mode_value=$((8#$(stat -c '%a' "$file")))
   (( (mode_value & 0037) == 0 )) || fail "secret file permissions are too broad"
 done
+if [[ -n "$command_ca_file" ]]; then
+  [[ -f "$command_ca_file" && ! -L "$command_ca_file" ]] || fail "Portal command CA file is missing or unsafe"
+fi
 control_url="$(<"$control_url_file")"
 token="$(<"$token_file")"
+if [[ "$control_url" =~ ^(postgres|postgresql)://([^:/@]+):([^@/]*)@([^:/?]+):([0-9]+)/([^?]+)(\?options=([^&]+))?$ ]]; then
+  printf -v control_user '%b' "${BASH_REMATCH[2]//%/\\x}"
+  printf -v control_password '%b' "${BASH_REMATCH[3]//%/\\x}"
+  control_host="${BASH_REMATCH[4]}"
+  control_port="${BASH_REMATCH[5]}"
+  printf -v control_database '%b' "${BASH_REMATCH[6]//%/\\x}"
+  printf -v control_options '%b' "${BASH_REMATCH[8]//%/\\x}"
+else
+  fail "Portal control database URL is invalid"
+fi
+unset control_url
 [[ "$lease_seconds" =~ ^[1-9][0-9]*$ && "$poll_seconds" =~ ^[1-9][0-9]*$ ]] || fail "invalid timing configuration"
 umask 077
 mkdir -p -- "$secret_root/.locks"
 curl_config_file="$(mktemp)"
 printf 'url = "%s"\nheader = "Authorization: Bearer %s"\n' "$command_url" "$token" >"$curl_config_file"
+[[ -z "$command_ca_file" ]] || printf 'cacert = "%s"\n' "$command_ca_file" >>"$curl_config_file"
+[[ -z "$command_connect_to" ]] || printf 'connect-to = "%s"\n' "$command_connect_to" >>"$curl_config_file"
 unset token command_url
 
 renew_lease() {
   local job_id="$1" lease_owner="$2" fencing_token="$3"
-  [[ "$(PGDATABASE="$control_url" psql -X -qAt --set=ON_ERROR_STOP=1 \
+  [[ "$(PGHOST="$control_host" PGPORT="$control_port" PGDATABASE="$control_database" \
+    PGUSER="$control_user" PGPASSWORD="$control_password" PGOPTIONS="$control_options" \
+    psql -X -qAt --set=ON_ERROR_STOP=1 \
     --set=job_id="$job_id" --set=lease_owner="$lease_owner" --set=fencing_token="$fencing_token" \
     --set=lease_seconds="$lease_seconds" <<'SQL'
 UPDATE operational_store_provisioning_job_t
@@ -66,7 +86,9 @@ post_command() {
 }
 
 claim_job() {
-  PGDATABASE="$control_url" psql -X -qAt -F '|' --set=ON_ERROR_STOP=1 \
+  PGHOST="$control_host" PGPORT="$control_port" PGDATABASE="$control_database" \
+    PGUSER="$control_user" PGPASSWORD="$control_password" PGOPTIONS="$control_options" \
+    psql -X -qAt -F '|' --set=ON_ERROR_STOP=1 \
     --set=worker_id="$worker_id" --set=lease_seconds="$lease_seconds" <<'SQL'
 WITH candidate AS (
  SELECT j.job_id FROM operational_store_provisioning_job_t j

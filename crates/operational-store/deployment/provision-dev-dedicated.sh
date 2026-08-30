@@ -11,6 +11,10 @@ secret_root="${OPERATIONAL_PROVISIONING_SECRET_ROOT:?OPERATIONAL_PROVISIONING_SE
 bundle_root="${OPERATIONAL_BUNDLE_ROOT:?OPERATIONAL_BUNDLE_ROOT is required}"
 script_root="${OPERATIONAL_SCRIPT_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}"
 image="${OPERATIONAL_POSTGRES_IMAGE:-pgvector/pgvector:pg17}"
+bootstrap_binding_id="${OPERATIONAL_BOOTSTRAP_BINDING_ID:-}"
+bootstrap_host_id="${OPERATIONAL_BOOTSTRAP_HOST_ID:-}"
+bootstrap_environment="${OPERATIONAL_BOOTSTRAP_ENVIRONMENT:-}"
+bootstrap_container="${OPERATIONAL_BOOTSTRAP_CONTAINER:-}"
 binding_suffix="${binding_id//-/}"
 container_name="lightapi-ops-${binding_suffix: -12}"
 secret_dir="$secret_root/$binding_id"
@@ -24,6 +28,31 @@ for command in docker openssl; do command -v "$command" >/dev/null || fail "$com
 [[ "$generation" =~ ^[1-9][0-9]*$ ]] || fail "invalid desired generation"
 [[ -d "$bundle_root" && -x "$script_root/bootstrap-operational-store.sh" && -x "$script_root/prepare-operational-secret.sh" ]] || fail "canonical bundle or scripts are unavailable"
 docker network inspect "$network_name" >/dev/null 2>&1 || fail "Docker network does not exist: $network_name"
+
+if [[ -n "$bootstrap_binding_id" && "$binding_id" == "$bootstrap_binding_id" ]]; then
+  [[ -n "$bootstrap_host_id" && -n "$bootstrap_environment" && -n "$bootstrap_container" ]] ||
+    fail "bootstrap binding adoption configuration is incomplete"
+  [[ "$host_id" == "$bootstrap_host_id" && "$environment_name" == "$bootstrap_environment" ]] ||
+    fail "bootstrap binding does not match its configured Host and environment"
+  docker container inspect "$bootstrap_container" >/dev/null 2>&1 ||
+    fail "bootstrap operational-store container does not exist"
+  [[ "$(docker inspect --format '{{.State.Running}}' "$bootstrap_container")" == "true" ]] ||
+    fail "bootstrap operational-store container is not running"
+  docker exec -i "$bootstrap_container" psql -U postgres -d operations -X -qAt \
+    --set=ON_ERROR_STOP=1 --set=binding_id="$binding_id" --set=host_id="$host_id" \
+    --set=environment="$environment_name" --set=binding_digest="$binding_digest" <<'SQL' |
+SELECT 1
+FROM operational_meta.operational_store_binding_t
+WHERE binding_id=:'binding_id'::uuid
+  AND host_id=:'host_id'::uuid
+  AND environment=:'environment'
+  AND binding_digest=:'binding_digest'
+  AND active;
+SQL
+    grep -qx 1 || fail "bootstrap operational-store scope-root validation failed"
+  printf 'docker://%s\n' "$bootstrap_container"
+  exit 0
+fi
 
 umask 077
 mkdir -p -- "$secret_dir"
