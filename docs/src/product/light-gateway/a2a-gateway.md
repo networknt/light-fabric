@@ -2,6 +2,16 @@
 
 Status: Proposed design; implementation and runtime qualification have not started
 
+Related control-plane designs:
+
+- [AI Agent Registration In Task Center](https://github.com/lightapi/light-portal-doc/blob/master/src/design/portal-view/agent-registration.md)
+  defines the logical Agent, native runtime link, base Agent publication, and
+  explicit handoff into optional A2A publication.
+- [Control-Plane Policy Publication Through Config Server](https://github.com/lightapi/light-portal-doc/blob/master/src/design/light-portal/control-plane-policy-config-server.md)
+  defines the immutable snapshot, `(host, serviceId, envTag)` workload identity,
+  `/configs`, reload, acknowledgement, last-known-good, and rollback contract
+  reused here.
+
 This document defines how `light-gateway`, native A2A support in `light-agent`,
 and a first-class `light-a2a` integration service should expose and govern
 Agent2Agent (A2A) traffic while Light Portal remains the catalog and policy
@@ -85,7 +95,9 @@ registration, skill assignment, memory, task persistence, or agent execution.
 Light-Fabric already has richer platform foundations:
 
 - Light Portal registers an agent as an API version with API type `agt`.
-- `agent_definition_t` binds that agent identity to model and execution policy.
+- `agent_definition_t` binds that agent identity to an authorized model alias or
+  model policy and to the remaining Agent profile. Direct provider/model/key
+  fields are legacy compatibility inputs, not the native publication model.
 - `skill_t`, `agent_skill_t`, and `skill_tool_t` represent governed skills and
   their assigned tools.
 - `genai-query/getEffectiveAgentCatalog` compiles an agent-scoped catalog.
@@ -204,6 +216,9 @@ topology.
   into a second, gateway-owned task engine.
 - Do not deploy one sidecar per remote SaaS agent when a shared federation
   service provides the required network and credential boundary.
+- Do not expose every registered Agent through A2A automatically. Registration
+  and native runtime linking are prerequisites; A2A exposure is an explicit,
+  independently authorized publication decision.
 
 ## Decisions
 
@@ -280,6 +295,19 @@ instance. Its `instanceApiId` is the deployment-scoped binding identity used to
 compile routing and coarse edge authorization. This relationship is distinct
 from the binding that selects the native `light-agent`, external sidecar, or
 remote A2A implementation.
+
+For a native Agent, these are two distinct deployment relationships:
+
+```text
+Agent API version -> native light-agent runtime
+Agent API version -> public light-gateway instance
+```
+
+The Agent registration flow owns or verifies the first relationship. The A2A
+publication flow owns or verifies the second. Their `instanceApiId` values are
+not interchangeable. An internal `instanceId` or `instanceApiId` may appear in
+Portal commands, manifests, associations, and audit evidence, but neither is a
+Config Server workload identity or query parameter.
 
 Multiple agent APIs intentionally expose the same A2A protocol endpoints. Raw
 keys such as `/@post` or `/message:send@post` therefore cannot be used directly
@@ -728,7 +756,7 @@ agent policy remains in Config Server, not Controller metadata. A
 `LIGHT_AGENT` publication must never select `mode=sidecar`.
 
 Each accepted runtime projection is single-host. All agent bindings in that
-projection inherit and must match `runtimePolicy.hostId`. Shared mode means
+projection inherit and must match `runtimePolicy.host`. Shared mode means
 many agents within that boundary, not one mixed-host policy document. A future
 multi-host fleet must load separately signed and isolated host partitions; it
 must not weaken the host check or combine entries under one envelope.
@@ -744,10 +772,9 @@ runtimePolicy:
   policyDigest: ${runtimePolicy.policyDigest:}
   contentDigest: ${runtimePolicy.contentDigest:}
   audience: ${runtimePolicy.audience:light-a2a}
-  hostId: ${runtimePolicy.hostId:}
-  environment: ${runtimePolicy.environment:}
+  host: ${runtimePolicy.host:}
   serviceId: ${runtimePolicy.serviceId:}
-  instanceId: ${runtimePolicy.instanceId:}
+  envTag: ${runtimePolicy.envTag:}
   sourceEventSequence: ${runtimePolicy.sourceEventSequence:0}
   schemaVersion: ${runtimePolicy.schemaVersion:1}
   createdAt: ${runtimePolicy.createdAt:}
@@ -853,7 +880,11 @@ digest is unavailable, whose profile is not single-generation, or whose 0.3
 profile carries any extension configuration.
 
 For a native `LIGHT_AGENT` binding, Portal compiles an optional `a2aPolicy`
-section into that instance's existing `agent.yml` projection. It contains the
+section into the existing `agent.yml` Agent audience projection. The base Agent
+policy and A2A overlay are compiled, validated, snapshotted, activated, and
+acknowledged as one immutable generation for the target
+`(host, serviceId, envTag)`. The overlay is not a separately activated native
+Agent configuration. It contains the
 inbound binding, server profiles, disclosure policy, authorization policy, task
 and artifact policy, limits, accepted signed card, and logical signing-profile
 metadata. It
@@ -1398,8 +1429,10 @@ key collision, or any route whose `instanceApiId`, `apiVersionId`, and
 
 ### Portal Authoring And Publication Workflow
 
-Portal View exposes an **A2A Bindings** action or workspace from each Agent
-Definition. Because an agent can have zero or more environment-specific
+Portal View exposes an explicit **Publish through A2A** handoff from Agent
+registration or Agent detail. The handoff opens the **A2A Bindings** action or
+workspace; completing ordinary Agent registration never creates a public A2A
+route implicitly. Because an agent can have zero or more environment-specific
 bindings, the primary UI is a table with binding name, environment,
 implementation kind, deployment mode, public path, selected profiles, target
 kind, visibility, validation status, publication version/state, and last update.
@@ -1433,9 +1466,23 @@ live runtime configuration. An explicit validate-and-publish workflow:
    the immutable publication;
 7. emits the Config command/events that stage the property sets in
    `instance_property_t` for the target registered instances;
-8. creates and validates immutable `config_snapshot_t` Config Server snapshots;
-9. explicitly activates the coordinated current snapshots; and
-10. records runtime acknowledgement or rejection for Portal diagnostics.
+8. creates and validates immutable `config_snapshot_t` Config Server snapshots
+   for every target `(host, serviceId, envTag)`;
+9. activates the release manifest and its exact target-to-snapshot mapping;
+10. asks the Controller to reload each target by `host`, `serviceId`, and
+    `envTag`;
+11. each runtime calls `/configs`, validates the selected immutable snapshot,
+    and atomically applies it or retains its still-valid last-known-good
+    generation; and
+12. records each applied or rejected snapshot ID and digest for Portal
+    diagnostics.
+
+Portal may update all current pointers atomically in its database, but
+independently operated Gateway, `light-agent`, and `light-a2a` processes observe
+and apply them at different times. A release therefore requires compatible
+adjacent generations or an explicit staged protocol, per-target reload and
+acknowledgement, and exact-generation rollback. It must not claim instantaneous
+cross-service activation.
 
 Retiring a published binding creates and activates a new generation without
 the route and, when immediate invalidation is required, advances the revocation
@@ -1475,6 +1522,13 @@ immutable Config Server generation selected by host, service ID, and environment
 tag. Property definitions or an editable instance row alone do not constitute a
 published runtime contract.
 
+`GET /configs?host&serviceId&envTag` is the only current-workload configuration
+path. The Config Server does not resolve mutable A2A authoring data, does not
+serve `instance_property_t` directly, and does not support an A2A-specific
+runtime-config endpoint or a secondary `instanceId`, `productId`, or
+`productVersion` lookup mode. Publication alone does not hot-load a process;
+the explicit Controller reload causes the runtime to call `/configs` again.
+
 The selected runtime renders public metadata only from the accepted publication;
 an environment variable, upstream card refresh, or backend response cannot
 replace an individual name, description, provider, documentation, icon, or
@@ -1484,7 +1538,7 @@ Every runtime audience projection is immutable and digest-bound. The runtime
 checks:
 
 - audience matches the selected runtime (`agent` or `light-a2a`);
-- host, environment, service, and instance match the running target service;
+- host, service ID, and environment tag match the running target service;
 - schema version and compatibility generation are supported;
 - content digest and publication digest match canonical content;
 - validity, refresh, expiry, and revocation constraints pass;
@@ -1548,7 +1602,7 @@ for the internal catalog and execution-placement boundaries.
 The public Agent Card skill list and the internal agent skill projection have
 different purposes. The card contains bounded discovery metadata. The runtime
 projection contains the assigned instruction content and the independently
-authorized tool and workflow descriptors required by one agent instance.
+authorized tool and workflow descriptors required by one Agent publication.
 
 For `LIGHT_AGENT`, Config Server is the runtime authority. At startup or an
 explicit reload, `light-agent` resolves the current immutable generation into
@@ -2065,7 +2119,10 @@ unbounded metric labels.
 ## Reload, Caching, And Availability
 
 - Compile and validate a complete generation off the request path.
-- Atomically publish cards, routes, profiles, and backend bindings together.
+- Keep every target snapshot internally complete and atomic. Coordinate the
+  cross-service release through one exact target-to-snapshot manifest,
+  compatible adjacent generations, explicit reload, per-target
+  acknowledgement, and exact-generation rollback.
 - Keep the previous valid generation when a refresh is malformed.
 - Fail closed when a publication is expired or revoked.
 - Cache final public cards by publication digest, disclosure class,
@@ -2098,7 +2155,9 @@ inbound external-integration path, and one governed outbound remote-agent path.
 
 Deliver:
 
-- pinned A2A 1.0 and 0.3 fixtures;
+- an exact A2A 1.0 normative tag or commit, accepted errata level, TCK version,
+  and separate pinned 0.3 compatibility fixtures; the implementation must not
+  depend on an unversioned `latest` specification page;
 - canonical internal operation and error models;
 - request/response and Agent Card size/depth limits;
 - inbound and outbound route, task-ownership, signing, SSRF, confused-deputy,
@@ -2116,6 +2175,11 @@ Deliver:
   and 1.0/0.3 isolation rules for the runtime projection schema;
 - compatibility matrix and explicit deferred features; and
 - handler/config/module contracts.
+
+The baseline record must cite the official
+[A2A specification repository](https://github.com/a2aproject/A2A/blob/main/docs/specification.md)
+and [changelog](https://github.com/a2aproject/A2A/blob/main/CHANGELOG.md), then
+freeze the exact revision used by generated models and conformance fixtures.
 
 Exit gates:
 
@@ -2178,6 +2242,9 @@ Exit gates:
 
 Deliver:
 
+- reuse of the Agent registration publication foundation for native
+  `LIGHT_AGENT`; Phase 2 must not create a second Agent compiler, snapshot
+  lifecycle, current pointer, reload protocol, or acknowledgement store;
 - Portal A2A publication authoring and validation;
 - managed extension registry and dependency records, structured Portal View
   forms, and binding selectors that ship with no extension eligible for initial
@@ -2215,6 +2282,10 @@ Deliver:
 
 Exit gates:
 
+- the generic Agent publisher can activate and reload a non-A2A Agent before
+  the optional native `a2aPolicy` overlay is enabled, and adding the overlay
+  produces one new combined Agent snapshot generation rather than a separately
+  activated A2A generation;
 - aggregate-version and publication-digest changes are deterministic;
 - effective name, description, provider, documentation URL, icon, and semantic
   version follow the pinned precedence rules and retain source provenance;
@@ -2590,6 +2661,20 @@ lists, streaming event framing, and malformed cards.
     other SDK languages are deferred and require independent qualification.
     The private backend contract is versioned independently and never activates
     a public A2A HTTP+JSON binding.
+12. Runtime configuration identity is exactly `(host, serviceId, envTag)` and
+    current configuration is loaded only through `/configs`. Portal
+    `instanceId` and `instanceApiId` values remain internal association,
+    publication-target, and audit identifiers; no A2A runtime projection or
+    Config Server query treats them as workload identity. Product ID and product
+    version describe compatibility and never select runtime configuration.
+13. Agent registration, native runtime linking, and A2A exposure are separate
+    lifecycle decisions. A native Agent uses one immutable Agent audience
+    snapshot containing the base policy and optional `a2aPolicy` overlay. The
+    Gateway and any external-integration `light-a2a` runtime receive their own
+    least-privilege snapshots under one coordinated release manifest. Current
+    pointers may change in one control-plane transaction, but runtime
+    application is completed only through explicit reload and per-target
+    acknowledgement.
 
 ## Completion Criteria
 
@@ -2598,6 +2683,14 @@ The A2A Gateway feature is complete only when:
 - selected A2A profiles pass protocol and negative conformance fixtures;
 - Portal can publish and revoke a versioned Agent Card without direct gateway or
   runtime database access;
+- every Gateway, `light-agent`, and `light-a2a` target loads its current
+  immutable snapshot from `/configs` using only `(host, serviceId, envTag)`, and
+  mutable authoring or staged properties have no runtime effect before snapshot
+  activation and explicit reload;
+- a native Agent can be registered, linked, and activated without A2A, while an
+  explicit later A2A publication adds the overlay through one new combined
+  Agent snapshot rather than parallel independently active Agent/A2A
+  generations or confused native and Gateway `instanceApiId` associations;
 - public card content is demonstrably smaller and less privileged than the
   internal effective agent catalog;
 - public skill IDs are stable aliases, never Portal UUIDs, and every active
