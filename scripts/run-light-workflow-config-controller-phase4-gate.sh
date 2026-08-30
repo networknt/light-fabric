@@ -151,10 +151,7 @@ else
 fi
 
 docker compose -f "$workspace_root/portal-config-dev/docker-compose.yml" config --quiet
-docker compose \
-  -f "$workspace_root/portal-config-loc/all-in-lt/docker-compose.yml" \
-  -f "$workspace_root/portal-config-loc/all-in-lt/docker-compose-rust.yml" \
-  config --quiet
+docker compose -f "$workspace_root/portal-config-loc/all-in-lt/docker-compose.yml" config --quiet
 docker compose -f "$workspace_root/light-portal-install/docker-compose.yml" config --quiet
 
 echo "Light Workflow Config Server/controller Phase 4 source gate passed."

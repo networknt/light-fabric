@@ -7,6 +7,7 @@ edition.workspace = true
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 agent-delegation = { path = "../../crates/agent-delegation" }
+a2a-core = { path = "../../crates/a2a-core" }
 base64 = "0.22"
 hex = { workspace = true }
 sha2 = { workspace = true }
@@ -23,10 +24,12 @@ light-axum = { path = "../../frameworks/light-axum" }
 light-security = { path = "../../crates/light-security" }
 config-loader = { path = "../../crates/config-loader" }
 execution-runner-protocol = { path = "../../crates/execution-runner-protocol" }
+execution-client = { path = "../../crates/execution-client" }
 execution-fixed-action = { path = "../../crates/execution-fixed-action" }
 execution-security = { path = "../../crates/execution-security" }
 workflow-policy = { path = "../../crates/workflow-policy" }
 workflow-invocation-contract = { path = "../../crates/workflow-invocation-contract" }
+workflow-store = { path = "../../crates/workflow-store" }
 model-provider = { path = "../../crates/model-provider" }
 object_store = { version = "0.12.4", features = ["aws"] }
 sqlx = { version = "0.8", features = ["chrono", "json", "postgres", "runtime-tokio-rustls", "uuid"] }
@@ -35,6 +38,7 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
+url = { workspace = true }
 reqwest = { workspace = true }
 regex = "1"
 jsonschema = { workspace = true }

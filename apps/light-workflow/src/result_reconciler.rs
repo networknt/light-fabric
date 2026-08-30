@@ -1,19 +1,19 @@
 use crate::artifact_publish::promote_artifact_evidence;
 use crate::artifact_store::DurableArtifactStore;
+use crate::configuration::RunnerExecutionConfig;
 use crate::executor::TaskExecutor;
-use crate::provenance::persist_trusted_provenance;
-use crate::repositories::WorkflowRepository;
+use crate::repositories::TerminalAttempt;
+use execution_client::ExecutionClient;
 use execution_runner_protocol::NormalizedExecutionResult;
-use sqlx::{PgPool, postgres::PgListener};
+use sqlx::PgPool;
 use std::{sync::Arc, time::Duration};
-use tokio::time::{sleep, timeout};
-use tracing::{debug, error, info};
+use tokio::time::sleep;
+use tracing::{error, info};
 
 pub struct ResultReconciler {
     pool: PgPool,
-    repository: WorkflowRepository,
+    execution: ExecutionClient,
     executor: Arc<TaskExecutor>,
-    origin_service_id: String,
     artifact_store: Option<DurableArtifactStore>,
     artifact_retention_days: i64,
 }
@@ -22,19 +22,31 @@ impl ResultReconciler {
     pub fn new(
         pool: PgPool,
         executor: Arc<TaskExecutor>,
-        origin_service_id: String,
-        _origin_instance_id: String,
+        runner: &RunnerExecutionConfig,
+        bearer_token: &str,
         artifact_store: Option<DurableArtifactStore>,
         artifact_retention_days: i64,
-    ) -> Self {
-        Self {
-            repository: WorkflowRepository::new(pool.clone()),
+    ) -> Result<Self, String> {
+        let ca = runner
+            .execution_api_ca_cert_file
+            .as_ref()
+            .map(std::fs::read)
+            .transpose()
+            .map_err(|error| format!("cannot read execution API CA certificate: {error}"))?;
+        let execution = ExecutionClient::new_with_bearer_token(
+            &runner.execution_api_url,
+            bearer_token,
+            Duration::from_secs(10),
+            ca.as_deref(),
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(Self {
             pool,
+            execution,
             executor,
-            origin_service_id,
             artifact_store,
             artifact_retention_days: artifact_retention_days.clamp(1, 3650),
-        }
+        })
     }
 
     pub async fn run(
@@ -46,54 +58,41 @@ impl ResultReconciler {
             if shutdown.is_cancelled() {
                 return Ok(());
             }
-            match self.listen_and_reconcile(&shutdown).await {
-                Ok(()) => {
-                    return Err(sqlx::Error::Protocol(
-                        "execution result listener exited unexpectedly".to_string(),
-                    ));
-                }
-                Err(error) => {
-                    error!("execution result listener failed: {error}; reconnecting");
-                    tokio::select! { _ = shutdown.cancelled() => return Ok(()), _ = sleep(Duration::from_secs(2)) => {} }
-                }
+            if let Err(error) = self.run_once().await {
+                error!("execution result reconciliation failed: {error}; retrying");
             }
-        }
-    }
-
-    async fn listen_and_reconcile(
-        &self,
-        shutdown: &tokio_util::sync::CancellationToken,
-    ) -> Result<(), sqlx::Error> {
-        let mut listener = PgListener::connect_with(&self.pool).await?;
-        listener.listen("execution_result_ready_v1").await?;
-        // LISTEN is established before catch-up, closing the commit/subscribe gap.
-        self.run_once().await?;
-        loop {
-            let received = tokio::select! {
+            tokio::select! {
                 _ = shutdown.cancelled() => return Ok(()),
-                result = timeout(Duration::from_secs(1), listener.recv()) => result,
-            };
-            match received {
-                Ok(Ok(notification)) => {
-                    debug!(
-                        payload_bytes = notification.payload().len(),
-                        "execution result wakeup received"
-                    );
-                }
-                Ok(Err(error)) => return Err(error),
-                Err(_) => {}
+                _ = sleep(Duration::from_secs(1)) => {}
             }
-            self.run_once().await?;
         }
     }
 
     pub async fn run_once(&self) -> Result<bool, sqlx::Error> {
         let attempts = self
-            .repository
-            .pending_terminal_attempts(&self.origin_service_id, 32)
-            .await?;
+            .execution
+            .pending_results(32)
+            .await
+            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
         let mut transitioned = false;
-        for attempt in attempts {
+        for result in attempts {
+            let attempt = TerminalAttempt {
+                host_id: result.host_id,
+                execution_id: result.execution_id,
+                request_id: result.request_id,
+                process_id: result.process_id.ok_or_else(|| {
+                    sqlx::Error::Protocol("workflow execution result has no process ID".into())
+                })?,
+                task_id: result.task_id.ok_or_else(|| {
+                    sqlx::Error::Protocol("workflow execution result has no task ID".into())
+                })?,
+                attempt_number: result.attempt_number,
+                lease_id: result.lease_id,
+                fencing_token: result.fencing_token,
+                state: result.state,
+                normalized_result: result.normalized_result,
+                normalized_error: result.normalized_error,
+            };
             let normalized = attempt
                 .normalized_result
                 .clone()
@@ -129,13 +128,6 @@ impl ResultReconciler {
                 }
             }
             let mut tx = self.pool.begin().await?;
-            if attempt.state == "SUCCEEDED" {
-                if let Some(result) = &normalized {
-                    persist_trusted_provenance(&mut tx, attempt.host_id, result)
-                        .await
-                        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
-                }
-            }
             match self
                 .executor
                 .reconcile_runner_attempt(&mut tx, &attempt)
@@ -143,6 +135,10 @@ impl ResultReconciler {
             {
                 Ok(true) => {
                     tx.commit().await?;
+                    self.execution
+                        .acknowledge_result(attempt.execution_id, attempt.fencing_token)
+                        .await
+                        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
                     transitioned = true;
                     info!(
                         execution_id = %attempt.execution_id,

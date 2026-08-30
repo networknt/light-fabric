@@ -178,6 +178,16 @@ The versioned workflow execution policy schema and its valid/invalid
 conformance fixtures are published under
 `crates/workflow-policy/schema/` and `crates/workflow-policy/fixtures/`.
 
+Runner scheduling and terminal-result reconciliation use Controller's HTTPS
+execution API. Configure `workflow.runner.executionApiUrl` and, when required,
+`workflow.runner.executionApiCaCertFile`; the Workflow service token must carry
+the exact Host, Workflow service ID, and `execution.invoke`. Controller alone
+opens the `operations_execution_runtime` connection and owns sessions,
+attempts, leases, approval evidence, inputs, provenance, and runtime audit in
+`operations.execution_ops`. Workflow never holds its local transaction across
+the API call, uses a deterministic request ID for restart replay, and
+acknowledges a result only after Workflow state commits.
+
 ## Artifact object store
 
 Runner artifact acceptance is fail-closed. When a terminal result declares an
@@ -210,17 +220,20 @@ mismatch is quarantined and prevents workflow result acceptance.
 
 The retention reconciler respects legal holds, claims deletions with
 `SKIP LOCKED`, verifies object absence, retries with bounded backoff, recovers
-stale delete claims, and retains the database tombstone. Successful attempts
-also persist trusted execution provenance and bind its digest/reference to the
-verified artifact rows before approval creation or task transition.
+stale delete claims, and retains the database tombstone. When a runner supplies
+a trusted provenance digest in its terminal evidence, Workflow binds that
+digest into approval state. The provenance record itself is Controller-owned
+execution evidence; Workflow does not query or update the execution store
+directly.
 
 ## Trusted fixed-action providers
 
-`apply-patch` runs locally in a fresh hook/filter/submodule-disabled trusted
-checkout. Branch/PR and publish/sign operations are sent as typed requests to
-dedicated credential-owning services; no platform or signing credential is
-placed in workflow context, a runner, an agent, or a sandbox. Configure one or
-both typed endpoints:
+Phase 3 does not start a fixed-action provider worker inside Workflow because
+that would restore direct execution-table access. Configuring either legacy
+provider endpoint fails startup until the provider protocol is exposed through
+a Controller-owned execution worker API. No platform or signing credential is
+placed in workflow context, a runner, an agent, or a sandbox. The reserved
+properties remain:
 
 ```yaml
 workflow.fixedActions.repositoryUrl: https://repository-actions.example.net/v1/

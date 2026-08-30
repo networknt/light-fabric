@@ -1,0 +1,21 @@
+[package]
+name = "a2a-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Durable external-integration A2A task, correlation, callback, and artifact store"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+a2a-core = { path = "../a2a-core" }
+chrono.workspace = true
+serde_json.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["chrono", "json", "postgres", "runtime-tokio-rustls", "uuid"] }
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

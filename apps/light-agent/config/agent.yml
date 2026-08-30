@@ -1,6 +1,33 @@
 # Immutable Agent audience projection. Every placeholder is resolved from the
 # current Config Server values.yml snapshot. Light Portal owns these values;
 # light-agent validates the complete document before accepting new work.
+operationalStore:
+  contractVersion: ${operationalStore.contractVersion:1}
+  bindingId: ${operationalStore.bindingId:}
+  bindingDigest: ${operationalStore.bindingDigest:}
+  profileId: ${operationalStore.profileId:}
+  deploymentProfile: ${operationalStore.deploymentProfile:DEV_DEDICATED}
+  scopeKind: ${operationalStore.scopeKind:HOST_ENVIRONMENT}
+  scopeId: ${operationalStore.scopeId:}
+  hostId: ${operationalStore.hostId:}
+  environment: ${operationalStore.environment:}
+  serviceOwner: ${operationalStore.serviceOwner:light-agent}
+  schema: ${operationalStore.schema:agent_ops}
+  minimumSchemaVersion: ${operationalStore.minimumSchemaVersion:1}
+  expectedDatabase: ${operationalStore.expectedDatabase:operations}
+  databaseUrlFile: ${operationalStore.databaseUrlFile:/run/secrets/operational-database-url}
+  credentialGeneration: ${operationalStore.credentialGeneration:1}
+
+# Native LIGHT_AGENT publications terminate A2A here. External business agents
+# use light-a2a instead; a native publication must never select sidecar mode.
+a2aPolicy:
+  enabled: ${a2aPolicy.enabled:false}
+  agentRef: ${a2aPolicy.agentRef:}
+  bindingId: ${a2aPolicy.bindingId:}
+  publicationId: ${a2aPolicy.publicationId:}
+  policyDigest: ${a2aPolicy.policyDigest:}
+  authorizationContextKeyFile: ${a2aPolicy.authorizationContextKeyFile:/run/secrets/a2a-authorized-context-key}
+
 runtimePolicy:
   publicationId: ${runtimePolicy.publicationId:}
   releaseVersion: ${runtimePolicy.releaseVersion:0}
@@ -59,9 +86,11 @@ agentPolicy:
     maximumOutputDepth: ${agentPolicy.execution.maximumOutputDepth:16}
     maximumOutputItems: ${agentPolicy.execution.maximumOutputItems:1024}
     maximumTurnTokens: ${agentPolicy.execution.maximumTurnTokens:65536}
+    executionApiUrl: ${agentPolicy.execution.executionApiUrl:https://controller:8438/}
     quotaPolicies: ${agentPolicy.execution.quotaPolicies:[]}
     modelRates: ${agentPolicy.execution.modelRates:[]}
     servicePools: ${agentPolicy.execution.servicePools:[]}
+    edgeRunnerBindings: ${agentPolicy.execution.edgeRunnerBindings:[]}
     approvalRules: ${agentPolicy.execution.approvalRules:[]}
     codingProfile: ${agentPolicy.execution.codingProfile:{}}
   catalog:
@@ -69,9 +98,7 @@ agentPolicy:
     staleOnErrorSeconds: ${agentPolicy.catalog.staleOnErrorSeconds:300}
     effectiveCatalog: ${agentPolicy.catalog.effectiveCatalog:{}}
   memory:
-    writeMode: ${agentPolicy.memory.writeMode:portal-command}
-    portalCommandUrl: ${agentPolicy.memory.portalCommandUrl:}
-    allowDirectPg: ${agentPolicy.memory.allowDirectPg:false}
+    writeMode: ${agentPolicy.memory.writeMode:operational}
     personalProfileDigest: ${agentPolicy.memory.personalProfileDigest:}
     rules: ${agentPolicy.memory.rules:{}}
   knowledge:

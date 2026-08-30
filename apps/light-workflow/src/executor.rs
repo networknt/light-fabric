@@ -1,5 +1,6 @@
 use crate::configuration::WorkflowConfigManager;
 use crate::repositories::{NewTask, TerminalAttempt, WorkflowRepository};
+use a2a_core::{AuthorizedInvocation, Direction, sign_authorized_invocation};
 use agent_delegation::{DelegationClaims, DelegationKind, DelegationSigner};
 use chrono::Utc;
 use execution_runner_protocol::canonical_sha256;
@@ -11,10 +12,12 @@ use model_provider::{
 use regex::Regex;
 use serde_json::{Map as JsonMap, Number, Value, json};
 use serde_yaml::Value as YamlValue;
+use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Row, Transaction, postgres::PgListener};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tokio::time::sleep;
@@ -22,9 +25,10 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 use workflow_core::models::duration::OneOfDurationOrIso8601Expression;
 use workflow_core::models::task::{
-    AgentArguments, AskDefinition, AssertComparison, AssertComparisonObject, AssertDefinition,
-    CallTaskDefinition, HasLengthComparison, JsonRpcArguments, JsonRpcErrorPolicy, McpArguments,
-    McpServerDefinition, OpenRpcArguments, SetValue, TaskDefinition, TaskDefinitionFields,
+    A2aArguments, AgentArguments, AskDefinition, AssertComparison, AssertComparisonObject,
+    AssertDefinition, CallTaskDefinition, HasLengthComparison, JsonRpcArguments,
+    JsonRpcErrorPolicy, McpArguments, McpServerDefinition, OpenRpcArguments, SetValue,
+    TaskDefinition, TaskDefinitionFields,
 };
 use workflow_core::models::workflow::WorkflowDefinition;
 use workflow_policy::{ExecutionProfile, TaskKind, parse_security_policy, resolve_policy};
@@ -46,6 +50,28 @@ const DEFAULT_HOST_TASK_LEASE_MS: i32 = 30_000;
 const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_AGENT_OUTPUT_BYTES: usize = 128 * 1024;
 const AGENT_PROMPT_VERSION: u32 = 1;
+
+fn read_private_a2a_key(path: &Path) -> Result<Vec<u8>, String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect Workflow A2A context key: {error}"))?;
+    #[cfg(unix)]
+    let permissions_are_private = {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o037 == 0
+    };
+    #[cfg(not(unix))]
+    let permissions_are_private = true;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || !permissions_are_private {
+        return Err("Workflow A2A context key must be a private regular non-symlink file".into());
+    }
+    let key = std::fs::read(path)
+        .map_err(|error| format!("cannot read Workflow A2A context key: {error}"))?;
+    if key.len() < 32 {
+        return Err("Workflow A2A context key must contain at least 32 bytes".into());
+    }
+    Ok(key)
+}
+
 #[derive(sqlx::FromRow)]
 pub struct ActiveTask {
     pub host_id: Uuid,
@@ -98,6 +124,15 @@ struct EffectClaim {
     idempotency_key: String,
     request_digest: String,
     replayed_result: Option<Value>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct A2aBindingProjection {
+    binding_id: Uuid,
+    publication_id: Uuid,
+    policy_digest: String,
+    gateway_uri: String,
+    audience: String,
 }
 
 #[derive(sqlx::FromRow)]
@@ -160,6 +195,7 @@ pub struct TaskExecutor {
     environment: String,
     service_authorization: Option<String>,
     agent_provider_base_urls: BTreeMap<String, String>,
+    a2a_authorization_key: Option<Arc<Vec<u8>>>,
     managed_configuration: bool,
 }
 
@@ -263,6 +299,7 @@ impl TaskExecutor {
             TaskDefinition::Switch(_) => Ok(TaskKind::Switch),
             TaskDefinition::Call(call) => match call {
                 CallTaskDefinition::Agent(_) => Ok(TaskKind::CallAgent),
+                CallTaskDefinition::A2a(_) => Ok(TaskKind::CallA2a),
                 CallTaskDefinition::Mcp(_) => Ok(TaskKind::CallMcp),
                 _ => Ok(TaskKind::CallHttp),
             },
@@ -303,6 +340,7 @@ impl TaskExecutor {
             environment: "local".to_string(),
             service_authorization: None,
             agent_provider_base_urls: BTreeMap::new(),
+            a2a_authorization_key: None,
             managed_configuration: false,
         }
     }
@@ -315,6 +353,7 @@ impl TaskExecutor {
         service_authorization: String,
         delegation_secret: Option<String>,
         agent_provider_base_urls: BTreeMap<String, String>,
+        a2a_authorization_context_key_file: PathBuf,
         managed_configuration: bool,
     ) -> Result<Self, String> {
         self.database_url = Some(database_url);
@@ -322,6 +361,9 @@ impl TaskExecutor {
         self.environment = environment;
         self.service_authorization = Some(service_authorization);
         self.agent_provider_base_urls = agent_provider_base_urls;
+        self.a2a_authorization_key = Some(Arc::new(read_private_a2a_key(
+            &a2a_authorization_context_key_file,
+        )?));
         self.managed_configuration = managed_configuration;
         self.workflow_delegation_signer = delegation_secret
             .map(|secret| {
@@ -882,29 +924,6 @@ impl TaskExecutor {
         attempt: &TerminalAttempt,
         approval_id: Uuid,
     ) -> Result<bool, DynError> {
-        let accepted = sqlx::query(
-            "UPDATE execution_attempt_t SET accepted_by_origin_ts=CURRENT_TIMESTAMP,
-                    updated_ts=CURRENT_TIMESTAMP
-             WHERE host_id=$1 AND execution_id=$2 AND lease_id=$3 AND fencing_token=$4
-               AND accepted_by_origin_ts IS NULL",
-        )
-        .bind(attempt.host_id)
-        .bind(attempt.execution_id)
-        .bind(attempt.lease_id)
-        .bind(attempt.fencing_token)
-        .execute(&mut **tx)
-        .await?;
-        if accepted.rows_affected() != 1 {
-            return Ok(false);
-        }
-        sqlx::query(
-            "UPDATE runner_scheduling_request_t SET state='SATISFIED',updated_ts=CURRENT_TIMESTAMP
-                    WHERE host_id=$1 AND request_id=$2 AND state='ATTEMPT_CREATED'",
-        )
-        .bind(attempt.host_id)
-        .bind(attempt.request_id)
-        .execute(&mut **tx)
-        .await?;
         if attempt.state == "UNKNOWN" {
             sqlx::query("UPDATE process_info_t SET status_code='W',custom_status_code='FIXED_ACTION_UNKNOWN',
                         error_info=$1 WHERE host_id=$2 AND process_id=$3")
@@ -995,16 +1014,13 @@ impl TaskExecutor {
         .bind(attempt.execution_id)
         .fetch_one(&mut **tx)
         .await?;
-        let provenance_digest: Option<String> = sqlx::query_scalar(
-            "SELECT statement_digest FROM execution_provenance_t
-             WHERE host_id = $1 AND execution_id = $2 AND trusted_generator <> ''
-             ORDER BY created_ts DESC LIMIT 1",
-        )
-        .bind(attempt.host_id)
-        .bind(attempt.execution_id)
-        .fetch_optional(&mut **tx)
-        .await?
-        .flatten();
+        let provenance_digest = attempt
+            .normalized_result
+            .as_ref()
+            .and_then(|value| value.get("evidence"))
+            .and_then(|value| value.get("provenanceDigest"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let approval_id = Uuid::now_v7();
         sqlx::query(
             "UPDATE task_info_t SET status_code = 'C', locked = 'N',
@@ -1044,17 +1060,7 @@ impl TaskExecutor {
         .bind(binding.ttl_seconds as i64)
         .execute(&mut **tx)
         .await?;
-        if hold_eligible {
-            sqlx::query("UPDATE execution_session_t SET state='IDLE_APPROVAL_HOLD',hold_id=$1,
-                        hold_reason='approval',hold_until_ts=LEAST(effective_expires_ts,
-                          CURRENT_TIMESTAMP+make_interval(secs=>$2)),hold_policy_digest=$3,
-                        session_version=session_version+1,session_fence=session_fence+1,
-                        retained_resource_evidence=jsonb_build_object('reason','approval','checkpointRequired',true),
-                        updated_ts=CURRENT_TIMESTAMP WHERE host_id=$4 AND subject_id=$5
-                        AND policy_digest=$3 AND state='IDLE' AND cleanup_status='NOT_REQUESTED'")
-                .bind(approval_id).bind(binding.ttl_seconds as i64).bind(policy_digest)
-                .bind(attempt.host_id).bind(attempt.task_id).execute(&mut **tx).await?;
-        }
+        let _ = hold_eligible;
         sqlx::query(
             "UPDATE process_info_t SET status_code = 'W',
                     custom_status_code = 'WAITING_APPROVAL', context_data = $1,
@@ -1617,6 +1623,10 @@ impl TaskExecutor {
             }
             TaskDefinition::Call(CallTaskDefinition::Mcp(mcp_call)) => {
                 self.execute_mcp_call(&mcp_call.with, &mcp_call.common, claimed)
+                    .await
+            }
+            TaskDefinition::Call(CallTaskDefinition::A2a(a2a_call)) => {
+                self.execute_a2a_call(&a2a_call.with, &a2a_call.common, claimed)
                     .await
             }
             TaskDefinition::Call(CallTaskDefinition::Agent(agent_call)) => {
@@ -2337,6 +2347,185 @@ impl TaskExecutor {
                 context_data: None,
             })
         }
+    }
+
+    async fn execute_a2a_call(
+        &self,
+        args: &A2aArguments,
+        common: &TaskDefinitionFields,
+        claimed: &ClaimedTask,
+    ) -> Result<TaskExecutionResult, DynError> {
+        if args.agent_card.is_some() || args.server.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "WORKFLOW_A2A_RAW_DESTINATION_FORBIDDEN: use a stable agentRef",
+            )
+            .into());
+        }
+        let agent_ref = args
+            .agent_ref
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "WORKFLOW_A2A_AGENT_REF_REQUIRED",
+                )
+            })?;
+        match args.method.as_str() {
+            "message/send" | "message/stream" | "tasks/get" | "tasks/cancel" => {}
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "WORKFLOW_A2A_METHOD_NOT_ALLOWED",
+                )
+                .into());
+            }
+        }
+
+        let binding = sqlx::query_as::<_, A2aBindingProjection>(
+            "SELECT binding_id,publication_id,policy_digest,gateway_uri,audience
+               FROM workflow_a2a_binding_t
+              WHERE host_id=$1 AND agent_ref=$2 AND active=TRUE",
+        )
+        .bind(claimed.task.host_id)
+        .bind(agent_ref)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "WORKFLOW_A2A_BINDING_NOT_FOUND",
+            )
+        })?;
+        if binding.audience != "light-a2a" && binding.audience != "light-agent" {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "WORKFLOW_A2A_AUDIENCE_DENIED",
+            )
+            .into());
+        }
+        let key = self.a2a_authorization_key.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "WORKFLOW_A2A_AUTHORIZATION_KEY_UNAVAILABLE",
+            )
+        })?;
+        let params = args
+            .parameters
+            .as_ref()
+            .map(|value| self.resolve_json_value(value, &claimed.context_data))
+            .unwrap_or_else(|| json!({}));
+        let request_id = claimed.task.task_id.to_string();
+        let body = serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": args.method,
+            "params": params,
+        }))?;
+        let request_digest = format!("sha256:{}", hex::encode(Sha256::digest(&body)));
+        let idempotency_key = common
+            .idempotency_key
+            .as_deref()
+            .map(|value| self.resolve_template_to_string(value, &claimed.context_data))
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| {
+                format!(
+                    "workflow:{}:{}:{}",
+                    claimed.task.process_id, claimed.task.task_id, args.method
+                )
+            });
+        if idempotency_key.len() > 255 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "WORKFLOW_A2A_IDEMPOTENCY_KEY_TOO_LONG",
+            )
+            .into());
+        }
+        let now = Utc::now();
+        let invocation = AuthorizedInvocation {
+            host_id: claimed.task.host_id,
+            audience: binding.audience.clone(),
+            principal_subject: format!("workflow:{}", claimed.task.process_id),
+            caller_agent_ref: format!("workflow:{}", claimed.wf_def_id),
+            target_agent_ref: agent_ref.to_string(),
+            binding_id: binding.binding_id,
+            policy_digest: binding.policy_digest,
+            publication_id: binding.publication_id,
+            direction: if binding.audience == "light-a2a" {
+                Direction::Outbound
+            } else {
+                Direction::Inbound
+            },
+            idempotency_key,
+            request_digest,
+            issued_at: now,
+            expires_at: now + chrono::Duration::minutes(5),
+        };
+        let (encoded_context, encoded_signature) =
+            sign_authorized_invocation(&invocation, &body, key.as_slice()).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("WORKFLOW_A2A_SIGNING_FAILED: {error}"),
+                )
+            })?;
+        let mut endpoint = url::Url::parse(&binding.gateway_uri).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("WORKFLOW_A2A_PROJECTED_ENDPOINT_INVALID: {error}"),
+            )
+        })?;
+        endpoint
+            .path_segments_mut()
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "WORKFLOW_A2A_PROJECTED_ENDPOINT_CANNOT_BE_BASE",
+                )
+            })?
+            .pop_if_empty()
+            .push(agent_ref);
+        let response = self
+            .http_client
+            .post(endpoint)
+            .header("content-type", "application/json")
+            .header("x-light-a2a-context", encoded_context)
+            .header("x-light-a2a-signature", encoded_signature)
+            .body(body)
+            .send()
+            .await?;
+        let status = response.status();
+        let bytes = response.bytes().await?;
+        if bytes.len() > MAX_HTTP_RESPONSE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "WORKFLOW_A2A_RESPONSE_TOO_LARGE",
+            )
+            .into());
+        }
+        let rpc: Value = serde_json::from_slice(&bytes).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("WORKFLOW_A2A_RESPONSE_INVALID: {error}"),
+            )
+        })?;
+        let error = rpc.get("error").cloned();
+        let succeeded = status.is_success() && error.is_none();
+        Ok(TaskExecutionResult {
+            status_code: if succeeded { "C" } else { "F" },
+            task_output: if succeeded {
+                rpc.get("result").cloned().unwrap_or(Value::Null)
+            } else {
+                json!({
+                    "error": "a2a_call_failed",
+                    "httpStatus": status.as_u16(),
+                    "rpcError": error,
+                })
+            },
+            next_task: None,
+            context_data: None,
+        })
     }
 
     async fn load_agent_catalog(

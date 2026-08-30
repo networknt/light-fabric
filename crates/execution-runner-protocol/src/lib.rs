@@ -52,6 +52,118 @@ opaque_uuid!(LeaseId);
 opaque_uuid!(ExecutionSessionId);
 opaque_uuid!(CleanupRequestId);
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SchedulingRequestSubmission {
+    pub request_id: Uuid,
+    pub idempotency_key: String,
+    pub origin_kind: String,
+    pub origin_instance_id: String,
+    pub subject_kind: String,
+    pub subject_id: Uuid,
+    pub process_id: Option<Uuid>,
+    pub task_id: Option<Uuid>,
+    pub agent_session_id: Option<Uuid>,
+    pub agent_turn_id: Option<Uuid>,
+    pub agent_action_id: Option<Uuid>,
+    pub policy_snapshot_id: Uuid,
+    pub policy_digest: String,
+    pub normalized_requirements: Value,
+    pub execution_spec: Value,
+    pub resolved_policy: Value,
+    pub definition_digest: String,
+    pub fairness_key: String,
+    #[serde(default)]
+    pub priority: i32,
+    pub workflow_reference_digest: Option<String>,
+    pub origin_reference_digest: String,
+    pub approval_id: Option<Uuid>,
+    pub approval_evidence_digest: Option<String>,
+    pub pinned_runner_id: Option<String>,
+    pub pinned_backend_id: Option<String>,
+    pub edge_binding_id: Option<Uuid>,
+    pub edge_binding_compatibility_digest: Option<String>,
+    pub edge_binding_revocation_epoch: Option<i64>,
+    #[serde(default)]
+    pub inputs: Vec<ExecutionInputSubmission>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExecutionInputSubmission {
+    pub input_id: Uuid,
+    pub kind: String,
+    pub artifact_uri: String,
+    pub content_digest: String,
+    pub size_bytes: i64,
+    pub media_type: String,
+    pub signer_binding: Option<Value>,
+    pub provenance_binding: Option<Value>,
+    pub scanner_binding: Option<Value>,
+    pub revocation_binding: Option<Value>,
+    pub staging_root: String,
+    pub mount_target: String,
+    #[serde(default = "default_true")]
+    pub read_only: bool,
+    #[serde(default)]
+    pub executable: bool,
+    pub trust_bundle_id: Option<String>,
+    pub trust_bundle_version: Option<i32>,
+    pub package_manifest_digest: Option<String>,
+    #[serde(default = "default_mount_options")]
+    pub mount_options: Value,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_mount_options() -> Value {
+    serde_json::json!(["ro", "nodev", "nosuid", "noexec"])
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExecutionResultView {
+    pub host_id: Uuid,
+    pub execution_id: Uuid,
+    pub request_id: Uuid,
+    pub origin_instance_id: String,
+    pub subject_kind: String,
+    pub subject_id: Uuid,
+    pub process_id: Option<Uuid>,
+    pub task_id: Option<Uuid>,
+    pub agent_session_id: Option<Uuid>,
+    pub agent_turn_id: Option<Uuid>,
+    pub agent_action_id: Option<Uuid>,
+    pub action_kind: String,
+    pub attempt_number: i32,
+    pub lease_id: Uuid,
+    pub state: String,
+    pub fencing_token: i64,
+    pub normalized_result: Option<Value>,
+    pub normalized_error: Option<Value>,
+    pub retry_classification: Option<String>,
+    pub terminal: bool,
+    pub accepted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CleanupRequestSubmission {
+    pub cleanup_request_id: Uuid,
+    pub execution_session_id: Uuid,
+    pub origin_kind: String,
+    pub origin_instance_id: String,
+    pub origin_session_id: Option<Uuid>,
+    pub subject_kind: String,
+    pub subject_id: Uuid,
+    pub idempotency_key: String,
+    pub reason: String,
+    pub requested_by: String,
+    pub cleanup_deadline: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OriginKind {

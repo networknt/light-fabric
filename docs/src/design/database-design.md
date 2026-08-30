@@ -2,6 +2,12 @@
 
 The Light-Fabric utilizes a robust PostgreSQL schema to manage the entire lifecycle of agentic workflows, skills, agent execution, channels, and the biomimetic Hindsight memory system. The schema is organized into five logical layers:
 
+This page catalogs the logical domain model and current table shapes. It does
+not require every table to remain in one physical database or in the Config
+Server schema. The target authority, database, schema, tenancy, and migration
+boundaries are defined in
+[Control Plane And Operational Data](control-plane-operational-data.md).
+
 ## 1. Workflow Engine
 These tables manage the definition and execution of long-running agentic workflows.
 

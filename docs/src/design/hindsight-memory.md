@@ -39,7 +39,12 @@ The `reflect` operation performs "deep thinking." It analyzes existing memories 
 
 ## 3. Database Architecture
 
-The Hindsight system is fully integrated into the portal's multi-tenant schema:
+The current Hindsight tables are integrated into the Portal-era multi-tenant
+schema. In the target architecture, immutable memory policy and hard directives
+are published through Config Server, while concrete banks, memory content,
+session history, provenance, reflection, and erasure state are owned by a
+tenant operational Memory API and store. See
+[Control Plane And Operational Data](control-plane-operational-data.md#memory-boundary).
 
 | Table Name | Description |
 | :--- | :--- |
@@ -50,7 +55,7 @@ The Hindsight system is fully integrated into the portal's multi-tenant schema:
 | `agent_memory_unit_entity_t` | The join table linking individual memories to the entities they mention. |
 | `agent_memory_entity_cooccur_t` | Association graph tracking concept relationships and co-occurrence counts. |
 | `agent_memory_link_t` | Defines causal and semantic relationships between memories (causes, enables, etc.). |
-| `agent_memory_directive_t`| "Hard rules" that override probabilistic learning. |
+| `agent_memory_directive_t`| "Hard rules" that override probabilistic learning. **Control-plane content in the target architecture**: directives become versioned, reviewed, digest-bound authoring data compiled into the Agent projection and targeting a bank profile or scope, not operational rows bound to a concrete bank. This table is a semantic migration, not a move into the operational memory schema. |
 | `agent_memory_reflection_t`| Synthesized high-level insights generated during the "Reflect" phase. |
 | `agent_session_history_t`| The materialized conversation context for active sessions, linked to a specific bank. Effectful action attempts and append-only session events remain authoritative when history projection is delayed or conflicted. |
 

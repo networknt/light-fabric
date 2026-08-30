@@ -2,8 +2,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use axum::{
     Json, Router,
+    body::Bytes,
     extract::{
-        Query, State,
+        Path, Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{HeaderMap, StatusCode},
@@ -34,7 +35,10 @@ use model_provider::{
 };
 use portal_registry::RegistryHandler;
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, Row, postgres::PgListener};
+use sqlx::{
+    PgPool, Row,
+    postgres::{PgListener, PgPoolOptions},
+};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,10 +49,12 @@ use tracing::{error, info, warn};
 use url::Url;
 use uuid::Uuid;
 
-use agent_core::{AgentSessionId, PolicySnapshot, sha256_digest};
+use a2a_core::{AuthorizedInvocation, Direction, verify_authorized_invocation};
+use agent_core::{AgentSessionId, AgentTurnId, PolicySnapshot, sha256_digest};
 use agent_delegation::{DelegationClaims, DelegationKind, DelegationSigner};
 use agent_materializer::{MaterializationManifest, ProductProfile};
 use coding_agent_runtime::{CodingTurnSpec, ImmutableRepositoryInput};
+use execution_client::ExecutionClient;
 use light_agent::agent_config::{
     AGENT_CONFIG_FILE, AGENT_CONFIG_MODULE_ID, AgentConfig, AgentExecutionPolicy,
     CodingProfilePolicy,
@@ -200,14 +206,6 @@ fn bool_from_env(name: &str, default_value: bool) -> bool {
             )
         })
         .unwrap_or(default_value)
-}
-
-fn to_portal_command_url(portal_url: &str) -> anyhow::Result<String> {
-    let mut url = Url::parse(portal_url)
-        .with_context(|| format!("Invalid portal command URL: {portal_url}"))?;
-    url.set_path("/portal/command");
-    url.set_query(None);
-    Ok(url.to_string())
 }
 
 fn registry_token(config: &PortalRegistryConfig) -> Option<String> {
@@ -487,81 +485,6 @@ struct CatalogSelection {
     hidden_tools: Vec<CatalogToolDiagnostic>,
 }
 
-#[derive(Clone)]
-struct PortalCommandClient {
-    url: String,
-    token: String,
-    client: reqwest::Client,
-}
-
-impl PortalCommandClient {
-    fn with_options(
-        portal_url: &str,
-        token: String,
-        ca_cert_pem: Option<&[u8]>,
-        verify_hostname: bool,
-        timeout_ms: u64,
-    ) -> Result<Self> {
-        let mut builder = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(timeout_ms))
-            .connect_timeout(std::time::Duration::from_millis(timeout_ms));
-
-        if let Some(pem) = ca_cert_pem {
-            let certificates = light_client::parse_ca_cert_bundle(pem).context(
-                "Invalid ca_cert_pem: failed to parse PEM-encoded CA certificate bundle",
-            )?;
-            for certificate in certificates {
-                builder = builder.add_root_certificate(certificate);
-            }
-        }
-
-        if !verify_hostname {
-            builder = builder.danger_accept_invalid_hostnames(true);
-        }
-
-        Ok(Self {
-            url: to_portal_command_url(portal_url)?,
-            token,
-            client: builder
-                .build()
-                .context("Failed to build portal command client")?,
-        })
-    }
-
-    async fn call(&self, action: &str, data: serde_json::Value) -> Result<serde_json::Value> {
-        let request = serde_json::json!({
-            "host": "lightapi.net",
-            "service": "genai",
-            "action": action,
-            "version": "0.1.0",
-            "data": data
-        });
-        let response = self
-            .client
-            .post(&self.url)
-            .bearer_auth(&self.token)
-            .json(&request)
-            .send()
-            .await
-            .context("HTTP request to portal command failed")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            bail!("portal command {action} returned HTTP {status}: {body}");
-        }
-
-        let value: serde_json::Value = response
-            .json()
-            .await
-            .context("Failed to parse portal command response")?;
-        if value.get("statusCode").is_some() || value.get("code").is_some() {
-            bail!("portal command {action} returned an error response: {value}");
-        }
-        Ok(value)
-    }
-}
-
 #[async_trait]
 trait MemoryStore: Send + Sync {
     async fn ensure_session_memory_bank(
@@ -594,12 +517,12 @@ trait MemoryStore: Send + Sync {
     ) -> Result<Vec<hindsight_client::MemoryUnit>>;
 }
 
-struct DirectPgMemoryStore {
+struct EmbeddedMemoryStore {
     pool: PgPool,
     hindsight: PgHindsightClient,
 }
 
-impl DirectPgMemoryStore {
+impl EmbeddedMemoryStore {
     fn new(pool: PgPool) -> Self {
         Self {
             hindsight: PgHindsightClient::new(pool.clone()),
@@ -608,24 +531,8 @@ impl DirectPgMemoryStore {
     }
 }
 
-struct PortalCommandMemoryStore {
-    pool: PgPool,
-    hindsight: PgHindsightClient,
-    command_client: PortalCommandClient,
-}
-
-impl PortalCommandMemoryStore {
-    fn new(pool: PgPool, command_client: PortalCommandClient) -> Self {
-        Self {
-            hindsight: PgHindsightClient::new(pool.clone()),
-            pool,
-            command_client,
-        }
-    }
-}
-
 #[async_trait]
-impl MemoryStore for DirectPgMemoryStore {
+impl MemoryStore for EmbeddedMemoryStore {
     async fn ensure_session_memory_bank(
         &self,
         host_id: Uuid,
@@ -671,101 +578,6 @@ impl MemoryStore for DirectPgMemoryStore {
     }
 }
 
-#[async_trait]
-impl MemoryStore for PortalCommandMemoryStore {
-    async fn ensure_session_memory_bank(
-        &self,
-        host_id: Uuid,
-        bank_id: Uuid,
-        session_id: Uuid,
-        owner: SessionOwner,
-    ) -> Result<()> {
-        if let Some(existing) = load_session_owner(&self.pool, host_id, bank_id).await? {
-            return validate_session_owner(existing, owner);
-        }
-
-        self.command_client
-            .call(
-                "createAgentMemoryBank",
-                serde_json::json!({
-                    "hostId": host_id,
-                    "bankId": bank_id,
-                    "agentDefId": owner.agent_def_id,
-                    "userId": owner.principal_id,
-                    "bankName": format!("session-{session_id}")
-                }),
-            )
-            .await?;
-
-        if !session_history_exists(&self.pool, host_id, bank_id, session_id).await? {
-            self.command_client
-                .call(
-                    "createAgentSessionHistory",
-                    serde_json::json!({
-                        "hostId": host_id,
-                        "bankId": bank_id,
-                        "sessionId": session_id,
-                        "messages": []
-                    }),
-                )
-                .await?;
-        }
-        let persisted = load_session_owner(&self.pool, host_id, bank_id)
-            .await?
-            .context("created session memory bank is not visible")?;
-        validate_session_owner(persisted, owner)
-    }
-
-    async fn load_session_history(
-        &self,
-        host_id: Uuid,
-        bank_id: Uuid,
-        session_id: Uuid,
-    ) -> Result<Vec<ChatMessage>> {
-        load_session_history_from_db(&self.pool, host_id, bank_id, session_id).await
-    }
-
-    async fn retain(
-        &self,
-        host_id: Uuid,
-        bank_id: Uuid,
-        content: &str,
-        fact_type: &str,
-        metadata: serde_json::Value,
-    ) -> Result<Uuid> {
-        let value = self
-            .command_client
-            .call(
-                "retainAgentMemoryUnit",
-                serde_json::json!({
-                    "hostId": host_id,
-                    "bankId": bank_id,
-                    "content": content,
-                    "factType": fact_type,
-                    "metadata": metadata
-                }),
-            )
-            .await?;
-        let unit_id = value
-            .get("unitId")
-            .and_then(|value| value.as_str())
-            .context("retainAgentMemoryUnit response did not include unitId")?;
-        Uuid::parse_str(unit_id).context("retainAgentMemoryUnit returned invalid unitId")
-    }
-
-    async fn recall(
-        &self,
-        host_id: Uuid,
-        bank_id: Uuid,
-        query_embedding: Vec<f32>,
-        limit: i32,
-    ) -> Result<Vec<hindsight_client::MemoryUnit>> {
-        self.hindsight
-            .recall(host_id, bank_id, query_embedding, limit)
-            .await
-    }
-}
-
 struct AgentState {
     agent_config: AgentConfig,
     system_prompt: String,
@@ -794,6 +606,17 @@ struct AgentState {
     coding_profile: Option<CodingProfileConfig>,
     personal_profile_digest: Option<String>,
     knowledge_client: Option<KnowledgeClient>,
+    native_a2a: Option<NativeA2aRuntime>,
+}
+
+#[derive(Clone)]
+struct NativeA2aRuntime {
+    repository: agent_store::NativeA2aRepository,
+    authorization_key: Arc<Vec<u8>>,
+    agent_ref: String,
+    binding_id: Uuid,
+    publication_id: Uuid,
+    policy_digest: String,
 }
 
 #[derive(Clone)]
@@ -1071,12 +894,475 @@ fn agent_router(state: Arc<AgentState>) -> Router {
             post(knowledge_upload_delegation),
         )
         .route("/chat", get(ws_handler))
+        .route("/a2a/{agent_ref}", post(native_a2a_request))
         .fallback_service(ServeDir::new("public").append_index_html_on_directories(true))
         .with_state(state)
 }
 
 async fn health() -> &'static str {
     "ok"
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeA2aRpcRequest {
+    jsonrpc: String,
+    id: serde_json::Value,
+    method: String,
+    #[serde(default)]
+    params: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NativeA2aSendParams {
+    #[serde(default)]
+    task_id: Option<Uuid>,
+    #[serde(default)]
+    context_id: Option<Uuid>,
+    message: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeA2aTaskParams {
+    id: Uuid,
+}
+
+async fn native_a2a_request(
+    State(state): State<Arc<AgentState>>,
+    Path(agent_ref): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let request = match serde_json::from_slice::<NativeA2aRpcRequest>(&body) {
+        Ok(request) if request.jsonrpc == "2.0" => request,
+        _ => {
+            return native_a2a_error(
+                serde_json::Value::Null,
+                -32600,
+                "Invalid Request",
+                StatusCode::BAD_REQUEST,
+            );
+        }
+    };
+    let Some(runtime) = state.native_a2a.as_ref() else {
+        return native_a2a_error(
+            request.id,
+            -32004,
+            "Native A2A publication is disabled",
+            StatusCode::NOT_FOUND,
+        );
+    };
+    let invocation = match verify_native_a2a_context(&headers, &body, runtime) {
+        Ok(invocation) => invocation,
+        Err(message) => {
+            return native_a2a_error(request.id, -32001, message, StatusCode::UNAUTHORIZED);
+        }
+    };
+    if agent_ref != runtime.agent_ref
+        || invocation.target_agent_ref != runtime.agent_ref
+        || invocation.binding_id != runtime.binding_id
+        || invocation.publication_id != runtime.publication_id
+        || invocation.policy_digest != runtime.policy_digest
+        || invocation.direction != Direction::Inbound
+        || invocation.host_id != state.host_id
+        || invocation.request_digest != sha256_digest(&body)
+    {
+        return native_a2a_error(
+            request.id,
+            -32003,
+            "Native A2A binding denied",
+            StatusCode::FORBIDDEN,
+        );
+    }
+
+    match request.method.as_str() {
+        "message/send" | "message/stream" => {
+            let params = match serde_json::from_value::<NativeA2aSendParams>(request.params) {
+                Ok(params) => params,
+                Err(_) => {
+                    return native_a2a_error(
+                        request.id,
+                        -32602,
+                        "Invalid params",
+                        StatusCode::BAD_REQUEST,
+                    );
+                }
+            };
+            let text =
+                match native_a2a_message_text(&params.message, state.limits.max_user_message_bytes)
+                {
+                    Ok(text) => text,
+                    Err(message) => {
+                        return native_a2a_error(
+                            request.id,
+                            -32602,
+                            &message,
+                            StatusCode::BAD_REQUEST,
+                        );
+                    }
+                };
+            let context_id = params.context_id.unwrap_or_else(Uuid::now_v7);
+            let task_id = params.task_id.unwrap_or_else(Uuid::now_v7);
+            let now = chrono::Utc::now();
+            let session_policy = &state.agent_config.agent_policy.session;
+            let idle_expires_at = now
+                + chrono::Duration::seconds(
+                    i64::try_from(session_policy.idle_seconds).unwrap_or(i64::MAX),
+                );
+            let maximum_expires_at = invocation.expires_at.min(
+                now + chrono::Duration::seconds(
+                    i64::try_from(session_policy.maximum_seconds).unwrap_or(i64::MAX),
+                ),
+            );
+            if let Err(error) = state
+                .domain
+                .create_or_resume_session(&SessionSpec {
+                    host_id: state.host_id,
+                    session_id: AgentSessionId(context_id),
+                    principal_id: invocation.principal_subject.clone(),
+                    user_id: None,
+                    agent_def_id: state.agent_def_id,
+                    definition_version: state.definition_version,
+                    model_provider: state.agent_config.agent_policy.model.provider.clone(),
+                    model_name: state.agent_config.agent_policy.model.alias.clone(),
+                    maximum_active_sessions: session_policy.maximum_active_sessions,
+                    bank_id: None,
+                    policy: state.policy_snapshot.clone(),
+                    idle_expires_at: idle_expires_at.min(maximum_expires_at),
+                    maximum_expires_at,
+                    resume_handle_digest: sha256_digest(
+                        format!("a2a:{context_id}:{}", invocation.principal_subject).as_bytes(),
+                    ),
+                })
+                .await
+            {
+                return native_a2a_error(
+                    request.id,
+                    -32010,
+                    &error.to_string(),
+                    StatusCode::CONFLICT,
+                );
+            }
+            let admitted = match state
+                .domain
+                .admit_user_turn(
+                    state.host_id,
+                    AgentSessionId(context_id),
+                    &invocation.idempotency_key,
+                    &text,
+                    &state.agent_config.agent_policy.model.provider,
+                    &state.agent_config.agent_policy.model.alias,
+                    session_policy.maximum_queued_turns,
+                    state.agent_config.agent_policy.model.maximum_tokens,
+                )
+                .await
+            {
+                Ok(admitted) => admitted,
+                Err(error) => {
+                    return native_a2a_error(
+                        request.id,
+                        -32010,
+                        &error.to_string(),
+                        StatusCode::CONFLICT,
+                    );
+                }
+            };
+            let snapshot = match runtime
+                .repository
+                .bind(&agent_store::NativeTaskAdmission {
+                    session_id: context_id,
+                    turn_id: admitted.turn_id.0,
+                    task_id,
+                    context_id,
+                    agent_def_id: state.agent_def_id,
+                    invocation: invocation.clone(),
+                })
+                .await
+            {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    return native_a2a_error(
+                        request.id,
+                        -32010,
+                        &error.to_string(),
+                        StatusCode::CONFLICT,
+                    );
+                }
+            };
+            if !admitted.duplicate {
+                let execution_state = Arc::clone(&state);
+                let execution_invocation = invocation.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = execute_native_a2a_turn(
+                        execution_state,
+                        execution_invocation,
+                        context_id,
+                        admitted.turn_id,
+                        text,
+                    )
+                    .await
+                    {
+                        warn!(%error, %task_id, "native A2A Agent turn failed");
+                    }
+                });
+            }
+            native_a2a_result(
+                request.id,
+                serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null),
+            )
+        }
+        "tasks/get" | "tasks/cancel" => {
+            let params = match serde_json::from_value::<NativeA2aTaskParams>(request.params) {
+                Ok(params) => params,
+                Err(_) => {
+                    return native_a2a_error(
+                        request.id,
+                        -32602,
+                        "Invalid params",
+                        StatusCode::BAD_REQUEST,
+                    );
+                }
+            };
+            let access = agent_store::NativeTaskAccess {
+                host_id: state.host_id,
+                task_id: params.id,
+                principal_subject: &invocation.principal_subject,
+                target_agent_id: state.agent_def_id,
+                publication_id: runtime.publication_id,
+                policy_digest: &runtime.policy_digest,
+            };
+            if request.method == "tasks/cancel" {
+                let (session_id, turn_id) = match runtime.repository.resolve_turn(&access).await {
+                    Ok(ids) => ids,
+                    Err(error) => {
+                        return native_a2a_error(
+                            request.id,
+                            -32004,
+                            &error.to_string(),
+                            StatusCode::NOT_FOUND,
+                        );
+                    }
+                };
+                if let Err(error) = state
+                    .domain
+                    .cancel_turn(
+                        state.host_id,
+                        AgentSessionId(session_id),
+                        AgentTurnId(turn_id),
+                        &invocation.principal_subject,
+                    )
+                    .await
+                {
+                    return native_a2a_error(
+                        request.id,
+                        -32011,
+                        &error.to_string(),
+                        StatusCode::CONFLICT,
+                    );
+                }
+                match runtime.repository.mark_canceled(&access).await {
+                    Ok(snapshot) => native_a2a_result(
+                        request.id,
+                        serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null),
+                    ),
+                    Err(error) => native_a2a_error(
+                        request.id,
+                        -32011,
+                        &error.to_string(),
+                        StatusCode::CONFLICT,
+                    ),
+                }
+            } else {
+                match runtime.repository.get(&access).await {
+                    Ok(snapshot) => native_a2a_result(
+                        request.id,
+                        serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null),
+                    ),
+                    Err(error) => native_a2a_error(
+                        request.id,
+                        -32004,
+                        &error.to_string(),
+                        StatusCode::NOT_FOUND,
+                    ),
+                }
+            }
+        }
+        _ => native_a2a_error(
+            request.id,
+            -32601,
+            "Method not found",
+            StatusCode::NOT_FOUND,
+        ),
+    }
+}
+
+fn verify_native_a2a_context(
+    headers: &HeaderMap,
+    body: &[u8],
+    runtime: &NativeA2aRuntime,
+) -> Result<AuthorizedInvocation, &'static str> {
+    let context = headers
+        .get("x-light-a2a-context")
+        .and_then(|value| value.to_str().ok())
+        .ok_or("Missing authorized context")?;
+    let signature = headers
+        .get("x-light-a2a-signature")
+        .and_then(|value| value.to_str().ok())
+        .ok_or("Missing authorized context signature")?;
+    verify_authorized_invocation(
+        context,
+        signature,
+        body,
+        &runtime.authorization_key,
+        "light-agent",
+        chrono::Utc::now(),
+    )
+    .map_err(|_| "Authorized context rejected")
+}
+
+fn native_a2a_message_text(message: &serde_json::Value, maximum: usize) -> Result<String, String> {
+    let direct = message.get("text").and_then(serde_json::Value::as_str);
+    let part = message
+        .get("parts")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|parts| {
+            parts.iter().find_map(|part| {
+                part.get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|text| !text.trim().is_empty())
+            })
+        });
+    let text = direct
+        .or(part)
+        .map(str::trim)
+        .filter(|text| !text.is_empty());
+    let Some(text) = text else {
+        return Err("A2A message requires one bounded text part".into());
+    };
+    if text.len() > maximum {
+        return Err("A2A text part exceeds the Agent message limit".into());
+    }
+    Ok(text.to_string())
+}
+
+async fn execute_native_a2a_turn(
+    state: Arc<AgentState>,
+    invocation: AuthorizedInvocation,
+    session_id: Uuid,
+    turn_id: AgentTurnId,
+    text: String,
+) -> Result<()> {
+    let _ = state
+        .domain
+        .activate_next_turn(state.host_id, AgentSessionId(session_id))
+        .await?;
+    let mut resolution = None;
+    for _ in 0..20 {
+        match state
+            .domain
+            .resolve_turn_runtime(state.host_id, turn_id)
+            .await
+        {
+            Ok(value) => {
+                resolution = Some(value);
+                break;
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
+        }
+    }
+    let resolution = resolution.context("native A2A turn was not activated")?;
+    let provider_config = ModelProviderConfig {
+        provider: resolution.model_provider.clone(),
+        model: Some(resolution.model_name.clone()),
+        temperature: state.default_temperature,
+    };
+    let runtime = build_model_provider(
+        &state.agent_config,
+        &provider_config,
+        &state.llm_gateway_token,
+        &state.llm_gateway_client,
+    )?;
+    let authenticated = AuthenticatedRequest {
+        authorization: String::new(),
+        owner: SessionOwner {
+            principal_id: invocation.binding_id,
+            agent_def_id: state.agent_def_id,
+        },
+        caller_claims: serde_json::json!({"a2a":true}),
+        caller_subject: invocation.principal_subject.clone(),
+        subject_type: "a2a-principal".into(),
+        groups: Vec::new(),
+        organizations: Vec::new(),
+    };
+    let outcome = run_agent_loop(
+        &state,
+        vec![ChatMessage::user(text)],
+        &authenticated,
+        turn_id.0,
+        &resolution.policy_digest,
+        &resolution.data_boundary_digest,
+        &session_id.to_string(),
+        session_id,
+        &resolution,
+        &runtime,
+    )
+    .await;
+    match outcome {
+        Ok((response, usage, knowledge_evidence)) => {
+            let text = response.text.unwrap_or_default();
+            state
+                .domain
+                .complete_turn(
+                    state.host_id,
+                    AgentSessionId(session_id),
+                    turn_id,
+                    &text,
+                    usage
+                        .complete
+                        .then(|| i64::try_from(usage.input_tokens).unwrap_or(i64::MAX)),
+                    usage
+                        .complete
+                        .then(|| i64::try_from(usage.output_tokens).unwrap_or(i64::MAX)),
+                    knowledge_evidence.as_ref(),
+                )
+                .await
+        }
+        Err(error) => {
+            state
+                .domain
+                .fail_turn_after_model_dispatch(
+                    state.host_id,
+                    AgentSessionId(session_id),
+                    turn_id,
+                    &error.to_string(),
+                )
+                .await?;
+            Err(error)
+        }
+    }
+}
+
+fn native_a2a_result(id: serde_json::Value, result: serde_json::Value) -> Response {
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"jsonrpc":"2.0","id":id,"result":result})),
+    )
+        .into_response()
+}
+
+fn native_a2a_error(
+    id: serde_json::Value,
+    code: i64,
+    message: &str,
+    status: StatusCode,
+) -> Response {
+    (
+        status,
+        Json(serde_json::json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})),
+    )
+        .into_response()
 }
 
 #[derive(Debug, Serialize)]
@@ -2840,18 +3126,46 @@ async fn insert_session_memory_bank(
 ) -> Result<()> {
     sqlx::query(
         "INSERT INTO agent_memory_bank_t
-         (host_id, bank_id, agent_def_id, user_id, bank_name)
-         VALUES ($1, $2, $3, $4, $5)
+         (host_id,bank_id,agent_def_id,user_id,agent_definition_version,
+          agent_definition_digest,user_identity_digest,bank_name)
+         SELECT s.host_id,$2,s.agent_def_id,s.user_id,s.agent_definition_version,
+                s.agent_definition_digest,s.user_identity_digest,$5
+           FROM agent_session_t s
+          WHERE s.host_id=$1 AND s.session_id=$3 AND s.agent_def_id=$4
+            AND s.user_id=$6 AND s.state='ACTIVE'
          ON CONFLICT (host_id, bank_id) DO NOTHING",
     )
     .bind(host_id)
     .bind(bank_id)
+    .bind(session_id)
     .bind(owner.agent_def_id)
-    .bind(owner.principal_id)
     .bind(format!("session-{session_id}"))
+    .bind(owner.principal_id)
     .execute(db)
     .await
     .context("failed to create session memory bank")?;
+
+    sqlx::query(
+        "INSERT INTO operational_reference_evidence_t(
+             host_id,reference_id,source_service,source_table,source_record_id,
+             reference_kind,target_id,target_version,publication_id,content_digest,
+             issuer,audience,state,accepted_ts,reconciled_ts)
+         SELECT e.host_id,gen_random_uuid(),e.source_service,'agent_memory_bank_t',$1,
+                e.reference_kind,e.target_id,e.target_version,e.publication_id,e.content_digest,
+                e.issuer,e.audience,e.state,e.accepted_ts,now()
+           FROM operational_reference_evidence_t e
+          WHERE e.host_id=$2 AND e.source_table='agent_session_t'
+            AND e.source_record_id=$3
+            AND e.reference_kind IN ('HOST_SCOPE','AGENT_DEFINITION','USER_PRINCIPAL')
+         ON CONFLICT(host_id,source_service,source_table,source_record_id,reference_kind)
+         DO NOTHING",
+    )
+    .bind(bank_id)
+    .bind(host_id)
+    .bind(session_id)
+    .execute(db)
+    .await
+    .context("failed to pin session memory bank reference evidence")?;
 
     let persisted = load_session_owner(db, host_id, bank_id)
         .await?
@@ -2904,27 +3218,6 @@ fn validate_session_owner(actual: SessionOwner, expected: SessionOwner) -> Resul
         bail!("session is not owned by the authenticated principal and agent definition");
     }
     Ok(())
-}
-
-async fn session_history_exists(
-    db: &PgPool,
-    host_id: Uuid,
-    bank_id: Uuid,
-    session_id: Uuid,
-) -> Result<bool> {
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (
-            SELECT 1 FROM agent_session_history_t
-            WHERE host_id = $1 AND bank_id = $2 AND session_id = $3
-        )",
-    )
-    .bind(host_id)
-    .bind(bank_id)
-    .bind(session_id)
-    .fetch_one(db)
-    .await
-    .context("failed to check session history existence")?;
-    Ok(exists)
 }
 
 async fn load_session_history_from_db(
@@ -3879,11 +4172,76 @@ async fn build_agent_state(
     )
     .map_err(|e| RuntimeError::Config(format!("failed to build MCP gateway client: {e}")))?;
 
-    let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://postgres:secret@localhost:5432/configserver".to_string());
-    let pool = PgPool::connect(&db_url)
+    let database_url_file = PathBuf::from(&agent_config.operational_store.database_url_file);
+    let db_url = agent_store::read_database_url(&database_url_file)
+        .map_err(|error| RuntimeError::Config(error.to_string()))?;
+    let pool = PgPoolOptions::new()
+        .max_connections(20)
+        .after_connect(|connection, _metadata| {
+            Box::pin(async move {
+                sqlx::query("SET search_path TO agent_ops, operational_meta")
+                    .execute(connection)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(&db_url)
         .await
-        .map_err(|e| RuntimeError::Config(format!("failed to connect to database: {e}")))?;
+        .map_err(|e| RuntimeError::Config(format!("failed to connect to Agent store: {e}")))?;
+    agent_store::validate(
+        &pool,
+        &agent_store::ExpectedBinding {
+            binding_id: agent_config.operational_store.binding_id,
+            binding_digest: &agent_config.operational_store.binding_digest,
+            host_id: agent_config.runtime_policy.host_id,
+            environment: &agent_config.runtime_policy.environment,
+            minimum_schema_generation: agent_config.operational_store.minimum_schema_version,
+        },
+    )
+    .await
+    .map_err(|error| RuntimeError::Config(error.to_string()))?;
+    let native_a2a = if agent_config.a2a_policy.enabled {
+        let key_path = PathBuf::from(&agent_config.a2a_policy.authorization_context_key_file);
+        let metadata = std::fs::symlink_metadata(&key_path).map_err(|error| {
+            RuntimeError::Config(format!("cannot inspect native A2A context key: {error}"))
+        })?;
+        #[cfg(unix)]
+        let permissions_are_private = {
+            use std::os::unix::fs::PermissionsExt;
+            metadata.permissions().mode() & 0o037 == 0
+        };
+        #[cfg(not(unix))]
+        let permissions_are_private = true;
+        if metadata.file_type().is_symlink() || !metadata.is_file() || !permissions_are_private {
+            return Err(RuntimeError::Config(
+                "native A2A context key must be a private regular non-symlink file".into(),
+            ));
+        }
+        let key = std::fs::read(&key_path).map_err(|error| {
+            RuntimeError::Config(format!("cannot read native A2A context key: {error}"))
+        })?;
+        if key.len() < 32 {
+            return Err(RuntimeError::Config(
+                "native A2A context key must contain at least 32 bytes".into(),
+            ));
+        }
+        Some(NativeA2aRuntime {
+            repository: agent_store::NativeA2aRepository::new(pool.clone()),
+            authorization_key: Arc::new(key),
+            agent_ref: agent_config.a2a_policy.agent_ref.clone(),
+            binding_id: agent_config
+                .a2a_policy
+                .binding_id
+                .expect("validated native A2A binding ID"),
+            publication_id: agent_config
+                .a2a_policy
+                .publication_id
+                .expect("validated native A2A publication ID"),
+            policy_digest: agent_config.a2a_policy.policy_digest.clone(),
+        })
+    } else {
+        None
+    };
     lifecycle.register(Arc::new(AgentDatabase(pool.clone())))?;
     let allow_broad_gateway_token = bool_from_env("LIGHT_AGENT_ALLOW_BROAD_GATEWAY_TOKEN", false);
     let delegation_signer = match std::env::var("LIGHT_AGENT_DELEGATION_SECRET") {
@@ -3913,6 +4271,17 @@ async fn build_agent_state(
     let env_tag = runtime_config.service_identity.env_tag.clone();
     let portal_token =
         registry_token(&portal_registry_config).ok_or(RuntimeError::MissingPortalToken)?;
+    let execution_client = ExecutionClient::new_with_bearer_token(
+        &agent_config.agent_policy.execution.execution_api_url,
+        &portal_token,
+        Duration::from_millis(mcp_config.timeout_ms),
+        ca_cert.as_deref(),
+    )
+    .map_err(|error| {
+        RuntimeError::Config(format!(
+            "failed to build Controller execution client: {error}"
+        ))
+    })?;
     let memory_write_mode = agent_config
         .agent_policy
         .memory
@@ -3920,42 +4289,10 @@ async fn build_agent_state(
         .trim()
         .to_ascii_lowercase();
     let memory: Arc<dyn MemoryStore> = match memory_write_mode.as_str() {
-        "portal-command" => {
-            let command_url = agent_config
-                .agent_policy
-                .memory
-                .portal_command_url
-                .clone()
-                .filter(|value| !value.trim().is_empty())
-                .map(Ok)
-                .unwrap_or_else(|| to_portal_command_url(&portal_registry_config.portal_url))
-                .map_err(|error| RuntimeError::Config(error.to_string()))?;
-            let command_client = PortalCommandClient::with_options(
-                &command_url,
-                portal_token.clone(),
-                ca_cert.as_deref(),
-                verify_hostname,
-                mcp_config.timeout_ms,
-            )
-            .map_err(|e| {
-                RuntimeError::Config(format!("failed to build portal command client: {e}"))
-            })?;
-            Arc::new(PortalCommandMemoryStore::new(pool.clone(), command_client))
-        }
-        "direct-pg" if agent_config.agent_policy.memory.allow_direct_pg => {
-            warn!(
-                "direct PostgreSQL memory writes explicitly enabled; use portal-command in production"
-            );
-            Arc::new(DirectPgMemoryStore::new(pool.clone()))
-        }
-        "direct-pg" => {
-            return Err(RuntimeError::Config(
-                "direct-pg memory writes require agentPolicy.memory.allowDirectPg=true; portal-command is the production default".to_string(),
-            ));
-        }
+        "operational" => Arc::new(EmbeddedMemoryStore::new(pool.clone())),
         other => {
             return Err(RuntimeError::Config(format!(
-                "LIGHT_AGENT_MEMORY_WRITE_MODE must be portal-command or direct-pg, got {other}"
+                "agentPolicy.memory.writeMode must be operational after the Agent-store cutover, got {other}"
             )));
         }
     };
@@ -4045,13 +4382,26 @@ async fn build_agent_state(
         ));
     }
 
-    let domain = AgentRepository::with_authority(
+    let domain = AgentRepository::with_execution_authority(
         pool.clone(),
         AgentRuntimeAuthority {
             host_id,
             agent_def_id,
             definition_version,
+            publication_id: agent_config.runtime_policy.publication_id,
+            content_digest: agent_config.runtime_policy.content_digest.clone(),
+            definition_digest: agent_config
+                .agent_policy
+                .policy_snapshot
+                .definition_digest
+                .clone(),
+            environment: agent_config.runtime_policy.environment.clone(),
+            service_id: agent_config.runtime_policy.service_id.clone(),
+            instance_id: agent_config.runtime_policy.instance_id,
             policy_snapshot_id: agent_config.agent_policy.policy_snapshot.snapshot_id,
+            policy_version: i64::try_from(agent_config.runtime_policy.policy_version).map_err(
+                |_| RuntimeError::Config("runtimePolicy.policyVersion is too large".into()),
+            )?,
             policy_digest: policy_digest.clone(),
             data_boundary_digest: agent_config
                 .agent_policy
@@ -4060,7 +4410,16 @@ async fn build_agent_state(
                 .clone(),
             model_provider: agent_config.agent_policy.model.provider.clone(),
             model_name: agent_config.agent_policy.model.alias.clone(),
+            quota_policies: agent_config.agent_policy.execution.quota_policies.clone(),
+            model_rates: agent_config.agent_policy.execution.model_rates.clone(),
+            service_pools: agent_config.agent_policy.execution.service_pools.clone(),
+            edge_runner_bindings: agent_config
+                .agent_policy
+                .execution
+                .edge_runner_bindings
+                .clone(),
         },
+        execution_client,
     );
     let turn_dispatch = TurnDispatchCoordinator::new(domain.clone());
     turn_dispatch.spawn(host_id);
@@ -4092,6 +4451,7 @@ async fn build_agent_state(
         coding_profile,
         personal_profile_digest,
         knowledge_client,
+        native_a2a,
     });
     state.domain.spawn_result_reconciler();
 

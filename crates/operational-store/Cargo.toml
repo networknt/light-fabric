@@ -1,0 +1,15 @@
+[package]
+name = "operational-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Canonical metadata contract and PostgreSQL bootstrap bundle for Light operational stores"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+uuid.workspace = true

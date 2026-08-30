@@ -5,6 +5,7 @@ use knowledge_core::RetrievalFilters;
 use serde::de::{DeserializeOwned, Error as DeError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashSet;
 use uuid::Uuid;
 
 pub const AGENT_CONFIG_FILE: &str = "agent.yml";
@@ -13,8 +14,48 @@ pub const AGENT_CONFIG_MODULE_ID: &str = "light-agent/agent";
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentConfig {
+    pub operational_store: OperationalStoreProjection,
     pub runtime_policy: RuntimePolicyEnvelope,
     pub agent_policy: AgentPolicy,
+    #[serde(default)]
+    pub a2a_policy: NativeA2aPolicy,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeA2aPolicy {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub agent_ref: String,
+    #[serde(default, deserialize_with = "deserialize_optional_uuid")]
+    pub binding_id: Option<Uuid>,
+    #[serde(default, deserialize_with = "deserialize_optional_uuid")]
+    pub publication_id: Option<Uuid>,
+    #[serde(default)]
+    pub policy_digest: String,
+    #[serde(default)]
+    pub authorization_context_key_file: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OperationalStoreProjection {
+    pub contract_version: u32,
+    pub binding_id: Uuid,
+    pub binding_digest: String,
+    pub profile_id: String,
+    pub deployment_profile: String,
+    pub scope_kind: String,
+    pub scope_id: Uuid,
+    pub host_id: Uuid,
+    pub environment: String,
+    pub service_owner: String,
+    pub schema: String,
+    pub minimum_schema_version: i64,
+    pub expected_database: String,
+    pub database_url_file: String,
+    pub credential_generation: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -111,16 +152,95 @@ pub struct AgentExecutionPolicy {
     pub maximum_output_depth: usize,
     pub maximum_output_items: usize,
     pub maximum_turn_tokens: u64,
+    pub execution_api_url: String,
     #[serde(default)]
-    pub quota_policies: Vec<Value>,
+    pub quota_policies: Vec<AgentQuotaPolicy>,
     #[serde(default)]
-    pub model_rates: Vec<Value>,
+    pub model_rates: Vec<AgentModelRatePolicy>,
     #[serde(default)]
-    pub service_pools: Vec<Value>,
+    pub service_pools: Vec<AgentServicePoolPolicy>,
+    #[serde(default)]
+    pub edge_runner_bindings: Vec<AgentEdgeRunnerBindingPolicy>,
     #[serde(default)]
     pub approval_rules: Vec<Value>,
     #[serde(default, deserialize_with = "deserialize_optional_non_empty_map")]
     pub coding_profile: Option<CodingProfilePolicy>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentModelRatePolicy {
+    pub rate_id: Uuid,
+    pub provider: String,
+    pub model: String,
+    pub input_cost_micros_per_million: i64,
+    pub output_cost_micros_per_million: i64,
+    pub effective_at: DateTime<Utc>,
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+    pub aggregate_version: i64,
+    pub digest: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentEdgeRunnerBindingPolicy {
+    pub edge_binding_id: Uuid,
+    pub principal_id: String,
+    pub runner_id: String,
+    pub backend_id: String,
+    pub compatibility_digest: String,
+    #[serde(default)]
+    pub required_capabilities: Vec<String>,
+    #[serde(default)]
+    pub allowed_actions: Vec<String>,
+    pub action_policies: Value,
+    pub expires_at: DateTime<Utc>,
+    pub revocation_epoch: u64,
+    pub aggregate_version: i64,
+    pub digest: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentQuotaPolicy {
+    pub quota_id: Uuid,
+    pub policy_version: i64,
+    pub policy_digest: String,
+    pub scope_kind: String,
+    pub scope_key: String,
+    #[serde(default)]
+    pub maximum_active_sessions: Option<i32>,
+    #[serde(default)]
+    pub maximum_queued_turns: Option<i32>,
+    #[serde(default)]
+    pub maximum_running_turns: Option<i32>,
+    #[serde(default)]
+    pub token_budget_per_window: Option<i64>,
+    #[serde(default)]
+    pub cost_budget_micros_per_window: Option<i64>,
+    pub window_seconds: i32,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentServicePoolPolicy {
+    pub pool_id: Uuid,
+    pub compatibility_dimensions: Value,
+    pub compatibility_digest: String,
+    pub maximum_concurrency: i32,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -148,9 +268,6 @@ pub struct AgentCatalogPolicy {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentMemoryPolicy {
     pub write_mode: String,
-    #[serde(default)]
-    pub portal_command_url: Option<String>,
-    pub allow_direct_pg: bool,
     #[serde(default)]
     pub personal_profile_digest: Option<String>,
     #[serde(default)]
@@ -207,6 +324,21 @@ where
     }
 }
 
+fn deserialize_optional_uuid<'de, D>(deserializer: D) -> Result<Option<Uuid>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::Null => Ok(None),
+        Value::String(value) if value.trim().is_empty() => Ok(None),
+        Value::String(value) => Uuid::parse_str(value.trim())
+            .map(Some)
+            .map_err(D::Error::custom),
+        _ => Err(D::Error::custom("expected an optional UUID string")),
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentSessionPolicy {
@@ -225,6 +357,26 @@ impl AgentConfig {
     ) -> Result<(), String> {
         let envelope = &self.runtime_policy;
         let policy = &self.agent_policy;
+        let store = &self.operational_store;
+        if store.contract_version != 1
+            || store.deployment_profile != "DEV_DEDICATED"
+            || store.scope_kind != "HOST_ENVIRONMENT"
+            || store.scope_id != envelope.host_id
+            || store.host_id != envelope.host_id
+            || store.environment != envelope.environment
+            || store.service_owner != "light-agent"
+            || store.schema != agent_store::EXPECTED_SCHEMA
+            || store.minimum_schema_version < 1
+            || store.credential_generation < 1
+            || store.expected_database != agent_store::EXPECTED_DATABASE
+            || store.profile_id.trim().is_empty()
+            || !store.database_url_file.starts_with('/')
+            || !is_sha256_digest(&store.binding_digest)
+        {
+            return Err(
+                "operationalStore does not match the Agent Host/environment authority".to_string(),
+            );
+        }
         if envelope.schema_version != 1 {
             return Err(format!(
                 "unsupported Agent policy schema version {}",
@@ -302,6 +454,124 @@ impl AgentConfig {
                     .to_string(),
             );
         }
+        let mut pool_ids = HashSet::new();
+        let mut pool_digests = HashSet::new();
+        for pool in &policy.execution.service_pools {
+            if !pool_ids.insert(pool.pool_id)
+                || !pool_digests.insert(pool.compatibility_digest.as_str())
+            {
+                return Err("agentPolicy.execution.servicePools contains a duplicate".to_string());
+            }
+            if pool.maximum_concurrency <= 0 {
+                return Err(
+                    "agentPolicy.execution.servicePools.maximumConcurrency must be positive"
+                        .to_string(),
+                );
+            }
+            let dimensions = pool.compatibility_dimensions.as_object().ok_or_else(|| {
+                "agentPolicy.execution.servicePools.compatibilityDimensions must be an object"
+                    .to_string()
+            })?;
+            for required in [
+                "tenant",
+                "identity",
+                "modelCredential",
+                "region",
+                "dataBoundary",
+                "network",
+                "retention",
+                "profile",
+            ] {
+                if dimensions
+                    .get(required)
+                    .and_then(Value::as_str)
+                    .is_none_or(str::is_empty)
+                {
+                    return Err(format!(
+                        "agentPolicy.execution.servicePools compatibility dimension {required} is missing"
+                    ));
+                }
+            }
+            let computed =
+                execution_runner_protocol::canonical_sha256(&pool.compatibility_dimensions)
+                    .map_err(|error| {
+                        format!("failed to digest service-pool dimensions: {error}")
+                    })?;
+            if pool.compatibility_digest != computed {
+                return Err(
+                    "agentPolicy.execution.servicePools compatibility digest is stale".to_string(),
+                );
+            }
+        }
+        let mut quota_ids = HashSet::new();
+        for quota in &policy.execution.quota_policies {
+            if !quota_ids.insert(quota.quota_id)
+                || quota.policy_version <= 0
+                || !is_sha256_digest(&quota.policy_digest)
+                || !matches!(
+                    quota.scope_kind.as_str(),
+                    "HOST" | "PRINCIPAL" | "AGENT" | "PROFILE" | "PROVIDER" | "POOL"
+                )
+                || quota.scope_key.trim().is_empty()
+                || !(1..=86_400).contains(&quota.window_seconds)
+                || [
+                    quota.maximum_active_sessions.map(i64::from),
+                    quota.maximum_queued_turns.map(i64::from),
+                    quota.maximum_running_turns.map(i64::from),
+                    quota.token_budget_per_window,
+                    quota.cost_budget_micros_per_window,
+                ]
+                .into_iter()
+                .flatten()
+                .any(|limit| limit < 0)
+            {
+                return Err(
+                    "agentPolicy.execution.quotaPolicies contains an invalid pinned policy"
+                        .to_string(),
+                );
+            }
+        }
+        let mut rate_ids = HashSet::new();
+        for rate in &policy.execution.model_rates {
+            if !rate_ids.insert(rate.rate_id)
+                || rate.provider.trim().is_empty()
+                || rate.model.trim().is_empty()
+                || rate.input_cost_micros_per_million < 0
+                || rate.output_cost_micros_per_million < 0
+                || rate.aggregate_version <= 0
+                || !is_sha256_digest(&rate.digest)
+                || rate
+                    .expires_at
+                    .is_some_and(|expires| expires <= rate.effective_at)
+            {
+                return Err(
+                    "agentPolicy.execution.modelRates contains invalid pinned evidence".to_string(),
+                );
+            }
+        }
+        let mut edge_binding_ids = HashSet::new();
+        for binding in &policy.execution.edge_runner_bindings {
+            let action_policies = binding.action_policies.as_object();
+            if !edge_binding_ids.insert(binding.edge_binding_id)
+                || binding.principal_id.trim().is_empty()
+                || binding.runner_id.trim().is_empty()
+                || binding.backend_id.trim().is_empty()
+                || !is_sha256_digest(&binding.compatibility_digest)
+                || binding.allowed_actions.is_empty()
+                || action_policies.is_none()
+                || !binding.allowed_actions.iter().all(|action| {
+                    action_policies.is_some_and(|policies| policies.contains_key(action))
+                })
+                || binding.expires_at <= now
+                || binding.aggregate_version <= 0
+                || !is_sha256_digest(&binding.digest)
+            {
+                return Err(
+                    "agentPolicy.execution.edgeRunnerBindings contains invalid pinned evidence"
+                        .to_string(),
+                );
+            }
+        }
         if policy.session.idle_seconds == 0
             || policy.session.maximum_seconds == 0
             || policy.session.idle_seconds > policy.session.maximum_seconds
@@ -317,6 +587,21 @@ impl AgentConfig {
             || policy.knowledge.retrieval.token_budget == 0
         {
             return Err("agentPolicy.knowledge.retrieval limits are invalid".to_string());
+        }
+        if self.a2a_policy.enabled
+            && (self.a2a_policy.agent_ref.trim().is_empty()
+                || self.a2a_policy.binding_id.is_none()
+                || self.a2a_policy.publication_id != Some(envelope.publication_id)
+                || self.a2a_policy.policy_digest != envelope.policy_digest
+                || !self
+                    .a2a_policy
+                    .authorization_context_key_file
+                    .starts_with('/'))
+        {
+            return Err(
+                "a2aPolicy must bind this native Agent publication, policy, and key file"
+                    .to_string(),
+            );
         }
         validate_digest(
             "runtimePolicy.policyDigest",
@@ -350,6 +635,12 @@ impl AgentConfig {
         }
         prompt
     }
+}
+
+fn is_sha256_digest(value: &str) -> bool {
+    value
+        .strip_prefix("sha256:")
+        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
 fn persisted_policy_digest(policy: &PolicySnapshot) -> Result<String, serde_json::Error> {
@@ -428,9 +719,11 @@ mod tests {
                 maximum_output_depth: 16,
                 maximum_output_items: 1024,
                 maximum_turn_tokens: 65_536,
+                execution_api_url: "https://controller:8438/".into(),
                 quota_policies: vec![],
                 model_rates: vec![],
                 service_pools: vec![],
+                edge_runner_bindings: vec![],
                 approval_rules: vec![],
                 coding_profile: None,
             },
@@ -440,9 +733,7 @@ mod tests {
                 effective_catalog: None,
             },
             memory: AgentMemoryPolicy {
-                write_mode: "portal-command".into(),
-                portal_command_url: None,
-                allow_direct_pg: false,
+                write_mode: "operational".into(),
                 personal_profile_digest: None,
                 rules: serde_json::json!({}),
             },
@@ -468,7 +759,25 @@ mod tests {
         };
         let policy_digest = persisted_policy_digest(&agent_policy.policy_snapshot).unwrap();
         let content_digest = canonical_digest(&agent_policy).unwrap();
+        let host_id = Uuid::now_v7();
         AgentConfig {
+            operational_store: OperationalStoreProjection {
+                contract_version: 1,
+                binding_id: Uuid::now_v7(),
+                binding_digest: digest("binding"),
+                profile_id: "dev-dedicated".into(),
+                deployment_profile: "DEV_DEDICATED".into(),
+                scope_kind: "HOST_ENVIRONMENT".into(),
+                scope_id: host_id,
+                host_id,
+                environment: "dev".into(),
+                service_owner: "light-agent".into(),
+                schema: "agent_ops".into(),
+                minimum_schema_version: 1,
+                expected_database: "operations".into(),
+                database_url_file: "/run/secrets/operational-database-url".into(),
+                credential_generation: 1,
+            },
             runtime_policy: RuntimePolicyEnvelope {
                 publication_id: Uuid::now_v7(),
                 release_version: 4,
@@ -477,7 +786,7 @@ mod tests {
                 policy_digest,
                 content_digest,
                 audience: "agent".into(),
-                host_id: Uuid::now_v7(),
+                host_id,
                 environment: "dev".into(),
                 service_id: "com.networknt.agent.support-1.0.0".into(),
                 instance_id: Uuid::now_v7(),
@@ -491,6 +800,7 @@ mod tests {
                 compatibility_generation: 1,
             },
             agent_policy,
+            a2a_policy: NativeA2aPolicy::default(),
         }
     }
 
@@ -560,6 +870,55 @@ mod tests {
                 .validate("com.networknt.agent.support-1.0.0", Some("dev"), now)
                 .unwrap_err()
                 .contains("retrieval limits")
+        );
+    }
+
+    #[test]
+    fn rejects_stale_pool_and_invalid_quota_projection_evidence() {
+        let now = Utc::now();
+        let mut pool = config(now);
+        pool.agent_policy.execution.service_pools = vec![AgentServicePoolPolicy {
+            pool_id: Uuid::now_v7(),
+            compatibility_dimensions: serde_json::json!({
+                "tenant": pool.runtime_policy.host_id,
+                "identity": "isolated",
+                "modelCredential": "gateway",
+                "region": "ca-central",
+                "dataBoundary": pool.agent_policy.policy_snapshot.data_boundary_digest,
+                "network": "private",
+                "retention": "standard",
+                "profile": pool.agent_policy.policy_snapshot.product_profile_digest
+            }),
+            compatibility_digest: "stale".into(),
+            maximum_concurrency: 4,
+            enabled: true,
+        }];
+        assert!(
+            pool.validate("com.networknt.agent.support-1.0.0", Some("dev"), now)
+                .unwrap_err()
+                .contains("compatibility digest is stale")
+        );
+
+        let mut quota = config(now);
+        quota.agent_policy.execution.quota_policies = vec![AgentQuotaPolicy {
+            quota_id: Uuid::now_v7(),
+            policy_version: 1,
+            policy_digest: "not-a-digest".into(),
+            scope_kind: "HOST".into(),
+            scope_key: quota.runtime_policy.host_id.to_string(),
+            maximum_active_sessions: Some(10),
+            maximum_queued_turns: None,
+            maximum_running_turns: None,
+            token_budget_per_window: None,
+            cost_budget_micros_per_window: None,
+            window_seconds: 60,
+            enabled: true,
+        }];
+        assert!(
+            quota
+                .validate("com.networknt.agent.support-1.0.0", Some("dev"), now)
+                .unwrap_err()
+                .contains("invalid pinned policy")
         );
     }
 

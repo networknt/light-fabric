@@ -1,0 +1,6 @@
+enabled: ${portalRegistry.enabled:false}
+controllerUrl: ${portalRegistry.controllerUrl:}
+instanceId: ${runtimePolicy.instanceId:}
+hostId: ${runtimePolicy.hostId:}
+environment: ${runtimePolicy.environment:dev}
+serviceId: ${runtimePolicy.serviceId:com.networknt.light-a2a-1.0.0}

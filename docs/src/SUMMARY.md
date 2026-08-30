@@ -26,6 +26,8 @@
 - [Agent Engine Pattern](design/agent-engine-pattern.md)
 - [Light-Agent Execution](design/light-agent-execution.md)
 - [Database Design](design/database-design.md)
+- [Control Plane And Operational Data](design/control-plane-operational-data.md)
+- [Tenant Operational Store Provisioning](design/tenant-operational-store-provisioning.md)
 - [Light-Deployer](design/light-deployer.md)
 - [Module Registry](design/module-registry.md)
 - [Module Hot Reload](design/module-hot-reload.md)

@@ -443,33 +443,6 @@ impl WorkflowRepository {
         if accepted.rows_affected() != 1 {
             return Ok(false);
         }
-        let accepted_attempt = sqlx::query(
-            "UPDATE execution_attempt_t SET accepted_by_origin_ts = CURRENT_TIMESTAMP,
-                    updated_ts = CURRENT_TIMESTAMP
-             WHERE host_id = $1 AND execution_id = $2 AND lease_id = $3
-               AND fencing_token = $4 AND accepted_by_origin_ts IS NULL",
-        )
-        .bind(attempt.host_id)
-        .bind(attempt.execution_id)
-        .bind(attempt.lease_id)
-        .bind(attempt.fencing_token)
-        .execute(&mut **tx)
-        .await?;
-        if accepted_attempt.rows_affected() != 1 {
-            return Err(sqlx::Error::Protocol(
-                "terminal attempt lost its lease/fencing acceptance race".to_string(),
-            ));
-        }
-        sqlx::query(
-            "UPDATE runner_scheduling_request_t SET state = 'SATISFIED',
-                    updated_ts = CURRENT_TIMESTAMP
-             WHERE host_id = $1 AND request_id = $2
-               AND state IN ('ATTEMPT_CREATED', 'LEASED')",
-        )
-        .bind(attempt.host_id)
-        .bind(attempt.request_id)
-        .execute(&mut **tx)
-        .await?;
         Ok(true)
     }
 }

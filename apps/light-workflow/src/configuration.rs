@@ -13,6 +13,7 @@ use std::{
     str::FromStr,
     sync::Arc,
 };
+use uuid::Uuid;
 use workflow_policy::{CommandTemplate, ExecutionProfile};
 
 use crate::command_template::validate_command_template;
@@ -28,6 +29,7 @@ pub struct WorkflowConfiguration {
     pub environment: String,
     pub http_addr: SocketAddr,
     pub database_url: String,
+    pub operational_store: OperationalStoreProjection,
     pub database_max_connections: u32,
     pub invocation_caller_service_ids: Vec<String>,
     pub wait_listener_connections: usize,
@@ -41,10 +43,27 @@ pub struct WorkflowConfiguration {
     pub artifact: ArtifactSettings,
     pub fixed_actions: FixedActionSettings,
     pub agent_provider_base_urls: BTreeMap<String, String>,
+    pub a2a_authorization_context_key_file: PathBuf,
     /// Complete verifier configuration. The verifier is constructed once at
     /// startup, so any change to this value is restart-required.
     pub security: SecurityConfig,
     pub managed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OperationalStoreProjection {
+    pub contract_version: u16,
+    pub binding_id: Uuid,
+    pub binding_digest: String,
+    pub host_id: Uuid,
+    pub environment: String,
+    pub service_owner: String,
+    pub schema: String,
+    pub expected_database: String,
+    pub minimum_schema_generation: i64,
+    pub database_url_file: PathBuf,
+    pub credential_generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +72,8 @@ pub struct RunnerSettings {
     pub origin_service_id: String,
     pub origin_id: String,
     pub config_file: Option<PathBuf>,
+    pub execution_api_url: String,
+    pub execution_api_ca_cert_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,10 +101,12 @@ pub struct FixedActionSettings {
 struct WorkflowFile {
     invocation: InvocationFile,
     execution: ExecutionFile,
+    operational_store: OperationalStoreProjection,
     database: DatabaseFile,
     runner: RunnerFile,
     artifact: ArtifactFile,
     fixed_actions: FixedActionsFile,
+    a2a: A2aFile,
 }
 
 #[derive(Debug, Deserialize)]
@@ -115,6 +138,8 @@ struct RunnerFile {
     origin_service_id: String,
     origin_id: String,
     config_file: String,
+    execution_api_url: String,
+    execution_api_ca_cert_file: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -135,6 +160,12 @@ struct FixedActionsFile {
     branch_prefix: String,
     repository_url: String,
     release_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct A2aFile {
+    authorization_context_key_file: PathBuf,
 }
 
 impl WorkflowConfiguration {
@@ -317,6 +348,11 @@ impl WorkflowConfiguration {
             &mut violations,
         );
         validate_absolute_path(
+            "workflow.a2a.authorizationContextKeyFile",
+            &workflow.a2a.authorization_context_key_file,
+            &mut violations,
+        );
+        validate_absolute_path(
             "workflow.fixedActions.artifactRoot",
             &workflow.fixed_actions.artifact_root,
             &mut violations,
@@ -366,10 +402,40 @@ impl WorkflowConfiguration {
             violations.push(error.clone());
         }
 
-        let database_url = required_secret("DATABASE_URL", environment_value, &mut violations);
+        let store = &workflow.operational_store;
+        if store.contract_version != 1
+            || store.environment != environment
+            || store.service_owner != "light-workflow"
+            || store.schema != workflow_store::EXPECTED_SCHEMA
+            || store.expected_database != workflow_store::EXPECTED_DATABASE
+            || store.minimum_schema_generation < 1
+            || store.credential_generation < 1
+            || !store.binding_digest.starts_with("sha256:")
+            || !store.database_url_file.is_absolute()
+        {
+            violations.push(
+                "operationalStore: must be the exact Workflow Host/environment binding".to_string(),
+            );
+        }
+        #[cfg(not(test))]
+        let database_url = match workflow_store::read_database_url(&store.database_url_file) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                violations.push(format!("operationalStore.databaseUrlFile: {error}"));
+                None
+            }
+        };
+        #[cfg(test)]
+        let database_url = required_secret(
+            "WORKFLOW_OPERATIONAL_DATABASE_URL_TEST_ONLY",
+            environment_value,
+            &mut violations,
+        );
         if let Some(value) = database_url.as_deref() {
             if let Err(error) = PgConnectOptions::from_str(value) {
-                violations.push(format!("DATABASE_URL: invalid PostgreSQL URL: {error}"));
+                violations.push(format!(
+                    "operationalStore.databaseUrlFile: invalid PostgreSQL URL: {error}"
+                ));
             }
         }
         let service_authorization = required_secret(
@@ -414,6 +480,7 @@ impl WorkflowConfiguration {
             environment,
             http_addr: http_addr.expect("validated socket address"),
             database_url: database_url.expect("validated database secret"),
+            operational_store: workflow.operational_store,
             database_max_connections: workflow.database.max_connections,
             invocation_caller_service_ids: workflow.invocation.allowed_caller_service_ids,
             wait_listener_connections: workflow.invocation.wait_listener_connections,
@@ -428,6 +495,9 @@ impl WorkflowConfiguration {
                 origin_service_id: workflow.runner.origin_service_id,
                 origin_id: workflow.runner.origin_id,
                 config_file: non_empty(&workflow.runner.config_file).map(PathBuf::from),
+                execution_api_url: workflow.runner.execution_api_url,
+                execution_api_ca_cert_file: non_empty(&workflow.runner.execution_api_ca_cert_file)
+                    .map(PathBuf::from),
             },
             artifact: ArtifactSettings {
                 bucket: non_empty(&workflow.artifact.s3_bucket),
@@ -446,6 +516,7 @@ impl WorkflowConfiguration {
                 release_token,
             },
             agent_provider_base_urls,
+            a2a_authorization_context_key_file: workflow.a2a.authorization_context_key_file,
             security,
             managed,
         })
@@ -646,7 +717,10 @@ pub fn restart_required_differences_from_baseline(
         differences.insert("server.httpEndpoint".to_string());
     }
     if active.database_url != candidate.database_url {
-        differences.insert("DATABASE_URL".to_string());
+        differences.insert("operationalStore.databaseUrlFile".to_string());
+    }
+    if active.operational_store != candidate.operational_store {
+        differences.insert("operationalStore".to_string());
     }
     if active.database_max_connections != candidate.database_max_connections {
         differences.insert("workflow.database.maxConnections".to_string());
@@ -904,6 +978,8 @@ pub struct RunnerExecutionConfig {
     pub origin_instance_id: String,
     pub profiles: BTreeMap<String, ExecutionProfile>,
     pub command_templates: BTreeMap<String, CommandTemplate>,
+    pub execution_api_url: String,
+    pub execution_api_ca_cert_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -947,6 +1023,12 @@ impl RunnerExecutionConfig {
                     .to_string(),
             );
         }
+        if settings.enabled
+            && (!settings.execution_api_url.starts_with("https://")
+                || url::Url::parse(&settings.execution_api_url).is_err())
+        {
+            return Err("enabled runner execution requires a valid HTTPS execution API URL".into());
+        }
 
         Ok(Self {
             enabled: settings.enabled,
@@ -954,6 +1036,8 @@ impl RunnerExecutionConfig {
             origin_instance_id: settings.origin_id.clone(),
             profiles,
             command_templates,
+            execution_api_url: settings.execution_api_url.clone(),
+            execution_api_ca_cert_file: settings.execution_api_ca_cert_file.clone(),
         })
     }
 }
@@ -985,10 +1069,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        ArtifactSettings, FixedActionSettings, RunnerExecutionConfigFile, RunnerSettings,
-        WorkflowConfigManager, WorkflowConfiguration, compatibility_boolean, range,
-        restart_required_differences, validate_scope_token, validate_timeout_ordering,
-        validate_user_expiry_policy,
+        ArtifactSettings, FixedActionSettings, OperationalStoreProjection,
+        RunnerExecutionConfigFile, RunnerSettings, WorkflowConfigManager, WorkflowConfiguration,
+        compatibility_boolean, range, restart_required_differences, validate_scope_token,
+        validate_timeout_ordering, validate_user_expiry_policy,
     };
     use async_trait::async_trait;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -1001,12 +1085,26 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
     use tokio_util::sync::CancellationToken;
+    use uuid::Uuid;
 
     fn workflow_configuration() -> WorkflowConfiguration {
         WorkflowConfiguration {
             environment: "dev".to_string(),
             http_addr: "0.0.0.0:8436".parse().unwrap(),
             database_url: "postgres://workflow".to_string(),
+            operational_store: OperationalStoreProjection {
+                contract_version: 1,
+                binding_id: Uuid::parse_str("f8a8e4d0-c7cf-4000-b3b0-0044c62d3242").unwrap(),
+                binding_digest: format!("sha256:{}", "a".repeat(64)),
+                host_id: Uuid::parse_str("01964b05-552a-7c4b-9184-6857e7f3dc5f").unwrap(),
+                environment: "dev".into(),
+                service_owner: "light-workflow".into(),
+                schema: "workflow_ops".into(),
+                expected_database: "operations".into(),
+                minimum_schema_generation: 1,
+                credential_generation: 1,
+                database_url_file: "/run/secrets/operational-database-url".into(),
+            },
             database_max_connections: 32,
             invocation_caller_service_ids: vec!["caller-a".to_string()],
             wait_listener_connections: 2,
@@ -1021,6 +1119,8 @@ mod tests {
                 origin_service_id: "workflow".to_string(),
                 origin_id: "workflow-dev".to_string(),
                 config_file: None,
+                execution_api_url: "https://controller:8438/".to_string(),
+                execution_api_ca_cert_file: None,
             },
             artifact: ArtifactSettings {
                 bucket: None,
@@ -1039,6 +1139,7 @@ mod tests {
                 release_token: None,
             },
             agent_provider_base_urls: BTreeMap::new(),
+            a2a_authorization_context_key_file: "/run/secrets/a2a-authorized-context-key".into(),
             security: SecurityConfig {
                 issuer: "https://issuer".to_string(),
                 audience: vec!["workflow".to_string()],
@@ -1292,7 +1393,7 @@ workflow.runner.originId: workflow-dev
         let payload = URL_SAFE_NO_PAD.encode(br#"{"env":"dev","exp":101}"#);
         let values = BTreeMap::from([
             (
-                "DATABASE_URL".to_string(),
+                "WORKFLOW_OPERATIONAL_DATABASE_URL_TEST_ONLY".to_string(),
                 "postgres://workflow:workflow@localhost/workflow".to_string(),
             ),
             (

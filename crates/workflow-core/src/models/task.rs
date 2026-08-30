@@ -852,6 +852,10 @@ impl Default for CallA2aTaskDefinition {
 /// Arguments for an A2A call
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct A2aArguments {
+    /// Stable Portal publication alias. This is the only executable
+    /// destination selector accepted by Light Workflow.
+    #[serde(rename = "agentRef", skip_serializing_if = "Option::is_none")]
+    pub agent_ref: Option<String>,
     /// Agent card reference
     #[serde(rename = "agentCard", skip_serializing_if = "Option::is_none")]
     pub agent_card: Option<ExternalResourceDefinition>,

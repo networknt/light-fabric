@@ -1,4 +1,3 @@
-use execution_security::ProtectedPathPolicy;
 use light_axum::{AxumApp, AxumTransport, ControlRoute, ControlRouteKind, ServerContext};
 use light_runtime::{
     ConfigProvenance, ConfigSource, LifecycleParticipant, LightRuntimeBuilder, ModuleKind,
@@ -15,13 +14,10 @@ use light_workflow::configuration::{
 };
 use light_workflow::consumer::EventConsumer;
 use light_workflow::executor::TaskExecutor;
-use light_workflow::fixed_action::{FixedActionExecutor, HttpFixedActionProvider};
-use light_workflow::lease_reaper::LeaseReaper;
 use light_workflow::result_reconciler::ResultReconciler;
 use light_workflow::rule_api::{WorkflowHealth, build_rule_api_router};
 use light_workflow::runner_scheduler::RunnerScheduler;
 use light_workflow::service_runtime::{ManagedWorkflowTask, WorkflowOperationalMetadata};
-use light_workflow::session_reconciler::ExecutionSessionReconciler;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use std::{
@@ -325,6 +321,14 @@ impl AxumApp for WorkflowApp {
 
         let pool = PgPoolOptions::new()
             .max_connections(workflow_config.database_max_connections)
+            .after_connect(|connection, _| {
+                Box::pin(async move {
+                    sqlx::query("SET search_path TO workflow_ops, operational_meta")
+                        .execute(connection)
+                        .await?;
+                    Ok(())
+                })
+            })
             .connect(&workflow_config.database_url)
             .await
             .map_err(|error| Self::runtime_error("workflow database", error))?;
@@ -332,6 +336,20 @@ impl AxumApp for WorkflowApp {
             .fetch_one(&pool)
             .await
             .map_err(|error| Self::runtime_error("workflow database readiness", error))?;
+        workflow_store::validate(
+            &pool,
+            &workflow_store::ExpectedBinding {
+                binding_id: workflow_config.operational_store.binding_id,
+                binding_digest: &workflow_config.operational_store.binding_digest,
+                host_id: workflow_config.operational_store.host_id,
+                environment: &workflow_config.operational_store.environment,
+                minimum_schema_generation: workflow_config
+                    .operational_store
+                    .minimum_schema_generation,
+            },
+        )
+        .await
+        .map_err(|error| Self::runtime_error("workflow operational-store binding", error))?;
         context
             .lifecycle
             .register(Arc::new(WorkflowDatabase(pool.clone())))?;
@@ -394,6 +412,7 @@ impl AxumApp for WorkflowApp {
                     workflow_config.service_authorization.clone(),
                     workflow_config.delegation_secret.clone(),
                     workflow_config.agent_provider_base_urls.clone(),
+                    workflow_config.a2a_authorization_context_key_file.clone(),
                     workflow_config.managed,
                 )
                 .map_err(|error| Self::runtime_error("workflow executor", error))?
@@ -456,7 +475,12 @@ impl AxumApp for WorkflowApp {
         )?;
 
         if runner_config.enabled {
-            let scheduler = RunnerScheduler::new(pool.clone(), runner_config.clone());
+            let scheduler = RunnerScheduler::new(
+                pool.clone(),
+                runner_config.clone(),
+                &workflow_config.service_authorization,
+            )
+            .map_err(|error| Self::runtime_error("workflow execution client", error))?;
             self.register_task(
                 &context,
                 "light-workflow-runner-scheduler",
@@ -468,11 +492,12 @@ impl AxumApp for WorkflowApp {
             let reconciler = ResultReconciler::new(
                 pool.clone(),
                 Arc::clone(&executor),
-                runner_config.origin_service_id.clone(),
-                runner_config.origin_instance_id.clone(),
+                &runner_config,
+                &workflow_config.service_authorization,
                 artifact_store.clone(),
                 workflow_config.artifact.retention_days,
-            );
+            )
+            .map_err(|error| Self::runtime_error("workflow execution client", error))?;
             reconciler
                 .run_once()
                 .await
@@ -485,75 +510,14 @@ impl AxumApp for WorkflowApp {
                 move |shutdown| async move { reconciler.run(shutdown).await },
             )?;
 
-            let lease_reaper = LeaseReaper::new(pool.clone());
-            lease_reaper
-                .run_once()
-                .await
-                .map_err(|error| Self::runtime_error("workflow lease recovery", error))?;
-            self.register_task(
-                &context,
-                "light-workflow-lease-reaper",
-                &cancellation,
-                &health,
-                move |shutdown| async move { lease_reaper.run(shutdown).await },
-            )?;
-
-            let session_reconciler = ExecutionSessionReconciler::new(
-                pool.clone(),
-                runner_config.origin_service_id.clone(),
-                runner_config.origin_instance_id.clone(),
-            );
-            session_reconciler
-                .reconcile_once()
-                .await
-                .map_err(|error| Self::runtime_error("workflow session recovery", error))?;
-            self.register_task(
-                &context,
-                "light-workflow-session-reconciler",
-                &cancellation,
-                &health,
-                move |shutdown| async move { session_reconciler.run(shutdown).await },
-            )?;
-
-            let provider = |url: Option<&str>,
-                            token: Option<&str>|
-             -> Result<Option<HttpFixedActionProvider>, RuntimeError> {
-                let Some(url) = url else {
-                    return Ok(None);
-                };
-                let token = token.ok_or_else(|| {
-                    RuntimeError::Unsupported(
-                        "fixed-action provider token is required when its URL is configured"
-                            .to_string(),
-                    )
-                })?;
-                HttpFixedActionProvider::new(url, token.to_string())
-                    .map(Some)
-                    .map_err(|error| Self::runtime_error("fixed-action provider", error))
-            };
-            let repository_provider = provider(
-                workflow_config.fixed_actions.repository_url.as_deref(),
-                workflow_config.fixed_actions.repository_token.as_deref(),
-            )?;
-            let release_provider = provider(
-                workflow_config.fixed_actions.release_url.as_deref(),
-                workflow_config.fixed_actions.release_token.as_deref(),
-            )?;
-            let fixed_actions = FixedActionExecutor::new(
-                pool.clone(),
-                workflow_config.fixed_actions.root.clone(),
-                workflow_config.fixed_actions.artifact_root.clone(),
-                workflow_config.fixed_actions.branch_prefix.clone(),
-                ProtectedPathPolicy::default_deny(),
-            )
-            .with_providers(repository_provider, release_provider);
-            self.register_task(
-                &context,
-                "light-workflow-fixed-actions",
-                &cancellation,
-                &health,
-                move |shutdown| async move { fixed_actions.run(shutdown).await },
-            )?;
+            if workflow_config.fixed_actions.repository_url.is_some()
+                || workflow_config.fixed_actions.release_url.is_some()
+            {
+                return Err(RuntimeError::Unsupported(
+                    "fixed-action providers require a Controller-owned execution worker API; direct Workflow access to execution_ops is forbidden"
+                        .to_string(),
+                ));
+            }
 
             if let Some(store) = artifact_store {
                 let retention = ArtifactRetentionReconciler::new(pool.clone(), store, 100);
@@ -679,14 +643,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 mod tests {
     use super::*;
     use light_security::SecurityConfig;
-    use light_workflow::configuration::{ArtifactSettings, FixedActionSettings, RunnerSettings};
+    use light_workflow::configuration::{
+        ArtifactSettings, FixedActionSettings, OperationalStoreProjection, RunnerSettings,
+    };
     use std::collections::BTreeMap;
+    use uuid::Uuid;
 
     fn workflow_configuration() -> WorkflowConfiguration {
         WorkflowConfiguration {
             environment: "dev".to_string(),
             http_addr: "127.0.0.1:8436".parse().unwrap(),
             database_url: "postgres://workflow".to_string(),
+            operational_store: OperationalStoreProjection {
+                contract_version: 1,
+                binding_id: Uuid::parse_str("f8a8e4d0-c7cf-4000-b3b0-0044c62d3242").unwrap(),
+                binding_digest: format!("sha256:{}", "a".repeat(64)),
+                host_id: Uuid::parse_str("01964b05-552a-7c4b-9184-6857e7f3dc5f").unwrap(),
+                environment: "dev".into(),
+                service_owner: "light-workflow".into(),
+                schema: "workflow_ops".into(),
+                expected_database: "operations".into(),
+                minimum_schema_generation: 1,
+                credential_generation: 1,
+                database_url_file: "/run/secrets/operational-database-url".into(),
+            },
             database_max_connections: 8,
             invocation_caller_service_ids: vec!["gateway".to_string()],
             wait_listener_connections: 4,
@@ -701,6 +681,8 @@ mod tests {
                 origin_service_id: "workflow".to_string(),
                 origin_id: "workflow-dev".to_string(),
                 config_file: None,
+                execution_api_url: "https://controller:8438/".to_string(),
+                execution_api_ca_cert_file: None,
             },
             artifact: ArtifactSettings {
                 bucket: None,
@@ -719,6 +701,7 @@ mod tests {
                 release_token: None,
             },
             agent_provider_base_urls: BTreeMap::new(),
+            a2a_authorization_context_key_file: "/run/secrets/a2a-authorized-context-key".into(),
             security: SecurityConfig {
                 issuer: "issuer".to_string(),
                 audience: vec!["workflow".to_string()],

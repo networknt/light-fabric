@@ -3,6 +3,33 @@
 version = 4
 
 [[package]]
+name = "a2a-core"
+version = "0.2.1"
+dependencies = [
+ "base64",
+ "chrono",
+ "hmac 0.12.1",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "a2a-store"
+version = "0.2.1"
+dependencies = [
+ "a2a-core",
+ "chrono",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -88,6 +115,18 @@ dependencies = [
  "chrono",
  "serde",
  "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "agent-store"
+version = "0.2.1"
+dependencies = [
+ "a2a-core",
+ "chrono",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
  "uuid",
 ]
 
@@ -245,6 +284,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 
 [[package]]
+name = "artifact-store"
+version = "0.2.1"
+dependencies = [
+ "chrono",
+ "serde",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "asn1-rs"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -392,6 +444,20 @@ name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
+
+[[package]]
+name = "audit-store"
+version = "0.2.1"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
 
 [[package]]
 name = "autocfg"
@@ -2000,6 +2066,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "execution-client"
+version = "0.2.1"
+dependencies = [
+ "execution-runner-protocol",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "execution-fixed-action"
 version = "0.2.1"
 dependencies = [
@@ -2036,6 +2115,16 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.18",
  "url",
+ "uuid",
+]
+
+[[package]]
+name = "execution-store"
+version = "0.2.1"
+dependencies = [
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
  "uuid",
 ]
 
@@ -2294,6 +2383,23 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
+]
+
+[[package]]
+name = "gateway-operational-store"
+version = "0.2.1"
+dependencies = [
+ "axum",
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -4323,13 +4429,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "light-a2a"
+version = "0.2.1"
+dependencies = [
+ "a2a-core",
+ "a2a-store",
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "config-embed-build",
+ "config-loader",
+ "light-axum",
+ "light-runtime",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "light-agent"
 version = "0.2.1"
 dependencies = [
+ "a2a-core",
  "agent-core",
  "agent-delegation",
  "agent-materializer",
  "agent-runtime-protocol",
+ "agent-store",
  "anyhow",
  "async-trait",
  "axum",
@@ -4337,6 +4468,7 @@ dependencies = [
  "coding-agent-runtime",
  "config-embed-build",
  "config-loader",
+ "execution-client",
  "execution-runner-protocol",
  "futures-util",
  "hindsight-client",
@@ -4491,6 +4623,7 @@ dependencies = [
  "config-embed-build",
  "config-loader",
  "futures-util",
+ "gateway-operational-store",
  "hex",
  "hmac 0.12.1",
  "http 1.4.0",
@@ -4750,6 +4883,7 @@ dependencies = [
 name = "light-workflow"
 version = "0.2.1"
 dependencies = [
+ "a2a-core",
  "agent-delegation",
  "anyhow",
  "async-trait",
@@ -4758,6 +4892,7 @@ dependencies = [
  "chrono",
  "config-embed-build",
  "config-loader",
+ "execution-client",
  "execution-fixed-action",
  "execution-runner-protocol",
  "execution-security",
@@ -4782,10 +4917,12 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "url",
  "uuid",
  "workflow-core",
  "workflow-invocation-contract",
  "workflow-policy",
+ "workflow-store",
 ]
 
 [[package]]
@@ -5418,6 +5555,15 @@ name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
+
+[[package]]
+name = "operational-store"
+version = "0.2.1"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
+ "uuid",
+]
 
 [[package]]
 name = "option-ext"
@@ -8762,6 +8908,16 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "workflow-store"
+version = "0.2.1"
+dependencies = [
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

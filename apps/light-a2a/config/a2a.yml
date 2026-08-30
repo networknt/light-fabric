@@ -1,0 +1,29 @@
+runtimePolicy:
+  audience: ${runtimePolicy.audience:light-a2a}
+  hostId: ${runtimePolicy.hostId:}
+  environment: ${runtimePolicy.environment:dev}
+  serviceId: ${runtimePolicy.serviceId:com.networknt.light-a2a-1.0.0}
+  instanceId: ${runtimePolicy.instanceId:}
+  contentDigest: ${runtimePolicy.contentDigest:}
+  schemaVersion: ${runtimePolicy.schemaVersion:1}
+  validFrom: ${runtimePolicy.validFrom:1970-01-01T00:00:00Z}
+  refreshAfter: ${runtimePolicy.refreshAfter:1970-01-01T00:00:00Z}
+  expiresAt: ${runtimePolicy.expiresAt:9999-12-31T23:59:59Z}
+  revocationEpoch: ${runtimePolicy.revocationEpoch:0}
+  compatibilityGeneration: ${runtimePolicy.compatibilityGeneration:1}
+operationalStore:
+  contractVersion: ${operationalStore.contractVersion:1}
+  bindingId: ${operationalStore.bindingId:}
+  bindingDigest: ${operationalStore.bindingDigest:}
+  hostId: ${operationalStore.hostId:}
+  environment: ${operationalStore.environment:dev}
+  serviceOwner: ${operationalStore.serviceOwner:light-a2a}
+  schema: ${operationalStore.schema:a2a_ops}
+  expectedDatabase: ${operationalStore.expectedDatabase:operations}
+  minimumSchemaGeneration: ${operationalStore.minimumSchemaGeneration:1}
+  databaseUrlFile: ${operationalStore.databaseUrlFile:/run/secrets/operational-database-url}
+  credentialGeneration: ${operationalStore.credentialGeneration:1}
+authorizationContextKeyFile: ${a2aPolicy.authorizationContextKeyFile:/run/secrets/a2a-authorized-context-key}
+maximumDatabaseConnections: ${a2aPolicy.maximumDatabaseConnections:16}
+maximumRequestBytes: ${a2aPolicy.maximumRequestBytes:1048576}
+bindings: ${a2aPolicy.bindings:[]}

@@ -1,13 +1,13 @@
 use crate::command_template::resolve_run_shell_spec;
 use crate::configuration::RunnerExecutionConfig;
-use crate::repositories::{NewSchedulingRequest, WorkflowRepository};
-use chrono::{Duration as ChronoDuration, Utc};
-use execution_runner_protocol::SchedulingRequestId;
+use crate::repositories::WorkflowRepository;
+use execution_client::ExecutionClient;
+use execution_runner_protocol::{SchedulingRequestSubmission, canonical_sha256};
 use serde_json::Value;
 use sqlx::{PgPool, Postgres, Transaction};
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use uuid::Uuid;
 use workflow_policy::ResolvedExecutionPolicy;
 
@@ -21,20 +21,40 @@ struct PendingRunnerTask {
     task_policy_digest: String,
     resolved_policy: Value,
     definition_snapshot: Value,
+    definition_digest: String,
     wf_task_id: String,
 }
 
 pub struct RunnerScheduler {
     repository: WorkflowRepository,
     config: RunnerExecutionConfig,
+    execution: ExecutionClient,
 }
 
 impl RunnerScheduler {
-    pub fn new(pool: PgPool, config: RunnerExecutionConfig) -> Self {
-        Self {
+    pub fn new(
+        pool: PgPool,
+        config: RunnerExecutionConfig,
+        bearer_token: &str,
+    ) -> Result<Self, String> {
+        let ca = config
+            .execution_api_ca_cert_file
+            .as_ref()
+            .map(std::fs::read)
+            .transpose()
+            .map_err(|error| format!("cannot read execution API CA certificate: {error}"))?;
+        let execution = ExecutionClient::new_with_bearer_token(
+            &config.execution_api_url,
+            bearer_token,
+            Duration::from_secs(10),
+            ca.as_deref(),
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(Self {
             repository: WorkflowRepository::new(pool),
             config,
-        }
+            execution,
+        })
     }
 
     pub async fn run(
@@ -59,9 +79,7 @@ impl RunnerScheduler {
         if !self.config.enabled {
             return Ok(false);
         }
-        let requested = self.create_pending_request().await?;
-        let attempted = self.consume_reservation().await?;
-        Ok(requested || attempted)
+        self.create_pending_request().await
     }
 
     async fn create_pending_request(&self) -> Result<bool, sqlx::Error> {
@@ -71,8 +89,9 @@ impl RunnerScheduler {
             tx.commit().await?;
             return Ok(false);
         };
-        let policy = serde_json::from_value::<ResolvedExecutionPolicy>(task.resolved_policy)
-            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+        let policy =
+            serde_json::from_value::<ResolvedExecutionPolicy>(task.resolved_policy.clone())
+                .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
         if policy.policy_digest != task.task_policy_digest {
             return Err(sqlx::Error::Protocol(format!(
                 "task {} policy digest does not match immutable snapshot",
@@ -94,72 +113,79 @@ impl RunnerScheduler {
         let execution_spec = serde_json::to_value(execution_spec)
             .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
         let fairness_key = format!("{}:{}", task.host_id, task.process_id);
-        let request_id = WorkflowRepository::create_scheduling_request(
-            &mut tx,
-            &NewSchedulingRequest {
-                host_id: task.host_id,
-                request_id: SchedulingRequestId::new(),
-                origin_service_id: &self.config.origin_service_id,
-                origin_instance_id: &self.config.origin_instance_id,
-                process_id: task.process_id,
-                task_id: task.task_id,
-                policy_snapshot_id: task.policy_snapshot_id,
-                policy_digest: &task.task_policy_digest,
-                requirements: &requirements,
-                execution_spec: &execution_spec,
-                fairness_key: &fairness_key,
-                priority: task.priority,
-            },
-        )
-        .await?;
         tx.commit().await?;
+        let request_id = task.task_id;
+        let workflow_reference_digest = format!(
+            "sha256:{}",
+            canonical_sha256(&(
+                task.host_id,
+                task.process_id,
+                task.task_id,
+                task.definition_digest.as_str(),
+                task.task_policy_digest.as_str(),
+            ))
+            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?
+        );
+        let submitted = self
+            .execution
+            .submit_request(&SchedulingRequestSubmission {
+                request_id,
+                idempotency_key: format!("workflow-task:{}", task.task_id),
+                origin_kind: "workflow".to_string(),
+                origin_instance_id: self.config.origin_instance_id.clone(),
+                subject_kind: "workflow-task".to_string(),
+                subject_id: task.task_id,
+                process_id: Some(task.process_id),
+                task_id: Some(task.task_id),
+                agent_session_id: None,
+                agent_turn_id: None,
+                agent_action_id: None,
+                policy_snapshot_id: task.policy_snapshot_id,
+                policy_digest: task.task_policy_digest.clone(),
+                normalized_requirements: serde_json::to_value(requirements)
+                    .map_err(|error| sqlx::Error::Protocol(error.to_string()))?,
+                execution_spec,
+                resolved_policy: task.resolved_policy,
+                definition_digest: task.definition_digest,
+                fairness_key,
+                priority: task.priority,
+                workflow_reference_digest: Some(workflow_reference_digest.clone()),
+                origin_reference_digest: workflow_reference_digest,
+                approval_id: None,
+                approval_evidence_digest: None,
+                pinned_runner_id: None,
+                pinned_backend_id: None,
+                edge_binding_id: None,
+                edge_binding_compatibility_digest: None,
+                edge_binding_revocation_epoch: None,
+                inputs: Vec::new(),
+            })
+            .await
+            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+        if submitted != request_id {
+            return Err(sqlx::Error::Protocol(
+                "execution authority returned another scheduling request ID".to_string(),
+            ));
+        }
+        let updated = sqlx::query(
+            "UPDATE task_info_t SET scheduling_request_id=$1,update_ts=CURRENT_TIMESTAMP
+             WHERE host_id=$2 AND task_id=$3 AND execution_placement='runner'
+               AND scheduling_request_id IS NULL",
+        )
+        .bind(request_id)
+        .bind(task.host_id)
+        .bind(task.task_id)
+        .execute(self.repository.pool())
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err(sqlx::Error::Protocol(
+                "workflow task lost its execution scheduling claim".to_string(),
+            ));
+        }
         info!(
             request_id = %request_id,
             task_id = %task.task_id,
             "created durable runner scheduling request"
-        );
-        Ok(true)
-    }
-
-    async fn consume_reservation(&self) -> Result<bool, sqlx::Error> {
-        let mut tx = self.repository.pool().begin().await?;
-        let request =
-            WorkflowRepository::claim_reserved_request(&mut tx, &self.config.origin_service_id)
-                .await?;
-        let Some(request) = request else {
-            tx.commit().await?;
-            return Ok(false);
-        };
-        let token = request.reservation_token_hash.clone();
-        let task_deadline: Option<chrono::DateTime<Utc>> = sqlx::query_scalar(
-            "SELECT deadline_ts FROM task_info_t WHERE host_id = $1 AND task_id = $2",
-        )
-        .bind(request.host_id)
-        .bind(request.task_id)
-        .fetch_one(&mut *tx)
-        .await?;
-        let maximum_deadline = Utc::now() + ChronoDuration::minutes(5);
-        let lease_deadline = task_deadline
-            .map(|deadline| deadline.min(maximum_deadline))
-            .unwrap_or(maximum_deadline);
-        let attempt = WorkflowRepository::create_attempt_from_reservation(
-            &mut tx,
-            &request,
-            &token,
-            lease_deadline,
-        )
-        .await?;
-        let Some((execution_id, lease_id, fencing_token)) = attempt else {
-            warn!(request_id = %request.request_id, "reservation was no longer consumable");
-            tx.rollback().await?;
-            return Ok(false);
-        };
-        tx.commit().await?;
-        info!(
-            execution_id = %execution_id,
-            lease_id = %lease_id,
-            fencing_token,
-            "created fenced execution attempt"
         );
         Ok(true)
     }
@@ -171,7 +197,7 @@ async fn claim_unscheduled_runner_task(
     sqlx::query_as::<_, PendingRunnerTask>(
         "SELECT t.host_id, t.task_id, t.process_id, t.priority,
                 p.policy_snapshot_id, t.task_policy_digest, p.resolved_policy,
-                pi.definition_snapshot, t.wf_task_id
+                pi.definition_snapshot, pi.definition_digest, t.wf_task_id
          FROM task_info_t t
          JOIN process_info_t pi
            ON pi.host_id = t.host_id AND pi.process_id = t.process_id

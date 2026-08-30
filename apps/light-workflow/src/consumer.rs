@@ -131,10 +131,25 @@ fn validate_runtime_task(
                     "task '{task_name}' uses call openapi, which is not implemented by light-workflow"
                 ));
             }
-            CallTaskDefinition::A2a(_) => {
-                return Err(format!(
-                    "task '{task_name}' uses call a2a, which is not implemented by light-workflow"
-                ));
+            CallTaskDefinition::A2a(call) => {
+                let agent_ref = call.with.agent_ref.as_deref().map(str::trim);
+                if agent_ref.is_none_or(str::is_empty)
+                    || call.with.agent_card.is_some()
+                    || call.with.server.is_some()
+                {
+                    return Err(format!(
+                        "task '{task_name}' must use only stable with.agentRef; legacy agentCard/server destinations are non-executable"
+                    ));
+                }
+                if !matches!(
+                    call.with.method.as_str(),
+                    "message/send" | "message/stream" | "tasks/get" | "tasks/cancel"
+                ) {
+                    return Err(format!(
+                        "task '{task_name}' uses unsupported A2A method '{}'",
+                        call.with.method
+                    ));
+                }
             }
             CallTaskDefinition::Function(_) => {
                 return Err(format!(
@@ -276,6 +291,7 @@ impl EventConsumer {
             TaskDefinition::Switch(_) => Ok(TaskKind::Switch),
             TaskDefinition::Call(call) => match call {
                 CallTaskDefinition::Agent(_) => Ok(TaskKind::CallAgent),
+                CallTaskDefinition::A2a(_) => Ok(TaskKind::CallA2a),
                 CallTaskDefinition::Mcp(_) => Ok(TaskKind::CallMcp),
                 _ => Ok(TaskKind::CallHttp),
             },
@@ -1022,6 +1038,46 @@ mod tests {
             validate_runtime_definition(&stdio, DEFAULT_MAXIMUM_PARALLELISM)
                 .unwrap_err()
                 .contains("MCP stdio")
+        );
+    }
+
+    #[test]
+    fn runtime_definition_accepts_governed_a2a_alias_and_rejects_raw_destinations() {
+        let governed: WorkflowDefinition = serde_yaml::from_str(
+            r#"
+document: { dsl: 1.0.3, namespace: test, name: governed-a2a, version: 1.0.0 }
+evaluate: { language: cel }
+do:
+  - invoke:
+      call: a2a
+      with:
+        agentRef: external-account
+        method: message/send
+        parameters: { message: { text: hello } }
+"#,
+        )
+        .unwrap();
+        validate_runtime_definition(&governed, DEFAULT_MAXIMUM_PARALLELISM)
+            .expect("stable A2A publication alias should be executable");
+
+        let legacy: WorkflowDefinition = serde_yaml::from_str(
+            r#"
+document: { dsl: 1.0.3, namespace: test, name: legacy-a2a, version: 1.0.0 }
+evaluate: { language: cel }
+do:
+  - invoke:
+      call: a2a
+      with:
+        agentRef: external-account
+        server: https://untrusted.example/a2a
+        method: message/send
+"#,
+        )
+        .unwrap();
+        assert!(
+            validate_runtime_definition(&legacy, DEFAULT_MAXIMUM_PARALLELISM)
+                .unwrap_err()
+                .contains("legacy agentCard/server destinations are non-executable")
         );
     }
 

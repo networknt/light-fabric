@@ -1,0 +1,30 @@
+[package]
+name = "light-a2a"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Governed A2A external-agent integration runtime"
+
+[dependencies]
+a2a-core = { path = "../../crates/a2a-core" }
+a2a-store = { path = "../../crates/a2a-store" }
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+chrono.workspace = true
+config-loader = { path = "../../crates/config-loader" }
+light-axum = { path = "../../frameworks/light-axum" }
+light-runtime = { path = "../../crates/light-runtime" }
+serde.workspace = true
+serde_json.workspace = true
+sqlx = { version = "0.8", features = ["chrono", "json", "postgres", "runtime-tokio-rustls", "uuid"] }
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tower = { workspace = true, features = ["util"] }
+
+[build-dependencies]
+config-embed-build = { path = "../../crates/config-embed-build" }

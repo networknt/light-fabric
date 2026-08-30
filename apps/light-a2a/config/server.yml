@@ -1,0 +1,12 @@
+ip: 0.0.0.0
+advertisedAddress: ${server.advertisedAddress:light-a2a}
+httpPort: ${server.httpPort:8448}
+enableHttp: true
+httpsPort: 8449
+enableHttps: false
+serviceId: ${server.serviceId:com.networknt.light-a2a-1.0.0}
+enableRegistry: ${server.enableRegistry:false}
+startOnRegistryFailure: ${server.startOnRegistryFailure:false}
+dynamicPort: false
+environment: ${server.environment:dev}
+shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:30000}

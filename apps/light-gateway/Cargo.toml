@@ -6,6 +6,7 @@ license = "Apache-2.0"
 
 [dependencies]
 agent-delegation = { path = "../../crates/agent-delegation" }
+gateway-operational-store = { path = "../../crates/gateway-operational-store" }
 llm-gateway = { path = "../../crates/llm-gateway" }
 light-runtime = { path = "../../crates/light-runtime" }
 light-pingora = { path = "../../frameworks/light-pingora" }

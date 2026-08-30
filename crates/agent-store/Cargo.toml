@@ -1,0 +1,20 @@
+[package]
+name = "agent-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Authoritative PostgreSQL contract and scope validation for Agent and embedded-memory operational state"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+a2a-core = { path = "../a2a-core" }
+chrono.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["chrono", "postgres", "runtime-tokio-rustls", "uuid"] }
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

@@ -4,6 +4,7 @@ use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use chrono::{DateTime, Utc};
+use gateway_operational_store::{EvidenceClass, EvidenceRecord, sha256_digest};
 use light_gateway::model_provider_sidecar;
 use light_pingora::{
     AccessControlRuntime, AccessDecision, ActiveHandlerSet, ApiKeyConfig, AuthPrincipal,
@@ -74,6 +75,8 @@ mod live_validation;
 use live_validation::{
     LiveValidationOptions, live_validation_usage, parse_live_validation_options,
 };
+mod operational_evidence;
+use operational_evidence::{GatewayEvidenceRuntime, load_gateway_evidence_runtime};
 
 mod embedded_config {
     include!(concat!(env!("OUT_DIR"), "/embedded_config.rs"));
@@ -401,6 +404,7 @@ struct GatewayProxy {
     access_control: Arc<ConfigManager<Option<AccessControlRuntime>>>,
     mcp_router: Arc<ConfigManager<Option<McpRouterRuntime>>>,
     websocket_router: Arc<ConfigManager<Option<WebSocketRouterRuntime>>>,
+    gateway_evidence: Option<Arc<GatewayEvidenceRuntime>>,
     llm_gateway: Arc<ArcSwapOption<LlmGatewayModule>>,
     metrics_recorder: Arc<MetricsRecorder>,
     proxy_route: Arc<ConfigManager<Option<ProxyRoute>>>,
@@ -1128,6 +1132,7 @@ impl GatewayProxy {
             active_handlers.is_handler_active("websocket"),
             access_control.clone().map(Arc::new),
         )?;
+        let gateway_evidence = load_gateway_evidence_runtime(config, admission.clone())?;
         let llm_gateway =
             load_llm_gateway_module_at_startup(config, active_handlers.is_handler_active("llm"));
         let router_route = load_router_route(config, active_handlers.is_handler_active("router"))?;
@@ -1491,6 +1496,7 @@ impl GatewayProxy {
             access_control,
             mcp_router,
             websocket_router,
+            gateway_evidence,
             llm_gateway,
             metrics_recorder,
             proxy_route,
@@ -2132,6 +2138,7 @@ impl GatewayProxy {
     }
 
     fn record_metrics(&self, ctx: &mut GatewayRequestContext, status: u16) {
+        ctx.response_status = Some(status);
         if ctx.metrics_recorded || !ctx.metrics_enabled {
             return;
         }
@@ -5163,6 +5170,72 @@ impl ProxyHttp for GatewayProxy {
         if error.is_some() {
             self.record_metrics(ctx, 500);
         }
+        if let Some(runtime) = self.gateway_evidence.as_ref()
+            && !ctx.method.is_empty()
+        {
+            let status = ctx
+                .response_status
+                .or(ctx.upstream_status)
+                .unwrap_or(if error.is_some() { 500 } else { 200 });
+            let event_class = if matches!(status, 401 | 403 | 429) {
+                EvidenceClass::RequiredAudit
+            } else {
+                EvidenceClass::Traffic
+            };
+            let event_type = match status {
+                401 | 403 => "gateway.authorization.denied",
+                429 => "gateway.rate_limited",
+                _ => "gateway.request.completed",
+            };
+            let principal_digest = ctx.auth.as_ref().map(|principal| {
+                sha256_digest(&format!(
+                    "{}|{}|{}|{}",
+                    principal.client_id.as_deref().unwrap_or(""),
+                    principal.user_id.as_deref().unwrap_or(""),
+                    principal.issuer.as_deref().unwrap_or(""),
+                    principal.host.as_deref().unwrap_or("")
+                ))
+            });
+            let policy_digest = ctx
+                .security_execution
+                .as_ref()
+                .map(|snapshot| sha256_digest(&snapshot.generation.to_string()));
+            let handler_digest =
+                (!ctx.handler_ids.is_empty()).then(|| sha256_digest(&ctx.handler_ids.join("|")));
+            let request_bytes = ctx
+                .sidecar_request_bytes
+                .saturating_add(ctx.hmac_verified_body.as_ref().map_or(0, Bytes::len));
+            let record = EvidenceRecord {
+                event_id: uuid::Uuid::now_v7(),
+                event_class,
+                event_type: event_type.to_string(),
+                method: ctx.method.clone(),
+                endpoint: if ctx.endpoint.is_empty() {
+                    "<unmatched>".to_string()
+                } else {
+                    ctx.endpoint.clone()
+                },
+                status_code: status,
+                duration_micros: u64::try_from(ctx.request_start.elapsed().as_micros())
+                    .unwrap_or(u64::MAX),
+                request_bytes: u64::try_from(request_bytes).unwrap_or(u64::MAX),
+                response_bytes: u64::try_from(ctx.sidecar_response_bytes).unwrap_or(u64::MAX),
+                correlation_digest: ctx.correlation.correlation_id.as_deref().map(sha256_digest),
+                principal_digest,
+                policy_digest,
+                handler_digest,
+                occurred_at: Utc::now(),
+            };
+            match runtime.record(&record).await {
+                Ok(gateway_operational_store::AdmissionOutcome::Persisted) => {}
+                Ok(gateway_operational_store::AdmissionOutcome::DroppedOptional) => {
+                    warn!("optional Gateway traffic evidence was dropped at the configured bound");
+                }
+                Err(error) => {
+                    tracing::error!(required = event_class == EvidenceClass::RequiredAudit, error = %error, "Gateway operational evidence admission failed");
+                }
+            }
+        }
         self.log_handler_durations(ctx);
     }
 }
@@ -5212,6 +5285,7 @@ struct GatewayRequestContext {
     sidecar_response_bytes: usize,
     access_control_exchange: Option<AccessControlExchange>,
     upstream_status: Option<u16>,
+    response_status: Option<u16>,
     rate_limit_headers: Option<RateLimitHeaders>,
     extra_response_headers: Vec<(String, String)>,
     metrics_enabled: bool,
@@ -5267,6 +5341,7 @@ impl Default for GatewayRequestContext {
             sidecar_response_bytes: 0,
             access_control_exchange: None,
             upstream_status: None,
+            response_status: None,
             rate_limit_headers: None,
             extra_response_headers: Vec::new(),
             metrics_enabled: false,
@@ -5321,6 +5396,7 @@ impl GatewayRequestContext {
         self.sidecar_response_bytes = 0;
         self.access_control_exchange = None;
         self.upstream_status = None;
+        self.response_status = None;
         self.rate_limit_headers = None;
         self.extra_response_headers.clear();
         self.metrics_enabled = false;

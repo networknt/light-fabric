@@ -6,6 +6,18 @@ execution:
   maximumParallelism: ${workflow.execution.maximumParallelism:64}
   hostExecutorConcurrency: ${workflow.execution.hostExecutorConcurrency:8}
   interactiveEstimatedTaskMs: ${workflow.execution.interactiveEstimatedTaskMs:500}
+operationalStore:
+  contractVersion: ${operationalStore.contractVersion:1}
+  bindingId: ${operationalStore.bindingId:f8a8e4d0-c7cf-4000-b3b0-0044c62d3242}
+  bindingDigest: ${operationalStore.bindingDigest:sha256:45be37b41a916f04308f84170728dd23342a602b81e5c64990c4021359d6fa6e}
+  hostId: ${operationalStore.hostId:01964b05-552a-7c4b-9184-6857e7f3dc5f}
+  environment: ${operationalStore.environment:dev}
+  serviceOwner: ${operationalStore.serviceOwner:light-workflow}
+  schema: ${operationalStore.schema:workflow_ops}
+  expectedDatabase: ${operationalStore.expectedDatabase:operations}
+  minimumSchemaGeneration: ${operationalStore.minimumSchemaGeneration:1}
+  databaseUrlFile: ${operationalStore.databaseUrlFile:/run/secrets/operational-database-url}
+  credentialGeneration: ${operationalStore.credentialGeneration:1}
 database:
   maxConnections: ${workflow.database.maxConnections:32}
 runner:
@@ -13,6 +25,8 @@ runner:
   originServiceId: ${workflow.runner.originServiceId:com.networknt.light-workflow-1.0.0}
   originId: ${workflow.runner.originId:workflow-dev}
   configFile: ${workflow.runner.configFile:}
+  executionApiUrl: ${workflow.runner.executionApiUrl:https://controller:8438/}
+  executionApiCaCertFile: ${workflow.runner.executionApiCaCertFile:}
 artifact:
   s3Bucket: ${workflow.artifact.s3Bucket:}
   s3Endpoint: ${workflow.artifact.s3Endpoint:}
@@ -25,3 +39,5 @@ fixedActions:
   branchPrefix: ${workflow.fixedActions.branchPrefix:agent/}
   repositoryUrl: ${workflow.fixedActions.repositoryUrl:}
   releaseUrl: ${workflow.fixedActions.releaseUrl:}
+a2a:
+  authorizationContextKeyFile: ${workflow.a2a.authorizationContextKeyFile:/run/secrets/a2a-authorized-context-key}

@@ -18,18 +18,20 @@ with `POST /knowledge/upload-delegation`. The returned token is valid only for
 binding, and cannot be used for retrieval. `light-knowledge` still authorizes
 the requested Knowledge Base and active `UPLOAD` source before accepting bytes.
 
-Memory writes use `portal-command` by default so authorization, events, and
-auditing remain in the command boundary. `LIGHT_AGENT_MEMORY_WRITE_MODE=direct-pg`
-is a development compatibility mode and is rejected unless
-`LIGHT_AGENT_ALLOW_DIRECT_PG_MEMORY=true` is also set.
+Memory writes use the embedded Memory API/repository and remain operational
+state in `operations.agent_ops`. Portal-command and direct-Config-Server write
+modes are rejected after the Phase 4 cutover. Portal publishes memory policy
+and hard directives; it is not on the conversation write path.
 
 Apply `portal-db/postgres/patch_20260711_01_light_agent_runtime.sql` after the
 workflow-runner migration before starting this version.
 
 Light Portal publishes one immutable Agent audience projection to Config Server
 for each Agent runtime instance. `agent.yml` is the typed template and the
-current snapshot's `values.yml` supplies its complete `runtimePolicy` and
-`agentPolicy` namespaces. Startup validates the service/environment binding,
+current snapshot's `values.yml` supplies its complete `operationalStore`,
+`runtimePolicy`, and `agentPolicy` namespaces. Startup reads the database URL
+only from the deployment-owned `0400` file, validates the exact
+`operations_agent_runtime` role and `agent_ops` authority, then validates the service/environment binding,
 validity window, policy/content digests, Agent definition/version, policy snapshot,
 model Alias, tools, skills, execution limits, catalog, memory, Knowledge
 bindings, channel, data-boundary, and session policy before accepting work.
@@ -46,10 +48,21 @@ the call to `llm-gateway`; it remains secret bootstrap material and is not
 published inside the immutable Agent projection. Portal controls which Alias
 that workload may use through the corresponding gateway audience policy.
 
-PostgreSQL remains the durable operational store for sessions, turns, actions,
+`operations.agent_ops` is the durable operational store for sessions, turns, actions,
 approvals, immutable pinned-policy copies, quota counters, and audit evidence.
+Light-Agent has no Config Server database credential.
 Resuming a session requires the exact policy snapshot and Agent-definition
 version admitted from Config Server.
+
+Shared runner state is owned by Controller in `operations.execution_ops`, not
+by the Agent database connection. Portal publishes
+`agentPolicy.execution.executionApiUrl`; the existing workload token must
+carry the Agent service ID, exact Host, and `execution.invoke`. Agent commits
+request and cleanup commands to `agent_execution_outbox_t` in the same local
+transaction as its turn/session state, retries that handoff idempotently, and
+acknowledges a terminal Controller result only after its local result
+transaction commits. The outbox moves with Agent state in database-topology
+Phase 4; it is never execution authority.
 
 The process-wide `AgentState` contains only shared infrastructure and caches.
 Provider, model, definition version, policy, data boundary, product profile,
@@ -131,7 +144,7 @@ Personal edge actions require Light Portal to publish
 `agentPolicy.memory.personalProfileDigest`. The typed `edgeAction` contains
 `edgeBindingId`, `action`, `arguments`,
 `schemaDigest`, and an optional `approvalId`. The server revalidates the live
-principal-bound edge runner, exact action schema, effect class, approval, runner
+principal-bound edge runner projection, exact action schema, effect class, approval, runner
 identity, backend identity, and compatibility digest before enqueueing. Direct
 edge turns terminate from the accepted runner result; they do not leave a
 session waiting for a nonexistent in-process model continuation.
@@ -140,8 +153,8 @@ session waiting for a nonexistent in-process model continuation.
 
 Token and cost quotas reserve the admitted turn ceiling transactionally.
 Enterprise model usage is accepted only from the server-owned provider adapter
-and cost is calculated from the immutable `agent_model_rate_t` rate snapshot
-stored on the turn. Runner-backed model usage is accepted only from
+and cost is calculated from the immutable projected model rate pinned on the
+turn. Runner-backed model usage is accepted only from
 runner-journal broker counters copied into terminal evidence; sandbox-provided
 `usage` fields are ignored. Missing or uncertain usage settles at the reserved
 ceiling instead of refunding capacity. Pre-dispatch failures explicitly release
@@ -154,13 +167,14 @@ micro-units per one million input or output tokens and are snapshotted at
 admission so later rate changes cannot alter an in-flight turn.
 
 The immutable projection already reserves
-`agentPolicy.execution.quotaPolicies`, `modelRates`, `servicePools`, and
-`approvalRules`. The current admission implementation still reads those rules
-from PostgreSQL because rule evaluation and transactional usage accounting are
-coupled there. Moving the immutable rule input to `agent.yml` while retaining
-only counters, reservations, sessions, turns, and evidence in PostgreSQL is a
-separate migration; until it is complete, Light-Agent still requires database
-access for these runtime controls.
+`agentPolicy.execution.quotaPolicies`, `modelRates`, `servicePools`,
+`edgeRunnerBindings`, and `approvalRules`. Quota policies, rate cards,
+edge-runner bindings, and service-pool definitions are typed,
+validated inputs from `agent.yml`. Admission pins their versions and digests;
+PostgreSQL retains only accounting windows, reservations, sessions, turns,
+pool occupancy, and reconciliation evidence. Dispatch locks operational
+session/turn rows and never reads or locks Agent control-plane authoring
+tables.
 
 Runtime Config Server/controller activation is also intentionally not enabled
 by this startup slice. A safe reloader must validate the complete candidate,

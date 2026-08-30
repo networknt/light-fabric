@@ -26,6 +26,29 @@ The gateway uses `light-runtime` for config-server bootstrap and controller
 registration. Local defaults are under `config/`; config-server values and files
 are cached into the runtime external config directory before Pingora starts.
 
+## Operational evidence
+
+`gateway-evidence.yml` controls the bounded, metadata-only request evidence
+spool. It is disabled by default. A deployment that enables it must mount the
+permission-restricted `operations_gateway_runtime` URL file and publish the
+exact Host/environment binding ID and digest. The Gateway refuses a different
+database, role, binding, Host, environment, or schema generation.
+
+Authorization denials and rate-limit decisions are required audit evidence;
+ordinary request completion records are optional traffic evidence. When the
+bounded spool is full, optional traffic records are counted and dropped while
+required evidence reports a high-severity failure. Records contain endpoint
+templates, status, duration, byte counts, and one-way digests only. Headers,
+credentials, prompts, request/response bodies, tool arguments, and application
+task/session state are not representable in the record type.
+
+The publisher supports an external HTTP ingestion endpoint and keeps failed
+records durable for retry across Gateway restart. Redirects are disabled so a
+configured sink cannot redirect evidence or its bearer token. The
+`stdout://collector` endpoint is a development-only sink profile; production
+must use an approved tenant telemetry or audit collector. `gateway_ops` is a
+bounded delivery spool, not the long-term traffic warehouse.
+
 ## Docker
 
 Build a local image from the workspace root context:
