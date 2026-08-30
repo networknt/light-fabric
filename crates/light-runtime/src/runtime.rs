@@ -27,7 +27,7 @@ use crate::cache::CacheRegistry;
 use crate::config::{
     BootstrapConfig, ClientConfig, ConfigProvenance, ConfigSource, ControlCandidateConfig,
     DirectRegistryConfig, PortalRegistryConfig, PreparedConfig, RemoteBootstrapResult,
-    RuntimeConfig, ServerConfig, ServiceIdentity, default_accept_header, default_environment,
+    RuntimeConfig, ServerConfig, ServiceIdentity, default_accept_header,
 };
 use crate::lifecycle::{
     AdmissionGate, LifecycleParticipant, LifecycleRegistry, MANDATORY_CLEANUP_FLOOR,
@@ -525,6 +525,7 @@ impl RuntimeConfig {
             source,
             host_id: remote_result.host_id,
             snapshot_id: remote_result.snapshot_id,
+            instance_id: remote_result.instance_id,
             content_digest,
         };
 
@@ -808,6 +809,7 @@ where
         };
         let snapshot_id = remote_result.snapshot_id.clone();
         let host_id = remote_result.host_id.clone();
+        let instance_id = remote_result.instance_id.clone();
         let source_content = remote_result
             .values_yaml
             .clone()
@@ -828,6 +830,7 @@ where
                 source,
                 host_id,
                 snapshot_id,
+                instance_id,
                 content_digest,
             },
         })
@@ -1340,10 +1343,10 @@ async fn fetch_remote_bootstrap_if_needed(
 
     fs::create_dir_all(external_config_dir)?;
     let client = build_config_server_client(bootstrap, client_config)?;
-    let query = build_query_params(bootstrap);
+    let query = build_query_params(bootstrap)?;
 
     match fetch_remote_values(&client, config_server_uri, &query, bootstrap).await {
-        Ok((values_yaml, host_id, snapshot_id, content_digest)) => {
+        Ok((values_yaml, host_id, snapshot_id, instance_id, content_digest)) => {
             let values_path = external_config_dir.join(VALUES_FILE);
             atomic_cache_write(&values_path, values_yaml.as_bytes())?;
 
@@ -1352,6 +1355,7 @@ async fn fetch_remote_bootstrap_if_needed(
                 cached_files: vec![values_path],
                 host_id,
                 snapshot_id,
+                instance_id,
                 content_digest,
             };
 
@@ -1537,22 +1541,28 @@ fn read_portal_registry_ca_certificate(
     Ok(Some((path, certificate)))
 }
 
-fn build_query_params(bootstrap: &BootstrapConfig) -> Vec<(String, String)> {
-    let mut params = Vec::new();
-    params.push(("host".to_string(), bootstrap.host.clone()));
+fn build_query_params(bootstrap: &BootstrapConfig) -> Result<Vec<(String, String)>, RuntimeError> {
+    let host = non_empty_bootstrap_identity("host", Some(&bootstrap.host))?;
+    let service_id = non_empty_bootstrap_identity("serviceId", bootstrap.service_id.as_deref())?;
+    let env_tag = non_empty_bootstrap_identity("envTag", bootstrap.env_tag.as_deref())?;
 
-    if let Some(value) = &bootstrap.service_id {
-        params.push(("serviceId".to_string(), value.clone()));
-    }
+    Ok(vec![
+        ("host".to_string(), host.to_string()),
+        ("serviceId".to_string(), service_id.to_string()),
+        ("envTag".to_string(), env_tag.to_string()),
+    ])
+}
 
-    params.push((
-        "envTag".to_string(),
-        bootstrap
-            .env_tag
-            .clone()
-            .unwrap_or_else(default_environment),
-    ));
-    params
+fn non_empty_bootstrap_identity<'a>(
+    name: &str,
+    value: Option<&'a str>,
+) -> Result<&'a str, RuntimeError> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            RuntimeError::Config(format!("startup.{name} is required for Config Server"))
+        })
 }
 
 async fn fetch_remote_values(
@@ -1560,7 +1570,16 @@ async fn fetch_remote_values(
     config_server_uri: &str,
     query: &[(String, String)],
     bootstrap: &BootstrapConfig,
-) -> Result<(String, Option<String>, Option<String>, Option<String>), RuntimeError> {
+) -> Result<
+    (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ),
+    RuntimeError,
+> {
     let response = client
         .get(format!(
             "{config_server_uri}{CONFIG_SERVER_CONFIGS_CONTEXT_ROOT}"
@@ -1577,6 +1596,7 @@ async fn fetch_remote_values(
     let response = response.error_for_status()?;
     let host_id = response_header(&response, "x-light-config-host-id");
     let snapshot_id = response_header(&response, "x-light-config-snapshot-id");
+    let instance_id = response_header(&response, "x-light-config-instance-id");
     let advertised_digest = response_header(&response, "x-light-config-content-digest");
     let content_type = response
         .headers()
@@ -1596,12 +1616,12 @@ async fn fetch_remote_values(
 
     if content_type.starts_with("application/yaml") || content_type.starts_with("text/yaml") {
         let digest = format!("{:x}", Sha256::digest(body.as_bytes()));
-        Ok((body, host_id, snapshot_id, Some(digest)))
+        Ok((body, host_id, snapshot_id, instance_id, Some(digest)))
     } else if content_type.starts_with("application/json") {
         let json: serde_json::Value = serde_json::from_str(&body)?;
         let yaml = serde_yaml::to_string(&json)?;
         let digest = format!("{:x}", Sha256::digest(yaml.as_bytes()));
-        Ok((yaml, host_id, snapshot_id, Some(digest)))
+        Ok((yaml, host_id, snapshot_id, instance_id, Some(digest)))
     } else {
         Err(RuntimeError::Unsupported(format!(
             "unsupported config server content type `{content_type}`"
@@ -2332,7 +2352,7 @@ controlCandidates:
             ..BootstrapConfig::default()
         };
 
-        let query = build_query_params(&bootstrap);
+        let query = build_query_params(&bootstrap).expect("build config query");
         assert!(query.contains(&("host".to_string(), "lightapi.net".to_string())));
         assert!(query.contains(&(
             "serviceId".to_string(),
@@ -2349,6 +2369,45 @@ controlCandidates:
         ] {
             assert!(query.iter().all(|(name, _)| name != obsolete));
         }
+    }
+
+    #[test]
+    fn config_server_query_rejects_missing_identity_locally() {
+        let missing_host = BootstrapConfig {
+            service_id: Some("com.networknt.petstore-1.0.0".to_string()),
+            env_tag: Some("dev".to_string()),
+            ..BootstrapConfig::default()
+        };
+        assert!(
+            build_query_params(&missing_host)
+                .expect_err("host must be required")
+                .to_string()
+                .contains("startup.host is required")
+        );
+
+        let missing_service = BootstrapConfig {
+            host: "lightapi.net".to_string(),
+            env_tag: Some("dev".to_string()),
+            ..BootstrapConfig::default()
+        };
+        assert!(
+            build_query_params(&missing_service)
+                .expect_err("serviceId must be required")
+                .to_string()
+                .contains("startup.serviceId is required")
+        );
+
+        let missing_environment = BootstrapConfig {
+            host: "lightapi.net".to_string(),
+            service_id: Some("com.networknt.petstore-1.0.0".to_string()),
+            ..BootstrapConfig::default()
+        };
+        assert!(
+            build_query_params(&missing_environment)
+                .expect_err("envTag must be required")
+                .to_string()
+                .contains("startup.envTag is required")
+        );
     }
 
     #[test]
@@ -2772,6 +2831,7 @@ shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
         write_server_template(config_dir.path());
         let runtime_config = RuntimeConfig {
             bootstrap: BootstrapConfig {
+                host: "lightapi.net".to_string(),
                 config_server_uri: Some(format!("http://{addr}")),
                 authorization: Some("Bearer token".to_string()),
                 service_id: Some("com.networknt.bootstrap-3.1.4".to_string()),
@@ -2869,7 +2929,10 @@ shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
         )
         .expect("write cached values");
         let bootstrap = BootstrapConfig {
+            host: "lightapi.net".to_string(),
             config_server_uri: Some(format!("http://{addr}")),
+            service_id: Some("com.networknt.cached-1.0.0".to_string()),
+            env_tag: Some("dev".to_string()),
             accept_header: default_accept_header(),
             timeout: crate::config::default_timeout_ms(),
             connect_timeout: crate::config::default_connect_timeout_ms(),
@@ -2901,7 +2964,10 @@ shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
         )
         .expect("write cached values");
         let bootstrap = BootstrapConfig {
+            host: "lightapi.net".to_string(),
             config_server_uri: Some(format!("http://{addr}")),
+            service_id: Some("com.networknt.cached-1.0.0".to_string()),
+            env_tag: Some("dev".to_string()),
             accept_header: default_accept_header(),
             timeout: crate::config::default_timeout_ms(),
             connect_timeout: crate::config::default_connect_timeout_ms(),
@@ -2948,7 +3014,9 @@ shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
         let external_dir = TempDir::new().expect("external config temp dir");
         fs::write(
             config_dir.path().join(STARTUP_FILE),
-            format!("configServerUri: http://{addr}\ntimeout: 100\nconnectTimeout: 100\n"),
+            format!(
+                "host: lightapi.net\nserviceId: com.networknt.local-1.0.0\nenvTag: dev\nconfigServerUri: http://{addr}\ntimeout: 100\nconnectTimeout: 100\n"
+            ),
         )
         .expect("write startup config");
         write_server_template(config_dir.path());
@@ -3095,7 +3163,10 @@ shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}
 
         let external_dir = TempDir::new().expect("external temp dir");
         let bootstrap = BootstrapConfig {
+            host: "lightapi.net".to_string(),
             config_server_uri: Some(format!("http://{addr}")),
+            service_id: Some("com.networknt.reference-1.0.0".to_string()),
+            env_tag: Some("dev".to_string()),
             accept_header: default_accept_header(),
             timeout: crate::config::default_timeout_ms(),
             connect_timeout: crate::config::default_connect_timeout_ms(),

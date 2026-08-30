@@ -205,6 +205,8 @@ pub struct RemoteBootstrapResult {
     pub cached_files: Vec<PathBuf>,
     pub host_id: Option<String>,
     pub snapshot_id: Option<String>,
+    /// Transitional Config Server metadata. Never use this value as workload identity.
+    pub instance_id: Option<String>,
     pub content_digest: Option<String>,
 }
 
@@ -220,6 +222,8 @@ pub struct ConfigProvenance {
     pub source: ConfigSource,
     pub host_id: Option<String>,
     pub snapshot_id: Option<String>,
+    /// Transitional Config Server metadata retained for LKG compatibility.
+    pub instance_id: Option<String>,
     pub content_digest: String,
 }
 
