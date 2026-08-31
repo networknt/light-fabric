@@ -1,0 +1,10 @@
+{
+  "name": "@networknt/light-a2a-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.js",
+  "types": "src/index.d.ts",
+  "engines": {"node": ">=20"},
+  "license": "Apache-2.0",
+  "scripts": {"test": "node --test test/*.test.js"}
+}

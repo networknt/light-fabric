@@ -49,6 +49,7 @@ jsonschema = { version = "=0.48.0", default-features = false }
 parking_lot = "0.12"
 tower = { version = "0.5", features = ["util"] }
 bytes = "1"
+base64 = "0.22"
 rkyv = { version = "=0.8.12", default-features = false, features = ["std", "bytecheck", "little_endian", "aligned", "pointer_width_32", "uuid-1"] }
 
 [profile.release]

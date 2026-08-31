@@ -1,9 +1,5 @@
 host: ${startup.host:dev.lightapi.net}
 serviceId: ${server.serviceId:com.networknt.agent.account-1.0.0}
-productId: ${startup.productId:null}
-productVersion: ${startup.productVersion:null}
-apiId: ${startup.apiId:null}
-apiVersion: ${startup.apiVersion:null}
 envTag: ${server.environment:dev}
 acceptHeader: ${startup.acceptHeader:application/yaml}
 timeout: ${startup.timeout:3000}

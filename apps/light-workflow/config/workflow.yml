@@ -41,3 +41,4 @@ fixedActions:
   releaseUrl: ${workflow.fixedActions.releaseUrl:}
 a2a:
   authorizationContextKeyFile: ${workflow.a2a.authorizationContextKeyFile:/run/secrets/a2a-authorized-context-key}
+  bindings: ${workflow.a2a.bindings:[]}

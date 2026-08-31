@@ -1,6 +1,9 @@
 //! Durable task facade for external business agents and remote A2A servers.
 
-use a2a_core::{A2aError, AuthorizedInvocation, Direction, TaskSnapshot, TaskState};
+use a2a_core::{
+    A2aError, ArtifactDescriptor, ArtifactVisibility, AuthorizedInvocation, Direction,
+    TaskSnapshot, TaskState, canonical_projection_digest,
+};
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -12,8 +15,14 @@ pub const EXPECTED_SCHEMA: &str = "a2a_ops";
 pub const EXPECTED_RUNTIME_ROLE: &str = "operations_a2a_runtime";
 pub const DEFAULT_DATABASE_URL_FILE: &str = "/run/secrets/operational-database-url";
 pub const MIGRATION_ID: &str = "0001_external_a2a_durability";
+pub const PHASE3_MIGRATION_ID: &str = "0002_backend_skill_correlation";
+pub const PHASE6_MIGRATION_ID: &str = "0003_governed_push_delivery";
 pub const MIGRATION_SQL: &str =
     include_str!("../migrations/a2a-postgres/0001_external_a2a_durability.sql");
+pub const PHASE3_MIGRATION_SQL: &str =
+    include_str!("../migrations/a2a-postgres/0002_backend_skill_correlation.sql");
+pub const PHASE6_MIGRATION_SQL: &str =
+    include_str!("../migrations/a2a-postgres/0003_governed_push_delivery.sql");
 pub const AUTHORITY_TABLES: &[&str] = &[
     "a2a_context_t",
     "a2a_task_t",
@@ -24,6 +33,8 @@ pub const AUTHORITY_TABLES: &[&str] = &[
     "a2a_task_event_t",
     "a2a_audit_outbox_t",
     "a2a_delegation_replay_t",
+    "a2a_push_config_t",
+    "a2a_push_delivery_t",
 ];
 
 #[derive(Debug, Clone)]
@@ -53,6 +64,17 @@ pub struct TaskAccess<'a> {
 }
 
 #[derive(Debug, Clone)]
+pub struct TaskScope<'a> {
+    pub host_id: Uuid,
+    pub principal_subject: &'a str,
+    pub caller_agent_ref: &'a str,
+    pub target_agent_ref: &'a str,
+    pub binding_id: Uuid,
+    pub context_id: Option<Uuid>,
+    pub maximum_results: i64,
+}
+
+#[derive(Debug, Clone)]
 pub struct ArtifactMetadata<'a> {
     pub artifact_id: Uuid,
     pub logical_name: &'a str,
@@ -62,6 +84,62 @@ pub struct ArtifactMetadata<'a> {
     pub object_reference: &'a str,
     pub visibility: &'a str,
     pub retain_until: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OwnedArtifact {
+    pub artifact_id: Uuid,
+    pub task_id: Uuid,
+    pub content_digest: String,
+    pub object_reference: String,
+    pub retain_until: DateTime<Utc>,
+    pub legal_hold: bool,
+    pub deletion_state: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExpiredArtifactCandidate {
+    pub artifact_id: Uuid,
+    pub task_id: Uuid,
+    pub principal_subject: String,
+    pub caller_agent_ref: String,
+    pub target_agent_ref: String,
+    pub binding_id: Uuid,
+}
+
+#[derive(Debug, Clone)]
+pub struct BackendTaskBinding {
+    pub context_id: Uuid,
+    pub idempotency_key: String,
+    pub backend_kind: String,
+    pub backend_binding_id: Uuid,
+    pub backend_operation_id: String,
+    pub selected_skill_id: Option<String>,
+    pub remote_task_id: Option<String>,
+    pub remote_context_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PushConfig {
+    pub config_id: Uuid,
+    pub task_id: Uuid,
+    pub callback_registration_id: Uuid,
+    pub callback_url_digest: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PushDelivery {
+    pub delivery_id: Uuid,
+    pub config_id: Uuid,
+    pub task_id: Uuid,
+    pub callback_registration_id: Uuid,
+    pub binding_id: Uuid,
+    pub delivery_nonce: Uuid,
+    pub payload: Value,
+    pub payload_digest: String,
+    pub attempt: i64,
+    pub maximum_attempts: i64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -86,6 +164,45 @@ impl Repository {
 
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    pub async fn expired_artifacts(
+        &self,
+        host_id: Uuid,
+        now: DateTime<Utc>,
+        maximum_results: i64,
+    ) -> Result<Vec<ExpiredArtifactCandidate>, StoreError> {
+        if !(1..=100).contains(&maximum_results) {
+            return Err(StoreError::Scope(
+                "invalid artifact retention batch size".into(),
+            ));
+        }
+        let rows = sqlx::query(
+            "SELECT a.artifact_id,a.task_id,t.principal_subject,t.caller_agent_ref,
+                    t.target_agent_ref,t.binding_id
+               FROM a2a_artifact_t a
+               JOIN a2a_task_t t ON t.host_id=a.host_id AND t.task_id=a.task_id
+              WHERE a.host_id=$1 AND a.retain_until_ts<=$2 AND NOT a.legal_hold
+                AND a.deletion_state='RETAINED'
+              ORDER BY a.retain_until_ts,a.artifact_id LIMIT $3",
+        )
+        .bind(host_id)
+        .bind(now)
+        .bind(maximum_results)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(ExpiredArtifactCandidate {
+                    artifact_id: row.try_get("artifact_id")?,
+                    task_id: row.try_get("task_id")?,
+                    principal_subject: row.try_get("principal_subject")?,
+                    caller_agent_ref: row.try_get("caller_agent_ref")?,
+                    target_agent_ref: row.try_get("target_agent_ref")?,
+                    binding_id: row.try_get("binding_id")?,
+                })
+            })
+            .collect()
     }
 
     pub async fn admit(&self, admission: &TaskAdmission) -> Result<TaskSnapshot, StoreError> {
@@ -195,7 +312,42 @@ impl Repository {
 
     pub async fn get(&self, access: &TaskAccess<'_>) -> Result<TaskSnapshot, StoreError> {
         let row = self.owned_task(access, false).await?;
-        snapshot_from_row(&row)
+        let mut snapshot = snapshot_from_row(&row)?;
+        snapshot.artifacts = load_artifacts(&self.pool, access.host_id, access.task_id).await?;
+        Ok(snapshot)
+    }
+
+    pub async fn list(&self, scope: &TaskScope<'_>) -> Result<Vec<TaskSnapshot>, StoreError> {
+        if !(1..=100).contains(&scope.maximum_results) {
+            return Err(StoreError::Scope(
+                "task list maximumResults must be between 1 and 100".into(),
+            ));
+        }
+        let rows = sqlx::query(
+            "SELECT task_id,context_id,state,direction,target_agent_ref,result,error
+               FROM a2a_task_t
+              WHERE host_id=$1 AND principal_subject=$2 AND caller_agent_ref=$3
+                AND target_agent_ref=$4 AND binding_id=$5
+                AND ($6::uuid IS NULL OR context_id=$6)
+              ORDER BY created_ts DESC,task_id DESC LIMIT $7",
+        )
+        .bind(scope.host_id)
+        .bind(scope.principal_subject)
+        .bind(scope.caller_agent_ref)
+        .bind(scope.target_agent_ref)
+        .bind(scope.binding_id)
+        .bind(scope.context_id)
+        .bind(scope.maximum_results)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut snapshots = Vec::with_capacity(rows.len());
+        for row in rows {
+            let task_id: Uuid = row.try_get("task_id")?;
+            let mut snapshot = snapshot_from_row(&row)?;
+            snapshot.artifacts = load_artifacts(&self.pool, scope.host_id, task_id).await?;
+            snapshots.push(snapshot);
+        }
+        Ok(snapshots)
     }
 
     pub async fn cancel(&self, access: &TaskAccess<'_>) -> Result<TaskSnapshot, StoreError> {
@@ -234,22 +386,119 @@ impl Repository {
         backend_kind: &str,
         backend_binding_id: Uuid,
         correlation_id: &str,
+        selected_skill_id: Option<&str>,
     ) -> Result<(), StoreError> {
         self.owned_task(access, false).await?;
         sqlx::query(
             "INSERT INTO a2a_backend_correlation_t(host_id,task_id,backend_kind,backend_binding_id,
-               opaque_correlation_id) VALUES($1,$2,$3,$4,$5)
+               opaque_correlation_id,selected_skill_id) VALUES($1,$2,$3,$4,$5,$6)
              ON CONFLICT(host_id,task_id) DO UPDATE SET
-               opaque_correlation_id=EXCLUDED.opaque_correlation_id,updated_ts=now()",
+               opaque_correlation_id=EXCLUDED.opaque_correlation_id,
+               selected_skill_id=COALESCE(EXCLUDED.selected_skill_id,a2a_backend_correlation_t.selected_skill_id),
+               updated_ts=now()",
         )
         .bind(access.host_id)
         .bind(access.task_id)
         .bind(backend_kind)
         .bind(backend_binding_id)
         .bind(correlation_id)
+        .bind(selected_skill_id)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub async fn bind_remote_task(
+        &self,
+        access: &TaskAccess<'_>,
+        backend_binding_id: Uuid,
+        remote_task_id: &str,
+        remote_context_id: Option<&str>,
+        selected_skill_id: Option<&str>,
+    ) -> Result<(), StoreError> {
+        if remote_task_id.is_empty()
+            || remote_task_id.len() > 512
+            || remote_context_id.is_some_and(|value| value.is_empty() || value.len() > 512)
+        {
+            return Err(StoreError::Scope(
+                "remote A2A task or context identity is invalid".into(),
+            ));
+        }
+        let mut tx = self.pool.begin().await?;
+        owned_task_in(&mut tx, access, true).await?;
+        sqlx::query(
+            "UPDATE a2a_task_t SET remote_task_id=$3,remote_context_id=$4,updated_ts=now()
+              WHERE host_id=$1 AND task_id=$2",
+        )
+        .bind(access.host_id)
+        .bind(access.task_id)
+        .bind(remote_task_id)
+        .bind(remote_context_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO a2a_backend_correlation_t(host_id,task_id,backend_kind,backend_binding_id,
+               opaque_correlation_id,selected_skill_id) VALUES($1,$2,'REMOTE_A2A',$3,$4,$5)
+             ON CONFLICT(host_id,task_id) DO UPDATE SET
+               backend_kind='REMOTE_A2A',backend_binding_id=EXCLUDED.backend_binding_id,
+               opaque_correlation_id=EXCLUDED.opaque_correlation_id,
+               selected_skill_id=COALESCE(EXCLUDED.selected_skill_id,a2a_backend_correlation_t.selected_skill_id),
+               updated_ts=now()",
+        )
+        .bind(access.host_id)
+        .bind(access.task_id)
+        .bind(backend_binding_id)
+        .bind(remote_task_id)
+        .bind(selected_skill_id)
+        .execute(&mut *tx)
+        .await?;
+        append_event(
+            &mut tx,
+            access.host_id,
+            access.task_id,
+            "REMOTE_TASK_BOUND",
+            json!({"backendBindingId": backend_binding_id}),
+        )
+        .await?;
+        append_audit(
+            &mut tx,
+            access.host_id,
+            access.task_id,
+            "a2a.remote-task.bound",
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn backend_task_binding(
+        &self,
+        access: &TaskAccess<'_>,
+    ) -> Result<BackendTaskBinding, StoreError> {
+        self.owned_task(access, false).await?;
+        let row = sqlx::query(
+            "SELECT t.context_id,t.idempotency_key,t.remote_task_id,t.remote_context_id,
+                    c.backend_kind,c.backend_binding_id,c.opaque_correlation_id,c.selected_skill_id
+               FROM a2a_task_t t
+               JOIN a2a_backend_correlation_t c
+                 ON c.host_id=t.host_id AND c.task_id=t.task_id
+              WHERE t.host_id=$1 AND t.task_id=$2",
+        )
+        .bind(access.host_id)
+        .bind(access.task_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(A2aError::NotFound)?;
+        Ok(BackendTaskBinding {
+            context_id: row.try_get("context_id")?,
+            idempotency_key: row.try_get("idempotency_key")?,
+            backend_kind: row.try_get("backend_kind")?,
+            backend_binding_id: row.try_get("backend_binding_id")?,
+            backend_operation_id: row.try_get("opaque_correlation_id")?,
+            selected_skill_id: row.try_get("selected_skill_id")?,
+            remote_task_id: row.try_get("remote_task_id")?,
+            remote_context_id: row.try_get("remote_context_id")?,
+        })
     }
 
     pub async fn reconcile(
@@ -324,6 +573,240 @@ impl Repository {
         Ok(())
     }
 
+    pub async fn create_push_config(
+        &self,
+        access: &TaskAccess<'_>,
+        config_id: Uuid,
+        callback_registration_id: Uuid,
+        callback_url_digest: &str,
+    ) -> Result<PushConfig, StoreError> {
+        self.owned_task(access, false).await?;
+        if !callback_url_digest.starts_with("sha256:") || callback_url_digest.len() != 71 {
+            return Err(A2aError::InvalidInvocation.into());
+        }
+        let row = sqlx::query(
+            "INSERT INTO a2a_push_config_t(host_id,config_id,task_id,binding_id,
+               principal_subject,callback_registration_id,callback_url_digest)
+             VALUES($1,$2,$3,$4,$5,$6,$7)
+             RETURNING config_id,task_id,callback_registration_id,callback_url_digest,created_ts",
+        )
+        .bind(access.host_id)
+        .bind(config_id)
+        .bind(access.task_id)
+        .bind(access.binding_id)
+        .bind(access.principal_subject)
+        .bind(callback_registration_id)
+        .bind(callback_url_digest)
+        .fetch_one(&self.pool)
+        .await?;
+        push_config_from_row(&row)
+    }
+
+    pub async fn get_push_config(
+        &self,
+        access: &TaskAccess<'_>,
+        config_id: Uuid,
+    ) -> Result<PushConfig, StoreError> {
+        self.owned_task(access, false).await?;
+        let row = sqlx::query(
+            "SELECT config_id,task_id,callback_registration_id,callback_url_digest,created_ts
+               FROM a2a_push_config_t
+              WHERE host_id=$1 AND task_id=$2 AND binding_id=$3
+                AND principal_subject=$4 AND config_id=$5",
+        )
+        .bind(access.host_id)
+        .bind(access.task_id)
+        .bind(access.binding_id)
+        .bind(access.principal_subject)
+        .bind(config_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(A2aError::NotFound)?;
+        push_config_from_row(&row)
+    }
+
+    pub async fn list_push_configs(
+        &self,
+        access: &TaskAccess<'_>,
+    ) -> Result<Vec<PushConfig>, StoreError> {
+        self.owned_task(access, false).await?;
+        let rows = sqlx::query(
+            "SELECT config_id,task_id,callback_registration_id,callback_url_digest,created_ts
+               FROM a2a_push_config_t
+              WHERE host_id=$1 AND task_id=$2 AND binding_id=$3 AND principal_subject=$4
+              ORDER BY created_ts,config_id LIMIT 100",
+        )
+        .bind(access.host_id)
+        .bind(access.task_id)
+        .bind(access.binding_id)
+        .bind(access.principal_subject)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(push_config_from_row).collect()
+    }
+
+    pub async fn delete_push_config(
+        &self,
+        access: &TaskAccess<'_>,
+        config_id: Uuid,
+    ) -> Result<(), StoreError> {
+        self.owned_task(access, false).await?;
+        let deleted = sqlx::query(
+            "DELETE FROM a2a_push_config_t
+              WHERE host_id=$1 AND task_id=$2 AND binding_id=$3
+                AND principal_subject=$4 AND config_id=$5",
+        )
+        .bind(access.host_id)
+        .bind(access.task_id)
+        .bind(access.binding_id)
+        .bind(access.principal_subject)
+        .bind(config_id)
+        .execute(&self.pool)
+        .await?;
+        if deleted.rows_affected() != 1 {
+            return Err(A2aError::NotFound.into());
+        }
+        Ok(())
+    }
+
+    pub async fn enqueue_push_deliveries(
+        &self,
+        access: &TaskAccess<'_>,
+        payload: &Value,
+        maximum_attempts: i64,
+    ) -> Result<u64, StoreError> {
+        self.owned_task(access, false).await?;
+        if maximum_attempts < 1 || maximum_attempts > 100 || !payload.is_object() {
+            return Err(A2aError::InvalidInvocation.into());
+        }
+        let digest = canonical_projection_digest(payload)
+            .map_err(|error| StoreError::Scope(error.to_string()))?;
+        let result = sqlx::query(
+            "INSERT INTO a2a_push_delivery_t(host_id,delivery_id,config_id,task_id,
+               delivery_nonce,payload,payload_digest,maximum_attempts)
+             SELECT host_id,gen_random_uuid(),config_id,task_id,gen_random_uuid(),$5,$6,$7
+               FROM a2a_push_config_t
+              WHERE host_id=$1 AND task_id=$2 AND binding_id=$3 AND principal_subject=$4",
+        )
+        .bind(access.host_id)
+        .bind(access.task_id)
+        .bind(access.binding_id)
+        .bind(access.principal_subject)
+        .bind(payload)
+        .bind(digest)
+        .bind(maximum_attempts)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn claim_push_deliveries(
+        &self,
+        host_id: Uuid,
+        worker_id: &str,
+        maximum_results: i64,
+        lease_seconds: i64,
+    ) -> Result<Vec<PushDelivery>, StoreError> {
+        if worker_id.trim().is_empty()
+            || worker_id.len() > 256
+            || !(1..=100).contains(&maximum_results)
+            || !(1..=300).contains(&lease_seconds)
+        {
+            return Err(A2aError::InvalidInvocation.into());
+        }
+        let rows = sqlx::query(
+            "WITH due AS (
+               SELECT host_id,delivery_id FROM a2a_push_delivery_t
+                WHERE host_id=$1 AND attempt<maximum_attempts
+                  AND ((state='PENDING' AND next_attempt_ts<=now())
+                    OR (state='DELIVERING' AND lease_until_ts<=now()))
+                ORDER BY next_attempt_ts,delivery_id
+                FOR UPDATE SKIP LOCKED LIMIT $2
+             )
+             UPDATE a2a_push_delivery_t d SET state='DELIVERING',attempt=d.attempt+1,
+                    lease_owner=$3,lease_until_ts=now()+make_interval(secs=>$4),updated_ts=now()
+               FROM due JOIN a2a_push_config_t c
+                 ON c.host_id=due.host_id AND c.config_id=(
+                   SELECT config_id FROM a2a_push_delivery_t
+                    WHERE host_id=due.host_id AND delivery_id=due.delivery_id)
+              WHERE d.host_id=due.host_id AND d.delivery_id=due.delivery_id
+              RETURNING d.delivery_id,d.config_id,d.task_id,c.callback_registration_id,c.binding_id,
+                        d.delivery_nonce,d.payload,d.payload_digest,d.attempt,d.maximum_attempts",
+        )
+        .bind(host_id)
+        .bind(maximum_results)
+        .bind(worker_id)
+        .bind(lease_seconds)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(push_delivery_from_row).collect()
+    }
+
+    pub async fn complete_push_delivery(
+        &self,
+        host_id: Uuid,
+        delivery_id: Uuid,
+        worker_id: &str,
+        http_status: u16,
+    ) -> Result<(), StoreError> {
+        let result = sqlx::query(
+            "UPDATE a2a_push_delivery_t SET state='DELIVERED',last_http_status=$4,
+                    delivered_ts=now(),lease_owner=NULL,lease_until_ts=NULL,updated_ts=now()
+              WHERE host_id=$1 AND delivery_id=$2 AND state='DELIVERING' AND lease_owner=$3",
+        )
+        .bind(host_id)
+        .bind(delivery_id)
+        .bind(worker_id)
+        .bind(i32::from(http_status))
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() != 1 {
+            return Err(StoreError::Scope(
+                "push delivery lease is not owned by this worker".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub async fn retry_push_delivery(
+        &self,
+        host_id: Uuid,
+        delivery_id: Uuid,
+        worker_id: &str,
+        error_code: &str,
+        delay_seconds: i64,
+        http_status: Option<u16>,
+    ) -> Result<(), StoreError> {
+        if error_code.trim().is_empty()
+            || error_code.len() > 128
+            || !(1..=86400).contains(&delay_seconds)
+        {
+            return Err(A2aError::InvalidInvocation.into());
+        }
+        let result = sqlx::query(
+            "UPDATE a2a_push_delivery_t SET
+               state=CASE WHEN attempt>=maximum_attempts THEN 'DEAD_LETTER' ELSE 'PENDING' END,
+               next_attempt_ts=now()+make_interval(secs=>$5),last_error_code=$4,
+               last_http_status=$6,dead_letter_ts=CASE WHEN attempt>=maximum_attempts THEN now() ELSE NULL END,
+               lease_owner=NULL,lease_until_ts=NULL,updated_ts=now()
+              WHERE host_id=$1 AND delivery_id=$2 AND state='DELIVERING' AND lease_owner=$3",
+        )
+        .bind(host_id)
+        .bind(delivery_id)
+        .bind(worker_id)
+        .bind(error_code)
+        .bind(delay_seconds)
+        .bind(http_status.map(i32::from))
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() != 1 {
+            return Err(StoreError::Scope(
+                "push delivery lease is not owned by this worker".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn add_artifact(
         &self,
         access: &TaskAccess<'_>,
@@ -353,6 +836,125 @@ impl Repository {
         .bind(artifact.retain_until)
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    pub async fn owned_artifact(
+        &self,
+        access: &TaskAccess<'_>,
+        artifact_id: Uuid,
+    ) -> Result<OwnedArtifact, StoreError> {
+        self.owned_task(access, false).await?;
+        let row = sqlx::query(
+            "SELECT artifact_id,task_id,content_digest,object_reference,retain_until_ts,
+                    legal_hold,deletion_state
+               FROM a2a_artifact_t
+              WHERE host_id=$1 AND task_id=$2 AND artifact_id=$3",
+        )
+        .bind(access.host_id)
+        .bind(access.task_id)
+        .bind(artifact_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(A2aError::NotFound)?;
+        Ok(OwnedArtifact {
+            artifact_id: row.try_get("artifact_id")?,
+            task_id: row.try_get("task_id")?,
+            content_digest: row.try_get("content_digest")?,
+            object_reference: row.try_get("object_reference")?,
+            retain_until: row.try_get("retain_until_ts")?,
+            legal_hold: row.try_get("legal_hold")?,
+            deletion_state: row.try_get("deletion_state")?,
+        })
+    }
+
+    pub async fn set_artifact_hold(
+        &self,
+        access: &TaskAccess<'_>,
+        artifact_id: Uuid,
+        held: bool,
+    ) -> Result<(), StoreError> {
+        self.owned_task(access, false).await?;
+        let changed = sqlx::query(
+            "UPDATE a2a_artifact_t SET legal_hold=$4,updated_ts=now()
+              WHERE host_id=$1 AND task_id=$2 AND artifact_id=$3
+                AND deletion_state<>'DELETED'",
+        )
+        .bind(access.host_id)
+        .bind(access.task_id)
+        .bind(artifact_id)
+        .bind(held)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if changed != 1 {
+            return Err(A2aError::NotFound.into());
+        }
+        Ok(())
+    }
+
+    pub async fn begin_artifact_deletion(
+        &self,
+        access: &TaskAccess<'_>,
+        artifact_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> Result<OwnedArtifact, StoreError> {
+        self.owned_task(access, false).await?;
+        let artifact = self.owned_artifact(access, artifact_id).await?;
+        if artifact.legal_hold {
+            return Err(StoreError::Scope("artifact is under legal hold".into()));
+        }
+        if artifact.retain_until > now {
+            return Err(StoreError::Scope(
+                "artifact retention period has not expired".into(),
+            ));
+        }
+        if artifact.deletion_state != "DELETED" {
+            sqlx::query(
+                "UPDATE a2a_artifact_t SET deletion_state='DELETE_PENDING',updated_ts=now()
+                  WHERE host_id=$1 AND task_id=$2 AND artifact_id=$3",
+            )
+            .bind(access.host_id)
+            .bind(access.task_id)
+            .bind(artifact_id)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(artifact)
+    }
+
+    pub async fn complete_artifact_deletion(
+        &self,
+        access: &TaskAccess<'_>,
+        artifact_id: Uuid,
+        tombstone_digest: &str,
+    ) -> Result<(), StoreError> {
+        self.owned_task(access, false).await?;
+        if tombstone_digest.len() != 71
+            || !tombstone_digest.starts_with("sha256:")
+            || !tombstone_digest[7..]
+                .bytes()
+                .all(|value| value.is_ascii_hexdigit() && !value.is_ascii_uppercase())
+        {
+            return Err(A2aError::InvalidInvocation.into());
+        }
+        let changed = sqlx::query(
+            "UPDATE a2a_artifact_t SET deletion_state='DELETED',
+                    deletion_evidence=jsonb_build_object('verifiedAbsent',TRUE,'tombstoneDigest',$4),
+                    updated_ts=now()
+              WHERE host_id=$1 AND task_id=$2 AND artifact_id=$3
+                AND deletion_state IN ('DELETE_PENDING','DELETING','DELETED')",
+        )
+        .bind(access.host_id)
+        .bind(access.task_id)
+        .bind(artifact_id)
+        .bind(tombstone_digest)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if changed != 1 {
+            return Err(A2aError::NotFound.into());
+        }
         Ok(())
     }
 
@@ -428,7 +1030,64 @@ async fn load_task(
     .fetch_optional(&mut **tx)
     .await?
     .ok_or(A2aError::NotFound)?;
-    snapshot_from_row(&row)
+    let mut snapshot = snapshot_from_row(&row)?;
+    snapshot.artifacts = load_artifacts_in(tx, host_id, task_id).await?;
+    Ok(snapshot)
+}
+
+async fn load_artifacts(
+    pool: &PgPool,
+    host_id: Uuid,
+    task_id: Uuid,
+) -> Result<Vec<ArtifactDescriptor>, StoreError> {
+    let rows = sqlx::query(
+        "SELECT artifact_id,logical_name,media_type,size_bytes,content_digest,retain_until_ts
+           FROM a2a_artifact_t WHERE host_id=$1 AND task_id=$2 AND deletion_state='RETAINED'
+           ORDER BY logical_name",
+    )
+    .bind(host_id)
+    .bind(task_id)
+    .fetch_all(pool)
+    .await?;
+    artifact_descriptors(rows)
+}
+
+async fn load_artifacts_in(
+    tx: &mut Transaction<'_, Postgres>,
+    host_id: Uuid,
+    task_id: Uuid,
+) -> Result<Vec<ArtifactDescriptor>, StoreError> {
+    let rows = sqlx::query(
+        "SELECT artifact_id,logical_name,media_type,size_bytes,content_digest,retain_until_ts
+           FROM a2a_artifact_t WHERE host_id=$1 AND task_id=$2 AND deletion_state='RETAINED'
+           ORDER BY logical_name",
+    )
+    .bind(host_id)
+    .bind(task_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    artifact_descriptors(rows)
+}
+
+fn artifact_descriptors(
+    rows: Vec<sqlx::postgres::PgRow>,
+) -> Result<Vec<ArtifactDescriptor>, StoreError> {
+    rows.into_iter()
+        .map(|row| {
+            let content_digest: String = row.try_get("content_digest")?;
+            Ok(ArtifactDescriptor {
+                artifact_id: row.try_get("artifact_id")?,
+                logical_name: row.try_get("logical_name")?,
+                media_type: row.try_get("media_type")?,
+                size_bytes: row.try_get::<i64, _>("size_bytes")? as u64,
+                content_digest: content_digest.clone(),
+                visibility: ArtifactVisibility::TaskOwner,
+                retention_deadline: row.try_get("retain_until_ts")?,
+                provenance_digest: content_digest,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()
+        .map_err(StoreError::from)
 }
 
 fn snapshot_from_row(row: &sqlx::postgres::PgRow) -> Result<TaskSnapshot, StoreError> {
@@ -445,6 +1104,7 @@ fn snapshot_from_row(row: &sqlx::postgres::PgRow) -> Result<TaskSnapshot, StoreE
         target_agent_ref: row.try_get("target_agent_ref")?,
         result: row.try_get("result")?,
         error: row.try_get("error")?,
+        artifacts: Vec::new(),
     })
 }
 
@@ -460,6 +1120,31 @@ fn parse_state(value: String) -> Result<TaskState, StoreError> {
         "REJECTED" => Ok(TaskState::Rejected),
         _ => Err(StoreError::Scope(format!("unknown A2A task state {value}"))),
     }
+}
+
+fn push_config_from_row(row: &sqlx::postgres::PgRow) -> Result<PushConfig, StoreError> {
+    Ok(PushConfig {
+        config_id: row.try_get("config_id")?,
+        task_id: row.try_get("task_id")?,
+        callback_registration_id: row.try_get("callback_registration_id")?,
+        callback_url_digest: row.try_get("callback_url_digest")?,
+        created_at: row.try_get("created_ts")?,
+    })
+}
+
+fn push_delivery_from_row(row: &sqlx::postgres::PgRow) -> Result<PushDelivery, StoreError> {
+    Ok(PushDelivery {
+        delivery_id: row.try_get("delivery_id")?,
+        config_id: row.try_get("config_id")?,
+        task_id: row.try_get("task_id")?,
+        callback_registration_id: row.try_get("callback_registration_id")?,
+        binding_id: row.try_get("binding_id")?,
+        delivery_nonce: row.try_get("delivery_nonce")?,
+        payload: row.try_get("payload")?,
+        payload_digest: row.try_get("payload_digest")?,
+        attempt: row.try_get("attempt")?,
+        maximum_attempts: row.try_get("maximum_attempts")?,
+    })
 }
 
 async fn append_event(
@@ -587,17 +1272,19 @@ pub async fn validate(pool: &PgPool, expected: &ExpectedBinding<'_>) -> Result<(
             missing.join(",")
         )));
     }
-    let migrated: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM operational_meta.operational_schema_migration_t
-          WHERE migration_owner='a2a-store' AND schema_name='a2a_ops' AND migration_id=$1)",
-    )
-    .bind(MIGRATION_ID)
-    .fetch_one(pool)
-    .await?;
-    if !migrated {
-        return Err(StoreError::Scope(
-            "a2a-store migration ledger entry is missing".into(),
-        ));
+    for migration_id in [MIGRATION_ID, PHASE3_MIGRATION_ID, PHASE6_MIGRATION_ID] {
+        let migrated: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM operational_meta.operational_schema_migration_t
+              WHERE migration_owner='a2a-store' AND schema_name='a2a_ops' AND migration_id=$1)",
+        )
+        .bind(migration_id)
+        .fetch_one(pool)
+        .await?;
+        if !migrated {
+            return Err(StoreError::Scope(format!(
+                "required a2a-store migration {migration_id} is missing"
+            )));
+        }
     }
     Ok(())
 }
@@ -608,12 +1295,15 @@ mod tests {
 
     #[test]
     fn a2a_authority_is_bounded_and_has_no_payload_bytes() {
-        assert_eq!(AUTHORITY_TABLES.len(), 9);
-        for table in AUTHORITY_TABLES {
+        assert_eq!(AUTHORITY_TABLES.len(), 11);
+        for table in &AUTHORITY_TABLES[..9] {
             assert!(MIGRATION_SQL.contains(&format!("a2a_ops.{table}")));
         }
         assert!(!MIGRATION_SQL.contains(" BYTEA"));
         assert!(!MIGRATION_SQL.contains("REFERENCES public."));
         assert!(MIGRATION_SQL.contains("object_reference !~ '^(https?|file)://'"));
+        assert!(PHASE3_MIGRATION_SQL.contains("selected_skill_id"));
+        assert!(PHASE6_MIGRATION_SQL.contains("a2a_push_config_t"));
+        assert!(PHASE6_MIGRATION_SQL.contains("a2a_push_delivery_t"));
     }
 }

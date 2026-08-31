@@ -1,0 +1,17 @@
+{
+  "a2aSpecifications": {
+    "0.3": {
+      "tag": "v0.3.0",
+      "commit": "210f03d426e2f2fa92000e14ef0de3b7ba15aee5"
+    },
+    "1.0": {
+      "tag": "v1.0.1",
+      "commit": "3303592588e388e62e0f69f701af531d2f4e3991"
+    }
+  },
+  "tck": {
+    "version": "1.0.0",
+    "commit": "5996b79f9cefa6fc390980e383e358a66fb9e49e"
+  },
+  "canonicalizationProfile": "light-a2a-projection-json-v1"
+}

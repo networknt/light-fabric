@@ -10,6 +10,7 @@ description = "Shared governed A2A operation, identity, task, and artifact contr
 path = "src/lib.rs"
 
 [dependencies]
+a2a-protocol = { path = "../a2a-protocol" }
 chrono.workspace = true
 base64 = "0.22"
 hmac.workspace = true

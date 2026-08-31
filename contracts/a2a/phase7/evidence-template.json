@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "qualificationId": "replace-with-uuid-v7",
+  "releaseDecision": "NOT_QUALIFIED",
+  "host": "replace.example.net",
+  "serviceId": "com.networknt.light-a2a-1.0.0",
+  "envTag": "replace",
+  "gatewayImageDigest": "sha256:replace",
+  "runtimeImageDigest": "sha256:replace",
+  "publicationId": "replace-with-uuid-v7",
+  "releaseVersion": 0,
+  "contentDigest": "sha256:replace",
+  "policyDigest": "sha256:replace",
+  "operationalBundleVersion": "1.9.0",
+  "previousPublicationId": "replace-with-uuid-v7",
+  "canaryStartedAt": null,
+  "canaryCompletedAt": null,
+  "automatedGateEvidence": [],
+  "environmentEvidence": [],
+  "approvals": []
+}

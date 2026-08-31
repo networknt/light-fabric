@@ -1,0 +1,10 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "light-a2a-backend"
+version = "1.0.0"
+requires-python = ">=3.11"
+description = "Business-only Python adapter for light-a2a-backend/v1"
+license = {text = "Apache-2.0"}

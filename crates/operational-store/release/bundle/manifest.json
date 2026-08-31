@@ -1,5 +1,5 @@
 {
-  "bundleVersion": "1.4.0",
+  "bundleVersion": "1.9.0",
   "contractGeneration": 1,
   "postgresMinimumVersion": "17",
   "postgresMaximumTestedVersion": "17",
@@ -107,9 +107,49 @@
       "migrationId": "0001_artifact_metadata",
       "path": "crates/artifact-store/migrations/artifact-postgres/0001_artifact_metadata.sql",
       "sha256": "3a968cbdec34d20645c51f9d05ad6f7bc15905436bd8175d52b6f94556a17c44"
+    },
+    {
+      "order": 14,
+      "owner": "a2a-store",
+      "schema": "a2a_ops",
+      "migrationId": "0002_backend_skill_correlation",
+      "path": "crates/a2a-store/migrations/a2a-postgres/0002_backend_skill_correlation.sql",
+      "sha256": "9fcf872bc11e4afcf404ed979eb92353ba6ed6a157ef5108f5aae2ed2dbe895d"
+    },
+    {
+      "order": 15,
+      "owner": "agent-store",
+      "schema": "agent_ops",
+      "migrationId": "0003_native_a2a_phase4",
+      "path": "crates/agent-store/migrations/agent-postgres/0003_native_a2a_phase4.sql",
+      "sha256": "e97842654881eca2d25df046afedf62889fa1229daeba5fa7ed8eb0bf0654215"
+    },
+    {
+      "order": 16,
+      "owner": "a2a-store",
+      "schema": "a2a_ops",
+      "migrationId": "0003_governed_push_delivery",
+      "path": "crates/a2a-store/migrations/a2a-postgres/0003_governed_push_delivery.sql",
+      "sha256": "0d51510cc8bc25eb8e23ebe571e7f884c26883e3ed30724235ce40b91ecab1bf"
+    },
+    {
+      "order": 17,
+      "owner": "workflow-store",
+      "schema": "workflow_ops",
+      "migrationId": "0003_governed_a2a_outbound_policy",
+      "path": "crates/workflow-store/migrations/workflow-postgres/0003_governed_a2a_outbound_policy.sql",
+      "sha256": "bcc7f85e6f1c033ae1ad4b6afdfb0ede44494aba152a14ff5f88b890dd0a9b5e"
+    },
+    {
+      "order": 18,
+      "owner": "workflow-store",
+      "schema": "workflow_ops",
+      "migrationId": "0004_workflow_consumer_offsets",
+      "path": "crates/workflow-store/migrations/workflow-postgres/0004_workflow_consumer_offsets.sql",
+      "sha256": "a99b9c86f9166822e2001ae6572b50c382793c72ee111832f0d7aba653b36a05"
     }
   ],
   "roleProfileVersion": 1,
   "scopeRootVersion": 1,
-  "sourceCommit": "57a97dadd7b1a465f43ac0a395a99cf6c0ded41f"
+  "sourceCommit": "0e917b7f26d9c0415335875588e2767aad89e93f"
 }

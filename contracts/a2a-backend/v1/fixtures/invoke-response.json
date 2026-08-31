@@ -1,0 +1,7 @@
+{
+  "state": "COMPLETED",
+  "backendOperationId": "account-operation-0001",
+  "result": {"accountId": "1001", "status": "ACTIVE"},
+  "error": null,
+  "artifacts": []
+}

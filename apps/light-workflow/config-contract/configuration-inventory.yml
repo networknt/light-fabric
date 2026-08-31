@@ -390,11 +390,24 @@ yamlProperties:
   - {file: workflow.yml, path: execution.maximumParallelism, finalAuthority: configServer, reloadClass: reloadable, sensitivity: public}
   - {file: workflow.yml, path: execution.hostExecutorConcurrency, finalAuthority: configServer, reloadClass: reloadable, sensitivity: public}
   - {file: workflow.yml, path: execution.interactiveEstimatedTaskMs, finalAuthority: configServer, reloadClass: reloadable, sensitivity: public}
+  - {file: workflow.yml, path: operationalStore.contractVersion, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: operationalStore.bindingId, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: operationalStore.bindingDigest, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: operationalStore.hostId, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: operationalStore.environment, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: operationalStore.serviceOwner, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: operationalStore.schema, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: operationalStore.expectedDatabase, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: operationalStore.minimumSchemaGeneration, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: operationalStore.databaseUrlFile, finalAuthority: mountedFile, reloadClass: restartRequired, sensitivity: secret}
+  - {file: workflow.yml, path: operationalStore.credentialGeneration, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: workflow.yml, path: database.maxConnections, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
   - {file: workflow.yml, path: runner.enabled, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: workflow.yml, path: runner.originServiceId, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: workflow.yml, path: runner.originId, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: workflow.yml, path: runner.configFile, finalAuthority: mountedFile, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: runner.executionApiUrl, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: runner.executionApiCaCertFile, finalAuthority: mountedFile, reloadClass: restartRequired, sensitivity: internal}
   - {file: workflow.yml, path: artifact.s3Bucket, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: workflow.yml, path: artifact.s3Endpoint, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: workflow.yml, path: artifact.allowHttp, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
@@ -405,3 +418,5 @@ yamlProperties:
   - {file: workflow.yml, path: fixedActions.branchPrefix, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: workflow.yml, path: fixedActions.repositoryUrl, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: workflow.yml, path: fixedActions.releaseUrl, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: a2a.authorizationContextKeyFile, finalAuthority: mountedFile, reloadClass: restartRequired, sensitivity: secret}
+  - {file: workflow.yml, path: a2a.bindings, finalAuthority: configServer, reloadClass: reloadable, sensitivity: internal}

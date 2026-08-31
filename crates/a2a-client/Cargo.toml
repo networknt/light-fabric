@@ -1,0 +1,18 @@
+[package]
+name = "a2a-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Bounded SSRF-safe client for governed outbound A2A calls"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+http.workspace = true
+reqwest.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true
+

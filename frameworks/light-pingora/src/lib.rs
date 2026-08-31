@@ -1,3 +1,4 @@
+mod a2a;
 mod access_control;
 mod apikey;
 mod basic_auth;
@@ -52,6 +53,11 @@ use std::thread::JoinHandle;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+pub use a2a::{
+    A2A_ROUTER_CONFIG_NAME, A2A_ROUTER_FILE, A2A_ROUTER_MODULE_ID, A2aImplementationKind,
+    A2aPolicyEndpoints, A2aRouteConfig, A2aRouteDecision, A2aRouterConfig, A2aRouterRuntime,
+    A2aTargetDecision, load_a2a_router_runtime,
+};
 pub use access_control::{
     ACCESS_CONTROL_CONFIG_NAME, ACCESS_CONTROL_FILE, ACCESS_CONTROL_LEGACY_FILE,
     ACCESS_CONTROL_MODULE_ID, AccessControlConfig, AccessControlResponseFilterError,

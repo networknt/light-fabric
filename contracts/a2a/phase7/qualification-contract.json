@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "profileId": "a2a-production-qualification-v1",
+  "releaseDecision": "NOT_QUALIFIED",
+  "identity": {
+    "required": ["host", "serviceId", "envTag"],
+    "forbidden": ["instanceId", "productId", "productVersion"]
+  },
+  "immutableEvidence": {
+    "required": [
+      "gatewayImageDigest",
+      "runtimeImageDigest",
+      "publicationId",
+      "releaseVersion",
+      "contentDigest",
+      "policyDigest",
+      "operationalBundleVersion",
+      "previousPublicationId"
+    ],
+    "operationalBundleVersion": "1.9.0",
+    "rollbackGenerations": 1
+  },
+  "automatedGates": [
+    "phase6-static",
+    "portal-schema-fresh-upgrade-parity",
+    "runtime-config-parity",
+    "compose-render",
+    "inbound-outbound-ownership",
+    "push-lease-takeover",
+    "push-dead-letter-restart",
+    "expired-projection-readiness",
+    "bundle-checksum-parity"
+  ],
+  "environmentEvidence": {
+    "minimumCanaryHours": 24,
+    "required": [
+      "inboundProbe",
+      "outboundProbe",
+      "snapshotReload",
+      "runtimeRestart",
+      "gatewayReroute",
+      "callbackFailureRecovery",
+      "alertReview",
+      "rollbackExercise",
+      "securitySignoff"
+    ]
+  },
+  "releaseThresholds": {
+    "crossTenantAuthorizationFailures": 0,
+    "lostDurableTasks": 0,
+    "lostPushDeliveries": 0,
+    "unsignedOrWrongPurposeCardsAccepted": 0,
+    "rawOutboundDestinationsAccepted": 0,
+    "unexpectedRollbackGenerationChanges": 0
+  }
+}

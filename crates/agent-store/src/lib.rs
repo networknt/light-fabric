@@ -4,8 +4,12 @@
 //! dedicated `operations_agent_runtime` pool against the immutable binding
 //! projection before becoming ready or accepting work.
 
-use a2a_core::{A2aError, AuthorizedInvocation, Direction, TaskSnapshot, TaskState};
-use chrono::Utc;
+use a2a_core::{
+    A2aError, ArtifactDescriptor, ArtifactVisibility, AuthorizedInvocation, Direction,
+    TaskSnapshot, TaskState,
+};
+use chrono::{DateTime, Utc};
+use serde_json::Value;
 use sqlx::{PgPool, Row};
 use std::path::Path;
 use uuid::Uuid;
@@ -16,6 +20,7 @@ pub const EXPECTED_RUNTIME_ROLE: &str = "operations_agent_runtime";
 pub const DEFAULT_DATABASE_URL_FILE: &str = "/run/secrets/operational-database-url";
 pub const MIGRATION_ID: &str = "0001_agent_and_embedded_memory";
 pub const NATIVE_A2A_MIGRATION_ID: &str = "0002_native_a2a_aliases";
+pub const NATIVE_A2A_PHASE4_MIGRATION_ID: &str = "0003_native_a2a_phase4";
 pub const MIGRATIONS: &[(&str, &str)] = &[
     (
         MIGRATION_ID,
@@ -24,6 +29,10 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
     (
         NATIVE_A2A_MIGRATION_ID,
         include_str!("../migrations/agent-postgres/0002_native_a2a_aliases.sql"),
+    ),
+    (
+        NATIVE_A2A_PHASE4_MIGRATION_ID,
+        include_str!("../migrations/agent-postgres/0003_native_a2a_phase4.sql"),
     ),
 ];
 
@@ -90,6 +99,9 @@ pub struct NativeTaskAdmission {
     pub task_id: Uuid,
     pub context_id: Uuid,
     pub agent_def_id: Uuid,
+    pub message_id: String,
+    pub skill_mapping: Value,
+    pub skill_mapping_digest: String,
     pub invocation: AuthorizedInvocation,
 }
 
@@ -100,7 +112,44 @@ pub struct NativeTaskAccess<'a> {
     pub principal_subject: &'a str,
     pub target_agent_id: Uuid,
     pub publication_id: Uuid,
-    pub policy_digest: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeTaskListAccess<'a> {
+    pub host_id: Uuid,
+    pub principal_subject: &'a str,
+    pub target_agent_id: Uuid,
+    pub publication_id: Uuid,
+    pub context_id: Option<Uuid>,
+    pub status: Option<TaskState>,
+    pub status_timestamp_after: Option<DateTime<Utc>>,
+    pub cursor: Option<(DateTime<Utc>, Uuid)>,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeTaskPage {
+    pub tasks: Vec<TaskSnapshot>,
+    pub total_size: usize,
+    pub next_cursor: Option<(DateTime<Utc>, Uuid)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeArtifactAdmission<'a> {
+    pub artifact_id: Uuid,
+    pub logical_name: &'a str,
+    pub media_type: &'a str,
+    pub size_bytes: u64,
+    pub content_digest: &'a str,
+    pub object_reference: &'a str,
+    pub provenance_digest: &'a str,
+    pub retain_until: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExpiredNativeArtifact {
+    pub artifact_id: Uuid,
+    pub object_reference: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -111,6 +160,8 @@ pub enum NativeA2aError {
     Database(#[from] sqlx::Error),
     #[error("native Agent A2A alias conflicts with durable Agent ownership")]
     Ownership,
+    #[error("native Agent A2A artifact request is invalid")]
+    InvalidArtifact,
 }
 
 #[derive(Clone)]
@@ -128,7 +179,12 @@ impl NativeA2aRepository {
         admission: &NativeTaskAdmission,
     ) -> Result<TaskSnapshot, NativeA2aError> {
         admission.invocation.validate("light-agent", Utc::now())?;
-        if admission.invocation.direction != Direction::Inbound {
+        if admission.invocation.direction != Direction::Inbound
+            || admission.message_id.trim().is_empty()
+            || admission.message_id.len() > 256
+            || !canonical_digest(&admission.skill_mapping_digest)
+            || !admission.skill_mapping.is_array()
+        {
             return Err(A2aError::InvalidInvocation.into());
         }
         let mut tx = self.pool.begin().await?;
@@ -148,7 +204,7 @@ impl NativeA2aRepository {
         if agent_def_id != admission.agent_def_id {
             return Err(NativeA2aError::Ownership);
         }
-        sqlx::query(
+        let context_inserted = sqlx::query(
             "INSERT INTO agent_a2a_context_alias_t(host_id,public_context_id,session_id,
                principal_subject,agent_def_id,publication_id,policy_digest,expires_ts)
              VALUES($1,$2,$3,$4,$5,$6,$7,$8)
@@ -163,11 +219,31 @@ impl NativeA2aRepository {
         .bind(&admission.invocation.policy_digest)
         .bind(admission.invocation.expires_at)
         .execute(&mut *tx)
-        .await?;
-        sqlx::query(
+        .await?
+        .rows_affected();
+        if context_inserted == 0 {
+            let matches: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM agent_a2a_context_alias_t
+                  WHERE host_id=$1 AND public_context_id=$2 AND session_id=$3
+                    AND principal_subject=$4 AND agent_def_id=$5 AND publication_id=$6)",
+            )
+            .bind(admission.invocation.host_id)
+            .bind(admission.context_id.to_string())
+            .bind(session_id)
+            .bind(&admission.invocation.principal_subject)
+            .bind(agent_def_id)
+            .bind(admission.invocation.publication_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !matches {
+                return Err(NativeA2aError::Ownership);
+            }
+        }
+        let task_inserted = sqlx::query(
             "INSERT INTO agent_a2a_task_alias_t(host_id,public_task_id,public_context_id,turn_id,
-               principal_subject,agent_def_id,publication_id,policy_digest,state)
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,'SUBMITTED')
+               principal_subject,agent_def_id,publication_id,policy_digest,state,message_id,
+               skill_mapping,skill_mapping_digest)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,'SUBMITTED',$9,$10,$11)
              ON CONFLICT(host_id,public_task_id) DO NOTHING",
         )
         .bind(admission.invocation.host_id)
@@ -178,8 +254,33 @@ impl NativeA2aRepository {
         .bind(agent_def_id)
         .bind(admission.invocation.publication_id)
         .bind(&admission.invocation.policy_digest)
+        .bind(&admission.message_id)
+        .bind(&admission.skill_mapping)
+        .bind(&admission.skill_mapping_digest)
         .execute(&mut *tx)
-        .await?;
+        .await?
+        .rows_affected();
+        if task_inserted == 0 {
+            let matches: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM agent_a2a_task_alias_t
+                  WHERE host_id=$1 AND public_task_id=$2 AND public_context_id=$3 AND turn_id=$4
+                    AND principal_subject=$5 AND agent_def_id=$6 AND publication_id=$7
+                    AND message_id=$8)",
+            )
+            .bind(admission.invocation.host_id)
+            .bind(admission.task_id.to_string())
+            .bind(admission.context_id.to_string())
+            .bind(admission.turn_id)
+            .bind(&admission.invocation.principal_subject)
+            .bind(agent_def_id)
+            .bind(admission.invocation.publication_id)
+            .bind(&admission.message_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !matches {
+                return Err(NativeA2aError::Ownership);
+            }
+        }
         let snapshot = load_native_task(
             &mut tx,
             &NativeTaskAccess {
@@ -188,7 +289,6 @@ impl NativeA2aRepository {
                 principal_subject: &admission.invocation.principal_subject,
                 target_agent_id: agent_def_id,
                 publication_id: admission.invocation.publication_id,
-                policy_digest: &admission.invocation.policy_digest,
             },
             false,
         )
@@ -212,14 +312,13 @@ impl NativeA2aRepository {
             "SELECT t.session_id,a.turn_id FROM agent_a2a_task_alias_t a
                JOIN agent_turn_t t ON t.host_id=a.host_id AND t.turn_id=a.turn_id
               WHERE a.host_id=$1 AND a.public_task_id=$2 AND a.principal_subject=$3
-                AND a.agent_def_id=$4 AND a.publication_id=$5 AND a.policy_digest=$6",
+                AND a.agent_def_id=$4 AND a.publication_id=$5",
         )
         .bind(access.host_id)
         .bind(access.task_id.to_string())
         .bind(access.principal_subject)
         .bind(access.target_agent_id)
         .bind(access.publication_id)
-        .bind(access.policy_digest)
         .fetch_optional(&self.pool)
         .await?;
         row.ok_or_else(|| A2aError::WrongTaskOwner.into())
@@ -231,6 +330,10 @@ impl NativeA2aRepository {
     ) -> Result<TaskSnapshot, NativeA2aError> {
         let mut tx = self.pool.begin().await?;
         let current = load_native_task(&mut tx, access, true).await?;
+        if current.state == TaskState::Canceled {
+            tx.commit().await?;
+            return Ok(current);
+        }
         if current.state.terminal() {
             return Err(A2aError::NotCancellable.into());
         }
@@ -246,6 +349,269 @@ impl NativeA2aRepository {
         tx.commit().await?;
         Ok(snapshot)
     }
+
+    pub async fn list(
+        &self,
+        access: &NativeTaskListAccess<'_>,
+    ) -> Result<NativeTaskPage, NativeA2aError> {
+        if !(1..=100).contains(&access.limit) {
+            return Err(A2aError::InvalidInvocation.into());
+        }
+        let status = access.status.map(task_state_filter);
+        let total_size: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM agent_a2a_task_alias_t a
+               JOIN agent_turn_t t ON t.host_id=a.host_id AND t.turn_id=a.turn_id
+              WHERE a.host_id=$1 AND a.principal_subject=$2 AND a.agent_def_id=$3
+                AND a.publication_id=$4
+                AND ($5::text IS NULL OR a.public_context_id=$5)
+                AND ($6::text IS NULL OR CASE
+                  WHEN a.state='CANCELED' OR t.state='CANCELLED' THEN 'CANCELED'
+                  WHEN t.state='COMPLETED' THEN 'COMPLETED'
+                  WHEN t.state IN ('FAILED','UNKNOWN') THEN 'FAILED'
+                  WHEN t.state='QUEUED' THEN 'SUBMITTED'
+                  ELSE 'WORKING' END=$6)
+                AND ($7::timestamptz IS NULL OR t.updated_ts >= $7)",
+        )
+        .bind(access.host_id)
+        .bind(access.principal_subject)
+        .bind(access.target_agent_id)
+        .bind(access.publication_id)
+        .bind(access.context_id.map(|value| value.to_string()))
+        .bind(status)
+        .bind(access.status_timestamp_after)
+        .fetch_one(&self.pool)
+        .await?;
+        let cursor_at = access.cursor.map(|cursor| cursor.0);
+        let cursor_id = access.cursor.map(|cursor| cursor.1.to_string());
+        let rows = sqlx::query(
+            "SELECT a.public_task_id,a.created_ts FROM agent_a2a_task_alias_t a
+               JOIN agent_turn_t t ON t.host_id=a.host_id AND t.turn_id=a.turn_id
+              WHERE a.host_id=$1 AND a.principal_subject=$2 AND a.agent_def_id=$3
+                AND a.publication_id=$4
+                AND ($5::text IS NULL OR a.public_context_id=$5)
+                AND ($6::text IS NULL OR CASE
+                  WHEN a.state='CANCELED' OR t.state='CANCELLED' THEN 'CANCELED'
+                  WHEN t.state='COMPLETED' THEN 'COMPLETED'
+                  WHEN t.state IN ('FAILED','UNKNOWN') THEN 'FAILED'
+                  WHEN t.state='QUEUED' THEN 'SUBMITTED'
+                  ELSE 'WORKING' END=$6)
+                AND ($7::timestamptz IS NULL OR t.updated_ts >= $7)
+                AND ($8::timestamptz IS NULL OR (a.created_ts,a.public_task_id) < ($8,$9))
+              ORDER BY a.created_ts DESC,a.public_task_id DESC LIMIT $10",
+        )
+        .bind(access.host_id)
+        .bind(access.principal_subject)
+        .bind(access.target_agent_id)
+        .bind(access.publication_id)
+        .bind(access.context_id.map(|value| value.to_string()))
+        .bind(status)
+        .bind(access.status_timestamp_after)
+        .bind(cursor_at)
+        .bind(cursor_id)
+        .bind(i64::try_from(access.limit + 1).map_err(|_| A2aError::InvalidInvocation)?)
+        .fetch_all(&self.pool)
+        .await?;
+        let has_more = rows.len() > access.limit;
+        let visible = rows.into_iter().take(access.limit).collect::<Vec<_>>();
+        let next_cursor = if has_more {
+            visible
+                .last()
+                .map(|row| -> Result<_, NativeA2aError> {
+                    Ok((
+                        row.try_get::<DateTime<Utc>, _>("created_ts")?,
+                        Uuid::parse_str(&row.try_get::<String, _>("public_task_id")?)
+                            .map_err(|_| A2aError::InvalidInvocation)?,
+                    ))
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        let mut tasks = Vec::with_capacity(visible.len());
+        for row in visible {
+            let id: String = row.try_get("public_task_id")?;
+            let task_id = Uuid::parse_str(&id).map_err(|_| A2aError::InvalidInvocation)?;
+            tasks.push(
+                self.get(&NativeTaskAccess {
+                    host_id: access.host_id,
+                    task_id,
+                    principal_subject: access.principal_subject,
+                    target_agent_id: access.target_agent_id,
+                    publication_id: access.publication_id,
+                })
+                .await?,
+            );
+        }
+        Ok(NativeTaskPage {
+            tasks,
+            total_size: usize::try_from(total_size).map_err(|_| A2aError::InvalidInvocation)?,
+            next_cursor,
+        })
+    }
+
+    pub async fn register_artifact(
+        &self,
+        access: &NativeTaskAccess<'_>,
+        artifact: &NativeArtifactAdmission<'_>,
+    ) -> Result<(), NativeA2aError> {
+        if artifact.logical_name.trim().is_empty()
+            || artifact.media_type.trim().is_empty()
+            || artifact.size_bytes == 0
+            || artifact.size_bytes > i64::MAX as u64
+            || !canonical_digest(artifact.content_digest)
+            || !canonical_digest(artifact.provenance_digest)
+            || artifact.object_reference.trim().is_empty()
+            || artifact.object_reference.contains("://")
+            || artifact.retain_until <= Utc::now()
+        {
+            return Err(A2aError::InvalidArtifact.into());
+        }
+        self.get(access).await?;
+        let inserted = sqlx::query(
+            "INSERT INTO agent_a2a_artifact_t(host_id,artifact_id,public_task_id,logical_name,
+               media_type,size_bytes,content_digest,object_reference,visibility,retain_until_ts,
+               provenance_digest)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,'OWNER',$9,$10)
+             ON CONFLICT(host_id,artifact_id) DO NOTHING",
+        )
+        .bind(access.host_id)
+        .bind(artifact.artifact_id)
+        .bind(access.task_id.to_string())
+        .bind(artifact.logical_name)
+        .bind(artifact.media_type)
+        .bind(artifact.size_bytes as i64)
+        .bind(artifact.content_digest)
+        .bind(artifact.object_reference)
+        .bind(artifact.retain_until)
+        .bind(artifact.provenance_digest)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if inserted == 0 {
+            let matches: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM agent_a2a_artifact_t
+                  WHERE host_id=$1 AND artifact_id=$2 AND public_task_id=$3
+                    AND logical_name=$4 AND media_type=$5 AND size_bytes=$6
+                    AND content_digest=$7 AND object_reference=$8
+                    AND provenance_digest=$9)",
+            )
+            .bind(access.host_id)
+            .bind(artifact.artifact_id)
+            .bind(access.task_id.to_string())
+            .bind(artifact.logical_name)
+            .bind(artifact.media_type)
+            .bind(artifact.size_bytes as i64)
+            .bind(artifact.content_digest)
+            .bind(artifact.object_reference)
+            .bind(artifact.provenance_digest)
+            .fetch_one(&self.pool)
+            .await?;
+            if !matches {
+                return Err(NativeA2aError::Ownership);
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn expire_artifacts(
+        &self,
+        host_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> Result<u64, NativeA2aError> {
+        Ok(sqlx::query(
+            "UPDATE agent_a2a_artifact_t SET deletion_state='TOMBSTONED',
+               deletion_evidence=jsonb_build_object('expiredAt',$2::timestamptz,
+                 'contentRetrievable',FALSE),updated_ts=now()
+             WHERE host_id=$1 AND deletion_state='RETAINED' AND NOT legal_hold
+               AND retain_until_ts <= $2",
+        )
+        .bind(host_id)
+        .bind(now)
+        .execute(&self.pool)
+        .await?
+        .rows_affected())
+    }
+
+    pub async fn expired_artifacts(
+        &self,
+        host_id: Uuid,
+        now: DateTime<Utc>,
+        maximum_results: i64,
+    ) -> Result<Vec<ExpiredNativeArtifact>, NativeA2aError> {
+        if !(1..=100).contains(&maximum_results) {
+            return Err(NativeA2aError::InvalidArtifact);
+        }
+        let rows = sqlx::query(
+            "SELECT artifact_id,object_reference FROM agent_a2a_artifact_t
+              WHERE host_id=$1 AND deletion_state='RETAINED' AND NOT legal_hold
+                AND retain_until_ts<=$2 ORDER BY retain_until_ts,artifact_id LIMIT $3",
+        )
+        .bind(host_id)
+        .bind(now)
+        .bind(maximum_results)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(ExpiredNativeArtifact {
+                    artifact_id: row.try_get("artifact_id")?,
+                    object_reference: row.try_get("object_reference")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn complete_artifact_deletion(
+        &self,
+        host_id: Uuid,
+        artifact_id: Uuid,
+        now: DateTime<Utc>,
+        evidence_digest: &str,
+    ) -> Result<(), NativeA2aError> {
+        if !canonical_digest(evidence_digest) {
+            return Err(NativeA2aError::InvalidArtifact);
+        }
+        let changed = sqlx::query(
+            "UPDATE agent_a2a_artifact_t SET deletion_state='TOMBSTONED',
+               deletion_evidence=jsonb_build_object('expiredAt',$3::timestamptz,
+                 'contentRetrievable',FALSE,'evidenceDigest',$4),updated_ts=now()
+             WHERE host_id=$1 AND artifact_id=$2 AND deletion_state='RETAINED'
+               AND NOT legal_hold AND retain_until_ts<=$3",
+        )
+        .bind(host_id)
+        .bind(artifact_id)
+        .bind(now)
+        .bind(evidence_digest)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if changed != 1 {
+            return Err(NativeA2aError::Ownership);
+        }
+        Ok(())
+    }
+}
+
+fn canonical_digest(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    })
+}
+
+const fn task_state_filter(state: TaskState) -> &'static str {
+    match state {
+        TaskState::Submitted => "SUBMITTED",
+        TaskState::Working => "WORKING",
+        TaskState::InputRequired => "INPUT_REQUIRED",
+        TaskState::AuthRequired => "AUTH_REQUIRED",
+        TaskState::Completed => "COMPLETED",
+        TaskState::Failed => "FAILED",
+        TaskState::Rejected => "REJECTED",
+        TaskState::Canceled => "CANCELED",
+    }
 }
 
 async fn load_native_task(
@@ -259,14 +625,13 @@ async fn load_native_task(
            FROM agent_a2a_task_alias_t a
            JOIN agent_turn_t t ON t.host_id=a.host_id AND t.turn_id=a.turn_id
           WHERE a.host_id=$1 AND a.public_task_id=$2 AND a.principal_subject=$3
-            AND a.agent_def_id=$4 AND a.publication_id=$5 AND a.policy_digest=$6{lock_clause}"
+            AND a.agent_def_id=$4 AND a.publication_id=$5{lock_clause}"
     ))
     .bind(access.host_id)
     .bind(access.task_id.to_string())
     .bind(access.principal_subject)
     .bind(access.target_agent_id)
     .bind(access.publication_id)
-    .bind(access.policy_digest)
     .fetch_optional(&mut **tx)
     .await?
     .ok_or(A2aError::WrongTaskOwner)?;
@@ -284,6 +649,34 @@ async fn load_native_task(
             _ => TaskState::Working,
         }
     };
+    let artifact_rows = sqlx::query(
+        "SELECT artifact_id,logical_name,media_type,size_bytes,content_digest,
+                retain_until_ts,provenance_digest
+           FROM agent_a2a_artifact_t
+          WHERE host_id=$1 AND public_task_id=$2 AND deletion_state='RETAINED'
+            AND (retain_until_ts > now() OR legal_hold)
+          ORDER BY created_ts,artifact_id",
+    )
+    .bind(access.host_id)
+    .bind(access.task_id.to_string())
+    .fetch_all(&mut **tx)
+    .await?;
+    let artifacts = artifact_rows
+        .into_iter()
+        .map(|artifact| {
+            Ok(ArtifactDescriptor {
+                artifact_id: artifact.try_get("artifact_id")?,
+                logical_name: artifact.try_get("logical_name")?,
+                media_type: artifact.try_get("media_type")?,
+                size_bytes: u64::try_from(artifact.try_get::<i64, _>("size_bytes")?)
+                    .map_err(|_| A2aError::InvalidArtifact)?,
+                content_digest: artifact.try_get("content_digest")?,
+                visibility: ArtifactVisibility::TaskOwner,
+                retention_deadline: artifact.try_get("retain_until_ts")?,
+                provenance_digest: artifact.try_get("provenance_digest")?,
+            })
+        })
+        .collect::<Result<Vec<_>, NativeA2aError>>()?;
     Ok(TaskSnapshot {
         task_id: access.task_id,
         context_id,
@@ -292,6 +685,7 @@ async fn load_native_task(
         target_agent_ref: access.target_agent_id.to_string(),
         result: row.try_get("terminal_result")?,
         error: row.try_get("terminal_error")?,
+        artifacts,
     })
 }
 
@@ -413,18 +807,20 @@ pub async fn validate(
             "agent-store migration ledger entry is missing".into(),
         ));
     }
-    let native_a2a_ready: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM operational_meta.operational_schema_migration_t
-          WHERE migration_owner='agent-store' AND schema_name='agent_ops'
-            AND migration_id=$1)",
-    )
-    .bind(NATIVE_A2A_MIGRATION_ID)
-    .fetch_one(pool)
-    .await?;
-    if !native_a2a_ready {
-        return Err(ValidationError::Scope(
-            "native Agent A2A migration ledger entry is missing".into(),
-        ));
+    for migration_id in [NATIVE_A2A_MIGRATION_ID, NATIVE_A2A_PHASE4_MIGRATION_ID] {
+        let native_a2a_ready: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM operational_meta.operational_schema_migration_t
+              WHERE migration_owner='agent-store' AND schema_name='agent_ops'
+                AND migration_id=$1)",
+        )
+        .bind(migration_id)
+        .fetch_one(pool)
+        .await?;
+        if !native_a2a_ready {
+            return Err(ValidationError::Scope(format!(
+                "native Agent A2A migration ledger entry is missing: {migration_id}"
+            )));
+        }
     }
     Ok(())
 }
@@ -437,7 +833,7 @@ mod tests {
     fn frozen_agent_inventory_is_exact() {
         assert_eq!(AUTHORITY_TABLES.len(), 21);
         assert_eq!(SUPPORT_TABLES.len(), 4);
-        assert_eq!(MIGRATIONS.len(), 2);
+        assert_eq!(MIGRATIONS.len(), 3);
         let sql = MIGRATIONS[0].1;
         for table in AUTHORITY_TABLES.iter().chain(SUPPORT_TABLES) {
             assert!(sql.contains(&format!("agent_ops.{table}")));
@@ -452,5 +848,6 @@ mod tests {
         }
         assert!(native_a2a_sql.contains("REFERENCES agent_ops.agent_session_t"));
         assert!(native_a2a_sql.contains("REFERENCES agent_ops.agent_turn_t"));
+        assert!(MIGRATIONS[2].1.contains("skill_mapping_digest"));
     }
 }

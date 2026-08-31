@@ -10,15 +10,19 @@ pub const EXPECTED_RUNTIME_ROLE: &str = "operations_workflow_runtime";
 pub const DEFAULT_DATABASE_URL_FILE: &str = "/run/secrets/operational-database-url";
 pub const MIGRATION_ID: &str = "0001_workflow_runtime";
 pub const A2A_BINDING_MIGRATION_ID: &str = "0002_governed_a2a_outbound";
+pub const CONSUMER_OFFSETS_MIGRATION_ID: &str = "0004_workflow_consumer_offsets";
 pub const MIGRATION_SQL: &str =
     include_str!("../migrations/workflow-postgres/0001_workflow_runtime.sql");
 pub const A2A_BINDING_MIGRATION_SQL: &str =
     include_str!("../migrations/workflow-postgres/0002_governed_a2a_outbound.sql");
+pub const CONSUMER_OFFSETS_MIGRATION_SQL: &str =
+    include_str!("../migrations/workflow-postgres/0004_workflow_consumer_offsets.sql");
 
 /// Durable Workflow state. The first three entries are the Phase 0 deferred
 /// roots; the remaining rows are runtime-owned state discovered during the
 /// Phase 5 authority audit.
 pub const AUTHORITY_TABLES: &[&str] = &[
+    "consumer_offsets",
     "process_info_t",
     "task_info_t",
     "workflow_approval_t",
@@ -190,6 +194,18 @@ pub async fn validate(
             "Workflow governed A2A binding migration ledger entry is missing".into(),
         ));
     }
+    let consumer_offsets_ready: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM operational_meta.operational_schema_migration_t
+          WHERE migration_owner='workflow-store' AND schema_name='workflow_ops' AND migration_id=$1)",
+    )
+    .bind(CONSUMER_OFFSETS_MIGRATION_ID)
+    .fetch_one(pool)
+    .await?;
+    if !consumer_offsets_ready {
+        return Err(ValidationError::Scope(
+            "Workflow consumer-offset migration ledger entry is missing".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -199,10 +215,11 @@ mod tests {
 
     #[test]
     fn workflow_inventory_and_boundary_are_frozen() {
-        assert_eq!(AUTHORITY_TABLES.len(), 17);
+        assert_eq!(AUTHORITY_TABLES.len(), 18);
         assert_eq!(PROJECTION_TABLES.len(), 7);
         for table in AUTHORITY_TABLES
             .iter()
+            .skip(1)
             .chain(PROJECTION_TABLES.iter().take(6))
         {
             assert!(MIGRATION_SQL.contains(&format!("workflow_ops.{table}")));
@@ -211,5 +228,6 @@ mod tests {
         assert!(!MIGRATION_SQL.contains("REFERENCES public."));
         assert!(A2A_BINDING_MIGRATION_SQL.contains("workflow_ops.workflow_a2a_binding_t"));
         assert!(!A2A_BINDING_MIGRATION_SQL.contains("server"));
+        assert!(CONSUMER_OFFSETS_MIGRATION_SQL.contains("workflow_ops.consumer_offsets"));
     }
 }

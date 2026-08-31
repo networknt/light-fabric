@@ -2,12 +2,12 @@ use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use axum::{
     Json, Router,
-    body::Bytes,
+    body::{Body, Bytes},
     extract::{
         Path, Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -49,7 +49,15 @@ use tracing::{error, info, warn};
 use url::Url;
 use uuid::Uuid;
 
-use a2a_core::{AuthorizedInvocation, Direction, verify_authorized_invocation};
+use a2a_core::{
+    AuthorizedInvocation, Direction, InvocationAuthority, OutboundInvocationConstraints,
+    TaskSnapshot, TaskState, sign_authorized_invocation, verify_authorized_invocation,
+};
+use a2a_protocol::{
+    A2aOperation, EXTENSIONS_HEADER, ProtocolProfile, VERSION_HEADER, agent_card_etag,
+    rewrite_agent_card_url,
+};
+use a2a_server::{OperationInput, parse_operation};
 use agent_core::{AgentSessionId, AgentTurnId, PolicySnapshot, sha256_digest};
 use agent_delegation::{DelegationClaims, DelegationKind, DelegationSigner};
 use agent_materializer::{MaterializationManifest, ProductProfile};
@@ -607,6 +615,14 @@ struct AgentState {
     personal_profile_digest: Option<String>,
     knowledge_client: Option<KnowledgeClient>,
     native_a2a: Option<NativeA2aRuntime>,
+    outbound_a2a: Option<OutboundA2aRuntime>,
+}
+
+#[derive(Clone)]
+struct OutboundA2aRuntime {
+    authorization_key: Arc<Vec<u8>>,
+    client: reqwest::Client,
+    bindings_by_tool: HashMap<String, light_agent::agent_config::OutboundA2aBinding>,
 }
 
 #[derive(Clone)]
@@ -617,6 +633,17 @@ struct NativeA2aRuntime {
     binding_id: Uuid,
     publication_id: Uuid,
     policy_digest: String,
+    protocol_profile: ProtocolProfile,
+    allowed_operations: BTreeSet<A2aOperation>,
+    allowed_principal_prefixes: Vec<String>,
+    public_url: String,
+    agent_card: serde_json::Value,
+    revocation_epoch: u64,
+    public_skill_mapping: serde_json::Value,
+    public_skill_mapping_digest: String,
+    artifact_retention_days: u32,
+    maximum_artifact_bytes: u64,
+    artifact_root_directory: std::path::PathBuf,
 }
 
 #[derive(Clone)]
@@ -733,6 +760,63 @@ impl TurnDispatchCoordinator {
 }
 
 impl AgentState {
+    fn spawn_native_artifact_retention(self: &Arc<Self>) {
+        let state = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                if let Some(native) = state.native_a2a.as_ref() {
+                    let now = chrono::Utc::now();
+                    match native
+                        .repository
+                        .expired_artifacts(state.host_id, now, 25)
+                        .await
+                    {
+                        Ok(artifacts) => {
+                            for artifact in artifacts {
+                                let path = native
+                                    .artifact_root_directory
+                                    .join(&artifact.object_reference);
+                                let deleted = match tokio::fs::remove_file(&path).await {
+                                    Ok(()) => true,
+                                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                        true
+                                    }
+                                    Err(error) => {
+                                        warn!(artifact_id=%artifact.artifact_id,%error,"native A2A artifact deletion failed");
+                                        false
+                                    }
+                                };
+                                if deleted {
+                                    let evidence = sha256_digest(
+                                        format!(
+                                            "native-a2a-delete:{}:{}",
+                                            artifact.artifact_id, now
+                                        )
+                                        .as_bytes(),
+                                    );
+                                    if let Err(error) = native
+                                        .repository
+                                        .complete_artifact_deletion(
+                                            state.host_id,
+                                            artifact.artifact_id,
+                                            now,
+                                            &evidence,
+                                        )
+                                        .await
+                                    {
+                                        warn!(artifact_id=%artifact.artifact_id,%error,"native A2A artifact tombstone failed");
+                                    }
+                                }
+                            }
+                        }
+                        Err(error) => warn!(%error,"native A2A artifact retention scan failed"),
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+        });
+    }
+
     fn catalog_cache_key(&self) -> CatalogCacheKey {
         CatalogCacheKey {
             host_id: self.host_id,
@@ -895,6 +979,14 @@ fn agent_router(state: Arc<AgentState>) -> Router {
         )
         .route("/chat", get(ws_handler))
         .route("/a2a/{agent_ref}", post(native_a2a_request))
+        .route(
+            "/a2a/{agent_ref}/.well-known/agent-card.json",
+            get(native_a2a_card),
+        )
+        .route(
+            "/a2a/{agent_ref}/.well-known/agent.json",
+            get(native_a2a_card),
+        )
         .fallback_service(ServeDir::new("public").append_index_html_on_directories(true))
         .with_state(state)
 }
@@ -908,25 +1000,78 @@ async fn health() -> &'static str {
 struct NativeA2aRpcRequest {
     jsonrpc: String,
     id: serde_json::Value,
-    method: String,
+    #[serde(rename = "method")]
+    _method: String,
     #[serde(default)]
     params: serde_json::Value,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct NativeA2aSendParams {
-    #[serde(default)]
-    task_id: Option<Uuid>,
-    #[serde(default)]
-    context_id: Option<Uuid>,
-    message: serde_json::Value,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct NativeA2aTaskParams {
-    id: Uuid,
+async fn native_a2a_card(
+    State(state): State<Arc<AgentState>>,
+    Path(agent_ref): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(runtime) = state.native_a2a.as_ref() else {
+        return native_a2a_error(
+            serde_json::Value::Null,
+            -32004,
+            "Native A2A publication is disabled",
+            StatusCode::NOT_FOUND,
+        );
+    };
+    if agent_ref != runtime.agent_ref {
+        return native_a2a_error(
+            serde_json::Value::Null,
+            -32004,
+            "Native A2A publication is disabled",
+            StatusCode::NOT_FOUND,
+        );
+    }
+    let path = format!("/a2a/{agent_ref}/.well-known/agent-card.json");
+    if let Err(error) = runtime.protocol_profile.classify(
+        &Method::GET,
+        &path,
+        headers
+            .get(VERSION_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        headers
+            .get(EXTENSIONS_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        &[],
+    ) {
+        return Json(error.jsonrpc_response(serde_json::Value::Null)).into_response();
+    }
+    match rewrite_agent_card_url(&runtime.agent_card, &runtime.public_url) {
+        Ok(card) => {
+            let etag = agent_card_etag(&card, &runtime.policy_digest, runtime.revocation_epoch);
+            if headers
+                .get("if-none-match")
+                .and_then(|value| value.to_str().ok())
+                == Some(etag.as_str())
+            {
+                return Response::builder()
+                    .status(StatusCode::NOT_MODIFIED)
+                    .header("etag", etag)
+                    .body(Body::empty())
+                    .expect("valid conditional Agent Card response");
+            }
+            let mut response = Json(card).into_response();
+            response.headers_mut().insert(
+                VERSION_HEADER,
+                HeaderValue::from_static(runtime.protocol_profile.version.as_str()),
+            );
+            response.headers_mut().insert(
+                "etag",
+                HeaderValue::from_str(&etag).expect("SHA-256 ETag is a valid header"),
+            );
+            response.headers_mut().insert(
+                "cache-control",
+                HeaderValue::from_static("public, max-age=60, must-revalidate"),
+            );
+            response
+        }
+        Err(error) => Json(error.jsonrpc_response(serde_json::Value::Null)).into_response(),
+    }
 }
 
 async fn native_a2a_request(
@@ -935,6 +1080,30 @@ async fn native_a2a_request(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    let Some(runtime) = state.native_a2a.as_ref() else {
+        return native_a2a_error(
+            serde_json::Value::Null,
+            -32004,
+            "Native A2A publication is disabled",
+            StatusCode::NOT_FOUND,
+        );
+    };
+    let classified = match runtime.protocol_profile.classify(
+        &Method::POST,
+        "/",
+        headers
+            .get(VERSION_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        headers
+            .get(EXTENSIONS_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        &body,
+    ) {
+        Ok(classified) => classified,
+        Err(error) => {
+            return Json(error.jsonrpc_response(serde_json::Value::Null)).into_response();
+        }
+    };
     let request = match serde_json::from_slice::<NativeA2aRpcRequest>(&body) {
         Ok(request) if request.jsonrpc == "2.0" => request,
         _ => {
@@ -946,28 +1115,28 @@ async fn native_a2a_request(
             );
         }
     };
-    let Some(runtime) = state.native_a2a.as_ref() else {
-        return native_a2a_error(
-            request.id,
-            -32004,
-            "Native A2A publication is disabled",
-            StatusCode::NOT_FOUND,
-        );
-    };
     let invocation = match verify_native_a2a_context(&headers, &body, runtime) {
         Ok(invocation) => invocation,
         Err(message) => {
             return native_a2a_error(request.id, -32001, message, StatusCode::UNAUTHORIZED);
         }
     };
+    let authority = InvocationAuthority {
+        binding_id: runtime.binding_id,
+        publication_id: runtime.publication_id,
+        policy_digest: runtime.policy_digest.clone(),
+        directions: [Direction::Inbound].into_iter().collect(),
+        operations: runtime.allowed_operations.clone(),
+        principal_prefixes: runtime.allowed_principal_prefixes.clone(),
+    };
     if agent_ref != runtime.agent_ref
         || invocation.target_agent_ref != runtime.agent_ref
-        || invocation.binding_id != runtime.binding_id
-        || invocation.publication_id != runtime.publication_id
-        || invocation.policy_digest != runtime.policy_digest
         || invocation.direction != Direction::Inbound
         || invocation.host_id != state.host_id
         || invocation.request_digest != sha256_digest(&body)
+        || authority
+            .authorize(&invocation, classified.operation)
+            .is_err()
     {
         return native_a2a_error(
             request.id,
@@ -977,52 +1146,92 @@ async fn native_a2a_request(
         );
     }
 
-    match request.method.as_str() {
-        "message/send" | "message/stream" => {
-            let params = match serde_json::from_value::<NativeA2aSendParams>(request.params) {
-                Ok(params) => params,
-                Err(_) => {
-                    return native_a2a_error(
-                        request.id,
-                        -32602,
-                        "Invalid params",
-                        StatusCode::BAD_REQUEST,
-                    );
-                }
-            };
-            let text =
-                match native_a2a_message_text(&params.message, state.limits.max_user_message_bytes)
-                {
-                    Ok(text) => text,
-                    Err(message) => {
-                        return native_a2a_error(
-                            request.id,
-                            -32602,
-                            &message,
-                            StatusCode::BAD_REQUEST,
-                        );
-                    }
-                };
-            let context_id = params.context_id.unwrap_or_else(Uuid::now_v7);
-            let task_id = params.task_id.unwrap_or_else(Uuid::now_v7);
+    let operation_input = match parse_operation(
+        classified.operation,
+        classified.version,
+        request.params,
+        state.limits.max_user_message_bytes,
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            return native_a2a_error(request.id, -32602, &error.to_string(), StatusCode::OK);
+        }
+    };
+
+    match (classified.operation, operation_input) {
+        (
+            A2aOperation::SendMessage | A2aOperation::SendStreamingMessage,
+            OperationInput::Send(params),
+        ) => {
+            let selected_skill = params
+                .metadata
+                .get("skillId")
+                .and_then(serde_json::Value::as_str);
+            if selected_skill.is_some_and(|requested| {
+                !runtime
+                    .public_skill_mapping
+                    .as_array()
+                    .is_some_and(|mappings| {
+                        mappings.iter().any(|mapping| {
+                            mapping
+                                .get("publicationAlias")
+                                .and_then(serde_json::Value::as_str)
+                                == Some(requested)
+                        })
+                    })
+            }) {
+                return native_a2a_error(
+                    request.id,
+                    -32003,
+                    "Requested skill is not published for this native Agent",
+                    StatusCode::FORBIDDEN,
+                );
+            }
+            if params.task_id.is_some() {
+                return native_a2a_error(
+                    request.id,
+                    -32004,
+                    "Task continuation is not available for a terminal native Agent turn",
+                    StatusCode::OK,
+                );
+            }
+            let context_id = params.context_id.unwrap_or_else(|| {
+                stable_native_a2a_id(
+                    "context",
+                    runtime.publication_id,
+                    &invocation.principal_subject,
+                    &params.message_id,
+                )
+            });
+            let task_id = stable_native_a2a_id(
+                "task",
+                runtime.publication_id,
+                &invocation.principal_subject,
+                &params.message_id,
+            );
+            let principal_id = stable_native_a2a_id(
+                "principal",
+                runtime.publication_id,
+                &invocation.principal_subject,
+                &invocation.principal_subject,
+            );
             let now = chrono::Utc::now();
             let session_policy = &state.agent_config.agent_policy.session;
             let idle_expires_at = now
                 + chrono::Duration::seconds(
                     i64::try_from(session_policy.idle_seconds).unwrap_or(i64::MAX),
                 );
-            let maximum_expires_at = invocation.expires_at.min(
-                now + chrono::Duration::seconds(
+            let maximum_expires_at = now
+                + chrono::Duration::seconds(
                     i64::try_from(session_policy.maximum_seconds).unwrap_or(i64::MAX),
-                ),
-            );
+                );
             if let Err(error) = state
                 .domain
                 .create_or_resume_session(&SessionSpec {
                     host_id: state.host_id,
                     session_id: AgentSessionId(context_id),
                     principal_id: invocation.principal_subject.clone(),
-                    user_id: None,
+                    user_id: Some(principal_id),
                     agent_def_id: state.agent_def_id,
                     definition_version: state.definition_version,
                     model_provider: state.agent_config.agent_policy.model.provider.clone(),
@@ -1045,13 +1254,33 @@ async fn native_a2a_request(
                     StatusCode::CONFLICT,
                 );
             }
+            if let Err(error) = state
+                .memory
+                .ensure_session_memory_bank(
+                    state.host_id,
+                    context_id,
+                    context_id,
+                    SessionOwner {
+                        principal_id,
+                        agent_def_id: state.agent_def_id,
+                    },
+                )
+                .await
+            {
+                return native_a2a_error(
+                    request.id,
+                    -32010,
+                    &error.to_string(),
+                    StatusCode::CONFLICT,
+                );
+            }
             let admitted = match state
                 .domain
                 .admit_user_turn(
                     state.host_id,
                     AgentSessionId(context_id),
-                    &invocation.idempotency_key,
-                    &text,
+                    &params.message_id,
+                    &params.text,
                     &state.agent_config.agent_policy.model.provider,
                     &state.agent_config.agent_policy.model.alias,
                     session_policy.maximum_queued_turns,
@@ -1077,6 +1306,9 @@ async fn native_a2a_request(
                     task_id,
                     context_id,
                     agent_def_id: state.agent_def_id,
+                    message_id: params.message_id.clone(),
+                    skill_mapping: runtime.public_skill_mapping.clone(),
+                    skill_mapping_digest: runtime.public_skill_mapping_digest.clone(),
                     invocation: invocation.clone(),
                 })
                 .await
@@ -1100,7 +1332,8 @@ async fn native_a2a_request(
                         execution_invocation,
                         context_id,
                         admitted.turn_id,
-                        text,
+                        task_id,
+                        params.text,
                     )
                     .await
                     {
@@ -1108,44 +1341,65 @@ async fn native_a2a_request(
                     }
                 });
             }
-            native_a2a_result(
-                request.id,
-                serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null),
-            )
+            let access = owned_native_task_access(&state, runtime, &invocation, task_id);
+            if classified.operation == A2aOperation::SendStreamingMessage {
+                native_a2a_task_stream(
+                    request.id,
+                    runtime.repository.clone(),
+                    access,
+                    classified.version,
+                    Some(snapshot),
+                    true,
+                    state.limits.turn_timeout,
+                    params.history_length,
+                )
+            } else {
+                let snapshot = if params.return_immediately {
+                    snapshot
+                } else {
+                    match wait_native_a2a_task(
+                        &runtime.repository,
+                        &access,
+                        state.limits.turn_timeout + Duration::from_secs(5),
+                    )
+                    .await
+                    {
+                        Ok(snapshot) => snapshot,
+                        Err(error) => {
+                            return native_a2a_error(request.id, -32603, &error, StatusCode::OK);
+                        }
+                    }
+                };
+                native_a2a_result(
+                    request.id,
+                    a2a_server::send_result_with_history(
+                        &snapshot,
+                        classified.version,
+                        chrono::Utc::now(),
+                        params.history_length,
+                    ),
+                )
+            }
         }
-        "tasks/get" | "tasks/cancel" => {
-            let params = match serde_json::from_value::<NativeA2aTaskParams>(request.params) {
-                Ok(params) => params,
-                Err(_) => {
-                    return native_a2a_error(
-                        request.id,
-                        -32602,
-                        "Invalid params",
-                        StatusCode::BAD_REQUEST,
-                    );
-                }
-            };
-            let access = agent_store::NativeTaskAccess {
-                host_id: state.host_id,
-                task_id: params.id,
-                principal_subject: &invocation.principal_subject,
-                target_agent_id: state.agent_def_id,
-                publication_id: runtime.publication_id,
-                policy_digest: &runtime.policy_digest,
-            };
-            if request.method == "tasks/cancel" {
+        (
+            A2aOperation::GetTask | A2aOperation::CancelTask | A2aOperation::SubscribeToTask,
+            OperationInput::Task(params),
+        ) => {
+            let owned = owned_native_task_access(&state, runtime, &invocation, params.task_id);
+            let access = owned.as_borrowed();
+            if classified.operation == A2aOperation::CancelTask {
                 let (session_id, turn_id) = match runtime.repository.resolve_turn(&access).await {
                     Ok(ids) => ids,
-                    Err(error) => {
+                    Err(_) => {
                         return native_a2a_error(
                             request.id,
-                            -32004,
-                            &error.to_string(),
+                            -32001,
+                            "Task not found",
                             StatusCode::NOT_FOUND,
                         );
                     }
                 };
-                if let Err(error) = state
+                if let Err(_) = state
                     .domain
                     .cancel_turn(
                         state.host_id,
@@ -1157,44 +1411,139 @@ async fn native_a2a_request(
                 {
                     return native_a2a_error(
                         request.id,
-                        -32011,
-                        &error.to_string(),
+                        -32002,
+                        "Task cannot be canceled",
                         StatusCode::CONFLICT,
                     );
                 }
                 match runtime.repository.mark_canceled(&access).await {
                     Ok(snapshot) => native_a2a_result(
                         request.id,
-                        serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null),
+                        a2a_server::task_value(&snapshot, classified.version, chrono::Utc::now()),
                     ),
-                    Err(error) => native_a2a_error(
+                    Err(_) => native_a2a_error(
                         request.id,
-                        -32011,
-                        &error.to_string(),
+                        -32002,
+                        "Task cannot be canceled",
                         StatusCode::CONFLICT,
+                    ),
+                }
+            } else if classified.operation == A2aOperation::SubscribeToTask {
+                match runtime.repository.get(&access).await {
+                    Ok(snapshot) if snapshot.state.terminal() => native_a2a_error(
+                        request.id,
+                        -32004,
+                        "This operation is not supported",
+                        StatusCode::OK,
+                    ),
+                    Ok(snapshot) => native_a2a_task_stream(
+                        request.id,
+                        runtime.repository.clone(),
+                        owned,
+                        classified.version,
+                        Some(snapshot),
+                        false,
+                        state.limits.turn_timeout,
+                        None,
+                    ),
+                    Err(_) => native_a2a_error(
+                        request.id,
+                        -32001,
+                        "Task not found",
+                        StatusCode::NOT_FOUND,
                     ),
                 }
             } else {
                 match runtime.repository.get(&access).await {
                     Ok(snapshot) => native_a2a_result(
                         request.id,
-                        serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null),
+                        a2a_server::task_value_with_history(
+                            &snapshot,
+                            classified.version,
+                            chrono::Utc::now(),
+                            params.history_length,
+                        ),
                     ),
-                    Err(error) => native_a2a_error(
+                    Err(_) => native_a2a_error(
                         request.id,
-                        -32004,
-                        &error.to_string(),
+                        -32001,
+                        "Task not found",
                         StatusCode::NOT_FOUND,
                     ),
                 }
             }
         }
-        _ => native_a2a_error(
-            request.id,
-            -32601,
-            "Method not found",
-            StatusCode::NOT_FOUND,
-        ),
+        (A2aOperation::ListTasks, OperationInput::List(params)) => {
+            let cursor = match a2a_server::decode_page_token(params.page_token.as_deref()) {
+                Ok(cursor) => cursor,
+                Err(_) => {
+                    return native_a2a_error(request.id, -32602, "Invalid params", StatusCode::OK);
+                }
+            };
+            let page = match runtime
+                .repository
+                .list(&agent_store::NativeTaskListAccess {
+                    host_id: state.host_id,
+                    principal_subject: &invocation.principal_subject,
+                    target_agent_id: state.agent_def_id,
+                    publication_id: runtime.publication_id,
+                    context_id: params.context_id,
+                    status: params.status,
+                    status_timestamp_after: params.status_timestamp_after,
+                    cursor: cursor.map(|cursor| (cursor.created_at, cursor.task_id)),
+                    limit: params.page_size,
+                })
+                .await
+            {
+                Ok(page) => page,
+                Err(error) => {
+                    return native_a2a_error(
+                        request.id,
+                        -32003,
+                        &error.to_string(),
+                        StatusCode::OK,
+                    );
+                }
+            };
+            let next_page_token = match a2a_server::encode_page_token(page.next_cursor.map(
+                |(created_at, task_id)| a2a_server::PageCursor {
+                    created_at,
+                    task_id,
+                },
+            )) {
+                Ok(token) => token,
+                Err(_) => {
+                    return native_a2a_error(request.id, -32603, "Internal error", StatusCode::OK);
+                }
+            };
+            let total_size = page.total_size;
+            let tasks = page.tasks;
+            let tasks = if params.include_artifacts {
+                tasks
+            } else {
+                tasks
+                    .into_iter()
+                    .map(|mut task| {
+                        task.artifacts.clear();
+                        task
+                    })
+                    .collect()
+            };
+            native_a2a_result(
+                request.id,
+                a2a_server::list_result_with_history(
+                    &tasks,
+                    classified.version,
+                    params.page_size,
+                    total_size,
+                    next_page_token.as_deref(),
+                    chrono::Utc::now(),
+                    params.history_length,
+                    params.include_artifacts,
+                ),
+            )
+        }
+        _ => native_a2a_error(request.id, -32601, "Method not found", StatusCode::OK),
     }
 }
 
@@ -1222,29 +1571,315 @@ fn verify_native_a2a_context(
     .map_err(|_| "Authorized context rejected")
 }
 
-fn native_a2a_message_text(message: &serde_json::Value, maximum: usize) -> Result<String, String> {
-    let direct = message.get("text").and_then(serde_json::Value::as_str);
-    let part = message
-        .get("parts")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|parts| {
-            parts.iter().find_map(|part| {
-                part.get("text")
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|text| !text.trim().is_empty())
-            })
-        });
-    let text = direct
-        .or(part)
-        .map(str::trim)
-        .filter(|text| !text.is_empty());
-    let Some(text) = text else {
-        return Err("A2A message requires one bounded text part".into());
-    };
-    if text.len() > maximum {
-        return Err("A2A text part exceeds the Agent message limit".into());
+#[derive(Clone)]
+struct NativeTaskAccessOwned {
+    host_id: Uuid,
+    task_id: Uuid,
+    principal_subject: String,
+    target_agent_id: Uuid,
+    publication_id: Uuid,
+}
+
+impl NativeTaskAccessOwned {
+    fn as_borrowed(&self) -> agent_store::NativeTaskAccess<'_> {
+        agent_store::NativeTaskAccess {
+            host_id: self.host_id,
+            task_id: self.task_id,
+            principal_subject: &self.principal_subject,
+            target_agent_id: self.target_agent_id,
+            publication_id: self.publication_id,
+        }
     }
-    Ok(text.to_string())
+}
+
+fn owned_native_task_access(
+    state: &AgentState,
+    runtime: &NativeA2aRuntime,
+    invocation: &AuthorizedInvocation,
+    task_id: Uuid,
+) -> NativeTaskAccessOwned {
+    NativeTaskAccessOwned {
+        host_id: state.host_id,
+        task_id,
+        principal_subject: invocation.principal_subject.clone(),
+        target_agent_id: state.agent_def_id,
+        publication_id: runtime.publication_id,
+    }
+}
+
+fn stable_native_a2a_id(
+    kind: &str,
+    publication_id: Uuid,
+    principal_subject: &str,
+    message_id: &str,
+) -> Uuid {
+    let digest = sha256_digest(
+        format!("native-a2a:{kind}:{publication_id}:{principal_subject}:{message_id}").as_bytes(),
+    );
+    let hex = digest
+        .strip_prefix("sha256:")
+        .expect("SHA-256 digest prefix");
+    let mut bytes = [0u8; 16];
+    for (index, value) in bytes.iter_mut().enumerate() {
+        *value = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16)
+            .expect("SHA-256 digest is hexadecimal");
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes)
+}
+
+fn outbound_a2a_tool_name(agent_ref: &str) -> String {
+    format!(
+        "a2a__{}__send",
+        agent_ref
+            .chars()
+            .map(|value| if value.is_ascii_alphanumeric() {
+                value
+            } else {
+                '_'
+            })
+            .collect::<String>()
+    )
+}
+
+async fn invoke_outbound_a2a(
+    state: &AgentState,
+    authenticated: &AuthenticatedRequest,
+    binding: &light_agent::agent_config::OutboundA2aBinding,
+    message: &str,
+    skill_id: Option<&str>,
+    message_id: &str,
+    data_boundary_digest: &str,
+) -> Result<serde_json::Value> {
+    let runtime = state
+        .outbound_a2a
+        .as_ref()
+        .context("outbound A2A runtime is unavailable")?;
+    let part = if binding.protocol_version == "0.3" {
+        serde_json::json!({"kind":"text","text":message})
+    } else {
+        serde_json::json!({"text":message})
+    };
+    let mut metadata = serde_json::Map::new();
+    if let Some(skill_id) = skill_id {
+        metadata.insert("skillId".into(), serde_json::Value::String(skill_id.into()));
+    }
+    let message_value = if binding.protocol_version == "0.3" {
+        serde_json::json!({
+            "kind":"message","role":"user","messageId":message_id,"parts":[part],
+            "metadata":metadata
+        })
+    } else {
+        serde_json::json!({
+            "role":"ROLE_USER","messageId":message_id,"parts":[part],"metadata":metadata
+        })
+    };
+    let body = serde_json::to_vec(&serde_json::json!({
+        "jsonrpc":"2.0","id":message_id,"method":"message/send",
+        "params":{"message":message_value}
+    }))?;
+    if body.len() as u64 > binding.maximum_budget_units {
+        bail!("outbound A2A request exceeds its published budget");
+    }
+    let now = chrono::Utc::now();
+    let expires_at = now + chrono::Duration::minutes(2);
+    let caller_agent_ref = state.service_id.clone();
+    let invocation = AuthorizedInvocation {
+        host_id: state.host_id,
+        audience: "light-a2a".into(),
+        principal_subject: authenticated.caller_subject.clone(),
+        caller_agent_ref: caller_agent_ref.clone(),
+        target_agent_ref: binding.agent_ref.clone(),
+        binding_id: binding.binding_id,
+        policy_digest: binding.policy_digest.clone(),
+        publication_id: binding.publication_id,
+        direction: Direction::Outbound,
+        idempotency_key: message_id.to_string(),
+        request_digest: a2a_core::request_digest(&body),
+        outbound: Some(OutboundInvocationConstraints {
+            delegation_id: Uuid::now_v7(),
+            environment: state.env_tag.clone().unwrap_or_default(),
+            data_boundary_digest: data_boundary_digest.to_string(),
+            delegation_depth: 1,
+            maximum_delegation_depth: binding.maximum_delegation_depth,
+            remaining_budget_units: binding.maximum_budget_units,
+            deadline: expires_at,
+            call_chain: vec![caller_agent_ref],
+            skill_id: skill_id.map(str::to_owned),
+        }),
+        issued_at: now,
+        expires_at,
+    };
+    invocation.validate("light-a2a", now)?;
+    let (context, signature) =
+        sign_authorized_invocation(&invocation, &body, &runtime.authorization_key)?;
+    let response = runtime
+        .client
+        .post(&binding.gateway_uri)
+        .bearer_auth(&state.llm_gateway_token)
+        .header("content-type", "application/json")
+        .header(VERSION_HEADER, &binding.protocol_version)
+        .header("x-light-a2a-context", context)
+        .header("x-light-a2a-signature", signature)
+        .body(body)
+        .send()
+        .await
+        .context("invoke governed outbound A2A binding")?;
+    let status = response.status();
+    let bytes = response.bytes().await?;
+    if bytes.len() > state.limits.max_tool_output_bytes {
+        bail!("outbound A2A response exceeds the Agent tool-output limit");
+    }
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).context("outbound A2A response is not JSON")?;
+    if !status.is_success() || value.get("error").is_some() {
+        bail!("outbound A2A invocation failed: {value}");
+    }
+    Ok(value
+        .get("result")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null))
+}
+
+async fn wait_native_a2a_task(
+    repository: &agent_store::NativeA2aRepository,
+    access: &NativeTaskAccessOwned,
+    maximum: Duration,
+) -> Result<TaskSnapshot, String> {
+    let deadline = tokio::time::Instant::now() + maximum;
+    loop {
+        let snapshot = repository
+            .get(&access.as_borrowed())
+            .await
+            .map_err(|error| error.to_string())?;
+        if snapshot.state.terminal()
+            || matches!(
+                snapshot.state,
+                TaskState::InputRequired | TaskState::AuthRequired
+            )
+        {
+            return Ok(snapshot);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(snapshot);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+fn native_a2a_task_stream(
+    id: serde_json::Value,
+    repository: agent_store::NativeA2aRepository,
+    access: NativeTaskAccessOwned,
+    version: a2a_protocol::ProtocolVersion,
+    initial: Option<TaskSnapshot>,
+    emit_initial_task: bool,
+    maximum: Duration,
+    history_length: Option<usize>,
+) -> Response {
+    struct StreamState {
+        id: serde_json::Value,
+        repository: agent_store::NativeA2aRepository,
+        access: NativeTaskAccessOwned,
+        version: a2a_protocol::ProtocolVersion,
+        next: Option<TaskSnapshot>,
+        last_state: Option<TaskState>,
+        emit_initial_task: bool,
+        deadline: tokio::time::Instant,
+        done: bool,
+        history_length: Option<usize>,
+    }
+    let stream = futures_util::stream::unfold(
+        StreamState {
+            id,
+            repository,
+            access,
+            version,
+            next: initial,
+            last_state: None,
+            emit_initial_task,
+            deadline: tokio::time::Instant::now() + maximum + Duration::from_secs(5),
+            done: false,
+            history_length,
+        },
+        |mut state| async move {
+            if state.done {
+                return None;
+            }
+            loop {
+                let snapshot = match state.next.take() {
+                    Some(snapshot) => snapshot,
+                    None => match state.repository.get(&state.access.as_borrowed()).await {
+                        Ok(snapshot) => snapshot,
+                        Err(_) => {
+                            state.done = true;
+                            let frame = serde_json::json!({
+                                "jsonrpc":"2.0","id":state.id,
+                                "error":{"code":-32001,"message":"Task not found"}
+                            });
+                            return Some((
+                                Ok::<_, std::convert::Infallible>(Bytes::from(format!(
+                                    "data: {frame}\n\n"
+                                ))),
+                                state,
+                            ));
+                        }
+                    },
+                };
+                let first = state.last_state.is_none() && state.emit_initial_task;
+                if first || state.last_state != Some(snapshot.state) {
+                    state.last_state = Some(snapshot.state);
+                    state.done = snapshot.state.terminal()
+                        || matches!(
+                            snapshot.state,
+                            TaskState::InputRequired | TaskState::AuthRequired
+                        );
+                    let result = if first {
+                        a2a_server::send_result_with_history(
+                            &snapshot,
+                            state.version,
+                            chrono::Utc::now(),
+                            state.history_length,
+                        )
+                    } else {
+                        a2a_server::status_stream_result(
+                            &snapshot,
+                            state.version,
+                            chrono::Utc::now(),
+                        )
+                    };
+                    let frame = serde_json::json!({"jsonrpc":"2.0","id":state.id,"result":result});
+                    return Some((
+                        Ok::<_, std::convert::Infallible>(Bytes::from(format!(
+                            "data: {frame}\n\n"
+                        ))),
+                        state,
+                    ));
+                }
+                if tokio::time::Instant::now() >= state.deadline {
+                    state.done = true;
+                    let frame = serde_json::json!({
+                        "jsonrpc":"2.0","id":state.id,
+                        "error":{"code":-32010,"message":"native A2A stream deadline exceeded"}
+                    });
+                    return Some((
+                        Ok::<_, std::convert::Infallible>(Bytes::from(format!(
+                            "data: {frame}\n\n"
+                        ))),
+                        state,
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        },
+    );
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/event-stream")
+        .header("cache-control", "no-store")
+        .body(Body::from_stream(stream))
+        .expect("valid native A2A SSE response")
 }
 
 async fn execute_native_a2a_turn(
@@ -1252,27 +1887,39 @@ async fn execute_native_a2a_turn(
     invocation: AuthorizedInvocation,
     session_id: Uuid,
     turn_id: AgentTurnId,
+    task_id: Uuid,
     text: String,
 ) -> Result<()> {
-    let _ = state
-        .domain
-        .activate_next_turn(state.host_id, AgentSessionId(session_id))
-        .await?;
-    let mut resolution = None;
-    for _ in 0..20 {
-        match state
+    let waiter = state.turn_dispatch.register(turn_id.0).await;
+    let deadline = tokio::time::Instant::now() + state.limits.turn_timeout;
+    let resolution = loop {
+        let notified = waiter.notified();
+        tokio::pin!(notified);
+        if let Ok(value) = state
             .domain
             .resolve_turn_runtime(state.host_id, turn_id)
             .await
         {
-            Ok(value) => {
-                resolution = Some(value);
-                break;
-            }
-            Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
+            break value;
         }
-    }
-    let resolution = resolution.context("native A2A turn was not activated")?;
+        if tokio::time::timeout_at(deadline, &mut notified)
+            .await
+            .is_err()
+        {
+            state.turn_dispatch.remove(turn_id.0).await;
+            state
+                .domain
+                .fail_turn(
+                    state.host_id,
+                    AgentSessionId(session_id),
+                    turn_id,
+                    "native A2A turn remained queued past dispatch deadline",
+                )
+                .await?;
+            bail!("native A2A turn was not activated before its deadline");
+        }
+    };
+    state.turn_dispatch.remove(turn_id.0).await;
     let provider_config = ModelProviderConfig {
         provider: resolution.model_provider.clone(),
         model: Some(resolution.model_name.clone()),
@@ -1287,7 +1934,12 @@ async fn execute_native_a2a_turn(
     let authenticated = AuthenticatedRequest {
         authorization: String::new(),
         owner: SessionOwner {
-            principal_id: invocation.binding_id,
+            principal_id: stable_native_a2a_id(
+                "principal",
+                invocation.publication_id,
+                &invocation.principal_subject,
+                &invocation.principal_subject,
+            ),
             agent_def_id: state.agent_def_id,
         },
         caller_claims: serde_json::json!({"a2a":true}),
@@ -1296,21 +1948,24 @@ async fn execute_native_a2a_turn(
         groups: Vec::new(),
         organizations: Vec::new(),
     };
-    let outcome = run_agent_loop(
-        &state,
-        vec![ChatMessage::user(text)],
-        &authenticated,
-        turn_id.0,
-        &resolution.policy_digest,
-        &resolution.data_boundary_digest,
-        &session_id.to_string(),
-        session_id,
-        &resolution,
-        &runtime,
+    let outcome = tokio::time::timeout(
+        state.limits.turn_timeout,
+        run_agent_loop(
+            &state,
+            vec![ChatMessage::user(text)],
+            &authenticated,
+            turn_id.0,
+            &resolution.policy_digest,
+            &resolution.data_boundary_digest,
+            &session_id.to_string(),
+            session_id,
+            &resolution,
+            &runtime,
+        ),
     )
     .await;
     match outcome {
-        Ok((response, usage, knowledge_evidence)) => {
+        Ok(Ok((response, usage, knowledge_evidence))) => {
             let text = response.text.unwrap_or_default();
             state
                 .domain
@@ -1327,9 +1982,67 @@ async fn execute_native_a2a_turn(
                         .then(|| i64::try_from(usage.output_tokens).unwrap_or(i64::MAX)),
                     knowledge_evidence.as_ref(),
                 )
-                .await
+                .await?;
+            if !text.is_empty()
+                && let Some(native) = state.native_a2a.as_ref()
+                && text.len() as u64 <= native.maximum_artifact_bytes
+            {
+                let access = agent_store::NativeTaskAccess {
+                    host_id: state.host_id,
+                    task_id,
+                    principal_subject: &invocation.principal_subject,
+                    target_agent_id: state.agent_def_id,
+                    publication_id: native.publication_id,
+                };
+                let snapshot = native.repository.get(&access).await?;
+                if snapshot.state == TaskState::Completed {
+                    let artifact_id = stable_native_a2a_id(
+                        "artifact",
+                        native.publication_id,
+                        &invocation.principal_subject,
+                        &task_id.to_string(),
+                    );
+                    let content_digest = sha256_digest(text.as_bytes());
+                    let provenance_digest = sha256_digest(
+                        format!("native-a2a-result:{session_id}:{}:{task_id}", turn_id.0)
+                            .as_bytes(),
+                    );
+                    let object_reference = format!("{}/{}/{}", state.host_id, task_id, artifact_id);
+                    let artifact_path = native.artifact_root_directory.join(&object_reference);
+                    let parent = artifact_path
+                        .parent()
+                        .context("native A2A artifact path has no parent")?;
+                    tokio::fs::create_dir_all(parent)
+                        .await
+                        .context("create native A2A artifact directory")?;
+                    tokio::fs::write(&artifact_path, text.as_bytes())
+                        .await
+                        .context("write native A2A managed artifact")?;
+                    native
+                        .repository
+                        .register_artifact(
+                            &access,
+                            &agent_store::NativeArtifactAdmission {
+                                artifact_id,
+                                logical_name: "agent-response.txt",
+                                media_type: "text/plain",
+                                size_bytes: text.len() as u64,
+                                content_digest: &content_digest,
+                                object_reference: &object_reference,
+                                provenance_digest: &provenance_digest,
+                                retain_until: chrono::Utc::now()
+                                    + chrono::Duration::days(i64::from(
+                                        native.artifact_retention_days,
+                                    )),
+                            },
+                        )
+                        .await
+                        .context("persist native A2A result artifact")?;
+                }
+            }
+            Ok(())
         }
-        Err(error) => {
+        Ok(Err(error)) => {
             state
                 .domain
                 .fail_turn_after_model_dispatch(
@@ -1340,6 +2053,18 @@ async fn execute_native_a2a_turn(
                 )
                 .await?;
             Err(error)
+        }
+        Err(_) => {
+            state
+                .domain
+                .fail_turn_after_model_dispatch(
+                    state.host_id,
+                    AgentSessionId(session_id),
+                    turn_id,
+                    "native A2A turn deadline exceeded",
+                )
+                .await?;
+            bail!("native A2A turn deadline exceeded")
         }
     }
 }
@@ -1356,10 +2081,10 @@ fn native_a2a_error(
     id: serde_json::Value,
     code: i64,
     message: &str,
-    status: StatusCode,
+    _status: StatusCode,
 ) -> Response {
     (
-        status,
+        StatusCode::OK,
         Json(serde_json::json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})),
     )
         .into_response()
@@ -3880,6 +4605,29 @@ async fn run_agent_loop(
         });
         accepted_tools.insert(t.name.clone(), t);
     }
+    let outbound_tools = state
+        .outbound_a2a
+        .as_ref()
+        .map(|runtime| runtime.bindings_by_tool.clone())
+        .unwrap_or_default();
+    for (name, binding) in &outbound_tools {
+        if accepted_tools.contains_key(name) {
+            bail!("outbound A2A tool collides with a Gateway tool: {name}");
+        }
+        tool_specs.push(ToolSpec {
+            name: name.clone(),
+            description: binding.description.clone(),
+            parameters: serde_json::json!({
+                "type":"object",
+                "additionalProperties":false,
+                "required":["message"],
+                "properties":{
+                    "message":{"type":"string","minLength":1},
+                    "skillId":{"type":"string","enum":binding.allowed_skill_ids}
+                }
+            }),
+        });
+    }
 
     // 3. Main LLM Loop
     let mut final_response = None;
@@ -3958,6 +4706,73 @@ async fn run_agent_loop(
             action_count = action_count.saturating_add(1);
             if action_count > state.limits.max_action_calls {
                 bail!("turn action limit exceeded");
+            }
+            if let Some(binding) = outbound_tools.get(&tool_call.name) {
+                let arguments: serde_json::Value = serde_json::from_str(&tool_call.arguments)
+                    .context("outbound A2A tool arguments are invalid JSON")?;
+                let message = arguments
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| anyhow!("outbound A2A message is required"))?;
+                let skill_id = arguments.get("skillId").and_then(serde_json::Value::as_str);
+                if skill_id.is_some_and(|skill| {
+                    !binding
+                        .allowed_skill_ids
+                        .iter()
+                        .any(|allowed| allowed == skill)
+                }) {
+                    bail!("outbound A2A skill is not assigned to this Agent");
+                }
+                let (action_attempt_id, _) = state
+                    .domain
+                    .propose_gateway_action(
+                        state.host_id,
+                        agent_core::AgentTurnId(turn_id),
+                        binding.catalog_tool_id,
+                        &tool_call.name,
+                        &tool_call.arguments,
+                    )
+                    .await?;
+                let result = invoke_outbound_a2a(
+                    state,
+                    authenticated,
+                    binding,
+                    message,
+                    skill_id,
+                    &tool_call.id,
+                    data_boundary_digest,
+                )
+                .await;
+                let (succeeded, payload) = match result {
+                    Ok(value) => (true, value),
+                    Err(error) => (false, serde_json::json!({"error":error.to_string()})),
+                };
+                state
+                    .domain
+                    .accept_gateway_result(
+                        state.host_id,
+                        agent_core::AgentTurnId(turn_id),
+                        action_attempt_id,
+                        succeeded,
+                        payload.clone(),
+                    )
+                    .await?;
+                let rendered = serde_json::to_string(&payload)?;
+                let (rendered, truncated) = bound_untrusted_text(
+                    &rendered,
+                    &state.limits,
+                    state.limits.max_tool_output_bytes,
+                );
+                messages.push(tool_result_message(
+                    &tool_call.id,
+                    &tool_call.name,
+                    &rendered,
+                    !succeeded,
+                    truncated,
+                ));
+                continue;
             }
             let Some(tool) = accepted_tools.get(&tool_call.name) else {
                 messages.push(tool_result_message(
@@ -4111,8 +4926,13 @@ async fn build_agent_state(
     )?;
     agent_config
         .validate(
+            &runtime_config.bootstrap.host,
             &runtime_config.service_identity.service_id,
-            runtime_config.service_identity.env_tag.as_deref(),
+            runtime_config
+                .service_identity
+                .env_tag
+                .as_deref()
+                .ok_or_else(|| RuntimeError::Config("startup envTag is required".into()))?,
             chrono::Utc::now(),
         )
         .map_err(RuntimeError::Config)?;
@@ -4193,8 +5013,8 @@ async fn build_agent_state(
         &agent_store::ExpectedBinding {
             binding_id: agent_config.operational_store.binding_id,
             binding_digest: &agent_config.operational_store.binding_digest,
-            host_id: agent_config.runtime_policy.host_id,
-            environment: &agent_config.runtime_policy.environment,
+            host_id: agent_config.operational_store.host_id,
+            environment: &agent_config.operational_store.environment,
             minimum_schema_generation: agent_config.operational_store.minimum_schema_version,
         },
     )
@@ -4238,6 +5058,88 @@ async fn build_agent_state(
                 .publication_id
                 .expect("validated native A2A publication ID"),
             policy_digest: agent_config.a2a_policy.policy_digest.clone(),
+            protocol_profile: agent_config
+                .a2a_policy
+                .protocol_profile
+                .clone()
+                .expect("validated native A2A protocol profile"),
+            allowed_operations: agent_config.a2a_policy.allowed_operations.clone(),
+            allowed_principal_prefixes: agent_config.a2a_policy.allowed_principal_prefixes.clone(),
+            public_url: agent_config.a2a_policy.public_url.clone(),
+            agent_card: agent_config
+                .a2a_policy
+                .agent_card
+                .clone()
+                .expect("validated native Agent Card"),
+            revocation_epoch: agent_config.runtime_policy.revocation_epoch,
+            public_skill_mapping: serde_json::to_value(&agent_config.a2a_policy.public_skills)
+                .map_err(|error| {
+                    RuntimeError::Config(format!(
+                        "cannot serialize native A2A public skill mapping: {error}"
+                    ))
+                })?,
+            public_skill_mapping_digest: agent_config
+                .a2a_skill_mapping_digest()
+                .map_err(RuntimeError::Config)?,
+            artifact_retention_days: agent_config
+                .a2a_policy
+                .artifact_retention
+                .as_ref()
+                .expect("validated native A2A artifact retention policy")
+                .artifact_retention_days,
+            maximum_artifact_bytes: agent_config
+                .a2a_policy
+                .artifact_retention
+                .as_ref()
+                .expect("validated native A2A artifact retention policy")
+                .maximum_artifact_bytes,
+            artifact_root_directory: agent_config.a2a_policy.artifact_root_directory.clone(),
+        })
+    } else {
+        None
+    };
+    let outbound_a2a = if agent_config.a2a_outbound.enabled {
+        let key_path = PathBuf::from(&agent_config.a2a_outbound.authorization_context_key_file);
+        let metadata = std::fs::symlink_metadata(&key_path).map_err(|error| {
+            RuntimeError::Config(format!("cannot inspect outbound A2A context key: {error}"))
+        })?;
+        #[cfg(unix)]
+        let permissions_are_private = {
+            use std::os::unix::fs::PermissionsExt;
+            metadata.permissions().mode() & 0o037 == 0
+        };
+        #[cfg(not(unix))]
+        let permissions_are_private = true;
+        if metadata.file_type().is_symlink() || !metadata.is_file() || !permissions_are_private {
+            return Err(RuntimeError::Config(
+                "outbound A2A context key must be a private regular non-symlink file".into(),
+            ));
+        }
+        let key = std::fs::read(&key_path).map_err(|error| {
+            RuntimeError::Config(format!("cannot read outbound A2A context key: {error}"))
+        })?;
+        if key.len() < 32 {
+            return Err(RuntimeError::Config(
+                "outbound A2A context key must contain at least 32 bytes".into(),
+            ));
+        }
+        let mut bindings_by_tool = HashMap::new();
+        for binding in &agent_config.a2a_outbound.bindings {
+            let name = outbound_a2a_tool_name(&binding.agent_ref);
+            if bindings_by_tool.insert(name, binding.clone()).is_some() {
+                return Err(RuntimeError::Config(
+                    "outbound A2A agentRef values produce a duplicate model tool name".into(),
+                ));
+            }
+        }
+        Some(OutboundA2aRuntime {
+            authorization_key: Arc::new(key),
+            client: build_agent_http_client(
+                ca_cert.as_deref(),
+                verify_hostname,
+                Duration::from_secs(120),
+            )?,
+            bindings_by_tool,
         })
     } else {
         None
@@ -4256,7 +5158,7 @@ async fn build_agent_state(
         _ => return Err(RuntimeError::Config("LIGHT_AGENT_DELEGATION_SECRET is required unless LIGHT_AGENT_ALLOW_BROAD_GATEWAY_TOKEN=true is explicitly set for local compatibility".into())),
     };
 
-    let host_id = agent_config.runtime_policy.host_id;
+    let host_id = agent_config.operational_store.host_id;
     let agent_def_id = agent_config.agent_policy.agent_def_id;
     let definition_version = agent_config.agent_policy.definition_version;
     let policy_digest = agent_config.runtime_policy.policy_digest.clone();
@@ -4395,9 +5297,9 @@ async fn build_agent_state(
                 .policy_snapshot
                 .definition_digest
                 .clone(),
-            environment: agent_config.runtime_policy.environment.clone(),
+            environment: agent_config.runtime_policy.env_tag.clone(),
             service_id: agent_config.runtime_policy.service_id.clone(),
-            instance_id: agent_config.runtime_policy.instance_id,
+            instance_id: agent_config.portal_association.runtime_instance_id,
             policy_snapshot_id: agent_config.agent_policy.policy_snapshot.snapshot_id,
             policy_version: i64::try_from(agent_config.runtime_policy.policy_version).map_err(
                 |_| RuntimeError::Config("runtimePolicy.policyVersion is too large".into()),
@@ -4452,8 +5354,10 @@ async fn build_agent_state(
         personal_profile_digest,
         knowledge_client,
         native_a2a,
+        outbound_a2a,
     });
     state.domain.spawn_result_reconciler();
+    state.spawn_native_artifact_retention();
 
     if let Err(err) = state.refresh_effective_catalog().await {
         warn!(
@@ -4619,6 +5523,17 @@ mod tests {
     use serde::de::DeserializeOwned;
     use sqlx::postgres::PgPoolOptions;
     use std::path::PathBuf;
+
+    #[test]
+    fn native_a2a_application_errors_use_http_200() {
+        let response = super::native_a2a_error(
+            serde_json::Value::Null,
+            -32003,
+            "denied",
+            axum::http::StatusCode::FORBIDDEN,
+        );
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+    }
     use std::time::Duration;
     use uuid::Uuid;
 
@@ -4676,11 +5591,15 @@ mod tests {
             "agent.yml",
             include_str!("../config/agent.yml"),
             r#"
+operationalStore.bindingId: 00000000-0000-0000-0000-000000000010
+operationalStore.scopeId: 00000000-0000-0000-0000-000000000003
+operationalStore.hostId: 00000000-0000-0000-0000-000000000003
 runtimePolicy.publicationId: 00000000-0000-0000-0000-000000000001
 runtimePolicy.policySnapshotId: 00000000-0000-0000-0000-000000000002
-runtimePolicy.hostId: 00000000-0000-0000-0000-000000000003
+runtimePolicy.host: dev.lightapi.net
 runtimePolicy.serviceId: com.networknt.agent.account-1.0.0
-runtimePolicy.instanceId: 00000000-0000-0000-0000-000000000004
+runtimePolicy.envTag: dev
+portalAssociation.runtimeInstanceId: 00000000-0000-0000-0000-000000000004
 runtimePolicy.createdAt: 2026-08-26T12:00:00Z
 runtimePolicy.validFrom: 2026-08-26T12:00:00Z
 runtimePolicy.refreshAfter: 2026-08-26T12:30:00Z

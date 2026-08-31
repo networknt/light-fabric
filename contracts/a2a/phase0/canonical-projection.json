@@ -1,0 +1,40 @@
+{
+  "runtimeIdentity": {
+    "host": "agent.dev.lightapi.net",
+    "serviceId": "com.networknt.agent.account-1.0.0",
+    "envTag": "dev"
+  },
+  "agentCard": {
+    "name": "Account Agent",
+    "description": "Answers account questions",
+    "protocolVersion": "1.0",
+    "url": "https://agent.dev.lightapi.net/a2a/account.agent",
+    "version": "1.0.0",
+    "skills": [
+      {
+        "id": "account.lookup",
+        "name": "Account lookup"
+      }
+    ]
+  },
+  "policyEnvelope": {
+    "audience": "light-agent",
+    "publicationId": "50000000-0000-0000-0000-000000000009",
+    "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "revocationEpoch": 3
+  },
+  "operations": [
+    "GET_AGENT_CARD",
+    "SEND_MESSAGE",
+    "SEND_STREAMING_MESSAGE",
+    "GET_TASK",
+    "LIST_TASKS",
+    "CANCEL_TASK",
+    "SUBSCRIBE_TO_TASK"
+  ],
+  "errors": {
+    "invalidRequest": -32600,
+    "methodNotFound": -32601,
+    "invalidParams": -32602
+  }
+}

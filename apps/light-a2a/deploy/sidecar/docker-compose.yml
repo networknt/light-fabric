@@ -1,0 +1,39 @@
+services:
+  light-a2a:
+    image: networknt/light-a2a:${LIGHT_A2A_VERSION:-latest}
+    environment:
+      LIGHT_ENV: ${LIGHT_ENV:-dev}
+      LIGHT_CONFIG_PATH: /config
+    ports:
+      - "${A2A_PUBLIC_PORT:-8448}:8448"
+    volumes:
+      - ./config:/config:ro
+      - ./secrets:/run/secrets:ro
+      - a2a-artifacts:/var/lib/light-a2a/artifacts
+    restart: unless-stopped
+    stop_grace_period: 35s
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8448/_a2a/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    labels:
+      net.lightapi.runtime-kind: light-a2a
+      net.lightapi.deployment-profile: external-agent-sidecar
+      net.lightapi.backend-contract: light-a2a-backend-v1
+  business-agent:
+    image: ${BUSINESS_AGENT_IMAGE:?set BUSINESS_AGENT_IMAGE}
+    network_mode: service:light-a2a
+    depends_on:
+      - light-a2a
+    environment:
+      LIGHT_A2A_BACKEND_BIND: 127.0.0.1:${BACKEND_PORT:-9010}
+      LIGHT_A2A_BACKEND_CONFIG: /config/backend.json
+    volumes:
+      - ./business-config:/config:ro
+      - ./secrets:/run/secrets:ro
+    restart: unless-stopped
+
+volumes:
+  a2a-artifacts: {}

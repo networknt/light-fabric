@@ -1,0 +1,8 @@
+{
+  "taskId": "018f0f5e-6f00-7000-8000-000000000001",
+  "contextId": "018f0f5e-6f00-7000-8000-000000000002",
+  "idempotencyKey": "message-0001",
+  "skillId": "account.lookup",
+  "message": {"role": "user", "parts": [{"kind": "text", "text": "lookup 1001"}]},
+  "metadata": {"locale": "en-CA"}
+}

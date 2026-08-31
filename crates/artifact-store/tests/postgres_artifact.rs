@@ -99,7 +99,7 @@ async fn artifact_digest_scan_hold_tombstone_isolation_and_restart_are_durable()
         .unwrap();
     assert!(matches!(
         repository
-            .tombstone(host_id, artifact_id, &sha256_digest("deleted"), Utc::now())
+            .begin_deletion(host_id, artifact_id, Utc::now())
             .await,
         Err(StoreError::LegalHold)
     ));
@@ -107,6 +107,16 @@ async fn artifact_digest_scan_hold_tombstone_isolation_and_restart_are_durable()
         .release_hold(host_id, artifact_id, hold_id)
         .await
         .unwrap();
+    repository
+        .begin_deletion(host_id, artifact_id, Utc::now())
+        .await
+        .unwrap();
+    assert!(matches!(
+        repository
+            .place_hold(host_id, artifact_id, Uuid::now_v7(), "TOO_LATE")
+            .await,
+        Err(StoreError::Scope(_))
+    ));
     repository
         .tombstone(host_id, artifact_id, &sha256_digest("deleted"), Utc::now())
         .await

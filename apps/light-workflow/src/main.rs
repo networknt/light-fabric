@@ -403,21 +403,27 @@ impl AxumApp for WorkflowApp {
         );
         let artifact_store = DurableArtifactStore::from_configuration(&workflow_config.artifact)
             .map_err(|error| Self::runtime_error("workflow artifact store", error))?;
-        let executor = Arc::new(
-            TaskExecutor::new(pool.clone())
-                .with_runtime_configuration(
-                    workflow_config.database_url.clone(),
-                    workflow_config.host_executor_concurrency,
-                    workflow_config.environment.clone(),
-                    workflow_config.service_authorization.clone(),
-                    workflow_config.delegation_secret.clone(),
-                    workflow_config.agent_provider_base_urls.clone(),
-                    workflow_config.a2a_authorization_context_key_file.clone(),
-                    workflow_config.managed,
-                )
-                .map_err(|error| Self::runtime_error("workflow executor", error))?
-                .with_execution_profiles(runner_config.profiles.clone()),
-        );
+        let executor = TaskExecutor::new(pool.clone())
+            .with_runtime_configuration(
+                workflow_config.database_url.clone(),
+                workflow_config.host_executor_concurrency,
+                workflow_config.environment.clone(),
+                workflow_config.service_authorization.clone(),
+                workflow_config.delegation_secret.clone(),
+                workflow_config.agent_provider_base_urls.clone(),
+                workflow_config.a2a_authorization_context_key_file.clone(),
+                workflow_config.managed,
+            )
+            .map_err(|error| Self::runtime_error("workflow executor", error))?
+            .with_execution_profiles(runner_config.profiles.clone());
+        executor
+            .synchronize_a2a_bindings(
+                workflow_config.operational_store.host_id,
+                &workflow_config.a2a_bindings,
+            )
+            .await
+            .map_err(|error| Self::runtime_error("workflow A2A binding projection", error))?;
+        let executor = Arc::new(executor);
         let cancellation = CancellationToken::new();
 
         let metadata_observer = self.operational_metadata.clone();
@@ -702,6 +708,7 @@ mod tests {
             },
             agent_provider_base_urls: BTreeMap::new(),
             a2a_authorization_context_key_file: "/run/secrets/a2a-authorized-context-key".into(),
+            a2a_bindings: Vec::new(),
             security: SecurityConfig {
                 issuer: "issuer".to_string(),
                 audience: vec!["workflow".to_string()],

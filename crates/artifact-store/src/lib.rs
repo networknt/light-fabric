@@ -202,9 +202,25 @@ impl Repository {
             return Err(StoreError::Scope("artifact hold reason is required".into()));
         }
         let mut tx = self.pool.begin().await?;
+        let changed = sqlx::query(
+            "UPDATE artifact_metadata_t SET legal_hold=TRUE,updated_ts=now()
+             WHERE host_id=$1 AND artifact_id=$2 AND lifecycle_state='RETAINED'",
+        )
+        .bind(host_id)
+        .bind(artifact_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if changed != 1 {
+            return Err(StoreError::Scope(
+                "owned retained artifact not found".into(),
+            ));
+        }
         sqlx::query(
             "INSERT INTO artifact_hold_t(host_id,artifact_id,hold_id,reason_code)
-             VALUES($1,$2,$3,$4)",
+             VALUES($1,$2,$3,$4)
+             ON CONFLICT(host_id,artifact_id,hold_id) DO UPDATE SET
+               reason_code=EXCLUDED.reason_code,active=TRUE,released_ts=NULL",
         )
         .bind(host_id)
         .bind(artifact_id)
@@ -212,8 +228,57 @@ impl Repository {
         .bind(reason_code)
         .execute(&mut *tx)
         .await?;
+        append_event(
+            &mut tx,
+            host_id,
+            artifact_id,
+            "ARTIFACT_HOLD_PLACED",
+            &sha256_digest(reason_code),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Establish the linearization point for managed-byte deletion.
+    ///
+    /// The row lock makes retention, legal-hold placement, and deletion
+    /// authorization mutually exclusive. Once this succeeds, a new hold may
+    /// not be placed and the caller may remove the managed bytes.
+    pub async fn begin_deletion(
+        &self,
+        host_id: Uuid,
+        artifact_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query(
+            "SELECT retain_until_ts,legal_hold,lifecycle_state FROM artifact_metadata_t
+             WHERE host_id=$1 AND artifact_id=$2 FOR UPDATE",
+        )
+        .bind(host_id)
+        .bind(artifact_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| StoreError::Scope("owned artifact not found".into()))?;
+        let lifecycle_state: String = row.try_get("lifecycle_state")?;
+        if lifecycle_state == "TOMBSTONED" || lifecycle_state == "DELETING" {
+            tx.commit().await?;
+            return Ok(());
+        }
+        if lifecycle_state != "RETAINED" {
+            return Err(StoreError::Scope(
+                "artifact is not eligible for deletion".into(),
+            ));
+        }
+        if row.try_get::<bool, _>("legal_hold")? {
+            return Err(StoreError::LegalHold);
+        }
+        if row.try_get::<DateTime<Utc>, _>("retain_until_ts")? > now {
+            return Err(StoreError::Retained);
+        }
         sqlx::query(
-            "UPDATE artifact_metadata_t SET legal_hold=TRUE,updated_ts=now()
+            "UPDATE artifact_metadata_t SET lifecycle_state='DELETING',updated_ts=now()
              WHERE host_id=$1 AND artifact_id=$2",
         )
         .bind(host_id)
@@ -224,8 +289,8 @@ impl Repository {
             &mut tx,
             host_id,
             artifact_id,
-            "ARTIFACT_HOLD_PLACED",
-            &sha256_digest(reason_code),
+            "ARTIFACT_DELETION_STARTED",
+            &sha256_digest(&artifact_id.to_string()),
         )
         .await?;
         tx.commit().await?;
@@ -250,7 +315,18 @@ impl Repository {
         .await?
         .rows_affected();
         if changed != 1 {
-            return Err(StoreError::Scope("active artifact hold not found".into()));
+            let inactive_exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM artifact_hold_t
+                   WHERE host_id=$1 AND artifact_id=$2 AND hold_id=$3 AND NOT active)",
+            )
+            .bind(host_id)
+            .bind(artifact_id)
+            .bind(hold_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !inactive_exists {
+                return Err(StoreError::Scope("artifact hold not found".into()));
+            }
         }
         sqlx::query(
             "UPDATE artifact_metadata_t SET legal_hold=EXISTS(
@@ -296,15 +372,21 @@ impl Repository {
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| StoreError::Scope("owned artifact not found".into()))?;
+        let lifecycle_state: String = row.try_get("lifecycle_state")?;
+        if lifecycle_state == "TOMBSTONED" {
+            tx.commit().await?;
+            return Ok(());
+        }
+        if lifecycle_state != "DELETING" {
+            return Err(StoreError::Scope(
+                "artifact deletion was not authorized".into(),
+            ));
+        }
         if row.try_get::<bool, _>("legal_hold")? {
             return Err(StoreError::LegalHold);
         }
         if row.try_get::<DateTime<Utc>, _>("retain_until_ts")? > now {
             return Err(StoreError::Retained);
-        }
-        if row.try_get::<String, _>("lifecycle_state")? == "TOMBSTONED" {
-            tx.commit().await?;
-            return Ok(());
         }
         sqlx::query(
             "UPDATE artifact_metadata_t SET lifecycle_state='TOMBSTONED',

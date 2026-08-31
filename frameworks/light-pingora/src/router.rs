@@ -264,6 +264,15 @@ async fn select_service_id_target(
     ))
 }
 
+pub async fn select_registered_service_target(
+    route: &RouterRoute,
+    service_id: &str,
+    env_tag: Option<&str>,
+    index: usize,
+) -> Result<ProxyTarget, HandlerRejection> {
+    select_service_id_target(route, service_id, env_tag, index).await
+}
+
 async fn discovery_targets(
     route: &RouterRoute,
     service_id: &str,

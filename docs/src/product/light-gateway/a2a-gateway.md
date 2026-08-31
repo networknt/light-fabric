@@ -1,6 +1,9 @@
 # A2A Gateway
 
-Status: Proposed design; implementation and runtime qualification have not started
+Status: Phases 0 through 7 are implemented for the governed JSON-RPC profiles.
+The checked-in gates qualify source, schema, SDK, deployment, reload, and
+operational contracts; live environment evidence is still required before a
+production release decision.
 
 Related control-plane designs:
 
@@ -57,11 +60,12 @@ production release requirements; Rust provides the reference implementation
 and shared conformance harness. This local backend contract is not the public
 A2A HTTP+JSON binding.
 
-The first delivery should support A2A 1.0 JSON-RPC with an explicit A2A 0.3
-compatibility profile and no activated protocol extensions. Public A2A
-HTTP+JSON, public A2A gRPC, push notifications, custom bindings, and individual
-extension profiles belong in later phases after the abstract task and message
-contract is proven.
+The first delivery supports A2A 1.0 JSON-RPC with an explicit A2A 0.3
+compatibility profile and no activated protocol extensions. Phase 6 adds an
+independently enabled external-sidecar A2A 1.0 profile for extended disclosure,
+optional data-only extensions, and governed push notifications. Public A2A
+HTTP+JSON, public A2A gRPC, custom bindings, required extensions, and additional
+transport or SDK profiles remain disabled until independently qualified.
 The first production milestone includes both governed inbound publication and
 governed outbound invocation. Implementation remains sequenced so the inbound
 server, identity, policy, and task foundations land before outbound completion,
@@ -109,11 +113,11 @@ Light-Fabric already has richer platform foundations:
   access control, delegation, request and response filtering, rate limiting,
   TLS, service discovery, telemetry, and last-known-good configuration reload.
 
-The current checkout does not yet provide an A2A handler in `light-gateway` or
-native A2A routes in `light-agent`, and it does not contain a `light-a2a`
-application. The current `light-agent` effective catalog is loaded from its
-immutable configured projection; a future live Portal query must not be
-assumed to be part of the first A2A implementation.
+The implementation now provides an `a2a-router` handler in `light-gateway`,
+native A2A routes in `light-agent`, and a registered `light-a2a` application
+for external sidecar and federation profiles. `light-agent` continues to load
+its effective catalog from an immutable Config Server snapshot; a live Portal
+query is not runtime authority.
 
 ## Use Cases
 
@@ -131,8 +135,9 @@ An external developer implements a narrow local business interface instead of
 implementing A2A and every Light platform concern. A `light-a2a` sidecar
 terminates A2A, loads its Portal-published policy, validates callers and
 operations, manages protocol task correlation, and invokes the business
-backend over a protected localhost, Unix-domain-socket, or mutually
-authenticated connection.
+backend over the first-release fixed-loopback HTTP/JSON transport. Unix-domain
+sockets and mutually authenticated network transports require separately
+versioned and qualified backend profiles.
 
 The sidecar passes a short-lived signed authorized invocation context. It does
 not forward the caller's raw bearer token. The business implementation still
@@ -158,9 +163,9 @@ after gateway edge admission.
 ### Public And Extended Discovery
 
 An anonymous caller can receive a deliberately limited public Agent Card in the
-first production profile. Phase 6 may add an independently authorized profile
-through which an authenticated caller can request an extended Agent Card
-containing additional policy-approved skills or interfaces. Neither form
+first production profile. The independently authorized Phase 6 external-sidecar
+profile lets an authenticated caller request an extended Agent Card containing
+additional policy-approved skills or interfaces. Neither form
 exposes internal skill instructions, tool bindings, credentials, memory, or
 topology.
 
@@ -718,16 +723,23 @@ depends on the other application's internal modules.
 
 ```text
 crates/a2a-protocol/       versioned wire types, parsing and conformance
-crates/a2a-runtime/        operations, errors, task mapping and backend traits
 crates/a2a-client/         outbound bindings and Agent Card client
-crates/a2a-policy/         A2A authorization inputs, decisions and obligations
-crates/a2a-backend/        private backend v1 models and Rust reference adapter
-crates/agent-policy-core/  publication envelope, identity, digests and limits
-crates/artifact-core/      shared artifact validation, storage and retention contracts
+crates/a2a-core/           operations, errors, authorization envelope, policy,
+                           task mapping, artifact lifecycle and retention types
+crates/a2a-store/          durable integration-service task correlation
+crates/agent-store/        durable native-agent A2A task correlation
+
+contracts/a2a-backend/v1/  private backend protocol and SDK conformance
 
 apps/light-a2a/            external integration server/client and adapters
 apps/light-agent/          generic agent runtime with native A2A server
 ```
+
+Phase 1 intentionally keeps the small mutually dependent runtime, policy,
+envelope, and artifact value contracts in `a2a-core`. Split them into narrower
+crates only when an independent consumer or release cadence requires it; do not
+create pass-through crates that merely re-export the same types. The private
+backend contract and reference adapter remain Phase 3 deliverables.
 
 Both applications also reuse existing `light-runtime`, `light-security`,
 `light-client`, `agent-core`, and `agent-delegation`. The common policy crate
@@ -967,7 +979,10 @@ reuse a generated policy endpoint across Instance API owners.
 
 All destinations are validated configuration, not request data. Hostname,
 scheme, port, DNS/IP ranges, TLS policy, redirect behavior, and network zone
-must be checked to prevent SSRF and destination substitution.
+must be checked to prevent SSRF and destination substitution. The default
+public-destination profile rejects private, loopback, link-local, multicast,
+unspecified, documentation, CGNAT (`100.64.0.0/10`), protocol-assignment
+(`192.0.0.0/24`), and benchmarking (`198.18.0.0/15`) address space.
 
 ### External Business Backend Contract
 
@@ -1055,7 +1070,9 @@ backend operation ID when present, and policy and data-boundary digests before
 calling business code. Loopback address or process placement is defense in
 depth, not authentication. The configured origin, version, methods, and paths
 are immutable; proxy environment variables, redirects, arbitrary destinations,
-and wildcard backend listeners are rejected.
+and wildcard backend listeners are rejected. The HTTP origin uses an explicit
+loopback port in the valid TCP range `1..=65535`; Portal rejects an invalid port
+before publication rather than leaving it for runtime URL parsing.
 
 Portal authoring selects only an approved backend transport profile. The
 activated Config Server projection pins its contract version and digest,
@@ -1492,7 +1509,10 @@ Portal does not hard-delete the active runtime contract.
 Portal View manages A2A artifact-retention profiles through structured fields
 for transient, content, task-visibility, and metadata periods, external-reference
 handling, scanning, and memory-promotion posture. A host default may be selected
-and an agent binding may select an approved override. Artifact access itself
+and an agent binding may select an approved override. The effective runtime
+projection retains the selected `profileId` together with its compiled rules so
+admission evidence can identify the authoritative profile without querying the
+control plane. Artifact access itself
 continues to use the existing fine-grained access-control authoring and policy
 projection; the artifact form does not introduce a parallel ACL or special
 administrator bypass. Publication validates the combined retention and access
@@ -1754,6 +1774,12 @@ server-owned credentials or delegation, and enforces the calling principal,
 calling agent, target agent, operation, skill, environment, data boundary,
 delegation depth, budget, and task/context policy.
 
+Each outbound catalog entry has a Portal-generated UUID `catalogToolId`. Its
+human-readable logical alias may contain dots, but it is a separate field and
+must not be substituted for this stable evidence identifier. The shared
+delegation-depth wire type is an unsigned 16-bit integer; Portal authoring and
+publication therefore accept only integral values from 1 through 65535.
+
 The initial outbound production profile is deliberately bounded to the same
 selected JSON-RPC message, streaming, task lookup, subscription, and
 cancellation capabilities qualified for inbound use and supported by the
@@ -1963,19 +1989,20 @@ signing profile
   rotationPolicy, validity, revocationEpoch, active
 
 signing key
-  profileId, kid, publicJwk, privateKeyRef
+  profileId, kid, publicJwk, privateKeyRef = managed:<logical-alias>
   state = CURRENT | PREVIOUS | REVOKED
   validFrom, validUntil, rotation/revocation audit
 ```
 
-`privateKeyRef` is a server-side reference to a KMS, HSM, or approved secret
-provider. Production A2A private keys are not stored as plaintext Portal table
-values. A privileged Portal form may select an approved logical managed-key
-provider or alias, but private material and the resolved provider resource
-reference are not exposed in forms, Config Server runtime properties, Agent
-Cards, logs, or telemetry. Only `light-oauth` resolves the backing key
-reference. Existing OAuth provider and provider-key records remain OAuth-owned
-and are not repurposed for A2A.
+`privateKeyRef` is the server-created `managed:<logical-alias>` reference. The
+Portal form accepts only the logical alias; it never accepts a path, URI, PEM,
+or provider credential. `light-oauth` resolves that alias below its configured
+and mounted A2A key root and rejects path traversal, unsafe permissions, and
+non-canonical files. Production A2A private keys are not stored as plaintext
+Portal values or exposed through Config Server, Agent Cards, logs, or
+telemetry. A future KMS/HSM provider may resolve the same logical alias behind
+`light-oauth`; existing OAuth provider keys remain OAuth-owned and are not
+repurposed for A2A.
 
 Portal View exposes a structured **Signing Profiles** table under the host and
 environment administration boundary. The form manages purpose, algorithm,
@@ -2007,7 +2034,7 @@ public profile JWKS operation. Exact HTTP paths are finalized with the
 `light-oauth` OpenAPI, but the semantic operations are:
 
 ```text
-SignAgentCard(profileId, publicationId, finalCardWithoutSignatures)
+SignAgentCard(profileId, publicationId, cardKind, finalCardWithoutSignatures)
 GetSigningProfileJwks(profileId)
 ```
 
@@ -2015,8 +2042,12 @@ GetSigningProfileJwks(profileId)
 environment, purpose, publication authority, algorithm, and current key from
 server-owned state; validates that the workload may use the profile for the
 publication; binds the authorization to `agentDefId`, `publicationId`, purpose,
-and canonical content digest; requires the signing payload to omit existing
-signatures; validates and JCS canonicalizes the final Agent Card; and returns
+and canonical content digest. `cardKind` is required and is exactly
+`AGENT_CARD` or `EXTENDED_AGENT_CARD`; it selects the corresponding immutable
+card in the prepared publication manifest, and the service rejects a payload
+that matches the other card kind. The operation requires the signing payload
+to omit existing signatures; validates and JCS canonicalizes the final Agent
+Card; and returns
 the A2A JWS signature, `kid`, JWKS location, canonical digest, and audit
 reference. It is not a generic
 arbitrary-byte or caller-selected-key signing endpoint. The public JWKS
@@ -2028,9 +2059,10 @@ the `SignAgentCard` request and may be assembled into the final `signatures`
 array only when it covers the same canonical digest. It is never treated as
 input authority for selecting the Light signing profile or key.
 
-The normal publication workflow calls this operation once after all public URLs
-and optional fields are final, verifies the result, and projects the complete
-signed card. `light-agent` and `light-a2a` validate the signature and digest when
+The normal publication workflow calls this operation after all public URLs and
+optional fields are final, once for `AGENT_CARD` and, when present, once for
+`EXTENDED_AGENT_CARD`. It verifies each result and projects the complete signed
+cards. `light-agent` and `light-a2a` validate the signature and digest when
 activating a projection and then serve the accepted immutable card without a
 request-path `light-oauth` call. An explicitly approved activation-time fallback
 may call `light-oauth` with a logical profile ID when the final card can only be
@@ -2147,7 +2179,8 @@ unbounded metric labels.
 These phases describe implementation order, not optional production scope.
 Inbound paths may be enabled first in development and canary environments, but
 the first production release requires the applicable Phase 0 through Phase 5
-exit gates. Phase 6 capabilities remain explicitly deferred. Release evidence
+exit gates. Phase 6 remains opt-in: only the independently qualified
+external-sidecar profile described below may be activated. Release evidence
 must include at least one governed inbound native-agent path, one governed
 inbound external-integration path, and one governed outbound remote-agent path.
 
@@ -2155,8 +2188,11 @@ inbound external-integration path, and one governed outbound remote-agent path.
 
 Deliver:
 
-- an exact A2A 1.0 normative tag or commit, accepted errata level, TCK version,
-  and separate pinned 0.3 compatibility fixtures; the implementation must not
+- A2A 1.0.1 tag `v1.0.1` at commit
+  `3303592588e388e62e0f69f701af531d2f4e3991`, A2A 0.3 compatibility tag
+  `v0.3.0` at commit `210f03d426e2f2fa92000e14ef0de3b7ba15aee5`, and
+  A2A TCK version 1.0.0 at commit
+  `5996b79f9cefa6fc390980e383e358a66fb9e49e`; the implementation must not
   depend on an unversioned `latest` specification page;
 - canonical internal operation and error models;
 - request/response and Agent Card size/depth limits;
@@ -2180,10 +2216,14 @@ The baseline record must cite the official
 [A2A specification repository](https://github.com/a2aproject/A2A/blob/main/docs/specification.md)
 and [changelog](https://github.com/a2aproject/A2A/blob/main/CHANGELOG.md), then
 freeze the exact revision used by generated models and conformance fixtures.
+The machine-readable baseline, shared canonical projection fixture, and
+existing-code inventory are maintained under `contracts/a2a/phase0/`.
 
 Exit gates:
 
 - all selected normative fixture shapes parse and canonicalize deterministically;
+- the Portal Java compiler and Rust `a2a-core` implementation produce the same
+  digest for the shared Phase 0 golden projection;
 - malformed, oversized, ambiguous-version, invalid-activated-extension, and
   destination-escape fixtures fail closed, while an unknown optional 1.0
   extension remains inactive and isolated;
@@ -2202,6 +2242,16 @@ Exit gates:
   configuration.
 
 ### Phase 1: Shared A2A Foundation And Transparent Federation
+
+Implementation evidence: `scripts/run-a2a-phase1-gates.sh` verifies the shared
+Rust protocol, client, policy-envelope, task, artifact, native-runtime,
+integration-runtime, and Gateway route contracts together with the Java Portal
+projection compiler. The Gateway mints a short-lived body-bound authorization
+context only for an authenticated principal and an exact Instance API route;
+the selected native or integration runtime reclassifies the A2A operation and
+enforces the signed binding, publication, policy digest, direction, operation,
+audience, and tenant host. Remote federation uses a redirect-free bounded
+client that resolves and pins public destinations before connecting.
 
 Deliver:
 
@@ -2239,6 +2289,17 @@ Exit gates:
 - soak testing shows bounded memory and stream cleanup.
 
 ### Phase 2: Portal-Published Agent Cards
+
+Implementation evidence: `scripts/run-a2a-phase2-gates.sh` verifies the
+normalized Portal DB authoring schema, frozen CloudEvent creation/replay
+inventories, deterministic Java publication compiler, Hybrid command/query
+surfaces, Portal View production build, purpose-separated `light-oauth`
+signing/JWKS contracts, strict Rust activation, and import-ready Config Server
+metadata events. A publication remains `PREPARED` until its exact card is
+signed, becomes `STAGED` when immutable audience properties are written, and
+becomes `ACTIVE` only when those exact properties belong to the activated
+Config Server snapshot. Runtime reload continues to use the existing snapshot
+and control-plane lifecycle; Phase 2 does not add a mutable request-path query.
 
 Deliver:
 
@@ -2342,7 +2403,8 @@ Exit gates:
 - the business backend receives neither raw caller tokens nor Portal policy;
 - Python, Java, and TypeScript reference backends pass the same contract,
   signed-context, unary, streaming, status, cancellation, artifact, deadline,
-  error, and restart TCK against the same `light-a2a` build;
+  error, and restart TCK manifest and report the same compiled `light-a2a`
+  build digest;
 - forged, expired, replayed, wrong-audience, wrong-agent, wrong-skill,
   wrong-operation, wrong-task, and wrong-context invocation attempts fail
   closed;
@@ -2350,9 +2412,10 @@ Exit gates:
   boundaries;
 - sidecar/backend restarts reconcile detached work by signed task and backend
   operation identity without duplicating effects or guessing a terminal state;
-- task-owner defaults, explicit fine-grained artifact grants and denials,
-  expiry, legal hold, verified deletion, and deletion tombstones survive
-  sidecar/backend restarts; and
+- task-owner-only artifact access and explicit policy denials, expiry, legal
+  hold, verified deletion, and deletion tombstones survive sidecar/backend
+  restarts; non-owner sharing remains disabled until a separately versioned
+  artifact grant API is implemented and qualified; and
 - a reference external agent passes conformance, security, reload, audit, and
   telemetry gates without implementing platform plumbing.
 
@@ -2394,7 +2457,42 @@ Exit gates:
 - A2A and existing `/chat` paths produce equivalent governed agent behavior for
   an agreed test corpus.
 
+Implementation evidence: `scripts/run-a2a-phase4-gates.sh` verifies the shared
+strict A2A server models, native `light-agent` embedding, immutable Portal
+projection fields, Portal compiler tests, import-ready Config Property events,
+the full Rust workspace, and operational-bundle 1.6.0 parity across
+`portal-config-loc/all-in-lt`, `portal-config-dev`, and
+`light-portal-install`. `scripts/run-a2a-phase4-operational-gates.sh` runs the
+native durability test against a disposable PostgreSQL store. That test proves
+restart-safe task/context lookup, client-message idempotency, cross-principal
+and cross-agent denial, idempotent cancellation, immutable public-skill mapping
+evidence, independent artifact expiry, and survival of the underlying Agent
+turn. Native A2A execution enters the same durable admission, fair dispatcher,
+governed model/tool loop, effective catalog, memory, and terminal-turn paths as
+`/chat`; it does not introduce a second Agent reasoning runtime or require a
+`light-a2a` process.
+
 ### Phase 5: Required Governed Outbound A2A
+
+Implementation evidence: `scripts/run-a2a-phase5-gates.sh` verifies immutable
+Portal trust review and changed-card quarantine, Instance-API-scoped outbound
+Gateway routing, `light-agent` catalog tools, Workflow `agentRef` validation and
+snapshot reload, server-owned destination and credential handling, bounded
+delegation envelopes, incremental SSE governance, and managed-versus-ephemeral
+artifact behavior. Portal View exposes the structured reviewed-card,
+assignment, credential-reference, data-boundary, budget, and artifact controls;
+the command service recomputes the canonical card digest and rejects destination,
+review, signature, extension, assignment, or policy-scope inconsistencies. The
+gate also verifies operational bundle parity across
+`portal-config-loc/all-in-lt`, `portal-config-dev`, and
+`light-portal-install`. `scripts/run-a2a-phase5-operational-gates.sh` runs the
+outbound durability contract against a disposable PostgreSQL 17 store and
+proves restart-safe local-to-remote task/context correlation, ownership denial,
+idempotency, replay rejection, cancellation, artifact metadata, and audit
+outbox persistence. Import-ready Config Property events publish the Agent and
+Workflow outbound binding properties; they remain data files until explicitly
+imported. A deployed multi-node canary remains release-qualification evidence,
+not authority to weaken any of these code gates.
 
 Deliver:
 
@@ -2449,6 +2547,71 @@ Push notification delivery additionally requires approved callback
 registration, callback ownership verification, SSRF controls, HMAC or mTLS,
 replay protection, retry budgets, dead-letter handling, and durable delivery
 state outside the gateway process.
+
+#### Implemented Phase 6 Profile
+
+The first Phase 6 profile is deliberately narrow. It is selectable only for an
+`EXTERNAL_SIDECAR` binding using the A2A 1.0 JSON-RPC profile. Portal compiles
+the selected extended-card profile, reviewed optional data extensions, and
+push profile into the immutable `light-a2a` projection. It signs the public and
+extended cards through the purpose-scoped `light-oauth` signing workflow.
+
+An extension handler must exactly match the published URI, schema digest, and
+operation allowlist. Required extensions, dependencies, non-data behavior, and
+A2A 0.3 extension activation fail publication. Extended-card authorization is
+evaluated before conditional-cache handling, and its ETag includes the
+authorization-policy digest and revocation epoch.
+
+Push configuration accepts only a Portal-approved registration ID and its
+fixed credential-free HTTPS URL. The caller cannot supply a token, signing key,
+or arbitrary callback. `light-a2a` validates task ownership, stores the
+configuration and delivery outbox in `a2a_ops`, re-resolves the destination,
+rejects redirects and non-global addresses, signs each attempt with a
+server-owned HMAC key, and applies bounded retry, leases, and dead-letter state.
+
+The frozen fixture and threat/rollback contract are under
+`contracts/a2a/phase6/`. The public HTTP+JSON and gRPC bindings, custom public
+bindings, private-backend mTLS/gRPC, required extensions, extra SDK languages,
+and a native `light-agent` Phase 6 profile are still disabled. Each requires an
+independent projection, persistence boundary, conformance suite, and rollback
+gate; none may inherit activation from this external-sidecar profile.
+
+### Phase 7: Production Qualification And Rollback
+
+Phase 7 adds no protocol method, transport, extension, or SDK. It turns the
+implemented profiles into a releasable unit by making deployment drift,
+readiness, multi-worker delivery, immutable evidence, canary, and rollback
+requirements executable.
+
+The runtime exposes `/_a2a/ready` for traffic admission. It returns unavailable
+when the active projection is expired. When push is enabled, it also returns
+unavailable until the delivery worker has successfully polled the operational
+store and whenever that success becomes older than the selected profile's
+maximum lease plus a small completion margin. `/health` remains liveness only.
+
+Each worker claims one callback delivery at a time. The callback timeout must
+leave at least five seconds in its lease, preventing a second replica from
+normally reclaiming an in-flight request before the first can persist its
+outcome. An expired lease is reclaimable by another worker; the previous owner
+cannot complete or retry it. Retry exhaustion persists `DEAD_LETTER` rather
+than dropping the event.
+
+The deployment profiles mount both operational and artifact-store credentials,
+persist the artifact root, use the worker-aware readiness endpoint, and load
+runtime authority only from the immutable Config Server snapshot identified by
+`host`, `serviceId`, and `envTag`. Checked-in local values contain bootstrap and
+store bindings only; they contain no `runtimePolicy`, agent binding, instance
+UUID, product fallback, or fabricated Agent Card.
+
+The machine-readable evidence contract is under `contracts/a2a/phase7/`.
+Automated qualification proves source/config parity, Compose rendering, bundle
+checksums, fresh/upgrade schema parity, both traffic directions, ownership,
+lease takeover, stale-worker readiness, durable dead-letter state, and restart
+recovery. A production decision additionally requires immutable image and
+snapshot digests, a 24-hour canary, alert review, security approval, and a
+successful one-generation rollback exercise. CI must leave the evidence
+template `NOT_QUALIFIED`; only evidence from the target environment may change
+that decision.
 
 ## Testing Strategy
 
@@ -2512,9 +2675,12 @@ lists, streaming event framing, and malformed cards.
 - fixed-loopback `light-a2a-backend/v1` unary, SSE streaming, status
   reconciliation, and cancellation, including sidecar and backend restarts;
 - Python, Java, and TypeScript/Node.js reference business backends passing the
-  same language-neutral TCK against one `light-a2a` build;
-- task-owner artifact access plus explicit fine-grained grants and denials for
-  metadata, content, download, export, deletion, and memory promotion;
+  same language-neutral TCK manifest and reporting one `light-a2a` build
+  digest;
+- task-owner-only artifact metadata and lifecycle access, with Gateway policy
+  able to narrow but never widen ownership; non-owner metadata, content,
+  download, export, deletion, and memory-promotion grants require a future
+  separately versioned grant API and are denied in this profile;
 - Config Server artifact-policy activation, 24-hour chunk cleanup, 30-day task
   and content expiry, longer metadata retention, legal hold, and verified
   object-store deletion without a live Portal query;
@@ -2606,7 +2772,8 @@ lists, streaming event framing, and malformed cards.
    and governed outbound invocation. Inbound may land first for development and
    canary qualification, but Phase 5 catalog resolution, trust, credentials,
    delegation, data-boundary enforcement, loop/budget controls, and correlated
-   audit are production gates. Phase 6 bindings and push remain deferred.
+   audit are production gates. Phase 6 features remain disabled unless the
+   independently qualified external-sidecar A2A 1.0 profile is selected.
 7. `light-oauth` is the first-production Agent Card signing and JWKS authority.
    Native and external-facade publications use separate key rings scoped by
    host, environment, and purpose. The agent publication is the signed subject;
@@ -2675,6 +2842,13 @@ lists, streaming event framing, and malformed cards.
     pointers may change in one control-plane transaction, but runtime
     application is completed only through explicit reload and per-target
     acknowledgement.
+14. Phase 7 is a qualification boundary, not a capability bundle. Deployment
+    readiness combines immutable projection validity with push-worker/store
+    progress, callback timeout remains shorter than its fenced lease, and local
+    values cannot replace Config Server runtime authority. Automated evidence
+    is necessary but not sufficient: the target Host/environment must bind a
+    24-hour canary and rollback exercise to immutable image and publication
+    digests before its decision becomes `QUALIFIED`.
 
 ## Completion Criteria
 
@@ -2741,6 +2915,9 @@ The A2A Gateway feature is complete only when:
 - skills remain descriptive discovery metadata and memory remains runtime-owned
   untrusted context;
 - security, filtering, telemetry, reload, scale, and rollback gates pass in a
-  deployed multi-node environment; and
+  deployed multi-node environment;
+- Phase 7 evidence binds the Host/environment, image digests, active and prior
+  publication generations, policy/content digests, bundle version, canary,
+  alerts, lease takeover, dead-letter recovery, and rollback approval; and
 - unsupported bindings and capabilities are documented and rejected rather
   than partially emulated.

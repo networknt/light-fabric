@@ -1,0 +1,139 @@
+openapi: 3.1.0
+info:
+  title: Light A2A Business Backend
+  version: 1.0.0
+  description: >-
+    Private fixed-loopback contract between light-a2a and an external business
+    agent. Caller credentials and Portal policy are never part of this API.
+servers:
+  - url: http://127.0.0.1:{port}
+    variables:
+      port:
+        default: "9010"
+paths:
+  /v1/capabilities:
+    get:
+      operationId: capabilities
+      parameters:
+        - $ref: "#/components/parameters/ContractDigest"
+      responses:
+        "200":
+          description: Backend capabilities
+          content:
+            application/json:
+              schema:
+                $ref: schemas/backend-capabilities.schema.json
+  /v1/invoke:
+    post:
+      operationId: invoke
+      parameters:
+        - $ref: "#/components/parameters/AuthorizedContext"
+        - $ref: "#/components/parameters/AuthorizedSignature"
+        - $ref: "#/components/parameters/ContractDigest"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: schemas/business-request.schema.json
+      responses:
+        "200":
+          description: Business response
+          content:
+            application/json:
+              schema:
+                $ref: schemas/business-response.schema.json
+  /v1/invoke-stream:
+    post:
+      operationId: invokeStream
+      parameters:
+        - $ref: "#/components/parameters/AuthorizedContext"
+        - $ref: "#/components/parameters/AuthorizedSignature"
+        - $ref: "#/components/parameters/ContractDigest"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: schemas/business-request.schema.json
+      responses:
+        "200":
+          description: Ordered business events
+          content:
+            text/event-stream:
+              schema:
+                type: string
+  /v1/status:
+    post:
+      operationId: status
+      parameters:
+        - $ref: "#/components/parameters/AuthorizedContext"
+        - $ref: "#/components/parameters/AuthorizedSignature"
+        - $ref: "#/components/parameters/ContractDigest"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: schemas/business-request.schema.json
+      responses:
+        "200":
+          description: Reconciled business status
+          content:
+            application/json:
+              schema:
+                $ref: schemas/business-response.schema.json
+  /v1/cancel:
+    post:
+      operationId: cancel
+      parameters:
+        - $ref: "#/components/parameters/AuthorizedContext"
+        - $ref: "#/components/parameters/AuthorizedSignature"
+        - $ref: "#/components/parameters/ContractDigest"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: schemas/business-request.schema.json
+      responses:
+        "200":
+          description: Cancellation result
+          content:
+            application/json:
+              schema:
+                $ref: schemas/business-response.schema.json
+  /health/live:
+    get:
+      operationId: liveness
+      responses:
+        "204":
+          description: Process is live
+  /health/ready:
+    get:
+      operationId: readiness
+      responses:
+        "204":
+          description: Backend is ready
+components:
+  parameters:
+    AuthorizedContext:
+      name: x-light-a2a-backend-context
+      in: header
+      required: true
+      schema:
+        type: string
+    AuthorizedSignature:
+      name: x-light-a2a-backend-signature
+      in: header
+      required: true
+      schema:
+        type: string
+        pattern: "^[0-9a-f]{64}$"
+    ContractDigest:
+      name: x-light-a2a-backend-contract-digest
+      in: header
+      required: true
+      schema:
+        type: string
+        pattern: "^sha256:[0-9a-f]{64}$"

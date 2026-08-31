@@ -1,0 +1,39 @@
+{
+  "profileId": "external-v1-optional-data-push",
+  "extendedCard": {
+    "authorizationPolicyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "allowedPrincipalPrefixes": ["tenant:example:user:"],
+    "card": {
+      "name": "Example extended agent",
+      "description": "Authenticated disclosure fixture",
+      "url": "https://agents.example.test/a2a/example",
+      "version": "1.0.0",
+      "protocolVersion": "1.0",
+      "capabilities": {"extendedAgentCard": true}
+    }
+  },
+  "dataExtensions": [
+    {
+      "extensionUri": "https://extensions.example.test/a2a/order-context/v1",
+      "schemaDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "allowedOperations": ["send-message", "send-streaming-message"]
+    }
+  ],
+  "pushNotifications": {
+    "profileId": "example-dev-push",
+    "maximumAttempts": 5,
+    "initialBackoffSeconds": 2,
+    "maximumBackoffSeconds": 60,
+    "leaseSeconds": 30,
+    "requestTimeoutMs": 5000,
+    "registrations": [
+      {
+        "registrationId": "01994d99-79d0-7000-8000-000000000001",
+        "url": "https://callback.example.test/a2a/tasks",
+        "ownerPrincipalPrefixes": ["tenant:example:user:"],
+        "hmacKeyFile": "/run/secrets/a2a-example-callback-hmac"
+      }
+    ]
+  }
+}
+

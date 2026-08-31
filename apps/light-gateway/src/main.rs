@@ -7,30 +7,31 @@ use chrono::{DateTime, Utc};
 use gateway_operational_store::{EvidenceClass, EvidenceRecord, sha256_digest};
 use light_gateway::model_provider_sidecar;
 use light_pingora::{
-    AccessControlRuntime, AccessDecision, ActiveHandlerSet, ApiKeyConfig, AuthPrincipal,
-    BasicAuthConfig, CorrelationConfig, CorrelationState, CorsConfig, CorsRequestOutcome,
-    CorsResponseHeaders, HandlerBuildContext, HandlerMetricsLogLevel, HandlerRejection,
-    HeaderConfig, HmacReplayAttempt, HmacRuntime, HmacVerificationError, McpHttpRequest,
-    McpHttpResponse, McpRequestContext, McpResponseBody, McpResponseStream, McpRouterRuntime,
-    MetricsConfig, MetricsRecorder, MsalAuthRuntime, MsalExchangeOutcome, MsalExchangeRuntime,
-    PathPrefixServiceConfig, PiiTokenizationRuntime, PingoraApp, PingoraHandler,
-    PingoraHandlerDescriptor, PingoraHandlerKind, PingoraHandlerRegistry, PingoraTransport,
-    ProxyRoute, ProxyTarget, RateLimitHeaders, RateLimitRuntime, ReplayReservation, ReserveOutcome,
-    RouterDecision, RouterRoute, SecurityRuntime, SpaAuthLegacyEndpoint, SpaAuthResponse,
-    StatelessAuthOutcome, StatelessAuthRuntime, StaticResolution, StaticResourceSet, TokenRuntime,
-    UnifiedSecurityConfig, WebSocketConnectionPermit, WebSocketHandshake, WebSocketRouteDecision,
-    WebSocketRouteError, WebSocketRouterRuntime, apply_browser_websocket_upstream_credentials,
+    A2aRouteDecision, A2aRouterRuntime, AccessControlRuntime, AccessDecision, ActiveHandlerSet,
+    ApiKeyConfig, AuthPrincipal, BasicAuthConfig, CorrelationConfig, CorrelationState, CorsConfig,
+    CorsRequestOutcome, CorsResponseHeaders, HandlerBuildContext, HandlerMetricsLogLevel,
+    HandlerRejection, HeaderConfig, HmacReplayAttempt, HmacRuntime, HmacVerificationError,
+    McpHttpRequest, McpHttpResponse, McpRequestContext, McpResponseBody, McpResponseStream,
+    McpRouterRuntime, MetricsConfig, MetricsRecorder, MsalAuthRuntime, MsalExchangeOutcome,
+    MsalExchangeRuntime, PathPrefixServiceConfig, PiiTokenizationRuntime, PingoraApp,
+    PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerKind, PingoraHandlerRegistry,
+    PingoraTransport, ProxyRoute, ProxyTarget, RateLimitHeaders, RateLimitRuntime,
+    ReplayReservation, ReserveOutcome, RouterDecision, RouterRoute, SecurityRuntime,
+    SpaAuthLegacyEndpoint, SpaAuthResponse, StatelessAuthOutcome, StatelessAuthRuntime,
+    StaticResolution, StaticResourceSet, TokenRuntime, UnifiedSecurityConfig,
+    WebSocketConnectionPermit, WebSocketHandshake, WebSocketRouteDecision, WebSocketRouteError,
+    WebSocketRouterRuntime, apply_browser_websocket_upstream_credentials,
     apply_correlation_request, apply_correlation_response, apply_cors_response,
     apply_header_request, apply_header_response, apply_path_prefix_service,
     apply_rate_limit_headers, apply_router_upstream_request, apply_token_request,
     apply_websocket_upstream_request, build_metrics_event, check_rate_limit,
-    correlation_id_for_upstream, evaluate_cors_request, load_access_control_runtime,
-    load_active_handlers, load_api_key_config, load_basic_auth_config, load_correlation_config,
-    load_cors_config, load_header_config, load_hmac_runtime, load_hmac_runtime_preserving,
-    load_mcp_router_runtime, load_metrics_config, load_msal_auth_runtime,
-    load_msal_exchange_runtime, load_path_prefix_service_config, load_pii_tokenization_runtime,
-    load_proxy_route, load_rate_limit_runtime, load_router_route, load_security_runtime,
-    load_stateless_auth_runtime, load_static_resources, load_token_runtime,
+    correlation_id_for_upstream, evaluate_cors_request, load_a2a_router_runtime,
+    load_access_control_runtime, load_active_handlers, load_api_key_config, load_basic_auth_config,
+    load_correlation_config, load_cors_config, load_header_config, load_hmac_runtime,
+    load_hmac_runtime_preserving, load_mcp_router_runtime, load_metrics_config,
+    load_msal_auth_runtime, load_msal_exchange_runtime, load_path_prefix_service_config,
+    load_pii_tokenization_runtime, load_proxy_route, load_rate_limit_runtime, load_router_route,
+    load_security_runtime, load_stateless_auth_runtime, load_static_resources, load_token_runtime,
     load_unified_security_config, load_websocket_router_runtime_with_policy,
     merge_extra_response_headers, record_mcp_router_reload_rejection, record_spa_auth_legacy_get,
     select_router_target, validate_mcp_router_runtime_config, validate_unified_security_config,
@@ -402,6 +403,7 @@ struct GatewayProxy {
     msal_auth: Arc<ConfigManager<Option<MsalAuthRuntime>>>,
     pii_tokenization: Arc<ConfigManager<Option<PiiTokenizationRuntime>>>,
     access_control: Arc<ConfigManager<Option<AccessControlRuntime>>>,
+    a2a_router: Arc<ConfigManager<Option<A2aRouterRuntime>>>,
     mcp_router: Arc<ConfigManager<Option<McpRouterRuntime>>>,
     websocket_router: Arc<ConfigManager<Option<WebSocketRouterRuntime>>>,
     gateway_evidence: Option<Arc<GatewayEvidenceRuntime>>,
@@ -1126,6 +1128,7 @@ impl GatewayProxy {
             active_handlers.is_handler_active("access-control"),
         )?;
         log_access_control_revision(access_control.as_ref());
+        let a2a_router = load_a2a_router_runtime(config, active_handlers.is_handler_active("a2a"))?;
         let mcp_router = load_mcp_router_runtime(config, active_handlers.is_handler_active("mcp"))?;
         let websocket_router = load_websocket_router_runtime_with_policy(
             config,
@@ -1135,7 +1138,8 @@ impl GatewayProxy {
         let gateway_evidence = load_gateway_evidence_runtime(config, admission.clone())?;
         let llm_gateway =
             load_llm_gateway_module_at_startup(config, active_handlers.is_handler_active("llm"));
-        let router_route = load_router_route(config, active_handlers.is_handler_active("router"))?;
+        let router_route =
+            load_router_route(config, handler_active(&active_handlers, &["router", "a2a"]))?;
         let proxy_route = load_proxy_route(config)?;
         let static_resources = load_static_resources(config)?;
         validate_hmac_effective_chains(
@@ -1171,6 +1175,7 @@ impl GatewayProxy {
         let msal_auth = Arc::new(ConfigManager::new(msal_auth));
         let pii_tokenization = Arc::new(ConfigManager::new(pii_tokenization));
         let access_control = Arc::new(ConfigManager::new(access_control));
+        let a2a_router = Arc::new(ConfigManager::new(a2a_router));
         let mcp_router = Arc::new(ConfigManager::new(mcp_router));
         let websocket_router = Arc::new(ConfigManager::new(websocket_router));
         let llm_gateway = Arc::new(ArcSwapOption::from(llm_gateway));
@@ -1202,6 +1207,7 @@ impl GatewayProxy {
                 msal_auth: Arc::clone(&msal_auth),
                 pii_tokenization: Arc::clone(&pii_tokenization),
                 access_control: Arc::clone(&access_control),
+                a2a_router: Arc::clone(&a2a_router),
                 mcp_router: Arc::clone(&mcp_router),
                 websocket_router: Arc::clone(&websocket_router),
                 llm_gateway: Arc::clone(&llm_gateway),
@@ -1368,6 +1374,13 @@ impl GatewayProxy {
             Arc::clone(&mcp_reloader),
         );
         config.module_registry.register_reloader(
+            light_pingora::A2A_ROUTER_MODULE_ID,
+            Arc::new(A2aRouterReloader {
+                active_handlers: Arc::clone(&active_handlers),
+                a2a_router: Arc::clone(&a2a_router),
+            }),
+        );
+        config.module_registry.register_reloader(
             light_pingora::WEBSOCKET_ROUTER_MODULE_ID,
             Arc::new(WebSocketRouterReloader {
                 active_handlers: Arc::clone(&active_handlers),
@@ -1494,6 +1507,7 @@ impl GatewayProxy {
             msal_auth,
             pii_tokenization,
             access_control,
+            a2a_router,
             mcp_router,
             websocket_router,
             gateway_evidence,
@@ -2367,6 +2381,7 @@ struct HandlerReloader {
     msal_auth: Arc<ConfigManager<Option<MsalAuthRuntime>>>,
     pii_tokenization: Arc<ConfigManager<Option<PiiTokenizationRuntime>>>,
     access_control: Arc<ConfigManager<Option<AccessControlRuntime>>>,
+    a2a_router: Arc<ConfigManager<Option<A2aRouterRuntime>>>,
     mcp_router: Arc<ConfigManager<Option<McpRouterRuntime>>>,
     websocket_router: Arc<ConfigManager<Option<WebSocketRouterRuntime>>>,
     llm_gateway: Arc<ArcSwapOption<LlmGatewayModule>>,
@@ -2470,6 +2485,10 @@ impl ReloadableModule for HandlerReloader {
             active_handlers.is_handler_active("access-control"),
         )?;
         log_access_control_revision(access_control.as_ref());
+        let a2a_router = load_a2a_router_runtime(
+            &ctx.runtime_config,
+            active_handlers.is_handler_active("a2a"),
+        )?;
         let mcp_router = load_mcp_router_runtime_preserving_state(
             &ctx.runtime_config,
             active_handlers.is_handler_active("mcp"),
@@ -2493,7 +2512,7 @@ impl ReloadableModule for HandlerReloader {
         )?;
         let router_route = load_router_route(
             &ctx.runtime_config,
-            active_handlers.is_handler_active("router"),
+            handler_active(&active_handlers, &["router", "a2a"]),
         )?;
         validate_hmac_effective_chains(
             &active_handlers,
@@ -2538,6 +2557,7 @@ impl ReloadableModule for HandlerReloader {
         self.msal_auth.store(msal_auth);
         self.pii_tokenization.store(pii_tokenization);
         self.access_control.store(access_control);
+        self.a2a_router.store(a2a_router);
         store_mcp_reload(&self.mcp_router, mcp_router);
         self.websocket_router.store(websocket_router);
         self.llm_gateway.store(llm_gateway);
@@ -3049,6 +3069,21 @@ struct McpRouterReloader {
     mcp_router: Arc<ConfigManager<Option<McpRouterRuntime>>>,
 }
 
+struct A2aRouterReloader {
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    a2a_router: Arc<ConfigManager<Option<A2aRouterRuntime>>>,
+}
+
+#[async_trait]
+impl ReloadableModule for A2aRouterReloader {
+    async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let active = self.active_handlers.load().is_handler_active("a2a");
+        let candidate = load_a2a_router_runtime(&ctx.runtime_config, active)?;
+        self.a2a_router.store(candidate);
+        Ok(ReloadOutcome::success("a2a-router.yml reloaded"))
+    }
+}
+
 #[async_trait]
 impl ReloadableModule for McpRouterReloader {
     async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
@@ -3173,7 +3208,8 @@ struct RouterReloader {
 #[async_trait]
 impl ReloadableModule for RouterReloader {
     async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
-        let active = self.active_handlers.load().is_handler_active("router");
+        let active_handlers = self.active_handlers.load();
+        let active = handler_active(&active_handlers, &["router", "a2a"]);
         let router_route = load_router_route(&ctx.runtime_config, active)?;
         self.router_route.store(router_route);
         Ok(ReloadOutcome::success("router.yml reloaded"))
@@ -3506,7 +3542,9 @@ impl ProxyHttp for GatewayProxy {
     }
 
     fn prebuffered_request_body(&self, _session: &Session, ctx: &Self::CTX) -> Option<Bytes> {
-        ctx.hmac_verified_body.clone()
+        ctx.hmac_verified_body
+            .clone()
+            .or_else(|| ctx.a2a_authorized_body.clone())
     }
 
     async fn request_filter(
@@ -3585,6 +3623,25 @@ impl ProxyHttp for GatewayProxy {
             .as_ref()
             .map(|path| path.params.clone())
             .unwrap_or_default();
+
+        if ctx.handler_ids.iter().any(|handler| handler == "a2a") {
+            let runtime = self.a2a_router.load();
+            let runtime = runtime.as_ref().as_ref().ok_or_else(|| {
+                pingora_internal_error(RuntimeError::Config(
+                    "a2a handler is active but a2a-router.yml is not loaded".into(),
+                ))
+            })?;
+            let host = request_header(session, "host").unwrap_or_default();
+            match runtime.resolve(&host, &method, &request_path) {
+                Ok(decision) => {
+                    ctx.endpoint = decision.policy_endpoint.clone();
+                    ctx.a2a_decision = Some(decision);
+                }
+                Err(rejection) => {
+                    return self.write_rejection_response(session, ctx, rejection).await;
+                }
+            }
+        }
 
         if ctx.handler_ids.is_empty() {
             if let Some((target, rewrite_host_header, reuse_x_forwarded)) = self.select_upstream() {
@@ -4537,6 +4594,198 @@ impl ProxyHttp for GatewayProxy {
                         }
                     }
                 }
+                "a2a" => {
+                    let runtime = self.a2a_router.load();
+                    let Some(runtime) = runtime.as_ref().as_ref() else {
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                        return self
+                            .write_text_response(session, ctx, 502, "A2A router is not configured")
+                            .await;
+                    };
+                    let Some(decision) = ctx.a2a_decision.take() else {
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                        return self
+                            .write_text_response(session, ctx, 404, "A2A route is not published")
+                            .await;
+                    };
+                    if !decision.card_request {
+                        if request_header(session, "content-type")
+                            .as_deref()
+                            .and_then(|value| value.split(';').next())
+                            .is_none_or(|value| {
+                                !value.trim().eq_ignore_ascii_case("application/json")
+                            })
+                        {
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            return self
+                                .write_text_response(
+                                    session,
+                                    ctx,
+                                    415,
+                                    "A2A JSON-RPC requires application/json",
+                                )
+                                .await;
+                        }
+                        if request_header(session, "content-length")
+                            .and_then(|value| value.parse::<usize>().ok())
+                            .is_some_and(|length| length > runtime.maximum_request_body_bytes())
+                        {
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            return self
+                                .write_text_response(session, ctx, 413, "A2A request is too large")
+                                .await;
+                        }
+                        let captured = timeout(
+                            Duration::from_secs(30),
+                            self.capture_hmac_body(
+                                session,
+                                runtime.maximum_request_body_bytes(),
+                                runtime.maximum_buffered_request_bytes(),
+                            ),
+                        )
+                        .await;
+                        let (body, permit) = match captured {
+                            Err(_) => {
+                                ctx.record_handler_duration(&handler_id, started.elapsed());
+                                return self
+                                    .write_text_response(
+                                        session,
+                                        ctx,
+                                        408,
+                                        "A2A body read timed out",
+                                    )
+                                    .await;
+                            }
+                            Ok(Err(error)) => return Err(error),
+                            Ok(Ok(Err(HmacCaptureFailure::TooLarge))) => {
+                                ctx.record_handler_duration(&handler_id, started.elapsed());
+                                return self
+                                    .write_text_response(
+                                        session,
+                                        ctx,
+                                        413,
+                                        "A2A request is too large",
+                                    )
+                                    .await;
+                            }
+                            Ok(Ok(Err(HmacCaptureFailure::BufferUnavailable))) => {
+                                ctx.record_handler_duration(&handler_id, started.elapsed());
+                                return self
+                                    .write_text_response(
+                                        session,
+                                        ctx,
+                                        503,
+                                        "A2A request buffer is unavailable",
+                                    )
+                                    .await;
+                            }
+                            Ok(Ok(Ok(value))) => value,
+                        };
+                        let authorization = if decision.outbound_request {
+                            match (
+                                request_header(session, "x-light-a2a-context"),
+                                request_header(session, "x-light-a2a-signature"),
+                            ) {
+                                (Some(encoded), Some(signature)) => runtime
+                                    .authorize_forwarded_outbound(
+                                        &decision, &encoded, &signature, &body,
+                                    ),
+                                _ => Err(light_pingora::HandlerRejection::new(
+                                    403,
+                                    "ERR10203",
+                                    "outbound A2A context is required",
+                                )),
+                            }
+                        } else {
+                            let auth = ctx.auth.as_ref();
+                            let principal = auth.and_then(|value| {
+                                value.user_id.as_deref().or(value.client_id.as_deref())
+                            });
+                            let Some(principal) = principal else {
+                                ctx.record_handler_duration(&handler_id, started.elapsed());
+                                return self
+                                    .write_text_response(
+                                        session,
+                                        ctx,
+                                        401,
+                                        "A2A authentication required",
+                                    )
+                                    .await;
+                            };
+                            let correlation_id = ctx
+                                .correlation
+                                .correlation_id
+                                .clone()
+                                .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+                            // The authenticated OAuth client is the calling workload/agent.
+                            // A human subject remains the principal whose data authority is
+                            // evaluated. Keeping both identities prevents one client from
+                            // being silently represented as another user or agent.
+                            let caller_agent_ref = auth
+                                .and_then(|value| value.client_id.as_deref())
+                                .map(|value| format!("client:{value}"))
+                                .unwrap_or_else(|| format!("principal:{principal}"));
+                            runtime.authorize_invocation(
+                                &decision,
+                                principal,
+                                &caller_agent_ref,
+                                &correlation_id,
+                                &body,
+                            )
+                        };
+                        let (authorized_context, authorized_signature) = match authorization {
+                            Ok(value) => value,
+                            Err(rejection) => {
+                                ctx.record_handler_duration(&handler_id, started.elapsed());
+                                return self
+                                    .write_rejection_response(session, ctx, rejection)
+                                    .await;
+                            }
+                        };
+                        ctx.a2a_authorized_body = Some(body);
+                        ctx.a2a_body_permit = Some(permit);
+                        ctx.a2a_authorized_context = Some(authorized_context);
+                        ctx.a2a_authorized_signature = Some(authorized_signature);
+                    }
+                    let route = self.router_route.load();
+                    let Some(route) = route.as_ref().as_ref() else {
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                        return self
+                            .write_text_response(
+                                session,
+                                ctx,
+                                502,
+                                "A2A service discovery is not configured",
+                            )
+                            .await;
+                    };
+                    let index = self.next_upstream.fetch_add(1, Ordering::Relaxed);
+                    match runtime.select_target(route, decision, index).await {
+                        Ok(selected) => {
+                            ctx.proxy_target = Some(selected.target);
+                            ctx.a2a_decision = Some(selected.route);
+                            ctx.rewrite_host_header = true;
+                            ctx.reuse_x_forwarded = false;
+                            if let Err(rejection) = self.prepare_response_handlers(
+                                ctx,
+                                &handler_ids[handler_index + 1..],
+                                &request_path,
+                                &method,
+                            ) {
+                                ctx.record_handler_duration(&handler_id, started.elapsed());
+                                return self
+                                    .write_rejection_response(session, ctx, rejection)
+                                    .await;
+                            }
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            return Ok(false);
+                        }
+                        Err(rejection) => {
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            return self.write_rejection_response(session, ctx, rejection).await;
+                        }
+                    }
+                }
                 "health" => {
                     ctx.record_handler_duration(&handler_id, started.elapsed());
                     return self.write_text_response(session, ctx, 200, "ok").await;
@@ -4751,7 +5000,36 @@ impl ProxyHttp for GatewayProxy {
                 self.server_scheme.as_str(),
                 self.server_port,
             )?;
-            if let Some(decision) = ctx.websocket_decision.as_ref() {
+            if let Some(decision) = ctx.a2a_decision.as_ref() {
+                rewrite_upstream_path_exact(upstream_request, &decision.upstream_path)?;
+                upstream_request.remove_header("service_id");
+                upstream_request.remove_header("service_url");
+                upstream_request.remove_header("env_tag");
+                upstream_request.insert_header(
+                    "x-light-a2a-instance-api-id",
+                    decision.route.instance_api_id.as_str(),
+                )?;
+                upstream_request.remove_header("x-light-a2a-context");
+                upstream_request.remove_header("x-light-a2a-signature");
+                if let Some(value) = ctx.a2a_authorized_context.as_deref() {
+                    upstream_request.insert_header("x-light-a2a-context", value)?;
+                }
+                if let Some(value) = ctx.a2a_authorized_signature.as_deref() {
+                    upstream_request.insert_header("x-light-a2a-signature", value)?;
+                }
+                upstream_request.insert_header(
+                    "x-light-a2a-agent-def-id",
+                    decision.route.agent_def_id.as_str(),
+                )?;
+                upstream_request.insert_header(
+                    "x-light-a2a-implementation-kind",
+                    match decision.route.implementation_kind {
+                        light_pingora::A2aImplementationKind::LightAgent => "LIGHT_AGENT",
+                        light_pingora::A2aImplementationKind::ExternalSidecar => "EXTERNAL_SIDECAR",
+                        light_pingora::A2aImplementationKind::RemoteA2a => "REMOTE_A2A",
+                    },
+                )?;
+            } else if let Some(decision) = ctx.websocket_decision.as_ref() {
                 apply_websocket_upstream_request(
                     upstream_request,
                     decision,
@@ -4828,7 +5106,11 @@ impl ProxyHttp for GatewayProxy {
     where
         Self::CTX: Send + Sync,
     {
-        if let Some(verified) = ctx.hmac_verified_body.as_ref() {
+        if let Some(verified) = ctx
+            .hmac_verified_body
+            .as_ref()
+            .or(ctx.a2a_authorized_body.as_ref())
+        {
             if !end_of_stream || body.as_ref() != Some(verified) {
                 return Err(Error::explain(
                     ErrorType::InternalError,
@@ -5204,7 +5486,8 @@ impl ProxyHttp for GatewayProxy {
                 (!ctx.handler_ids.is_empty()).then(|| sha256_digest(&ctx.handler_ids.join("|")));
             let request_bytes = ctx
                 .sidecar_request_bytes
-                .saturating_add(ctx.hmac_verified_body.as_ref().map_or(0, Bytes::len));
+                .saturating_add(ctx.hmac_verified_body.as_ref().map_or(0, Bytes::len))
+                .saturating_add(ctx.a2a_authorized_body.as_ref().map_or(0, Bytes::len));
             let record = EvidenceRecord {
                 event_id: uuid::Uuid::now_v7(),
                 event_class,
@@ -5252,6 +5535,7 @@ struct GatewayRequestContext {
     rewrite_host_header: bool,
     reuse_x_forwarded: bool,
     router_decision: Option<RouterDecision>,
+    a2a_decision: Option<A2aRouteDecision>,
     websocket_decision: Option<WebSocketRouteDecision>,
     websocket_permit: Option<WebSocketConnectionPermit>,
     websocket_handshake: Option<WebSocketHandshake>,
@@ -5298,6 +5582,10 @@ struct GatewayRequestContext {
     hmac_verified_body: Option<Bytes>,
     hmac_body_permit: Option<HmacBodyPermit>,
     hmac_replay: WebhookReplayState,
+    a2a_authorized_body: Option<Bytes>,
+    a2a_body_permit: Option<HmacBodyPermit>,
+    a2a_authorized_context: Option<String>,
+    a2a_authorized_signature: Option<String>,
 }
 
 impl Default for GatewayRequestContext {
@@ -5308,6 +5596,7 @@ impl Default for GatewayRequestContext {
             rewrite_host_header: false,
             reuse_x_forwarded: false,
             router_decision: None,
+            a2a_decision: None,
             websocket_decision: None,
             websocket_permit: None,
             websocket_handshake: None,
@@ -5354,6 +5643,10 @@ impl Default for GatewayRequestContext {
             hmac_verified_body: None,
             hmac_body_permit: None,
             hmac_replay: WebhookReplayState::NotRequired,
+            a2a_authorized_body: None,
+            a2a_body_permit: None,
+            a2a_authorized_context: None,
+            a2a_authorized_signature: None,
         }
     }
 }
@@ -5365,6 +5658,7 @@ impl GatewayRequestContext {
         self.rewrite_host_header = false;
         self.reuse_x_forwarded = false;
         self.router_decision = None;
+        self.a2a_decision = None;
         self.websocket_decision = None;
         self.websocket_permit = None;
         self.websocket_handshake = None;
@@ -5409,6 +5703,10 @@ impl GatewayRequestContext {
         self.hmac_verified_body = None;
         self.hmac_body_permit = None;
         self.hmac_replay = WebhookReplayState::NotRequired;
+        self.a2a_authorized_body = None;
+        self.a2a_body_permit = None;
+        self.a2a_authorized_context = None;
+        self.a2a_authorized_signature = None;
     }
 
     fn record_handler_duration(&mut self, handler_id: &str, duration: Duration) {
@@ -5560,6 +5858,23 @@ fn rewrite_upstream_path(
         Error::because(
             ErrorType::InvalidHTTPHeader,
             format!("invalid upstream URI `{path_and_query}`"),
+            error,
+        )
+    })?;
+    upstream_request.set_uri(uri);
+    Ok(())
+}
+
+fn rewrite_upstream_path_exact(
+    upstream_request: &mut pingora::http::RequestHeader,
+    path: &str,
+) -> pingora::Result<()> {
+    let query = upstream_request.uri.query();
+    let path_and_query = query.map_or_else(|| path.to_string(), |query| format!("{path}?{query}"));
+    let uri = path_and_query.parse().map_err(|error| {
+        Error::because(
+            ErrorType::InvalidHTTPHeader,
+            format!("invalid A2A upstream URI '{path_and_query}'"),
             error,
         )
     })?;
@@ -6690,6 +7005,7 @@ const GATEWAY_HANDLER_DESCRIPTORS: &[(&str, PingoraHandlerKind)] = &[
     ("msal-exchange", PingoraHandlerKind::Security),
     ("msal-auth", PingoraHandlerKind::Security),
     ("websocket", PingoraHandlerKind::Traffic),
+    ("a2a", PingoraHandlerKind::Application),
     ("mcp", PingoraHandlerKind::Application),
     ("llm", PingoraHandlerKind::Application),
 ];

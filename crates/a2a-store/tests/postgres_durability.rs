@@ -18,6 +18,19 @@ fn invocation(host_id: Uuid, binding_id: Uuid, direction: Direction) -> Authoriz
         direction,
         idempotency_key: format!("phase5-{direction:?}"),
         request_digest: format!("sha256:{}", "b".repeat(64)),
+        outbound: (direction == Direction::Outbound).then(|| {
+            a2a_core::OutboundInvocationConstraints {
+                delegation_id: Uuid::now_v7(),
+                environment: "dev".into(),
+                data_boundary_digest: format!("sha256:{}", "c".repeat(64)),
+                delegation_depth: 1,
+                maximum_delegation_depth: 4,
+                remaining_budget_units: 100,
+                deadline: now + Duration::minutes(1),
+                call_chain: vec!["caller.agent".into()],
+                skill_id: None,
+            }
+        }),
         issued_at: now,
         expires_at: now + Duration::minutes(5),
     }
@@ -94,15 +107,45 @@ async fn inbound_outbound_ownership_replay_cancel_artifact_and_restart() {
             repository.get(&wrong).await,
             Err(a2a_store::StoreError::A2a(A2aError::WrongTaskOwner))
         ));
-        repository
-            .bind_backend(
-                &access,
-                "EXTERNAL_SIDECAR",
-                Uuid::now_v7(),
-                &format!("backend:{task_id}"),
-            )
-            .await
-            .expect("persist opaque backend correlation");
+        if direction == Direction::Outbound {
+            let remote_binding_id = Uuid::now_v7();
+            repository
+                .bind_remote_task(
+                    &access,
+                    remote_binding_id,
+                    &format!("remote:{task_id}"),
+                    Some("remote-context"),
+                    Some("account.lookup"),
+                )
+                .await
+                .expect("persist owned remote A2A identity");
+            let remote = repository
+                .backend_task_binding(&access)
+                .await
+                .expect("reload remote task binding");
+            assert_eq!(remote.backend_kind, "REMOTE_A2A");
+            assert_eq!(remote.backend_binding_id, remote_binding_id);
+            assert_eq!(
+                remote.remote_task_id.as_deref(),
+                Some(&*format!("remote:{task_id}"))
+            );
+            assert_eq!(remote.remote_context_id.as_deref(), Some("remote-context"));
+            assert!(matches!(
+                repository.backend_task_binding(&wrong).await,
+                Err(a2a_store::StoreError::A2a(A2aError::WrongTaskOwner))
+            ));
+        } else {
+            repository
+                .bind_backend(
+                    &access,
+                    "EXTERNAL_SIDECAR",
+                    Uuid::now_v7(),
+                    &format!("backend:{task_id}"),
+                    Some("account.lookup"),
+                )
+                .await
+                .expect("persist opaque backend correlation");
+        }
         repository
             .schedule_callback(
                 &access,
@@ -113,6 +156,107 @@ async fn inbound_outbound_ownership_replay_cancel_artifact_and_restart() {
             )
             .await
             .expect("persist server-owned callback reference");
+        let push_config = repository
+            .create_push_config(
+                &access,
+                Uuid::now_v7(),
+                Uuid::now_v7(),
+                &format!("sha256:{}", "e".repeat(64)),
+            )
+            .await
+            .expect("create owned push configuration");
+        assert!(matches!(
+            repository
+                .get_push_config(&wrong, push_config.config_id)
+                .await,
+            Err(a2a_store::StoreError::A2a(A2aError::WrongTaskOwner))
+        ));
+        assert_eq!(
+            repository
+                .enqueue_push_deliveries(
+                    &access,
+                    &serde_json::json!({"statusUpdate":{"taskId":task_id}}),
+                    2,
+                )
+                .await
+                .expect("enqueue durable push delivery"),
+            1
+        );
+        let worker = format!("phase6-worker-{direction:?}");
+        let first_delivery = repository
+            .claim_push_deliveries(host_id, &worker, 1, 30)
+            .await
+            .expect("claim push delivery")
+            .pop()
+            .expect("one delivery");
+        if direction == Direction::Inbound {
+            repository
+                .retry_push_delivery(
+                    host_id,
+                    first_delivery.delivery_id,
+                    &worker,
+                    "TEST_RETRY",
+                    1,
+                    Some(503),
+                )
+                .await
+                .expect("persist bounded retry");
+            sqlx::query(
+                "UPDATE a2a_ops.a2a_push_delivery_t SET next_attempt_ts=now()
+                  WHERE host_id=$1 AND delivery_id=$2",
+            )
+            .bind(host_id)
+            .bind(first_delivery.delivery_id)
+            .execute(&pool)
+            .await
+            .expect("advance disposable retry clock");
+            let second_delivery = repository
+                .claim_push_deliveries(host_id, &worker, 1, 30)
+                .await
+                .expect("reclaim push delivery")
+                .pop()
+                .expect("one retried delivery");
+            assert_eq!(second_delivery.attempt, 2);
+            repository
+                .complete_push_delivery(host_id, second_delivery.delivery_id, &worker, 204)
+                .await
+                .expect("complete push delivery");
+        } else {
+            sqlx::query(
+                "UPDATE a2a_ops.a2a_push_delivery_t SET lease_until_ts=now()-interval '1 second'
+                  WHERE host_id=$1 AND delivery_id=$2",
+            )
+            .bind(host_id)
+            .bind(first_delivery.delivery_id)
+            .execute(&pool)
+            .await
+            .expect("expire disposable worker lease");
+            let takeover_worker = "phase7-worker-takeover";
+            let takeover = repository
+                .claim_push_deliveries(host_id, takeover_worker, 1, 30)
+                .await
+                .expect("second worker claims expired lease")
+                .pop()
+                .expect("one expired delivery");
+            assert_eq!(takeover.attempt, 2);
+            assert!(
+                repository
+                    .complete_push_delivery(host_id, takeover.delivery_id, &worker, 204)
+                    .await
+                    .is_err()
+            );
+            repository
+                .retry_push_delivery(
+                    host_id,
+                    takeover.delivery_id,
+                    takeover_worker,
+                    "QUALIFICATION_FAILURE",
+                    1,
+                    Some(503),
+                )
+                .await
+                .expect("exhaust retry budget into dead letter");
+        }
         repository
             .reconcile(&access, TaskState::Working, None, None)
             .await
@@ -158,4 +302,14 @@ async fn inbound_outbound_ownership_replay_cancel_artifact_and_restart() {
     assert_eq!(counts.2, 2);
     assert_eq!(counts.3, 2);
     assert!(counts.4 >= 4);
+    let push_counts: (i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM a2a_ops.a2a_push_config_t),
+                (SELECT count(*) FROM a2a_ops.a2a_push_delivery_t),
+                (SELECT count(*) FROM a2a_ops.a2a_push_delivery_t WHERE state='DELIVERED'),
+                (SELECT count(*) FROM a2a_ops.a2a_push_delivery_t WHERE state='DEAD_LETTER')",
+    )
+    .fetch_one(&restarted)
+    .await
+    .expect("reload durable push state");
+    assert_eq!(push_counts, (2, 2, 1, 1));
 }

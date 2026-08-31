@@ -1,14 +1,11 @@
+host: ${startup.host:dev.lightapi.net}
 serviceId: ${server.serviceId:com.networknt.light-a2a-1.0.0}
-environment: ${server.environment:dev}
-envTag: ${startup.envTag:dev}
-hostId: ${runtimePolicy.hostId:}
-instanceId: ${runtimePolicy.instanceId:}
-configServer:
-  enabled: ${configServer.enabled:false}
-  url: ${configServer.url:}
-  pathPrefix: ${configServer.pathPrefix:/config}
-  token: ${configServer.token:}
-  timeoutMs: ${configServer.timeoutMs:5000}
-  caFile: ${configServer.caFile:}
-  certFile: ${configServer.certFile:}
-  keyFile: ${configServer.keyFile:}
+envTag: ${server.environment:dev}
+acceptHeader: ${startup.acceptHeader:application/yaml}
+timeout: ${startup.timeout:3000}
+connectTimeout: ${startup.connectTimeout:3000}
+configServerUri: ${light-config-server-uri:https://local.lightapi.net}
+authorization: ${light_portal_authorization:}
+bootstrapCertPath: ${startup.bootstrapCertPath:null}
+bootstrapKeyPath: ${startup.bootstrapKeyPath:null}
+bootstrapCaCertPath: ${startup.bootstrapCaCertPath:config/ca.pem}

@@ -1,14 +1,20 @@
 runtimePolicy:
+  publicationId: ${runtimePolicy.publicationId:}
+  releaseVersion: ${runtimePolicy.releaseVersion:0}
+  policySnapshotId: ${runtimePolicy.policySnapshotId:}
+  policyVersion: ${runtimePolicy.policyVersion:0}
+  policyDigest: ${runtimePolicy.policyDigest:}
   audience: ${runtimePolicy.audience:light-a2a}
-  hostId: ${runtimePolicy.hostId:}
-  environment: ${runtimePolicy.environment:dev}
+  host: ${runtimePolicy.host:}
   serviceId: ${runtimePolicy.serviceId:com.networknt.light-a2a-1.0.0}
-  instanceId: ${runtimePolicy.instanceId:}
+  envTag: ${runtimePolicy.envTag:dev}
   contentDigest: ${runtimePolicy.contentDigest:}
+  sourceEventSequence: ${runtimePolicy.sourceEventSequence:0}
   schemaVersion: ${runtimePolicy.schemaVersion:1}
-  validFrom: ${runtimePolicy.validFrom:1970-01-01T00:00:00Z}
-  refreshAfter: ${runtimePolicy.refreshAfter:1970-01-01T00:00:00Z}
-  expiresAt: ${runtimePolicy.expiresAt:9999-12-31T23:59:59Z}
+  createdAt: ${runtimePolicy.createdAt:}
+  validFrom: ${runtimePolicy.validFrom:}
+  refreshAfter: ${runtimePolicy.refreshAfter:}
+  expiresAt: ${runtimePolicy.expiresAt:}
   revocationEpoch: ${runtimePolicy.revocationEpoch:0}
   compatibilityGeneration: ${runtimePolicy.compatibilityGeneration:1}
 operationalStore:
@@ -23,7 +29,18 @@ operationalStore:
   minimumSchemaGeneration: ${operationalStore.minimumSchemaGeneration:1}
   databaseUrlFile: ${operationalStore.databaseUrlFile:/run/secrets/operational-database-url}
   credentialGeneration: ${operationalStore.credentialGeneration:1}
+managedArtifactStore:
+  bindingId: ${artifactStore.bindingId:}
+  bindingDigest: ${artifactStore.bindingDigest:}
+  minimumSchemaGeneration: ${artifactStore.minimumSchemaGeneration:1}
+  databaseUrlFile: ${artifactStore.databaseUrlFile:/run/secrets/artifact-database-url}
+  rootDirectory: ${artifactStore.rootDirectory:/var/lib/light-a2a/artifacts}
+  scanProfileId: ${artifactStore.scanProfileId:light-a2a-static-v1}
+  allowedMediaTypes: ${artifactStore.allowedMediaTypes:[text/plain,application/json,application/pdf,image/png,image/jpeg]}
 authorizationContextKeyFile: ${a2aPolicy.authorizationContextKeyFile:/run/secrets/a2a-authorized-context-key}
 maximumDatabaseConnections: ${a2aPolicy.maximumDatabaseConnections:16}
 maximumRequestBytes: ${a2aPolicy.maximumRequestBytes:1048576}
+maximumResponseBytes: ${a2aPolicy.maximumResponseBytes:4194304}
+requestTimeoutMs: ${a2aPolicy.requestTimeoutMs:120000}
+allowUnsignedAgentCards: ${a2aPolicy.allowUnsignedAgentCards:false}
 bindings: ${a2aPolicy.bindings:[]}

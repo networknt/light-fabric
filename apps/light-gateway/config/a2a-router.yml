@@ -1,0 +1,8 @@
+# Portal compiles one route per active Instance API association. The gateway
+# performs coarse route admission only; A2A semantics remain in the selected
+# light-agent or light-a2a runtime.
+enabled: ${a2a-router.enabled:false}
+maximumRequestBodyBytes: ${a2a-router.maximumRequestBodyBytes:1048576}
+maximumBufferedRequestBytes: ${a2a-router.maximumBufferedRequestBytes:16777216}
+authorizationContextKeyFile: ${a2a-router.authorizationContextKeyFile:/run/secrets/a2a-authorized-context-key}
+routes: ${a2a-router.routes:[]}

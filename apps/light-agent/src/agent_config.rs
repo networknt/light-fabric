@@ -1,3 +1,4 @@
+use a2a_protocol::{A2aOperation, ProtocolProfile};
 use agent_core::{PolicySnapshot, sha256_digest};
 use agent_runtime_protocol::canonical_digest;
 use chrono::{DateTime, Utc};
@@ -6,6 +7,7 @@ use serde::de::{DeserializeOwned, Error as DeError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
+use url::Url;
 use uuid::Uuid;
 
 pub const AGENT_CONFIG_FILE: &str = "agent.yml";
@@ -16,9 +18,50 @@ pub const AGENT_CONFIG_MODULE_ID: &str = "light-agent/agent";
 pub struct AgentConfig {
     pub operational_store: OperationalStoreProjection,
     pub runtime_policy: RuntimePolicyEnvelope,
+    pub portal_association: PortalAssociationEvidence,
     pub agent_policy: AgentPolicy,
     #[serde(default)]
     pub a2a_policy: NativeA2aPolicy,
+    #[serde(default)]
+    pub a2a_outbound: OutboundA2aPolicy,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OutboundA2aPolicy {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub authorization_context_key_file: String,
+    #[serde(default)]
+    pub bindings: Vec<OutboundA2aBinding>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OutboundA2aBinding {
+    pub agent_ref: String,
+    pub display_name: String,
+    pub description: String,
+    pub catalog_tool_id: Uuid,
+    pub binding_id: Uuid,
+    pub publication_id: Uuid,
+    pub policy_digest: String,
+    pub gateway_uri: String,
+    pub protocol_version: String,
+    pub data_boundary_digest: String,
+    pub maximum_delegation_depth: u16,
+    pub maximum_budget_units: u64,
+    #[serde(default)]
+    pub allowed_skill_ids: Vec<String>,
+}
+
+/// Portal relationship evidence used by operational records and audit only.
+/// It is deliberately outside runtimePolicy and is never workload identity.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PortalAssociationEvidence {
+    pub runtime_instance_id: Uuid,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -35,7 +78,46 @@ pub struct NativeA2aPolicy {
     #[serde(default)]
     pub policy_digest: String,
     #[serde(default)]
+    pub content_digest: String,
+    #[serde(default)]
     pub authorization_context_key_file: String,
+    #[serde(default)]
+    pub protocol_profile: Option<ProtocolProfile>,
+    #[serde(default)]
+    pub allowed_operations: std::collections::BTreeSet<A2aOperation>,
+    #[serde(default)]
+    pub allowed_principal_prefixes: Vec<String>,
+    #[serde(default)]
+    pub public_url: String,
+    #[serde(default)]
+    pub agent_card: Option<Value>,
+    #[serde(default)]
+    pub artifact_retention: Option<A2aArtifactRetentionPolicy>,
+    #[serde(default)]
+    pub artifact_root_directory: std::path::PathBuf,
+    #[serde(default)]
+    pub trusted_signing_profile: Option<a2a_protocol::TrustedCardSigningProfile>,
+    #[serde(default)]
+    pub public_skills: Vec<A2aPublicSkillMapping>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct A2aPublicSkillMapping {
+    pub publication_alias: String,
+    pub skill_id: Uuid,
+    pub skill_version: String,
+    pub skill_digest: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct A2aArtifactRetentionPolicy {
+    pub profile_id: String,
+    pub task_retention_days: u32,
+    pub artifact_retention_days: u32,
+    pub maximum_artifact_bytes: u64,
+    pub access_policy_ref: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -68,10 +150,9 @@ pub struct RuntimePolicyEnvelope {
     pub policy_digest: String,
     pub content_digest: String,
     pub audience: String,
-    pub host_id: Uuid,
-    pub environment: String,
+    pub host: String,
     pub service_id: String,
-    pub instance_id: Uuid,
+    pub env_tag: String,
     pub source_event_sequence: i64,
     pub schema_version: u32,
     pub created_at: DateTime<Utc>,
@@ -351,8 +432,9 @@ pub struct AgentSessionPolicy {
 impl AgentConfig {
     pub fn validate(
         &self,
+        host: &str,
         service_id: &str,
-        environment: Option<&str>,
+        env_tag: &str,
         now: DateTime<Utc>,
     ) -> Result<(), String> {
         let envelope = &self.runtime_policy;
@@ -361,9 +443,8 @@ impl AgentConfig {
         if store.contract_version != 1
             || store.deployment_profile != "DEV_DEDICATED"
             || store.scope_kind != "HOST_ENVIRONMENT"
-            || store.scope_id != envelope.host_id
-            || store.host_id != envelope.host_id
-            || store.environment != envelope.environment
+            || store.scope_id != store.host_id
+            || store.environment != envelope.env_tag
             || store.service_owner != "light-agent"
             || store.schema != agent_store::EXPECTED_SCHEMA
             || store.minimum_schema_version < 1
@@ -386,16 +467,15 @@ impl AgentConfig {
         if envelope.audience != "agent" {
             return Err("runtimePolicy.audience must be agent".to_string());
         }
-        if envelope.service_id != service_id {
-            return Err("runtimePolicy.serviceId does not match the running service".to_string());
+        a2a_core::RuntimeIdentity {
+            host: envelope.host.clone(),
+            service_id: envelope.service_id.clone(),
+            env_tag: envelope.env_tag.clone(),
         }
-        if let Some(environment) = environment {
-            if !environment.is_empty() && envelope.environment != environment {
-                return Err(
-                    "runtimePolicy.environment does not match the running service".to_string(),
-                );
-            }
-        }
+        .validate_against(host, service_id, env_tag)
+        .map_err(|_| {
+            "runtimePolicy host, serviceId, and envTag do not match the running service".to_string()
+        })?;
         if envelope.policy_snapshot_id != policy.policy_snapshot.snapshot_id {
             return Err(
                 "runtimePolicy.policySnapshotId does not match agentPolicy.policySnapshot"
@@ -591,8 +671,21 @@ impl AgentConfig {
         if self.a2a_policy.enabled
             && (self.a2a_policy.agent_ref.trim().is_empty()
                 || self.a2a_policy.binding_id.is_none()
-                || self.a2a_policy.publication_id != Some(envelope.publication_id)
-                || self.a2a_policy.policy_digest != envelope.policy_digest
+                || self.a2a_policy.publication_id.is_none()
+                || !is_sha256_digest(&self.a2a_policy.policy_digest)
+                || !is_sha256_digest(&self.a2a_policy.content_digest)
+                || self.a2a_policy.protocol_profile.is_none()
+                || self.a2a_policy.allowed_operations.is_empty()
+                || self.a2a_policy.allowed_principal_prefixes.is_empty()
+                || self
+                    .a2a_policy
+                    .allowed_principal_prefixes
+                    .iter()
+                    .any(|prefix| prefix.is_empty())
+                || self.a2a_policy.public_url.trim().is_empty()
+                || self.a2a_policy.agent_card.is_none()
+                || self.a2a_policy.artifact_retention.is_none()
+                || !self.a2a_policy.artifact_root_directory.is_absolute()
                 || !self
                     .a2a_policy
                     .authorization_context_key_file
@@ -602,6 +695,160 @@ impl AgentConfig {
                 "a2aPolicy must bind this native Agent publication, policy, and key file"
                     .to_string(),
             );
+        }
+        if self.a2a_policy.enabled {
+            let mut aliases = HashSet::new();
+            let mut skill_ids = HashSet::new();
+            for mapping in &self.a2a_policy.public_skills {
+                let skill = policy
+                    .skills
+                    .iter()
+                    .find(|skill| skill.skill_id == mapping.skill_id)
+                    .ok_or_else(|| {
+                        "a2aPolicy.publicSkills references an unassigned Agent skill".to_string()
+                    })?;
+                if mapping.publication_alias.is_empty()
+                    || mapping.publication_alias.len() > 128
+                    || !mapping
+                        .publication_alias
+                        .bytes()
+                        .next()
+                        .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+                    || !mapping.publication_alias.bytes().all(|byte| {
+                        byte.is_ascii_lowercase()
+                            || byte.is_ascii_digit()
+                            || matches!(byte, b'.' | b'_' | b'-')
+                    })
+                    || !aliases.insert(mapping.publication_alias.clone())
+                    || !skill_ids.insert(mapping.skill_id)
+                    || mapping.skill_version != skill.version
+                    || mapping.skill_digest != skill.digest
+                {
+                    return Err(
+                        "a2aPolicy.publicSkills does not match the immutable Agent skill projection"
+                            .into(),
+                    );
+                }
+            }
+            let card_skill_ids = self
+                .a2a_policy
+                .agent_card
+                .as_ref()
+                .and_then(|card| card.get("skills"))
+                .and_then(Value::as_array)
+                .ok_or_else(|| "native Agent Card skills are required".to_string())?
+                .iter()
+                .map(|skill| {
+                    skill
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .ok_or_else(|| "native Agent Card contains an invalid skill ID".to_string())
+                })
+                .collect::<Result<HashSet<_>, _>>()?;
+            if card_skill_ids != aliases {
+                return Err("native Agent Card skills do not match a2aPolicy.publicSkills".into());
+            }
+            let mut digest_value = serde_json::to_value(&self.a2a_policy)
+                .map_err(|error| format!("cannot canonicalize a2aPolicy: {error}"))?;
+            digest_value
+                .as_object_mut()
+                .expect("a2aPolicy serializes as an object")
+                .remove("contentDigest");
+            validate_digest(
+                "a2aPolicy.contentDigest",
+                &self.a2a_policy.content_digest,
+                &canonical_digest(&digest_value)
+                    .map_err(|error| format!("failed to digest a2aPolicy: {error}"))?,
+            )?;
+        }
+        if let Some(retention) = self.a2a_policy.artifact_retention.as_ref()
+            && (retention.profile_id.trim().is_empty()
+                || retention.task_retention_days == 0
+                || retention.task_retention_days > 3650
+                || retention.artifact_retention_days == 0
+                || retention.artifact_retention_days > 3650
+                || retention.maximum_artifact_bytes == 0
+                || retention.maximum_artifact_bytes > 1_099_511_627_776
+                || retention.access_policy_ref.trim().is_empty())
+        {
+            return Err("native A2A artifact retention policy is invalid".into());
+        }
+        if let Some(profile) = self.a2a_policy.protocol_profile.as_ref() {
+            profile
+                .validate()
+                .map_err(|error| format!("invalid native A2A protocol profile: {error}"))?;
+            if !profile.advertised_extensions.is_empty()
+                || !profile.allowed_inbound_extensions.is_empty()
+                || !profile.required_extensions.is_empty()
+            {
+                return Err("initial native A2A profile must not activate extensions".into());
+            }
+            a2a_protocol::rewrite_agent_card_url(
+                self.a2a_policy.agent_card.as_ref().expect("checked above"),
+                &self.a2a_policy.public_url,
+            )
+            .map_err(|error| format!("invalid native Agent Card: {error}"))?;
+            match (
+                self.a2a_policy
+                    .agent_card
+                    .as_ref()
+                    .and_then(|card| card.get("signatures")),
+                self.a2a_policy.trusted_signing_profile.as_ref(),
+            ) {
+                (Some(_), Some(profile)) => a2a_protocol::verify_signed_agent_card(
+                    self.a2a_policy.agent_card.as_ref().expect("checked above"),
+                    profile,
+                )
+                .map_err(|error| format!("invalid native Agent Card signature: {error}"))?,
+                _ => {
+                    return Err(
+                        "native Agent Card and trusted signing profile must be projected together"
+                            .into(),
+                    );
+                }
+            }
+        }
+        if self.a2a_outbound.enabled {
+            if self.a2a_outbound.bindings.is_empty()
+                || !self
+                    .a2a_outbound
+                    .authorization_context_key_file
+                    .starts_with('/')
+            {
+                return Err("a2aOutbound requires bindings and a server-owned key file".into());
+            }
+            let mut aliases = HashSet::new();
+            let mut tool_ids = HashSet::new();
+            for binding in &self.a2a_outbound.bindings {
+                let endpoint = Url::parse(&binding.gateway_uri)
+                    .map_err(|_| "a2aOutbound gatewayUri is invalid".to_string())?;
+                if binding.agent_ref.trim().is_empty()
+                    || binding.display_name.trim().is_empty()
+                    || binding.description.trim().is_empty()
+                    || !aliases.insert(binding.agent_ref.clone())
+                    || !tool_ids.insert(binding.catalog_tool_id)
+                    || !is_sha256_digest(&binding.policy_digest)
+                    || !is_sha256_digest(&binding.data_boundary_digest)
+                    || endpoint.scheme() != "https"
+                    || endpoint.host_str().is_none()
+                    || !endpoint.username().is_empty()
+                    || endpoint.password().is_some()
+                    || endpoint.query().is_some()
+                    || endpoint.fragment().is_some()
+                    || !matches!(binding.protocol_version.as_str(), "0.3" | "1.0")
+                    || binding.maximum_delegation_depth == 0
+                    || binding.maximum_budget_units == 0
+                    || binding
+                        .allowed_skill_ids
+                        .iter()
+                        .any(|value| value.trim().is_empty())
+                {
+                    return Err("a2aOutbound contains an invalid immutable binding".into());
+                }
+            }
+        } else if !self.a2a_outbound.bindings.is_empty() {
+            return Err("a2aOutbound bindings cannot be projected while disabled".into());
         }
         validate_digest(
             "runtimePolicy.policyDigest",
@@ -635,6 +882,11 @@ impl AgentConfig {
         }
         prompt
     }
+
+    pub fn a2a_skill_mapping_digest(&self) -> Result<String, String> {
+        canonical_digest(&self.a2a_policy.public_skills)
+            .map_err(|error| format!("failed to digest native A2A skill mapping: {error}"))
+    }
 }
 
 fn is_sha256_digest(value: &str) -> bool {
@@ -665,6 +917,45 @@ mod tests {
 
     fn digest(value: &str) -> String {
         sha256_digest(value.as_bytes())
+    }
+
+    #[test]
+    fn portal_a2a_projection_shapes_deserialize_without_runtime_drift() {
+        let retention: A2aArtifactRetentionPolicy = serde_json::from_value(serde_json::json!({
+            "profileId":"01964b05-552a-7c4b-9184-6857e7f3dc5f",
+            "taskRetentionDays":30,
+            "artifactRetentionDays":60,
+            "maximumArtifactBytes":1048576,
+            "accessPolicyRef":"account-agent-artifacts"
+        }))
+        .expect("Portal artifact retention projection");
+        assert_eq!(retention.profile_id, "01964b05-552a-7c4b-9184-6857e7f3dc5f");
+
+        let binding: OutboundA2aBinding = serde_json::from_value(serde_json::json!({
+            "agentRef":"account.agent",
+            "displayName":"Account agent",
+            "description":"Governed account operations",
+            "catalogToolId":"01964b05-552a-7c4b-9184-6857e7f3dc60",
+            "bindingId":"01964b05-552a-7c4b-9184-6857e7f3dc61",
+            "publicationId":"01964b05-552a-7c4b-9184-6857e7f3dc62",
+            "policyDigest":format!("sha256:{}","a".repeat(64)),
+            "gatewayUri":"https://gateway.example/internal/a2a/outbound/account.agent",
+            "protocolVersion":"1.0",
+            "dataBoundaryDigest":format!("sha256:{}","b".repeat(64)),
+            "maximumDelegationDepth":65535,
+            "maximumBudgetUnits":65536,
+            "allowedSkillIds":["account.lookup"]
+        }))
+        .expect("Portal outbound A2A binding projection");
+        assert_eq!(binding.maximum_delegation_depth, u16::MAX);
+        assert!(serde_json::from_value::<OutboundA2aBinding>(serde_json::json!({
+            "agentRef":"account.agent","displayName":"Account agent","description":"description",
+            "catalogToolId":"a2a.account.agent","bindingId":Uuid::now_v7(),
+            "publicationId":Uuid::now_v7(),"policyDigest":format!("sha256:{}","a".repeat(64)),
+            "gatewayUri":"https://gateway.example/a2a","protocolVersion":"1.0",
+            "dataBoundaryDigest":format!("sha256:{}","b".repeat(64)),
+            "maximumDelegationDepth":4,"maximumBudgetUnits":1,"allowedSkillIds":[]
+        })).is_err());
     }
 
     fn config(now: DateTime<Utc>) -> AgentConfig {
@@ -786,10 +1077,9 @@ mod tests {
                 policy_digest,
                 content_digest,
                 audience: "agent".into(),
-                host_id,
-                environment: "dev".into(),
+                host: "agent.dev.lightapi.net".into(),
                 service_id: "com.networknt.agent.support-1.0.0".into(),
-                instance_id: Uuid::now_v7(),
+                env_tag: "dev".into(),
                 source_event_sequence: 42,
                 schema_version: 1,
                 created_at: now - Duration::minutes(1),
@@ -799,8 +1089,12 @@ mod tests {
                 revocation_epoch: 1,
                 compatibility_generation: 1,
             },
+            portal_association: PortalAssociationEvidence {
+                runtime_instance_id: Uuid::now_v7(),
+            },
             agent_policy,
             a2a_policy: NativeA2aPolicy::default(),
+            a2a_outbound: OutboundA2aPolicy::default(),
         }
     }
 
@@ -810,7 +1104,12 @@ mod tests {
         let config = config(now);
         assert!(
             config
-                .validate("com.networknt.agent.support-1.0.0", Some("dev"), now)
+                .validate(
+                    "agent.dev.lightapi.net",
+                    "com.networknt.agent.support-1.0.0",
+                    "dev",
+                    now
+                )
                 .is_ok()
         );
         assert_eq!(
@@ -826,7 +1125,12 @@ mod tests {
         direct.agent_policy.model.provider = "openai".into();
         assert!(
             direct
-                .validate("com.networknt.agent.support-1.0.0", Some("dev"), now)
+                .validate(
+                    "agent.dev.lightapi.net",
+                    "com.networknt.agent.support-1.0.0",
+                    "dev",
+                    now
+                )
                 .unwrap_err()
                 .contains("must be gateway")
         );
@@ -835,7 +1139,12 @@ mod tests {
         tampered.agent_policy.model.alias = "unpublished-alias".into();
         assert!(
             tampered
-                .validate("com.networknt.agent.support-1.0.0", Some("dev"), now)
+                .validate(
+                    "agent.dev.lightapi.net",
+                    "com.networknt.agent.support-1.0.0",
+                    "dev",
+                    now
+                )
                 .unwrap_err()
                 .contains("contentDigest")
         );
@@ -849,7 +1158,12 @@ mod tests {
         session.agent_policy.session.maximum_seconds = i64::MAX as u64 + 1;
         assert!(
             session
-                .validate("com.networknt.agent.support-1.0.0", Some("dev"), now)
+                .validate(
+                    "agent.dev.lightapi.net",
+                    "com.networknt.agent.support-1.0.0",
+                    "dev",
+                    now
+                )
                 .unwrap_err()
                 .contains("session limits")
         );
@@ -858,7 +1172,12 @@ mod tests {
         model.agent_policy.model.maximum_tokens = u64::from(u32::MAX) + 1;
         assert!(
             model
-                .validate("com.networknt.agent.support-1.0.0", Some("dev"), now)
+                .validate(
+                    "agent.dev.lightapi.net",
+                    "com.networknt.agent.support-1.0.0",
+                    "dev",
+                    now
+                )
                 .unwrap_err()
                 .contains("maximumTokens")
         );
@@ -867,7 +1186,12 @@ mod tests {
         retrieval.agent_policy.knowledge.retrieval.top_k = 0;
         assert!(
             retrieval
-                .validate("com.networknt.agent.support-1.0.0", Some("dev"), now)
+                .validate(
+                    "agent.dev.lightapi.net",
+                    "com.networknt.agent.support-1.0.0",
+                    "dev",
+                    now
+                )
                 .unwrap_err()
                 .contains("retrieval limits")
         );
@@ -880,7 +1204,7 @@ mod tests {
         pool.agent_policy.execution.service_pools = vec![AgentServicePoolPolicy {
             pool_id: Uuid::now_v7(),
             compatibility_dimensions: serde_json::json!({
-                "tenant": pool.runtime_policy.host_id,
+                "tenant": pool.operational_store.host_id,
                 "identity": "isolated",
                 "modelCredential": "gateway",
                 "region": "ca-central",
@@ -894,9 +1218,14 @@ mod tests {
             enabled: true,
         }];
         assert!(
-            pool.validate("com.networknt.agent.support-1.0.0", Some("dev"), now)
-                .unwrap_err()
-                .contains("compatibility digest is stale")
+            pool.validate(
+                "agent.dev.lightapi.net",
+                "com.networknt.agent.support-1.0.0",
+                "dev",
+                now
+            )
+            .unwrap_err()
+            .contains("compatibility digest is stale")
         );
 
         let mut quota = config(now);
@@ -905,7 +1234,7 @@ mod tests {
             policy_version: 1,
             policy_digest: "not-a-digest".into(),
             scope_kind: "HOST".into(),
-            scope_key: quota.runtime_policy.host_id.to_string(),
+            scope_key: quota.operational_store.host_id.to_string(),
             maximum_active_sessions: Some(10),
             maximum_queued_turns: None,
             maximum_running_turns: None,
@@ -916,7 +1245,12 @@ mod tests {
         }];
         assert!(
             quota
-                .validate("com.networknt.agent.support-1.0.0", Some("dev"), now)
+                .validate(
+                    "agent.dev.lightapi.net",
+                    "com.networknt.agent.support-1.0.0",
+                    "dev",
+                    now
+                )
                 .unwrap_err()
                 .contains("invalid pinned policy")
         );

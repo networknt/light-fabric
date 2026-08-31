@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lightapi.net/contracts/a2a-backend/v1/inline-artifact.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifactId", "logicalName", "mediaType", "contentBase64", "contentDigest", "visibility"],
+  "properties": {
+    "artifactId": {"type": "string", "format": "uuid"},
+    "logicalName": {"type": "string", "minLength": 1, "maxLength": 256},
+    "mediaType": {"type": "string", "minLength": 1, "maxLength": 256},
+    "contentBase64": {"type": "string", "contentEncoding": "base64"},
+    "contentDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "visibility": {"enum": ["OWNER", "AUTHORIZED_CALLER", "TENANT_POLICY"]}
+  }
+}

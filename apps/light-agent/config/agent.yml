@@ -26,7 +26,21 @@ a2aPolicy:
   bindingId: ${a2aPolicy.bindingId:}
   publicationId: ${a2aPolicy.publicationId:}
   policyDigest: ${a2aPolicy.policyDigest:}
+  contentDigest: ${a2aPolicy.contentDigest:}
   authorizationContextKeyFile: ${a2aPolicy.authorizationContextKeyFile:/run/secrets/a2a-authorized-context-key}
+  protocolProfile: ${a2aPolicy.protocolProfile:null}
+  allowedOperations: ${a2aPolicy.allowedOperations:[]}
+  allowedPrincipalPrefixes: ${a2aPolicy.allowedPrincipalPrefixes:[]}
+  publicUrl: ${a2aPolicy.publicUrl:}
+  agentCard: ${a2aPolicy.agentCard:null}
+  artifactRetention: ${a2aPolicy.artifactRetention:null}
+  artifactRootDirectory: ${a2aPolicy.artifactRootDirectory:/var/lib/light-agent/a2a-artifacts}
+  trustedSigningProfile: ${a2aPolicy.trustedSigningProfile:null}
+  publicSkills: ${a2aPolicy.publicSkills:[]}
+a2aOutbound:
+  enabled: ${a2aOutbound.enabled:false}
+  authorizationContextKeyFile: ${a2aOutbound.authorizationContextKeyFile:/run/secrets/a2a-authorized-context-key}
+  bindings: ${a2aOutbound.bindings:[]}
 
 runtimePolicy:
   publicationId: ${runtimePolicy.publicationId:}
@@ -36,10 +50,9 @@ runtimePolicy:
   policyDigest: ${runtimePolicy.policyDigest:}
   contentDigest: ${runtimePolicy.contentDigest:}
   audience: ${runtimePolicy.audience:agent}
-  hostId: ${runtimePolicy.hostId:}
-  environment: ${runtimePolicy.environment:}
+  host: ${runtimePolicy.host:}
   serviceId: ${runtimePolicy.serviceId:}
-  instanceId: ${runtimePolicy.instanceId:}
+  envTag: ${runtimePolicy.envTag:}
   sourceEventSequence: ${runtimePolicy.sourceEventSequence:0}
   schemaVersion: ${runtimePolicy.schemaVersion:1}
   createdAt: ${runtimePolicy.createdAt:}
@@ -48,6 +61,11 @@ runtimePolicy:
   expiresAt: ${runtimePolicy.expiresAt:}
   revocationEpoch: ${runtimePolicy.revocationEpoch:0}
   compatibilityGeneration: ${runtimePolicy.compatibilityGeneration:1}
+
+# Portal relationship evidence for operational records and audit. This UUID is
+# not part of workload identity; startup identity is host/serviceId/envTag.
+portalAssociation:
+  runtimeInstanceId: ${portalAssociation.runtimeInstanceId:}
 
 agentPolicy:
   agentDefId: ${agentPolicy.agentDefId:}

@@ -1,6 +1,8 @@
-use crate::configuration::WorkflowConfigManager;
+use crate::configuration::{A2aBindingProjection as ConfiguredA2aBinding, WorkflowConfigManager};
 use crate::repositories::{NewTask, TerminalAttempt, WorkflowRepository};
-use a2a_core::{AuthorizedInvocation, Direction, sign_authorized_invocation};
+use a2a_core::{
+    AuthorizedInvocation, Direction, OutboundInvocationConstraints, sign_authorized_invocation,
+};
 use agent_delegation::{DelegationClaims, DelegationKind, DelegationSigner};
 use chrono::Utc;
 use execution_runner_protocol::canonical_sha256;
@@ -133,6 +135,10 @@ struct A2aBindingProjection {
     policy_digest: String,
     gateway_uri: String,
     audience: String,
+    environment: String,
+    data_boundary_digest: String,
+    maximum_delegation_depth: i32,
+    maximum_budget_units: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -383,6 +389,54 @@ impl TaskExecutor {
         self
     }
 
+    pub async fn synchronize_a2a_bindings(
+        &self,
+        host_id: Uuid,
+        bindings: &[ConfiguredA2aBinding],
+    ) -> Result<(), DynError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "UPDATE workflow_a2a_binding_t SET active=FALSE,updated_ts=now() WHERE host_id=$1",
+        )
+        .bind(host_id)
+        .execute(&mut *tx)
+        .await?;
+        for binding in bindings {
+            sqlx::query(
+                "INSERT INTO workflow_a2a_binding_t(host_id,binding_id,agent_ref,publication_id,
+                   policy_digest,gateway_uri,audience,environment,data_boundary_digest,
+                   maximum_delegation_depth,maximum_budget_units,projection_digest,active)
+                 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                 ON CONFLICT(host_id,binding_id) DO UPDATE SET
+                   agent_ref=EXCLUDED.agent_ref,publication_id=EXCLUDED.publication_id,
+                   policy_digest=EXCLUDED.policy_digest,gateway_uri=EXCLUDED.gateway_uri,
+                   audience=EXCLUDED.audience,environment=EXCLUDED.environment,
+                   data_boundary_digest=EXCLUDED.data_boundary_digest,
+                   maximum_delegation_depth=EXCLUDED.maximum_delegation_depth,
+                   maximum_budget_units=EXCLUDED.maximum_budget_units,
+                   projection_digest=EXCLUDED.projection_digest,active=EXCLUDED.active,
+                   updated_ts=now()",
+            )
+            .bind(host_id)
+            .bind(binding.binding_id)
+            .bind(&binding.agent_ref)
+            .bind(binding.publication_id)
+            .bind(&binding.policy_digest)
+            .bind(&binding.gateway_uri)
+            .bind(&binding.audience)
+            .bind(&binding.environment)
+            .bind(&binding.data_boundary_digest)
+            .bind(i32::try_from(binding.maximum_delegation_depth)?)
+            .bind(i64::try_from(binding.maximum_budget_units)?)
+            .bind(&binding.projection_digest)
+            .bind(binding.active)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn run(&self, shutdown: tokio_util::sync::CancellationToken) -> Result<(), DynError> {
         let concurrency = self.host_executor_concurrency;
         info!(concurrency, "Starting TaskExecutor workers");
@@ -446,6 +500,11 @@ impl TaskExecutor {
                     if changed.is_err() {
                         return Err(io::Error::new(io::ErrorKind::BrokenPipe, "workflow runtime configuration channel closed").into());
                     }
+                    let current = runtime_config.load();
+                    self.synchronize_a2a_bindings(
+                        current.config.operational_host_id,
+                        &current.config.a2a_bindings,
+                    ).await?;
                 }
                 joined = joins.join_next(), if !workers.is_empty() => {
                     let (worker_id, result) = joined
@@ -2385,7 +2444,8 @@ impl TaskExecutor {
         }
 
         let binding = sqlx::query_as::<_, A2aBindingProjection>(
-            "SELECT binding_id,publication_id,policy_digest,gateway_uri,audience
+            "SELECT binding_id,publication_id,policy_digest,gateway_uri,audience,environment,
+                    data_boundary_digest,maximum_delegation_depth,maximum_budget_units
                FROM workflow_a2a_binding_t
               WHERE host_id=$1 AND agent_ref=$2 AND active=TRUE",
         )
@@ -2444,24 +2504,50 @@ impl TaskExecutor {
             .into());
         }
         let now = Utc::now();
+        let expires_at = now + chrono::Duration::minutes(5);
+        let caller_agent_ref = format!("workflow:{}", claimed.wf_def_id);
+        let direction = if binding.audience == "light-a2a" {
+            Direction::Outbound
+        } else {
+            Direction::Inbound
+        };
+        if direction == Direction::Outbound && binding.environment != self.environment {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "WORKFLOW_A2A_ENVIRONMENT_DENIED",
+            )
+            .into());
+        }
         let invocation = AuthorizedInvocation {
             host_id: claimed.task.host_id,
             audience: binding.audience.clone(),
             principal_subject: format!("workflow:{}", claimed.task.process_id),
-            caller_agent_ref: format!("workflow:{}", claimed.wf_def_id),
+            caller_agent_ref: caller_agent_ref.clone(),
             target_agent_ref: agent_ref.to_string(),
             binding_id: binding.binding_id,
-            policy_digest: binding.policy_digest,
+            policy_digest: binding.policy_digest.clone(),
             publication_id: binding.publication_id,
-            direction: if binding.audience == "light-a2a" {
-                Direction::Outbound
-            } else {
-                Direction::Inbound
-            },
+            direction,
             idempotency_key,
             request_digest,
+            outbound: (direction == Direction::Outbound).then(|| OutboundInvocationConstraints {
+                delegation_id: Uuid::now_v7(),
+                environment: binding.environment.clone(),
+                data_boundary_digest: binding.data_boundary_digest.clone(),
+                delegation_depth: 1,
+                maximum_delegation_depth: u16::try_from(binding.maximum_delegation_depth)
+                    .unwrap_or_default(),
+                remaining_budget_units: u64::try_from(binding.maximum_budget_units)
+                    .unwrap_or_default(),
+                deadline: expires_at,
+                call_chain: vec![caller_agent_ref],
+                skill_id: params
+                    .pointer("/message/metadata/skillId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            }),
             issued_at: now,
-            expires_at: now + chrono::Duration::minutes(5),
+            expires_at,
         };
         let (encoded_context, encoded_signature) =
             sign_authorized_invocation(&invocation, &body, key.as_slice()).map_err(|error| {

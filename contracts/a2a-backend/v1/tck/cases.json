@@ -1,0 +1,11 @@
+{
+  "contract": "light-a2a-backend/v1",
+  "requiredCases": [
+    "valid-unary", "valid-stream", "status", "cancel", "artifact", "deadline",
+    "business-error", "restart-reconciliation", "forged-signature", "expired",
+    "replayed", "wrong-audience", "wrong-host", "wrong-environment",
+    "wrong-agent", "wrong-skill", "wrong-operation", "wrong-task",
+    "wrong-context", "wrong-idempotency", "wrong-publication", "wrong-policy",
+    "wrong-data-boundary", "unconfigured-destination"
+  ]
+}

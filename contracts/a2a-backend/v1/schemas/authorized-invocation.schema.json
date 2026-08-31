@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lightapi.net/contracts/a2a-backend/v1/authorized-invocation.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "invocationId", "issuer", "audience", "hostId", "environment", "principalSubject", "callerAgentRef", "targetAgentRef", "bindingId", "publicationId", "operation", "taskId", "contextId", "idempotencyKey", "policyDigest", "dataBoundaryDigest", "requestDigest", "budget", "issuedAt", "deadline", "expiresAt"],
+  "properties": {
+    "contractVersion": {"const": "light-a2a-backend/v1"},
+    "invocationId": {"type": "string", "format": "uuid"},
+    "issuer": {"const": "light-a2a"},
+    "audience": {"type": "string", "minLength": 1, "maxLength": 256},
+    "hostId": {"type": "string", "format": "uuid"},
+    "environment": {"type": "string", "minLength": 1, "maxLength": 64},
+    "principalSubject": {"type": "string", "minLength": 1, "maxLength": 512},
+    "callerAgentRef": {"type": "string", "maxLength": 256},
+    "targetAgentRef": {"type": "string", "minLength": 1, "maxLength": 256},
+    "bindingId": {"type": "string", "format": "uuid"},
+    "publicationId": {"type": "string", "format": "uuid"},
+    "selectedSkillId": {"type": ["string", "null"], "maxLength": 256},
+    "operation": {"enum": ["INVOKE", "INVOKE_STREAM", "STATUS", "CANCEL"]},
+    "taskId": {"type": "string", "format": "uuid"},
+    "contextId": {"type": "string", "format": "uuid"},
+    "idempotencyKey": {"type": "string", "minLength": 1, "maxLength": 512},
+    "backendOperationId": {"type": ["string", "null"], "maxLength": 1024},
+    "policyDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "dataBoundaryDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "requestDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "budget": {
+      "type": "object", "additionalProperties": false,
+      "required": ["maximumInputBytes", "maximumOutputBytes", "maximumArtifactBytes"],
+      "properties": {
+        "maximumInputBytes": {"type": "integer", "minimum": 1},
+        "maximumOutputBytes": {"type": "integer", "minimum": 1},
+        "maximumArtifactBytes": {"type": "integer", "minimum": 1}
+      }
+    },
+    "traceparent": {"type": ["string", "null"], "maxLength": 512},
+    "issuedAt": {"type": "string", "format": "date-time"},
+    "deadline": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": "string", "format": "date-time"}
+  }
+}

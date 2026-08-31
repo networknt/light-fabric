@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lightapi.net/contracts/a2a-backend/v1/business-response.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["state", "backendOperationId", "result", "error", "artifacts"],
+  "properties": {
+    "state": {"enum": ["SUBMITTED", "WORKING", "INPUT_REQUIRED", "AUTH_REQUIRED", "COMPLETED", "FAILED", "CANCELED", "REJECTED"]},
+    "backendOperationId": {"type": ["string", "null"], "maxLength": 1024},
+    "result": {},
+    "error": {"anyOf": [{"type": "null"}, {"$ref": "business-error.schema.json"}]},
+    "artifacts": {"type": "array", "items": {"$ref": "inline-artifact.schema.json"}, "maxItems": 32}
+  }
+}

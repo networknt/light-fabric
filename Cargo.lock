@@ -3,15 +3,79 @@
 version = 4
 
 [[package]]
+name = "a2a-backend"
+version = "0.2.1"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64",
+ "bytes",
+ "chrono",
+ "futures-util",
+ "hex",
+ "hmac 0.12.1",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "a2a-client"
+version = "0.2.1"
+dependencies = [
+ "http 1.4.0",
+ "reqwest",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "a2a-core"
 version = "0.2.1"
 dependencies = [
+ "a2a-protocol",
  "base64",
  "chrono",
  "hmac 0.12.1",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "a2a-protocol"
+version = "0.2.1"
+dependencies = [
+ "base64",
+ "http 1.4.0",
+ "jsonwebtoken",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "url",
+]
+
+[[package]]
+name = "a2a-server"
+version = "0.2.1"
+dependencies = [
+ "a2a-core",
+ "a2a-protocol",
+ "base64",
+ "chrono",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "uuid",
 ]
@@ -124,6 +188,7 @@ version = "0.2.1"
 dependencies = [
  "a2a-core",
  "chrono",
+ "serde_json",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
@@ -4432,22 +4497,34 @@ dependencies = [
 name = "light-a2a"
 version = "0.2.1"
 dependencies = [
+ "a2a-backend",
+ "a2a-client",
  "a2a-core",
+ "a2a-protocol",
  "a2a-store",
  "anyhow",
+ "arc-swap",
+ "artifact-store",
  "async-trait",
  "axum",
+ "base64",
  "chrono",
  "config-embed-build",
  "config-loader",
+ "futures-util",
+ "hmac 0.12.1",
+ "jsonschema",
  "light-axum",
  "light-runtime",
+ "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "tokio",
  "tower",
  "tracing",
+ "url",
  "uuid",
 ]
 
@@ -4456,6 +4533,8 @@ name = "light-agent"
 version = "0.2.1"
 dependencies = [
  "a2a-core",
+ "a2a-protocol",
+ "a2a-server",
  "agent-core",
  "agent-delegation",
  "agent-materializer",
@@ -4774,6 +4853,7 @@ dependencies = [
 name = "light-pingora"
 version = "0.2.1"
 dependencies = [
+ "a2a-core",
  "agent-delegation",
  "async-trait",
  "base64",
@@ -6891,6 +6971,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
+name = "ryu-js"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04d056b875a9d2e6cb9a61d127afee9ac5999b9f87bcb32079d1318e505be714"
+
+[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7026,6 +7112,17 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_json_canonicalizer"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe52319a927259afbfa5180c5157cd8167edfd3e8c254f9558c7fef44c5649f2"
+dependencies = [
+ "ryu-js",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

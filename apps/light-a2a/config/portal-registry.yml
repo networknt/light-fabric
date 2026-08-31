@@ -1,6 +1,5 @@
-enabled: ${portalRegistry.enabled:false}
-controllerUrl: ${portalRegistry.controllerUrl:}
-instanceId: ${runtimePolicy.instanceId:}
-hostId: ${runtimePolicy.hostId:}
-environment: ${runtimePolicy.environment:dev}
-serviceId: ${runtimePolicy.serviceId:com.networknt.light-a2a-1.0.0}
+portalUrl: ${portalRegistry.portalUrl:https://localhost:8438}
+portalQueryUrl: ${portalQuery.url:${portalRegistry.portalUrl:https://localhost:8438}}
+portalToken: ${light_portal_authorization:}
+controllerDiscoveryToken: ${portalRegistry.controllerDiscoveryToken:}
+controlCandidates: ${portalRegistry.controlCandidates:null}

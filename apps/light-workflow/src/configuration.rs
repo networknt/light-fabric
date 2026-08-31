@@ -44,13 +44,14 @@ pub struct WorkflowConfiguration {
     pub fixed_actions: FixedActionSettings,
     pub agent_provider_base_urls: BTreeMap<String, String>,
     pub a2a_authorization_context_key_file: PathBuf,
+    pub a2a_bindings: Vec<A2aBindingProjection>,
     /// Complete verifier configuration. The verifier is constructed once at
     /// startup, so any change to this value is restart-required.
     pub security: SecurityConfig,
     pub managed: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OperationalStoreProjection {
     pub contract_version: u16,
@@ -166,6 +167,30 @@ struct FixedActionsFile {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct A2aFile {
     authorization_context_key_file: PathBuf,
+    #[serde(default)]
+    bindings: Vec<A2aBindingProjection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct A2aBindingProjection {
+    pub binding_id: Uuid,
+    pub agent_ref: String,
+    pub publication_id: Uuid,
+    pub policy_digest: String,
+    pub gateway_uri: String,
+    pub audience: String,
+    pub environment: String,
+    pub data_boundary_digest: String,
+    pub maximum_delegation_depth: u16,
+    pub maximum_budget_units: u64,
+    pub projection_digest: String,
+    #[serde(default = "default_true")]
+    pub active: bool,
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 impl WorkflowConfiguration {
@@ -352,6 +377,34 @@ impl WorkflowConfiguration {
             &workflow.a2a.authorization_context_key_file,
             &mut violations,
         );
+        let mut a2a_aliases = BTreeSet::new();
+        for binding in &workflow.a2a.bindings {
+            if !a2a_aliases.insert(binding.agent_ref.as_str()) {
+                violations.push("workflow.a2a.bindings: duplicate agentRef".to_string());
+            }
+            if binding.agent_ref.trim().is_empty()
+                || binding.environment.trim().is_empty()
+                || !matches!(binding.audience.as_str(), "light-a2a" | "light-agent")
+                || !binding.policy_digest.starts_with("sha256:")
+                || !binding.data_boundary_digest.starts_with("sha256:")
+                || !binding.projection_digest.starts_with("sha256:")
+                || binding.maximum_delegation_depth == 0
+                || binding.maximum_budget_units == 0
+                || url::Url::parse(&binding.gateway_uri).map_or(true, |uri| {
+                    uri.scheme() != "https"
+                        || uri.host_str().is_none()
+                        || uri.query().is_some()
+                        || uri.fragment().is_some()
+                        || !uri.username().is_empty()
+                        || uri.password().is_some()
+                })
+            {
+                violations.push(format!(
+                    "workflow.a2a.bindings: {} is not an executable immutable projection",
+                    binding.agent_ref
+                ));
+            }
+        }
         validate_absolute_path(
             "workflow.fixedActions.artifactRoot",
             &workflow.fixed_actions.artifact_root,
@@ -517,6 +570,7 @@ impl WorkflowConfiguration {
             },
             agent_provider_base_urls,
             a2a_authorization_context_key_file: workflow.a2a.authorization_context_key_file,
+            a2a_bindings: workflow.a2a.bindings,
             security,
             managed,
         })
@@ -537,6 +591,8 @@ pub struct WorkflowRuntimeConfig {
     pub maximum_parallelism: usize,
     pub host_executor_concurrency: usize,
     pub interactive_estimated_task_ms: u64,
+    pub operational_host_id: Uuid,
+    pub a2a_bindings: Vec<A2aBindingProjection>,
 }
 
 impl WorkflowRuntimeConfig {
@@ -555,6 +611,8 @@ impl WorkflowRuntimeConfig {
             maximum_parallelism: configuration.maximum_parallelism,
             host_executor_concurrency: configuration.host_executor_concurrency,
             interactive_estimated_task_ms: configuration.interactive_estimated_task_ms,
+            operational_host_id: configuration.operational_store.host_id,
+            a2a_bindings: configuration.a2a_bindings.clone(),
         }
     }
 
@@ -565,6 +623,8 @@ impl WorkflowRuntimeConfig {
             && self.maximum_parallelism == other.maximum_parallelism
             && self.host_executor_concurrency == other.host_executor_concurrency
             && self.interactive_estimated_task_ms == other.interactive_estimated_task_ms
+            && self.operational_host_id == other.operational_host_id
+            && self.a2a_bindings == other.a2a_bindings
     }
 }
 
@@ -1087,6 +1147,29 @@ mod tests {
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
 
+    #[test]
+    fn portal_a2a_delegation_depth_uses_the_shared_u16_contract() {
+        let binding: super::A2aBindingProjection = serde_json::from_value(serde_json::json!({
+            "bindingId":Uuid::now_v7(),"agentRef":"account.agent",
+            "publicationId":Uuid::now_v7(),"policyDigest":format!("sha256:{}","a".repeat(64)),
+            "gatewayUri":"https://gateway.example/a2a","audience":"light-agent",
+            "environment":"dev","dataBoundaryDigest":format!("sha256:{}","b".repeat(64)),
+            "maximumDelegationDepth":65535,"maximumBudgetUnits":1,
+            "projectionDigest":format!("sha256:{}","c".repeat(64)),"active":true
+        }))
+        .expect("maximum shared delegation depth");
+        assert_eq!(binding.maximum_delegation_depth, u16::MAX);
+        let oversized = serde_json::json!({
+            "bindingId":Uuid::now_v7(),"agentRef":"account.agent",
+            "publicationId":Uuid::now_v7(),"policyDigest":format!("sha256:{}","a".repeat(64)),
+            "gatewayUri":"https://gateway.example/a2a","audience":"light-agent",
+            "environment":"dev","dataBoundaryDigest":format!("sha256:{}","b".repeat(64)),
+            "maximumDelegationDepth":65536,"maximumBudgetUnits":1,
+            "projectionDigest":format!("sha256:{}","c".repeat(64)),"active":true
+        });
+        assert!(serde_json::from_value::<super::A2aBindingProjection>(oversized).is_err());
+    }
+
     fn workflow_configuration() -> WorkflowConfiguration {
         WorkflowConfiguration {
             environment: "dev".to_string(),
@@ -1140,6 +1223,7 @@ mod tests {
             },
             agent_provider_base_urls: BTreeMap::new(),
             a2a_authorization_context_key_file: "/run/secrets/a2a-authorized-context-key".into(),
+            a2a_bindings: Vec::new(),
             security: SecurityConfig {
                 issuer: "https://issuer".to_string(),
                 audience: vec!["workflow".to_string()],

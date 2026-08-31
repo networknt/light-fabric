@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use light_a2a::{A2aConfig, A2aState, router};
+use light_a2a::{A2A_MODULE_ID, A2aConfig, A2aState, router};
 use light_axum::{AxumApp, AxumTransport, ControlRoute, ControlRouteKind, ServerContext};
 use light_runtime::{
-    LifecycleParticipant, LightRuntimeBuilder, RuntimeConfig, RuntimeError, ShutdownContext,
-    ShutdownWatcher, TracingOptions, init_tracing,
+    LifecycleParticipant, LightRuntimeBuilder, ReloadContext, ReloadOutcome, ReloadableModule,
+    RuntimeConfig, RuntimeError, ShutdownContext, ShutdownWatcher, TracingOptions, init_tracing,
 };
 use sqlx::PgPool;
 
@@ -29,9 +29,18 @@ impl AxumApp for A2aApp {
                 .await
                 .map_err(RuntimeError::Config)?,
         );
-        context
-            .lifecycle
-            .register(Arc::new(A2aDatabase(state.pool())))?;
+        state.spawn_push_worker();
+        state.spawn_artifact_retention_worker();
+        context.lifecycle.register(Arc::new(A2aDatabases(vec![
+            state.pool(),
+            state.artifact_pool(),
+        ])))?;
+        context.runtime_config.module_registry.register_reloader(
+            A2A_MODULE_ID,
+            Arc::new(A2aProjectionReloader {
+                state: Arc::clone(&state),
+            }),
+        );
         Ok(router(state))
     }
 
@@ -51,10 +60,26 @@ impl AxumApp for A2aApp {
     }
 }
 
-struct A2aDatabase(PgPool);
+struct A2aProjectionReloader {
+    state: Arc<A2aState>,
+}
 
 #[async_trait::async_trait]
-impl LifecycleParticipant for A2aDatabase {
+impl ReloadableModule for A2aProjectionReloader {
+    async fn reload(&self, context: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
+        let candidate = A2aConfig::load(&context.runtime_config).map_err(RuntimeError::Config)?;
+        self.state
+            .reload_projection(candidate)
+            .await
+            .map_err(RuntimeError::Config)?;
+        Ok(ReloadOutcome::success("a2a.yml reloaded"))
+    }
+}
+
+struct A2aDatabases(Vec<PgPool>);
+
+#[async_trait::async_trait]
+impl LifecycleParticipant for A2aDatabases {
     fn name(&self) -> &'static str {
         "light-a2a-database"
     }
@@ -64,10 +89,12 @@ impl LifecycleParticipant for A2aDatabase {
         _config: &RuntimeConfig,
         context: &ShutdownContext,
     ) -> Result<(), RuntimeError> {
-        let budget = context.remaining();
-        tokio::time::timeout(budget, self.0.close())
-            .await
-            .map_err(|_| RuntimeError::ShutdownDeadlineExceeded(budget))?;
+        for pool in &self.0 {
+            let budget = context.remaining();
+            tokio::time::timeout(budget, pool.close())
+                .await
+                .map_err(|_| RuntimeError::ShutdownDeadlineExceeded(budget))?;
+        }
         Ok(())
     }
 }

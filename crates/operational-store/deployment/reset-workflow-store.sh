@@ -22,6 +22,7 @@ ready="$(psql -U "$database_user" -d "$database_name" -X -tAc \
 
 psql -U "$database_user" -d "$database_name" -X --set=ON_ERROR_STOP=1 <<'SQL' >/dev/null
 TRUNCATE TABLE
+  workflow_ops.consumer_offsets,
   workflow_ops.workflow_tool_approval_evidence_t,
   workflow_ops.workflow_tool_access_request_item_t,
   workflow_ops.workflow_tool_access_request_t,

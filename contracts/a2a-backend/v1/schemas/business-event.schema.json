@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lightapi.net/contracts/a2a-backend/v1/business-event.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["sequenceNumber", "state", "backendOperationId", "result", "error", "artifact", "terminal"],
+  "properties": {
+    "sequenceNumber": {"type": "integer", "minimum": 1},
+    "state": {"enum": ["SUBMITTED", "WORKING", "INPUT_REQUIRED", "AUTH_REQUIRED", "COMPLETED", "FAILED", "CANCELED", "REJECTED"]},
+    "backendOperationId": {"type": ["string", "null"], "maxLength": 1024},
+    "result": {},
+    "error": {"anyOf": [{"type": "null"}, {"$ref": "business-error.schema.json"}]},
+    "artifact": {"anyOf": [{"type": "null"}, {"$ref": "inline-artifact.schema.json"}]},
+    "terminal": {"type": "boolean"}
+  }
+}

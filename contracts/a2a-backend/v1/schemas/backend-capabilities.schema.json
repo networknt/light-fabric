@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lightapi.net/contracts/a2a-backend/v1/backend-capabilities.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "streaming", "cancellation", "statusReconciliation", "acceptedContentModes", "maximumArtifactBytes"],
+  "properties": {
+    "contractVersion": {"const": "light-a2a-backend/v1"},
+    "streaming": {"type": "boolean"},
+    "cancellation": {"type": "boolean"},
+    "statusReconciliation": {"type": "boolean"},
+    "acceptedContentModes": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "maximumArtifactBytes": {"type": "integer", "minimum": 1}
+  }
+}
