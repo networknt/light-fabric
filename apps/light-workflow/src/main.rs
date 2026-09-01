@@ -471,16 +471,16 @@ impl AxumApp for WorkflowApp {
             },
         )?;
 
-        let agent_job_reconciler = AgentJobReconciler::new(pool.clone(), Arc::clone(&executor));
-        self.register_task(
-            &context,
-            "light-workflow-agent-job-reconciler",
-            &cancellation,
-            &health,
-            move |shutdown| async move { agent_job_reconciler.run(shutdown).await },
-        )?;
-
         if runner_config.enabled {
+            let agent_job_reconciler = AgentJobReconciler::new(pool.clone(), Arc::clone(&executor));
+            self.register_task(
+                &context,
+                "light-workflow-agent-job-reconciler",
+                &cancellation,
+                &health,
+                move |shutdown| async move { agent_job_reconciler.run(shutdown).await },
+            )?;
+
             let scheduler = RunnerScheduler::new(
                 pool.clone(),
                 runner_config.clone(),
