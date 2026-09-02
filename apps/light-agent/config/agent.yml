@@ -2,136 +2,136 @@
 # current Config Server values.yml snapshot. Light Portal owns these values;
 # light-agent validates the complete document before accepting new work.
 operationalStore:
-  contractVersion: ${operationalStore.contractVersion:1}
-  bindingId: ${operationalStore.bindingId:}
-  bindingDigest: ${operationalStore.bindingDigest:}
-  profileId: ${operationalStore.profileId:}
-  deploymentProfile: ${operationalStore.deploymentProfile:DEV_DEDICATED}
-  scopeKind: ${operationalStore.scopeKind:HOST_ENVIRONMENT}
-  scopeId: ${operationalStore.scopeId:}
-  hostId: ${operationalStore.hostId:}
-  environment: ${operationalStore.environment:}
-  serviceOwner: ${operationalStore.serviceOwner:light-agent}
-  schema: ${operationalStore.schema:agent_ops}
-  minimumSchemaVersion: ${operationalStore.minimumSchemaVersion:1}
-  expectedDatabase: ${operationalStore.expectedDatabase:operations}
-  databaseUrlFile: ${operationalStore.databaseUrlFile:/run/secrets/operational-database-url}
-  credentialGeneration: ${operationalStore.credentialGeneration:1}
+  contractVersion: ${agent.operationalStore.contractVersion:1}
+  bindingId: ${agent.operationalStore.bindingId:}
+  bindingDigest: ${agent.operationalStore.bindingDigest:}
+  profileId: ${agent.operationalStore.profileId:}
+  deploymentProfile: ${agent.operationalStore.deploymentProfile:DEV_DEDICATED}
+  scopeKind: ${agent.operationalStore.scopeKind:HOST_ENVIRONMENT}
+  scopeId: ${agent.operationalStore.scopeId:}
+  hostId: ${agent.operationalStore.hostId:}
+  environment: ${agent.operationalStore.environment:}
+  serviceOwner: ${agent.operationalStore.serviceOwner:light-agent}
+  schema: ${agent.operationalStore.schema:agent_ops}
+  minimumSchemaVersion: ${agent.operationalStore.minimumSchemaVersion:1}
+  expectedDatabase: ${agent.operationalStore.expectedDatabase:operations}
+  databaseUrlFile: ${agent.operationalStore.databaseUrlFile:/run/secrets/operational-database-url}
+  credentialGeneration: ${agent.operationalStore.credentialGeneration:1}
 
 # Native LIGHT_AGENT publications terminate A2A here. External business agents
 # use light-a2a instead; a native publication must never select sidecar mode.
 a2aPolicy:
-  enabled: ${a2aPolicy.enabled:false}
-  agentRef: ${a2aPolicy.agentRef:}
-  bindingId: ${a2aPolicy.bindingId:}
-  publicationId: ${a2aPolicy.publicationId:}
-  policyDigest: ${a2aPolicy.policyDigest:}
-  contentDigest: ${a2aPolicy.contentDigest:}
-  authorizationContextKeyFile: ${a2aPolicy.authorizationContextKeyFile:/run/secrets/a2a-authorized-context-key}
-  protocolProfile: ${a2aPolicy.protocolProfile:null}
-  allowedOperations: ${a2aPolicy.allowedOperations:[]}
-  allowedPrincipalPrefixes: ${a2aPolicy.allowedPrincipalPrefixes:[]}
-  publicUrl: ${a2aPolicy.publicUrl:}
-  agentCard: ${a2aPolicy.agentCard:null}
-  artifactRetention: ${a2aPolicy.artifactRetention:null}
-  artifactRootDirectory: ${a2aPolicy.artifactRootDirectory:/var/lib/light-agent/a2a-artifacts}
-  trustedSigningProfile: ${a2aPolicy.trustedSigningProfile:null}
-  publicSkills: ${a2aPolicy.publicSkills:[]}
+  enabled: ${agent.a2aPolicy.enabled:false}
+  agentRef: ${agent.a2aPolicy.agentRef:}
+  bindingId: ${agent.a2aPolicy.bindingId:}
+  publicationId: ${agent.a2aPolicy.publicationId:}
+  policyDigest: ${agent.a2aPolicy.policyDigest:}
+  contentDigest: ${agent.a2aPolicy.contentDigest:}
+  authorizationContextKeyFile: ${agent.a2aPolicy.authorizationContextKeyFile:/run/secrets/a2a-authorized-context-key}
+  protocolProfile: ${agent.a2aPolicy.protocolProfile:null}
+  allowedOperations: ${agent.a2aPolicy.allowedOperations:[]}
+  allowedPrincipalPrefixes: ${agent.a2aPolicy.allowedPrincipalPrefixes:[]}
+  publicUrl: ${agent.a2aPolicy.publicUrl:}
+  agentCard: ${agent.a2aPolicy.agentCard:null}
+  artifactRetention: ${agent.a2aPolicy.artifactRetention:null}
+  artifactRootDirectory: ${agent.a2aPolicy.artifactRootDirectory:/var/lib/light-agent/a2a-artifacts}
+  trustedSigningProfile: ${agent.a2aPolicy.trustedSigningProfile:null}
+  publicSkills: ${agent.a2aPolicy.publicSkills:[]}
 a2aOutbound:
-  enabled: ${a2aOutbound.enabled:false}
-  authorizationContextKeyFile: ${a2aOutbound.authorizationContextKeyFile:/run/secrets/a2a-authorized-context-key}
-  bindings: ${a2aOutbound.bindings:[]}
+  enabled: ${agent.a2aOutbound.enabled:false}
+  authorizationContextKeyFile: ${agent.a2aOutbound.authorizationContextKeyFile:/run/secrets/a2a-authorized-context-key}
+  bindings: ${agent.a2aOutbound.bindings:[]}
 
 runtimePolicy:
-  publicationId: ${runtimePolicy.publicationId:}
-  releaseVersion: ${runtimePolicy.releaseVersion:0}
-  policySnapshotId: ${runtimePolicy.policySnapshotId:}
-  policyVersion: ${runtimePolicy.policyVersion:0}
-  policyDigest: ${runtimePolicy.policyDigest:}
-  contentDigest: ${runtimePolicy.contentDigest:}
-  audience: ${runtimePolicy.audience:agent}
-  host: ${runtimePolicy.host:}
-  serviceId: ${runtimePolicy.serviceId:}
-  envTag: ${runtimePolicy.envTag:}
-  sourceEventSequence: ${runtimePolicy.sourceEventSequence:0}
-  schemaVersion: ${runtimePolicy.schemaVersion:1}
-  createdAt: ${runtimePolicy.createdAt:}
-  validFrom: ${runtimePolicy.validFrom:}
-  refreshAfter: ${runtimePolicy.refreshAfter:}
-  expiresAt: ${runtimePolicy.expiresAt:}
-  revocationEpoch: ${runtimePolicy.revocationEpoch:0}
-  compatibilityGeneration: ${runtimePolicy.compatibilityGeneration:1}
+  publicationId: ${agent.runtimePolicy.publicationId:}
+  releaseVersion: ${agent.runtimePolicy.releaseVersion:0}
+  policySnapshotId: ${agent.runtimePolicy.policySnapshotId:}
+  policyVersion: ${agent.runtimePolicy.policyVersion:0}
+  policyDigest: ${agent.runtimePolicy.policyDigest:}
+  contentDigest: ${agent.runtimePolicy.contentDigest:}
+  audience: ${agent.runtimePolicy.audience:agent}
+  host: ${agent.runtimePolicy.host:}
+  serviceId: ${agent.runtimePolicy.serviceId:}
+  envTag: ${agent.runtimePolicy.envTag:}
+  sourceEventSequence: ${agent.runtimePolicy.sourceEventSequence:0}
+  schemaVersion: ${agent.runtimePolicy.schemaVersion:1}
+  createdAt: ${agent.runtimePolicy.createdAt:}
+  validFrom: ${agent.runtimePolicy.validFrom:}
+  refreshAfter: ${agent.runtimePolicy.refreshAfter:}
+  expiresAt: ${agent.runtimePolicy.expiresAt:}
+  revocationEpoch: ${agent.runtimePolicy.revocationEpoch:0}
+  compatibilityGeneration: ${agent.runtimePolicy.compatibilityGeneration:1}
 
 # Portal relationship evidence for operational records and audit. This UUID is
 # not part of workload identity; startup identity is host/serviceId/envTag.
 portalAssociation:
-  runtimeInstanceId: ${portalAssociation.runtimeInstanceId:}
+  runtimeInstanceId: ${agent.portalAssociation.runtimeInstanceId:}
 
 agentPolicy:
-  agentDefId: ${agentPolicy.agentDefId:}
-  definitionVersion: ${agentPolicy.definitionVersion:0}
+  agentDefId: ${agent.agentPolicy.agentDefId:}
+  definitionVersion: ${agent.agentPolicy.definitionVersion:0}
   prompt:
-    system: ${agentPolicy.prompt.system:}
+    system: ${agent.agentPolicy.prompt.system:}
   model:
     provider: gateway
-    alias: ${agentPolicy.model.alias:}
-    temperature: ${agentPolicy.model.temperature:0.7}
-    maximumTokens: ${agentPolicy.model.maximumTokens:65536}
+    alias: ${agent.agentPolicy.model.alias:}
+    temperature: ${agent.agentPolicy.model.temperature:0.7}
+    maximumTokens: ${agent.agentPolicy.model.maximumTokens:65536}
     gateway:
-      name: ${agentPolicy.model.gateway.name:llm-gateway}
-      baseUrl: ${agentPolicy.model.gateway.baseUrl:https://llm-gateway:8443/v1}
-  skills: ${agentPolicy.skills:[]}
+      name: ${agent.agentPolicy.model.gateway.name:llm-gateway}
+      baseUrl: ${agent.agentPolicy.model.gateway.baseUrl:https://llm-gateway:8443/v1}
+  skills: ${agent.agentPolicy.skills:[]}
   policySnapshot:
-    snapshotId: ${agentPolicy.policySnapshot.snapshotId:}
-    definitionDigest: ${agentPolicy.policySnapshot.definitionDigest:}
-    productProfileDigest: ${agentPolicy.policySnapshot.productProfileDigest:}
-    modelDigest: ${agentPolicy.policySnapshot.modelDigest:}
-    catalogDigest: ${agentPolicy.policySnapshot.catalogDigest:}
-    memoryDigest: ${agentPolicy.policySnapshot.memoryDigest:}
-    executionDigest: ${agentPolicy.policySnapshot.executionDigest:}
-    channelDigest: ${agentPolicy.policySnapshot.channelDigest:}
-    dataBoundaryDigest: ${agentPolicy.policySnapshot.dataBoundaryDigest:}
-    tools: ${agentPolicy.policySnapshot.tools:{}}
+    snapshotId: ${agent.agentPolicy.policySnapshot.snapshotId:}
+    definitionDigest: ${agent.agentPolicy.policySnapshot.definitionDigest:}
+    productProfileDigest: ${agent.agentPolicy.policySnapshot.productProfileDigest:}
+    modelDigest: ${agent.agentPolicy.policySnapshot.modelDigest:}
+    catalogDigest: ${agent.agentPolicy.policySnapshot.catalogDigest:}
+    memoryDigest: ${agent.agentPolicy.policySnapshot.memoryDigest:}
+    executionDigest: ${agent.agentPolicy.policySnapshot.executionDigest:}
+    channelDigest: ${agent.agentPolicy.policySnapshot.channelDigest:}
+    dataBoundaryDigest: ${agent.agentPolicy.policySnapshot.dataBoundaryDigest:}
+    tools: ${agent.agentPolicy.policySnapshot.tools:{}}
   execution:
-    maximumTurnSeconds: ${agentPolicy.execution.maximumTurnSeconds:120}
-    maximumModelCalls: ${agentPolicy.execution.maximumModelCalls:10}
-    maximumActionCalls: ${agentPolicy.execution.maximumActionCalls:20}
-    maximumUserMessageBytes: ${agentPolicy.execution.maximumUserMessageBytes:65536}
-    maximumToolArgumentBytes: ${agentPolicy.execution.maximumToolArgumentBytes:65536}
-    maximumToolOutputBytes: ${agentPolicy.execution.maximumToolOutputBytes:65536}
-    maximumGatewayResponseBytes: ${agentPolicy.execution.maximumGatewayResponseBytes:1048576}
-    maximumResponseBytes: ${agentPolicy.execution.maximumResponseBytes:65536}
-    maximumOutputDepth: ${agentPolicy.execution.maximumOutputDepth:16}
-    maximumOutputItems: ${agentPolicy.execution.maximumOutputItems:1024}
-    maximumTurnTokens: ${agentPolicy.execution.maximumTurnTokens:65536}
-    executionApiUrl: ${agentPolicy.execution.executionApiUrl:https://controller:8438/}
-    quotaPolicies: ${agentPolicy.execution.quotaPolicies:[]}
-    modelRates: ${agentPolicy.execution.modelRates:[]}
-    servicePools: ${agentPolicy.execution.servicePools:[]}
-    edgeRunnerBindings: ${agentPolicy.execution.edgeRunnerBindings:[]}
-    approvalRules: ${agentPolicy.execution.approvalRules:[]}
-    codingProfile: ${agentPolicy.execution.codingProfile:{}}
+    maximumTurnSeconds: ${agent.agentPolicy.execution.maximumTurnSeconds:120}
+    maximumModelCalls: ${agent.agentPolicy.execution.maximumModelCalls:10}
+    maximumActionCalls: ${agent.agentPolicy.execution.maximumActionCalls:20}
+    maximumUserMessageBytes: ${agent.agentPolicy.execution.maximumUserMessageBytes:65536}
+    maximumToolArgumentBytes: ${agent.agentPolicy.execution.maximumToolArgumentBytes:65536}
+    maximumToolOutputBytes: ${agent.agentPolicy.execution.maximumToolOutputBytes:65536}
+    maximumGatewayResponseBytes: ${agent.agentPolicy.execution.maximumGatewayResponseBytes:1048576}
+    maximumResponseBytes: ${agent.agentPolicy.execution.maximumResponseBytes:65536}
+    maximumOutputDepth: ${agent.agentPolicy.execution.maximumOutputDepth:16}
+    maximumOutputItems: ${agent.agentPolicy.execution.maximumOutputItems:1024}
+    maximumTurnTokens: ${agent.agentPolicy.execution.maximumTurnTokens:65536}
+    executionApiUrl: ${agent.agentPolicy.execution.executionApiUrl:https://controller:8438/}
+    quotaPolicies: ${agent.agentPolicy.execution.quotaPolicies:[]}
+    modelRates: ${agent.agentPolicy.execution.modelRates:[]}
+    servicePools: ${agent.agentPolicy.execution.servicePools:[]}
+    edgeRunnerBindings: ${agent.agentPolicy.execution.edgeRunnerBindings:[]}
+    approvalRules: ${agent.agentPolicy.execution.approvalRules:[]}
+    codingProfile: ${agent.agentPolicy.execution.codingProfile:{}}
   catalog:
-    cacheTtlSeconds: ${agentPolicy.catalog.cacheTtlSeconds:60}
-    staleOnErrorSeconds: ${agentPolicy.catalog.staleOnErrorSeconds:300}
-    effectiveCatalog: ${agentPolicy.catalog.effectiveCatalog:{}}
+    cacheTtlSeconds: ${agent.agentPolicy.catalog.cacheTtlSeconds:60}
+    staleOnErrorSeconds: ${agent.agentPolicy.catalog.staleOnErrorSeconds:300}
+    effectiveCatalog: ${agent.agentPolicy.catalog.effectiveCatalog:{}}
   memory:
-    writeMode: ${agentPolicy.memory.writeMode:operational}
-    personalProfileDigest: ${agentPolicy.memory.personalProfileDigest:}
-    rules: ${agentPolicy.memory.rules:{}}
+    writeMode: ${agent.agentPolicy.memory.writeMode:operational}
+    personalProfileDigest: ${agent.agentPolicy.memory.personalProfileDigest:}
+    rules: ${agent.agentPolicy.memory.rules:{}}
   knowledge:
-    endpoint: ${agentPolicy.knowledge.endpoint:}
-    allowPrivatePlaintext: ${agentPolicy.knowledge.allowPrivatePlaintext:false}
-    bindings: ${agentPolicy.knowledge.bindings:[]}
+    endpoint: ${agent.agentPolicy.knowledge.endpoint:}
+    allowPrivatePlaintext: ${agent.agentPolicy.knowledge.allowPrivatePlaintext:false}
+    bindings: ${agent.agentPolicy.knowledge.bindings:[]}
     retrieval:
-      topK: ${agentPolicy.knowledge.retrieval.topK:5}
-      tokenBudget: ${agentPolicy.knowledge.retrieval.tokenBudget:2000}
-      filters: ${agentPolicy.knowledge.retrieval.filters:{}}
-  channel: ${agentPolicy.channel:{}}
-  dataBoundary: ${agentPolicy.dataBoundary:{}}
-  gatewayDelegation: ${agentPolicy.gatewayDelegation:{}}
+      topK: ${agent.agentPolicy.knowledge.retrieval.topK:5}
+      tokenBudget: ${agent.agentPolicy.knowledge.retrieval.tokenBudget:2000}
+      filters: ${agent.agentPolicy.knowledge.retrieval.filters:{}}
+  channel: ${agent.agentPolicy.channel:{}}
+  dataBoundary: ${agent.agentPolicy.dataBoundary:{}}
+  gatewayDelegation: ${agent.agentPolicy.gatewayDelegation:{}}
   session:
-    idleSeconds: ${agentPolicy.session.idleSeconds:3600}
-    maximumSeconds: ${agentPolicy.session.maximumSeconds:86400}
-    maximumActiveSessions: ${agentPolicy.session.maximumActiveSessions:1}
-    maximumQueuedTurns: ${agentPolicy.session.maximumQueuedTurns:100}
+    idleSeconds: ${agent.agentPolicy.session.idleSeconds:3600}
+    maximumSeconds: ${agent.agentPolicy.session.maximumSeconds:86400}
+    maximumActiveSessions: ${agent.agentPolicy.session.maximumActiveSessions:1}
+    maximumQueuedTurns: ${agent.agentPolicy.session.maximumQueuedTurns:100}

@@ -5591,21 +5591,21 @@ mod tests {
             "agent.yml",
             include_str!("../config/agent.yml"),
             r#"
-operationalStore.bindingId: 00000000-0000-0000-0000-000000000010
-operationalStore.scopeId: 00000000-0000-0000-0000-000000000003
-operationalStore.hostId: 00000000-0000-0000-0000-000000000003
-runtimePolicy.publicationId: 00000000-0000-0000-0000-000000000001
-runtimePolicy.policySnapshotId: 00000000-0000-0000-0000-000000000002
-runtimePolicy.host: dev.lightapi.net
-runtimePolicy.serviceId: com.networknt.agent.account-1.0.0
-runtimePolicy.envTag: dev
-portalAssociation.runtimeInstanceId: 00000000-0000-0000-0000-000000000004
-runtimePolicy.createdAt: 2026-08-26T12:00:00Z
-runtimePolicy.validFrom: 2026-08-26T12:00:00Z
-runtimePolicy.refreshAfter: 2026-08-26T12:30:00Z
-runtimePolicy.expiresAt: 2026-08-26T13:00:00Z
-agentPolicy.agentDefId: 00000000-0000-0000-0000-000000000005
-agentPolicy.policySnapshot.snapshotId: 00000000-0000-0000-0000-000000000002
+agent.operationalStore.bindingId: 00000000-0000-0000-0000-000000000010
+agent.operationalStore.scopeId: 00000000-0000-0000-0000-000000000003
+agent.operationalStore.hostId: 00000000-0000-0000-0000-000000000003
+agent.runtimePolicy.publicationId: 00000000-0000-0000-0000-000000000001
+agent.runtimePolicy.policySnapshotId: 00000000-0000-0000-0000-000000000002
+agent.runtimePolicy.host: dev.lightapi.net
+agent.runtimePolicy.serviceId: com.networknt.agent.account-1.0.0
+agent.runtimePolicy.envTag: dev
+agent.portalAssociation.runtimeInstanceId: 00000000-0000-0000-0000-000000000004
+agent.runtimePolicy.createdAt: 2026-08-26T12:00:00Z
+agent.runtimePolicy.validFrom: 2026-08-26T12:00:00Z
+agent.runtimePolicy.refreshAfter: 2026-08-26T12:30:00Z
+agent.runtimePolicy.expiresAt: 2026-08-26T13:00:00Z
+agent.agentPolicy.agentDefId: 00000000-0000-0000-0000-000000000005
+agent.agentPolicy.policySnapshot.snapshotId: 00000000-0000-0000-0000-000000000002
 "#,
         );
         let override_values = r#"

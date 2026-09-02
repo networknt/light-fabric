@@ -349,7 +349,7 @@ pub struct AgentCatalogPolicy {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentMemoryPolicy {
     pub write_mode: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_non_empty_string")]
     pub personal_profile_digest: Option<String>,
     #[serde(default)]
     pub rules: Value,
@@ -358,7 +358,7 @@ pub struct AgentMemoryPolicy {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentKnowledgePolicy {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_non_empty_string")]
     pub endpoint: Option<String>,
     pub allow_private_plaintext: bool,
     #[serde(default)]
@@ -417,6 +417,25 @@ where
             .map(Some)
             .map_err(D::Error::custom),
         _ => Err(D::Error::custom("expected an optional UUID string")),
+    }
+}
+
+fn deserialize_optional_non_empty_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::Null => Ok(None),
+        Value::String(value)
+            if value.trim().is_empty() || value.trim().eq_ignore_ascii_case("null") =>
+        {
+            Ok(None)
+        }
+        Value::String(value) => Ok(Some(value)),
+        _ => Err(D::Error::custom("expected an optional string")),
     }
 }
 
@@ -903,7 +922,9 @@ fn persisted_policy_digest(policy: &PolicySnapshot) -> Result<String, serde_json
 
 fn validate_digest(name: &str, configured: &str, actual: &str) -> Result<(), String> {
     if configured != actual {
-        return Err(format!("{name} failed digest verification"));
+        return Err(format!(
+            "{name} failed digest verification: configured={configured} actual={actual}"
+        ));
     }
     Ok(())
 }
@@ -917,6 +938,43 @@ mod tests {
 
     fn digest(value: &str) -> String {
         sha256_digest(value.as_bytes())
+    }
+
+    #[test]
+    fn java_portal_flattened_empty_values_preserve_digest_contract() {
+        let fixture = r#"{"agentDefId":"019d82bf-ab5e-791a-885c-d08aafa2b614","policySnapshot":{"snapshotId":"01a05d30-0000-7000-8000-000000000002","definitionDigest":"sha256:be35b6d853200d676a398e2f3ce8f58dc0f464a7c124ef0051c45d43753e65a1","productProfileDigest":"sha256:21be0163c81abd92121c99dddc95d0ac7d78647fe8f78172c1655a76e143bc31","modelDigest":"sha256:bd845e5a18e7c20041c25c6539c497f41ce27533de12e02f3b22000bf2d23cb2","catalogDigest":"sha256:0335a42d3d5fb9fd161ae19413e00e4421d8cca3e8e9f0be6978860f9e98677a","memoryDigest":"sha256:f03b2d6941c243aa01e80e685fef205d54961742ae5735579c0b2287077a383a","executionDigest":"sha256:13e1f4b064bd36177be2126f08278d08170f7f9887800dc5f68e2df9116a990c","channelDigest":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","dataBoundaryDigest":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","tools":{}},"session":{"idleSeconds":3600,"maximumSeconds":86400,"maximumActiveSessions":1,"maximumQueuedTurns":100},"memory":{"writeMode":"operational","personalProfileDigest":"","rules":{}},"model":{"provider":"gateway","alias":"assistant-dev","temperature":0.7,"maximumTokens":1000000,"gateway":{"name":"llm-gateway","baseUrl":"https://llm-gateway:8443/v1"}},"definitionVersion":2,"dataBoundary":{},"knowledge":{"endpoint":"","allowPrivatePlaintext":false,"bindings":[],"retrieval":{"topK":5,"tokenBudget":2000,"filters":{}}},"skills":[],"gatewayDelegation":{},"execution":{"maximumTurnSeconds":120,"maximumModelCalls":10,"maximumActionCalls":20,"maximumUserMessageBytes":65536,"maximumToolArgumentBytes":65536,"maximumToolOutputBytes":65536,"maximumGatewayResponseBytes":1048576,"maximumResponseBytes":65536,"maximumOutputDepth":16,"maximumOutputItems":1024,"maximumTurnTokens":1000000,"executionApiUrl":"https://controller:8438/","quotaPolicies":[],"modelRates":[],"servicePools":[],"edgeRunnerBindings":[],"approvalRules":[],"codingProfile":{}},"prompt":{"system":"Account Agent"},"channel":{},"catalog":{"cacheTtlSeconds":60,"staleOnErrorSeconds":300,"effectiveCatalog":{}}}"#;
+        let policy: AgentPolicy =
+            serde_json::from_str(fixture).expect("Java Portal Agent policy fixture");
+
+        assert_eq!(
+            persisted_policy_digest(&policy.policy_snapshot).unwrap(),
+            "sha256:614a33b62286877becb54b64fc72743760b9b5f34c73cff25d8dd77d54f0ae77"
+        );
+        assert_eq!(
+            canonical_digest(&policy).unwrap(),
+            "sha256:30701db286777609bd56f31ce07e745799333e1347b68a0d81462157b8109e99"
+        );
+    }
+
+    #[test]
+    fn portal_null_string_optionals_do_not_change_policy_content() {
+        let memory: AgentMemoryPolicy = serde_json::from_value(serde_json::json!({
+            "writeMode": "operational",
+            "personalProfileDigest": "null",
+            "rules": {}
+        }))
+        .expect("Portal memory projection");
+        let knowledge: AgentKnowledgePolicy = serde_json::from_value(serde_json::json!({
+            "endpoint": "null",
+            "allowPrivatePlaintext": false,
+            "bindings": [],
+            "retrieval": {"topK": 5, "tokenBudget": 2000, "filters": {}}
+        }))
+        .expect("Portal knowledge projection");
+
+        assert_eq!(None, memory.personal_profile_digest);
+        assert_eq!(None, knowledge.endpoint);
+        assert!(knowledge.retrieval.filters.is_none());
     }
 
     #[test]
