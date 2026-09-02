@@ -59,6 +59,9 @@ pub struct OperationalStoreProjection {
     pub binding_digest: String,
     pub host_id: Uuid,
     pub environment: String,
+    pub server_host: String,
+    pub port: u16,
+    pub tls_mode: String,
     pub service_owner: String,
     pub schema: String,
     pub expected_database: String,
@@ -456,11 +459,14 @@ impl WorkflowConfiguration {
         }
 
         let store = &workflow.operational_store;
-        if store.contract_version != 1
+        if store.contract_version != 2
             || store.environment != environment
             || store.service_owner != "light-workflow"
             || store.schema != workflow_store::EXPECTED_SCHEMA
-            || store.expected_database != workflow_store::EXPECTED_DATABASE
+            || store.server_host.trim().is_empty()
+            || store.port == 0
+            || !matches!(store.tls_mode.as_str(), "DISABLE" | "PREFER" | "REQUIRE" | "VERIFY_CA" | "VERIFY_FULL")
+            || !operational_store::runtime::postgres_identifier(&store.expected_database)
             || store.minimum_schema_generation < 1
             || store.credential_generation < 1
             || !store.binding_digest.starts_with("sha256:")
@@ -471,7 +477,13 @@ impl WorkflowConfiguration {
             );
         }
         #[cfg(not(test))]
-        let database_url = match workflow_store::read_database_url(&store.database_url_file) {
+        let database_url = match workflow_store::read_database_url(
+            &store.database_url_file,
+            &store.server_host,
+            store.port,
+            &store.tls_mode,
+            &store.expected_database,
+        ) {
             Ok(value) => Some(value),
             Err(error) => {
                 violations.push(format!("operationalStore.databaseUrlFile: {error}"));
@@ -1176,15 +1188,18 @@ mod tests {
             http_addr: "0.0.0.0:8436".parse().unwrap(),
             database_url: "postgres://workflow".to_string(),
             operational_store: OperationalStoreProjection {
-                contract_version: 1,
+                contract_version: 2,
                 binding_id: Uuid::parse_str("f8a8e4d0-c7cf-4000-b3b0-0044c62d3242").unwrap(),
                 binding_digest: format!("sha256:{}", "a".repeat(64)),
                 host_id: Uuid::parse_str("01964b05-552a-7c4b-9184-6857e7f3dc5f").unwrap(),
                 environment: "dev".into(),
+                server_host: "postgres".into(),
+                port: 5432,
+                tls_mode: "DISABLE".into(),
                 service_owner: "light-workflow".into(),
                 schema: "workflow_ops".into(),
                 expected_database: "operations".into(),
-                minimum_schema_generation: 1,
+                minimum_schema_generation: 2,
                 credential_generation: 1,
                 database_url_file: "/run/secrets/operational-database-url".into(),
             },
@@ -1478,7 +1493,7 @@ workflow.runner.originId: workflow-dev
         let values = BTreeMap::from([
             (
                 "WORKFLOW_OPERATIONAL_DATABASE_URL_TEST_ONLY".to_string(),
-                "postgres://workflow:workflow@localhost/workflow".to_string(),
+                "postgres://operations_workflow_runtime:workflow@localhost/operations".to_string(),
             ),
             (
                 "LIGHT_PORTAL_AUTHORIZATION".to_string(),

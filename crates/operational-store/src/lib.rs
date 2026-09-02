@@ -5,6 +5,8 @@
 //! the release assets used by deployment bootstrap jobs.
 
 pub mod integrity;
+pub mod registration;
+pub mod runtime;
 
 /// Logical database identity required by every operational runtime.
 pub const EXPECTED_DATABASE: &str = "operations";

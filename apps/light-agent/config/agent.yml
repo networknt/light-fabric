@@ -2,18 +2,21 @@
 # current Config Server values.yml snapshot. Light Portal owns these values;
 # light-agent validates the complete document before accepting new work.
 operationalStore:
-  contractVersion: ${agent.operationalStore.contractVersion:1}
+  contractVersion: ${agent.operationalStore.contractVersion:2}
   bindingId: ${agent.operationalStore.bindingId:}
   bindingDigest: ${agent.operationalStore.bindingDigest:}
   profileId: ${agent.operationalStore.profileId:}
-  deploymentProfile: ${agent.operationalStore.deploymentProfile:DEV_DEDICATED}
-  scopeKind: ${agent.operationalStore.scopeKind:HOST_ENVIRONMENT}
+  deploymentProfile: ${agent.operationalStore.deploymentProfile:CUSTOMER_MANAGED}
+  scopeKind: ${agent.operationalStore.scopeKind:HOST}
   scopeId: ${agent.operationalStore.scopeId:}
   hostId: ${agent.operationalStore.hostId:}
   environment: ${agent.operationalStore.environment:}
+  serverHost: ${agent.operationalStore.serverHost:postgres}
+  port: ${agent.operationalStore.port:5432}
+  tlsMode: ${agent.operationalStore.tlsMode:DISABLE}
   serviceOwner: ${agent.operationalStore.serviceOwner:light-agent}
   schema: ${agent.operationalStore.schema:agent_ops}
-  minimumSchemaVersion: ${agent.operationalStore.minimumSchemaVersion:1}
+  minimumSchemaVersion: ${agent.operationalStore.minimumSchemaVersion:2}
   expectedDatabase: ${agent.operationalStore.expectedDatabase:operations}
   databaseUrlFile: ${agent.operationalStore.databaseUrlFile:/run/secrets/operational-database-url}
   credentialGeneration: ${agent.operationalStore.credentialGeneration:1}

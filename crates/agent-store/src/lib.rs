@@ -81,6 +81,10 @@ pub struct ExpectedBinding<'a> {
     pub binding_digest: &'a str,
     pub host_id: Uuid,
     pub environment: &'a str,
+    pub server_host: &'a str,
+    pub port: u16,
+    pub tls_mode: &'a str,
+    pub expected_database: &'a str,
     pub minimum_schema_generation: i64,
 }
 
@@ -88,6 +92,8 @@ pub struct ExpectedBinding<'a> {
 pub enum ValidationError {
     #[error("agent-store database query failed: {0}")]
     Database(#[from] sqlx::Error),
+    #[error(transparent)]
+    Runtime(#[from] operational_store::runtime::RuntimeValidationError),
     #[error("agent-store scope validation failed: {0}")]
     Scope(String),
 }
@@ -689,39 +695,16 @@ async fn load_native_task(
     })
 }
 
-pub fn read_database_url(path: &Path) -> Result<String, ValidationError> {
-    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
-        ValidationError::Scope(format!("cannot inspect Agent database URL file: {error}"))
-    })?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(ValidationError::Scope(
-            "Agent database URL path must be a regular non-symlink file".into(),
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o037 != 0 {
-            return Err(ValidationError::Scope(
-                "Agent database URL file permissions are too broad".into(),
-            ));
-        }
-    }
-    let value = std::fs::read_to_string(path).map_err(|error| {
-        ValidationError::Scope(format!("cannot read Agent database URL file: {error}"))
-    })?;
-    let value = value.trim_end_matches(['\r', '\n']);
-    if value.is_empty()
-        || value.len() > 2048
-        || value.contains(['\r', '\n'])
-        || !value.starts_with("postgres://operations_agent_runtime:")
-        || !value.ends_with("/operations")
-    {
-        return Err(ValidationError::Scope(
-            "Agent database URL file does not match the redacted role/database contract".into(),
-        ));
-    }
-    Ok(value.to_string())
+pub fn read_database_url(path: &Path, server_host: &str, port: u16, tls_mode: &str,
+                         expected_database: &str) -> Result<String, ValidationError> {
+    Ok(operational_store::runtime::read_database_url(
+        path,
+        server_host,
+        port,
+        tls_mode,
+        expected_database,
+        "agent_runtime",
+    )?)
 }
 
 /// Fail closed unless `pool` is the least-privileged Agent connection for the
@@ -730,47 +713,31 @@ pub async fn validate(
     pool: &PgPool,
     expected: &ExpectedBinding<'_>,
 ) -> Result<(), ValidationError> {
+    operational_store::runtime::validate_binding(
+        pool,
+        &operational_store::runtime::ExpectedBinding {
+            binding_id: expected.binding_id,
+            binding_digest: expected.binding_digest,
+            host_id: expected.host_id,
+            environment: expected.environment,
+            server_host: expected.server_host,
+            port: expected.port,
+            tls_mode: expected.tls_mode,
+            expected_database: expected.expected_database,
+            role_suffix: "agent_runtime",
+            minimum_schema_generation: expected.minimum_schema_generation,
+        },
+    )
+    .await?;
     let identity = sqlx::query(
-        "SELECT current_database() AS database_name, current_user AS role_name,
-                has_database_privilege(current_user,current_database(),'CREATE') AS database_create,
-                has_schema_privilege(current_user,'agent_ops','CREATE') AS schema_create",
+        "SELECT has_schema_privilege(current_user,'agent_ops','CREATE') AS schema_create",
     )
     .fetch_one(pool)
     .await?;
-    let database_name: String = identity.try_get("database_name")?;
-    let role_name: String = identity.try_get("role_name")?;
-    let database_create: bool = identity.try_get("database_create")?;
     let schema_create: bool = identity.try_get("schema_create")?;
-    if database_name != EXPECTED_DATABASE
-        || role_name != EXPECTED_RUNTIME_ROLE
-        || database_create
-        || schema_create
-    {
-        return Err(ValidationError::Scope(format!(
-            "expected database {EXPECTED_DATABASE}, role {EXPECTED_RUNTIME_ROLE}, and no CREATE authority; got database {database_name}, role {role_name}"
-        )));
-    }
-
-    let binding = sqlx::query(
-        "SELECT binding_id,binding_digest,host_id,environment,schema_contract_generation
-           FROM operational_meta.operational_store_binding_t WHERE active",
-    )
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| ValidationError::Scope("no active operational-store binding".into()))?;
-    let actual_binding_id: Uuid = binding.try_get("binding_id")?;
-    let actual_binding_digest: String = binding.try_get("binding_digest")?;
-    let actual_host_id: Uuid = binding.try_get("host_id")?;
-    let actual_environment: String = binding.try_get("environment")?;
-    let generation: i64 = binding.try_get("schema_contract_generation")?;
-    if actual_binding_id != expected.binding_id
-        || actual_binding_digest != expected.binding_digest
-        || actual_host_id != expected.host_id
-        || actual_environment != expected.environment
-        || generation < expected.minimum_schema_generation
-    {
+    if schema_create {
         return Err(ValidationError::Scope(
-            "active operational-store binding does not match the Agent projection".into(),
+            "Agent runtime role must not have CREATE authority".into(),
         ));
     }
 

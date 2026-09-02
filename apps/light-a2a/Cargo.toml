@@ -7,6 +7,7 @@ authors.workspace = true
 description = "Governed A2A external-agent integration runtime"
 
 [dependencies]
+operational-store = { path = "../../crates/operational-store" }
 a2a-client = { path = "../../crates/a2a-client" }
 a2a-backend = { path = "../../crates/a2a-backend" }
 a2a-core = { path = "../../crates/a2a-core" }

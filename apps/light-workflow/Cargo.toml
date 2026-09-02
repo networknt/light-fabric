@@ -32,6 +32,7 @@ workflow-invocation-contract = { path = "../../crates/workflow-invocation-contra
 workflow-store = { path = "../../crates/workflow-store" }
 model-provider = { path = "../../crates/model-provider" }
 object_store = { version = "0.12.4", features = ["aws"] }
+operational-store = { path = "../../crates/operational-store" }
 sqlx = { version = "0.8", features = ["chrono", "json", "postgres", "runtime-tokio-rustls", "uuid"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }

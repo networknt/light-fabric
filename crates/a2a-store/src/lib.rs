@@ -43,6 +43,10 @@ pub struct ExpectedBinding<'a> {
     pub binding_digest: &'a str,
     pub host_id: Uuid,
     pub environment: &'a str,
+    pub server_host: &'a str,
+    pub port: u16,
+    pub tls_mode: &'a str,
+    pub expected_database: &'a str,
     pub minimum_schema_generation: i64,
 }
 
@@ -148,6 +152,8 @@ pub enum StoreError {
     A2a(#[from] A2aError),
     #[error("a2a-store database query failed: {0}")]
     Database(#[from] sqlx::Error),
+    #[error(transparent)]
+    Runtime(#[from] operational_store::runtime::RuntimeValidationError),
     #[error("a2a-store scope validation failed: {0}")]
     Scope(String),
 }
@@ -1189,74 +1195,43 @@ async fn append_audit(
     Ok(())
 }
 
-pub fn read_database_url(path: &Path) -> Result<String, StoreError> {
-    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
-        StoreError::Scope(format!("cannot inspect A2A database URL file: {error}"))
-    })?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(StoreError::Scope(
-            "A2A database URL path must be a regular non-symlink file".into(),
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o037 != 0 {
-            return Err(StoreError::Scope(
-                "A2A database URL file permissions are too broad".into(),
-            ));
-        }
-    }
-    let value = std::fs::read_to_string(path).map_err(|error| {
-        StoreError::Scope(format!("cannot read A2A database URL file: {error}"))
-    })?;
-    let value = value.trim_end_matches(['\r', '\n']);
-    if value.is_empty()
-        || value.len() > 2048
-        || value.contains(['\r', '\n'])
-        || !value.starts_with("postgres://operations_a2a_runtime:")
-        || !value.ends_with("/operations")
-    {
-        return Err(StoreError::Scope(
-            "A2A database URL file does not match the redacted role/database contract".into(),
-        ));
-    }
-    Ok(value.to_string())
+pub fn read_database_url(path: &Path, server_host: &str, port: u16, tls_mode: &str,
+                         expected_database: &str) -> Result<String, StoreError> {
+    Ok(operational_store::runtime::read_database_url(
+        path,
+        server_host,
+        port,
+        tls_mode,
+        expected_database,
+        "a2a_runtime",
+    )?)
 }
 
 pub async fn validate(pool: &PgPool, expected: &ExpectedBinding<'_>) -> Result<(), StoreError> {
+    operational_store::runtime::validate_binding(
+        pool,
+        &operational_store::runtime::ExpectedBinding {
+            binding_id: expected.binding_id,
+            binding_digest: expected.binding_digest,
+            host_id: expected.host_id,
+            environment: expected.environment,
+            server_host: expected.server_host,
+            port: expected.port,
+            tls_mode: expected.tls_mode,
+            expected_database: expected.expected_database,
+            role_suffix: "a2a_runtime",
+            minimum_schema_generation: expected.minimum_schema_generation,
+        },
+    )
+    .await?;
     let identity = sqlx::query(
-        "SELECT current_database() AS database_name,current_user AS role_name,
-                has_database_privilege(current_user,current_database(),'CREATE') AS database_create,
-                has_schema_privilege(current_user,'a2a_ops','CREATE') AS schema_create",
+        "SELECT has_schema_privilege(current_user,'a2a_ops','CREATE') AS schema_create",
     )
     .fetch_one(pool)
     .await?;
-    if identity.try_get::<String, _>("database_name")? != EXPECTED_DATABASE
-        || identity.try_get::<String, _>("role_name")? != EXPECTED_RUNTIME_ROLE
-        || identity.try_get::<bool, _>("database_create")?
-        || identity.try_get::<bool, _>("schema_create")?
-    {
+    if identity.try_get::<bool, _>("schema_create")? {
         return Err(StoreError::Scope(
-            "A2A database identity or privilege mismatch".into(),
-        ));
-    }
-    let binding = sqlx::query(
-        "SELECT binding_id,binding_digest,host_id,environment,schema_contract_generation
-           FROM operational_meta.operational_store_binding_t WHERE active",
-    )
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| StoreError::Scope("no active operational-store binding".into()))?;
-    if binding.try_get::<Uuid, _>("binding_id")? != expected.binding_id
-        || binding.try_get::<String, _>("binding_digest")? != expected.binding_digest
-        || binding.try_get::<Uuid, _>("host_id")? != expected.host_id
-        || binding.try_get::<String, _>("environment")? != expected.environment
-        || binding.try_get::<i64, _>("schema_contract_generation")?
-            < expected.minimum_schema_generation
-    {
-        return Err(StoreError::Scope(
-            "active operational-store binding does not match the A2A projection".into(),
+            "A2A runtime role must not have CREATE authority".into(),
         ));
     }
     let missing: Vec<String> = sqlx::query_scalar(

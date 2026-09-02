@@ -10,6 +10,7 @@ description = "Authoritative PostgreSQL contract and scope validation for shared
 path = "src/lib.rs"
 
 [dependencies]
+operational-store = { path = "../operational-store" }
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls", "uuid"] }
 thiserror.workspace = true
 uuid.workspace = true

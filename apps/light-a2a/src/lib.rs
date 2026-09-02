@@ -101,6 +101,9 @@ pub struct OperationalStore {
     pub binding_digest: String,
     pub host_id: Uuid,
     pub environment: String,
+    pub server_host: String,
+    pub port: u16,
+    pub tls_mode: String,
     pub service_owner: String,
     pub schema: String,
     pub expected_database: String,
@@ -272,12 +275,14 @@ impl A2aConfig {
 
     pub fn validate(&self, host: &str, service_id: &str, env_tag: &str) -> Result<(), String> {
         if self.runtime_policy.audience != "light-a2a"
-            || self.operational_store.contract_version != 1
+            || self.operational_store.contract_version != 2
             || self.operational_store.credential_generation < 1
             || self.operational_store.environment != self.runtime_policy.env_tag
             || self.operational_store.service_owner != "light-a2a"
             || self.operational_store.schema != "a2a_ops"
-            || self.operational_store.expected_database != "operations"
+            || !operational_store::runtime::postgres_identifier(
+                &self.operational_store.expected_database,
+            )
             || self.operational_store.binding_digest.len() < 8
             || self.maximum_database_connections == 0
             || self.maximum_request_bytes == 0
@@ -671,9 +676,14 @@ struct BackendRuntime {
 
 impl A2aState {
     pub async fn build(config: A2aConfig) -> Result<Self, String> {
-        let database_url =
-            a2a_store::read_database_url(&config.operational_store.database_url_file)
-                .map_err(|error| error.to_string())?;
+        let database_url = a2a_store::read_database_url(
+            &config.operational_store.database_url_file,
+            &config.operational_store.server_host,
+            config.operational_store.port,
+            &config.operational_store.tls_mode,
+            &config.operational_store.expected_database,
+        )
+        .map_err(|error| error.to_string())?;
         let pool = PgPoolOptions::new()
             .max_connections(config.maximum_database_connections)
             .after_connect(|connection, _| {
@@ -694,6 +704,10 @@ impl A2aState {
                 binding_digest: &config.operational_store.binding_digest,
                 host_id: config.operational_store.host_id,
                 environment: &config.operational_store.environment,
+                server_host: &config.operational_store.server_host,
+                port: config.operational_store.port,
+                tls_mode: &config.operational_store.tls_mode,
+                expected_database: &config.operational_store.expected_database,
                 minimum_schema_generation: config.operational_store.minimum_schema_generation,
             },
         )
@@ -3161,15 +3175,18 @@ mod tests {
                 compatibility_generation: 1,
             },
             operational_store: OperationalStore {
-                contract_version: 1,
+                contract_version: 2,
                 binding_id: Uuid::now_v7(),
                 binding_digest: format!("sha256:{}", "d".repeat(64)),
                 host_id: Uuid::now_v7(),
                 environment: "dev".into(),
+                server_host: "postgres".into(),
+                port: 5432,
+                tls_mode: "DISABLE".into(),
                 service_owner: "light-a2a".into(),
                 schema: "a2a_ops".into(),
                 expected_database: "operations".into(),
-                minimum_schema_generation: 1,
+                minimum_schema_generation: 2,
                 database_url_file: "/test/operations-url".into(),
                 credential_generation: 1,
             },

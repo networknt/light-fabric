@@ -21,7 +21,7 @@ fail() {
 
 actual_binding="$(psql -U "$database_user" -d "$database_name" -X -tA -F '|' -c \
   "SELECT binding_id, binding_digest, scope_id, host_id, environment, database_identity, deployment_profile, schema_contract_generation, active FROM operational_meta.operational_store_binding_t WHERE active")"
-expected_binding="$binding_id|$binding_digest|$scope_id|$host_id|$environment_name|operations|DEV_DEDICATED|$contract_generation|t"
+expected_binding="$binding_id|$binding_digest|$scope_id|$host_id||operations|CUSTOMER_MANAGED|$contract_generation|t"
 [[ "$actual_binding" == "$expected_binding" ]] || fail "active scope root mismatch"
 
 schema_ready="$(psql -U "$database_user" -d "$database_name" -X -tA <<'SQL'

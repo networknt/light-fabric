@@ -132,6 +132,9 @@ pub struct OperationalStoreProjection {
     pub scope_id: Uuid,
     pub host_id: Uuid,
     pub environment: String,
+    pub server_host: String,
+    pub port: u16,
+    pub tls_mode: String,
     pub service_owner: String,
     pub schema: String,
     pub minimum_schema_version: i64,
@@ -459,16 +462,16 @@ impl AgentConfig {
         let envelope = &self.runtime_policy;
         let policy = &self.agent_policy;
         let store = &self.operational_store;
-        if store.contract_version != 1
-            || store.deployment_profile != "DEV_DEDICATED"
-            || store.scope_kind != "HOST_ENVIRONMENT"
+        if store.contract_version != 2
+            || store.deployment_profile != "CUSTOMER_MANAGED"
+            || store.scope_kind != "HOST"
             || store.scope_id != store.host_id
             || store.environment != envelope.env_tag
             || store.service_owner != "light-agent"
             || store.schema != agent_store::EXPECTED_SCHEMA
             || store.minimum_schema_version < 1
             || store.credential_generation < 1
-            || store.expected_database != agent_store::EXPECTED_DATABASE
+            || !operational_store::runtime::postgres_identifier(&store.expected_database)
             || store.profile_id.trim().is_empty()
             || !store.database_url_file.starts_with('/')
             || !is_sha256_digest(&store.binding_digest)
@@ -1111,18 +1114,21 @@ mod tests {
         let host_id = Uuid::now_v7();
         AgentConfig {
             operational_store: OperationalStoreProjection {
-                contract_version: 1,
+                contract_version: 2,
                 binding_id: Uuid::now_v7(),
                 binding_digest: digest("binding"),
                 profile_id: "dev-dedicated".into(),
-                deployment_profile: "DEV_DEDICATED".into(),
-                scope_kind: "HOST_ENVIRONMENT".into(),
+                deployment_profile: "CUSTOMER_MANAGED".into(),
+                scope_kind: "HOST".into(),
                 scope_id: host_id,
                 host_id,
                 environment: "dev".into(),
+                server_host: "postgres".into(),
+                port: 5432,
+                tls_mode: "DISABLE".into(),
                 service_owner: "light-agent".into(),
                 schema: "agent_ops".into(),
-                minimum_schema_version: 1,
+                minimum_schema_version: 2,
                 expected_database: "operations".into(),
                 database_url_file: "/run/secrets/operational-database-url".into(),
                 credential_generation: 1,

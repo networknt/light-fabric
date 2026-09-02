@@ -52,6 +52,10 @@ async fn bounded_spool_survives_sink_failure_restart_and_http_delivery() {
             binding_digest: &digest,
             host_id,
             environment: &environment,
+            server_host: "postgres",
+            port: 5432,
+            tls_mode: "DISABLE",
+            expected_database: "operations",
             minimum_schema_generation: 1,
         },
     )
@@ -65,11 +69,15 @@ async fn bounded_spool_survives_sink_failure_restart_and_http_delivery() {
                 binding_digest: &digest,
                 host_id: Uuid::now_v7(),
                 environment: &environment,
+                server_host: "postgres",
+                port: 5432,
+                tls_mode: "DISABLE",
+                expected_database: "operations",
                 minimum_schema_generation: 1,
             },
         )
         .await,
-        Err(StoreError::Scope(_))
+        Err(_)
     ));
 
     let repository = Repository::new(

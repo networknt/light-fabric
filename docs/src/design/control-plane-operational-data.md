@@ -12,7 +12,7 @@ runtime persistence.
 It complements:
 
 - [Database Design](database-design.md);
-- [Tenant Operational Store Provisioning](tenant-operational-store-provisioning.md);
+- [Tenant Operational Store Registration](tenant-operational-store-provisioning.md);
 - [Hindsight Memory](hindsight-memory.md);
 - [Light-Agent Execution](light-agent-execution.md);
 - [Light-Workflow Runner](light-workflow-runner.md);
@@ -414,7 +414,7 @@ different.
 The Host Admin lifecycle, managed and customer-managed deployment profiles,
 secret handling, provisioning state machine, and decommission workflow are
 defined in
-[Tenant Operational Store Provisioning](tenant-operational-store-provisioning.md).
+[Tenant Operational Store Registration](tenant-operational-store-provisioning.md).
 
 ## Portal And Standalone Operation
 

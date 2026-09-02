@@ -5,6 +5,7 @@ edition.workspace = true
 license = "Apache-2.0"
 
 [dependencies]
+operational-store = { path = "../../crates/operational-store" }
 agent-delegation = { path = "../../crates/agent-delegation" }
 gateway-operational-store = { path = "../../crates/gateway-operational-store" }
 llm-gateway = { path = "../../crates/llm-gateway" }

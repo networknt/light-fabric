@@ -21,6 +21,7 @@ use light_axum::AxumTransport;
 use light_runtime::{
     LightRuntimeBuilder, ModuleRegistry, ShutdownWatcher, TracingOptions, init_tracing,
 };
+use sqlx::postgres::PgPoolOptions;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
@@ -46,6 +47,47 @@ async fn main() -> anyhow::Result<()> {
         &config_dir,
         &module_registry,
     )?;
+    let store = &config.operational_store;
+    if store.contract_version != operational_store::runtime::CONTRACT_VERSION as u16
+        || store.service_owner != "light-deployer"
+        || store.schema != "operational_meta"
+        || store.server_host.trim().is_empty()
+        || store.port == 0
+        || !matches!(store.tls_mode.as_str(), "DISABLE" | "PREFER" | "REQUIRE" | "VERIFY_CA" | "VERIFY_FULL")
+        || store.credential_generation < 1
+    {
+        anyhow::bail!("deployer operational-store projection is invalid");
+    }
+    let database_url = operational_store::runtime::read_database_url(
+        &store.database_url_file,
+        &store.server_host,
+        store.port,
+        &store.tls_mode,
+        &store.expected_database,
+        "deployer_runtime",
+    )?;
+    let operational_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .context("connect Deployer operational-store verifier")?;
+    operational_store::runtime::validate_binding(
+        &operational_pool,
+        &operational_store::runtime::ExpectedBinding {
+            binding_id: store.binding_id,
+            binding_digest: &store.binding_digest,
+            host_id: store.host_id,
+            environment: &store.environment,
+            server_host: &store.server_host,
+            port: store.port,
+            tls_mode: &store.tls_mode,
+            expected_database: &store.expected_database,
+            role_suffix: "deployer_runtime",
+            minimum_schema_generation: store.minimum_schema_generation,
+        },
+    )
+    .await
+    .context("validate Deployer Host-specific operational-store audience")?;
     let template_base_dir = std::env::var("LIGHT_DEPLOYER_TEMPLATE_BASE_DIR")
         .ok()
         .map(PathBuf::from);

@@ -1,12 +1,19 @@
 # Bounded operational evidence. The record contract contains metadata and
 # digests only; request/response content and credentials are not representable.
 enabled: ${gatewayEvidence.enabled:false}
-databaseUrlFile: ${gatewayEvidence.databaseUrlFile:/run/secrets/gateway-database-url}
+contractVersion: ${gatewayEvidence.contractVersion:2}
+databaseUrlFile: ${gatewayEvidence.databaseUrlFile:/run/secrets/operational-database-url}
 bindingId: ${gatewayEvidence.bindingId:00000000-0000-0000-0000-000000000000}
 bindingDigest: ${gatewayEvidence.bindingDigest:sha256:0000000000000000000000000000000000000000000000000000000000000000}
 hostId: ${gatewayEvidence.hostId:00000000-0000-0000-0000-000000000000}
 environment: ${gatewayEvidence.environment:dev}
-minimumSchemaGeneration: ${gatewayEvidence.minimumSchemaGeneration:1}
+serverHost: ${gatewayEvidence.serverHost:postgres}
+port: ${gatewayEvidence.port:5432}
+tlsMode: ${gatewayEvidence.tlsMode:DISABLE}
+serviceOwner: ${gatewayEvidence.serviceOwner:light-gateway}
+schema: ${gatewayEvidence.schema:gateway_ops}
+expectedDatabase: ${gatewayEvidence.expectedDatabase:operations}
+minimumSchemaGeneration: ${gatewayEvidence.minimumSchemaGeneration:2}
 credentialGeneration: ${gatewayEvidence.credentialGeneration:1}
 gatewayInstance: ${gatewayEvidence.gatewayInstance:light-gateway-local}
 maximumPendingRecords: ${gatewayEvidence.maximumPendingRecords:8192}

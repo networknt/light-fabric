@@ -419,6 +419,9 @@ fn phase0_source_characterizes_current_manual_lifecycle() {
     assert!(service_runtime.contains("self.cancellation.cancel();"));
     assert!(!main.contains("axum::serve"));
     assert!(!main.contains("timeout_at(deadline, &mut tasks)"));
+    assert!(main.contains("legacy_event_source_available"));
+    assert!(main.contains("workflow.legacy_event_consumer.disabled"));
+    assert!(main.contains("direct invocation admission remains active"));
 }
 
 #[test]

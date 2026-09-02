@@ -7,15 +7,18 @@ execution:
   hostExecutorConcurrency: ${workflow.execution.hostExecutorConcurrency:8}
   interactiveEstimatedTaskMs: ${workflow.execution.interactiveEstimatedTaskMs:500}
 operationalStore:
-  contractVersion: ${operationalStore.contractVersion:1}
+  contractVersion: ${operationalStore.contractVersion:2}
   bindingId: ${operationalStore.bindingId:f8a8e4d0-c7cf-4000-b3b0-0044c62d3242}
   bindingDigest: ${operationalStore.bindingDigest:sha256:45be37b41a916f04308f84170728dd23342a602b81e5c64990c4021359d6fa6e}
   hostId: ${operationalStore.hostId:01964b05-552a-7c4b-9184-6857e7f3dc5f}
   environment: ${operationalStore.environment:dev}
+  serverHost: ${operationalStore.serverHost:postgres}
+  port: ${operationalStore.port:5432}
+  tlsMode: ${operationalStore.tlsMode:DISABLE}
   serviceOwner: ${operationalStore.serviceOwner:light-workflow}
   schema: ${operationalStore.schema:workflow_ops}
   expectedDatabase: ${operationalStore.expectedDatabase:operations}
-  minimumSchemaGeneration: ${operationalStore.minimumSchemaGeneration:1}
+  minimumSchemaGeneration: ${operationalStore.minimumSchemaGeneration:2}
   databaseUrlFile: ${operationalStore.databaseUrlFile:/run/secrets/operational-database-url}
   credentialGeneration: ${operationalStore.credentialGeneration:1}
 database:

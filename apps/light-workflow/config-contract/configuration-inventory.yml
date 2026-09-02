@@ -395,6 +395,9 @@ yamlProperties:
   - {file: workflow.yml, path: operationalStore.bindingDigest, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: workflow.yml, path: operationalStore.hostId, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: workflow.yml, path: operationalStore.environment, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: operationalStore.serverHost, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: operationalStore.port, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: operationalStore.tlsMode, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: workflow.yml, path: operationalStore.serviceOwner, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: workflow.yml, path: operationalStore.schema, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: workflow.yml, path: operationalStore.expectedDatabase, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}

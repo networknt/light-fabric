@@ -1,6 +1,6 @@
 {
-  "bundleVersion": "1.9.0",
-  "contractGeneration": 1,
+  "bundleVersion": "2.0.0",
+  "contractGeneration": 2,
   "postgresMinimumVersion": "17",
   "postgresMaximumTestedVersion": "17",
   "orderedMigrations": [
@@ -147,9 +147,17 @@
       "migrationId": "0004_workflow_consumer_offsets",
       "path": "crates/workflow-store/migrations/workflow-postgres/0004_workflow_consumer_offsets.sql",
       "sha256": "a99b9c86f9166822e2001ae6572b50c382793c72ee111832f0d7aba653b36a05"
+    },
+    {
+      "order": 19,
+      "owner": "operational-store",
+      "schema": "operational_meta",
+      "migrationId": "0005_host_registration_v2",
+      "path": "crates/operational-store/migrations/metadata-postgres/0005_host_registration_v2.sql",
+      "sha256": "a52ece50cb754a485e7ee6e0acc633e1c9d7f67a6e49dad47ba96f67cd2d3603"
     }
   ],
   "roleProfileVersion": 1,
-  "scopeRootVersion": 1,
+  "scopeRootVersion": 2,
   "sourceCommit": "0e917b7f26d9c0415335875588e2767aad89e93f"
 }

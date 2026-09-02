@@ -575,7 +575,9 @@ pub async fn validate(pool: &PgPool, expected: &ExpectedBinding<'_>) -> Result<(
     if binding.try_get::<Uuid, _>("binding_id")? != expected.binding_id
         || binding.try_get::<String, _>("binding_digest")? != expected.binding_digest
         || binding.try_get::<Uuid, _>("host_id")? != expected.host_id
-        || binding.try_get::<String, _>("environment")? != expected.environment
+        || binding
+            .try_get::<Option<String>, _>("environment")?
+            .is_some()
         || binding.try_get::<i64, _>("schema_contract_generation")?
             < expected.minimum_schema_generation
     {

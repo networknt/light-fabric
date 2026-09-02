@@ -6,6 +6,7 @@ use light_runtime::{ModuleKind, ModuleRegistry};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +35,26 @@ pub struct DeployerConfig {
     pub prune: PruneConfig,
     #[serde(default)]
     pub dev_insecure: bool,
+    pub operational_store: OperationalStoreProjection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OperationalStoreProjection {
+    pub contract_version: u16,
+    pub binding_id: Uuid,
+    pub binding_digest: String,
+    pub host_id: Uuid,
+    pub environment: String,
+    pub server_host: String,
+    pub port: u16,
+    pub tls_mode: String,
+    pub service_owner: String,
+    pub schema: String,
+    pub expected_database: String,
+    pub minimum_schema_generation: i64,
+    pub database_url_file: PathBuf,
+    pub credential_generation: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,6 +172,22 @@ impl Default for DeployerConfig {
             blocked_kinds: default_blocked_kinds(),
             prune: PruneConfig::default(),
             dev_insecure: false,
+            operational_store: OperationalStoreProjection {
+                contract_version: 0,
+                binding_id: Uuid::nil(),
+                binding_digest: String::new(),
+                host_id: Uuid::nil(),
+                environment: String::new(),
+                server_host: String::new(),
+                port: 0,
+                tls_mode: String::new(),
+                service_owner: String::new(),
+                schema: String::new(),
+                expected_database: String::new(),
+                minimum_schema_generation: 0,
+                database_url_file: PathBuf::new(),
+                credential_generation: 0,
+            },
         }
     }
 }

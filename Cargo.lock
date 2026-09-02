@@ -86,6 +86,7 @@ version = "0.2.1"
 dependencies = [
  "a2a-core",
  "chrono",
+ "operational-store",
  "serde_json",
  "sqlx",
  "thiserror 2.0.18",
@@ -188,6 +189,7 @@ version = "0.2.1"
 dependencies = [
  "a2a-core",
  "chrono",
+ "operational-store",
  "serde_json",
  "sqlx",
  "thiserror 2.0.18",
@@ -2187,6 +2189,7 @@ dependencies = [
 name = "execution-store"
 version = "0.2.1"
 dependencies = [
+ "operational-store",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
@@ -2456,6 +2459,7 @@ version = "0.2.1"
 dependencies = [
  "axum",
  "chrono",
+ "operational-store",
  "reqwest",
  "serde",
  "serde_json",
@@ -4516,6 +4520,7 @@ dependencies = [
  "jsonschema",
  "light-axum",
  "light-runtime",
+ "operational-store",
  "reqwest",
  "serde",
  "serde_json",
@@ -4559,6 +4564,7 @@ dependencies = [
  "light-security",
  "mcp-client",
  "model-provider",
+ "operational-store",
  "portal-registry",
  "reqwest",
  "serde",
@@ -4678,11 +4684,13 @@ dependencies = [
  "kube",
  "light-axum",
  "light-runtime",
+ "operational-store",
  "portal-registry",
  "serde",
  "serde_json",
  "serde_yaml",
  "sha2 0.10.9",
+ "sqlx",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -4709,6 +4717,7 @@ dependencies = [
  "light-pingora",
  "light-runtime",
  "llm-gateway",
+ "operational-store",
  "pingora",
  "portal-registry",
  "reqwest",
@@ -4985,6 +4994,7 @@ dependencies = [
  "light-security",
  "model-provider",
  "object_store",
+ "operational-store",
  "regex",
  "reqwest",
  "serde",
@@ -5641,6 +5651,9 @@ name = "operational-store"
 version = "0.2.1"
 dependencies = [
  "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
  "thiserror 2.0.18",
  "uuid",
 ]
@@ -9011,6 +9024,7 @@ dependencies = [
 name = "workflow-store"
 version = "0.2.1"
 dependencies = [
+ "operational-store",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",

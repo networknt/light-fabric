@@ -285,6 +285,15 @@ impl WorkflowApp {
             run,
         ))
     }
+
+    async fn legacy_event_source_available(pool: &PgPool) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT to_regclass('outbox_message_t') IS NOT NULL
+                    AND to_regclass('log_counter') IS NOT NULL",
+        )
+        .fetch_one(pool)
+        .await
+    }
 }
 
 #[async_trait::async_trait]
@@ -343,6 +352,10 @@ impl AxumApp for WorkflowApp {
                 binding_digest: &workflow_config.operational_store.binding_digest,
                 host_id: workflow_config.operational_store.host_id,
                 environment: &workflow_config.operational_store.environment,
+                server_host: &workflow_config.operational_store.server_host,
+                port: workflow_config.operational_store.port,
+                tls_mode: &workflow_config.operational_store.tls_mode,
+                expected_database: &workflow_config.operational_store.expected_database,
                 minimum_schema_generation: workflow_config
                     .operational_store
                     .minimum_schema_generation,
@@ -440,22 +453,33 @@ impl AxumApp for WorkflowApp {
             },
         )?;
 
-        let consumer =
-            EventConsumer::new(pool.clone(), "workflow-engine-group".to_string(), 0, 1, 10)
-                .with_database_url(workflow_config.database_url.clone())
-                .with_runtime_config(Arc::clone(&runtime_config))
-                .with_execution_profiles(runner_config.profiles.clone());
-        consumer
-            .initialize()
+        if Self::legacy_event_source_available(&pool)
             .await
-            .map_err(|error| Self::runtime_error("workflow event recovery", error))?;
-        self.register_task(
-            &context,
-            "light-workflow-event-consumer",
-            &cancellation,
-            &health,
-            move |shutdown| async move { consumer.run(shutdown).await },
-        )?;
+            .map_err(|error| Self::runtime_error("legacy workflow event source", error))?
+        {
+            let consumer =
+                EventConsumer::new(pool.clone(), "workflow-engine-group".to_string(), 0, 1, 10)
+                    .with_database_url(workflow_config.database_url.clone())
+                    .with_runtime_config(Arc::clone(&runtime_config))
+                    .with_execution_profiles(runner_config.profiles.clone());
+            consumer
+                .initialize()
+                .await
+                .map_err(|error| Self::runtime_error("workflow event recovery", error))?;
+            self.register_task(
+                &context,
+                "light-workflow-event-consumer",
+                &cancellation,
+                &health,
+                move |shutdown| async move { consumer.run(shutdown).await },
+            )?;
+        } else {
+            info!(
+                event = "workflow.legacy_event_consumer.disabled",
+                reason = "local_event_source_unavailable",
+                "Legacy WorkflowStartedEvent consumer is disabled; direct invocation admission remains active"
+            );
+        }
 
         let host_executor = Arc::clone(&executor);
         let executor_runtime_config = Arc::clone(&runtime_config);
@@ -661,15 +685,18 @@ mod tests {
             http_addr: "127.0.0.1:8436".parse().unwrap(),
             database_url: "postgres://workflow".to_string(),
             operational_store: OperationalStoreProjection {
-                contract_version: 1,
+                contract_version: 2,
                 binding_id: Uuid::parse_str("f8a8e4d0-c7cf-4000-b3b0-0044c62d3242").unwrap(),
                 binding_digest: format!("sha256:{}", "a".repeat(64)),
                 host_id: Uuid::parse_str("01964b05-552a-7c4b-9184-6857e7f3dc5f").unwrap(),
                 environment: "dev".into(),
+                server_host: "postgres".into(),
+                port: 5432,
+                tls_mode: "DISABLE".into(),
                 service_owner: "light-workflow".into(),
                 schema: "workflow_ops".into(),
                 expected_database: "operations".into(),
-                minimum_schema_generation: 1,
+                minimum_schema_generation: 2,
                 credential_generation: 1,
                 database_url_file: "/run/secrets/operational-database-url".into(),
             },

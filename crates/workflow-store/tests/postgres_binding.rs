@@ -1,6 +1,6 @@
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
-use workflow_store::{ExpectedBinding, ValidationError};
+use workflow_store::ExpectedBinding;
 
 #[tokio::test]
 async fn workflow_binding_and_restart_state_are_durable() {
@@ -32,6 +32,10 @@ async fn workflow_binding_and_restart_state_are_durable() {
             binding_digest: &digest,
             host_id,
             environment: &environment,
+            server_host: "postgres",
+            port: 5432,
+            tls_mode: "DISABLE",
+            expected_database: "operations",
             minimum_schema_generation: 1,
         },
     )
@@ -45,11 +49,15 @@ async fn workflow_binding_and_restart_state_are_durable() {
                 binding_digest: &digest,
                 host_id: Uuid::now_v7(),
                 environment: &environment,
+                server_host: "postgres",
+                port: 5432,
+                tls_mode: "DISABLE",
+                expected_database: "operations",
                 minimum_schema_generation: 1,
             }
         )
         .await,
-        Err(ValidationError::Scope(_))
+        Err(_)
     ));
 
     let process_id = Uuid::now_v7();

@@ -21,11 +21,18 @@ const GATEWAY_EVIDENCE_CONFIG_NAME: &str = "gatewayEvidence";
 struct GatewayEvidenceConfig {
     #[serde(default)]
     enabled: bool,
+    contract_version: u16,
     database_url_file: String,
     binding_id: Uuid,
     binding_digest: String,
     host_id: Uuid,
     environment: String,
+    server_host: String,
+    port: u16,
+    tls_mode: String,
+    service_owner: String,
+    schema: String,
+    expected_database: String,
     #[serde(default = "default_generation")]
     minimum_schema_generation: i64,
     credential_generation: u64,
@@ -58,6 +65,10 @@ struct ExpectedBindingOwned {
     binding_digest: String,
     host_id: Uuid,
     environment: String,
+    server_host: String,
+    port: u16,
+    tls_mode: String,
+    expected_database: String,
     minimum_schema_generation: i64,
 }
 
@@ -80,6 +91,10 @@ impl GatewayEvidenceRuntime {
                         binding_digest: &self.expected_binding.binding_digest,
                         host_id: self.expected_binding.host_id,
                         environment: &self.expected_binding.environment,
+                        server_host: &self.expected_binding.server_host,
+                        port: self.expected_binding.port,
+                        tls_mode: &self.expected_binding.tls_mode,
+                        expected_database: &self.expected_binding.expected_database,
                         minimum_schema_generation: self.expected_binding.minimum_schema_generation,
                     },
                 )
@@ -94,9 +109,14 @@ pub fn load_gateway_evidence_runtime(
     runtime_config: &RuntimeConfig,
     admission: AdmissionGate,
 ) -> Result<Option<Arc<GatewayEvidenceRuntime>>, RuntimeError> {
-    let config = runtime_config
+    let config = match runtime_config
         .module_registry
-        .load_config::<GatewayEvidenceConfig>(runtime_config, GATEWAY_EVIDENCE_FILE)?;
+        .load_config::<GatewayEvidenceConfig>(runtime_config, GATEWAY_EVIDENCE_FILE)
+    {
+        Ok(config) => config,
+        Err(RuntimeError::MissingConfig(file)) if file == GATEWAY_EVIDENCE_FILE => return Ok(None),
+        Err(error) => return Err(error),
+    };
     runtime_config.module_registry.register_loaded_config(
         GATEWAY_EVIDENCE_MODULE_ID,
         GATEWAY_EVIDENCE_CONFIG_NAME,
@@ -111,8 +131,14 @@ pub fn load_gateway_evidence_runtime(
         return Ok(None);
     }
     validate_config(&config)?;
-    let database_url = read_database_url(Path::new(&config.database_url_file))
-        .map_err(|error| RuntimeError::Config(error.to_string()))?;
+    let database_url = read_database_url(
+        Path::new(&config.database_url_file),
+        &config.server_host,
+        config.port,
+        &config.tls_mode,
+        &config.expected_database,
+    )
+    .map_err(|error| RuntimeError::Config(error.to_string()))?;
     let pool = PgPoolOptions::new()
         .max_connections(8)
         .connect_lazy(&database_url)
@@ -148,6 +174,10 @@ pub fn load_gateway_evidence_runtime(
             binding_digest: config.binding_digest.clone(),
             host_id: config.host_id,
             environment: config.environment.clone(),
+            server_host: config.server_host.clone(),
+            port: config.port,
+            tls_mode: config.tls_mode.clone(),
+            expected_database: config.expected_database.clone(),
             minimum_schema_generation: config.minimum_schema_generation,
         },
         validated: OnceCell::new(),
@@ -225,10 +255,17 @@ fn start_publisher(
 
 fn validate_config(config: &GatewayEvidenceConfig) -> Result<(), RuntimeError> {
     if config.binding_id.is_nil()
+        || config.contract_version != 2
         || config.host_id.is_nil()
         || config.environment.trim().is_empty()
+        || !operational_store::runtime::postgres_identifier(&config.expected_database)
+        || config.service_owner != "light-gateway"
+        || config.schema != gateway_operational_store::EXPECTED_SCHEMA
         || config.gateway_instance.trim().is_empty()
         || config.minimum_schema_generation < 1
+        || config.server_host.trim().is_empty()
+        || config.port == 0
+        || !matches!(config.tls_mode.as_str(), "DISABLE" | "PREFER" | "REQUIRE" | "VERIFY_CA" | "VERIFY_FULL")
         || config.credential_generation < 1
         || config.maximum_pending_records < 1
         || config.maximum_pending_bytes < 1

@@ -15,11 +15,13 @@ config-loader = { path = "../../crates/config-loader" }
 futures-util = { workspace = true }
 light-axum = { path = "../../frameworks/light-axum" }
 light-runtime = { path = "../../crates/light-runtime" }
+operational-store = { path = "../../crates/operational-store" }
 portal-registry = { path = "../../crates/portal-registry" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 sha2 = { workspace = true }
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls", "uuid"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

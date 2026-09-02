@@ -12,6 +12,7 @@ path = "src/lib.rs"
 [dependencies]
 a2a-core = { path = "../a2a-core" }
 chrono.workspace = true
+operational-store = { path = "../operational-store" }
 serde_json.workspace = true
 sqlx = { version = "0.8", default-features = false, features = ["chrono", "postgres", "runtime-tokio-rustls", "uuid"] }
 thiserror.workspace = true

@@ -63,6 +63,10 @@ async fn inbound_outbound_ownership_replay_cancel_artifact_and_restart() {
             binding_digest: &digest,
             host_id,
             environment: &environment,
+            server_host: "postgres",
+            port: 5432,
+            tls_mode: "DISABLE",
+            expected_database: "operations",
             minimum_schema_generation: 1,
         },
     )

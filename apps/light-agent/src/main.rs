@@ -4993,8 +4993,14 @@ async fn build_agent_state(
     .map_err(|e| RuntimeError::Config(format!("failed to build MCP gateway client: {e}")))?;
 
     let database_url_file = PathBuf::from(&agent_config.operational_store.database_url_file);
-    let db_url = agent_store::read_database_url(&database_url_file)
-        .map_err(|error| RuntimeError::Config(error.to_string()))?;
+    let db_url = agent_store::read_database_url(
+        &database_url_file,
+        &agent_config.operational_store.server_host,
+        agent_config.operational_store.port,
+        &agent_config.operational_store.tls_mode,
+        &agent_config.operational_store.expected_database,
+    )
+    .map_err(|error| RuntimeError::Config(error.to_string()))?;
     let pool = PgPoolOptions::new()
         .max_connections(20)
         .after_connect(|connection, _metadata| {
@@ -5015,6 +5021,10 @@ async fn build_agent_state(
             binding_digest: &agent_config.operational_store.binding_digest,
             host_id: agent_config.operational_store.host_id,
             environment: &agent_config.operational_store.environment,
+            server_host: &agent_config.operational_store.server_host,
+            port: agent_config.operational_store.port,
+            tls_mode: &agent_config.operational_store.tls_mode,
+            expected_database: &agent_config.operational_store.expected_database,
             minimum_schema_generation: agent_config.operational_store.minimum_schema_version,
         },
     )

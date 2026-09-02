@@ -27,6 +27,10 @@ pub struct ExpectedBinding<'a> {
     pub binding_digest: &'a str,
     pub host_id: Uuid,
     pub environment: &'a str,
+    pub server_host: &'a str,
+    pub port: u16,
+    pub tls_mode: &'a str,
+    pub expected_database: &'a str,
     pub minimum_schema_generation: i64,
 }
 
@@ -131,6 +135,8 @@ pub struct ClaimedEvidence {
 pub enum StoreError {
     #[error("gateway evidence database query failed: {0}")]
     Database(#[from] sqlx::Error),
+    #[error(transparent)]
+    Runtime(#[from] operational_store::runtime::RuntimeValidationError),
     #[error("gateway evidence scope validation failed: {0}")]
     Scope(String),
     #[error("required audit spool is full")]
@@ -573,51 +579,43 @@ pub fn read_secret(path: &Path, label: &str, maximum_bytes: usize) -> Result<Str
     Ok(value.to_string())
 }
 
-pub fn read_database_url(path: &Path) -> Result<String, StoreError> {
-    let value = read_secret(path, "gateway database URL file", 2048)?;
-    if !value.starts_with("postgres://operations_gateway_runtime:")
-        || !value.ends_with("/operations")
-    {
-        return Err(StoreError::Scope(
-            "gateway database URL does not match the runtime role/database contract".into(),
-        ));
-    }
-    Ok(value)
+pub fn read_database_url(path: &Path, server_host: &str, port: u16, tls_mode: &str,
+                         expected_database: &str) -> Result<String, StoreError> {
+    Ok(operational_store::runtime::read_database_url(
+        path,
+        server_host,
+        port,
+        tls_mode,
+        expected_database,
+        "gateway_runtime",
+    )?)
 }
 
 pub async fn validate(pool: &PgPool, expected: &ExpectedBinding<'_>) -> Result<(), StoreError> {
+    operational_store::runtime::validate_binding(
+        pool,
+        &operational_store::runtime::ExpectedBinding {
+            binding_id: expected.binding_id,
+            binding_digest: expected.binding_digest,
+            host_id: expected.host_id,
+            environment: expected.environment,
+            server_host: expected.server_host,
+            port: expected.port,
+            tls_mode: expected.tls_mode,
+            expected_database: expected.expected_database,
+            role_suffix: "gateway_runtime",
+            minimum_schema_generation: expected.minimum_schema_generation,
+        },
+    )
+    .await?;
     let identity = sqlx::query(
-        "SELECT current_database() AS database_name,current_user AS role_name,
-                has_database_privilege(current_user,current_database(),'CREATE') AS database_create,
-                has_schema_privilege(current_user,'gateway_ops','CREATE') AS schema_create",
+        "SELECT has_schema_privilege(current_user,'gateway_ops','CREATE') AS schema_create",
     )
     .fetch_one(pool)
     .await?;
-    if identity.try_get::<String, _>("database_name")? != EXPECTED_DATABASE
-        || identity.try_get::<String, _>("role_name")? != EXPECTED_RUNTIME_ROLE
-        || identity.try_get::<bool, _>("database_create")?
-        || identity.try_get::<bool, _>("schema_create")?
-    {
+    if identity.try_get::<bool, _>("schema_create")? {
         return Err(StoreError::Scope(
-            "gateway database identity or privilege mismatch".into(),
-        ));
-    }
-    let binding = sqlx::query(
-        "SELECT binding_id,binding_digest,host_id,environment,schema_contract_generation
-           FROM operational_meta.operational_store_binding_t WHERE active",
-    )
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| StoreError::Scope("active operational binding is missing".into()))?;
-    if binding.try_get::<Uuid, _>("binding_id")? != expected.binding_id
-        || binding.try_get::<String, _>("binding_digest")? != expected.binding_digest
-        || binding.try_get::<Uuid, _>("host_id")? != expected.host_id
-        || binding.try_get::<String, _>("environment")? != expected.environment
-        || binding.try_get::<i64, _>("schema_contract_generation")?
-            < expected.minimum_schema_generation
-    {
-        return Err(StoreError::Scope(
-            "gateway operational binding does not match the runtime projection".into(),
+            "Gateway runtime role must not have CREATE authority".into(),
         ));
     }
     let migration = sqlx::query_scalar::<_, i64>(

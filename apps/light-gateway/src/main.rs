@@ -7173,6 +7173,39 @@ tools:
         external_config_dir: &TempDir,
         resolved_values: HashMap<String, serde_yaml::Value>,
     ) -> RuntimeConfig {
+        std::fs::write(
+            config_dir
+                .path()
+                .join(operational_evidence::GATEWAY_EVIDENCE_FILE),
+            concat!(
+                "enabled: false\n",
+                "contractVersion: 2\n",
+                "databaseUrlFile: /run/secrets/operational-database-url\n",
+                "bindingId: 00000000-0000-0000-0000-000000000000\n",
+                "bindingDigest: sha256:0000000000000000000000000000000000000000000000000000000000000000\n",
+                "hostId: 00000000-0000-0000-0000-000000000000\n",
+                "environment: dev\n",
+                "serverHost: postgres\n",
+                "port: 5432\n",
+                "tlsMode: DISABLE\n",
+                "serviceOwner: light-gateway\n",
+                "schema: gateway_ops\n",
+                "expectedDatabase: operations\n",
+                "minimumSchemaGeneration: 2\n",
+                "credentialGeneration: 1\n",
+                "gatewayInstance: test-gateway\n",
+                "maximumPendingRecords: 8\n",
+                "maximumPendingBytes: 65536\n",
+                "sinkEndpoint: stdout://collector\n",
+                "sinkBearerTokenFile: ''\n",
+                "publisherBatchRecords: 4\n",
+                "publisherPollMs: 250\n",
+                "publisherRetryMs: 1000\n",
+                "publisherLeaseSeconds: 30\n",
+                "deliveredRetentionSeconds: 3600\n",
+            ),
+        )
+        .expect("write disabled Gateway evidence test config");
         let client = [
             external_config_dir.path().join(light_pingora::CLIENT_FILE),
             config_dir.path().join(light_pingora::CLIENT_FILE),
@@ -10964,6 +10997,90 @@ aliases:
 
         running.shutdown().await.expect("shutdown gateway");
         provider_task.await.expect("provider task");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn proxy_preserves_operational_store_idempotency_key() {
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind hybrid-command test upstream");
+        let upstream_address = upstream.local_addr().expect("upstream address");
+        let (observed_tx, observed_rx) = oneshot::channel();
+        let upstream_task = tokio::spawn(async move {
+            let (mut socket, _) = upstream.accept().await.expect("accept gateway request");
+            let request = read_complete_http_request(&mut socket).await;
+            let headers = String::from_utf8_lossy(&request)
+                .split("\r\n\r\n")
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            let idempotency_key = headers.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("Idempotency-Key")
+                    .then(|| value.trim().to_string())
+            });
+            let _ = observed_tx.send(idempotency_key);
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                )
+                .await
+                .expect("write hybrid-command test response");
+        });
+
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        let gateway_port = free_tcp_port();
+        let gateway_address = format!("127.0.0.1:{gateway_port}")
+            .parse::<std::net::SocketAddr>()
+            .expect("gateway address");
+        std::fs::write(
+            config_dir.path().join("server.yml"),
+            format!(
+                "ip: 127.0.0.1\nadvertisedAddress: 127.0.0.1\nhttpPort: {gateway_port}\nenableHttp: true\nhttpsPort: 8443\nenableHttps: false\nserviceId: com.networknt.portal.gateway-1.0.0\nenableRegistry: false\nstartOnRegistryFailure: true\ndynamicPort: false\nenvironment: dev\nshutdownGracefulPeriod: 100\n"
+            ),
+        )
+        .expect("write server config");
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            "handlers: [proxy]\npaths:\n  - path: /portal/command\n    method: POST\n    exec: [proxy]\ndefaultHandlers: []\n",
+        )
+        .expect("write handler config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::PROXY_FILE),
+            format!("hosts: http://{upstream_address}\n"),
+        )
+        .expect("write proxy config");
+
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp::default()))
+            .with_config_dir(config_dir.path())
+            .with_external_config_dir(external_dir.path())
+            .build();
+        let running = runtime.start().await.expect("start portal gateway");
+        wait_for_tcp(gateway_address).await;
+
+        let response = raw_http_exchange(
+            gateway_address,
+            &format!(
+                "POST /portal/command HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nContent-Type: application/json\r\nIdempotency-Key: register-retry-42\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+            ),
+        )
+        .await;
+        assert!(
+            String::from_utf8_lossy(&response).starts_with("HTTP/1.1 200"),
+            "response: {}",
+            String::from_utf8_lossy(&response)
+        );
+        assert_eq!(
+            timeout(TokioDuration::from_secs(5), observed_rx)
+                .await
+                .expect("hybrid-command header observation timeout")
+                .expect("hybrid-command header observation"),
+            Some("register-retry-42".to_string())
+        );
+
+        running.shutdown().await.expect("shutdown portal gateway");
+        upstream_task.await.expect("hybrid-command test task");
     }
 
     #[tokio::test]

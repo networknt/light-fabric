@@ -5,6 +5,7 @@ edition.workspace = true
 license = "Apache-2.0"
 
 [dependencies]
+operational-store = { path = "../../crates/operational-store" }
 agent-core = { path = "../../crates/agent-core" }
 a2a-core = { path = "../../crates/a2a-core" }
 a2a-protocol = { path = "../../crates/a2a-protocol" }

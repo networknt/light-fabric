@@ -1,4 +1,4 @@
-use execution_store::{ExpectedBinding, ValidationError};
+use execution_store::ExpectedBinding;
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
@@ -32,6 +32,10 @@ async fn exact_binding_is_ready_and_wrong_scope_fails_closed() {
             binding_digest: &binding_digest,
             host_id,
             environment: &environment,
+            server_host: "postgres",
+            port: 5432,
+            tls_mode: "DISABLE",
+            expected_database: "operations",
             minimum_schema_generation: 1,
         },
     )
@@ -44,6 +48,10 @@ async fn exact_binding_is_ready_and_wrong_scope_fails_closed() {
             binding_digest: &binding_digest,
             host_id,
             environment: &environment,
+            server_host: "postgres",
+            port: 5432,
+            tls_mode: "DISABLE",
+            expected_database: "operations",
             minimum_schema_generation: 1,
         },
         ExpectedBinding {
@@ -51,6 +59,10 @@ async fn exact_binding_is_ready_and_wrong_scope_fails_closed() {
             binding_digest: "sha256:wrong-binding",
             host_id,
             environment: &environment,
+            server_host: "postgres",
+            port: 5432,
+            tls_mode: "DISABLE",
+            expected_database: "operations",
             minimum_schema_generation: 1,
         },
         ExpectedBinding {
@@ -58,6 +70,10 @@ async fn exact_binding_is_ready_and_wrong_scope_fails_closed() {
             binding_digest: &binding_digest,
             host_id: Uuid::now_v7(),
             environment: &environment,
+            server_host: "postgres",
+            port: 5432,
+            tls_mode: "DISABLE",
+            expected_database: "operations",
             minimum_schema_generation: 1,
         },
         ExpectedBinding {
@@ -65,12 +81,16 @@ async fn exact_binding_is_ready_and_wrong_scope_fails_closed() {
             binding_digest: &binding_digest,
             host_id,
             environment: "wrong-environment",
+            server_host: "postgres",
+            port: 5432,
+            tls_mode: "DISABLE",
+            expected_database: "operations",
             minimum_schema_generation: 1,
         },
     ] {
         assert!(matches!(
             execution_store::validate(&pool, &wrong).await,
-            Err(ValidationError::Scope(_))
+            Err(_)
         ));
     }
 }

@@ -11,6 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 chrono.workspace = true
+operational-store = { path = "../operational-store" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
