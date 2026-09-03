@@ -28,6 +28,7 @@ mod security;
 mod service;
 mod spa_auth;
 mod stateless_auth;
+mod streaming;
 mod token;
 mod unified_security;
 mod websocket;
@@ -178,6 +179,7 @@ pub use stateless_auth::{
     STATELESS_AUTH_MODULE_ID, StatelessAuthConfig, StatelessAuthOutcome, StatelessAuthRuntime,
     load_stateless_auth_runtime,
 };
+pub use streaming::{StreamingPolicy, StreamingRequestMatch};
 pub use token::{
     CLIENT_FILE, CLIENT_TOKEN_CONFIG_NAME, CLIENT_TOKEN_MODULE_ID, ClientOauthConfig,
     ClientRequestConfig, ClientTlsConfig, ClientTokenConfig, OAuthAuthorizationCodeConfig,

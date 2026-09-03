@@ -2,6 +2,7 @@ use crate::config_util::{deserialize_string_list, deserialize_typed_map, request
 use crate::direct_registry::direct_registry_target;
 use crate::proxy::ProxyTarget;
 use crate::security::HandlerRejection;
+use crate::streaming::StreamingPolicy;
 use light_runtime::{
     DirectRegistryConfig, DiscoveryNode, DiscoverySubscription, ModuleKind, PortalRegistryClient,
     RuntimeConfig, RuntimeError,
@@ -35,6 +36,8 @@ pub struct RouterConfig {
     pub max_request_time: u64,
     #[serde(default, deserialize_with = "deserialize_typed_map")]
     pub path_prefix_max_request_time: BTreeMap<String, u64>,
+    #[serde(flatten)]
+    pub streaming: StreamingPolicy,
     #[serde(default = "default_connections_per_thread")]
     pub connections_per_thread: usize,
     #[serde(default)]
@@ -74,6 +77,7 @@ impl Default for RouterConfig {
             https_enabled: true,
             max_request_time: default_max_request_time(),
             path_prefix_max_request_time: BTreeMap::new(),
+            streaming: StreamingPolicy::default(),
             connections_per_thread: default_connections_per_thread(),
             max_queue_size: 0,
             soft_max_connections_per_thread: default_soft_max_connections_per_thread(),
@@ -90,6 +94,16 @@ impl Default for RouterConfig {
             metrics_injection: false,
             metrics_name: default_metrics_name(),
         }
+    }
+}
+
+impl RouterConfig {
+    pub fn request_timeout_for_path(&self, path: &str) -> u64 {
+        self.path_prefix_max_request_time
+            .iter()
+            .filter(|(prefix, _)| !prefix.is_empty() && path.starts_with(prefix.as_str()))
+            .max_by_key(|(prefix, _)| prefix.len())
+            .map_or(self.max_request_time, |(_, timeout)| *timeout)
     }
 }
 
@@ -151,6 +165,10 @@ pub fn load_router_route(
         Ok(config) => config,
         Err(RuntimeError::MissingConfig(file)) if file == ROUTER_FILE => RouterConfig::default(),
         Err(error) => return Err(error),
+    };
+    let config = RouterConfig {
+        streaming: config.streaming.clone().normalized(ROUTER_CONFIG_NAME)?,
+        ..config
     };
     runtime_config.module_registry.register_loaded_config(
         ROUTER_MODULE_ID,
@@ -876,7 +894,7 @@ fn default_true() -> bool {
 }
 
 fn default_max_request_time() -> u64 {
-    1000
+    0
 }
 
 fn default_connections_per_thread() -> usize {
@@ -899,6 +917,38 @@ fn default_metrics_name() -> String {
 mod tests {
     use super::*;
     use light_runtime::DirectRegistryConfig;
+
+    #[test]
+    fn legacy_router_config_receives_streaming_defaults() {
+        let config: RouterConfig = serde_yaml::from_str("{}\n").expect("legacy router config");
+
+        assert_eq!(
+            config.streaming,
+            StreamingPolicy::default(),
+            "omitted Phase 0 fields must preserve the compatibility defaults"
+        );
+        assert_eq!(
+            config.max_request_time, 0,
+            "ordinary whole-exchange deadlines must remain opt-in"
+        );
+    }
+
+    #[test]
+    fn request_timeout_uses_longest_matching_non_empty_prefix() {
+        let config = RouterConfig {
+            max_request_time: 1_000,
+            path_prefix_max_request_time: BTreeMap::from([
+                (String::new(), 5),
+                ("/events".to_string(), 2_000),
+                ("/events/slow".to_string(), 3_000),
+            ]),
+            ..RouterConfig::default()
+        };
+
+        assert_eq!(config.request_timeout_for_path("/events/slow/42"), 3_000);
+        assert_eq!(config.request_timeout_for_path("/events/fast"), 2_000);
+        assert_eq!(config.request_timeout_for_path("/ordinary"), 1_000);
+    }
 
     #[test]
     fn router_config_accepts_java_rule_shapes() {

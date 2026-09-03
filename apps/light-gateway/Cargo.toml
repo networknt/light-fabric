@@ -17,7 +17,8 @@ arc-swap = "1.7"
 async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
-pingora = { version = "=0.8.1", features = ["proxy", "rustls"] }
+http = { workspace = true }
+pingora = { version = "=0.8.1", features = ["cache", "proxy", "rustls"] }
 rustls-pemfile = "2.2"
 reqwest = { workspace = true }
 serde = { workspace = true }
@@ -32,12 +33,16 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 futures-util = { workspace = true }
+h2 = "0.4"
 hmac = { workspace = true }
 hex = { workspace = true }
-http = { workspace = true }
 portal-registry = { path = "../../crates/portal-registry" }
+rcgen = "0.14"
+reqwest = { workspace = true, features = ["http2"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 socket2 = "0.6"
 tempfile = "3"
+tokio-rustls = "0.26"
 tokio-tungstenite = { version = "0.24" }
 
 [build-dependencies]

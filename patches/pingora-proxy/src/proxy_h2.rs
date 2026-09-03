@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use futures::future::OptionFuture;
 use futures::StreamExt;
+use futures::future::OptionFuture;
 
 use super::*;
-use crate::proxy_cache::{range_filter::RangeBodyFilter, ServeFromCache};
+use crate::proxy_cache::{ServeFromCache, range_filter::RangeBodyFilter};
 use crate::proxy_common::*;
-use http::{header::CONTENT_LENGTH, Method, StatusCode};
+use http::{Method, StatusCode, header::CONTENT_LENGTH};
 use pingora_cache::CachePhase;
 use pingora_core::protocols::http::custom::CUSTOM_MESSAGE_QUEUE_SIZE;
 use pingora_core::protocols::http::v2::{client::Http2Session, write_body};
@@ -181,6 +181,7 @@ where
         let write_timeout = peer.options.write_timeout;
 
         let (tx, rx) = mpsc::channel::<HttpTask>(TASK_BUFFER_SIZE);
+        let upstream_read_timeout = self.inner.upstream_read_timeout(session, ctx);
 
         session.as_mut().enable_retry_buffering();
 
@@ -195,7 +196,7 @@ where
                 write_timeout,
                 &mut downstream_custom_message_writer
             ),
-            pipe_up_to_down_response(client_session, tx)
+            pipe_up_to_down_response(client_session, tx, upstream_read_timeout.as_ref())
         );
 
         if let Some(custom_session) = session.downstream_session.as_custom_mut() {
@@ -639,7 +640,8 @@ where
 
                 /* Add chunked header to tell downstream to use chunked encoding
                  * during the absent of content-length in h2 */
-                if !no_body
+                if session.req_header().version != Version::HTTP_2
+                    && !no_body
                     && !header.status.is_informational()
                     && header.headers.get(http::header::CONTENT_LENGTH).is_none()
                 {
@@ -766,6 +768,7 @@ where
 pub(crate) async fn pipe_up_to_down_response(
     client: &mut Http2Session,
     tx: mpsc::Sender<HttpTask>,
+    upstream_read_timeout: Option<&ProxyUpstreamReadTimeout>,
 ) -> Result<()> {
     client
         .read_response_header()
@@ -815,12 +818,23 @@ pub(crate) async fn pipe_up_to_down_response(
         }
     }
 
-    while let Some(chunk) = client
-        .read_response_body()
+    loop {
+        let response_body = match run_with_upstream_read_timeout(upstream_read_timeout, async {
+            Ok(client.read_response_body().await.map_err(|e| e.into_up()))
+        })
         .await
-        .map_err(|e| e.into_up())
-        .transpose()
-    {
+        {
+            Ok(response_body) => response_body,
+            Err(error) => {
+                // Match the HTTP/1 driver: deliver active-read failures to the
+                // downstream half so it can complete normal proxy cleanup.
+                let _ = tx.send(HttpTask::Failed(error)).await;
+                return Ok(());
+            }
+        };
+        let Some(chunk) = response_body.transpose() else {
+            break;
+        };
         let data = match chunk {
             Ok(d) => d,
             Err(e) => {

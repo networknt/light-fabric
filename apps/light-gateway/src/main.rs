@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use chrono::{DateTime, Utc};
 use gateway_operational_store::{EvidenceClass, EvidenceRecord, sha256_digest};
+use http::{HeaderName, HeaderValue, Version};
 use light_gateway::model_provider_sidecar;
 use light_pingora::{
     A2aRouteDecision, A2aRouterRuntime, AccessControlRuntime, AccessDecision, ActiveHandlerSet,
@@ -18,9 +19,9 @@ use light_pingora::{
     PingoraTransport, ProxyRoute, ProxyTarget, RateLimitHeaders, RateLimitRuntime,
     ReplayReservation, ReserveOutcome, RouterDecision, RouterRoute, SecurityRuntime,
     SpaAuthLegacyEndpoint, SpaAuthResponse, StatelessAuthOutcome, StatelessAuthRuntime,
-    StaticResolution, StaticResourceSet, TokenRuntime, UnifiedSecurityConfig,
-    WebSocketConnectionPermit, WebSocketHandshake, WebSocketRouteDecision, WebSocketRouteError,
-    WebSocketRouterRuntime, apply_browser_websocket_upstream_credentials,
+    StaticResolution, StaticResourceSet, StreamingPolicy, StreamingRequestMatch, TokenRuntime,
+    UnifiedSecurityConfig, WebSocketConnectionPermit, WebSocketHandshake, WebSocketRouteDecision,
+    WebSocketRouteError, WebSocketRouterRuntime, apply_browser_websocket_upstream_credentials,
     apply_correlation_request, apply_correlation_response, apply_cors_response,
     apply_header_request, apply_header_response, apply_path_prefix_service,
     apply_rate_limit_headers, apply_router_upstream_request, apply_token_request,
@@ -55,15 +56,17 @@ use llm_gateway::http::{
 use llm_gateway::runtime::{
     LlmCompiler, LlmSnapshotStore, ReadinessControllerTask, start_readiness_controller,
 };
+use pingora::cache::{CachePhase, NoCacheReason};
 use pingora::http::{HMap, ResponseHeader};
 use pingora::prelude::{HttpPeer, ProxyHttp, Session};
+use pingora::proxy::{ProxyRequestDeadline, ProxyUpstreamReadTimeout};
 use pingora::utils::tls::CertKey;
 use pingora::{Error, ErrorType};
 use serde_json::{Value as JsonValue, json};
 use sqlx::postgres::PgPoolOptions;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::BufReader;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
@@ -409,6 +412,7 @@ struct GatewayProxy {
     gateway_evidence: Option<Arc<GatewayEvidenceRuntime>>,
     llm_gateway: Arc<ArcSwapOption<LlmGatewayModule>>,
     metrics_recorder: Arc<MetricsRecorder>,
+    stream_metrics: Arc<StreamMetricsRecorder>,
     proxy_route: Arc<ConfigManager<Option<ProxyRoute>>>,
     router_route: Arc<ConfigManager<Option<RouterRoute>>>,
     static_resources: Arc<ConfigManager<StaticResourceSet>>,
@@ -1142,6 +1146,13 @@ impl GatewayProxy {
             load_router_route(config, handler_active(&active_handlers, &["router", "a2a"]))?;
         let proxy_route = load_proxy_route(config)?;
         let static_resources = load_static_resources(config)?;
+        report_known_streaming_handler_conflicts(
+            &active_handlers,
+            pii_tokenization.as_ref(),
+            access_control.as_ref(),
+            proxy_route.as_ref(),
+            router_route.as_ref(),
+        )?;
         validate_hmac_effective_chains(
             &active_handlers,
             hmac_runtime.as_ref(),
@@ -1183,6 +1194,7 @@ impl GatewayProxy {
         let proxy_route = Arc::new(ConfigManager::new(proxy_route));
         let static_resources = Arc::new(ConfigManager::new(static_resources));
         let metrics_recorder = Arc::new(MetricsRecorder::default());
+        let stream_metrics = Arc::new(StreamMetricsRecorder::default());
 
         config.module_registry.register_reloader(
             light_pingora::HANDLER_MODULE_ID,
@@ -1513,6 +1525,7 @@ impl GatewayProxy {
             gateway_evidence,
             llm_gateway,
             metrics_recorder,
+            stream_metrics,
             proxy_route,
             router_route,
             static_resources,
@@ -1536,7 +1549,7 @@ impl GatewayProxy {
         })
     }
 
-    fn select_upstream(&self) -> Option<(ProxyTarget, bool, bool)> {
+    fn select_upstream(&self) -> Option<(ProxyTarget, bool, bool, bool, StreamingPolicy, u64)> {
         let route = self.proxy_route.load();
         let route = route.as_ref().as_ref()?;
         let mut first_open_target = None;
@@ -1553,6 +1566,9 @@ impl GatewayProxy {
                 target,
                 route.rewrite_host_header(),
                 route.config.reuse_x_forwarded,
+                route.config.http2_enabled,
+                route.config.streaming.clone(),
+                route.config.max_request_time,
             ));
         }
         first_open_target.map(|target| {
@@ -1560,6 +1576,9 @@ impl GatewayProxy {
                 target,
                 route.rewrite_host_header(),
                 route.config.reuse_x_forwarded,
+                route.config.http2_enabled,
+                route.config.streaming.clone(),
+                route.config.max_request_time,
             )
         })
     }
@@ -2292,6 +2311,101 @@ impl GatewayProxy {
             }
         }
         Ok(())
+    }
+
+    fn validate_expected_stream_handlers(
+        &self,
+        ctx: &mut GatewayRequestContext,
+    ) -> Result<(), HandlerRejection> {
+        if matches!(
+            ctx.streaming_request_match,
+            Some(StreamingRequestMatch::PathPrefix)
+        ) && ctx.streaming_handler_conflict()
+        {
+            ctx.stream_outcome = Some(StreamOutcome::IncompatibleHandler);
+            return Err(streaming_handler_rejection());
+        }
+        Ok(())
+    }
+
+    fn restore_streaming_response_headers(
+        &self,
+        session: &Session,
+        response: &mut ResponseHeader,
+        ctx: &GatewayRequestContext,
+    ) -> pingora::Result<()> {
+        if !ctx.stream_confirmed {
+            return Ok(());
+        }
+        for (name, values) in &ctx.stream_authoritative_headers {
+            response.remove_header(name);
+            for value in values {
+                response.append_header(name.clone(), value.clone())?;
+            }
+        }
+
+        // Streaming bodies have no known terminal length. Pingora owns the
+        // downstream protocol framing, so origin hop-by-hop values cannot be
+        // copied verbatim across protocol versions.
+        response.remove_header(&http::header::CONTENT_LENGTH);
+        response.remove_header(&http::header::CONNECTION);
+        response.remove_header(&http::header::TRANSFER_ENCODING);
+        if session.req_header().version == Version::HTTP_11 {
+            let no_body = session.req_header().method == http::Method::HEAD
+                || response.status.is_informational()
+                || matches!(response.status.as_u16(), 204 | 304);
+            if !no_body {
+                response.insert_header(http::header::TRANSFER_ENCODING, "chunked")?;
+            }
+        }
+        Ok(())
+    }
+
+    fn record_stream_terminal(&self, error: Option<&Error>, ctx: &mut GatewayRequestContext) {
+        let Some(classification) = ctx.stream_classification else {
+            return;
+        };
+        if classification == StreamClassification::RequestAccept && !ctx.stream_confirmed {
+            return;
+        }
+        let outcome = ctx
+            .stream_outcome
+            .unwrap_or_else(|| terminal_stream_outcome(self.admission.is_open(), error));
+        ctx.stream_outcome = Some(outcome);
+        let duration = ctx.request_start.elapsed();
+        let (
+            classification_count,
+            outcome_count,
+            total_request_bytes,
+            total_response_bytes,
+            total_duration_ms,
+        ) = self.stream_metrics.record(
+            classification,
+            outcome,
+            duration,
+            ctx.stream_request_bytes,
+            ctx.stream_response_bytes,
+        );
+        let policy = ctx.streaming_policy.as_ref();
+        info!(
+            target: "light_gateway::stream",
+            gateway_stream_kind = "generic_sse",
+            gateway_stream_classification = classification.as_str(),
+            gateway_stream_outcome = outcome.as_str(),
+            endpoint = ctx.endpoint.as_str(),
+            correlation_id = ctx.correlation.correlation_id.as_deref().unwrap_or(""),
+            stream_max_request_time_ms = policy.map_or(0, |policy| policy.stream_max_request_time),
+            stream_idle_timeout_ms = policy.map_or(0, |policy| policy.stream_idle_timeout),
+            stream_duration_ms = duration.as_millis(),
+            stream_request_bytes = ctx.stream_request_bytes,
+            stream_response_bytes = ctx.stream_response_bytes,
+            stream_classification_count = classification_count,
+            stream_outcome_count = outcome_count,
+            stream_total_request_bytes = total_request_bytes,
+            stream_total_response_bytes = total_response_bytes,
+            stream_total_duration_ms = total_duration_ms,
+            "gateway stream completed"
+        );
     }
 
     #[cfg(test)]
@@ -3644,10 +3758,29 @@ impl ProxyHttp for GatewayProxy {
         }
 
         if ctx.handler_ids.is_empty() {
-            if let Some((target, rewrite_host_header, reuse_x_forwarded)) = self.select_upstream() {
+            if let Some((
+                target,
+                rewrite_host_header,
+                reuse_x_forwarded,
+                http2_enabled,
+                streaming,
+                timeout_ms,
+            )) = self.select_upstream()
+            {
                 ctx.proxy_target = Some(target);
                 ctx.rewrite_host_header = rewrite_host_header;
                 ctx.reuse_x_forwarded = reuse_x_forwarded;
+                ctx.upstream_http2_enabled = http2_enabled;
+                ctx.capture_streaming_policy(
+                    streaming,
+                    timeout_ms,
+                    session
+                        .req_header()
+                        .headers
+                        .get_all("accept")
+                        .iter()
+                        .filter_map(|value| value.to_str().ok()),
+                );
                 return Ok(false);
             }
             return self
@@ -3910,6 +4043,8 @@ impl ProxyHttp for GatewayProxy {
                         ctx.record_handler_duration(&handler_id, started.elapsed());
                         continue;
                     };
+                    ctx.access_control_response_active =
+                        runtime.has_response_filter(ctx.endpoint.as_str());
                     if request_header(session, "content-encoding").is_some()
                         && method_has_request_body(&method)
                     {
@@ -4829,18 +4964,39 @@ impl ProxyHttp for GatewayProxy {
                     return self.write_static_resolution(session, ctx, resolution).await;
                 }
                 "proxy" => {
-                    if let Some((target, rewrite_host_header, reuse_x_forwarded)) =
-                        self.select_upstream()
+                    if let Some((
+                        target,
+                        rewrite_host_header,
+                        reuse_x_forwarded,
+                        http2_enabled,
+                        streaming,
+                        timeout_ms,
+                    )) = self.select_upstream()
                     {
                         ctx.proxy_target = Some(target);
                         ctx.rewrite_host_header = rewrite_host_header;
                         ctx.reuse_x_forwarded = reuse_x_forwarded;
+                        ctx.upstream_http2_enabled = http2_enabled;
+                        ctx.capture_streaming_policy(
+                            streaming,
+                            timeout_ms,
+                            session
+                                .req_header()
+                                .headers
+                                .get_all("accept")
+                                .iter()
+                                .filter_map(|value| value.to_str().ok()),
+                        );
                         if let Err(rejection) = self.prepare_response_handlers(
                             ctx,
                             &handler_ids[handler_index + 1..],
                             &request_path,
                             &method,
                         ) {
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
+                            return self.write_rejection_response(session, ctx, rejection).await;
+                        }
+                        if let Err(rejection) = self.validate_expected_stream_handlers(ctx) {
                             ctx.record_handler_duration(&handler_id, started.elapsed());
                             return self.write_rejection_response(session, ctx, rejection).await;
                         }
@@ -4892,6 +5048,17 @@ impl ProxyHttp for GatewayProxy {
                             ctx.proxy_target = Some(decision.target.clone());
                             ctx.rewrite_host_header = route.config.rewrite_host_header;
                             ctx.reuse_x_forwarded = route.config.reuse_x_forwarded;
+                            ctx.upstream_http2_enabled = route.config.http2_enabled;
+                            ctx.capture_streaming_policy(
+                                route.config.streaming.clone(),
+                                route.config.request_timeout_for_path(&request_path),
+                                session
+                                    .req_header()
+                                    .headers
+                                    .get_all("accept")
+                                    .iter()
+                                    .filter_map(|value| value.to_str().ok()),
+                            );
                             ctx.router_decision = Some(decision);
                             if let Err(rejection) = self.prepare_response_handlers(
                                 ctx,
@@ -4899,6 +5066,11 @@ impl ProxyHttp for GatewayProxy {
                                 &request_path,
                                 &method,
                             ) {
+                                return self
+                                    .write_rejection_response(session, ctx, rejection)
+                                    .await;
+                            }
+                            if let Err(rejection) = self.validate_expected_stream_handlers(ctx) {
                                 return self
                                     .write_rejection_response(session, ctx, rejection)
                                     .await;
@@ -4917,6 +5089,35 @@ impl ProxyHttp for GatewayProxy {
 
         self.write_text_response(session, ctx, 404, "not found")
             .await
+    }
+
+    fn request_deadline(
+        &self,
+        _session: &Session,
+        ctx: &Self::CTX,
+    ) -> Option<ProxyRequestDeadline> {
+        ctx.request_deadline.clone()
+    }
+
+    fn upstream_read_timeout(
+        &self,
+        _session: &Session,
+        ctx: &Self::CTX,
+    ) -> Option<ProxyUpstreamReadTimeout> {
+        ctx.upstream_read_timeout.clone()
+    }
+
+    fn request_cache_filter(
+        &self,
+        session: &mut Session,
+        ctx: &mut Self::CTX,
+    ) -> pingora::Result<()> {
+        if ctx.streaming_request_match.is_some() {
+            session
+                .cache
+                .disable(NoCacheReason::Custom("expected streaming response"));
+        }
+        Ok(())
     }
 
     async fn upstream_peer(
@@ -4960,6 +5161,9 @@ impl ProxyHttp for GatewayProxy {
         };
         if !self.upstream_verify_hostname {
             peer.options.verify_hostname = false;
+        }
+        if ctx.upstream_http2_enabled {
+            peer.options.set_http_version(2, 1);
         }
         if let Some(timeout) = self.upstream_connect_timeout {
             peer.options.connection_timeout = Some(timeout);
@@ -5096,6 +5300,33 @@ impl ProxyHttp for GatewayProxy {
         Ok(())
     }
 
+    async fn upstream_response_filter(
+        &self,
+        session: &mut Session,
+        upstream_response: &mut ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> pingora::Result<()>
+    where
+        Self::CTX: Send + Sync,
+    {
+        ctx.confirm_streaming_response(upstream_response);
+        if !ctx.stream_confirmed {
+            return Ok(());
+        }
+        session
+            .cache
+            .disable(NoCacheReason::Custom("streaming response"));
+        if ctx.streaming_handler_conflict() {
+            ctx.stream_outcome = Some(StreamOutcome::IncompatibleHandler);
+            let rejection = streaming_handler_rejection();
+            return Err(Error::explain(
+                ErrorType::HTTPStatus(502),
+                format!("{}: {}", rejection.code, rejection.message),
+            ));
+        }
+        Ok(())
+    }
+
     async fn request_body_filter(
         &self,
         session: &mut Session,
@@ -5106,6 +5337,11 @@ impl ProxyHttp for GatewayProxy {
     where
         Self::CTX: Send + Sync,
     {
+        // Response headers can promote an otherwise ordinary exchange to a
+        // stream after the complete request body has already been forwarded.
+        // Keep request-local accounting for every candidate and publish it
+        // only when terminal stream metrics are recorded.
+        ctx.record_request_body_bytes(body.as_ref());
         if let Some(verified) = ctx
             .hmac_verified_body
             .as_ref()
@@ -5347,18 +5583,38 @@ impl ProxyHttp for GatewayProxy {
                 *body = None;
             }
         }
+        if ctx.stream_confirmed {
+            ctx.stream_response_bytes = ctx
+                .stream_response_bytes
+                .saturating_add(body.as_ref().map_or(0, Bytes::len) as u64);
+        }
         Ok(None)
     }
 
     async fn response_filter(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         upstream_response: &mut ResponseHeader,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()>
     where
         Self::CTX: Send + Sync,
     {
+        if !ctx.stream_confirmed {
+            ctx.confirm_streaming_response(upstream_response);
+            if ctx.stream_confirmed
+                && matches!(
+                    session.cache.phase(),
+                    CachePhase::Hit | CachePhase::Stale | CachePhase::StaleUpdating
+                )
+            {
+                ctx.stream_outcome = Some(StreamOutcome::UpstreamError);
+                return Err(Error::explain(
+                    ErrorType::HTTPStatus(502),
+                    "cached streaming response rejected",
+                ));
+            }
+        }
         let upstream_status = upstream_response.status.as_u16();
         ctx.upstream_status = Some(upstream_status);
         if matches!(ctx.hmac_replay, WebhookReplayState::Reserved { .. }) {
@@ -5420,6 +5676,7 @@ impl ProxyHttp for GatewayProxy {
             upstream_response.insert_header("sec-websocket-protocol", protocol)?;
         }
         self.apply_response_headers(upstream_response, ctx)?;
+        self.restore_streaming_response_headers(session, upstream_response, ctx)?;
         if upstream_response.status.as_u16() >= 500 {
             self.record_upstream_failure(ctx);
         } else {
@@ -5452,6 +5709,7 @@ impl ProxyHttp for GatewayProxy {
         if error.is_some() {
             self.record_metrics(ctx, 500);
         }
+        self.record_stream_terminal(error, ctx);
         if let Some(runtime) = self.gateway_evidence.as_ref()
             && !ctx.method.is_empty()
         {
@@ -5529,11 +5787,161 @@ struct UpstreamCircuitState {
     opened_at: Option<Instant>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamClassification {
+    RequestAccept,
+    PathPrefix,
+    ResponseContentType,
+}
+
+impl StreamClassification {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::RequestAccept => "request_accept",
+            Self::PathPrefix => "path_prefix",
+            Self::ResponseContentType => "response_content_type",
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Self::RequestAccept => 0,
+            Self::PathPrefix => 1,
+            Self::ResponseContentType => 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamOutcome {
+    Completed,
+    ClientDisconnect,
+    UpstreamError,
+    ExchangeTimeout,
+    IdleTimeout,
+    IncompatibleHandler,
+    Shutdown,
+}
+
+fn terminal_stream_outcome(admission_open: bool, error: Option<&Error>) -> StreamOutcome {
+    if !admission_open {
+        return StreamOutcome::Shutdown;
+    }
+    match error {
+        None => StreamOutcome::Completed,
+        Some(error) if error.to_string().contains("stream idle timeout exceeded") => {
+            StreamOutcome::IdleTimeout
+        }
+        Some(error) if error.to_string().contains("request deadline exceeded") => {
+            StreamOutcome::ExchangeTimeout
+        }
+        Some(error) if matches!(error.esource(), pingora::ErrorSource::Downstream) => {
+            StreamOutcome::ClientDisconnect
+        }
+        Some(_) => StreamOutcome::UpstreamError,
+    }
+}
+
+impl StreamOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::ClientDisconnect => "client_disconnect",
+            Self::UpstreamError => "upstream_error",
+            Self::ExchangeTimeout => "exchange_timeout",
+            Self::IdleTimeout => "idle_timeout",
+            Self::IncompatibleHandler => "incompatible_handler",
+            Self::Shutdown => "shutdown",
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Self::Completed => 0,
+            Self::ClientDisconnect => 1,
+            Self::UpstreamError => 2,
+            Self::ExchangeTimeout => 3,
+            Self::IdleTimeout => 4,
+            Self::IncompatibleHandler => 5,
+            Self::Shutdown => 6,
+        }
+    }
+}
+
+struct StreamMetricsRecorder {
+    classifications: [AtomicU64; 3],
+    outcomes: [AtomicU64; 7],
+    request_bytes: AtomicU64,
+    response_bytes: AtomicU64,
+    duration_ms: AtomicU64,
+}
+
+impl Default for StreamMetricsRecorder {
+    fn default() -> Self {
+        Self {
+            classifications: std::array::from_fn(|_| AtomicU64::new(0)),
+            outcomes: std::array::from_fn(|_| AtomicU64::new(0)),
+            request_bytes: AtomicU64::new(0),
+            response_bytes: AtomicU64::new(0),
+            duration_ms: AtomicU64::new(0),
+        }
+    }
+}
+
+impl StreamMetricsRecorder {
+    fn record(
+        &self,
+        classification: StreamClassification,
+        outcome: StreamOutcome,
+        duration: Duration,
+        request_bytes: u64,
+        response_bytes: u64,
+    ) -> (u64, u64, u64, u64, u64) {
+        let classification_count = self.classifications[classification.index()]
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        let outcome_count = self.outcomes[outcome.index()]
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        let total_request_bytes = self
+            .request_bytes
+            .fetch_add(request_bytes, Ordering::Relaxed)
+            .saturating_add(request_bytes);
+        let total_response_bytes = self
+            .response_bytes
+            .fetch_add(response_bytes, Ordering::Relaxed)
+            .saturating_add(response_bytes);
+        let duration_ms = duration.as_millis().min(u128::from(u64::MAX)) as u64;
+        let total_duration_ms = self
+            .duration_ms
+            .fetch_add(duration_ms, Ordering::Relaxed)
+            .saturating_add(duration_ms);
+        (
+            classification_count,
+            outcome_count,
+            total_request_bytes,
+            total_response_bytes,
+            total_duration_ms,
+        )
+    }
+}
+
 struct GatewayRequestContext {
     admission_permit: Option<AdmissionPermit>,
     proxy_target: Option<ProxyTarget>,
+    upstream_http2_enabled: bool,
     rewrite_host_header: bool,
     reuse_x_forwarded: bool,
+    streaming_policy: Option<StreamingPolicy>,
+    streaming_request_match: Option<StreamingRequestMatch>,
+    stream_confirmed: bool,
+    stream_classification: Option<StreamClassification>,
+    stream_outcome: Option<StreamOutcome>,
+    stream_authoritative_headers: Vec<(HeaderName, Vec<HeaderValue>)>,
+    stream_request_bytes: u64,
+    stream_response_bytes: u64,
+    request_deadline: Option<ProxyRequestDeadline>,
+    upstream_read_timeout: Option<ProxyUpstreamReadTimeout>,
     router_decision: Option<RouterDecision>,
     a2a_decision: Option<A2aRouteDecision>,
     websocket_decision: Option<WebSocketRouteDecision>,
@@ -5593,8 +6001,19 @@ impl Default for GatewayRequestContext {
         Self {
             admission_permit: None,
             proxy_target: None,
+            upstream_http2_enabled: false,
             rewrite_host_header: false,
             reuse_x_forwarded: false,
+            streaming_policy: None,
+            streaming_request_match: None,
+            stream_confirmed: false,
+            stream_classification: None,
+            stream_outcome: None,
+            stream_authoritative_headers: Vec::new(),
+            stream_request_bytes: 0,
+            stream_response_bytes: 0,
+            request_deadline: None,
+            upstream_read_timeout: None,
             router_decision: None,
             a2a_decision: None,
             websocket_decision: None,
@@ -5655,8 +6074,19 @@ impl GatewayRequestContext {
     fn begin_request(&mut self) {
         self.admission_permit = None;
         self.proxy_target = None;
+        self.upstream_http2_enabled = false;
         self.rewrite_host_header = false;
         self.reuse_x_forwarded = false;
+        self.streaming_policy = None;
+        self.streaming_request_match = None;
+        self.stream_confirmed = false;
+        self.stream_classification = None;
+        self.stream_outcome = None;
+        self.stream_authoritative_headers.clear();
+        self.stream_request_bytes = 0;
+        self.stream_response_bytes = 0;
+        self.request_deadline = None;
+        self.upstream_read_timeout = None;
         self.router_decision = None;
         self.a2a_decision = None;
         self.websocket_decision = None;
@@ -5707,6 +6137,102 @@ impl GatewayRequestContext {
         self.a2a_body_permit = None;
         self.a2a_authorized_context = None;
         self.a2a_authorized_signature = None;
+    }
+
+    fn capture_streaming_policy<'a, I>(
+        &mut self,
+        policy: StreamingPolicy,
+        ordinary_timeout_ms: u64,
+        accept_values: I,
+    ) where
+        I: IntoIterator<Item = &'a str>,
+    {
+        self.streaming_request_match =
+            policy.classify_request(self.request_path.as_str(), accept_values);
+        self.stream_classification = self.streaming_request_match.map(|matched| match matched {
+            StreamingRequestMatch::AcceptHeader => StreamClassification::RequestAccept,
+            StreamingRequestMatch::PathPrefix => StreamClassification::PathPrefix,
+        });
+        let timeout_ms = match self.streaming_request_match {
+            // A configured path prefix is an operator-controlled declaration.
+            // Accept is client-controlled, so retain the ordinary deadline
+            // until the upstream confirms an actual streaming response.
+            Some(StreamingRequestMatch::PathPrefix) => policy.stream_max_request_time,
+            Some(StreamingRequestMatch::AcceptHeader) | None => ordinary_timeout_ms,
+        };
+        self.request_deadline = Some(ProxyRequestDeadline::new(self.deadline_after(timeout_ms)));
+        self.upstream_read_timeout = Some(ProxyUpstreamReadTimeout::new(None));
+        self.streaming_policy = Some(policy);
+    }
+
+    fn record_request_body_bytes(&mut self, body: Option<&Bytes>) {
+        self.stream_request_bytes = self
+            .stream_request_bytes
+            .saturating_add(body.map_or(0, Bytes::len) as u64);
+    }
+
+    fn confirm_streaming_response(&mut self, upstream_response: &ResponseHeader) {
+        let Some(policy) = self.streaming_policy.as_ref() else {
+            return;
+        };
+        let confirmed = policy.is_streaming_response(
+            upstream_response
+                .headers
+                .get_all("content-type")
+                .iter()
+                .filter_map(|value| value.to_str().ok()),
+        );
+        if !confirmed {
+            if matches!(
+                self.streaming_request_match,
+                Some(StreamingRequestMatch::AcceptHeader)
+            ) {
+                self.streaming_request_match = None;
+                self.stream_classification = None;
+            }
+            return;
+        }
+        self.stream_confirmed = true;
+        if self.stream_classification.is_none() {
+            self.stream_classification = Some(StreamClassification::ResponseContentType);
+        }
+        self.stream_authoritative_headers = policy
+            .stream_response_header_overwrite
+            .iter()
+            .filter_map(|name| HeaderName::from_bytes(name.as_bytes()).ok())
+            .map(|name| {
+                let values = upstream_response
+                    .headers
+                    .get_all(&name)
+                    .iter()
+                    .cloned()
+                    .collect();
+                (name, values)
+            })
+            .collect();
+        let deadline = self.deadline_after(policy.stream_max_request_time);
+        if let Some(request_deadline) = self.request_deadline.as_ref() {
+            request_deadline.replace(deadline);
+        }
+        if let Some(upstream_read_timeout) = self.upstream_read_timeout.as_ref() {
+            upstream_read_timeout.replace(
+                (policy.stream_idle_timeout != 0)
+                    .then(|| Duration::from_millis(policy.stream_idle_timeout)),
+            );
+        }
+    }
+
+    fn streaming_handler_conflict(&self) -> bool {
+        self.detokenize_active || self.access_control_response_active
+    }
+
+    fn deadline_after(&self, timeout_ms: u64) -> Option<Instant> {
+        (timeout_ms != 0)
+            .then(|| {
+                self.request_start
+                    .checked_add(Duration::from_millis(timeout_ms))
+            })
+            .flatten()
     }
 
     fn record_handler_duration(&mut self, handler_id: &str, duration: Duration) {
@@ -6267,6 +6793,14 @@ fn access_control_response_filter_error() -> Box<Error> {
     )
 }
 
+fn streaming_handler_rejection() -> HandlerRejection {
+    HandlerRejection::new(
+        502,
+        "ERR13027",
+        "streaming response is incompatible with a configured complete-body response handler",
+    )
+}
+
 fn access_control_status_error(status: u16, message: String) -> Box<Error> {
     Error::explain(ErrorType::HTTPStatus(status), message)
 }
@@ -6773,6 +7307,56 @@ fn hmac_handler_path_probe(path: &str) -> String {
         .join("/")
 }
 
+fn report_known_streaming_handler_conflicts(
+    active_handlers: &ActiveHandlerSet,
+    pii_tokenization: Option<&PiiTokenizationRuntime>,
+    access_control: Option<&AccessControlRuntime>,
+    proxy_route: Option<&ProxyRoute>,
+    router_route: Option<&RouterRoute>,
+) -> Result<(), RuntimeError> {
+    for path in &active_handlers.config().paths {
+        let request_path = hmac_handler_path_probe(path.path.as_str());
+        let chain = active_handlers.materialized_path_handler_ids(path)?;
+        let streaming = if chain
+            .iter()
+            .any(|handler| matches!(handler.as_str(), "router" | "a2a"))
+        {
+            router_route.map(|route| &route.config.streaming)
+        } else if chain.iter().any(|handler| handler == "proxy") {
+            proxy_route.map(|route| &route.config.streaming)
+        } else {
+            None
+        };
+        let Some(streaming) = streaming else {
+            continue;
+        };
+        if streaming
+            .classify_request(request_path.as_str(), std::iter::empty::<&str>())
+            .is_none()
+        {
+            continue;
+        }
+        let resolved = active_handlers.resolve_handler_chain(&request_path, &path.method)?;
+        let endpoint = resolved.endpoint(&request_path, &path.method);
+        let detokenize_conflict = chain.iter().any(|handler| handler == "detokenize")
+            && pii_tokenization.is_some_and(|runtime| {
+                runtime.has_response_rules(request_path.as_str(), path.method.as_str())
+            });
+        let access_control_conflict = chain.iter().any(|handler| handler == "access-control")
+            && access_control.is_some_and(|runtime| runtime.has_response_filter(&endpoint));
+        if detokenize_conflict || access_control_conflict {
+            warn!(
+                code = "ERR13027",
+                configured_path = path.path.as_str(),
+                method = path.method.as_str(),
+                endpoint = endpoint.as_str(),
+                "configured streaming path uses an incompatible complete-body response handler"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn upstream_verify_hostname(config: &RuntimeConfig) -> bool {
     config
         .client
@@ -7040,6 +7624,11 @@ mod tests {
     use portal_registry::{
         PortalRegistryClient, RegistrationState, RegistryHandler, ServiceRegistrationParams,
     };
+    use rcgen::{
+        BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
+        KeyUsagePurpose,
+    };
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
     use serde_json::{Value as JsonValue, json};
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -7049,6 +7638,7 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::oneshot;
     use tokio::time::{Duration as TokioDuration, sleep, timeout};
+    use tokio_rustls::TlsAcceptor;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
     use tokio_tungstenite::tungstenite::handshake::server::{
@@ -7057,6 +7647,172 @@ mod tests {
     use tokio_tungstenite::tungstenite::http::HeaderValue;
     use tokio_tungstenite::tungstenite::protocol::Message;
     use tokio_tungstenite::{accept_async, accept_hdr_async, connect_async};
+
+    #[test]
+    fn request_context_snapshots_and_resets_streaming_classification() {
+        let mut ctx = GatewayRequestContext {
+            request_path: "/events/42".to_string(),
+            ..GatewayRequestContext::default()
+        };
+        let policy = StreamingPolicy {
+            stream_path_prefixes: vec!["/events".to_string()],
+            ..StreamingPolicy::default()
+        };
+
+        ctx.capture_streaming_policy(policy.clone(), 1_000, ["application/json"]);
+
+        assert_eq!(ctx.streaming_policy, Some(policy));
+        assert_eq!(
+            ctx.streaming_request_match,
+            Some(StreamingRequestMatch::PathPrefix)
+        );
+        assert!(ctx.request_deadline.is_some());
+        assert!(ctx.upstream_read_timeout.is_some());
+        assert_eq!(
+            ctx.request_deadline
+                .as_ref()
+                .and_then(ProxyRequestDeadline::deadline),
+            None,
+            "the compatibility stream timeout disables the deadline"
+        );
+
+        ctx.begin_request();
+        assert!(ctx.streaming_policy.is_none());
+        assert!(ctx.streaming_request_match.is_none());
+        assert!(ctx.request_deadline.is_none());
+        assert!(ctx.upstream_read_timeout.is_none());
+        assert!(!ctx.stream_confirmed);
+    }
+
+    #[test]
+    fn upstream_sse_confirmation_replaces_the_ordinary_absolute_deadline() {
+        let mut ctx = GatewayRequestContext {
+            request_path: "/events/42".to_string(),
+            ..GatewayRequestContext::default()
+        };
+        let policy = StreamingPolicy {
+            stream_max_request_time: 250,
+            stream_idle_timeout: 75,
+            ..StreamingPolicy::default()
+        };
+        ctx.capture_streaming_policy(policy, 1_000, ["application/json"]);
+        assert_eq!(
+            ctx.request_deadline
+                .as_ref()
+                .and_then(ProxyRequestDeadline::deadline)
+                .expect("ordinary deadline")
+                .duration_since(ctx.request_start),
+            Duration::from_millis(1_000)
+        );
+
+        let mut response =
+            ResponseHeader::build(http::StatusCode::OK, Some(1)).expect("response header");
+        response
+            .insert_header("content-type", "text/event-stream; charset=utf-8")
+            .expect("content type");
+        ctx.confirm_streaming_response(&response);
+
+        assert!(ctx.stream_confirmed);
+        assert_eq!(
+            ctx.stream_classification,
+            Some(StreamClassification::ResponseContentType)
+        );
+        assert_eq!(
+            ctx.upstream_read_timeout
+                .as_ref()
+                .and_then(ProxyUpstreamReadTimeout::timeout),
+            Some(Duration::from_millis(75))
+        );
+        assert_eq!(
+            ctx.stream_authoritative_headers
+                .iter()
+                .find(|(name, _)| name == http::header::CONTENT_TYPE)
+                .and_then(|(_, values)| values.first())
+                .and_then(|value| value.to_str().ok()),
+            Some("text/event-stream; charset=utf-8")
+        );
+        assert_eq!(
+            ctx.request_deadline
+                .as_ref()
+                .and_then(ProxyRequestDeadline::deadline)
+                .expect("stream deadline")
+                .duration_since(ctx.request_start),
+            Duration::from_millis(250)
+        );
+    }
+
+    #[test]
+    fn accept_match_is_provisional_until_the_upstream_confirms_streaming() {
+        let mut ctx = GatewayRequestContext {
+            request_path: "/ordinary".to_string(),
+            ..GatewayRequestContext::default()
+        };
+        ctx.capture_streaming_policy(
+            StreamingPolicy::default(),
+            1_000,
+            ["text/event-stream, application/json"],
+        );
+
+        assert_eq!(
+            ctx.streaming_request_match,
+            Some(StreamingRequestMatch::AcceptHeader)
+        );
+        assert_eq!(
+            ctx.request_deadline
+                .as_ref()
+                .and_then(ProxyRequestDeadline::deadline)
+                .expect("provisional ordinary deadline")
+                .duration_since(ctx.request_start),
+            Duration::from_millis(1_000)
+        );
+
+        let mut response =
+            ResponseHeader::build(http::StatusCode::OK, Some(1)).expect("response header");
+        response
+            .insert_header("content-type", "application/json")
+            .expect("content type");
+        ctx.confirm_streaming_response(&response);
+
+        assert!(!ctx.stream_confirmed);
+        assert!(ctx.streaming_request_match.is_none());
+        assert!(ctx.stream_classification.is_none());
+    }
+
+    #[test]
+    fn response_discovered_stream_retains_request_byte_accounting() {
+        let mut ctx = GatewayRequestContext {
+            request_path: "/events/42".to_string(),
+            ..GatewayRequestContext::default()
+        };
+        ctx.capture_streaming_policy(StreamingPolicy::default(), 1_000, ["application/json"]);
+        assert!(ctx.stream_classification.is_none());
+
+        ctx.record_request_body_bytes(Some(&Bytes::from_static(b"request-body")));
+        let mut response =
+            ResponseHeader::build(http::StatusCode::OK, Some(1)).expect("response header");
+        response
+            .insert_header("content-type", "text/event-stream")
+            .expect("content type");
+        ctx.confirm_streaming_response(&response);
+
+        assert_eq!(
+            ctx.stream_classification,
+            Some(StreamClassification::ResponseContentType)
+        );
+        assert_eq!(ctx.stream_request_bytes, 12);
+    }
+
+    #[test]
+    fn closed_admission_classifies_a_terminal_stream_as_shutdown() {
+        assert_eq!(
+            terminal_stream_outcome(false, None),
+            StreamOutcome::Shutdown
+        );
+        assert_eq!(
+            terminal_stream_outcome(true, None),
+            StreamOutcome::Completed
+        );
+    }
 
     #[test]
     fn gateway_command_rejects_unknown_positional_arguments() {
@@ -7233,6 +7989,878 @@ tools:
             cache_registry: None,
             registry_client: None,
         }
+    }
+
+    fn write_proxy_deadline_config(
+        config_dir: &TempDir,
+        gateway_port: u16,
+        upstream_address: std::net::SocketAddr,
+        path: &str,
+        max_request_time: u64,
+        stream_max_request_time: u64,
+    ) {
+        std::fs::write(
+            config_dir.path().join("server.yml"),
+            format!(
+                "ip: 127.0.0.1\nadvertisedAddress: 127.0.0.1\nhttpPort: {gateway_port}\nenableHttp: true\nhttpsPort: 8443\nenableHttps: false\nserviceId: com.networknt.light-gateway-1.0.0\nenableRegistry: false\nstartOnRegistryFailure: true\ndynamicPort: false\nenvironment: dev\nshutdownGracefulPeriod: 100\n"
+            ),
+        )
+        .expect("write server config");
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            format!(
+                "handlers: [proxy]\npaths:\n  - path: {path}\n    method: GET\n    exec: [proxy]\ndefaultHandlers: []\n"
+            ),
+        )
+        .expect("write handler config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::PROXY_FILE),
+            format!(
+                "hosts: http://{upstream_address}\nmaxRequestTime: {max_request_time}\nstreamMaxRequestTime: {stream_max_request_time}\n"
+            ),
+        )
+        .expect("write proxy config");
+    }
+
+    struct Phase3TestPki {
+        ca_pem: Vec<u8>,
+        leaf_pem: String,
+        key_pem: String,
+        certificate: CertificateDer<'static>,
+        private_key_der: Vec<u8>,
+    }
+
+    fn phase3_test_pki() -> Phase3TestPki {
+        let mut ca_params = CertificateParams::new(Vec::<String>::new()).expect("CA params");
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca_params.key_usages = vec![
+            KeyUsagePurpose::DigitalSignature,
+            KeyUsagePurpose::KeyCertSign,
+            KeyUsagePurpose::CrlSign,
+        ];
+        let ca_key = KeyPair::generate().expect("CA key");
+        let ca_certificate = ca_params.self_signed(&ca_key).expect("CA certificate");
+        let issuer = Issuer::new(ca_params, ca_key);
+
+        let mut leaf_params =
+            CertificateParams::new(vec!["localhost".to_string(), "127.0.0.1".to_string()])
+                .expect("leaf params");
+        leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        let leaf_key = KeyPair::generate().expect("leaf key");
+        let leaf_certificate = leaf_params
+            .signed_by(&leaf_key, &issuer)
+            .expect("leaf certificate");
+        Phase3TestPki {
+            ca_pem: ca_certificate.pem().into_bytes(),
+            leaf_pem: leaf_certificate.pem(),
+            key_pem: leaf_key.serialize_pem(),
+            certificate: leaf_certificate.der().clone(),
+            private_key_der: leaf_key.serialize_der(),
+        }
+    }
+
+    async fn spawn_phase3_h1_upstream() -> (
+        std::net::SocketAddr,
+        oneshot::Receiver<Version>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind phase 3 HTTP/1.1 upstream");
+        let address = listener.local_addr().expect("HTTP/1.1 upstream address");
+        let (observed_tx, observed_rx) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept HTTP/1.1 upstream");
+            let request = read_complete_http_request(&mut socket).await;
+            assert!(
+                String::from_utf8_lossy(&request).contains("HTTP/1.1"),
+                "upstream request was not HTTP/1.1"
+            );
+            let _ = observed_tx.send(Version::HTTP_11);
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nD\r\ndata: first\n\n\r\n",
+                )
+                .await
+                .expect("write first HTTP/1.1 SSE event");
+            sleep(TokioDuration::from_millis(25)).await;
+            socket
+                .write_all(b"E\r\ndata: second\n\n\r\n0\r\n\r\n")
+                .await
+                .expect("write second HTTP/1.1 SSE event");
+        });
+        (address, observed_rx, task)
+    }
+
+    async fn spawn_phase3_h2_upstream(
+        pki: &Phase3TestPki,
+    ) -> (
+        std::net::SocketAddr,
+        oneshot::Receiver<Version>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let private_key =
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(pki.private_key_der.clone()));
+        let mut tls = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![pki.certificate.clone()], private_key)
+            .expect("phase 3 upstream TLS config");
+        tls.alpn_protocols = vec![b"h2".to_vec()];
+        let acceptor = TlsAcceptor::from(Arc::new(tls));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind phase 3 HTTP/2 upstream");
+        let address = listener.local_addr().expect("HTTP/2 upstream address");
+        let (observed_tx, observed_rx) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("accept HTTP/2 upstream");
+            let tls = acceptor.accept(socket).await.expect("accept upstream TLS");
+            assert_eq!(
+                tls.get_ref().1.alpn_protocol(),
+                Some(b"h2".as_slice()),
+                "gateway must negotiate h2 with an HTTP/2-enabled upstream"
+            );
+            let mut connection = h2::server::handshake(tls)
+                .await
+                .expect("HTTP/2 server handshake");
+            let (request, mut respond) = connection
+                .accept()
+                .await
+                .expect("HTTP/2 request result")
+                .expect("HTTP/2 request");
+            let _ = observed_tx.send(request.version());
+            let response = http::Response::builder()
+                .status(http::StatusCode::OK)
+                .header("content-type", "text/event-stream")
+                .body(())
+                .expect("HTTP/2 response");
+            let mut body = respond
+                .send_response(response, false)
+                .expect("send HTTP/2 response headers");
+            body.send_data(Bytes::from_static(b"data: first\n\n"), false)
+                .expect("send first HTTP/2 SSE event");
+            sleep(TokioDuration::from_millis(25)).await;
+            body.send_data(Bytes::from_static(b"data: second\n\n"), true)
+                .expect("send second HTTP/2 SSE event");
+            connection.graceful_shutdown();
+            let _ = timeout(TokioDuration::from_secs(1), async {
+                while let Some(request) = connection.accept().await {
+                    if request.is_err() {
+                        break;
+                    }
+                }
+            })
+            .await;
+        });
+        (address, observed_rx, task)
+    }
+
+    async fn spawn_phase3_idle_h2_upstream(
+        pki: &Phase3TestPki,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let private_key =
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(pki.private_key_der.clone()));
+        let mut tls = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![pki.certificate.clone()], private_key)
+            .expect("idle HTTP/2 upstream TLS config");
+        tls.alpn_protocols = vec![b"h2".to_vec()];
+        let acceptor = TlsAcceptor::from(Arc::new(tls));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind idle HTTP/2 upstream");
+        let address = listener.local_addr().expect("idle HTTP/2 upstream address");
+        let task = tokio::spawn(async move {
+            let (socket, _) = listener
+                .accept()
+                .await
+                .expect("accept idle HTTP/2 upstream");
+            let tls = acceptor
+                .accept(socket)
+                .await
+                .expect("accept idle upstream TLS");
+            let mut connection = h2::server::handshake(tls)
+                .await
+                .expect("idle HTTP/2 server handshake");
+            let (_request, mut respond) = connection
+                .accept()
+                .await
+                .expect("idle HTTP/2 request result")
+                .expect("idle HTTP/2 request");
+            let response = http::Response::builder()
+                .status(http::StatusCode::OK)
+                .header("content-type", "text/event-stream")
+                .body(())
+                .expect("idle HTTP/2 response");
+            let mut body = respond
+                .send_response(response, false)
+                .expect("send idle HTTP/2 response headers");
+            body.send_data(Bytes::from_static(b"data: first\n\n"), false)
+                .expect("send first idle HTTP/2 SSE event");
+
+            let silence = sleep(TokioDuration::from_millis(300));
+            tokio::pin!(silence);
+            loop {
+                tokio::select! {
+                    _ = &mut silence => break,
+                    request = connection.accept() => {
+                        if request.is_none() || request.is_some_and(|request| request.is_err()) {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        (address, task)
+    }
+
+    fn write_phase3_gateway_config(
+        config_dir: &TempDir,
+        gateway_port: u16,
+        upstream_url: &str,
+        downstream_h2: bool,
+        upstream_h2: bool,
+        router: bool,
+        pki: &Phase3TestPki,
+    ) {
+        let cert_path = config_dir.path().join("phase3-cert.pem");
+        let key_path = config_dir.path().join("phase3-key.pem");
+        let ca_path = config_dir.path().join("phase3-ca.pem");
+        std::fs::write(&cert_path, &pki.leaf_pem).expect("write phase 3 certificate");
+        std::fs::write(&key_path, &pki.key_pem).expect("write phase 3 key");
+        std::fs::write(&ca_path, &pki.ca_pem).expect("write phase 3 CA");
+        std::fs::write(
+            config_dir.path().join("server.yml"),
+            format!(
+                "ip: 127.0.0.1\nadvertisedAddress: localhost\nhttpPort: {gateway_port}\nenableHttp: {}\nhttpsPort: {gateway_port}\nenableHttps: {}\ntlsCertPath: {}\ntlsKeyPath: {}\nserviceId: com.networknt.light-gateway-1.0.0\nenableRegistry: false\nstartOnRegistryFailure: true\ndynamicPort: false\nenvironment: test\nshutdownGracefulPeriod: 500\n",
+                !downstream_h2,
+                downstream_h2,
+                cert_path.display(),
+                key_path.display(),
+            ),
+        )
+        .expect("write phase 3 server config");
+        let handler = if router { "router" } else { "proxy" };
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            format!(
+                "handlers: [{handler}]\npaths:\n  - path: /events\n    method: GET\n    exec: [{handler}]\ndefaultHandlers: []\n"
+            ),
+        )
+        .expect("write phase 3 handler config");
+        std::fs::write(
+            config_dir.path().join("client.yml"),
+            format!(
+                "tls:\n  verifyHostname: true\n  caCertPath: {}\nrequest:\n  connectTimeout: 1000\n",
+                ca_path.display()
+            ),
+        )
+        .expect("write phase 3 client config");
+        if router {
+            std::fs::write(
+                config_dir.path().join(light_pingora::ROUTER_FILE),
+                format!(
+                    "http2Enabled: {upstream_h2}\nhttpsEnabled: true\nhostWhitelist: ['^127\\.0\\.0\\.1$']\nstreamMaxRequestTime: 0\nstreamIdleTimeout: 1000\n"
+                ),
+            )
+            .expect("write phase 3 router config");
+        } else {
+            std::fs::write(
+                config_dir.path().join(light_pingora::PROXY_FILE),
+                format!(
+                    "hosts: {upstream_url}\nhttp2Enabled: {upstream_h2}\nstreamMaxRequestTime: 0\nstreamIdleTimeout: 1000\n"
+                ),
+            )
+            .expect("write phase 3 proxy config");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sse_phase3_protocol_and_route_matrix() {
+        for (downstream_h2, upstream_h2, router) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (true, true, false),
+            (true, true, true),
+        ] {
+            let pki = phase3_test_pki();
+            let (upstream_address, observed_version, upstream_task) = if upstream_h2 {
+                spawn_phase3_h2_upstream(&pki).await
+            } else {
+                spawn_phase3_h1_upstream().await
+            };
+            let upstream_url = if upstream_h2 {
+                format!("https://127.0.0.1:{}", upstream_address.port())
+            } else {
+                format!("http://127.0.0.1:{}", upstream_address.port())
+            };
+            let config_dir = TempDir::new().expect("phase 3 config temp dir");
+            let external_dir = TempDir::new().expect("phase 3 external temp dir");
+            let gateway_port = free_tcp_port();
+            let gateway_address = format!("127.0.0.1:{gateway_port}")
+                .parse::<std::net::SocketAddr>()
+                .expect("phase 3 gateway address");
+            write_phase3_gateway_config(
+                &config_dir,
+                gateway_port,
+                &upstream_url,
+                downstream_h2,
+                upstream_h2,
+                router,
+                &pki,
+            );
+
+            let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp::default()))
+                .with_config_dir(config_dir.path())
+                .with_external_config_dir(external_dir.path())
+                .build();
+            let running = runtime.start().await.expect("start phase 3 gateway");
+            wait_for_tcp(gateway_address).await;
+
+            if downstream_h2 {
+                let ca = reqwest::Certificate::from_pem(&pki.ca_pem).expect("reqwest phase 3 CA");
+                let client = reqwest::Client::builder()
+                    .add_root_certificate(ca)
+                    .http2_prior_knowledge()
+                    .build()
+                    .expect("phase 3 HTTP/2 client");
+                let mut request = client
+                    .get(format!("https://localhost:{gateway_port}/events"))
+                    .header("accept", "text/event-stream");
+                if router {
+                    request = request.header("service_url", &upstream_url);
+                }
+                let response = timeout(TokioDuration::from_secs(3), request.send())
+                    .await
+                    .expect("downstream HTTP/2 response timeout")
+                    .expect("downstream HTTP/2 response");
+                assert_eq!(response.version(), Version::HTTP_2);
+                assert_eq!(
+                    response
+                        .headers()
+                        .get("content-type")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("text/event-stream")
+                );
+                assert!(!response.headers().contains_key("transfer-encoding"));
+                assert!(!response.headers().contains_key("content-length"));
+                let body = timeout(TokioDuration::from_secs(3), response.text())
+                    .await
+                    .expect("downstream HTTP/2 body timeout")
+                    .expect("downstream HTTP/2 body");
+                assert!(body.contains("data: first"), "HTTP/2 body: {body}");
+                assert!(body.contains("data: second"), "HTTP/2 body: {body}");
+            } else {
+                let router_header = router
+                    .then(|| format!("service_url: {upstream_url}\r\n"))
+                    .unwrap_or_default();
+                let response = raw_http_exchange(
+                    gateway_address,
+                    &format!(
+                        "GET /events HTTP/1.1\r\nHost: localhost:{gateway_port}\r\nAccept: text/event-stream\r\n{router_header}Connection: close\r\n\r\n"
+                    ),
+                )
+                .await;
+                let response = String::from_utf8_lossy(&response);
+                let lower = response.to_ascii_lowercase();
+                assert!(
+                    response.starts_with("HTTP/1.1 200"),
+                    "downstream_h2={downstream_h2} upstream_h2={upstream_h2} router={router} response: {response}"
+                );
+                assert!(lower.contains("content-type: text/event-stream"));
+                assert!(lower.contains("transfer-encoding: chunked"));
+                assert!(!lower.contains("content-length:"));
+                assert!(response.contains("data: first"), "response: {response}");
+                assert!(response.contains("data: second"), "response: {response}");
+            }
+
+            assert_eq!(
+                timeout(TokioDuration::from_secs(2), observed_version)
+                    .await
+                    .expect("upstream protocol observation timeout")
+                    .expect("upstream protocol observation"),
+                if upstream_h2 {
+                    Version::HTTP_2
+                } else {
+                    Version::HTTP_11
+                }
+            );
+            running.shutdown().await.expect("shutdown phase 3 gateway");
+            upstream_task.await.expect("phase 3 upstream task");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn http_1_0_streaming_uses_close_delimited_framing() {
+        let pki = phase3_test_pki();
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind HTTP/1.0 upstream");
+        let upstream_address = upstream.local_addr().expect("HTTP/1.0 upstream address");
+        let upstream_task = tokio::spawn(async move {
+            let (mut socket, _) = upstream.accept().await.expect("accept HTTP/1.0 upstream");
+            let _ = read_complete_http_request(&mut socket).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nD\r\ndata: first\n\n\r\nE\r\ndata: second\n\n\r\n0\r\n\r\n",
+                )
+                .await
+                .expect("write HTTP/1.0 test stream");
+        });
+        let config_dir = TempDir::new().expect("HTTP/1.0 config temp dir");
+        let external_dir = TempDir::new().expect("HTTP/1.0 external temp dir");
+        let gateway_port = free_tcp_port();
+        let gateway_address = format!("127.0.0.1:{gateway_port}")
+            .parse::<std::net::SocketAddr>()
+            .expect("HTTP/1.0 gateway address");
+        write_phase3_gateway_config(
+            &config_dir,
+            gateway_port,
+            &format!("http://{upstream_address}"),
+            false,
+            false,
+            false,
+            &pki,
+        );
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp::default()))
+            .with_config_dir(config_dir.path())
+            .with_external_config_dir(external_dir.path())
+            .build();
+        let running = runtime.start().await.expect("start HTTP/1.0 gateway");
+        wait_for_tcp(gateway_address).await;
+
+        let response = raw_http_exchange(
+            gateway_address,
+            &format!(
+                "GET /events HTTP/1.0\r\nHost: localhost:{gateway_port}\r\nAccept: text/event-stream\r\n\r\n"
+            ),
+        )
+        .await;
+        let response = String::from_utf8_lossy(&response);
+        let lower = response.to_ascii_lowercase();
+        assert!(
+            !lower.contains("transfer-encoding:"),
+            "response: {response}"
+        );
+        assert!(!lower.contains("content-length:"), "response: {response}");
+        assert!(response.contains("data: first"), "response: {response}");
+        assert!(response.contains("data: second"), "response: {response}");
+        assert!(!response.contains("\r\nD\r\n"), "response: {response}");
+
+        running.shutdown().await.expect("shutdown HTTP/1.0 gateway");
+        upstream_task.await.expect("HTTP/1.0 upstream task");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn http_2_upstream_idle_timeout_uses_normal_downstream_failure_path() {
+        let pki = phase3_test_pki();
+        let (upstream_address, upstream_task) = spawn_phase3_idle_h2_upstream(&pki).await;
+        let config_dir = TempDir::new().expect("HTTP/2 idle config temp dir");
+        let external_dir = TempDir::new().expect("HTTP/2 idle external temp dir");
+        let gateway_port = free_tcp_port();
+        let gateway_address = format!("127.0.0.1:{gateway_port}")
+            .parse::<std::net::SocketAddr>()
+            .expect("HTTP/2 idle gateway address");
+        write_phase3_gateway_config(
+            &config_dir,
+            gateway_port,
+            &format!("https://127.0.0.1:{}", upstream_address.port()),
+            false,
+            true,
+            false,
+            &pki,
+        );
+        let proxy_path = config_dir.path().join(light_pingora::PROXY_FILE);
+        let proxy_config = std::fs::read_to_string(&proxy_path)
+            .expect("read HTTP/2 idle proxy config")
+            .replace("streamIdleTimeout: 1000", "streamIdleTimeout: 75");
+        std::fs::write(&proxy_path, proxy_config).expect("write HTTP/2 idle proxy config");
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp::default()))
+            .with_config_dir(config_dir.path())
+            .with_external_config_dir(external_dir.path())
+            .build();
+        let running = runtime.start().await.expect("start HTTP/2 idle gateway");
+        wait_for_tcp(gateway_address).await;
+
+        let response = timeout(
+            TokioDuration::from_millis(250),
+            raw_http_exchange(
+                gateway_address,
+                &format!(
+                    "GET /events HTTP/1.1\r\nHost: localhost:{gateway_port}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n"
+                ),
+            ),
+        )
+        .await
+        .expect("HTTP/2 upstream idle timeout must close the downstream");
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.starts_with("HTTP/1.1 200"), "response: {response}");
+        assert!(response.contains("data: first"), "response: {response}");
+
+        running
+            .shutdown()
+            .await
+            .expect("shutdown HTTP/2 idle gateway");
+        upstream_task.await.expect("HTTP/2 idle upstream task");
+    }
+
+    #[cfg(target_os = "linux")]
+    fn phase3_open_file_descriptors() -> usize {
+        std::fs::read_dir("/proc/self/fd")
+            .expect("read /proc/self/fd")
+            .count()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn phase3_resident_memory_kib() -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .expect("read /proc/self/status")
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("VmRSS:")
+                    .and_then(|value| value.split_whitespace().next())
+                    .and_then(|value| value.parse().ok())
+            })
+            .expect("VmRSS in /proc/self/status")
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "run with scripts/run-sse-passthrough-phase3-gates.sh"]
+    async fn sse_phase3_soak_shutdown_and_post_commit_retry_gate() {
+        const STREAM_COUNT: usize = 32;
+        const SOAK_HEARTBEATS: usize = 20;
+        const MAX_FD_GROWTH: usize = 4;
+        const MAX_RSS_GROWTH_KIB: u64 = 64 * 1024;
+
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind phase 3 soak upstream");
+        let upstream_address = upstream.local_addr().expect("soak upstream address");
+        let upstream_task = tokio::spawn(async move {
+            let mut streams = Vec::with_capacity(STREAM_COUNT);
+            for _ in 0..STREAM_COUNT {
+                let (mut socket, _) = upstream.accept().await.expect("accept soak stream");
+                streams.push(tokio::spawn(async move {
+                    let _ = read_complete_http_request(&mut socket).await;
+                    socket
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nD\r\ndata: first\n\n\r\n",
+                        )
+                        .await
+                        .expect("write soak first event");
+                    for _ in 0..SOAK_HEARTBEATS {
+                        sleep(TokioDuration::from_millis(100)).await;
+                        socket
+                            .write_all(b"D\r\n: keepalive\n\n\r\n")
+                            .await
+                            .expect("write soak heartbeat");
+                    }
+                    socket
+                        .write_all(b"E\r\ndata: second\n\n\r\n0\r\n\r\n")
+                        .await
+                        .expect("write soak second event");
+                }));
+            }
+            for stream in streams {
+                stream.await.expect("soak upstream stream task");
+            }
+        });
+
+        let pki = phase3_test_pki();
+        let config_dir = TempDir::new().expect("soak config temp dir");
+        let external_dir = TempDir::new().expect("soak external temp dir");
+        let gateway_port = free_tcp_port();
+        let gateway_address = format!("127.0.0.1:{gateway_port}")
+            .parse::<std::net::SocketAddr>()
+            .expect("soak gateway address");
+        write_phase3_gateway_config(
+            &config_dir,
+            gateway_port,
+            &format!("http://{upstream_address}"),
+            false,
+            false,
+            false,
+            &pki,
+        );
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp::default()))
+            .with_config_dir(config_dir.path())
+            .with_external_config_dir(external_dir.path())
+            .build();
+        let running = runtime.start().await.expect("start phase 3 soak gateway");
+        wait_for_tcp(gateway_address).await;
+        let baseline_fds = phase3_open_file_descriptors();
+        let baseline_rss = phase3_resident_memory_kib();
+
+        let mut clients = Vec::with_capacity(STREAM_COUNT);
+        for _ in 0..STREAM_COUNT {
+            let request = format!(
+                "GET /events HTTP/1.1\r\nHost: localhost:{gateway_port}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n"
+            );
+            clients.push(tokio::spawn(async move {
+                raw_http_exchange(gateway_address, &request).await
+            }));
+        }
+        for client in clients {
+            let response = timeout(TokioDuration::from_secs(5), client)
+                .await
+                .expect("soak client timeout")
+                .expect("soak client task");
+            let response = String::from_utf8_lossy(&response);
+            assert!(response.contains("data: first"), "response: {response}");
+            assert!(response.contains("data: second"), "response: {response}");
+        }
+        upstream_task.await.expect("soak upstream task");
+        sleep(TokioDuration::from_millis(100)).await;
+        let final_fds = phase3_open_file_descriptors();
+        let final_rss = phase3_resident_memory_kib();
+        assert!(
+            final_fds <= baseline_fds + MAX_FD_GROWTH,
+            "file descriptors grew from {baseline_fds} to {final_fds}"
+        );
+        assert!(
+            final_rss <= baseline_rss + MAX_RSS_GROWTH_KIB,
+            "resident memory grew from {baseline_rss} KiB to {final_rss} KiB"
+        );
+        running.shutdown().await.expect("shutdown soak gateway");
+
+        let retry_upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind post-commit retry upstream");
+        let retry_address = retry_upstream.local_addr().expect("retry upstream address");
+        let (retried_tx, retried_rx) = oneshot::channel();
+        let retry_task = tokio::spawn(async move {
+            let (mut socket, _) = retry_upstream.accept().await.expect("accept first attempt");
+            let _ = read_complete_http_request(&mut socket).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 4096\r\nConnection: close\r\n\r\ndata: committed\n\n",
+                )
+                .await
+                .expect("write committed SSE event");
+            drop(socket);
+            let retried = timeout(TokioDuration::from_millis(250), retry_upstream.accept())
+                .await
+                .is_ok();
+            let _ = retried_tx.send(retried);
+        });
+        let retry_config_dir = TempDir::new().expect("retry config temp dir");
+        let retry_external_dir = TempDir::new().expect("retry external temp dir");
+        let retry_gateway_port = free_tcp_port();
+        let retry_gateway_address = format!("127.0.0.1:{retry_gateway_port}")
+            .parse::<std::net::SocketAddr>()
+            .expect("retry gateway address");
+        write_phase3_gateway_config(
+            &retry_config_dir,
+            retry_gateway_port,
+            &format!("http://{retry_address}"),
+            false,
+            false,
+            false,
+            &pki,
+        );
+        std::fs::write(
+            retry_config_dir.path().join(light_pingora::PROXY_FILE),
+            format!(
+                "hosts: http://{retry_address}\nmaxConnectionRetries: 3\nstreamMaxRequestTime: 0\nstreamIdleTimeout: 1000\n"
+            ),
+        )
+        .expect("write retry boundary proxy config");
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp::default()))
+            .with_config_dir(retry_config_dir.path())
+            .with_external_config_dir(retry_external_dir.path())
+            .build();
+        let running = runtime.start().await.expect("start retry boundary gateway");
+        wait_for_tcp(retry_gateway_address).await;
+        let response = raw_http_exchange(
+            retry_gateway_address,
+            &format!(
+                "GET /events HTTP/1.1\r\nHost: localhost:{retry_gateway_port}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n"
+            ),
+        )
+        .await;
+        assert!(
+            String::from_utf8_lossy(&response).contains("data: committed"),
+            "committed event must reach the client"
+        );
+        assert!(
+            !timeout(TokioDuration::from_secs(1), retried_rx)
+                .await
+                .expect("retry observation timeout")
+                .expect("retry observation"),
+            "a committed SSE response must never be retried"
+        );
+        retry_task.await.expect("post-commit retry task");
+        running.shutdown().await.expect("shutdown retry gateway");
+
+        let shutdown_upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind graceful shutdown upstream");
+        let shutdown_address = shutdown_upstream
+            .local_addr()
+            .expect("graceful shutdown upstream address");
+        let (first_event_tx, first_event_rx) = oneshot::channel();
+        let shutdown_upstream_task = tokio::spawn(async move {
+            let (mut socket, _) = shutdown_upstream
+                .accept()
+                .await
+                .expect("accept graceful shutdown stream");
+            let _ = read_complete_http_request(&mut socket).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nD\r\ndata: first\n\n\r\n",
+                )
+                .await
+                .expect("write graceful shutdown first event");
+            let _ = first_event_tx.send(());
+            sleep(TokioDuration::from_millis(150)).await;
+            socket
+                .write_all(b"E\r\ndata: second\n\n\r\n0\r\n\r\n")
+                .await
+                .expect("write graceful shutdown second event");
+        });
+        let shutdown_config_dir = TempDir::new().expect("shutdown config temp dir");
+        let shutdown_external_dir = TempDir::new().expect("shutdown external temp dir");
+        let shutdown_gateway_port = free_tcp_port();
+        let shutdown_gateway_address = format!("127.0.0.1:{shutdown_gateway_port}")
+            .parse::<std::net::SocketAddr>()
+            .expect("shutdown gateway address");
+        write_phase3_gateway_config(
+            &shutdown_config_dir,
+            shutdown_gateway_port,
+            &format!("http://{shutdown_address}"),
+            false,
+            false,
+            false,
+            &pki,
+        );
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp::default()))
+            .with_config_dir(shutdown_config_dir.path())
+            .with_external_config_dir(shutdown_external_dir.path())
+            .build();
+        let running = runtime
+            .start()
+            .await
+            .expect("start graceful shutdown gateway");
+        wait_for_tcp(shutdown_gateway_address).await;
+        let request = format!(
+            "GET /events HTTP/1.1\r\nHost: localhost:{shutdown_gateway_port}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n"
+        );
+        let client =
+            tokio::spawn(
+                async move { raw_http_exchange(shutdown_gateway_address, &request).await },
+            );
+        timeout(TokioDuration::from_secs(2), first_event_rx)
+            .await
+            .expect("first shutdown event timeout")
+            .expect("first shutdown event");
+        let shutdown_started = Instant::now();
+        timeout(TokioDuration::from_millis(500), running.shutdown())
+            .await
+            .expect("shutdown must remain inside the configured deadline")
+            .expect("graceful gateway shutdown");
+        let shutdown_elapsed = shutdown_started.elapsed();
+        assert!(
+            shutdown_elapsed >= Duration::from_millis(75),
+            "shutdown returned before the active stream drained: {shutdown_elapsed:?}"
+        );
+        let response = client.await.expect("graceful shutdown client");
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.contains("data: first"), "response: {response}");
+        assert!(response.contains("data: second"), "response: {response}");
+        shutdown_upstream_task
+            .await
+            .expect("graceful shutdown upstream task");
+
+        let forced_upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind forced shutdown upstream");
+        let forced_address = forced_upstream
+            .local_addr()
+            .expect("forced shutdown upstream address");
+        let (forced_first_event_tx, forced_first_event_rx) = oneshot::channel();
+        let forced_upstream_task = tokio::spawn(async move {
+            let (mut socket, _) = forced_upstream
+                .accept()
+                .await
+                .expect("accept forced shutdown stream");
+            let _ = read_complete_http_request(&mut socket).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nD\r\ndata: first\n\n\r\n",
+                )
+                .await
+                .expect("write forced shutdown first event");
+            let _ = forced_first_event_tx.send(());
+            sleep(TokioDuration::from_millis(300)).await;
+        });
+        let forced_config_dir = TempDir::new().expect("forced shutdown config temp dir");
+        let forced_external_dir = TempDir::new().expect("forced shutdown external temp dir");
+        let forced_gateway_port = free_tcp_port();
+        let forced_gateway_address = format!("127.0.0.1:{forced_gateway_port}")
+            .parse::<std::net::SocketAddr>()
+            .expect("forced shutdown gateway address");
+        write_phase3_gateway_config(
+            &forced_config_dir,
+            forced_gateway_port,
+            &format!("http://{forced_address}"),
+            false,
+            false,
+            false,
+            &pki,
+        );
+        let server_path = forced_config_dir.path().join("server.yml");
+        let server_config = std::fs::read_to_string(&server_path)
+            .expect("read forced shutdown server config")
+            .replace("shutdownGracefulPeriod: 500", "shutdownGracefulPeriod: 100");
+        std::fs::write(&server_path, server_config).expect("write forced shutdown server config");
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp::default()))
+            .with_config_dir(forced_config_dir.path())
+            .with_external_config_dir(forced_external_dir.path())
+            .build();
+        let running = runtime
+            .start()
+            .await
+            .expect("start forced shutdown gateway");
+        wait_for_tcp(forced_gateway_address).await;
+        let request = format!(
+            "GET /events HTTP/1.1\r\nHost: localhost:{forced_gateway_port}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n"
+        );
+        let client =
+            tokio::spawn(async move { raw_http_exchange(forced_gateway_address, &request).await });
+        timeout(TokioDuration::from_secs(2), forced_first_event_rx)
+            .await
+            .expect("forced shutdown first event timeout")
+            .expect("forced shutdown first event");
+        let shutdown_started = Instant::now();
+        let error = running
+            .shutdown()
+            .await
+            .expect_err("an over-deadline stream must fail the graceful drain");
+        let shutdown_elapsed = shutdown_started.elapsed();
+        assert!(
+            matches!(error, RuntimeError::ShutdownDeadlineExceeded(_)),
+            "unexpected forced shutdown error: {error}"
+        );
+        assert!(
+            shutdown_elapsed >= Duration::from_millis(75)
+                && shutdown_elapsed < Duration::from_secs(1),
+            "forced shutdown did not honor the configured deadline: {shutdown_elapsed:?}"
+        );
+        let response = timeout(TokioDuration::from_secs(1), client)
+            .await
+            .expect("forced shutdown client must be released")
+            .expect("forced shutdown client task");
+        assert!(
+            String::from_utf8_lossy(&response).contains("data: first"),
+            "first event must be committed before forced shutdown"
+        );
+        forced_upstream_task
+            .await
+            .expect("forced shutdown upstream task");
     }
 
     #[test]
@@ -11021,9 +12649,7 @@ aliases:
             });
             let _ = observed_tx.send(idempotency_key);
             socket
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
-                )
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
                 .await
                 .expect("write hybrid-command test response");
         });
@@ -11081,6 +12707,433 @@ aliases:
 
         running.shutdown().await.expect("shutdown portal gateway");
         upstream_task.await.expect("hybrid-command test task");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn proxy_deadlines_are_isolated_between_ordinary_and_expected_stream_requests() {
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind deadline test upstream");
+        let upstream_address = upstream.local_addr().expect("upstream address");
+        let upstream_task = tokio::spawn(async move {
+            let mut responses = Vec::new();
+            for _ in 0..2 {
+                let (mut socket, _) = upstream.accept().await.expect("accept gateway request");
+                responses.push(tokio::spawn(async move {
+                    let _ = read_complete_http_request(&mut socket).await;
+                    sleep(TokioDuration::from_millis(150)).await;
+                    let _ = socket
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                        )
+                        .await;
+                }));
+            }
+            for response in responses {
+                response.await.expect("upstream response task");
+            }
+        });
+
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        let gateway_port = free_tcp_port();
+        let gateway_address = format!("127.0.0.1:{gateway_port}")
+            .parse::<std::net::SocketAddr>()
+            .expect("gateway address");
+        write_proxy_deadline_config(
+            &config_dir,
+            gateway_port,
+            upstream_address,
+            "/deadline",
+            75,
+            0,
+        );
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            "handlers: [proxy]\npaths:\n  - path: /deadline\n    method: GET\n    exec: [proxy]\n  - path: /events\n    method: GET\n    exec: [proxy]\ndefaultHandlers: []\n",
+        )
+        .expect("write deadline isolation handler config");
+        let proxy_path = config_dir.path().join(light_pingora::PROXY_FILE);
+        let proxy_config = format!(
+            "{}streamPathPrefixes: [/events]\n",
+            std::fs::read_to_string(&proxy_path).expect("read deadline isolation proxy config")
+        );
+        std::fs::write(&proxy_path, proxy_config).expect("write deadline isolation proxy config");
+
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp::default()))
+            .with_config_dir(config_dir.path())
+            .with_external_config_dir(external_dir.path())
+            .build();
+        let running = runtime.start().await.expect("start deadline test gateway");
+        wait_for_tcp(gateway_address).await;
+
+        let ordinary_request = format!(
+            "GET /deadline HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nConnection: close\r\n\r\n"
+        );
+        let stream_request = format!(
+            "GET /events HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nConnection: close\r\n\r\n"
+        );
+        let (ordinary_response, stream_response) = tokio::join!(
+            raw_http_exchange(gateway_address, &ordinary_request),
+            raw_http_exchange(gateway_address, &stream_request),
+        );
+
+        assert!(
+            String::from_utf8_lossy(&ordinary_response).starts_with("HTTP/1.1 504"),
+            "ordinary response: {}",
+            String::from_utf8_lossy(&ordinary_response)
+        );
+        assert!(
+            String::from_utf8_lossy(&stream_response).starts_with("HTTP/1.1 200"),
+            "expected-stream response: {}",
+            String::from_utf8_lossy(&stream_response)
+        );
+
+        running
+            .shutdown()
+            .await
+            .expect("shutdown deadline test gateway");
+        upstream_task.await.expect("deadline test upstream task");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn upstream_sse_response_cancels_the_ordinary_deadline() {
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind SSE promotion upstream");
+        let upstream_address = upstream.local_addr().expect("upstream address");
+        let upstream_task = tokio::spawn(async move {
+            let (mut socket, _) = upstream.accept().await.expect("accept gateway request");
+            let _ = read_complete_http_request(&mut socket).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-cache\r\nContent-Length: 4096\r\nConnection: close\r\n\r\ndata: first\n\n",
+                )
+                .await
+                .expect("write first SSE event");
+            sleep(TokioDuration::from_millis(150)).await;
+            socket
+                .write_all(b"data: second\n\n")
+                .await
+                .expect("write second SSE event");
+        });
+
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        let gateway_port = free_tcp_port();
+        let gateway_address = format!("127.0.0.1:{gateway_port}")
+            .parse::<std::net::SocketAddr>()
+            .expect("gateway address");
+        write_proxy_deadline_config(
+            &config_dir,
+            gateway_port,
+            upstream_address,
+            "/promote",
+            75,
+            0,
+        );
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            "handlers: [header, proxy]\npaths:\n  - path: /promote\n    method: GET\n    exec: [header, proxy]\ndefaultHandlers: []\n",
+        )
+        .expect("write streaming header handler config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::HEADER_FILE),
+            "enabled: true\nresponse:\n  update:\n    Content-Type: application/json\n    Cache-Control: private\n",
+        )
+        .expect("write streaming header mutation config");
+
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp::default()))
+            .with_config_dir(config_dir.path())
+            .with_external_config_dir(external_dir.path())
+            .build();
+        let running = runtime.start().await.expect("start SSE promotion gateway");
+        wait_for_tcp(gateway_address).await;
+
+        let mut client = TcpStream::connect(gateway_address)
+            .await
+            .expect("connect SSE promotion gateway");
+        client
+            .write_all(
+                format!(
+                    "GET /promote HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("write SSE promotion request");
+        let first = timeout(TokioDuration::from_millis(100), async {
+            let mut received = Vec::new();
+            loop {
+                let mut chunk = vec![0; 4096];
+                let read = client.read(&mut chunk).await.expect("read first SSE event");
+                received.extend_from_slice(&chunk[..read]);
+                if received
+                    .windows(b"data: first".len())
+                    .any(|window| window == b"data: first")
+                    || read == 0
+                {
+                    return received;
+                }
+            }
+        })
+        .await
+        .expect("first SSE event must arrive while upstream remains open");
+        let first = String::from_utf8_lossy(&first);
+        assert!(first.contains("data: first"), "response: {first}");
+        assert!(!first.contains("data: second"), "response: {first}");
+        let first_lower = first.to_ascii_lowercase();
+        assert!(
+            first_lower.contains("content-type: text/event-stream; charset=utf-8"),
+            "response: {first}"
+        );
+        assert!(first_lower.contains("cache-control: no-cache"));
+        assert!(!first_lower.contains("content-length:"));
+        assert!(first_lower.contains("transfer-encoding: chunked"));
+
+        let mut rest = Vec::new();
+        timeout(TokioDuration::from_secs(2), client.read_to_end(&mut rest))
+            .await
+            .expect("second SSE event timeout")
+            .expect("read second SSE event");
+        let mut response = first.as_bytes().to_vec();
+        response.extend_from_slice(&rest);
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.starts_with("HTTP/1.1 200"), "response: {response}");
+        assert!(response.contains("data: first"), "response: {response}");
+        assert!(response.contains("data: second"), "response: {response}");
+
+        running
+            .shutdown()
+            .await
+            .expect("shutdown SSE promotion gateway");
+        upstream_task.await.expect("SSE promotion upstream task");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn confirmed_sse_stream_closes_after_the_configured_idle_timeout() {
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind SSE idle upstream");
+        let upstream_address = upstream.local_addr().expect("upstream address");
+        let upstream_task = tokio::spawn(async move {
+            let (mut socket, _) = upstream.accept().await.expect("accept gateway request");
+            let _ = read_complete_http_request(&mut socket).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\nD\r\ndata: first\n\n\r\n",
+                )
+                .await
+                .expect("write first idle-test event");
+            sleep(TokioDuration::from_millis(300)).await;
+            let _ = socket.write_all(b"0\r\n\r\n").await;
+        });
+
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        let gateway_port = free_tcp_port();
+        let gateway_address = format!("127.0.0.1:{gateway_port}")
+            .parse::<std::net::SocketAddr>()
+            .expect("gateway address");
+        write_proxy_deadline_config(
+            &config_dir,
+            gateway_port,
+            upstream_address,
+            "/idle",
+            1_000,
+            1_000,
+        );
+        std::fs::write(
+            config_dir.path().join(light_pingora::PROXY_FILE),
+            format!(
+                "hosts: http://{upstream_address}\nmaxRequestTime: 1000\nstreamMaxRequestTime: 1000\nstreamIdleTimeout: 75\n"
+            ),
+        )
+        .expect("write idle-timeout proxy config");
+
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp::default()))
+            .with_config_dir(config_dir.path())
+            .with_external_config_dir(external_dir.path())
+            .build();
+        let running = runtime.start().await.expect("start SSE idle gateway");
+        wait_for_tcp(gateway_address).await;
+
+        let response = timeout(
+            TokioDuration::from_millis(250),
+            raw_http_exchange(
+                gateway_address,
+                &format!(
+                    "GET /idle HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nConnection: close\r\n\r\n"
+                ),
+            ),
+        )
+        .await
+        .expect("idle timeout must close the downstream before the upstream resumes");
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.starts_with("HTTP/1.1 200"), "response: {response}");
+        assert!(response.contains("data: first"), "response: {response}");
+
+        running.shutdown().await.expect("shutdown SSE idle gateway");
+        upstream_task.await.expect("SSE idle upstream task");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn accept_is_provisional_but_confirmed_stream_rejects_complete_body_filter() {
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind incompatible-handler upstream");
+        let upstream_address = upstream.local_addr().expect("upstream address");
+
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        let gateway_port = free_tcp_port();
+        let gateway_address = format!("127.0.0.1:{gateway_port}")
+            .parse::<std::net::SocketAddr>()
+            .expect("gateway address");
+        write_proxy_deadline_config(
+            &config_dir,
+            gateway_port,
+            upstream_address,
+            "/events",
+            1_000,
+            1_000,
+        );
+        let proxy_path = config_dir.path().join(light_pingora::PROXY_FILE);
+        let proxy_config = format!(
+            "{}streamPathPrefixes: [/declared]\n",
+            std::fs::read_to_string(&proxy_path).expect("read incompatible proxy config")
+        );
+        std::fs::write(&proxy_path, proxy_config).expect("write incompatible proxy config");
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            "handlers: [access-control, proxy]\npaths:\n  - path: /events\n    method: GET\n    exec: [access-control, proxy]\n  - path: /declared\n    method: GET\n    exec: [access-control, proxy]\ndefaultHandlers: []\n",
+        )
+        .expect("write incompatible handler chain");
+        std::fs::write(
+            config_dir.path().join(light_pingora::ACCESS_CONTROL_FILE),
+            "enabled: true\ndefaultDeny: false\n",
+        )
+        .expect("write access-control config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::RULE_FILE),
+            r#"
+ruleBodies:
+  filter:
+    common: Y
+    ruleId: filter
+    ruleName: Filter
+    ruleType: res-fil
+    expression: "col != null"
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+    actions:
+      - actionClassName: com.networknt.rule.ResponseColumnFilterAction
+endpointRules:
+  /events@get:
+    res-fil:
+      - filter
+    permission:
+      col: {}
+  /declared@get:
+    res-fil:
+      - filter
+    permission:
+      col: {}
+"#,
+        )
+        .expect("write response-filter rule");
+
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp::default()))
+            .with_config_dir(config_dir.path())
+            .with_external_config_dir(external_dir.path())
+            .build();
+        let running = runtime
+            .start()
+            .await
+            .expect("start incompatible-handler gateway");
+        wait_for_tcp(gateway_address).await;
+
+        let response = raw_http_exchange(
+            gateway_address,
+            &format!(
+                "GET /declared HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nConnection: close\r\n\r\n"
+            ),
+        )
+        .await;
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.starts_with("HTTP/1.1 502"), "response: {response}");
+        assert!(response.contains("ERR13027"), "response: {response}");
+        assert!(
+            timeout(TokioDuration::from_millis(100), upstream.accept())
+                .await
+                .is_err(),
+            "an operator-declared stream must reject incompatible handlers before upstream connect"
+        );
+
+        let ordinary_client = tokio::spawn(async move {
+            raw_http_exchange(
+                gateway_address,
+                &format!(
+                    "GET /events HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nAccept: text/event-stream, application/json\r\nConnection: close\r\n\r\n"
+                ),
+            )
+            .await
+        });
+        let (mut socket, _) = timeout(TokioDuration::from_secs(1), upstream.accept())
+            .await
+            .expect("Accept-only request must reach upstream")
+            .expect("accept provisional stream request");
+        let _ = read_complete_http_request(&mut socket).await;
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+            )
+            .await
+            .expect("write ordinary response");
+        let response = ordinary_client.await.expect("ordinary response client");
+        let response = String::from_utf8_lossy(&response);
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "a client Accept preference must not reject an ordinary response: {response}"
+        );
+
+        let discovered_client = tokio::spawn(async move {
+            raw_http_exchange(
+                gateway_address,
+                &format!(
+                    "GET /events HTTP/1.1\r\nHost: 127.0.0.1:{gateway_port}\r\nConnection: close\r\n\r\n"
+                ),
+            )
+            .await
+        });
+        let (mut socket, _) = timeout(TokioDuration::from_secs(1), upstream.accept())
+            .await
+            .expect("ordinary request must reach upstream")
+            .expect("accept ordinary request");
+        let _ = read_complete_http_request(&mut socket).await;
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+            )
+            .await
+            .expect("write response-discovered stream");
+        let discovered_response = discovered_client.await.expect("response-discovered client");
+        let discovered_response = String::from_utf8_lossy(&discovered_response);
+        assert!(
+            discovered_response.starts_with("HTTP/1.1 502"),
+            "response: {discovered_response}"
+        );
+        assert!(
+            !discovered_response
+                .to_ascii_lowercase()
+                .contains("content-type: text/event-stream"),
+            "upstream stream headers must not be committed: {discovered_response}"
+        );
+
+        running
+            .shutdown()
+            .await
+            .expect("shutdown incompatible-handler gateway");
     }
 
     #[tokio::test]

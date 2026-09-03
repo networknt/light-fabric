@@ -2,7 +2,13 @@ enabled: ${proxy.enabled:true}
 http2Enabled: ${proxy.http2Enabled:false}
 hosts: ${proxy.hosts:http://localhost:8080}
 connectionsPerThread: ${proxy.connectionsPerThread:20}
-maxRequestTime: ${proxy.maxRequestTime:1000}
+maxRequestTime: ${proxy.maxRequestTime:0}
+streamResponseContentTypes: ${proxy.streamResponseContentTypes:[text/event-stream]}
+streamRequestAcceptTypes: ${proxy.streamRequestAcceptTypes:[text/event-stream]}
+streamPathPrefixes: ${proxy.streamPathPrefixes:[]}
+streamMaxRequestTime: ${proxy.streamMaxRequestTime:0}
+streamIdleTimeout: ${proxy.streamIdleTimeout:0}
+streamResponseHeaderOverwrite: ${proxy.streamResponseHeaderOverwrite:[Content-Type,Cache-Control,Connection,Transfer-Encoding,Content-Encoding,Content-Length]}
 rewriteHostHeader: ${proxy.rewriteHostHeader:true}
 reuseXForwarded: ${proxy.reuseXForwarded:false}
 maxConnectionRetries: ${proxy.maxConnectionRetries:3}

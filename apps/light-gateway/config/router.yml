@@ -1,7 +1,13 @@
 http2Enabled: ${router.http2Enabled:true}
 httpsEnabled: ${router.httpsEnabled:true}
-maxRequestTime: ${router.maxRequestTime:1000}
+maxRequestTime: ${router.maxRequestTime:0}
 pathPrefixMaxRequestTime: ${router.pathPrefixMaxRequestTime:{}}
+streamResponseContentTypes: ${router.streamResponseContentTypes:[text/event-stream]}
+streamRequestAcceptTypes: ${router.streamRequestAcceptTypes:[text/event-stream]}
+streamPathPrefixes: ${router.streamPathPrefixes:[]}
+streamMaxRequestTime: ${router.streamMaxRequestTime:0}
+streamIdleTimeout: ${router.streamIdleTimeout:0}
+streamResponseHeaderOverwrite: ${router.streamResponseHeaderOverwrite:[Content-Type,Cache-Control,Connection,Transfer-Encoding,Content-Encoding,Content-Length]}
 connectionsPerThread: ${router.connectionsPerThread:10}
 maxQueueSize: ${router.maxQueueSize:0}
 softMaxConnectionsPerThread: ${router.softMaxConnectionsPerThread:5}

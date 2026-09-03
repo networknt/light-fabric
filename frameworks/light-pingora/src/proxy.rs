@@ -1,3 +1,4 @@
+use crate::streaming::StreamingPolicy;
 use light_runtime::{ModuleKind, RuntimeConfig, RuntimeError};
 use serde::{Deserialize, Serialize};
 use url::{Host, Url};
@@ -19,6 +20,8 @@ pub struct ProxyConfig {
     pub connections_per_thread: usize,
     #[serde(default = "default_max_request_time")]
     pub max_request_time: u64,
+    #[serde(flatten)]
+    pub streaming: StreamingPolicy,
     #[serde(default = "default_rewrite_host_header")]
     pub rewrite_host_header: bool,
     #[serde(default)]
@@ -43,6 +46,7 @@ impl Default for ProxyConfig {
             hosts: default_hosts(),
             connections_per_thread: default_connections_per_thread(),
             max_request_time: default_max_request_time(),
+            streaming: StreamingPolicy::default(),
             rewrite_host_header: default_rewrite_host_header(),
             reuse_x_forwarded: false,
             max_connection_retries: default_max_connection_retries(),
@@ -108,6 +112,11 @@ pub fn load_proxy_route(
             return Ok(None);
         }
         Err(error) => return Err(error),
+    };
+
+    let config = ProxyConfig {
+        streaming: config.streaming.clone().normalized(PROXY_CONFIG_NAME)?,
+        ..config
     };
 
     if !config.enabled {
@@ -234,7 +243,7 @@ fn default_connections_per_thread() -> usize {
 }
 
 fn default_max_request_time() -> u64 {
-    1000
+    0
 }
 
 fn default_rewrite_host_header() -> bool {
@@ -301,6 +310,36 @@ mod tests {
             .expect_err("unsupported scheme should fail");
 
         assert!(error.to_string().contains("unsupported scheme"));
+    }
+
+    #[test]
+    fn legacy_proxy_config_receives_streaming_defaults() {
+        let config: ProxyConfig =
+            serde_yaml::from_str("hosts: http://127.0.0.1:8080\n").expect("proxy config");
+
+        assert_eq!(
+            config.streaming,
+            StreamingPolicy::default(),
+            "omitted Phase 0 fields must preserve the compatibility defaults"
+        );
+        assert_eq!(
+            config.max_request_time, 0,
+            "ordinary whole-exchange deadlines must remain opt-in"
+        );
+    }
+
+    #[test]
+    fn proxy_loader_rejects_invalid_streaming_header_name() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        std::fs::write(
+            config_dir.path().join(PROXY_FILE),
+            "hosts: http://127.0.0.1:8080\nstreamResponseHeaderOverwrite: [bad header]\n",
+        )
+        .expect("write proxy config");
+        let runtime = runtime_config(&config_dir);
+
+        let error = load_proxy_route(&runtime).expect_err("invalid header should fail loading");
+        assert!(error.to_string().contains("streamResponseHeaderOverwrite"));
     }
 
     #[test]

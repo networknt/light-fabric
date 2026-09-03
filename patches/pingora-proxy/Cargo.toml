@@ -172,6 +172,8 @@ version = "1"
 features = [
     "macros",
     "net",
+    "sync",
+    "time",
 ]
 
 [dev-dependencies.env_logger]

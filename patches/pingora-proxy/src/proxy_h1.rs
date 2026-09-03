@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use futures::future::OptionFuture;
 use futures::StreamExt;
+use futures::future::OptionFuture;
 
 use super::*;
-use crate::proxy_cache::{range_filter::RangeBodyFilter, ServeFromCache};
+use crate::proxy_cache::{ServeFromCache, range_filter::RangeBodyFilter};
 use crate::proxy_common::*;
 use pingora_cache::CachePhase;
 use pingora_core::protocols::http::custom::CUSTOM_MESSAGE_QUEUE_SIZE;
@@ -99,6 +99,7 @@ where
 
         let (tx_upstream, rx_upstream) = mpsc::channel::<HttpTask>(TASK_BUFFER_SIZE);
         let (tx_downstream, rx_downstream) = mpsc::channel::<HttpTask>(TASK_BUFFER_SIZE);
+        let upstream_read_timeout = self.inner.upstream_read_timeout(session, ctx);
 
         session.as_mut().enable_retry_buffering();
 
@@ -111,7 +112,12 @@ where
                 ctx,
                 &mut downstream_custom_message_writer
             ),
-            self.proxy_handle_upstream(client_session, tx_upstream, rx_downstream),
+            self.proxy_handle_upstream(
+                client_session,
+                tx_upstream,
+                rx_downstream,
+                upstream_read_timeout.as_ref(),
+            ),
         );
 
         if let Some(custom_session) = session.downstream_session.as_custom_mut() {
@@ -187,6 +193,7 @@ where
         client_session: &mut HttpSessionV1,
         tx: mpsc::Sender<HttpTask>,
         mut rx: mpsc::Receiver<HttpTask>,
+        upstream_read_timeout: Option<&ProxyUpstreamReadTimeout>,
     ) -> Result<()>
     where
         SV: ProxyHttp + Send + Sync,
@@ -200,7 +207,10 @@ where
         /* duplex mode, wait for either to complete */
         while !request_done || !response_done {
             tokio::select! {
-                res = client_session.read_response_task(), if !response_done => {
+                res = run_with_upstream_read_timeout(
+                    upstream_read_timeout,
+                    client_session.read_response_task(),
+                ), if !response_done => {
                     match res {
                         Ok(task) => {
                             response_done = task.is_end();
@@ -851,16 +861,16 @@ pub(crate) async fn send_body_to1(
                 if let Some(d) = data {
                     let m = client_session.write_body(&d).await;
                     match m {
-                        Ok(m) => {
-                            match m {
-                                Some(n) => {
-                                    debug!("Write {} bytes upgraded body to upstream", n);
-                                }
-                                None => {
-                                    warn!("Upstream upgraded body is already finished. Nothing to write");
-                                }
+                        Ok(m) => match m {
+                            Some(n) => {
+                                debug!("Write {} bytes upgraded body to upstream", n);
                             }
-                        }
+                            None => {
+                                warn!(
+                                    "Upstream upgraded body is already finished. Nothing to write"
+                                );
+                            }
+                        },
                         Err(e) => {
                             return e.into_up().into_err();
                         }

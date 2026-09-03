@@ -14,12 +14,104 @@
 
 use super::*;
 use pingora_cache::{
-    key::HashBinary,
     CacheKey, CacheMeta, ForcedFreshness, HitHandler,
     RespCacheable::{self, *},
+    key::HashBinary,
 };
 use proxy_cache::range_filter::{self};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::sync::watch;
+
+/// A request-local, dynamically replaceable whole-exchange deadline.
+///
+/// The proxy driver observes clones of this handle while an implementation can
+/// replace or disable the deadline after upstream response classification.
+#[derive(Clone, Debug)]
+pub struct ProxyRequestDeadline {
+    deadline: watch::Sender<Option<Instant>>,
+}
+
+/// A request-local, dynamically replaceable timeout between upstream body reads.
+///
+/// The handle starts disabled and can be enabled after response headers classify
+/// an exchange as streaming. Each new body read observes the latest duration,
+/// so a successful read naturally resets the idle window.
+#[derive(Clone, Debug)]
+pub struct ProxyUpstreamReadTimeout {
+    timeout: watch::Sender<Option<Duration>>,
+}
+
+impl ProxyUpstreamReadTimeout {
+    pub fn new(timeout: Option<Duration>) -> Self {
+        let (timeout, _) = watch::channel(timeout);
+        Self { timeout }
+    }
+
+    pub fn replace(&self, timeout: Option<Duration>) {
+        self.timeout.send_replace(timeout);
+    }
+
+    pub fn timeout(&self) -> Option<Duration> {
+        *self.timeout.borrow()
+    }
+
+    pub(crate) async fn expired(&self) {
+        let mut timeout = self.timeout.subscribe();
+        loop {
+            let current = *timeout.borrow_and_update();
+            match current {
+                Some(duration) => {
+                    tokio::select! {
+                        _ = tokio::time::sleep(duration) => return,
+                        changed = timeout.changed() => {
+                            debug_assert!(changed.is_ok(), "timeout sender is held by self");
+                        }
+                    }
+                }
+                None => {
+                    let changed = timeout.changed().await;
+                    debug_assert!(changed.is_ok(), "timeout sender is held by self");
+                }
+            }
+        }
+    }
+}
+
+impl ProxyRequestDeadline {
+    pub fn new(deadline: Option<Instant>) -> Self {
+        let (deadline, _) = watch::channel(deadline);
+        Self { deadline }
+    }
+
+    pub fn replace(&self, deadline: Option<Instant>) {
+        self.deadline.send_replace(deadline);
+    }
+
+    pub fn deadline(&self) -> Option<Instant> {
+        *self.deadline.borrow()
+    }
+
+    pub(crate) async fn expired(&self) {
+        let mut deadline = self.deadline.subscribe();
+        loop {
+            let current = *deadline.borrow_and_update();
+            match current {
+                Some(at) => {
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(at.into()) => return,
+                        changed = deadline.changed() => {
+                            debug_assert!(changed.is_ok(), "deadline sender is held by self");
+                        }
+                    }
+                }
+                None => {
+                    let changed = deadline.changed().await;
+                    debug_assert!(changed.is_ok(), "deadline sender is held by self");
+                }
+            }
+        }
+    }
+}
 
 /// The interface to control the HTTP proxy
 ///
@@ -70,6 +162,30 @@ pub trait ProxyHttp {
         Self::CTX: Send + Sync,
     {
         Ok(false)
+    }
+
+    /// Return a request-local whole-exchange deadline after request routing.
+    ///
+    /// The default disables this behavior so existing `ProxyHttp`
+    /// implementations retain their current lifecycle semantics.
+    fn request_deadline(
+        &self,
+        _session: &Session,
+        _ctx: &Self::CTX,
+    ) -> Option<ProxyRequestDeadline> {
+        None
+    }
+
+    /// Return a request-local upstream body read timeout handle.
+    ///
+    /// The default disables this behavior. Implementations may return a handle
+    /// whose value is enabled or replaced after response classification.
+    fn upstream_read_timeout(
+        &self,
+        _session: &Session,
+        _ctx: &Self::CTX,
+    ) -> Option<ProxyUpstreamReadTimeout> {
+        None
     }
 
     /// Handle the incoming request before any downstream module is executed.

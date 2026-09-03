@@ -39,18 +39,19 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use futures::future::FutureExt;
-use http::{header, version::Version, Method};
+use http::{Method, header, version::Version};
 use log::{debug, error, trace, warn};
 use once_cell::sync::Lazy;
 use pingora_http::{RequestHeader, ResponseHeader};
 use std::fmt::Debug;
+use std::future::Future;
 use std::str;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use std::time::Duration;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{Notify, mpsc};
 use tokio::time;
 
 use pingora_cache::NoCacheReason;
@@ -58,25 +59,48 @@ use pingora_core::apps::{
     HttpPersistentSettings, HttpServerApp, HttpServerOptions, ReusedHttpStream,
 };
 use pingora_core::connectors::http::custom;
-use pingora_core::connectors::{http::Connector, ConnectorOptions};
+use pingora_core::connectors::{ConnectorOptions, http::Connector};
 use pingora_core::modules::http::compression::ResponseCompressionBuilder;
 use pingora_core::modules::http::{HttpModuleCtx, HttpModules};
+use pingora_core::protocols::Stream;
+use pingora_core::protocols::http::HttpTask;
+use pingora_core::protocols::http::SERVER_NAME;
+use pingora_core::protocols::http::ServerSession as HttpSession;
 use pingora_core::protocols::http::client::HttpSession as ClientSession;
 use pingora_core::protocols::http::custom::CustomMessageWrite;
 use pingora_core::protocols::http::subrequest::server::SubrequestHandle;
 use pingora_core::protocols::http::v1::client::HttpSession as HttpSessionV1;
 use pingora_core::protocols::http::v2::server::H2Options;
-use pingora_core::protocols::http::HttpTask;
-use pingora_core::protocols::http::ServerSession as HttpSession;
-use pingora_core::protocols::http::SERVER_NAME;
-use pingora_core::protocols::Stream;
 use pingora_core::protocols::{Digest, UniqueID};
-use pingora_core::server::configuration::ServerConf;
 use pingora_core::server::ShutdownWatch;
+use pingora_core::server::configuration::ServerConf;
 use pingora_core::upstreams::peer::{HttpPeer, Peer};
 use pingora_error::{Error, ErrorSource, ErrorType::*, OrErr, Result};
 
 const TASK_BUFFER_SIZE: usize = 4;
+
+async fn run_with_request_deadline<F>(
+    deadline: Option<&ProxyRequestDeadline>,
+    operation: F,
+) -> std::result::Result<F::Output, ()>
+where
+    F: Future,
+{
+    let Some(deadline) = deadline else {
+        return Ok(operation.await);
+    };
+    tokio::select! {
+        biased;
+        _ = deadline.expired() => Err(()),
+        output = operation => Ok(output),
+    }
+}
+
+fn request_deadline_error() -> Box<Error> {
+    let mut error = Error::explain(HTTPStatus(504), "whole-exchange request deadline exceeded");
+    error.retry = false.into();
+    error
+}
 
 mod proxy_cache;
 mod proxy_common;
@@ -89,12 +113,32 @@ pub mod subrequest;
 
 use subrequest::{BodyMode, Ctx as SubrequestCtx};
 
-pub use proxy_cache::range_filter::{range_header_filter, MultiRangeInfo, RangeType};
+pub use proxy_cache::range_filter::{MultiRangeInfo, RangeType, range_header_filter};
 pub use proxy_purge::PurgeStatus;
-pub use proxy_trait::{FailToProxy, ProxyHttp};
+pub use proxy_trait::{FailToProxy, ProxyHttp, ProxyRequestDeadline, ProxyUpstreamReadTimeout};
+
+async fn run_with_upstream_read_timeout<F, T>(
+    timeout: Option<&ProxyUpstreamReadTimeout>,
+    operation: F,
+) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    let Some(timeout) = timeout else {
+        return operation.await;
+    };
+    tokio::select! {
+        result = operation => result,
+        _ = timeout.expired() => Err(stream_idle_timeout_error()),
+    }
+}
+
+fn stream_idle_timeout_error() -> Box<Error> {
+    Error::explain(ReadTimedout, "stream idle timeout exceeded").into_up()
+}
 
 pub mod prelude {
-    pub use crate::{http_proxy, http_proxy_service, ProxyHttp, Session};
+    pub use crate::{ProxyHttp, Session, http_proxy, http_proxy_service};
 }
 
 pub type ProcessCustomSession<SV, C> = Arc<
@@ -310,10 +354,15 @@ where
                         let (server_reused, mut error) = self
                             .proxy_to_h2_upstream(session, &mut h2, client_reused, &peer, ctx)
                             .await;
-                        let session = ClientSession::H2(h2);
-                        self.client_upstream
-                            .release_http_session(session, &*peer, peer.idle_timeout())
-                            .await;
+                        let reusable = error.as_ref().is_none_or(|error| {
+                            !matches!(error.etype, ReadTimedout | InvalidH2 | H2Error)
+                        });
+                        if reusable {
+                            let session = ClientSession::H2(h2);
+                            self.client_upstream
+                                .release_http_session(session, &*peer, peer.idle_timeout())
+                                .await;
+                        }
 
                         if let Some(e) = error.as_mut() {
                             // try to downgrade if A. origin says so or B. origin sends an invalid
@@ -803,7 +852,20 @@ where
             }
         }
 
-        if let Some((reuse, err)) = self.proxy_cache(&mut session, &mut ctx).await {
+        let request_deadline = self.inner.request_deadline(&session, &ctx);
+
+        let cache_result = match run_with_request_deadline(
+            request_deadline.as_ref(),
+            self.proxy_cache(&mut session, &mut ctx),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(()) => {
+                return self.handle_request_deadline(session, &mut ctx).await;
+            }
+        };
+        if let Some((reuse, err)) = cache_result {
             // cache hit
             return self.finish(session, &mut ctx, reuse, err).await;
         }
@@ -813,11 +875,18 @@ where
         self.cleanup_sub_req(&mut session);
 
         // decide if the request is allowed to go to upstream
-        match self
-            .inner
-            .proxy_upstream_filter(&mut session, &mut ctx)
-            .await
+        let proxy_upstream = match run_with_request_deadline(
+            request_deadline.as_ref(),
+            self.inner.proxy_upstream_filter(&mut session, &mut ctx),
+        )
+        .await
         {
+            Ok(result) => result,
+            Err(()) => {
+                return self.handle_request_deadline(session, &mut ctx).await;
+            }
+        };
+        match proxy_upstream {
             Ok(proxy_to_upstream) => {
                 if !proxy_to_upstream {
                     // The hook can choose to write its own response, but if it doesn't, we respond
@@ -870,12 +939,22 @@ where
         while retries < self.max_retries {
             retries += 1;
 
-            let (reuse, e) = self.proxy_to_upstream(&mut session, &mut ctx).await;
+            let (reuse, e) = match run_with_request_deadline(
+                request_deadline.as_ref(),
+                self.proxy_to_upstream(&mut session, &mut ctx),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(()) => {
+                    return self.handle_request_deadline(session, &mut ctx).await;
+                }
+            };
             server_reuse = reuse;
 
             match e {
                 Some(error) => {
-                    let retry = error.retry();
+                    let retry = session.response_written().is_none() && error.retry();
                     proxy_error = Some(error);
                     if !retry {
                         break;
@@ -901,8 +980,17 @@ where
         // allow unwrap until if let chains
         #[allow(clippy::unnecessary_unwrap)]
         let serve_stale_result = if proxy_error.is_some() && session.cache.can_serve_stale_error() {
-            self.handle_stale_if_error(&mut session, &mut ctx, proxy_error.as_ref().unwrap())
-                .await
+            match run_with_request_deadline(
+                request_deadline.as_ref(),
+                self.handle_stale_if_error(&mut session, &mut ctx, proxy_error.as_ref().unwrap()),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(()) => {
+                    return self.handle_request_deadline(session, &mut ctx).await;
+                }
+            }
         } else {
             None
         };
@@ -943,6 +1031,38 @@ where
         // logging() will be called in finish()
         self.finish(session, &mut ctx, server_reuse, final_error)
             .await
+    }
+
+    async fn handle_request_deadline(
+        &self,
+        mut session: Session,
+        ctx: &mut <SV as ProxyHttp>::CTX,
+    ) -> Option<ReusedHttpStream>
+    where
+        SV: ProxyHttp + Send + Sync + 'static,
+        <SV as ProxyHttp>::CTX: Send + Sync,
+    {
+        if session.cache.enabled() {
+            session.cache.disable(NoCacheReason::InternalError);
+        }
+        let error = request_deadline_error();
+        if session.response_written().is_none() {
+            let result = self.inner.fail_to_proxy(&mut session, &error, ctx).await;
+            if !self.inner.suppress_error_log(&session, ctx, &error) {
+                error!(
+                    "Fail to proxy: {}, status: {}, retry: false, {}",
+                    error,
+                    result.error_code,
+                    self.inner.request_summary(&session, ctx),
+                );
+            }
+        } else if !self.inner.suppress_error_log(&session, ctx, &error) {
+            warn!(
+                "whole-exchange request deadline exceeded after downstream response commitment: {}",
+                self.inner.request_summary(&session, ctx),
+            );
+        }
+        self.finish(session, ctx, false, Some(error)).await
     }
 
     async fn handle_error(
@@ -1393,5 +1513,89 @@ where
 
         proxy.handle_init_modules();
         Service::new(name, proxy)
+    }
+}
+
+#[cfg(test)]
+mod request_deadline_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn one_absolute_deadline_is_shared_across_sequential_attempts() {
+        let deadline =
+            ProxyRequestDeadline::new(Some(std::time::Instant::now() + Duration::from_millis(250)));
+
+        let first = run_with_request_deadline(
+            Some(&deadline),
+            tokio::time::sleep(Duration::from_millis(50)),
+        )
+        .await;
+        assert!(first.is_ok());
+
+        let second =
+            run_with_request_deadline(Some(&deadline), tokio::time::sleep(Duration::from_secs(1)))
+                .await;
+        assert!(
+            second.is_err(),
+            "the second attempt must use only the remaining time"
+        );
+    }
+
+    #[tokio::test]
+    async fn replacing_a_deadline_wakes_the_active_driver_waiter() {
+        let deadline =
+            ProxyRequestDeadline::new(Some(std::time::Instant::now() + Duration::from_millis(50)));
+        let replacement = deadline.clone();
+        let update = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            replacement.replace(None);
+        });
+
+        let result = run_with_request_deadline(
+            Some(&deadline),
+            tokio::time::sleep(Duration::from_millis(100)),
+        )
+        .await;
+
+        update.await.expect("deadline update task");
+        assert!(
+            result.is_ok(),
+            "disabling the deadline must cancel the old timer"
+        );
+    }
+
+    #[tokio::test]
+    async fn upstream_read_timeout_can_be_enabled_after_headers() {
+        let timeout = ProxyUpstreamReadTimeout::new(None);
+        let replacement = timeout.clone();
+        let update = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            replacement.replace(Some(Duration::from_millis(25)));
+        });
+
+        let error = run_with_upstream_read_timeout(Some(&timeout), async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            Ok(())
+        })
+        .await
+        .expect_err("response classification must activate the idle timeout");
+
+        update.await.expect("timeout update task");
+        assert!(matches!(error.etype, ReadTimedout));
+        assert!(error.to_string().contains("stream idle timeout exceeded"));
+    }
+
+    #[tokio::test]
+    async fn each_upstream_read_gets_a_fresh_idle_window() {
+        let timeout = ProxyUpstreamReadTimeout::new(Some(Duration::from_millis(50)));
+
+        for _ in 0..2 {
+            run_with_upstream_read_timeout(Some(&timeout), async {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                Ok(())
+            })
+            .await
+            .expect("progress before expiry must reset the next read window");
+        }
     }
 }
