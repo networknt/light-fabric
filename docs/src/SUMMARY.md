@@ -81,6 +81,8 @@
 # Product
 
 - [Light-Agent](product/light-agent.md)
+  - [Coding Harness Integration](product/light-agent/coding-harness-integration.md)
+  - [Development Workflow Orchestration](product/light-agent/development-workflow-orchestration.md)
   - [Deploy Native](product/light-agent/deploy-native.md)
   - [Deploy Kubernetes](product/light-agent/deploy-kubernetes.md)
 - [Light-Deployer](product/light-deployer.md)

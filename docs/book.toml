@@ -4,7 +4,11 @@ language = "en"
 src = "src"
 title = "Light-Fabric Documentation"
 
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
 [output.html]
 site-url = "/light-fabric/"
 git-repository-url = "https://github.com/networknt/light-fabric"
 edit-url-template = "https://github.com/networknt/light-fabric/edit/master/docs/{path}"
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
