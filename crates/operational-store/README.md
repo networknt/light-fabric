@@ -33,3 +33,5 @@ Bundle `2.0.0` migrates the operational database metadata row from the retired
 Host/environment provider profile to `scope_kind=HOST`,
 `deployment_profile=CUSTOMER_MANAGED`, and `binding_version>=2`. Environment
 remains runtime-instance routing metadata, not part of database ownership.
+Bundle `2.1.0` adds the Workflow-owned endpoint-resolution projection without
+adding Portal catalog tables to the operational database.

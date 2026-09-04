@@ -11,12 +11,18 @@ pub const DEFAULT_DATABASE_URL_FILE: &str = "/run/secrets/operational-database-u
 pub const MIGRATION_ID: &str = "0001_workflow_runtime";
 pub const A2A_BINDING_MIGRATION_ID: &str = "0002_governed_a2a_outbound";
 pub const CONSUMER_OFFSETS_MIGRATION_ID: &str = "0004_workflow_consumer_offsets";
+pub const CATALOG_PROJECTION_MIGRATION_ID: &str = "0005_workflow_catalog_projection";
+pub const ENDPOINT_RESOLUTION_MIGRATION_ID: &str = "0006_workflow_endpoint_resolution";
 pub const MIGRATION_SQL: &str =
     include_str!("../migrations/workflow-postgres/0001_workflow_runtime.sql");
 pub const A2A_BINDING_MIGRATION_SQL: &str =
     include_str!("../migrations/workflow-postgres/0002_governed_a2a_outbound.sql");
 pub const CONSUMER_OFFSETS_MIGRATION_SQL: &str =
     include_str!("../migrations/workflow-postgres/0004_workflow_consumer_offsets.sql");
+pub const CATALOG_PROJECTION_MIGRATION_SQL: &str =
+    include_str!("../migrations/workflow-postgres/0005_workflow_catalog_projection.sql");
+pub const ENDPOINT_RESOLUTION_MIGRATION_SQL: &str =
+    include_str!("../migrations/workflow-postgres/0006_workflow_endpoint_resolution.sql");
 
 /// Durable Workflow state. The first three entries are the Phase 0 deferred
 /// roots; the remaining rows are runtime-owned state discovered during the
@@ -175,6 +181,30 @@ pub async fn validate(
             "Workflow consumer-offset migration ledger entry is missing".into(),
         ));
     }
+    let catalog_projection_ready: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM operational_meta.operational_schema_migration_t
+          WHERE migration_owner='workflow-store' AND schema_name='workflow_ops' AND migration_id=$1)",
+    )
+    .bind(CATALOG_PROJECTION_MIGRATION_ID)
+    .fetch_one(pool)
+    .await?;
+    if !catalog_projection_ready {
+        return Err(ValidationError::Scope(
+            "Workflow catalog-projection migration ledger entry is missing".into(),
+        ));
+    }
+    let endpoint_resolution_ready: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM operational_meta.operational_schema_migration_t
+          WHERE migration_owner='workflow-store' AND schema_name='workflow_ops' AND migration_id=$1)",
+    )
+    .bind(ENDPOINT_RESOLUTION_MIGRATION_ID)
+    .fetch_one(pool)
+    .await?;
+    if !endpoint_resolution_ready {
+        return Err(ValidationError::Scope(
+            "Workflow endpoint-resolution migration ledger entry is missing".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -198,5 +228,7 @@ mod tests {
         assert!(A2A_BINDING_MIGRATION_SQL.contains("workflow_ops.workflow_a2a_binding_t"));
         assert!(!A2A_BINDING_MIGRATION_SQL.contains("server"));
         assert!(CONSUMER_OFFSETS_MIGRATION_SQL.contains("workflow_ops.consumer_offsets"));
+        assert!(CATALOG_PROJECTION_MIGRATION_SQL.contains("tool_name"));
+        assert!(ENDPOINT_RESOLUTION_MIGRATION_SQL.contains("resolution_document"));
     }
 }

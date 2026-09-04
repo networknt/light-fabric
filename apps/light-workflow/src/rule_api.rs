@@ -450,11 +450,11 @@ async fn start_invocation(
     let binding = sqlx::query_as::<_, BindingRow>(
         "SELECT b.binding_id,b.wf_def_id,b.workflow_version,b.definition_digest,
                 b.schema_digest,b.policy_digest,b.response_policy_digest,w.definition,
-                t.name AS tool_name
+                b.tool_name
            FROM workflow_tool_binding_t b
            JOIN wf_definition_t w ON w.host_id=b.host_id AND w.wf_def_id=b.wf_def_id
-           JOIN tool_t t ON t.host_id=b.host_id AND t.tool_id=b.tool_id
-          WHERE b.host_id=$1 AND b.tool_id=$2 AND b.active AND w.active AND t.active",
+          WHERE b.host_id=$1 AND b.tool_id=$2 AND b.active AND w.active
+            AND b.tool_name IS NOT NULL",
     )
     .bind(identity.host_id)
     .bind(request.stable_tool_ref)
@@ -1916,6 +1916,21 @@ fn bad_request<E: std::fmt::Display>(err: E) -> (StatusCode, Json<Value>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invocation_binding_query_uses_only_workflow_projection_tables() {
+        let source = include_str!("rule_api.rs");
+        let start = source
+            .find("SELECT b.binding_id,b.wf_def_id,b.workflow_version")
+            .expect("workflow binding query must exist");
+        let end = source[start..]
+            .find(".fetch_optional(&state.pool)")
+            .map(|offset| start + offset)
+            .expect("workflow binding query must execute");
+        let query = &source[start..end];
+        assert!(query.contains("b.tool_name"));
+        assert!(!query.contains("JOIN tool_t"));
+    }
 
     #[test]
     fn readiness_reports_background_failure_without_changing_liveness() {

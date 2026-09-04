@@ -1386,35 +1386,26 @@ impl TaskExecutor {
                         .into());
                     }
                     let environment = self.environment.clone();
-                    let resolved: Option<(Uuid, Uuid, Value, String)> = sqlx::query_as(
-                        "SELECT g.grant_id,t.tool_id,t.lightapi_document,
-                                (av.protocol || '://' || av.target_host) AS base_uri
+                    let resolved: Option<(Uuid, Uuid, String, Option<Value>)> = sqlx::query_as(
+                        "SELECT g.grant_id,g.tool_id,target.endpoint_uri,target.resolution_document
                            FROM workflow_tool_grant_t g
-                           JOIN tool_t t ON t.host_id=g.host_id AND t.tool_id=g.tool_id
-                           JOIN api_endpoint_t e ON e.host_id=t.host_id AND e.endpoint_id=t.endpoint_id
-                           JOIN api_version_t av ON av.host_id=e.host_id AND av.api_version_id=e.api_version_id
-                           JOIN api_t a ON a.host_id=av.host_id AND a.api_id=av.api_id
+                           JOIN workflow_tool_binding_t binding
+                             ON binding.host_id=g.host_id AND binding.wf_def_id=g.wf_def_id
+                            AND binding.active
+                           JOIN workflow_endpoint_target_t target
+                             ON target.host_id=binding.host_id
+                            AND target.binding_id=binding.binding_id
+                           LEFT JOIN workflow_invocation_t invocation
+                             ON invocation.host_id=g.host_id AND invocation.process_id=$7
                           WHERE g.host_id=$1 AND g.wf_def_id=$2 AND g.active
                             AND g.tool_id=$3 AND g.tool_version=$4 AND g.lightapi_digest=$5
                             AND $6=ANY(g.allowed_environments)
-                            AND t.capability_ref=$7 AND t.version=g.tool_version AND t.lightapi_digest=g.lightapi_digest
-                            AND t.lightapi_validation_status='VALID' AND t.active AND t.lifecycle_status='active'
-                            AND e.active AND e.lifecycle_status='active' AND av.active AND a.active
-                            AND upper(e.http_method)=upper($8) AND av.target_host IS NOT NULL
-                            AND NOT EXISTS (SELECT 1 FROM api_endpoint_scope_t scope
-                                             WHERE scope.host_id=e.host_id AND scope.endpoint_id=e.endpoint_id AND scope.active)
-                            AND NOT EXISTS (SELECT 1 FROM api_endpoint_rule_t endpoint_rule
-                                             WHERE endpoint_rule.host_id=e.host_id AND endpoint_rule.endpoint_id=e.endpoint_id AND endpoint_rule.active)
-                            AND NOT EXISTS (SELECT 1 FROM role_permission_t permission
-                                             WHERE permission.host_id=e.host_id AND permission.endpoint_id=e.endpoint_id AND permission.active)
-                            AND NOT EXISTS (SELECT 1 FROM group_permission_t permission
-                                             WHERE permission.host_id=e.host_id AND permission.endpoint_id=e.endpoint_id AND permission.active)
-                            AND NOT EXISTS (SELECT 1 FROM user_permission_t permission
-                                             WHERE permission.host_id=e.host_id AND permission.endpoint_id=e.endpoint_id AND permission.active)
-                            AND NOT EXISTS (SELECT 1 FROM position_permission_t permission
-                                             WHERE permission.host_id=e.host_id AND permission.endpoint_id=e.endpoint_id AND permission.active)
-                            AND NOT EXISTS (SELECT 1 FROM attribute_permission_t permission
-                                             WHERE permission.host_id=e.host_id AND permission.endpoint_id=e.endpoint_id AND permission.active)"
+                            AND target.endpoint_ref=$8 AND target.active
+                            AND upper($9)=ANY(target.allowed_methods)
+                            AND (invocation.binding_id IS NULL
+                                 OR binding.binding_id=invocation.binding_id)
+                          ORDER BY binding.binding_id
+                          LIMIT 1",
                     )
                     .bind(claimed.task.host_id)
                     .bind(claimed.wf_def_id)
@@ -1422,20 +1413,26 @@ impl TaskExecutor {
                     .bind(tool_version)
                     .bind(lightapi_digest)
                     .bind(&environment)
+                    .bind(claimed.task.process_id)
                     .bind(capability_ref)
-                    .bind(&http_call.with.method)
-                    .fetch_optional(&self.pool).await?;
-                    let (grant_id, tool_id, lightapi_document, base_uri) = resolved.ok_or_else(|| io::Error::new(
+                    .bind(http_call.with.method.to_ascii_uppercase())
+                    .fetch_optional(&self.pool)
+                    .await?;
+                    let (grant_id, tool_id, endpoint_uri, resolution_document) = resolved.ok_or_else(|| io::Error::new(
                         io::ErrorKind::PermissionDenied,
-                        "workflow Tool grant is missing, inactive, stale, protected by an unsupported endpoint policy, or not allowed in this environment",
+                        "workflow Tool grant or its published endpoint target is missing, inactive, stale, or not allowed in this environment",
                     ))?;
-                    let endpoint_uri = resolve_lightapi_http_endpoint(
-                        &lightapi_document,
-                        capability_ref,
-                        &environment,
-                        &http_call.with.method,
-                        &base_uri,
-                    )?;
+                    let endpoint_uri = if let Some(document) = resolution_document {
+                        resolve_lightapi_http_endpoint(
+                            &document,
+                            capability_ref,
+                            &environment,
+                            &http_call.with.method,
+                            &endpoint_uri,
+                        )?
+                    } else {
+                        endpoint_uri
+                    };
                     info!(host_id=%claimed.task.host_id, workflow_definition_id=%claimed.wf_def_id,
                         %grant_id, %tool_id, capability_ref, lightapi_digest, environment,
                         "workflow Tool capability resolved");
@@ -1449,6 +1446,7 @@ impl TaskExecutor {
                            FROM workflow_invocation_t invocation
                            JOIN workflow_endpoint_target_t target ON target.host_id=invocation.host_id
                           WHERE invocation.host_id=$1 AND invocation.process_id=$2
+                            AND target.binding_id=invocation.binding_id
                             AND target.endpoint_ref=$3 AND target.active
                             AND $4=ANY(target.allowed_methods)",
                     )
@@ -6261,7 +6259,7 @@ do:
     fn workflow_tool_grant_sql_keeps_definition_wide_bind_contract() {
         let source = include_str!("executor.rs");
         let start = source
-            .find("SELECT g.grant_id,t.tool_id,t.lightapi_document")
+            .find("SELECT g.grant_id,g.tool_id,target.endpoint_uri,target.resolution_document")
             .expect("workflow Tool grant SQL must exist");
         let end = source[start..]
             .find(".fetch_optional(&self.pool)")
@@ -6275,8 +6273,12 @@ do:
             "g.tool_version=$4",
             "g.lightapi_digest=$5",
             "$6=ANY(g.allowed_environments)",
-            "t.capability_ref=$7",
-            "upper(e.http_method)=upper($8)",
+            "invocation.process_id=$7",
+            "target.endpoint_ref=$8",
+            "upper($9)=ANY(target.allowed_methods)",
+            "LEFT JOIN workflow_invocation_t",
+            "invocation.binding_id IS NULL",
+            "binding.binding_id=invocation.binding_id",
         ] {
             assert!(
                 query.contains(expected),
@@ -6290,12 +6292,25 @@ do:
             ".bind(tool_version)",
             ".bind(lightapi_digest)",
             ".bind(&environment)",
+            ".bind(claimed.task.process_id)",
             ".bind(capability_ref)",
-            ".bind(&http_call.with.method)",
+            ".bind(http_call.with.method.to_ascii_uppercase())",
         ] {
             assert!(
                 query.contains(expected),
                 "missing positional bind {expected}"
+            );
+        }
+        for forbidden in [
+            "JOIN tool_t",
+            "JOIN api_endpoint_t",
+            "JOIN api_version_t",
+            "JOIN api_t",
+            "permission_t",
+        ] {
+            assert!(
+                !query.contains(forbidden),
+                "Workflow runtime query must not depend on Portal table {forbidden}"
             );
         }
         assert!(!query.contains("workflow_version"));
