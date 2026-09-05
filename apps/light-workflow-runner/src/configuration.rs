@@ -255,6 +255,12 @@ impl RunnerConfig {
         }
         if let Some(worker) = &file.agent_worker {
             worker.validate()?;
+            if worker.requires_exclusive_runner() && file.maximum_concurrency != 1 {
+                return Err(
+                    "local native agent workers require maximumConcurrency: 1; multi-session pools require a per-attempt sandbox launcher"
+                        .into(),
+                );
+            }
         }
         let evidence = EffectiveConfigEvidence {
             version: file.version,
@@ -624,6 +630,8 @@ allowedCommandTemplateDigests: [sha256:template-digest]
             executable: "/usr/local/bin/light-agent-worker".into(),
             binary_digest: format!("sha256:{}", "1".repeat(64)),
             capability_digest: format!("sha256:{}", "2".repeat(64)),
+            sandbox_launcher: None,
+            codex_home: None,
             broker: None,
         });
         let document = config

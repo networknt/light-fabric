@@ -1,5 +1,5 @@
 use chrono::{Duration, Utc};
-use coding_agent_runtime::{CodingFixtureRequest, CodingTurnSpec};
+use coding_agent_runtime::{CodingFixtureRequest, CodingRole, CodingTurnSpec};
 use execution_backend::{ExecutionBackend, StagedInput};
 use execution_backend_cube::{
     CubeBackendConfig, CubeExecutionBackend, CubeHttpClient, CubeHttpClientConfig,
@@ -68,10 +68,18 @@ async fn immutable_repository_returns_canonical_patch_through_live_cube() {
         base_revision: revision.clone(),
         workspace_root: "/workspace/repo".into(),
         prompt: "replace fixture text".into(),
-        model_alias: "deterministic-fixture".into(),
+        model_alias: coding_agent_runtime::CODING_IMPLEMENTER_ALIAS.into(),
+        authentication_profile:
+            coding_agent_runtime::CodingAuthenticationProfile::PersonalSubscription,
+        role: coding_agent_runtime::CodingRole::Implement,
+        role_profile: coding_agent_runtime::CodingRoleExecutionProfile::pinned(
+            coding_agent_runtime::CodingRole::Implement,
+        ),
+        review_input: None,
+        remediation: None,
         materialization_manifest_digest: format!("sha256:{}", "1".repeat(64)),
         writable_roots: BTreeSet::from(["/workspace/repo".into()]),
-        allowed_tools: BTreeSet::from(["fs.read".into(), "fs.write".into()]),
+        allowed_tools: CodingTurnSpec::supported_tools(CodingRole::Implement),
         maximum_patch_bytes: 4096,
         maximum_changed_files: 1,
     };

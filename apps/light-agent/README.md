@@ -96,7 +96,7 @@ Coding and personal edge execution use closed, typed payloads and are dispatched
 only after the durable turn acquires its session fence and its published
 `productProfileDigest` matches the operator-enabled profile.
 
-Light Portal enables the Pi coding profile by publishing all of the following
+Light Portal enables the Codex coding profile by publishing all of the following
 `agentPolicy.execution.codingProfile` values; partial configuration fails
 startup:
 
@@ -104,19 +104,72 @@ startup:
 agentPolicy:
   execution:
     codingProfile:
+      schemaVersion: 1
       productProfileDigest: sha256:<published-coding-profile-digest>
       repositoryUriPrefix: file:///var/lib/light-agent/repositories/
+      adapterId: codex-app-server-v1
+      adapterVersion: 0.153.2
+      adapterProtocolVersion: codex-app-server-v2
+      actionKind: coding.codex-app-server-v1
       compatibilityDigest: sha256:<approved-cube-compatibility>
+      imageDigest: sha256:<approved-runner-image>
+      capabilityDigest: sha256:<approved-runtime-capabilities>
+      templateId: coding-codex-app-server-v1
+      templateVersion: 1
       templateDigest: sha256:<approved-command-template>
-      binaryDigest: sha256:<pinned-pi-binary>
-      provider: brokered
-      model: <approved-model-alias>
+      executable: /usr/local/bin/codex
+      binaryDigest: sha256:f8786262ebc0fa1337448a2977332beadec66c8d0cda0ce973c7849766d7943c
+      schemaDigest: sha256:d3eace08be5dca386bfd1f1e8df650058b4113f1e10870a284d775d75517576a
+      requiredFeatures:
+        - restricted-model-egress
+        - immutable-repository-upload
+        - canonical-patch-output
+        - codex-app-server-v1
+      qualification:
+        schemaVersion: 1
+        adapterId: codex-app-server-v1
+        adapterVersion: 0.153.2
+        status: qualified
+        evaluatedDimensions: [protocol-lifecycle, approval-mediation, streaming-events, usage-accounting, cancellation, resumability, canonical-patch, review-isolation, authentication-profiles, workspace-isolation, panic-containment, dependency-compatibility, license-compatibility]
+        contractDigest: sha256:<exact-launch-contract-digest>
+        evidenceDigest: sha256:268432fcff0f5d90ad58f45be6d8e433baedcb4c6e96e7b16e4c82ee262ebf4c
+      model: coding-implementer
+      reviewModel: coding-reviewer
+      # personal-subscription or enterprise-api. This value is immutable for
+      # every admitted coding turn.
+      authenticationProfile: enterprise-api
+      # Omit for the local personal-subscription profile. In enterprise mode
+      # every value is trusted policy; the repository cannot override it.
+      enterpriseGateway:
+        baseUrl: https://llm-gateway.example/v1
+        credentialTarget: llm-gateway-attempt
+        audience: llm-gateway
+        routeDigest: sha256:<runner-broker-route-digest>
+        budgetPolicyId: developer-default
+        maximumRequests: 1
+        maximumTokens: 200000
+        maximumCostMicros: 5000000
+        maximumResponseBytes: 16384
 ```
+
+The corresponding runner credential directory contains one owner-only JSON
+envelope named `<attempt-binding-sha256>.json`, with `schemaVersion`,
+`credentialId`, `generation`, `token`, `audience`, `bindingDigest`, `issuedAt`,
+`expiresAt`, and optional `revokedAt`. The token broker must mint it for that
+exact coding attempt and expire it within five minutes. It re-reads the envelope
+when delivering a credential, so a higher generation replaces a not-yet-issued
+credential and a revoked envelope fails closed. Per-attempt names avoid a shared
+credential race when turns run concurrently. The runner gives it only to the
+Codex App Server process; generated shell and tool processes explicitly exclude
+`LIGHT_LLM_ATTEMPT_TOKEN`.
 
 The repository source adapter must place immutable Git bundles under the
 configured spool before the message is admitted. Arbitrary local paths and
 remote URLs are rejected. Light-Agent constructs the materialization manifest
 itself and currently admits no client-selected skill packages.
+The pinned runner image reports the exact capability document and digest with
+`light-agent-worker print-capabilities`; publish that value rather than a
+hand-authored digest.
 
 ```json
 {
@@ -133,8 +186,8 @@ itself and currently admits no client-selected skill packages.
     "baseRevision": "<40-or-64-hex-commit>",
     "workspaceRoot": "/workspace/repo",
     "writableRoots": ["/workspace/repo"],
-    "allowedTools": ["fs.read", "fs.write"],
-    "maximumPatchBytes": 1048576,
+    "allowedTools": ["fs.read", "fs.write", "process.exec"],
+    "maximumPatchBytes": 131072,
     "maximumChangedFiles": 100
   }
 }

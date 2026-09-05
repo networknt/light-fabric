@@ -5,6 +5,9 @@ repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 database_url="${1:-${LLM_AUDIT_TEST_DATABASE_URL:-}}"
 migration="$repo_root/crates/llm-gateway/migrations/audit-postgres/0001_llm_audit.sql"
 pii_profile_migration="$repo_root/crates/llm-gateway/migrations/audit-postgres/0002_pii_profile.sql"
+embedding_space_migration="$repo_root/crates/llm-gateway/migrations/audit-postgres/0003_embedding_space.sql"
+transport_context_migration="$repo_root/crates/llm-gateway/migrations/audit-postgres/0004_local_transport_context.sql"
+billing_subject_migration="$repo_root/crates/llm-gateway/migrations/audit-postgres/0005_billing_subject.sql"
 
 echo "[llm-audit-wal] durability, recovery, corruption, capacity, replay"
 (cd "$repo_root" && cargo test --locked -p llm-gateway audit::tests --lib)
@@ -25,10 +28,12 @@ fi
 
 if [[ -n "$database_url" ]]; then
   echo "[llm-audit-wal] applying schema twice and testing duplicate replay"
-  psql "$database_url" -v ON_ERROR_STOP=1 -f "$migration"
-  psql "$database_url" -v ON_ERROR_STOP=1 -f "$pii_profile_migration"
-  psql "$database_url" -v ON_ERROR_STOP=1 -f "$migration"
-  psql "$database_url" -v ON_ERROR_STOP=1 -f "$pii_profile_migration"
+  for pass in 1 2; do
+    for schema in "$migration" "$pii_profile_migration" "$embedding_space_migration" \
+      "$transport_context_migration" "$billing_subject_migration"; do
+      psql "$database_url" -v ON_ERROR_STOP=1 -f "$schema"
+    done
+  done
   psql "$database_url" -v ON_ERROR_STOP=1 -Atc \
     "SELECT count(*) FROM pg_class WHERE relname IN ('llm_audit_event_t','llm_request_t','llm_attempt_t','llm_content_object_t','llm_dataset_export_t')" | rg -qx '5'
   (cd "$repo_root" && LLM_AUDIT_TEST_DATABASE_URL="$database_url" \

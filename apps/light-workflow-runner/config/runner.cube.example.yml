@@ -32,6 +32,6 @@ backend:
 allowedCommandTemplateDigests:
   - sha256:replace-with-canonical-command-template-digest
   # Enable only when templateId contains the exact reviewed fixture binary, or
-  # the pinned light-pi-rpc-adapter and Pi binary for coding.pi-rpc-v1. Include
+  # the pinned light-agent-worker and Codex binary for coding.codex-app-server-v1. Include
   # the matching command template digest in allowedCommandTemplateDigests.
   - sha256:503c1f8879addd7dec140d9f2e703e6b7230979188bbd6f7c9e4f941e276a717

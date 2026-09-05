@@ -5,6 +5,7 @@ edition.workspace=true
 license.workspace=true
 
 [dependencies]
+coding-agent-runtime = { path = "../../crates/coding-agent-runtime" }
 anyhow.workspace=true
 axum.workspace=true
 chrono.workspace=true

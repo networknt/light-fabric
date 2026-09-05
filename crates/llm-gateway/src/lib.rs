@@ -10,6 +10,7 @@ pub mod http;
 pub mod pii;
 pub mod provider;
 pub mod reasoning_seal;
+pub mod receipt;
 pub mod routing;
 pub mod runtime;
 pub mod usage;

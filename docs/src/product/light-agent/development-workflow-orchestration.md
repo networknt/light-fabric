@@ -723,9 +723,10 @@ the same round, turn, wall-clock, cancellation, review, and publication rules.
 - `light-agent` reconciles matching pending jobs into bankless agent sessions
   and turns, handles cancellation and expiry, and mirrors terminal turn state
   back to the job.
-- The coding runtime, Pi adapter, worker protocol, Cube backend, artifact
-  validation, and `llm-gateway` Responses surface provide important lower-level
-  foundations.
+- The coding runtime, pinned Codex App Server worker, immutable implement/review
+  role profiles, worker protocol, Cube backend, structured review and
+  remediation validation, fixed publication closure gate, and `llm-gateway`
+  Responses surface provide the coding-loop foundation.
 - Workflow invocation already verifies a user bearer and a gateway scope token,
   checks caller and end-user identity headers against the verified JWT, and
   preserves invocation identity for downstream work.
@@ -748,9 +749,11 @@ the same round, turn, wall-clock, cancellation, review, and publication rules.
   a coding worker to schema-validated workflow output. Persistence and
   reconciliation exist, but this full path is not yet demonstrated by the
   checked implementation.
-- Codex App Server and Claude Code worker adapters.
-- The work-package, review-result, finding-ledger, repository-manifest, and
-  response-publication contracts defined here.
+- A production Claude Code worker adapter.
+- The feature-level work-package, durable finding-ledger,
+  repository-manifest, and response-publication contracts defined here. The
+  repository-level `CodingReviewResult` and immutable remediation handoff are
+  implemented by the coding harness.
 - First-class fixed GitHub issue, comment, link, branch, and pull-request
   actions. The repository contains GitHub webhook and authentication support,
   but not this outbound SDLC action set.

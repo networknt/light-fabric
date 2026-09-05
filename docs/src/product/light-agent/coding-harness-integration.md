@@ -213,40 +213,20 @@ a trusted single-user local environment. Repositories requiring hostile-code
 isolation must use the enterprise API profile or a separately qualified
 host-mediated credential design.
 
-### Legacy `pi-rpc-v1` Retirement Baseline
+The host-process path is admitted only on an exclusive
+`maximumConcurrency: 1` local runner and advertises
+`local-single-user-native-v1`, not `restricted-model-egress`. Enterprise pools
+must configure a digest-pinned per-attempt sandbox launcher. Its reviewed
+profile owns filesystem, process, and resource separation and the deployment
+egress allowlist to `llm-gateway`; enterprise startup fails closed without it.
 
-Pi is more than an enum or mock fixture in the current repository. The
-`light-agent` coding-profile path constructs a closed `CodingTurnSpec` and
-schedules `coding.pi-rpc-v1` with a MicroVM boundary, deny-all egress, an
-immutable Git bundle, and the fixed `/usr/local/bin/light-pi-rpc-adapter`
-executable. The Cube backend recognizes that executable, validates the staged
-input and command shape, and independently validates the returned canonical
-patch.
+### Retired `pi-rpc-v1` Baseline
 
-The dedicated adapter pins `@earendil-works/pi-coding-agent` `0.80.6` by both
-reported version and executable digest. It materializes the admitted Git
-revision, starts `pi --mode rpc --no-session` with a cleared environment,
-requires correlated prompt acceptance and `agent_settled`, bounds JSONL and
-stderr, rejects interactive extension authority, maps only `fs.read` and
-`fs.write` to Pi's `read`, `write`, and `edit` tools, and exports a validated
-patch. Its Cube Dockerfile installs the pinned Pi package.
-
-This is a real but incomplete adapter slice:
-
-- Cube launches `light-pi-rpc-adapter` directly as the command; the real Pi
-  process is not hosted by `light-agent-worker` through
-  `agent-runtime-protocol`.
-- `light-agent-worker` still implements a deterministic coding fixture even
-  though its capability document advertises `coding.pi-rpc-v1`.
-- The repository creates `/opt/light-pi/config` but does not ship the required
-  broker-aware Pi model definition. A deployment must supply and qualify it.
-- The admitted Pi tools do not include shell, build, or test execution.
-- `--no-session` prevents session reuse, and checkpoint/resume is not wired.
-- Interactive approval fails closed instead of round-tripping through Light.
-- Client-selected skill packages are deliberately rejected.
-- Unit and backend conformance tests exist, but the checked live Cube tests are
-  ignored without external test configuration and do not prove a live Pi model
-  call.
+Phase 1 used the Phase 0 Pi contract as the migration baseline and then removed
+its scheduling path, adapter application and image, Cube admission, capability,
+enum value, policy profile, and Node/npm runtime. The retained deterministic
+coding fixture exercises immutable input and bounded canonical-patch behavior;
+it is test infrastructure, not a selectable product worker.
 
 Retain these fixtures during Codex development because this is the only
 concrete external RPC coding harness currently wired from `light-agent` through
@@ -310,13 +290,16 @@ operational cost is justified.
 
 In the enterprise API profile, the trusted worker launcher obtains an
 attempt-scoped credential through a command-backed helper before it starts
-Codex. This is Light launcher policy, not repository configuration:
+Codex. This is Light launcher policy, not repository configuration. The Phase
+2 worker obtains the token over its runner-owned Unix broker socket; it does
+not launch an external Python or shell adapter:
 
 ```yaml
 credential:
-  source: command
-  command: /usr/local/bin/light-llm-token
+  source: attempt-broker
+  target: llm-gateway-attempt
   audience: llm-gateway
+  envelopeDirectory: /run/secrets/llm-gateway-attempts
   exportForChildAs: LIGHT_LLM_ATTEMPT_TOKEN
 ```
 
@@ -334,15 +317,17 @@ wire_api = "responses"
 env_key = "LIGHT_LLM_ATTEMPT_TOKEN"
 ```
 
-If the pinned Codex version later supports a directly configured credential
-helper, use that form and remove the launcher export. The `env_key` form is a
-compatibility fallback: it names a short-lived token present only in the Codex
-process environment, not a reusable gateway bearer token in the worker's
-ambient or tool-subprocess environment. The worker must not place a reusable
-gateway token or provider key in the repository, inherited shell environment,
-process arguments, logs, or artifacts. Provider configuration is trusted
-image/user configuration; repository-local `.codex/config.toml` cannot define
-or replace the enterprise provider.
+The envelope filename is the canonical attempt-binding SHA-256, so concurrent
+turns never share a credential slot. If the pinned Codex version later supports
+a directly configured credential helper, use that form and remove the launcher
+export. The `env_key` form is a compatibility fallback: it names a short-lived
+token present only in the Codex process environment, not a reusable gateway
+bearer token in the worker's ambient or tool-subprocess environment. Both the
+private Codex home and command-line configuration pin the provider, gateway
+URL, Responses wire protocol, environment key, and shell exclusion so a
+repository-local `.codex/config.toml` cannot replace them. The worker must not
+place a reusable gateway token or provider key in the repository, inherited
+shell environment, process arguments, logs, runtime events, or artifacts.
 
 The adapter must remove the attempt token from every shell, tool, MCP, and
 repository-command environment created by the harness. Qualification must
@@ -630,50 +615,84 @@ shipping claim.
 
 ### Present In The Repository
 
-- `agent-runtime-protocol` defines versioned worker commands/events, runtime
-  identity and fencing, capability digests, broker grants, bounded frames, and
-  a coding-patch event.
-- `coding-agent-runtime` defines a `CodingTurnSpec`, patch validation, and
-  adapter identifiers including `PiRpc`, `CodexJsonl`, and
-  `ClaudeStreamJson`.
-- `light-agent` has a concrete Pi coding dispatch path that validates the
-  published profile and immutable repository input, then schedules
-  `coding.pi-rpc-v1` as a fixed Cube command.
-- `light-pi-rpc-adapter` launches pinned Pi `0.80.6` in structured RPC mode and
-  produces a bounded canonical patch. The Cube backend validates the fixed
-  executable, immutable Git bundle, adapter identity, and patch again.
-- `light-agent-worker` separately implements the normalized runtime protocol
-  with a deterministic mock and coding fixture; it does not host the real Pi
-  adapter yet, despite advertising the Pi action.
+- `agent-runtime-protocol` version `1.4` defines versioned worker
+  commands/events, runtime identity and fencing, strict contiguous event
+  sequencing, capability digests, bounded frames, and broker-grant admission.
+  Its capability document declares adapter protocol version, approvals,
+  streaming, session reuse, thread/turn identity, checkpoint, and usage
+  support.
+- `coding-agent-runtime` defines a closed, digest-bound
+  `CodingAdapterContract`, `CodingTurnSpec`, structured implementation and
+  review artifacts, immutable `coding-implement-v1` and `coding-review-v1`
+  profiles, remediation-chain validation, the review closure gate, canonical
+  patch validation, and explicit migration dispositions for the shipped
+  adapter identifiers.
+- `light-agent` schedules the digest-bound `codex-app-server-v1` shared-worker
+  contract with an immutable Git bundle.
+- `light-workflow-runner` stages that bundle into an execution-specific private
+  directory and independently validates the worker's bounded canonical patch.
+- `light-agent-worker` hosts pinned Codex `0.153.2` over local stdio, maps App
+  Server lifecycle, streaming, approval, usage, error, and cancellation events,
+  exports the validated implementation artifact, and runs review in a fresh
+  ephemeral thread over a reconstructed candidate with only an external build
+  scratch directory writable. Reviewer output is constrained to the structured
+  `CodingReviewResult` schema and candidate mutation fails the turn.
+- `light-github-action-provider` requires an approved review bound to the exact
+  implementation patch before its fixed create-branch or open-PR action can
+  materialize or publish the patch.
+- Exact generated JSON Schema and TypeScript artifacts plus binary and schema
+  provenance are stored under `contracts/codex-app-server/v0.153.2`.
 - `light-agent` has an immutable `codingProfile` projection point.
 - `llm-gateway` implements the `/v1/responses` client surface, and its product
   design documents Codex custom-provider configuration and logical aliases.
 - `llm-gateway` accepts a principal context and audits a principal digest,
   charged cost, and usage completeness with per-principal admission controls.
+- The enterprise coding profile binds the authenticated user, workload actor,
+  optional workflow, session, turn, action attempt, logical route, billing
+  subject, budget policy, policy, data boundary, and correlation ID into one
+  canonical attempt digest. The runner releases only a short-lived credential
+  envelope matching that exact digest and audience.
+- The coding turn carries an immutable `personal-subscription` or
+  `enterprise-api` authentication profile. Runner admission keeps native Codex
+  homes and enterprise brokers in separate pools, validates owner-only local
+  credential-store placement, and rejects user, billing-subject, or host
+  substitution.
+- Authentication audit evidence is a closed metadata-only record. It contains
+  the profile, credential source, optional broker generation, and usage
+  authority, but no token, account, email, or subscription-plan material.
+- Attempt credential envelopes carry schema, identity, generation, issue,
+  expiry, and revocation state. The broker validates and re-reads the envelope
+  at delivery so rotation and revocation before process launch fail closed.
+- The worker creates a private ephemeral Codex home containing only the trusted
+  `light_gateway` Responses provider. The attempt token is placed only in the
+  App Server environment and is excluded from Codex-created shell and tool
+  environments.
+- `codingWorkerEligible` makes provider compatibility explicit: an alias is
+  rejected unless it is generation-only, requires streaming and tools, and
+  every deployment has current passing conformance evidence.
+- `llm-gateway` provides a signed usage-receipt contract whose verification
+  covers the complete attempt binding and normalized token/cost result.
 
 ### Not Yet Implemented Or Qualified
 
-- A runtime-neutral coding-profile schema and scheduler; the current production
-  types and method names are Pi-specific.
-- Pi retirement after its replacement fixtures are captured and Codex passes
-  the migration gate.
-- A Codex App Server JSON-RPC adapter and generated schema pipeline.
 - An embedded Codex Rust adapter.
 - A production Claude Code worker adapter.
-- The implementer/reviewer orchestration and structured review contract.
-- Subscription credential placement and rotation for dedicated workers.
+- The Development Workflow Orchestration state machine that automatically
+  schedules repeated implementer/reviewer rounds and persists the feature-wide
+  finding ledger. The coding harness now enforces each immutable review and
+  remediation handoff and blocks fixed publication until closure.
+- Live packaging/browser qualification of the same local contract through both
+  `portal-config-loc/all-in-lt` and `light-portal-install`.
 - End-to-end Codex-to-`llm-gateway` compatibility across every proposed
   physical provider.
-- End-to-end binding of a worker model call to the initiating end user rather
-  than only the pooled `light-agent` service token.
 - Durable normalized per-user token accounting, budget-window reservation,
-  signed usage receipts, and reauthorization for workflows that outlive the
-  initiating JWT. Existing gateway audit persistence records cost and usage
-  completeness but not normalized token counts.
+  receipt emission/storage, and reauthorization for workflows that outlive
+  the initiating JWT remain owned by Development Workflow Orchestration Phase
+  1. Existing gateway audit persistence records cost and usage completeness
+  but not normalized token counts.
 
-The existing `CodexJsonl` enum value validates a generic structured CLI launch;
-it is not the App Server integration described here. Conversely, Pi is a real
-direct Cube adapter, not merely the deterministic worker fixture.
+The existing `CodexJsonl` enum value validates a deprecated generic structured
+CLI launch; it is not the App Server integration described here.
 
 ## Delivery Plan
 
@@ -684,9 +703,10 @@ disposition:
 
 | Current enum value | Target disposition |
 | --- | --- |
-| `PiRpc` | Map explicitly to legacy `pi-rpc-v1` only during migration; remove the enum value and every runtime/profile artifact after Codex passes the replacement gate. |
 | `CodexJsonl` | Keep only as a deprecated generic CLI compatibility identifier during migration. It must not alias `codex-app-server-v1`; remove it after callers migrate unless it receives its own qualified adapter contract. |
 | `ClaudeStreamJson` | Keep only as a deprecated, non-production compatibility identifier. Remove it unless a separately versioned `claude-code-v1` contract and qualification suite are delivered. |
+| `GeminiJson` | Keep only as a deprecated, non-production compatibility identifier. A future Gemini worker requires its own versioned adapter contract and qualification suite. |
+| `KiloJson` | Keep only as a deprecated, non-production compatibility identifier. A future Kilo worker requires its own versioned adapter contract and qualification suite. |
 
 - Capture the existing Pi scheduling, sandbox, digest, RPC, and canonical-patch
   behavior as the initial cross-adapter conformance suite.
@@ -704,6 +724,11 @@ disposition:
 Exit gate: protocol and policy fixtures pass without starting a vendor harness,
 and the generic contract captures every Pi behavior required for Codex
 replacement without making Pi part of the target adapter set.
+
+Implementation status: complete. The protocol, policy, scheduler, immutable
+adapter binding, artifact schemas, and negative fixtures are implemented and
+covered by unit/conformance tests. The temporary Pi migration selection has
+been removed by Phase 1.
 
 ### Phase 1: Codex App Server Worker
 
@@ -724,6 +749,17 @@ Exit gate: one sandboxed Codex turn can inspect, edit, test, emit a bounded
 canonical patch, cancel cleanly, and fail closed on version/schema mismatch;
 the legacy Pi product/runtime artifacts listed above are removed.
 
+Implementation status: complete. The shared worker uses only the pinned local
+stdio App Server, verifies both binary and generated-schema digests, performs
+the initialize/account/thread/turn sequence, maps streaming and usage, denies
+unbrokered approval requests, translates cancellation to `turn/interrupt`, and
+shuts down the process tree. The runner supplies staged immutable input and
+revalidates the canonical patch before publishing it. Pi product/runtime
+artifacts are removed. App Server frames are bounded before JSON parsing,
+inline patches are limited to 128 KiB so their complete event fits the 1 MiB
+runtime frame, and the phase gate launches the pinned App Server for a live
+initialize/account lifecycle smoke test.
+
 ### Phase 2: Enterprise Gateway Routing
 
 - Treat Development Workflow Orchestration Phase 1 as the prerequisite and
@@ -742,6 +778,22 @@ cancellation, usage, and error scenarios through `llm-gateway` without learning
 a physical provider or credential, and every call is charged to the verified
 billing subject with its distinct workload actor and correlation IDs.
 
+Implementation status: complete at the coding-harness boundary. The scheduler,
+runner, worker, and gateway use the versioned attempt binding; mismatched user,
+turn, route, audience, or billing bindings fail closed. Codex receives a
+trusted ephemeral custom-provider configuration, while its shell environment
+excludes the attempt token. Gateway tests cover buffered Responses, streaming,
+tool events, cancellation, usage, errors, route pinning, provider eligibility,
+and signed receipt tamper detection. `scripts/run-coding-harness-phase2-gates.sh`
+composes these checks with the complete Phase 1 gate.
+
+Production enablement remains conditional on the separately owned Development
+Workflow Orchestration Phase 1 ledger, receipt persistence/emission, token
+exchange, and reauthorization services. A physical provider/model is suitable
+for a coding worker only after its current conformance evidence satisfies the
+alias; unsupported Responses transformations remain ineligible rather than
+being routed optimistically.
+
 ### Phase 3: Implement And Review
 
 - Add immutable `coding-implement-v1` and `coding-review-v1` role execution
@@ -755,6 +807,20 @@ billing subject with its distinct workload actor and correlation IDs.
 Exit gate: tests prove the reviewer cannot mutate the candidate workspace and
 cannot observe implementer-private thread state, while a blocking finding
 prevents the fixed publish action.
+
+Implementation status: complete at the coding-harness and fixed-publication
+boundary. `light-agent` selects the two pinned profiles and aliases from trusted
+policy; the runner canonicalizes implementation artifacts and validates review
+results; the worker reconstructs the accepted patch in a new thread with
+scratch-only writes; remediation inputs must carry the complete prior finding
+set; and the GitHub fixed action rejects missing, mismatched, or blocking review
+evidence. `scripts/run-coding-harness-phase3-gates.sh` composes the Phase 0-2
+qualification with the role, isolation, structured-output, remediation, and
+publication-blocking tests.
+
+Automatic multi-round feature orchestration and its durable finding ledger
+remain owned by Development Workflow Orchestration; they consume these Phase 3
+contracts rather than weakening or duplicating them.
 
 ### Phase 4: Authentication Profiles
 
@@ -773,22 +839,81 @@ prevents the fixed publish action.
 Exit gate: cross-user, cross-tenant, gateway-proxy, and expired/revoked
 credential tests fail closed.
 
+Implementation status: complete at the coding-harness and runner-pool boundary.
+The immutable coding turn now carries exactly one authentication profile.
+`personal-subscription` requires an owner-only, runner-projected native Codex
+home, rejects any broker or enterprise gateway, accepts only an authenticated
+ChatGPT account status, and records advisory-usage metadata without account or
+secret fields. `enterprise-api` requires the exact user/host-bound gateway and
+attempt broker, rejects native credential-store visibility, and records only
+the authentication class, broker source, credential generation, and
+authoritative-usage flag.
+
+Local native pools are single-concurrency. Enterprise pools require the pinned
+per-attempt sandbox-launch contract and restricted-egress profile; the runner
+advertises those features only when that contract is configured.
+
+Attempt credential envelopes are versioned and bound to a unique credential ID
+and positive generation. The broker re-reads the owner-only envelope at
+delivery, enabling pre-delivery rotation, and rejects zero-generation,
+future-issued, expired, overlong, mismatched, or revoked credentials. Process
+cancellation still terminates credential use; durable token minting and gateway
+revocation remain owned by the enterprise token-exchange service described in
+Development Workflow Orchestration Phase 1. Local distribution conformance is
+expressed against the same Portal/workflow/agent contract for both
+`portal-config-loc/all-in-lt` and `light-portal-install`; their packaging and
+browser qualification remain distribution release gates rather than a second
+coding-worker implementation.
+
+`scripts/run-coding-harness-phase4-gates.sh` composes every earlier coding
+harness gate with the profile-separation, account-status, credential lifecycle,
+user/tenant binding, audit-metadata, and documentation checks.
+
 ### Phase 5: Optional Adapters
 
-- Prototype and benchmark `codex-embedded-v1` against App Server behavior.
-- Add `claude-code-v1` only for a named harness-diversity or native-client use
-  case.
-- Permit other native coding harnesses, such as a future Grok-oriented worker,
-  only through a new versioned adapter and the full qualification matrix.
-- Qualify each adapter independently; never infer parity from model parity.
+Phase 5 is implemented as a fail-closed optional-adapter qualification layer:
+
+- `CodingAdapterQualification` separates launch contracts from promotion
+  evidence. A selectable adapter must bind the exact launch-contract digest
+  and have evidence for all 13 lifecycle, isolation, authentication,
+  dependency, and output dimensions.
+- Immutable agent policy carries the separately issued qualification record.
+  Both `light-agent` and the worker require its `contractDigest` to equal the
+  exact admitted launch contract and its `evidenceDigest` to equal the reviewed
+  manifest. Runtime code cannot manufacture a qualified record from an incoming
+  candidate contract.
+- `codex-app-server-v1` is the only qualified production adapter. Its evidence
+  manifest is digest-bound to the worker and composes the Phase 1 through
+  Phase 4 gates.
+- `prototypes/codex-embedded-v1` pins the official Codex `0.153.2` source
+  revision and upstream Cargo patches, compile-probes the exported
+  `ThreadManager` and `StartThreadOptions` types, and benchmarks only direct
+  typed-call overhead against JSON boundary translation. Its isolated lock
+  currently contains 1,122 packages, which confirms that dependency size and
+  release coupling are material costs rather than theoretical risks.
+- `codex-embedded-v1` is recorded as `prototype-only`: only dependency and
+  license dimensions have evidence, it has no launch-contract digest, it is
+  absent from worker capabilities, and selection fails closed.
+- No `claude-code-v1` worker is shipped because no named harness-diversity or
+  native-client use case has been admitted. Anthropic models remain routable
+  behind logical aliases without implying Claude Code harness semantics.
+- Future native harnesses, including Grok-oriented workers, require a new
+  versioned adapter, an exact evidence manifest, and the same complete matrix.
+  Model parity never implies adapter parity and adapters never silently fall
+  back to one another.
+
+`scripts/run-coding-harness-phase5-gates.sh` composes all earlier gates,
+validates evidence digests and the fail-closed selection contract, and ensures
+unqualified adapter IDs do not enter production selection paths. Setting
+`LIGHT_RUN_CODEX_EMBEDDED_PROBE=1` additionally compiles and runs the pinned,
+network-dependent embedded probe; it does not promote the adapter.
 
 ## Acceptance Criteria
 
 - `light-agent` selects a pinned adapter and logical model alias from immutable
   policy; prompt input cannot change either.
-- The existing Pi profile remains runnable only during migration; after Codex
-  passes its replacement gate, no Pi runtime, profile, template, capability,
-  enum, image, or Node/npm dependency remains in the supported product.
+- No Pi runtime, profile, template, capability, enum, image, or Node/npm
+  dependency remains in the supported product.
 - The long-lived service never starts a coding harness or receives its reusable
   provider/subscription credential.
 - App Server runs locally inside one leased sandbox and communicates over
@@ -833,8 +958,8 @@ credential tests fail closed.
 - Embedded Codex crate linkage, if delivered, follows the same upstream-release
   cadence. Light will not fork Codex crates; an upstream incompatibility blocks
   that adapter upgrade or causes the embedded adapter to be withdrawn.
-- Pi is a migration-only baseline and will be removed after Codex replacement
-  qualification, including its Node/npm dependency and published profile.
+- Pi has been removed after Codex replacement qualification, including its
+  runtime, Node/npm dependency, and published profile.
 - `llm-gateway` will preserve Responses semantics where possible. A provider or
   model that cannot faithfully support required reasoning, tool, streaming,
   usage, or cancellation behavior is marked ineligible for coding-worker
@@ -865,7 +990,6 @@ Vendor documentation, verified September 4, 2026:
 - [OpenAI Codex SDK](https://developers.openai.com/codex/sdk)
 - [OpenAI Codex configuration reference](https://developers.openai.com/codex/config-reference)
 - [OpenAI Codex authentication](https://developers.openai.com/codex/auth)
-- [OpenAI Codex access tokens](https://developers.openai.com/codex/enterprise/access-tokens)
 - [OpenAI Codex code review](https://developers.openai.com/codex/code-review)
 - [Anthropic Claude Code authentication](https://code.claude.com/docs/en/iam)
 - [Anthropic third-party subscription guidance](https://support.claude.com/en/articles/13189465-log-in-to-your-claude-account)

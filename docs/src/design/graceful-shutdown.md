@@ -1033,9 +1033,8 @@ Adopt the shared signal API and explicit drain behavior in:
   workspace
 
 `light-agent-worker` is deliberately excluded because its stdio lifecycle ends
-on EOF from its supervisor. `light-pi-rpc-adapter` is excluded because it is a
-one-shot adapter. If either becomes an independently orchestrated long-running
-service, it enters this contract.
+on EOF from its supervisor. If it becomes an independently orchestrated
+long-running service, it enters this contract.
 
 ### Phase 4: External repository adoption
 

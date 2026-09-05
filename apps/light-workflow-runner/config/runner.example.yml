@@ -30,21 +30,42 @@ allowedCommandTemplateDigests:
 # Optional and disabled when absent. Enable only in an admitted agent-runner
 # pool whose immutable image contains the reviewed binary at this fixed path.
 # The worker command template digest must also appear in the allowlist above.
+# Use this local form only in a dedicated personal-subscription runner. Do not
+# configure broker in the same runner pool.
 # agentWorker:
 #   originServiceId: light-agent
 #   executable: /usr/local/bin/light-agent-worker
 #   binaryDigest: sha256:replace-with-exact-worker-binary-digest
 #   capabilityDigest: sha256:replace-with-canonical-worker-capability-digest
+#   # Required in enterprise-api pools. This pinned executable implements the
+#   # per-attempt sandbox-launch contract. profileDigest also identifies the
+#   # deployment policy that restricts model egress to llm-gateway.
+#   # The launcher must exec the worker in place after creating the boundary.
+#   sandboxLauncher:
+#     executable: /usr/local/bin/light-agent-sandbox-launcher
+#     binaryDigest: sha256:replace-with-exact-launcher-binary-digest
+#     profileDigest: sha256:replace-with-reviewed-isolation-and-egress-profile
+#     restrictedModelEgress: true
+#   # Local personal-subscription profile only. The directory is made visible
+#   # to Codex as CODEX_HOME; credentials are never copied into the workspace.
+#   codexHome: /var/lib/light-workflow-runner/codex-home
+#
+# Use a separate enterprise-api runner definition with codexHome omitted and
+# the broker block enabled. Startup rejects a configuration containing both.
 #   broker:
 #     socketDirectory: /run/light-workflow-runner/brokers
 #     maximumRequestBytes: 1048576
 #     requestTimeoutMs: 30000
 #     routes:
-#       - target: model-main
-#         operation: model-inference
-#         baseUrl: https://model-proxy.example.net/v1/
-#         credentialClass: model-provider
-#         credentialFile: /run/secrets/model-provider.token
+#       - target: llm-gateway-attempt
+#         operation: credentialed-request
+#         baseUrl: https://llm-gateway.example/v1/
+#         credentialClass: llm-gateway-attempt
+#         # The credential broker projects one owner-only envelope named
+#         # <attempt-binding-sha256>.json, allowing concurrent isolated turns.
+#         credentialDirectory: /run/secrets/llm-gateway-attempts
 #         authHeader: authorization
 #         authScheme: Bearer
-#         costPer1kTokensMicros: 1000
+#         deliverAttemptCredential: true
+#         credentialAudience: llm-gateway
+#         costPer1kTokensMicros: 0

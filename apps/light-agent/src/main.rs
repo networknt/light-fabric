@@ -61,14 +61,18 @@ use a2a_server::{OperationInput, parse_operation};
 use agent_core::{AgentSessionId, AgentTurnId, PolicySnapshot, sha256_digest};
 use agent_delegation::{DelegationClaims, DelegationKind, DelegationSigner};
 use agent_materializer::{MaterializationManifest, ProductProfile};
-use coding_agent_runtime::{CodingTurnSpec, ImmutableRepositoryInput};
+use coding_agent_runtime::{
+    CODING_IMPLEMENTER_ALIAS, CODING_REVIEWER_ALIAS, CodingAdapterContract,
+    CodingAuthenticationProfile, CodingRemediationInput, CodingReviewInput, CodingRole,
+    CodingRoleExecutionProfile, CodingTurnSpec, ImmutableRepositoryInput,
+};
 use execution_client::ExecutionClient;
 use light_agent::agent_config::{
     AGENT_CONFIG_FILE, AGENT_CONFIG_MODULE_ID, AgentConfig, AgentExecutionPolicy,
     CodingProfilePolicy,
 };
 use light_agent::domain::{
-    AgentRepository, AgentRuntimeAuthority, EdgeActionSpec, PiCodingRuntime, SessionSpec,
+    AgentRepository, AgentRuntimeAuthority, CodingAdapterRuntime, EdgeActionSpec, SessionSpec,
     TurnRuntimeResolution,
 };
 
@@ -650,7 +654,9 @@ struct NativeA2aRuntime {
 struct CodingProfileConfig {
     product_profile_digest: String,
     repository_uri_prefix: String,
-    runtime: PiCodingRuntime,
+    authentication_profile: CodingAuthenticationProfile,
+    runtime: CodingAdapterRuntime,
+    reviewer_runtime: CodingAdapterRuntime,
 }
 
 #[derive(Clone)]
@@ -2488,6 +2494,12 @@ struct CodingDispatchRequest {
     allowed_tools: BTreeSet<String>,
     maximum_patch_bytes: u64,
     maximum_changed_files: usize,
+    #[serde(default)]
+    role: CodingRole,
+    #[serde(default)]
+    review_input: Option<Box<CodingReviewInput>>,
+    #[serde(default)]
+    remediation: Option<Box<CodingRemediationInput>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3217,8 +3229,11 @@ fn coding_profile_from_policy(
             policy.product_profile_digest.as_str(),
         ),
         ("compatibilityDigest", policy.compatibility_digest.as_str()),
+        ("imageDigest", policy.image_digest.as_str()),
+        ("capabilityDigest", policy.capability_digest.as_str()),
         ("templateDigest", policy.template_digest.as_str()),
         ("binaryDigest", policy.binary_digest.as_str()),
+        ("schemaDigest", policy.schema_digest.as_str()),
     ] {
         if !canonical_sha256(value) {
             return Err(RuntimeError::Config(format!(
@@ -3231,15 +3246,114 @@ fn coding_profile_from_policy(
         &policy.repository_uri_prefix,
     )
     .map_err(|error| RuntimeError::Config(error.to_string()))?;
+    let contract = CodingAdapterContract {
+        schema_version: policy.schema_version,
+        adapter_id: policy.adapter_id.clone(),
+        adapter_version: policy.adapter_version.clone(),
+        adapter_protocol_version: policy.adapter_protocol_version.clone(),
+        action_kind: policy.action_kind.clone(),
+        compatibility_digest: policy.compatibility_digest.clone(),
+        image_digest: policy.image_digest.clone(),
+        capability_digest: policy.capability_digest.clone(),
+        template_id: policy.template_id.clone(),
+        template_version: policy.template_version,
+        template_digest: policy.template_digest.clone(),
+        executable: policy.executable.clone(),
+        binary_digest: policy.binary_digest.clone(),
+        schema_digest: policy.schema_digest.clone(),
+        required_features: policy.required_features.clone(),
+    };
+    contract
+        .validate()
+        .map_err(|error| RuntimeError::Config(error.to_string()))?;
+    policy
+        .qualification
+        .require_selectable(&contract)
+        .map_err(|error| {
+            RuntimeError::Config(format!("coding adapter qualification is invalid: {error}"))
+        })?;
+    if contract.adapter_id != coding_agent_runtime::CODEX_APP_SERVER_ADAPTER_ID
+        || contract.adapter_version != coding_agent_runtime::CODEX_APP_SERVER_VERSION
+        || contract.adapter_protocol_version
+            != coding_agent_runtime::CODEX_APP_SERVER_PROTOCOL_VERSION
+        || contract.action_kind != "coding.codex-app-server-v1"
+        || contract.template_id != "coding-codex-app-server-v1"
+        || contract.executable != "/usr/local/bin/codex"
+        || contract.binary_digest != coding_agent_runtime::CODEX_APP_SERVER_BINARY_DIGEST
+        || contract.schema_digest != coding_agent_runtime::CODEX_APP_SERVER_SCHEMA_DIGEST
+    {
+        return Err(RuntimeError::Config(
+            "coding profile does not match the pinned Codex App Server contract".into(),
+        ));
+    }
+    if let Some(gateway) = &policy.enterprise_gateway {
+        let url = url::Url::parse(&gateway.base_url).map_err(|error| {
+            RuntimeError::Config(format!("invalid coding gateway baseUrl: {error}"))
+        })?;
+        if url.scheme() != "https"
+            || url.path() != "/v1"
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || gateway.credential_target.is_empty()
+            || gateway.audience.is_empty()
+            || gateway.budget_policy_id.is_empty()
+            || !canonical_sha256(&gateway.route_digest)
+            || gateway.maximum_requests == 0
+            || gateway.maximum_tokens == 0
+            || gateway.maximum_cost_micros == 0
+            || gateway.maximum_response_bytes == 0
+        {
+            return Err(RuntimeError::Config(
+                "agentPolicy.execution.codingProfile.enterpriseGateway is invalid".into(),
+            ));
+        }
+    }
+    match (
+        policy.authentication_profile,
+        policy.enterprise_gateway.is_some(),
+    ) {
+        (CodingAuthenticationProfile::PersonalSubscription, false)
+        | (CodingAuthenticationProfile::EnterpriseApi, true) => {}
+        _ => {
+            return Err(RuntimeError::Config(
+                "personal-subscription forbids enterpriseGateway and enterprise-api requires it"
+                    .into(),
+            ));
+        }
+    }
+    let has_restricted_egress = contract
+        .required_features
+        .contains("restricted-model-egress");
+    if (policy.authentication_profile == CodingAuthenticationProfile::EnterpriseApi)
+        != has_restricted_egress
+    {
+        return Err(RuntimeError::Config(
+            "restricted-model-egress is required only for the enterprise-api coding profile".into(),
+        ));
+    }
+    if policy.model != CODING_IMPLEMENTER_ALIAS || policy.review_model != CODING_REVIEWER_ALIAS {
+        return Err(RuntimeError::Config(
+            "coding role profiles must use the coding-implementer and coding-reviewer aliases"
+                .into(),
+        ));
+    }
     Ok(Some(CodingProfileConfig {
         product_profile_digest: policy.product_profile_digest.clone(),
         repository_uri_prefix: policy.repository_uri_prefix.clone(),
-        runtime: PiCodingRuntime {
-            compatibility_digest: policy.compatibility_digest.clone(),
-            template_digest: policy.template_digest.clone(),
-            pi_digest: policy.binary_digest.clone(),
-            provider: policy.provider.clone(),
+        authentication_profile: policy.authentication_profile,
+        runtime: CodingAdapterRuntime {
+            contract: contract.clone(),
+            qualification: policy.qualification.clone(),
             model: policy.model.clone(),
+            enterprise_gateway: policy.enterprise_gateway.clone(),
+        },
+        reviewer_runtime: CodingAdapterRuntime {
+            contract,
+            qualification: policy.qualification.clone(),
+            model: policy.review_model.clone(),
+            enterprise_gateway: policy.enterprise_gateway.clone(),
         },
     }))
 }
@@ -3564,17 +3678,28 @@ async fn handle_socket(
                         &request.repository.artifact_uri,
                         &config.repository_uri_prefix,
                     )?;
-                    let writable_roots = if request.writable_roots.is_empty() {
-                        BTreeSet::from([request.workspace_root.clone()])
-                    } else {
-                        request.writable_roots.clone()
+                    let (runtime, writable_roots, allowed_tools) = match request.role {
+                        CodingRole::Implement => (
+                            &config.runtime,
+                            if request.writable_roots.is_empty() {
+                                BTreeSet::from([request.workspace_root.clone()])
+                            } else {
+                                request.writable_roots.clone()
+                            },
+                            request.allowed_tools.clone(),
+                        ),
+                        CodingRole::Review => (
+                            &config.reviewer_runtime,
+                            BTreeSet::from(["/workspace/review-scratch".into()]),
+                            BTreeSet::from(["fs.read".into(), "process.exec".into()]),
+                        ),
                     };
                     let manifest = MaterializationManifest {
                         schema_version: 1,
                         materializer_id: "coding".into(),
                         materializer_version: 1,
                         product_profile: ProductProfile::Coding,
-                        runtime_compatibility: config.runtime.compatibility_digest.clone(),
+                        runtime_compatibility: runtime.contract.compatibility_digest.clone(),
                         packages: Vec::new(),
                         effective_instructions: Vec::new(),
                         allowed_tools: BTreeSet::new(),
@@ -3585,19 +3710,21 @@ async fn handle_socket(
                         base_revision: request.base_revision.clone(),
                         workspace_root: request.workspace_root.clone(),
                         prompt: user_text.clone(),
-                        model_alias: format!(
-                            "{}:{}",
-                            config.runtime.provider, config.runtime.model
-                        ),
+                        model_alias: runtime.model.clone(),
+                        authentication_profile: config.authentication_profile,
+                        role: request.role,
+                        role_profile: CodingRoleExecutionProfile::pinned(request.role),
+                        review_input: request.review_input.clone(),
+                        remediation: request.remediation.clone(),
                         materialization_manifest_digest: manifest.digest()?,
                         writable_roots,
-                        allowed_tools: request.allowed_tools.clone(),
+                        allowed_tools,
                         maximum_patch_bytes: request.maximum_patch_bytes,
                         maximum_changed_files: request.maximum_changed_files,
                     };
                     state
                         .domain
-                        .schedule_pi_coding_turn(
+                        .schedule_coding_adapter_turn(
                             state.host_id,
                             AgentSessionId(session_id),
                             admitted.turn_id,
@@ -3605,7 +3732,7 @@ async fn handle_socket(
                             &manifest,
                             &spec,
                             &request.repository,
-                            &config.runtime,
+                            runtime,
                         )
                         .await
                 }
@@ -5518,12 +5645,13 @@ mod tests {
         McpClientConfig, ModelProviderConfig, SessionOwner, TurnDispatchCoordinator,
         agent_ca_cert_path_from_config, apply_authoritative_system_prompt,
         bind_authenticated_principal, bound_untrusted_text, choose_model,
-        collect_catalog_tool_names, collect_policy_diagnostics, filter_gateway_tools,
-        normalize_provider_id, normalized_claim_values, parse_tool_arguments, select_catalog_tools,
-        trim_history, validate_repository_input_uri, validate_session_owner,
+        coding_profile_from_policy, collect_catalog_tool_names, collect_policy_diagnostics,
+        filter_gateway_tools, normalize_provider_id, normalized_claim_values, parse_tool_arguments,
+        select_catalog_tools, trim_history, validate_repository_input_uri, validate_session_owner,
     };
+    use coding_agent_runtime::CodingAuthenticationProfile;
     use config_loader::{ConfigLoader, EmbeddedConfigFile};
-    use light_agent::agent_config::AgentConfig;
+    use light_agent::agent_config::{AgentConfig, CodingProfilePolicy};
     use light_agent::domain::AgentRepository;
     use light_runtime::config::{
         BootstrapConfig, ClientConfig, PortalRegistryConfig, ServerConfig,
@@ -5532,7 +5660,7 @@ mod tests {
     use mcp_client::McpTool;
     use serde::de::DeserializeOwned;
     use sqlx::postgres::PgPoolOptions;
-    use std::path::PathBuf;
+    use std::{collections::BTreeSet, path::PathBuf};
 
     #[test]
     fn native_a2a_application_errors_use_http_200() {
@@ -5688,6 +5816,144 @@ security.skipPathPrefixes: [/health]
             validate_repository_input_uri("https://attacker.invalid/repository.bundle", prefix)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn coding_profile_accepts_only_pinned_codex_app_server_adapter() {
+        let digest = |value| format!("sha256:{value:064x}");
+        let qualify = |contract: &coding_agent_runtime::CodingAdapterContract| {
+            coding_agent_runtime::CodingAdapterQualification {
+                schema_version: coding_agent_runtime::CODING_ADAPTER_QUALIFICATION_VERSION,
+                adapter_id: coding_agent_runtime::CODEX_APP_SERVER_ADAPTER_ID.into(),
+                adapter_version: coding_agent_runtime::CODEX_APP_SERVER_VERSION.into(),
+                status: coding_agent_runtime::CodingAdapterQualificationStatus::Qualified,
+                evaluated_dimensions:
+                    coding_agent_runtime::CodingAdapterQualificationDimension::required(),
+                contract_digest: Some(contract.digest().unwrap()),
+                evidence_digest:
+                    coding_agent_runtime::CODEX_APP_SERVER_QUALIFICATION_EVIDENCE_DIGEST.into(),
+            }
+        };
+        let mut policy = CodingProfilePolicy {
+            schema_version: 1,
+            product_profile_digest: digest(1),
+            repository_uri_prefix: "file:///var/lib/light-agent/repositories/".into(),
+            adapter_id: coding_agent_runtime::CODEX_APP_SERVER_ADAPTER_ID.into(),
+            adapter_version: coding_agent_runtime::CODEX_APP_SERVER_VERSION.into(),
+            adapter_protocol_version: coding_agent_runtime::CODEX_APP_SERVER_PROTOCOL_VERSION
+                .into(),
+            action_kind: "coding.codex-app-server-v1".into(),
+            compatibility_digest: digest(2),
+            image_digest: digest(3),
+            capability_digest: digest(4),
+            template_id: "coding-codex-app-server-v1".into(),
+            template_version: 1,
+            template_digest: digest(5),
+            executable: "/usr/local/bin/codex".into(),
+            schema_digest: coding_agent_runtime::CODEX_APP_SERVER_SCHEMA_DIGEST.into(),
+            required_features: BTreeSet::from([
+                "canonical-patch-output".into(),
+                "immutable-repository-upload".into(),
+                "codex-app-server-v1".into(),
+            ]),
+            binary_digest: coding_agent_runtime::CODEX_APP_SERVER_BINARY_DIGEST.into(),
+            qualification: coding_agent_runtime::CodingAdapterQualification {
+                schema_version: coding_agent_runtime::CODING_ADAPTER_QUALIFICATION_VERSION,
+                adapter_id: coding_agent_runtime::CODEX_APP_SERVER_ADAPTER_ID.into(),
+                adapter_version: coding_agent_runtime::CODEX_APP_SERVER_VERSION.into(),
+                status: coding_agent_runtime::CodingAdapterQualificationStatus::Qualified,
+                evaluated_dimensions:
+                    coding_agent_runtime::CodingAdapterQualificationDimension::required(),
+                contract_digest: Some(digest(0)),
+                evidence_digest:
+                    coding_agent_runtime::CODEX_APP_SERVER_QUALIFICATION_EVIDENCE_DIGEST.into(),
+            },
+            model: coding_agent_runtime::CODING_IMPLEMENTER_ALIAS.into(),
+            review_model: coding_agent_runtime::CODING_REVIEWER_ALIAS.into(),
+            authentication_profile: CodingAuthenticationProfile::PersonalSubscription,
+            enterprise_gateway: None,
+        };
+        let admitted_contract = coding_agent_runtime::CodingAdapterContract {
+            schema_version: policy.schema_version,
+            adapter_id: policy.adapter_id.clone(),
+            adapter_version: policy.adapter_version.clone(),
+            adapter_protocol_version: policy.adapter_protocol_version.clone(),
+            action_kind: policy.action_kind.clone(),
+            compatibility_digest: policy.compatibility_digest.clone(),
+            image_digest: policy.image_digest.clone(),
+            capability_digest: policy.capability_digest.clone(),
+            template_id: policy.template_id.clone(),
+            template_version: policy.template_version,
+            template_digest: policy.template_digest.clone(),
+            executable: policy.executable.clone(),
+            binary_digest: policy.binary_digest.clone(),
+            schema_digest: policy.schema_digest.clone(),
+            required_features: policy.required_features.clone(),
+        };
+        policy.qualification = qualify(&admitted_contract);
+        let configured = coding_profile_from_policy(Some(&policy)).unwrap().unwrap();
+        assert_eq!(
+            configured.runtime.contract,
+            coding_agent_runtime::CodingAdapterContract {
+                schema_version: policy.schema_version,
+                adapter_id: policy.adapter_id.clone(),
+                adapter_version: policy.adapter_version.clone(),
+                adapter_protocol_version: policy.adapter_protocol_version.clone(),
+                action_kind: policy.action_kind.clone(),
+                compatibility_digest: policy.compatibility_digest.clone(),
+                image_digest: policy.image_digest.clone(),
+                capability_digest: policy.capability_digest.clone(),
+                template_id: policy.template_id.clone(),
+                template_version: policy.template_version,
+                template_digest: policy.template_digest.clone(),
+                executable: policy.executable.clone(),
+                binary_digest: policy.binary_digest.clone(),
+                schema_digest: policy.schema_digest.clone(),
+                required_features: policy.required_features.clone(),
+            }
+        );
+
+        policy.authentication_profile = CodingAuthenticationProfile::EnterpriseApi;
+        policy
+            .required_features
+            .insert("restricted-model-egress".into());
+        policy.enterprise_gateway = Some(light_agent::agent_config::CodingGatewayPolicy {
+            base_url: "https://llm-gateway.example/v1".into(),
+            credential_target: "llm-gateway-attempt".into(),
+            audience: "llm-gateway".into(),
+            route_digest: digest(6),
+            budget_policy_id: "developer-default".into(),
+            maximum_requests: 1,
+            maximum_tokens: 200_000,
+            maximum_cost_micros: 5_000_000,
+            maximum_response_bytes: 16_384,
+        });
+        let enterprise_contract = coding_agent_runtime::CodingAdapterContract {
+            required_features: policy.required_features.clone(),
+            ..admitted_contract.clone()
+        };
+        policy.qualification = qualify(&enterprise_contract);
+        assert!(
+            coding_profile_from_policy(Some(&policy))
+                .unwrap()
+                .unwrap()
+                .runtime
+                .enterprise_gateway
+                .is_some()
+        );
+        policy.enterprise_gateway.as_mut().unwrap().base_url =
+            "http://llm-gateway.example/v1".into();
+        assert!(coding_profile_from_policy(Some(&policy)).is_err());
+        policy.enterprise_gateway = None;
+        assert!(coding_profile_from_policy(Some(&policy)).is_err());
+        policy.authentication_profile = CodingAuthenticationProfile::PersonalSubscription;
+
+        policy.review_model = "coding-implementer".into();
+        assert!(coding_profile_from_policy(Some(&policy)).is_err());
+        policy.review_model = coding_agent_runtime::CODING_REVIEWER_ALIAS.into();
+
+        policy.adapter_version = "0.154.0".into();
+        assert!(coding_profile_from_policy(Some(&policy)).is_err());
     }
 
     #[test]

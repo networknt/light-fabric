@@ -1291,6 +1291,7 @@ fn compiler_config() -> LlmRouterConfig {
                 audit: AuditMode::Disabled,
                 pii: Default::default(),
                 required_capabilities: Default::default(),
+                coding_worker_eligible: false,
                 require_expected_embedding_space: false,
                 embedding_workload_lane: EmbeddingWorkloadLane::Standard,
             },
@@ -1353,6 +1354,31 @@ fn bedrock_compiler_config(auth: EndpointAuth) -> LlmRouterConfig {
         embedding: None,
     });
     config
+}
+
+#[test]
+fn coding_worker_alias_without_current_responses_conformance_is_ineligible() {
+    let mut config = compiler_config();
+    let alias = config.aliases.get_mut("public-model").unwrap();
+    alias.coding_worker_eligible = true;
+    alias.required_capabilities.streaming = true;
+    alias.required_capabilities.tools = true;
+    let compiler = LlmCompiler::new(Arc::new(MapSecretResolver(BTreeMap::from([(
+        "secret".to_string(),
+        "development-token".to_string(),
+    )]))));
+
+    let error = match compiler.compile(&config, 1, None) {
+        Ok(_) => panic!("coding worker alias without conformance was accepted"),
+        Err(error) => error,
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("no current conformance evidence"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -2291,6 +2317,8 @@ fn http_request(body: &[u8]) -> BufferedHttpRequest {
         ]),
         body: body.to_vec(),
         principal_id: "user".to_string(),
+        billing_subject: "user".to_string(),
+        bound_model_alias: None,
         tenant_id: Some("tenant-test".to_string()),
         trusted_request_id: "trusted".to_string(),
     }
@@ -2306,6 +2334,29 @@ fn responses_http_request(body: &[u8]) -> BufferedHttpRequest {
     let mut request = http_request(body);
     request.path = "/v1/responses".to_string();
     request
+}
+
+#[tokio::test]
+async fn authenticated_coding_route_cannot_be_changed_by_the_codex_body() {
+    let provider = Arc::new(ScriptedProvider::new(
+        ProviderProtocol::OpenAiChat,
+        vec![Ok(success_response())],
+    ));
+    let runtime = runtime_with(
+        vec![provider.clone()],
+        1,
+        4096,
+        Arc::new(RecordingAudit::default()),
+    );
+    let http = LlmBufferedHttp::new(runtime, Arc::new(Allow), 4096, 32, Duration::from_secs(1));
+    let mut request =
+        responses_http_request(br#"{"model":"coding-reviewer","input":"review","stream":false}"#);
+    request.bound_model_alias = Some("coding-implementer".into());
+
+    let response = http.handle(request).await;
+
+    assert_eq!(response.status, 403);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -2671,6 +2722,13 @@ async fn embeddings_http_supports_string_batch_float_and_base64() {
         Some(100),
     );
     let http = LlmBufferedHttp::new(runtime, Arc::new(Allow), 1024, 16, Duration::from_secs(1));
+
+    let mut denied =
+        embedding_http_request(br#"{"model":"embedding-default","input":"must-not-route"}"#);
+    denied.bound_model_alias = Some("coding-implementer".into());
+    let denied = http.handle(denied).await;
+    assert_eq!(denied.status, 403);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
 
     let first = http
         .handle(embedding_http_request(
@@ -3838,6 +3896,8 @@ async fn models_never_enumerate_internal_aliases() {
             headers: BTreeMap::new(),
             body: Vec::new(),
             principal_id: "test-agent".to_string(),
+            billing_subject: "test-agent".to_string(),
+            bound_model_alias: None,
             tenant_id: Some("tenant-test".to_string()),
             trusted_request_id: "trusted".to_string(),
         })
@@ -3859,6 +3919,8 @@ async fn models_never_enumerate_internal_aliases() {
                 headers: BTreeMap::new(),
                 body: Vec::new(),
                 principal_id: "test-agent".to_string(),
+                billing_subject: "test-agent".to_string(),
+                bound_model_alias: None,
                 tenant_id: Some("tenant-test".to_string()),
                 trusted_request_id: "trusted-model".to_string(),
             })

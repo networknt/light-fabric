@@ -218,7 +218,7 @@ mod tests {
             object_reference: "object://immutable".into(),
             entrypoint: "SKILL.md".into(),
             authority,
-            compatibility: BTreeSet::from(["pi-rpc-v1".into()]),
+            compatibility: BTreeSet::from(["codex-app-server-v1".into()]),
             published: true,
             revoked: false,
             signer_verified: true,
@@ -234,7 +234,7 @@ mod tests {
         let make = |candidates| {
             materialize(MaterializationRequest {
                 profile: ProductProfile::Coding,
-                runtime_compatibility: "pi-rpc-v1".into(),
+                runtime_compatibility: "codex-app-server-v1".into(),
                 allowed_package_ids: ids.clone(),
                 allowed_tools: BTreeSet::new(),
                 writable_roots: BTreeSet::from(["/workspace/src".into()]),
@@ -255,7 +255,7 @@ mod tests {
         assert!(matches!(
             materialize(MaterializationRequest {
                 profile: ProductProfile::Coding,
-                runtime_compatibility: "pi-rpc-v1".into(),
+                runtime_compatibility: "codex-app-server-v1".into(),
                 allowed_package_ids: BTreeSet::from([id]),
                 allowed_tools: BTreeSet::new(),
                 writable_roots: BTreeSet::new(),

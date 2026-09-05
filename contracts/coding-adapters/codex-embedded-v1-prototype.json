@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "adapterId": "codex-embedded-v1",
+  "adapterVersion": "0.153.2",
+  "status": "prototype-only",
+  "upstream": {
+    "repository": "https://github.com/openai/codex",
+    "tag": "rust-v0.153.2",
+    "revision": "657a993cbee87acf52d14b758ce49dbd46d1b8eb",
+    "license": "Apache-2.0"
+  },
+  "publicApiProbe": [
+    "codex_core::ThreadManager",
+    "codex_core::StartThreadOptions"
+  ],
+  "evaluatedDimensions": [
+    "dependency-compatibility",
+    "license-compatibility"
+  ],
+  "benchmarkScope": "typed-call-versus-json-boundary-only",
+  "productionQualified": false
+}

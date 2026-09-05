@@ -100,6 +100,21 @@ earlier of the worker and lease deadlines. Enabling the block also adds only
 the configured agent origin and `agent-turn`/`agent-action` subjects to the
 generated controller admission document.
 
+Coding authentication uses separate runner pools. A local
+`personal-subscription` pool sets `codexHome` to an owner-only real directory
+and has no broker; the runner exposes that directory only as `CODEX_HOME` to the
+trusted worker launcher. This local path requires `maximumConcurrency: 1`. An
+`enterprise-api` pool omits `codexHome`, enables the attempt broker, and must
+configure a digest-pinned `sandboxLauncher` whose reviewed profile creates a
+new boundary per attempt and restricts model egress to `llm-gateway`. The
+launcher creates that boundary and then replaces itself with the worker via
+`exec`, preserving the PID used by Unix broker peer authentication. Startup
+rejects an enterprise pool without that launcher, a local shared-concurrency
+pool, or a pool that configures both authentication paths. Execution
+admission rejects a coding turn whose immutable authentication profile does not
+match the pool. The enterprise binding must also match the lease host and use
+the initiating end user as its billing subject.
+
 The optional nested `broker` block keeps model, network, and credential
 authority in the runner. A lease must carry a matching attempt grant; otherwise
 worker launch fails closed. The worker receives only a mode-`0600` Unix-socket

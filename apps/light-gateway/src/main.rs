@@ -4565,11 +4565,8 @@ impl ProxyHttp for GatewayProxy {
                         .into_iter()
                         .map(|(name, value)| (name.to_ascii_lowercase(), value))
                         .collect();
-                    let principal_id = ctx
-                        .auth
-                        .as_ref()
-                        .and_then(|auth| auth.client_id.clone().or_else(|| auth.user_id.clone()))
-                        .unwrap_or_else(|| "anonymous".to_string());
+                    let (principal_id, billing_subject, bound_model_alias) =
+                        llm_billing_context(ctx.auth.as_ref());
                     let tenant_id = ctx.auth.as_ref().and_then(|auth| {
                         auth.host
                             .clone()
@@ -4607,6 +4604,8 @@ impl ProxyHttp for GatewayProxy {
                                 headers,
                                 body,
                                 principal_id,
+                                billing_subject,
+                                bound_model_alias,
                                 tenant_id,
                                 trusted_request_id,
                             },
@@ -5779,6 +5778,29 @@ impl ProxyHttp for GatewayProxy {
         }
         self.log_handler_durations(ctx);
     }
+}
+
+fn llm_billing_context(auth: Option<&AuthPrincipal>) -> (String, String, Option<String>) {
+    let principal_id = auth
+        .and_then(|auth| auth.client_id.clone().or_else(|| auth.user_id.clone()))
+        .unwrap_or_else(|| "anonymous".to_string());
+    let route_alias = auth.and_then(|auth| {
+        auth.claims
+            .get("routeAlias")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    });
+    let billing_subject = auth
+        .and_then(|auth| {
+            auth.claims
+                .get("billingSubject")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| principal_id.clone());
+    (principal_id, billing_subject, route_alias)
 }
 
 #[derive(Debug, Default)]
@@ -7647,6 +7669,28 @@ mod tests {
     use tokio_tungstenite::tungstenite::http::HeaderValue;
     use tokio_tungstenite::tungstenite::protocol::Message;
     use tokio_tungstenite::{accept_async, accept_hdr_async, connect_async};
+
+    #[test]
+    fn llm_authorization_uses_verified_principal_and_pins_route_alias() {
+        let auth = AuthPrincipal {
+            client_id: Some("light-agent-worker".into()),
+            user_id: Some("user-17".into()),
+            claims: json!({
+                "billingSubject": "cost-center-4",
+                "routeAlias": "coding-reviewer"
+            }),
+            ..AuthPrincipal::default()
+        };
+
+        assert_eq!(
+            llm_billing_context(Some(&auth)),
+            (
+                "light-agent-worker".into(),
+                "cost-center-4".into(),
+                Some("coding-reviewer".into())
+            )
+        );
+    }
 
     #[test]
     fn request_context_snapshots_and_resets_streaming_classification() {

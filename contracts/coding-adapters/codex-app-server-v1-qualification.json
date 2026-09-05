@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "adapterId": "codex-app-server-v1",
+  "adapterVersion": "0.153.2",
+  "status": "qualified",
+  "contractDigestRequired": true,
+  "evidenceGates": [
+    "run-coding-harness-phase1-gates.sh",
+    "run-coding-harness-phase2-gates.sh",
+    "run-coding-harness-phase3-gates.sh",
+    "run-coding-harness-phase4-gates.sh",
+    "run-codex-app-server-smoke.sh"
+  ],
+  "evaluatedDimensions": [
+    "protocol-lifecycle",
+    "approval-mediation",
+    "streaming-events",
+    "usage-accounting",
+    "cancellation",
+    "resumability",
+    "canonical-patch",
+    "review-isolation",
+    "authentication-profiles",
+    "workspace-isolation",
+    "panic-containment",
+    "dependency-compatibility",
+    "license-compatibility"
+  ]
+}

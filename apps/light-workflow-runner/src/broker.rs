@@ -1,7 +1,7 @@
 use crate::journal::{BrokerRequestDisposition, Journal};
 use agent_runtime_protocol::{
-    AttemptBrokerGrant, BrokerOperation, BrokerRequest, BrokerResponse, RuntimeIdentity,
-    canonical_digest,
+    AttemptBrokerGrant, AttemptCredentialEnvelope, BrokerOperation, BrokerRequest, BrokerResponse,
+    RuntimeIdentity, canonical_digest,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::Utc;
@@ -32,10 +32,22 @@ pub struct BrokerRouteConfig {
     pub credential_class: Option<String>,
     #[serde(default)]
     pub credential_file: Option<PathBuf>,
+    /// Owner-only directory containing one `<binding-sha256>.json` credential
+    /// envelope per admitted attempt. Required for concurrent credential
+    /// delivery; a shared token file is forbidden for this mode.
+    #[serde(default)]
+    pub credential_directory: Option<PathBuf>,
     #[serde(default = "default_auth_header")]
     pub auth_header: String,
     #[serde(default = "default_auth_scheme")]
     pub auth_scheme: String,
+    /// Return an attempt-scoped credential over the protected broker socket
+    /// instead of forwarding this route. The credential file is a JSON
+    /// `AttemptCredentialEnvelope`, never a reusable provider key.
+    #[serde(default)]
+    pub deliver_attempt_credential: bool,
+    #[serde(default)]
+    pub credential_audience: Option<String>,
     /// Trusted rate used to reserve model cost; it is never supplied by the worker.
     #[serde(default)]
     pub cost_per_1k_tokens_micros: u64,
@@ -64,6 +76,8 @@ struct RouteEvidence<'a> {
     operation: BrokerOperation,
     base_url: &'a str,
     credential_class: &'a Option<String>,
+    deliver_attempt_credential: bool,
+    credential_audience: &'a Option<String>,
     cost_per_1k_tokens_micros: u64,
 }
 
@@ -71,6 +85,7 @@ struct ResolvedRoute {
     config: BrokerRouteConfig,
     base_url: url::Url,
     credential: Option<String>,
+    credential_path: Option<PathBuf>,
 }
 pub struct AttemptBroker {
     listener: UnixListener,
@@ -110,11 +125,25 @@ impl AttemptBrokerConfig {
             {
                 return Err("broker routes require HTTPS except loopback test routes".into());
             }
-            if route.credential_file.is_some() != route.credential_class.is_some() {
+            if !route.deliver_attempt_credential
+                && route.credential_file.is_some() != route.credential_class.is_some()
+            {
                 return Err("credential class and file must be configured together".into());
+            }
+            if route.deliver_attempt_credential
+                != (route.credential_audience.is_some()
+                    && route.credential_directory.is_some()
+                    && route.credential_file.is_none()
+                    && route.credential_class.is_some()
+                    && route.operation == BrokerOperation::CredentialedRequest)
+            {
+                return Err("attempt credential routes require an audience, credential envelope, and credentialed-request operation".into());
             }
             if let Some(path) = &route.credential_file {
                 validate_secret_file(path)?;
+            }
+            if let Some(path) = &route.credential_directory {
+                validate_secret_directory(path)?;
             }
             if !route
                 .auth_header
@@ -135,6 +164,8 @@ impl AttemptBrokerConfig {
                 operation: r.operation,
                 base_url: &r.base_url,
                 credential_class: &r.credential_class,
+                deliver_attempt_credential: r.deliver_attempt_credential,
+                credential_audience: &r.credential_audience,
                 cost_per_1k_tokens_micros: r.cost_per_1k_tokens_micros,
             })
             .collect::<Vec<_>>();
@@ -174,12 +205,34 @@ impl AttemptBroker {
             .map_err(|e| e.to_string())?;
         let mut routes = BTreeMap::new();
         for route in &config.routes {
-            let credential = route
-                .credential_file
-                .as_ref()
-                .map(|p| fs::read_to_string(p).map(|v| v.trim().to_string()))
-                .transpose()
-                .map_err(|e| e.to_string())?;
+            let credential_path = if route.deliver_attempt_credential {
+                let digest = grant
+                    .gateway_binding_digest
+                    .as_deref()
+                    .and_then(|value| value.strip_prefix("sha256:"))
+                    .ok_or("attempt credential grant has no canonical gateway binding")?;
+                Some(
+                    route
+                        .credential_directory
+                        .as_ref()
+                        .expect("validated attempt credential directory")
+                        .join(format!("{digest}.json")),
+                )
+            } else {
+                route.credential_file.clone()
+            };
+            if let Some(path) = credential_path.as_ref() {
+                validate_secret_file(path)?;
+            }
+            let credential = if route.deliver_attempt_credential {
+                None
+            } else {
+                credential_path
+                    .as_ref()
+                    .map(|p| fs::read_to_string(p).map(|v| v.trim().to_string()))
+                    .transpose()
+                    .map_err(|e| e.to_string())?
+            };
             if credential.as_ref().is_some_and(String::is_empty) {
                 return Err("broker credential file is empty".into());
             }
@@ -189,6 +242,7 @@ impl AttemptBroker {
                     config: route.clone(),
                     base_url: url::Url::parse(&route.base_url).map_err(|e| e.to_string())?,
                     credential,
+                    credential_path,
                 },
             );
         }
@@ -311,6 +365,11 @@ async fn dispatch(
     let body = STANDARD
         .decode(&request.body_base64)
         .map_err(|e| e.to_string())?;
+    if route.config.deliver_attempt_credential
+        && (request.method != "GET" || request.path != "credential" || !body.is_empty())
+    {
+        return Err("attempt credential requests require an empty GET credential request".into());
+    }
     let (charged_tokens, charged_cost_micros) =
         if request.operation == BrokerOperation::ModelInference {
             if request.method != "POST" || request.declared_tokens == 0 {
@@ -356,7 +415,7 @@ async fn dispatch(
     let method =
         reqwest::Method::from_bytes(request.method.as_bytes()).map_err(|e| e.to_string())?;
     let request_digest = canonical_digest(&request).map_err(|e| e.to_string())?;
-    match journal.begin_broker_request(
+    let replay = match journal.begin_broker_request(
         identity.execution_id,
         identity.fencing_token,
         request.request_id,
@@ -369,16 +428,73 @@ async fn dispatch(
         grant.maximum_tokens,
         grant.maximum_cost_micros,
     )? {
-        BrokerRequestDisposition::Replay(response) => return Ok(response),
+        BrokerRequestDisposition::Replay(response) => Some(response),
         BrokerRequestDisposition::Unknown => {
             let _ = unknown_outcome.send(true);
             return Err(
                 "broker request outcome is durably UNKNOWN; reconciliation is required".into(),
             );
         }
-        BrokerRequestDisposition::New => {}
+        BrokerRequestDisposition::New => None,
+    };
+    if let Some(response) = replay.as_ref()
+        && !route.config.deliver_attempt_credential
+    {
+        validate_replayed_response(response, grant.maximum_response_bytes)?;
+        return Ok(response.clone());
     }
     tracing::info!(execution_id=%identity.execution_id,lease_id=%identity.lease_id,fencing_token=identity.fencing_token,request_id=%request.request_id,operation=?request.operation,target=%request.target,charged_tokens,charged_cost_micros,"attempt broker request durably admitted");
+    if route.config.deliver_attempt_credential {
+        let credential_path = route
+            .credential_path
+            .as_ref()
+            .ok_or("attempt credential envelope is unavailable")?;
+        validate_secret_file(credential_path)?;
+        let current = fs::read_to_string(credential_path)
+            .map_err(|error| format!("attempt credential envelope is unavailable: {error}"))?;
+        let envelope: AttemptCredentialEnvelope = serde_json::from_str(current.trim())
+            .map_err(|_| "attempt credential envelope is invalid JSON")?;
+        let audience = route
+            .config
+            .credential_audience
+            .as_deref()
+            .ok_or("attempt credential audience is unavailable")?;
+        envelope
+            .validate(
+                audience,
+                grant
+                    .gateway_binding_digest
+                    .as_deref()
+                    .ok_or("attempt credential grant has no gateway binding")?,
+                Utc::now(),
+            )
+            .map_err(|error| error.to_string())?;
+        if envelope.expires_at > grant.expires_at {
+            return Err("attempt credential outlives its broker grant".into());
+        }
+        let (requests, tokens, cost) = journal.broker_usage(identity.execution_id)?;
+        let envelope_bytes = serde_json::to_vec(&envelope)
+            .map_err(|error| format!("serialize attempt credential envelope: {error}"))?;
+        if envelope_bytes.len() > grant.maximum_response_bytes {
+            return Err("attempt credential response exceeds admitted limit".into());
+        }
+        let response = BrokerResponse {
+            request_id: request.request_id,
+            status: 200,
+            body_base64: STANDARD.encode(envelope_bytes),
+            consumed_requests: requests,
+            consumed_tokens: tokens,
+            consumed_cost_micros: cost,
+        };
+        if replay.is_none() {
+            journal.complete_broker_request_redacted(
+                identity.execution_id,
+                request.request_id,
+                &response,
+            )?;
+        }
+        return Ok(response);
+    }
     let mut outbound = client.request(method, url).body(body);
     if request.operation != BrokerOperation::ModelInference {
         outbound = outbound.header("Idempotency-Key", request.request_id.to_string());
@@ -425,6 +541,19 @@ async fn dispatch(
     Ok(response)
 }
 
+fn validate_replayed_response(
+    response: &BrokerResponse,
+    maximum_response_bytes: usize,
+) -> Result<(), String> {
+    let body = STANDARD
+        .decode(&response.body_base64)
+        .map_err(|_| "journaled broker response is invalid base64")?;
+    if body.len() > maximum_response_bytes {
+        return Err("journaled broker response exceeds admitted limit".into());
+    }
+    Ok(())
+}
+
 async fn read_bounded_response(
     response: reqwest::Response,
     maximum_bytes: usize,
@@ -456,6 +585,19 @@ fn validate_secret_file(path: &Path) -> Result<(), String> {
         .map_err(|e| format!("broker credential {} unavailable: {e}", path.display()))?;
     if !metadata.is_file() || metadata.permissions().mode() & 0o077 != 0 {
         return Err("broker credential must be an owner-only regular file".into());
+    }
+    Ok(())
+}
+
+fn validate_secret_directory(path: &Path) -> Result<(), String> {
+    let metadata = fs::metadata(path).map_err(|e| {
+        format!(
+            "broker credential directory {} unavailable: {e}",
+            path.display()
+        )
+    })?;
+    if !path.is_absolute() || !metadata.is_dir() || metadata.permissions().mode() & 0o077 != 0 {
+        return Err("broker credential directory must be absolute and owner-only".into());
     }
     Ok(())
 }
@@ -564,8 +706,11 @@ mod tests {
                 base_url: format!("http://{address}/"),
                 credential_class: Some("model-provider".into()),
                 credential_file: Some(secret),
+                credential_directory: None,
                 auth_header: "authorization".into(),
                 auth_scheme: "Bearer".into(),
+                deliver_attempt_credential: false,
+                credential_audience: None,
                 cost_per_1k_tokens_micros: 100,
             }],
         };
@@ -586,6 +731,7 @@ mod tests {
             maximum_cost_micros: 1000,
             maximum_response_bytes: 1024,
             expires_at: Utc::now() + chrono::Duration::minutes(1),
+            gateway_binding_digest: None,
         };
         let journal = Journal::open(&directory.path().join("journal.sqlite")).unwrap();
         journal
@@ -641,6 +787,141 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn attempt_credential_delivery_requires_exact_audience_and_binding() {
+        let directory = tempfile::tempdir().unwrap();
+        let credentials = directory.path().join("credentials");
+        fs::create_dir(&credentials).unwrap();
+        fs::set_permissions(&credentials, fs::Permissions::from_mode(0o700)).unwrap();
+        let binding_digest = format!("sha256:{}", "a".repeat(64));
+        let secret = credentials.join(format!("{}.json", "a".repeat(64)));
+        fs::write(
+            &secret,
+            serde_json::to_vec(&AttemptCredentialEnvelope {
+                schema_version: 1,
+                credential_id: Uuid::new_v4(),
+                generation: 1,
+                token: "attempt-only-token".into(),
+                audience: "llm-gateway".into(),
+                binding_digest: binding_digest.clone(),
+                issued_at: Utc::now() - chrono::Duration::seconds(1),
+                expires_at: Utc::now() + chrono::Duration::seconds(30),
+                revoked_at: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
+        let config = AttemptBrokerConfig {
+            socket_directory: directory.path().join("sockets"),
+            maximum_request_bytes: 64 * 1024,
+            request_timeout_ms: 5_000,
+            routes: vec![BrokerRouteConfig {
+                target: "llm-gateway-attempt".into(),
+                operation: BrokerOperation::CredentialedRequest,
+                base_url: "https://llm-gateway.example/v1/".into(),
+                credential_class: Some("llm-gateway-attempt".into()),
+                credential_file: None,
+                credential_directory: Some(credentials),
+                auth_header: "authorization".into(),
+                auth_scheme: "Bearer".into(),
+                deliver_attempt_credential: true,
+                credential_audience: Some("llm-gateway".into()),
+                cost_per_1k_tokens_micros: 0,
+            }],
+        };
+        let identity = RuntimeIdentity {
+            execution_id: ExecutionId::new(),
+            lease_id: LeaseId::new(),
+            fencing_token: 8,
+            transport_nonce: "transport".into(),
+        };
+        let grant = AttemptBrokerGrant {
+            policy_digest: "sha256:policy".into(),
+            data_boundary_digest: "sha256:boundary".into(),
+            route_digest: config.route_digest().unwrap(),
+            allowed_operations: std::collections::BTreeSet::from([
+                BrokerOperation::CredentialedRequest,
+            ]),
+            allowed_targets: std::collections::BTreeSet::from(["llm-gateway-attempt".into()]),
+            maximum_requests: 1,
+            maximum_tokens: 100,
+            maximum_cost_micros: 1000,
+            maximum_response_bytes: 1024,
+            expires_at: Utc::now() + chrono::Duration::minutes(1),
+            gateway_binding_digest: Some(binding_digest),
+        };
+        let journal_path = directory.path().join("journal.sqlite");
+        let journal = Journal::open(&journal_path).unwrap();
+        journal
+            .record_broker_test_execution(
+                identity.execution_id,
+                identity.lease_id,
+                identity.fencing_token,
+            )
+            .unwrap();
+        let broker = AttemptBroker::bind(&config, grant, identity.clone(), journal)
+            .await
+            .unwrap();
+        fs::write(
+            &secret,
+            serde_json::to_vec(&AttemptCredentialEnvelope {
+                schema_version: 1,
+                credential_id: Uuid::new_v4(),
+                generation: 2,
+                token: "rotated-attempt-token".into(),
+                audience: "llm-gateway".into(),
+                binding_digest: format!("sha256:{}", "a".repeat(64)),
+                issued_at: Utc::now() - chrono::Duration::seconds(1),
+                expires_at: Utc::now() + chrono::Duration::seconds(30),
+                revoked_at: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let socket = broker.socket_path().to_path_buf();
+        let (shutdown, rx) = watch::channel(false);
+        let task = tokio::spawn(broker.serve(std::process::id(), rx));
+        let request = BrokerRequest {
+            request_id: Uuid::new_v4(),
+            execution_id: identity.execution_id,
+            lease_id: identity.lease_id,
+            fencing_token: identity.fencing_token,
+            policy_digest: "sha256:policy".into(),
+            data_boundary_digest: "sha256:boundary".into(),
+            operation: BrokerOperation::CredentialedRequest,
+            target: "llm-gateway-attempt".into(),
+            method: "GET".into(),
+            path: "credential".into(),
+            body_base64: String::new(),
+            declared_tokens: 0,
+            declared_cost_micros: 0,
+        };
+        let response = send(&socket, &request).await.unwrap();
+        let delivered: AttemptCredentialEnvelope =
+            serde_json::from_slice(&STANDARD.decode(&response.body_base64).unwrap()).unwrap();
+        assert_eq!(delivered.generation, 2);
+        assert_eq!(delivered.token, "rotated-attempt-token");
+        let replay = send(&socket, &request).await.unwrap();
+        let replayed: AttemptCredentialEnvelope =
+            serde_json::from_slice(&STANDARD.decode(&replay.body_base64).unwrap()).unwrap();
+        assert_eq!(replayed.generation, 2);
+        assert_eq!(replayed.token, "rotated-attempt-token");
+        assert_eq!(replay.consumed_requests, 1);
+        shutdown.send(true).unwrap();
+        task.await.unwrap().unwrap();
+        let stored: String = rusqlite::Connection::open(journal_path)
+            .unwrap()
+            .query_row(
+                "SELECT response_json FROM broker_request_journal WHERE execution_id=?1",
+                rusqlite::params![identity.execution_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!stored.contains("attempt-only-token"));
+        assert!(!stored.contains("rotated-attempt-token"));
+    }
+
+    #[tokio::test]
     async fn broker_rejects_payload_child_before_parsing_request() {
         let directory = tempfile::tempdir().unwrap();
         let config = AttemptBrokerConfig {
@@ -653,8 +934,11 @@ mod tests {
                 base_url: "http://127.0.0.1:9/".into(),
                 credential_class: None,
                 credential_file: None,
+                credential_directory: None,
                 auth_header: "authorization".into(),
                 auth_scheme: "Bearer".into(),
+                deliver_attempt_credential: false,
+                credential_audience: None,
                 cost_per_1k_tokens_micros: 0,
             }],
         };
@@ -675,6 +959,7 @@ mod tests {
             maximum_cost_micros: 0,
             maximum_response_bytes: 100,
             expires_at: Utc::now() + chrono::Duration::minutes(1),
+            gateway_binding_digest: None,
         };
         let journal = Journal::open(&directory.path().join("journal.sqlite")).unwrap();
         journal

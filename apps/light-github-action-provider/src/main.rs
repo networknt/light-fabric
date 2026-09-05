@@ -7,6 +7,9 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use coding_agent_runtime::{
+    CodingImplementationArtifact, CodingReviewResult, authorize_reviewed_publish,
+};
 use execution_fixed_action::{
     FixedPatchRequest, GitObjectFormat, execute_fixed_patch_in_workspace,
 };
@@ -342,7 +345,44 @@ fn validate_request(state: &AppState, operation: &str, r: &ActionRequest) -> Res
     {
         anyhow::bail!("canonical patch differs from approved artifact digest")
     }
+    validate_review_closure_if_present(r)?;
     Ok(())
+}
+
+fn validate_review_closure(request: &ActionRequest) -> Result<()> {
+    let implementation: CodingImplementationArtifact = serde_json::from_value(
+        request
+            .spec
+            .get("implementationArtifact")
+            .cloned()
+            .context("approved coding implementation artifact missing")?,
+    )?;
+    let review: CodingReviewResult = serde_json::from_value(
+        request
+            .spec
+            .get("reviewResult")
+            .cloned()
+            .context("approved coding review result missing")?,
+    )?;
+    authorize_reviewed_publish(&implementation, &review)
+        .context("coding review closure gate blocked publication")?;
+    if implementation.patch_digest != request.immutable_input_digest {
+        anyhow::bail!("reviewed implementation differs from immutable fixed-action input")
+    }
+    Ok(())
+}
+
+fn validate_review_closure_if_present(request: &ActionRequest) -> Result<()> {
+    match (
+        request.spec.get("implementationArtifact"),
+        request.spec.get("reviewResult"),
+    ) {
+        (None, None) => Ok(()),
+        (Some(_), Some(_)) => validate_review_closure(request),
+        _ => anyhow::bail!(
+            "coding implementation artifact and review result must be supplied together"
+        ),
+    }
 }
 
 async fn github(
@@ -465,6 +505,7 @@ async fn create_patched_commit(
     repository: &Repository,
     branch: &str,
 ) -> Result<String> {
+    validate_review_closure_if_present(request)?;
     let repository_url = request
         .spec
         .get("repository")
@@ -922,6 +963,24 @@ mod tests {
             work_root: Arc::new(work_root),
         };
         let patch_digest = format!("sha256:{}", hex::encode(Sha256::digest(patch.as_bytes())));
+        let implementation = CodingImplementationArtifact {
+            schema_version: coding_agent_runtime::CODING_ARTIFACT_SCHEMA_VERSION,
+            adapter_contract_digest: format!("sha256:{}", "1".repeat(64)),
+            repository_digest: format!("sha256:{}", "2".repeat(64)),
+            base_revision: base.clone(),
+            patch_digest: patch_digest.clone(),
+            changed_paths: std::collections::BTreeSet::from(["fixture.txt".into()]),
+            validation_evidence: Vec::new(),
+            resolved_finding_ids: std::collections::BTreeSet::new(),
+        };
+        let review = CodingReviewResult {
+            schema_version: coding_agent_runtime::CODING_ARTIFACT_SCHEMA_VERSION,
+            review_id: "review-1".into(),
+            artifact_digest: patch_digest.clone(),
+            verdict: coding_agent_runtime::ReviewVerdict::Approved,
+            findings: Vec::new(),
+            validation_gaps: Vec::new(),
+        };
         let request = ActionRequest {
             fixed_action_id: uuid::Uuid::now_v7(),
             execution_id: uuid::Uuid::now_v7(),
@@ -931,8 +990,57 @@ mod tests {
             target: json!(remote.display().to_string()),
             policy_digest: "sha256:policy".into(),
             provenance_digest: Some("sha256:provenance".into()),
-            spec: json!({"operation":"open-pr","target":remote.display().to_string(),"repository":remote.display().to_string(),"baseCommit":base,"repositoryObjectFormat":"sha1","targetBranch":"agent/change","patchDigest":patch_digest,"patch":patch,"changedPaths":["fixture.txt"],"pullRequestBase":"main","pullRequestTitle":"Approved fixture change","policyDigest":"sha256:policy","provenanceDigest":"sha256:provenance"}),
+            spec: json!({"operation":"open-pr","target":remote.display().to_string(),"repository":remote.display().to_string(),"baseCommit":base,"repositoryObjectFormat":"sha1","targetBranch":"agent/change","patchDigest":patch_digest,"patch":patch,"changedPaths":["fixture.txt"],"pullRequestBase":"main","pullRequestTitle":"Approved fixture change","policyDigest":"sha256:policy","provenanceDigest":"sha256:provenance","implementationArtifact":implementation,"reviewResult":review}),
         };
+        let mut generic_fixed_action = request.clone();
+        generic_fixed_action
+            .spec
+            .as_object_mut()
+            .unwrap()
+            .remove("implementationArtifact");
+        generic_fixed_action
+            .spec
+            .as_object_mut()
+            .unwrap()
+            .remove("reviewResult");
+        assert!(validate_request(&state, "open-pr", &generic_fixed_action).is_ok());
+        generic_fixed_action.spec["implementationArtifact"] =
+            request.spec["implementationArtifact"].clone();
+        assert!(validate_request(&state, "open-pr", &generic_fixed_action).is_err());
+        let mut blocked = request.clone();
+        blocked.fixed_action_id = uuid::Uuid::now_v7();
+        blocked.spec["reviewResult"] = json!({
+            "schemaVersion": 1,
+            "reviewId": "review-blocking",
+            "artifactDigest": patch_digest,
+            "verdict": "changes-required",
+            "findings": [{
+                "findingId": "CODE-1",
+                "severity": "high",
+                "repository": "networknt/light-fabric",
+                "location": "fixture.txt",
+                "summary": "candidate is not safe",
+                "evidence": "seeded blocking evidence",
+                "requiredResolution": "remediate before publication"
+            }],
+            "validationGaps": []
+        });
+        assert!(
+            execute_inner(&state, "approval:fixed-action-blocked", "open-pr", blocked,)
+                .await
+                .is_err()
+        );
+        let blocked_journal_count: i64 = state
+            .db
+            .lock()
+            .await
+            .query_row(
+                "SELECT COUNT(*) FROM operation_journal WHERE idempotency_key='approval:fixed-action-blocked'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(blocked_journal_count, 0);
         assert!(
             execute_inner(
                 &state,

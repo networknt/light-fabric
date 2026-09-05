@@ -11,12 +11,14 @@ async-trait.workspace = true
 base64 = "0.22"
 axum.workspace = true
 chrono.workspace = true
+coding-agent-runtime = { path = "../../crates/coding-agent-runtime" }
 dashmap = "6"
 execution-backend = { path = "../../crates/execution-backend" }
 execution-backend-mock = { path = "../../crates/execution-backend-mock" }
 execution-backend-cube = { path = "../../crates/execution-backend-cube" }
 execution-backend-oci = { path = "../../crates/execution-backend-oci" }
 execution-runner-protocol = { path = "../../crates/execution-runner-protocol" }
+execution-security = { path = "../../crates/execution-security" }
 futures-util.workspace = true
 hex.workspace = true
 http = "1"

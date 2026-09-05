@@ -6,7 +6,7 @@ use knowledge_core::RetrievalFilters;
 use serde::de::{DeserializeOwned, Error as DeError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use url::Url;
 use uuid::Uuid;
 
@@ -330,13 +330,43 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CodingProfilePolicy {
+    pub schema_version: u16,
     pub product_profile_digest: String,
     pub repository_uri_prefix: String,
+    pub adapter_id: String,
+    pub adapter_version: String,
+    pub adapter_protocol_version: String,
+    pub action_kind: String,
     pub compatibility_digest: String,
+    pub image_digest: String,
+    pub capability_digest: String,
+    pub template_id: String,
+    pub template_version: u32,
     pub template_digest: String,
+    pub executable: String,
+    pub schema_digest: String,
+    pub required_features: BTreeSet<String>,
     pub binary_digest: String,
-    pub provider: String,
+    pub qualification: coding_agent_runtime::CodingAdapterQualification,
     pub model: String,
+    pub review_model: String,
+    pub authentication_profile: coding_agent_runtime::CodingAuthenticationProfile,
+    #[serde(default)]
+    pub enterprise_gateway: Option<CodingGatewayPolicy>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CodingGatewayPolicy {
+    pub base_url: String,
+    pub credential_target: String,
+    pub audience: String,
+    pub route_digest: String,
+    pub budget_policy_id: String,
+    pub maximum_requests: u32,
+    pub maximum_tokens: u64,
+    pub maximum_cost_micros: u64,
+    pub maximum_response_bytes: usize,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1348,19 +1378,44 @@ mod tests {
         let coding: CodingProfileValue = serde_yaml::from_str(
             r#"
 value:
+  schemaVersion: 1
   productProfileDigest: sha256:profile
   repositoryUriPrefix: file:///var/lib/light-agent/repositories/
+  adapterId: codex-app-server-v1
+  adapterVersion: 0.153.2
+  adapterProtocolVersion: codex-app-server-v2
+  actionKind: coding.codex-app-server-v1
   compatibilityDigest: sha256:compatibility
+  imageDigest: sha256:image
+  capabilityDigest: sha256:capability
+  templateId: coding-codex-app-server-v1
+  templateVersion: 1
   templateDigest: sha256:template
+  executable: /usr/local/bin/codex
+  schemaDigest: sha256:schema
+  requiredFeatures: [deny-all-egress, immutable-repository-upload, canonical-patch-output, codex-app-server-v1]
   binaryDigest: sha256:binary
-  provider: gateway
-  model: coding-model
+  qualification:
+    schemaVersion: 1
+    adapterId: codex-app-server-v1
+    adapterVersion: 0.153.2
+    status: qualified
+    evaluatedDimensions: [protocol-lifecycle, approval-mediation, streaming-events, usage-accounting, cancellation, resumability, canonical-patch, review-isolation, authentication-profiles, workspace-isolation, panic-containment, dependency-compatibility, license-compatibility]
+    contractDigest: sha256:contract
+    evidenceDigest: sha256:evidence
+  model: coding-implementer
+  reviewModel: coding-reviewer
+  authenticationProfile: personal-subscription
 "#,
         )
         .unwrap();
         let coding = coding.value.unwrap();
-        assert_eq!(coding.provider, "gateway");
-        assert_eq!(coding.model, "coding-model");
+        assert_eq!(coding.model, "coding-implementer");
+        assert_eq!(coding.review_model, "coding-reviewer");
+        assert_eq!(
+            coding.authentication_profile,
+            coding_agent_runtime::CodingAuthenticationProfile::PersonalSubscription
+        );
 
         let missing_catalog: CatalogValue = serde_yaml::from_str("{}").unwrap();
         assert!(missing_catalog.value.is_none());
@@ -1386,6 +1441,8 @@ value:
 
         assert!(serde_yaml::from_str::<CodingProfileValue>("value: []").is_err());
         assert!(serde_yaml::from_str::<CodingProfileValue>("value: enabled").is_err());
-        assert!(serde_yaml::from_str::<CodingProfileValue>("value: {provider: gateway}").is_err());
+        assert!(
+            serde_yaml::from_str::<CodingProfileValue>("value: {model: coding-model}").is_err()
+        );
     }
 }

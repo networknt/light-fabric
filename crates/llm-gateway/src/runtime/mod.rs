@@ -46,15 +46,18 @@ use uuid::Uuid;
 pub struct LlmRequestContext {
     pub request_id: String,
     pub principal_id: String,
+    pub billing_subject: String,
     pub tenant_id: Option<String>,
     pub deadline: Instant,
 }
 
 impl LlmRequestContext {
     pub fn with_timeout(principal_id: impl Into<String>, timeout: Duration) -> Self {
+        let principal_id = principal_id.into();
         Self {
             request_id: Uuid::now_v7().to_string(),
-            principal_id: principal_id.into(),
+            billing_subject: principal_id.clone(),
+            principal_id,
             tenant_id: None,
             deadline: Instant::now() + timeout,
         }
@@ -341,6 +344,7 @@ impl LlmRuntime {
                 AuditStart {
                     request_id: context.request_id.clone(),
                     principal_id: context.principal_id.clone(),
+                    billing_subject: context.billing_subject.clone(),
                     alias: alias.public_name.clone(),
                     operation: Operation::Generate,
                     generation: root.generation,
@@ -978,6 +982,7 @@ impl LlmRuntime {
                 AuditStart {
                     request_id: context.request_id.clone(),
                     principal_id: context.principal_id.clone(),
+                    billing_subject: context.billing_subject.clone(),
                     alias: alias.public_name.clone(),
                     operation: Operation::Embed,
                     generation: root.generation,
@@ -1543,6 +1548,7 @@ impl LlmRuntime {
         &self,
         root: &LlmPublishedSnapshot,
         principal_id: &str,
+        billing_subject: &str,
         model: &str,
         expectation: Option<&EmbeddingSpaceExpectation>,
     ) -> Result<(), LlmGatewayError> {
@@ -1557,6 +1563,7 @@ impl LlmRuntime {
                 AuditStart {
                     request_id: uuid::Uuid::now_v7().to_string(),
                     principal_id: principal_id.to_string(),
+                    billing_subject: billing_subject.to_string(),
                     alias: alias.public_name.clone(),
                     operation: Operation::Embed,
                     generation: root.generation,

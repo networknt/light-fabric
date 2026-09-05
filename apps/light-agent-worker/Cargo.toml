@@ -9,11 +9,18 @@ agent-core = { path = "../../crates/agent-core" }
 agent-runtime-protocol = { path = "../../crates/agent-runtime-protocol" }
 agent-materializer = { path = "../../crates/agent-materializer" }
 anyhow = { workspace = true }
+base64 = "0.22"
 chrono = { workspace = true }
 coding-agent-runtime = { path = "../../crates/coding-agent-runtime" }
 execution-security = { path = "../../crates/execution-security" }
+execution-backend = { path = "../../crates/execution-backend" }
 execution-runner-protocol = { path = "../../crates/execution-runner-protocol" }
+hex = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true }
+tempfile = "3"
 uuid = { workspace = true }
+
+[dev-dependencies]
+jsonschema = { workspace = true }

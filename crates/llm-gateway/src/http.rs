@@ -26,7 +26,15 @@ pub struct BufferedHttpRequest {
     pub path: String,
     pub headers: BTreeMap<String, String>,
     pub body: Vec<u8>,
+    /// Authorization/rate-limit identity derived only from verified standard
+    /// principal fields, never from accounting claims.
     pub principal_id: String,
+    /// Verified accounting subject. It may differ from the workload principal
+    /// but has no role in alias or admission authorization.
+    pub billing_subject: String,
+    /// Authenticated delegation claim. When present, the JSON body cannot
+    /// select a different logical route.
+    pub bound_model_alias: Option<String>,
     /// Authenticated host/tenant boundary. It is required for portable
     /// reasoning-state continuation and is never accepted from the JSON body.
     pub tenant_id: Option<String>,
@@ -269,6 +277,13 @@ impl LlmBufferedHttp {
                 ));
             }
             let probe = embedding_admission_probe(&raw)?;
+            if request
+                .bound_model_alias
+                .as_deref()
+                .is_some_and(|bound| bound != probe.model)
+            {
+                return Err(LlmGatewayError::Forbidden);
+            }
             let selection = match self.runtime.probe_embedding_space(
                 &root,
                 &request.principal_id,
@@ -282,6 +297,7 @@ impl LlmBufferedHttp {
                         .audit_embedding_space_rejection(
                             &root,
                             &request.principal_id,
+                            &request.billing_subject,
                             probe.model,
                             expectation.as_ref(),
                         )
@@ -317,10 +333,18 @@ impl LlmBufferedHttp {
                 "JSON nesting limit exceeded".to_string(),
             ));
         }
-        if raw.get("model").and_then(Value::as_str).is_none() {
+        let requested_model = raw.get("model").and_then(Value::as_str);
+        if requested_model.is_none() {
             return Err(LlmGatewayError::InvalidRequest(
                 "model is required".to_string(),
             ));
+        }
+        if request
+            .bound_model_alias
+            .as_deref()
+            .is_some_and(|bound| Some(bound) != requested_model)
+        {
+            return Err(LlmGatewayError::Forbidden);
         }
         let streaming = match raw.get("stream") {
             None | Some(Value::Null) | Some(Value::Bool(false)) => false,
@@ -429,6 +453,7 @@ impl LlmBufferedHttp {
             // header and is never forced into the audit database UUID key.
             request_id: uuid::Uuid::now_v7().to_string(),
             principal_id: request.principal_id.clone(),
+            billing_subject: request.billing_subject.clone(),
             tenant_id: request.tenant_id.clone(),
             deadline: std::time::Instant::now() + self.timeout,
         };
@@ -653,6 +678,7 @@ impl LlmBufferedHttp {
         let context = LlmRequestContext {
             request_id: request.trusted_request_id.clone(),
             principal_id: request.principal_id.clone(),
+            billing_subject: request.billing_subject.clone(),
             tenant_id: request.tenant_id.clone(),
             deadline: std::time::Instant::now() + self.timeout,
         };

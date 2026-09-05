@@ -12,13 +12,21 @@ use std::collections::BTreeSet;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
+mod codex_app_server;
+
 pub fn capabilities() -> RuntimeCapabilities {
     RuntimeCapabilities {
-        adapter_id: "deterministic-mock".into(),
-        adapter_version: env!("CARGO_PKG_VERSION").into(),
+        adapter_id: coding_agent_runtime::CODEX_APP_SERVER_ADAPTER_ID.into(),
+        adapter_version: coding_agent_runtime::CODEX_APP_SERVER_VERSION.into(),
+        adapter_protocol_version: coding_agent_runtime::CODEX_APP_SERVER_PROTOCOL_VERSION.into(),
         protocol_version: PROTOCOL_VERSION.into(),
-        actions: BTreeSet::from(["mock".into(), "coding.pi-rpc-v1".into()]),
-        supports_checkpoint: true,
+        actions: BTreeSet::from(["mock".into(), "coding.codex-app-server-v1".into()]),
+        supports_approvals: true,
+        supports_checkpoint: false,
+        supports_session_reuse: false,
+        supports_streaming: true,
+        supports_thread_turn_identity: true,
+        supports_usage: true,
         maximum_event_bytes: 1024 * 1024,
     }
 }
@@ -57,8 +65,50 @@ where
     .await?;
     while let Some(line) = lines.next_line().await? {
         match serde_json::from_str::<RuntimeCommand>(&line).context("invalid runtime command")? {
-            RuntimeCommand::Start { input, .. } => {
-                run_scenario(&mut writer, &identity, &mut sequence, input).await?
+            RuntimeCommand::Start {
+                session_id,
+                turn_id,
+                action_attempt_id,
+                policy_digest,
+                input,
+                enterprise_gateway,
+            } => {
+                if let Some(gateway) = enterprise_gateway.as_deref() {
+                    gateway.validate()?;
+                    if gateway.binding.session_id != session_id
+                        || gateway.binding.turn_id != turn_id
+                        || gateway.binding.action_attempt_id != action_attempt_id
+                        || gateway.binding.policy_digest != policy_digest
+                    {
+                        bail!("enterprise gateway binding differs from the admitted turn")
+                    }
+                }
+                let (cancel_tx, cancel_rx) = tokio::sync::watch::channel::<Option<String>>(None);
+                let running = run_scenario(
+                    &mut writer,
+                    &identity,
+                    &mut sequence,
+                    input,
+                    enterprise_gateway.map(|gateway| *gateway),
+                    cancel_rx,
+                );
+                tokio::pin!(running);
+                loop {
+                    tokio::select! {
+                        result = &mut running => { result?; break; }
+                        command = lines.next_line() => {
+                            let Some(command) = command? else {
+                                let _ = cancel_tx.send(Some("runner channel closed".into()));
+                                running.await?;
+                                return Ok(());
+                            };
+                            match serde_json::from_str::<RuntimeCommand>(&command).context("invalid runtime command")? {
+                                RuntimeCommand::Cancel { reason } => { let _ = cancel_tx.send(Some(reason)); }
+                                _ => bail!("only cancel is accepted while a turn is active"),
+                            }
+                        }
+                    }
+                }
             }
             RuntimeCommand::Cancel { reason } => {
                 emit(
@@ -98,11 +148,24 @@ async fn run_scenario<W: AsyncWrite + Unpin>(
     identity: &RuntimeIdentity,
     sequence: &mut u64,
     input: Value,
+    enterprise_gateway: Option<agent_runtime_protocol::EnterpriseGatewayConfig>,
+    cancel: tokio::sync::watch::Receiver<Option<String>>,
 ) -> Result<()> {
     let scenario = input
         .get("scenario")
         .and_then(Value::as_str)
         .unwrap_or("success");
+    if input.get("adapterContract").is_some() {
+        return codex_app_server::run(
+            writer,
+            identity,
+            sequence,
+            input,
+            enterprise_gateway,
+            cancel,
+        )
+        .await;
+    }
     if scenario == "coding-fixture" {
         return run_coding_fixture(writer, identity, sequence, input).await;
     }
@@ -212,8 +275,8 @@ async fn run_coding_fixture<W: AsyncWrite + Unpin>(
         )
         .await?;
     }
-    // This adapter is a deterministic structured-RPC fixture. A production Pi
-    // process supplies the same fields over the protected worker transport.
+    // This deterministic fixture exercises the same bounded patch contract as
+    // the production Codex App Server adapter.
     let path = input
         .get("fixturePath")
         .and_then(Value::as_str)
@@ -246,7 +309,17 @@ async fn run_coding_fixture<W: AsyncWrite + Unpin>(
         sequence,
         RuntimeEventPayload::Terminal {
             class: ResultClass::Success,
-            output: Some(json!({"adapter":"pi-rpc","adapterVersion":"1"})),
+            output: Some(json!({
+                "adapter":"coding-fixture",
+                "adapterVersion":"1",
+                "authentication": coding_agent_runtime::CodingAuthenticationEvidence {
+                    profile: spec.authentication_profile,
+                    credential_source: coding_agent_runtime::CodingCredentialSource::NativeCodexStore,
+                    credential_generation: None,
+                    authoritative_usage: false,
+                },
+                "validationEvidence": []
+            })),
             error: None,
         },
     )
@@ -271,6 +344,9 @@ async fn emit<W: AsyncWrite + Unpin>(
         payload,
     };
     let bytes = serde_json::to_vec(&event)?;
+    if bytes.len() > agent_runtime_protocol::MAX_FRAME_BYTES {
+        bail!("runtime event exceeds the protocol frame limit")
+    }
     writer.write_all(&bytes).await?;
     writer.write_all(b"\n").await?;
     writer.flush().await?;
@@ -308,6 +384,7 @@ mod tests {
                 turn_id: AgentTurnId::new(),
                 action_attempt_id: AgentActionAttemptId::new(),
                 policy_digest: "sha256:policy".into(),
+                enterprise_gateway: None,
                 input: json!({"scenario":"success"}),
             },
         ] {
@@ -342,26 +419,37 @@ mod tests {
             fencing_token: 8,
             transport_nonce: "b".repeat(32),
         };
+        let writable_roots = std::collections::BTreeSet::from(["/workspace/repo".into()]);
+        let allowed_tools =
+            CodingTurnSpec::supported_tools(coding_agent_runtime::CodingRole::Implement);
         let manifest = MaterializationManifest {
             schema_version: 1,
             materializer_id: "coding".into(),
             materializer_version: 1,
             product_profile: ProductProfile::Coding,
-            runtime_compatibility: "pi-rpc-v1".into(),
+            runtime_compatibility: "coding-fixture-v1".into(),
             packages: vec![],
             effective_instructions: vec![],
             allowed_tools: Default::default(),
-            writable_roots: Default::default(),
+            writable_roots: writable_roots.clone(),
         };
         let spec = CodingTurnSpec {
             repository_digest: format!("sha256:{:064x}", 1),
             base_revision: "a".repeat(40),
             workspace_root: "/workspace/repo".into(),
             prompt: "fix".into(),
-            model_alias: "approved".into(),
+            model_alias: coding_agent_runtime::CODING_IMPLEMENTER_ALIAS.into(),
+            authentication_profile:
+                coding_agent_runtime::CodingAuthenticationProfile::PersonalSubscription,
+            role: coding_agent_runtime::CodingRole::Implement,
+            role_profile: coding_agent_runtime::CodingRoleExecutionProfile::pinned(
+                coding_agent_runtime::CodingRole::Implement,
+            ),
+            review_input: None,
+            remediation: None,
             materialization_manifest_digest: manifest.digest().unwrap(),
-            writable_roots: Default::default(),
-            allowed_tools: Default::default(),
+            writable_roots,
+            allowed_tools,
             maximum_patch_bytes: 4096,
             maximum_changed_files: 10,
         };
@@ -379,6 +467,7 @@ mod tests {
                 turn_id: AgentTurnId::new(),
                 action_attempt_id: AgentActionAttemptId::new(),
                 policy_digest: "sha256:policy".into(),
+                enterprise_gateway: None,
                 input: json!({"scenario":"coding-fixture","codingSpec":spec,"materializationManifest":manifest}),
             },
         ] {

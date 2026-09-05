@@ -1,8 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use coding_agent_runtime::{
-    CodingFixtureOutput, CodingFixtureRequest, CodingTurnSpec, PI_RPC_ADAPTER_ID,
-    PI_RPC_ADAPTER_VERSION, validate_patch,
+    CodingFixtureOutput, CodingFixtureRequest, CodingTurnSpec, validate_patch,
 };
 use execution_backend::{
     BackendError, BackendOperationState, BackendOutput, CleanupEvidence, ExecutionBackend,
@@ -217,18 +216,13 @@ impl CubeBackendConfig {
             backend_version: "cube-e2b-connect-v1".into(),
             boundary: IsolationBoundary::MicroVm,
             host_exposure: HostExposure::None,
-            actions: vec![
-                "run.shell".into(),
-                "coding.fixture".into(),
-                "coding.pi-rpc-v1".into(),
-            ],
+            actions: vec!["run.shell".into(), "coding.fixture".into()],
             features: vec![
                 "deny-all-egress".into(),
                 "native-ttl".into(),
                 "bounded-metadata-recovery".into(),
                 "immutable-repository-upload".into(),
                 "canonical-patch-output".into(),
-                "pi-rpc-v1".into(),
                 "bounded-tag-discovery".into(),
             ],
             compatibility_digest: self.compatibility_digest.clone(),
@@ -268,10 +262,7 @@ impl<C: CubeApi + 'static> ExecutionBackend for CubeExecutionBackend<C> {
                 "Cube inputs must be immutable".into(),
             ));
         }
-        if matches!(
-            command.executable.as_str(),
-            "/usr/local/bin/light-coding-agent-fixture" | "/usr/local/bin/light-pi-rpc-adapter"
-        ) {
+        if command.executable == "/usr/local/bin/light-coding-agent-fixture" {
             let repository_digest = coding_spec(&command)?.repository_digest;
             if staged.len() != 1
                 || staged[0].mount_target != "/inputs/repository.bundle"
@@ -453,21 +444,14 @@ fn validate_coding_fixture_output(
         serde_json::from_value(lease.command.clone()).map_err(|error| {
             BackendError::InvalidRequest(format!("invalid coding command: {error}"))
         })?;
-    if !matches!(
-        command.executable.as_str(),
-        "/usr/local/bin/light-coding-agent-fixture" | "/usr/local/bin/light-pi-rpc-adapter"
-    ) {
+    if command.executable != "/usr/local/bin/light-coding-agent-fixture" {
         return Ok(None);
     }
     let spec = coding_spec(&command)?;
     let output: CodingFixtureOutput = serde_json::from_slice(stdout).map_err(|error| {
         BackendError::Unknown(format!("invalid coding fixture output: {error}"))
     })?;
-    let expected_adapter = if command.executable == "/usr/local/bin/light-pi-rpc-adapter" {
-        (PI_RPC_ADAPTER_ID, PI_RPC_ADAPTER_VERSION)
-    } else {
-        ("cube-coding-fixture", "1")
-    };
+    let expected_adapter = ("cube-coding-fixture", "1");
     if output.adapter_id != expected_adapter.0
         || output.adapter_version != expected_adapter.1
         || output.repository_digest != spec.repository_digest
@@ -492,21 +476,6 @@ fn validate_coding_fixture_output(
 fn coding_spec(command: &CommandExecutionSpec) -> Result<CodingTurnSpec, BackendError> {
     if command.executable == "/usr/local/bin/light-coding-agent-fixture" {
         return coding_fixture_request(command).map(|request| request.spec);
-    }
-    if command.executable == "/usr/local/bin/light-pi-rpc-adapter"
-        && command.arguments.len() == 12
-        && command.arguments[0] == "--repository"
-        && command.arguments[1] == "/inputs/repository.bundle"
-        && command.arguments[2] == "--request-base64"
-        && command.arguments[4] == "--pi"
-        && command.arguments[5] == "/usr/local/bin/pi"
-        && command.arguments[6] == "--pi-digest"
-        && command.arguments[8] == "--provider"
-        && command.arguments[10] == "--model"
-    {
-        return CodingTurnSpec::decode_argument(&command.arguments[3]).map_err(|error| {
-            BackendError::InvalidRequest(format!("invalid Pi coding request: {error}"))
-        });
     }
     Err(BackendError::InvalidRequest(
         "coding adapter executable or arguments do not match an admitted contract".into(),
@@ -561,7 +530,7 @@ fn map_state(state: CubeState) -> BackendOperationState {
 mod tests {
     use super::*;
     use chrono::Duration;
-    use coding_agent_runtime::{CodingFixtureRequest, CodingTurnSpec};
+    use coding_agent_runtime::{CodingFixtureRequest, CodingRole, CodingTurnSpec};
     use execution_runner_protocol::{
         AuthenticatedOrigin, ExecutionId, ExecutionSubject, LeaseContext, LeaseId, OriginKind,
         SchedulingRequestId,
@@ -937,10 +906,18 @@ mod tests {
             base_revision: "a".repeat(40),
             workspace_root: "/workspace/repo".into(),
             prompt: "fixture".into(),
-            model_alias: "fixture".into(),
+            model_alias: coding_agent_runtime::CODING_IMPLEMENTER_ALIAS.into(),
+            authentication_profile:
+                coding_agent_runtime::CodingAuthenticationProfile::EnterpriseApi,
+            role: coding_agent_runtime::CodingRole::Implement,
+            role_profile: coding_agent_runtime::CodingRoleExecutionProfile::pinned(
+                coding_agent_runtime::CodingRole::Implement,
+            ),
+            review_input: None,
+            remediation: None,
             materialization_manifest_digest: format!("sha256:{}", "2".repeat(64)),
             writable_roots: BTreeSet::from(["/workspace/repo".into()]),
-            allowed_tools: BTreeSet::from(["fs.read".into(), "fs.write".into()]),
+            allowed_tools: CodingTurnSpec::supported_tools(CodingRole::Implement),
             maximum_patch_bytes: 4096,
             maximum_changed_files: 1,
         };
@@ -996,50 +973,6 @@ mod tests {
         assert!(
             validate_coding_fixture_output(&lease, &serde_json::to_vec(&tampered).unwrap())
                 .is_err()
-        );
-
-        lease.command = serde_json::to_value(CommandExecutionSpec {
-            schema_version: 1,
-            template_id: "cube-pi-rpc-v1".into(),
-            template_version: 1,
-            template_digest: lease.command_template_digest.clone(),
-            executable: "/usr/local/bin/light-pi-rpc-adapter".into(),
-            arguments: vec![
-                "--repository".into(),
-                "/inputs/repository.bundle".into(),
-                "--request-base64".into(),
-                spec.encode_argument().unwrap(),
-                "--pi".into(),
-                "/usr/local/bin/pi".into(),
-                "--pi-digest".into(),
-                format!("sha256:{}", "3".repeat(64)),
-                "--provider".into(),
-                "brokered".into(),
-                "--model".into(),
-                "approved".into(),
-            ],
-            working_directory: "/workspace".into(),
-            environment: BTreeMap::new(),
-            wall_clock_timeout_ms: 10_000,
-            stdout_limit_bytes: 4096,
-            stderr_limit_bytes: 4096,
-            network_enabled: false,
-            credentials_enabled: false,
-            persistent_workspace: false,
-        })
-        .unwrap();
-        let pi_output = CodingFixtureOutput {
-            adapter_id: PI_RPC_ADAPTER_ID.into(),
-            adapter_version: PI_RPC_ADAPTER_VERSION.into(),
-            repository_digest: spec.repository_digest.clone(),
-            base_revision: spec.base_revision.clone(),
-            patch: patch.into(),
-            changed_paths: vec!["fixture.txt".into()],
-        };
-        assert!(
-            validate_coding_fixture_output(&lease, &serde_json::to_vec(&pi_output).unwrap())
-                .unwrap()
-                .is_some()
         );
     }
 }

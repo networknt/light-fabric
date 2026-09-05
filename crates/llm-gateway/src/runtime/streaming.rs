@@ -193,6 +193,7 @@ impl LlmRuntime {
                 AuditStart {
                     request_id: context.request_id.clone(),
                     principal_id: context.principal_id.clone(),
+                    billing_subject: context.billing_subject.clone(),
                     alias: alias.public_name.clone(),
                     operation: Operation::Generate,
                     generation: root.generation,

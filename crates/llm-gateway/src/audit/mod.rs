@@ -21,6 +21,7 @@ use model_provider::inference::Operation;
 pub struct AuditStart {
     pub request_id: String,
     pub principal_id: String,
+    pub billing_subject: String,
     pub alias: String,
     pub operation: Operation,
     pub generation: u64,
@@ -114,6 +115,8 @@ pub struct AuditEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selected_embedding_space_revision: Option<u64>,
     pub principal_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing_subject_digest: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub charged_micros: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -427,6 +430,10 @@ fn event(
         selected_embedding_space_id: start.selected_embedding_space_id.clone(),
         selected_embedding_space_revision: start.selected_embedding_space_revision,
         principal_digest: format!("{:x}", Sha256::digest(start.principal_id.as_bytes())),
+        billing_subject_digest: Some(format!(
+            "{:x}",
+            Sha256::digest(start.billing_subject.as_bytes())
+        )),
         charged_micros,
         usage_complete,
     }
@@ -459,6 +466,7 @@ mod tests {
         AuditStart {
             request_id: Uuid::now_v7().to_string(),
             principal_id: "principal-secret".to_string(),
+            billing_subject: "billing-secret".to_string(),
             alias: "public-model".to_string(),
             operation: Operation::Generate,
             generation: 7,
@@ -994,7 +1002,9 @@ mod tests {
         .unwrap();
         let encoded = value.to_string();
         assert!(!encoded.contains("principal-secret"));
+        assert!(!encoded.contains("billing-secret"));
         assert!(!encoded.contains("person@example.com"));
+        assert_ne!(value["principalDigest"], value["billingSubjectDigest"]);
         assert_eq!(value["piiProfile"], "local-regex-v1:v1:request");
         for forbidden in ["prompt", "completion", "toolArguments", "credential"] {
             assert!(!value.as_object().unwrap().contains_key(forbidden));

@@ -170,6 +170,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.18",
+ "url",
  "uuid",
 ]
 
@@ -4613,12 +4614,17 @@ dependencies = [
  "agent-materializer",
  "agent-runtime-protocol",
  "anyhow",
+ "base64",
  "chrono",
  "coding-agent-runtime",
+ "execution-backend",
  "execution-runner-protocol",
  "execution-security",
+ "hex",
+ "jsonschema",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "tokio",
  "uuid",
 ]
@@ -4747,6 +4753,7 @@ dependencies = [
  "anyhow",
  "axum",
  "chrono",
+ "coding-agent-runtime",
  "execution-fixed-action",
  "execution-security",
  "futures-util",
@@ -4847,19 +4854,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
-]
-
-[[package]]
-name = "light-pi-rpc-adapter"
-version = "0.2.1"
-dependencies = [
- "anyhow",
- "coding-agent-runtime",
- "execution-security",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "tokio",
 ]
 
 [[package]]
@@ -5029,12 +5023,14 @@ dependencies = [
  "axum",
  "base64",
  "chrono",
+ "coding-agent-runtime",
  "dashmap",
  "execution-backend",
  "execution-backend-cube",
  "execution-backend-mock",
  "execution-backend-oci",
  "execution-runner-protocol",
+ "execution-security",
  "futures-util",
  "hex",
  "http 1.4.0",
@@ -5073,6 +5069,8 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 name = "llm-gateway"
 version = "0.2.1"
 dependencies = [
+ "agent-core",
+ "agent-runtime-protocol",
  "arc-swap",
  "async-stream",
  "async-trait",

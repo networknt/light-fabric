@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "codexVersion": "0.153.2",
+  "target": "x86_64-unknown-linux-musl",
+  "nativeBinarySha256": "f8786262ebc0fa1337448a2977332beadec66c8d0cda0ce973c7849766d7943c",
+  "v2SchemaBundleSha256": "d3eace08be5dca386bfd1f1e8df650058b4113f1e10870a284d775d75517576a",
+  "generatedBy": [
+    "codex app-server generate-json-schema --out <json-directory>",
+    "codex app-server generate-ts --out <typescript-directory>"
+  ]
+}

@@ -70,6 +70,51 @@ impl Supervisor {
 
     pub fn backend_capability(&self) -> execution_runner_protocol::BackendCapability {
         let mut capability = self.backend.capability();
+        if self.agent_worker.is_some() {
+            if !capability
+                .actions
+                .iter()
+                .any(|action| action == "coding.codex-app-server-v1")
+            {
+                capability.actions.push("coding.codex-app-server-v1".into());
+            }
+            for feature in [
+                "codex-app-server-v1",
+                "canonical-patch-output",
+                "immutable-repository-upload",
+            ] {
+                if !capability.features.iter().any(|current| current == feature) {
+                    capability.features.push(feature.into());
+                }
+            }
+            if self
+                .agent_worker
+                .as_ref()
+                .is_some_and(WorkerProcessConfig::has_restricted_model_egress)
+                && !capability
+                    .features
+                    .iter()
+                    .any(|feature| feature == "restricted-model-egress")
+            {
+                capability.features.push("restricted-model-egress".into());
+            }
+            let isolation_feature = if self
+                .agent_worker
+                .as_ref()
+                .is_some_and(|worker| worker.sandbox_launcher.is_some())
+            {
+                "per-attempt-worker-sandbox-v1"
+            } else {
+                "local-single-user-native-v1"
+            };
+            if !capability
+                .features
+                .iter()
+                .any(|feature| feature == isolation_feature)
+            {
+                capability.features.push(isolation_feature.into());
+            }
+        }
         capability.available_slots = self.available_capacity();
         capability.healthy = !self.draining.load(Ordering::Acquire)
             && self.journal.is_healthy()
@@ -546,39 +591,64 @@ impl Supervisor {
         {
             return Err("agent worker template digest is not admitted by the runner".into());
         }
-        let spec = serde_json::from_value::<agent_runtime_protocol::AgentWorkerExecutionSpec>(
+        let mut spec = serde_json::from_value::<agent_runtime_protocol::AgentWorkerExecutionSpec>(
             lease.command.clone(),
         )
         .map_err(|error| format!("invalid agent worker execution spec: {error}"))?;
-        self.journal.record_intent(&lease)?;
-        outbound
-            .send(RunnerToController::RunnerLeaseAccepted(lease.lease.clone()))
-            .await
-            .map_err(|_| "controller outbound channel closed".to_string())?;
-        let permit = self
-            .capacity
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| "runner capacity was exhausted".to_string())?;
+        let staged_inputs = self.stager.stage(&lease)?;
         let operation_id = format!("agent-worker:{}", lease.lease.execution_id);
-        let (cancel, cancellation) = watch::channel(false);
-        self.active.insert(
-            lease.lease.execution_id,
-            ActiveExecution {
-                lease: lease.clone(),
-                backend_operation_id: operation_id.clone(),
-                cancel,
-            },
-        );
-        self.journal.set_state(
-            lease.lease.execution_id,
-            JournalState::Executing,
-            Some(&operation_id),
-        )?;
-        outbound
-            .send(RunnerToController::RunnerLeaseStarted(lease.lease.clone()))
-            .await
-            .map_err(|_| "controller outbound channel closed".to_string())?;
+        let setup = async {
+            let input = spec
+                .input
+                .as_object_mut()
+                .ok_or_else(|| "agent worker input must be an object".to_string())?;
+            input.insert(
+                "runtimeStagedInputs".into(),
+                serde_json::to_value(&staged_inputs).map_err(|error| error.to_string())?,
+            );
+            self.journal.record_intent(&lease)?;
+            outbound
+                .send(RunnerToController::RunnerLeaseAccepted(lease.lease.clone()))
+                .await
+                .map_err(|_| "controller outbound channel closed".to_string())?;
+            let permit = self
+                .capacity
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| "runner capacity was exhausted".to_string())?;
+            let (cancel, cancellation) = watch::channel(false);
+            self.active.insert(
+                lease.lease.execution_id,
+                ActiveExecution {
+                    lease: lease.clone(),
+                    backend_operation_id: operation_id.clone(),
+                    cancel,
+                },
+            );
+            self.journal.set_state(
+                lease.lease.execution_id,
+                JournalState::Executing,
+                Some(&operation_id),
+            )?;
+            outbound
+                .send(RunnerToController::RunnerLeaseStarted(lease.lease.clone()))
+                .await
+                .map_err(|_| "controller outbound channel closed".to_string())?;
+            Ok::<_, String>((permit, cancellation))
+        }
+        .await;
+        let (permit, cancellation) = match setup {
+            Ok(value) => value,
+            Err(setup_error) => {
+                self.active.remove(&lease.lease.execution_id);
+                return match self.stager.cleanup(lease.lease.execution_id) {
+                    Ok(()) => Err(setup_error),
+                    Err(cleanup_error) => Err(format!(
+                        "{setup_error}; staged input cleanup also failed: {cleanup_error}"
+                    )),
+                };
+            }
+        };
 
         let supervisor = Arc::clone(self);
         tokio::spawn(async move {
@@ -586,6 +656,7 @@ impl Supervisor {
             let started_at = Utc::now();
             let execution =
                 run_worker_process(&lease, &spec, &config, &supervisor.journal, cancellation).await;
+            let cleanup_error = supervisor.stager.cleanup(lease.lease.execution_id).err();
             let finished_at = Utc::now();
             let worker_error = execution.as_ref().err().cloned();
             let mut result = match execution {
@@ -661,6 +732,12 @@ impl Supervisor {
             };
             if let Some(error) = worker_error {
                 result.evidence.insert("workerError".into(), error);
+            }
+            if let Some(error) = cleanup_error {
+                result.state = AttemptState::Unknown;
+                result.failure_class = Some("cleanup_failed".into());
+                result.cleanup_state = CleanupState::Failed;
+                result.evidence.insert("cleanupError".into(), error);
             }
             match supervisor.journal.broker_usage(lease.lease.execution_id) {
                 Ok((requests, tokens, cost)) => {

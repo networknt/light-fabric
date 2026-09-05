@@ -279,6 +279,23 @@ impl Journal {
         Ok(())
     }
 
+    pub fn complete_broker_request_redacted(
+        &self,
+        execution_id: ExecutionId,
+        request_id: uuid::Uuid,
+        response: &BrokerResponse,
+    ) -> Result<(), String> {
+        let redacted = BrokerResponse {
+            request_id: response.request_id,
+            status: response.status,
+            body_base64: String::new(),
+            consumed_requests: response.consumed_requests,
+            consumed_tokens: response.consumed_tokens,
+            consumed_cost_micros: response.consumed_cost_micros,
+        };
+        self.complete_broker_request(execution_id, request_id, &redacted)
+    }
+
     pub fn mark_broker_request_unknown(
         &self,
         execution_id: ExecutionId,

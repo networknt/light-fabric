@@ -1,5 +1,11 @@
-use agent_core::{AgentSessionId, AgentTurnId, PolicySnapshot, sha256_digest};
+use agent_core::{
+    AgentActionAttemptId, AgentSessionId, AgentTurnId, PolicySnapshot, sha256_digest,
+};
 use agent_materializer::MaterializationManifest;
+use agent_runtime_protocol::{
+    AgentWorkerExecutionSpec, AttemptBrokerGrant, BrokerOperation, EnterpriseGatewayConfig,
+    GatewayAttemptBinding,
+};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{Value, json};
@@ -12,7 +18,9 @@ use crate::agent_config::{
 };
 use crate::governed_model::GATEWAY_PROVIDER_ID;
 
-use coding_agent_runtime::{CodingFixtureRequest, CodingTurnSpec, ImmutableRepositoryInput};
+use coding_agent_runtime::{
+    CodingAdapterContract, CodingFixtureRequest, CodingTurnSpec, ImmutableRepositoryInput,
+};
 use execution_client::ExecutionClient;
 use execution_runner_protocol::{
     CleanupRequestSubmission, CommandExecutionSpec, ExecutionInputSubmission,
@@ -87,12 +95,11 @@ pub struct EdgeActionSpec {
 }
 
 #[derive(Debug, Clone)]
-pub struct PiCodingRuntime {
-    pub compatibility_digest: String,
-    pub template_digest: String,
-    pub pi_digest: String,
-    pub provider: String,
+pub struct CodingAdapterRuntime {
+    pub contract: CodingAdapterContract,
+    pub qualification: coding_agent_runtime::CodingAdapterQualification,
     pub model: String,
+    pub enterprise_gateway: Option<crate::agent_config::CodingGatewayPolicy>,
 }
 
 fn validate_edge_arguments(path: &str, schema: &Value, value: &Value) -> Result<()> {
@@ -1363,7 +1370,7 @@ impl AgentRepository {
         Ok(request_id)
     }
 
-    pub async fn schedule_pi_coding_turn(
+    pub async fn schedule_coding_adapter_turn(
         &self,
         host_id: Uuid,
         session_id: AgentSessionId,
@@ -1372,94 +1379,150 @@ impl AgentRepository {
         manifest: &MaterializationManifest,
         spec: &CodingTurnSpec,
         repository: &ImmutableRepositoryInput,
-        runtime: &PiCodingRuntime,
+        runtime: &CodingAdapterRuntime,
     ) -> Result<Uuid> {
         spec.validate()?;
         repository.validate(spec)?;
+        runtime.contract.validate()?;
+        if runtime.model != spec.model_alias {
+            bail!("coding runtime model alias differs from immutable role profile")
+        }
+        match (
+            spec.authentication_profile,
+            runtime.enterprise_gateway.is_some(),
+        ) {
+            (coding_agent_runtime::CodingAuthenticationProfile::PersonalSubscription, false)
+            | (coding_agent_runtime::CodingAuthenticationProfile::EnterpriseApi, true) => {}
+            _ => bail!("coding authentication profile differs from the admitted runtime route"),
+        }
         let manifest_digest = manifest.digest()?;
         if manifest.product_profile != agent_materializer::ProductProfile::Coding
             || spec.materialization_manifest_digest != manifest_digest
-            || manifest.runtime_compatibility != runtime.compatibility_digest
+            || manifest.runtime_compatibility != runtime.contract.compatibility_digest
             || manifest.writable_roots != spec.writable_roots
         {
-            bail!("Pi coding materialization or runtime binding mismatch")
+            bail!("coding adapter materialization or runtime binding mismatch")
         }
-        for digest in [
-            runtime.compatibility_digest.as_str(),
-            runtime.template_digest.as_str(),
-            runtime.pi_digest.as_str(),
-        ] {
-            let hex = digest.strip_prefix("sha256:").unwrap_or_default();
-            if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                bail!("Pi runtime requires canonical SHA-256 digests")
-            }
-        }
-        if runtime.provider.is_empty()
-            || runtime.model.is_empty()
-            || runtime.provider.starts_with('-')
-            || runtime.model.starts_with('-')
-        {
-            bail!("Pi provider or model binding is invalid")
+        if runtime.model.is_empty() || runtime.model.starts_with('-') {
+            bail!("Codex model binding is invalid")
         }
         let mut tx = self.pool.begin().await?;
-        let row=sqlx::query("SELECT t.policy_snapshot_id,t.policy_digest,s.principal_id FROM agent_turn_t t JOIN agent_session_t s ON s.host_id=t.host_id AND s.session_id=t.session_id JOIN agent_policy_snapshot_t p ON p.host_id=t.host_id AND p.policy_snapshot_id=t.policy_snapshot_id AND p.revoked_ts IS NULL WHERE t.host_id=$1 AND t.turn_id=$2 AND t.session_id=$3 AND t.state='RECEIVED' FOR UPDATE OF t,s")
+        let row=sqlx::query("SELECT t.policy_snapshot_id,t.policy_digest,t.data_boundary_digest,t.deadline_ts,s.principal_id FROM agent_turn_t t JOIN agent_session_t s ON s.host_id=t.host_id AND s.session_id=t.session_id JOIN agent_policy_snapshot_t p ON p.host_id=t.host_id AND p.policy_snapshot_id=t.policy_snapshot_id AND p.revoked_ts IS NULL WHERE t.host_id=$1 AND t.turn_id=$2 AND t.session_id=$3 AND t.state='RECEIVED' FOR UPDATE OF t,s")
             .bind(host_id).bind(turn_id.0).bind(session_id.0).fetch_one(&mut *tx).await?;
         let snapshot: Uuid = row.try_get("policy_snapshot_id")?;
         let policy: String = row.try_get("policy_digest")?;
+        let data_boundary: String = row.try_get("data_boundary_digest")?;
         let principal: String = row.try_get("principal_id")?;
+        let turn_deadline: DateTime<Utc> = row.try_get("deadline_ts")?;
         let request_id = turn_id.0;
-        let requirements = ExecutionRequirements {
-            action_kind: "coding.pi-rpc-v1".into(),
-            minimum_boundary: IsolationBoundary::MicroVm,
-            maximum_host_exposure: HostExposure::None,
-            network_enabled: false,
-            credential_classes: vec![],
-            persistent_workspace: false,
-            required_features: vec![
-                "deny-all-egress".into(),
-                "immutable-repository-upload".into(),
-                "canonical-patch-output".into(),
-                "pi-rpc-v1".into(),
-            ],
-            policy_digest: policy.clone(),
-            compatibility_digest: runtime.compatibility_digest.clone(),
+        let enterprise_gateway =
+            runtime
+                .enterprise_gateway
+                .as_ref()
+                .map(|gateway| EnterpriseGatewayConfig {
+                    provider_id: "light_gateway".into(),
+                    base_url: gateway.base_url.clone(),
+                    credential_target: gateway.credential_target.clone(),
+                    credential_env: "LIGHT_LLM_ATTEMPT_TOKEN".into(),
+                    binding: GatewayAttemptBinding {
+                        audience: gateway.audience.clone(),
+                        host_id,
+                        end_user_subject: principal.clone(),
+                        principal_subject: principal.clone(),
+                        workload_actor: format!("light-agent/{instance_id}"),
+                        workflow_id: None,
+                        session_id,
+                        turn_id,
+                        action_attempt_id: AgentActionAttemptId(turn_id.0),
+                        policy_digest: policy.clone(),
+                        data_boundary_digest: data_boundary.clone(),
+                        route_alias: runtime.model.clone(),
+                        billing_subject: principal.clone(),
+                        budget_policy_id: gateway.budget_policy_id.clone(),
+                        correlation_id: turn_id.0,
+                    },
+                });
+        if let Some(gateway) = &enterprise_gateway {
+            gateway.validate()?;
+        }
+        let broker = match (&runtime.enterprise_gateway, &enterprise_gateway) {
+            (Some(policy), Some(gateway)) => Some(AttemptBrokerGrant {
+                policy_digest: gateway.binding.policy_digest.clone(),
+                data_boundary_digest: gateway.binding.data_boundary_digest.clone(),
+                route_digest: policy.route_digest.clone(),
+                allowed_operations: std::collections::BTreeSet::from([
+                    BrokerOperation::CredentialedRequest,
+                ]),
+                allowed_targets: std::collections::BTreeSet::from([policy
+                    .credential_target
+                    .clone()]),
+                maximum_requests: policy.maximum_requests,
+                maximum_tokens: policy.maximum_tokens,
+                maximum_cost_micros: policy.maximum_cost_micros,
+                maximum_response_bytes: policy.maximum_response_bytes,
+                // The grant shares the authoritative turn/lease deadline. It must
+                // not introduce a shorter enqueue-relative lifetime.
+                expires_at: turn_deadline,
+                gateway_binding_digest: Some(gateway.binding.digest()?),
+            }),
+            _ => None,
         };
-        let command = CommandExecutionSpec {
-            schema_version: 1,
-            template_id: "cube-pi-rpc-v1".into(),
-            template_version: 1,
-            template_digest: runtime.template_digest.clone(),
-            executable: "/usr/local/bin/light-pi-rpc-adapter".into(),
-            arguments: vec![
-                "--repository".into(),
-                "/inputs/repository.bundle".into(),
-                "--request-base64".into(),
-                spec.encode_argument()?,
-                "--pi".into(),
-                "/usr/local/bin/pi".into(),
-                "--pi-digest".into(),
-                runtime.pi_digest.clone(),
-                "--provider".into(),
-                runtime.provider.clone(),
-                "--model".into(),
-                runtime.model.clone(),
-            ],
-            working_directory: "/workspace".into(),
-            environment: Default::default(),
-            wall_clock_timeout_ms: 120_000,
-            stdout_limit_bytes: 16 * 1024 * 1024,
-            stderr_limit_bytes: 1024 * 1024,
-            network_enabled: false,
-            credentials_enabled: false,
+        let mut required_features: Vec<String> =
+            runtime.contract.required_features.iter().cloned().collect();
+        if enterprise_gateway.is_some() {
+            required_features.push("enterprise-llm-gateway-v1".into());
+            required_features.push("enterprise-api-auth-v1".into());
+            required_features.push("restricted-model-egress".into());
+            required_features.push("per-attempt-worker-sandbox-v1".into());
+        } else {
+            required_features.push("personal-subscription-auth-v1".into());
+            required_features.push("local-single-user-native-v1".into());
+        }
+        let requirements = ExecutionRequirements {
+            action_kind: runtime.contract.action_kind.clone(),
+            minimum_boundary: if enterprise_gateway.is_some() {
+                IsolationBoundary::Container
+            } else {
+                IsolationBoundary::Process
+            },
+            maximum_host_exposure: HostExposure::ExplicitMounts,
+            network_enabled: true,
+            credential_classes: enterprise_gateway
+                .as_ref()
+                .map(|_| vec!["llm-gateway-attempt".into()])
+                .unwrap_or_default(),
             persistent_workspace: false,
+            required_features,
+            policy_digest: policy.clone(),
+            compatibility_digest: runtime.contract.compatibility_digest.clone(),
+        };
+        let command = AgentWorkerExecutionSpec {
+            schema_version: 1,
+            template_digest: runtime.contract.template_digest.clone(),
+            expected_capability_digest: runtime.contract.capability_digest.clone(),
+            session_id,
+            turn_id,
+            action_attempt_id: AgentActionAttemptId(turn_id.0),
+            policy_digest: policy.clone(),
+            input: json!({
+                "codingSpec": spec,
+                "materializationManifest": manifest,
+                "adapterContract": runtime.contract,
+                "adapterQualification": runtime.qualification,
+            }),
+            wall_clock_timeout_ms: 120_000,
+            maximum_event_bytes: 1024 * 1024,
+            maximum_stderr_bytes: 1024 * 1024,
+            broker,
+            enterprise_gateway,
         };
         let authority = self
             .authority
             .as_ref()
-            .context("Pi execution requires immutable Agent authority")?;
+            .context("coding adapter execution requires immutable Agent authority")?;
         let request = SchedulingRequestSubmission {
             request_id,
-            idempotency_key: format!("coding-pi-turn:{}", turn_id.0),
+            idempotency_key: format!("coding-adapter-turn:{}", turn_id.0),
             origin_kind: "agent".into(),
             origin_instance_id: instance_id.to_string(),
             subject_kind: "agent-turn".into(),
@@ -1477,7 +1540,14 @@ impl AgentRepository {
                 "policyDigest": policy,
                 "materializationManifestDigest": manifest_digest,
                 "baseRevision": spec.base_revision,
-                "runtimeCompatibilityDigest": runtime.compatibility_digest,
+                "codingAdapterContractDigest": runtime.contract.digest()?,
+                "adapterId": runtime.contract.adapter_id,
+                "adapterVersion": runtime.contract.adapter_version,
+                "adapterProtocolVersion": runtime.contract.adapter_protocol_version,
+                "runtimeCompatibilityDigest": runtime.contract.compatibility_digest,
+                "imageDigest": runtime.contract.image_digest,
+                "capabilityDigest": runtime.contract.capability_digest,
+                "templateDigest": runtime.contract.template_digest,
             }),
             definition_digest: authority.definition_digest.clone(),
             fairness_key: format!("agent:{principal}"),
@@ -1492,7 +1562,7 @@ impl AgentRepository {
                     &manifest_digest,
                     &spec.base_revision,
                     &policy,
-                    &runtime.compatibility_digest
+                    &runtime.contract.digest()?
                 ))?
             ),
             approval_id: None,
@@ -1528,12 +1598,12 @@ impl AgentRepository {
             .bind(host_id).bind(turn_id.0).bind(&manifest.materializer_id).bind(manifest.materializer_version as i32).bind(serde_json::to_value(manifest)?).bind(&manifest_digest).execute(&mut *tx).await?;
         if !manifest.packages.is_empty() {
             bail!(
-                "Pi coding profile package mounting is not admitted until policy-to-package resolution is server-owned"
+                "coding adapter package mounting is not admitted until policy-to-package resolution is server-owned"
             )
         }
         sqlx::query("UPDATE agent_turn_t SET scheduling_request_id=$3,materialization_manifest_digest=$4,coding_base_revision=$5,state='WAITING_RECONCILIATION',updated_ts=now() WHERE host_id=$1 AND turn_id=$2 AND state='RECEIVED'")
             .bind(host_id).bind(turn_id.0).bind(request_id).bind(&manifest_digest).bind(&spec.base_revision).execute(&mut *tx).await?;
-        append_event(&mut tx,host_id,session_id.0,Some(turn_id.0),None,"agent","PI_CODING_TURN_SCHEDULED",json!({"requestId":request_id,"manifestDigest":manifest_digest,"baseRevision":spec.base_revision,"adapter":"pi-rpc"}),&policy).await?;
+        append_event(&mut tx,host_id,session_id.0,Some(turn_id.0),None,"agent","CODING_ADAPTER_TURN_SCHEDULED",json!({"requestId":request_id,"manifestDigest":manifest_digest,"baseRevision":spec.base_revision,"adapterId":runtime.contract.adapter_id,"adapterVersion":runtime.contract.adapter_version,"contractDigest":runtime.contract.digest()?}),&policy).await?;
         tx.commit().await?;
         Ok(request_id)
     }

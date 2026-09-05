@@ -793,6 +793,15 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
                 "embedding alias `{name}` cannot use reversible PII tokenization"
             )));
         }
+        if alias.coding_worker_eligible
+            && (alias.operations != BTreeSet::from([Operation::Generate])
+                || !alias.required_capabilities.streaming
+                || !alias.required_capabilities.tools)
+        {
+            return Err(LlmGatewayError::Config(format!(
+                "coding-worker alias `{name}` must be generation-only and require streaming plus tools"
+            )));
+        }
         if alias.internal && alias.bound_principal.as_deref().is_none_or(str::is_empty) {
             return Err(LlmGatewayError::Config(format!(
                 "internal alias `{name}` must bind a principal"
@@ -932,6 +941,11 @@ fn validate(config: &LlmRouterConfig) -> Result<(), LlmGatewayError> {
                 // Request-scoped PII is a gateway transform. Portal projection
                 // does not require provider conformance evidence before the
                 // operator can publish and validate the live configuration.
+                None if alias.coding_worker_eligible => {
+                    return Err(LlmGatewayError::Config(format!(
+                        "coding-worker alias `{name}` deployment `{deployment}` has no current conformance evidence"
+                    )));
+                }
                 None => {}
             }
         }

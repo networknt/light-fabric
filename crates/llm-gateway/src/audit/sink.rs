@@ -150,7 +150,7 @@ async fn ingest_record(
         AuditEventKind::RequestFinished => "request_finished",
     };
     let inserted = sqlx::query(
-        "INSERT INTO llm_audit_event_t (event_day,event_id,schema_version,event_kind,request_id,attempt_no,attempt_count,event_ts,generation,snapshot_digest,host_id,public_alias,operation,status,category,deployment_id,duration_ms,content_mode,pii_profile,expected_embedding_space_id,expected_embedding_space_revision,selected_embedding_space_id,selected_embedding_space_revision,principal_digest,charged_micros,usage_complete,transport_context) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27::jsonb) ON CONFLICT (event_day,event_id) DO NOTHING",
+        "INSERT INTO llm_audit_event_t (event_day,event_id,schema_version,event_kind,request_id,attempt_no,attempt_count,event_ts,generation,snapshot_digest,host_id,public_alias,operation,status,category,deployment_id,duration_ms,content_mode,pii_profile,expected_embedding_space_id,expected_embedding_space_revision,selected_embedding_space_id,selected_embedding_space_revision,principal_digest,billing_subject_digest,charged_micros,usage_complete,transport_context) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28::jsonb) ON CONFLICT (event_day,event_id) DO NOTHING",
     )
     .bind(event_day)
     .bind(event_id)
@@ -184,6 +184,7 @@ async fn ingest_record(
             .and_then(|value| i64::try_from(value).ok()),
     )
     .bind(&event.principal_digest)
+    .bind(&event.billing_subject_digest)
     .bind(event.charged_micros.and_then(|value| i64::try_from(value).ok()))
     .bind(event.usage_complete)
     .bind(event.transport_context.as_ref().map(|value| serde_json::to_string(value)).transpose().map_err(protocol_error)?)

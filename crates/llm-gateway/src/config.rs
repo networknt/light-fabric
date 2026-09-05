@@ -674,6 +674,10 @@ pub struct AliasConfig {
     pub pii: PiiProfile,
     #[serde(default)]
     pub required_capabilities: AliasCapabilityRequirements,
+    /// Admit this alias to native coding harnesses only when every deployment
+    /// has current conformance evidence for streaming and tool use.
+    #[serde(default)]
+    pub coding_worker_eligible: bool,
     #[serde(default)]
     pub require_expected_embedding_space: bool,
     #[serde(default)]
