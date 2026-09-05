@@ -6,10 +6,11 @@ use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
+#[ignore = "requires AUDIT_STORE_TEST_DATABASE_URL"]
 #[tokio::test]
 async fn audit_redaction_hold_erasure_isolation_and_restart_are_durable() {
     let Ok(database_url) = std::env::var("AUDIT_STORE_TEST_DATABASE_URL") else {
-        return;
+        panic!("AUDIT_STORE_TEST_DATABASE_URL must be set to run this test");
     };
     let binding_id = Uuid::parse_str(&std::env::var("PHASE6_TEST_BINDING_ID").unwrap()).unwrap();
     let host_id = Uuid::parse_str(&std::env::var("PHASE6_TEST_HOST_ID").unwrap()).unwrap();

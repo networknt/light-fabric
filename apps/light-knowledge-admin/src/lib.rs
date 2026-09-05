@@ -3636,10 +3636,11 @@ mod tests {
         }
     }
 
+    #[ignore = "requires LIGHT_KNOWLEDGE_PHASE2_TEST_DATABASE_URL"]
     #[tokio::test]
     async fn phase2_database_lifecycle_is_idempotent_atomic_and_fail_closed() {
         let Ok(database_url) = std::env::var("LIGHT_KNOWLEDGE_PHASE2_TEST_DATABASE_URL") else {
-            return;
+            panic!("LIGHT_KNOWLEDGE_PHASE2_TEST_DATABASE_URL must be set to run this test");
         };
         let pool = PgPoolOptions::new()
             .max_connections(2)

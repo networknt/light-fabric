@@ -2,10 +2,11 @@ use execution_store::ExpectedBinding;
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
+#[ignore = "requires EXECUTION_STORE_TEST_DATABASE_URL"]
 #[tokio::test]
 async fn exact_binding_is_ready_and_wrong_scope_fails_closed() {
     let Ok(database_url) = std::env::var("EXECUTION_STORE_TEST_DATABASE_URL") else {
-        return;
+        panic!("EXECUTION_STORE_TEST_DATABASE_URL must be set to run this test");
     };
     let binding_id = Uuid::parse_str(
         &std::env::var("EXECUTION_STORE_TEST_BINDING_ID").expect("binding ID accompanies URL"),

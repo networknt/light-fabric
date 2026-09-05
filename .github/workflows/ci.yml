@@ -30,6 +30,47 @@ jobs:
       - name: Unit and deterministic integration tests
         run: cargo test --workspace --locked
 
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: operations
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # agent-postgres GRANTs against roles and schemas it does not create, so the
+      # metadata bundle has to be applied first.
+      - name: Bootstrap operational schema
+        env:
+          PGPASSWORD: postgres
+        run: |
+          for file in crates/operational-store/migrations/metadata-postgres/*.sql \
+                      crates/agent-store/migrations/agent-postgres/*.sql; do
+            psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d operations -f "$file"
+          done
+      # These are #[ignore]d so that a run without a database reports them as
+      # skipped rather than passing without executing.
+      - name: Database-backed tests
+        env:
+          LIGHT_AGENT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/operations
+          LIGHT_AGENT_TEST_SCHEMA: agent_ops
+        run: >-
+          cargo test --locked -p light-agent --lib
+          durable_admission_is_idempotent_fifo_and_projection_rebuildable
+          -- --ignored
+
   runner-image-and-manifests:
     runs-on: ubuntu-latest
     timeout-minutes: 45

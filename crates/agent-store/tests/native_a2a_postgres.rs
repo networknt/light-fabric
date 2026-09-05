@@ -7,10 +7,11 @@ use chrono::Utc;
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
+#[ignore = "requires AGENT_STORE_TEST_DATABASE_URL"]
 #[tokio::test]
 async fn native_a2a_aliases_use_agent_state_and_survive_restart() {
     let Ok(database_url) = std::env::var("AGENT_STORE_TEST_DATABASE_URL") else {
-        return;
+        panic!("AGENT_STORE_TEST_DATABASE_URL must be set to run this test");
     };
     let host_id = Uuid::parse_str(&std::env::var("AGENT_STORE_TEST_HOST_ID").unwrap()).unwrap();
     let agent_def_id = Uuid::now_v7();

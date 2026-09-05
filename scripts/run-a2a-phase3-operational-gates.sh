@@ -16,14 +16,14 @@ fabric_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
   A2A_STORE_TEST_HOST_ID="$4" \
   A2A_STORE_TEST_BINDING_DIGEST="$5" \
   A2A_STORE_TEST_ENVIRONMENT="$6" \
-    cargo test -p a2a-store --test postgres_durability -- --nocapture
+    cargo test -p a2a-store --test postgres_durability -- --ignored --nocapture
 
   ARTIFACT_STORE_TEST_DATABASE_URL="$2" \
   PHASE6_TEST_BINDING_ID="$3" \
   PHASE6_TEST_HOST_ID="$4" \
   PHASE6_TEST_BINDING_DIGEST="$5" \
   PHASE6_TEST_ENVIRONMENT="$6" \
-    cargo test -p artifact-store --test postgres_artifact -- --nocapture
+    cargo test -p artifact-store --test postgres_artifact -- --ignored --nocapture
 )
 
 echo "A2A Phase 3 operational durability gates PASS"

@@ -17,7 +17,7 @@ workspace_root="$(cd -- "$fabric_root/.." && pwd)"
   A2A_STORE_TEST_HOST_ID="$3" \
   A2A_STORE_TEST_BINDING_DIGEST="$4" \
   A2A_STORE_TEST_ENVIRONMENT=dev \
-    cargo test -p a2a-store --test postgres_durability -- --nocapture
+    cargo test -p a2a-store --test postgres_durability -- --ignored --nocapture
 )
 
 "$workspace_root/portal-db/postgres/tests/run-a2a-phase6-profiles-schema-gate.sh" "$5"

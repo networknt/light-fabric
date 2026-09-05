@@ -16,7 +16,7 @@ fabric_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
   A2A_STORE_TEST_HOST_ID="$3" \
   A2A_STORE_TEST_BINDING_DIGEST="$4" \
   A2A_STORE_TEST_ENVIRONMENT=dev \
-    cargo test -p a2a-store --test postgres_durability -- --nocapture
+    cargo test -p a2a-store --test postgres_durability -- --ignored --nocapture
 )
 
 echo "A2A Phase 6 task ownership, push retry, lease, restart, and terminal-state gates PASS"

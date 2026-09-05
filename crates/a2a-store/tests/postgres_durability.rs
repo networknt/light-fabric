@@ -36,10 +36,11 @@ fn invocation(host_id: Uuid, binding_id: Uuid, direction: Direction) -> Authoriz
     }
 }
 
+#[ignore = "requires A2A_STORE_TEST_DATABASE_URL"]
 #[tokio::test]
 async fn inbound_outbound_ownership_replay_cancel_artifact_and_restart() {
     let Ok(database_url) = std::env::var("A2A_STORE_TEST_DATABASE_URL") else {
-        return;
+        panic!("A2A_STORE_TEST_DATABASE_URL must be set to run this test");
     };
     let binding_id = Uuid::parse_str(
         &std::env::var("A2A_STORE_TEST_BINDING_ID").expect("binding ID accompanies URL"),

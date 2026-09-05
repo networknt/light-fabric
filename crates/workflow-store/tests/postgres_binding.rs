@@ -2,10 +2,11 @@ use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 use workflow_store::ExpectedBinding;
 
+#[ignore = "requires WORKFLOW_STORE_TEST_DATABASE_URL"]
 #[tokio::test]
 async fn workflow_binding_and_restart_state_are_durable() {
     let Ok(database_url) = std::env::var("WORKFLOW_STORE_TEST_DATABASE_URL") else {
-        return;
+        panic!("WORKFLOW_STORE_TEST_DATABASE_URL must be set to run this test");
     };
     let binding_id = Uuid::parse_str(
         &std::env::var("WORKFLOW_STORE_TEST_BINDING_ID").expect("binding ID accompanies URL"),

@@ -3173,10 +3173,11 @@ mod tests {
         ));
     }
 
+    #[ignore = "requires LIGHT_AGENT_TEST_DATABASE_URL"]
     #[tokio::test]
     async fn durable_admission_is_idempotent_fifo_and_projection_rebuildable() {
         let Ok(url) = std::env::var("LIGHT_AGENT_TEST_DATABASE_URL") else {
-            return;
+            panic!("LIGHT_AGENT_TEST_DATABASE_URL must be set to run this test");
         };
         let use_agent_ops = std::env::var("LIGHT_AGENT_TEST_SCHEMA").as_deref() == Ok("agent_ops");
         let pool = sqlx::postgres::PgPoolOptions::new()

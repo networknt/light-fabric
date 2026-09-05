@@ -13,7 +13,7 @@ fabric_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
   cd "$fabric_root"
   AGENT_STORE_TEST_DATABASE_URL="$1" \
   AGENT_STORE_TEST_HOST_ID="$2" \
-    cargo test -p agent-store --test native_a2a_postgres -- --nocapture
+    cargo test -p agent-store --test native_a2a_postgres -- --ignored --nocapture
 )
 
 echo "A2A Phase 4 operational durability gates PASS"

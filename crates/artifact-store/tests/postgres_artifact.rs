@@ -5,10 +5,11 @@ use chrono::{Duration, Utc};
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
+#[ignore = "requires ARTIFACT_STORE_TEST_DATABASE_URL"]
 #[tokio::test]
 async fn artifact_digest_scan_hold_tombstone_isolation_and_restart_are_durable() {
     let Ok(database_url) = std::env::var("ARTIFACT_STORE_TEST_DATABASE_URL") else {
-        return;
+        panic!("ARTIFACT_STORE_TEST_DATABASE_URL must be set to run this test");
     };
     let binding_id = Uuid::parse_str(&std::env::var("PHASE6_TEST_BINDING_ID").unwrap()).unwrap();
     let host_id = Uuid::parse_str(&std::env::var("PHASE6_TEST_HOST_ID").unwrap()).unwrap();

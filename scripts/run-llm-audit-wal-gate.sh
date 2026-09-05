@@ -37,7 +37,7 @@ if [[ -n "$database_url" ]]; then
   psql "$database_url" -v ON_ERROR_STOP=1 -Atc \
     "SELECT count(*) FROM pg_class WHERE relname IN ('llm_audit_event_t','llm_request_t','llm_attempt_t','llm_content_object_t','llm_dataset_export_t')" | rg -qx '5'
   (cd "$repo_root" && LLM_AUDIT_TEST_DATABASE_URL="$database_url" \
-    cargo test --locked -p llm-gateway audit::tests::postgres_sink_duplicate_delivery_is_idempotent_when_database_is_available --lib)
+    cargo test --locked -p llm-gateway audit::tests::postgres_sink_duplicate_delivery_is_idempotent_when_database_is_available --lib -- --ignored)
 else
   echo "[llm-audit-wal] PostgreSQL replay smoke skipped; pass a disposable dedicated audit database URL"
 fi

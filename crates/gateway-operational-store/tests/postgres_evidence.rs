@@ -31,10 +31,11 @@ fn record(class: EvidenceClass, endpoint: &str) -> EvidenceRecord {
     }
 }
 
+#[ignore = "requires GATEWAY_STORE_TEST_DATABASE_URL"]
 #[tokio::test]
 async fn bounded_spool_survives_sink_failure_restart_and_http_delivery() {
     let Ok(database_url) = std::env::var("GATEWAY_STORE_TEST_DATABASE_URL") else {
-        return;
+        panic!("GATEWAY_STORE_TEST_DATABASE_URL must be set to run this test");
     };
     let binding_id = Uuid::parse_str(&std::env::var("PHASE6_TEST_BINDING_ID").unwrap()).unwrap();
     let host_id = Uuid::parse_str(&std::env::var("PHASE6_TEST_HOST_ID").unwrap()).unwrap();

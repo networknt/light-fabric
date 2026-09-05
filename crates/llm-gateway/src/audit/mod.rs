@@ -711,10 +711,11 @@ mod tests {
         assert_eq!(recovered.wal.replay_batch(64, 64 * 1024).unwrap().len(), 4);
     }
 
+    #[ignore = "requires LLM_AUDIT_TEST_DATABASE_URL"]
     #[tokio::test]
     async fn postgres_sink_duplicate_delivery_is_idempotent_when_database_is_available() {
         let Ok(database_url) = std::env::var("LLM_AUDIT_TEST_DATABASE_URL") else {
-            return;
+            panic!("LLM_AUDIT_TEST_DATABASE_URL must be set to run this test");
         };
         let directory = tempfile::tempdir().unwrap();
         let audit = WalAudit::open(config(directory.path()), "host-a").unwrap();
