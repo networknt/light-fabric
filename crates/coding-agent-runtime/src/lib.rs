@@ -7,16 +7,33 @@ use std::collections::BTreeSet;
 use thiserror::Error;
 
 pub const CODEX_APP_SERVER_ADAPTER_ID: &str = "codex-app-server-v1";
-pub const CODEX_APP_SERVER_VERSION: &str = "0.153.2";
+pub const CODEX_APP_SERVER_VERSION: &str = "0.153.4";
 pub const CODEX_APP_SERVER_PROTOCOL_VERSION: &str = "codex-app-server-v2";
 pub const CODEX_APP_SERVER_SCHEMA_DIGEST: &str =
     "sha256:d3eace08be5dca386bfd1f1e8df650058b4113f1e10870a284d775d75517576a";
 pub const CODEX_APP_SERVER_BINARY_DIGEST: &str =
-    "sha256:f8786262ebc0fa1337448a2977332beadec66c8d0cda0ce973c7849766d7943c";
+    "sha256:56ef98ab4032d317ab26e9b5e5a175650717351edb16ed9cde0cb6d1734d62da";
+pub fn codex_worker_capabilities() -> agent_runtime_protocol::RuntimeCapabilities {
+    agent_runtime_protocol::RuntimeCapabilities {
+        adapter_id: CODEX_APP_SERVER_ADAPTER_ID.into(),
+        adapter_version: CODEX_APP_SERVER_VERSION.into(),
+        adapter_protocol_version: CODEX_APP_SERVER_PROTOCOL_VERSION.into(),
+        protocol_version: agent_runtime_protocol::PROTOCOL_VERSION.into(),
+        actions: BTreeSet::from(["mock".into(), "coding.codex-app-server-v1".into()]),
+        supports_approvals: true,
+        supports_checkpoint: false,
+        supports_session_reuse: true,
+        supports_streaming: true,
+        supports_thread_turn_identity: true,
+        supports_usage: true,
+        maximum_event_bytes: 1024 * 1024,
+    }
+}
+
 pub const CODEX_EMBEDDED_ADAPTER_ID: &str = "codex-embedded-v1";
 pub const CODEX_EMBEDDED_UPSTREAM_REVISION: &str = "657a993cbee87acf52d14b758ce49dbd46d1b8eb";
 pub const CODEX_APP_SERVER_QUALIFICATION_EVIDENCE_DIGEST: &str =
-    "sha256:268432fcff0f5d90ad58f45be6d8e433baedcb4c6e96e7b16e4c82ee262ebf4c";
+    "sha256:6fe22317953bbfd2192ae9c4bca64828b447731ee00940041b1395f5f7b50bf4";
 pub const CODEX_EMBEDDED_PROTOTYPE_EVIDENCE_DIGEST: &str =
     "sha256:98fc7e79b0680efa86f534dd456fd89f7959ed59b1b3bd421727f5a05dcf9174";
 pub const CODING_ADAPTER_CONTRACT_VERSION: u16 = 1;
@@ -624,9 +641,53 @@ fn safe_relative_path(value: &str) -> bool {
             .any(|part| part.is_empty() || part == "." || part == "..")
 }
 
+/// A workflow-selected conversation, separate from the per-job Light session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CodingThreadControl {
+    pub runner_id: String,
+    pub session_ref: uuid::Uuid,
+    pub stage_id: String,
+    pub mode: CodingThreadMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_checkpoint: Option<uuid::Uuid>,
+    #[serde(default)]
+    pub close_after_turn: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CodingThreadMode {
+    New,
+    Resume,
+    Close,
+}
+
+impl CodingThreadControl {
+    pub fn validate(&self) -> Result<(), CodingError> {
+        if self.runner_id.is_empty()
+            || self.runner_id.len() > 128
+            || self.session_ref.is_nil()
+            || self.stage_id.is_empty()
+            || self.stage_id.len() > 128
+            || !self
+                .stage_id
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
+            || (self.mode == CodingThreadMode::New) != self.expected_checkpoint.is_none()
+            || self.expected_checkpoint.is_some_and(|id| id.is_nil())
+        {
+            return Err(CodingError::Spec);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CodingTurnSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<CodingThreadControl>,
     pub repository_digest: String,
     pub base_revision: String,
     pub workspace_root: String,
@@ -662,6 +723,14 @@ impl CodingTurnSpec {
     }
 
     pub fn validate(&self) -> Result<(), CodingError> {
+        if let Some(thread) = &self.thread {
+            thread.validate()?;
+            // Persisted native thread storage is not mounted into enterprise sandboxes.
+            if self.authentication_profile != CodingAuthenticationProfile::PersonalSubscription {
+                return Err(CodingError::Spec);
+            }
+        }
+
         if !self.workspace_root.starts_with("/workspace/")
             || self.workspace_root.contains("..")
             || self.prompt.is_empty()
@@ -945,6 +1014,7 @@ mod tests {
     use std::collections::BTreeSet;
     fn spec() -> CodingTurnSpec {
         CodingTurnSpec {
+            thread: None,
             repository_digest: format!("sha256:{:064x}", 1),
             base_revision: "a".repeat(40),
             workspace_root: "/workspace/repo".into(),
@@ -962,6 +1032,35 @@ mod tests {
             maximum_changed_files: 10,
         }
     }
+    #[test]
+    fn thread_directives_are_explicit_native_and_backward_compatible() {
+        let mut s = spec();
+        assert!(
+            !serde_json::to_value(&s)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("thread")
+        );
+        s.thread = Some(CodingThreadControl {
+            runner_id: "runner".into(),
+            session_ref: uuid::Uuid::new_v4(),
+            stage_id: "stage-1".into(),
+            mode: CodingThreadMode::New,
+            expected_checkpoint: None,
+            close_after_turn: false,
+        });
+        assert!(s.validate().is_err()); // No persistent enterprise credential home.
+        s.authentication_profile = CodingAuthenticationProfile::PersonalSubscription;
+        s.validate().unwrap();
+        s.thread.as_mut().unwrap().mode = CodingThreadMode::Resume;
+        assert!(s.validate().is_err());
+        s.thread.as_mut().unwrap().expected_checkpoint = Some(uuid::Uuid::new_v4());
+        s.validate().unwrap();
+        s.thread.as_mut().unwrap().stage_id = "../other-stage".into();
+        assert!(s.validate().is_err());
+    }
+
     #[test]
     fn canonical_patch_rejects_protected_and_tampered_reports() {
         let p = ProtectedPathPolicy::default_deny();

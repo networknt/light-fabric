@@ -398,6 +398,10 @@ impl RunnerConfig {
                     .capability()
             }
         };
+        let capability = crate::supervisor::Supervisor::admitted_backend_capability(
+            capability,
+            self.agent_worker.as_ref(),
+        );
         let mut origins = vec![serde_json::json!({
             "kind": OriginKind::Workflow,
             "serviceId": origin_service_id,
@@ -632,6 +636,7 @@ allowedCommandTemplateDigests: [sha256:template-digest]
             capability_digest: format!("sha256:{}", "2".repeat(64)),
             sandbox_launcher: None,
             codex_home: None,
+            codex_executable: None,
             broker: None,
         });
         let document = config
@@ -639,6 +644,19 @@ allowedCommandTemplateDigests: [sha256:template-digest]
             .unwrap();
         assert_eq!(document["origins"][1]["kind"], "agent");
         assert_eq!(document["origins"][1]["serviceId"], "light-agent");
+        let admitted = &document["enrollments"][0]["backends"][0];
+        assert!(
+            admitted["actions"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("coding.codex-app-server-v1"))
+        );
+        assert!(
+            admitted["features"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("local-single-user-native-v1"))
+        );
         assert_eq!(
             document["origins"][1]["allowedSubjectKinds"],
             serde_json::json!(["agent-turn", "agent-action"])

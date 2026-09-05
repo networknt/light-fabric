@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly EXPECTED_VERSION="0.153.2"
+readonly EXPECTED_VERSION="0.153.4"
 readonly EXPECTED_SCHEMA_SHA256="d3eace08be5dca386bfd1f1e8df650058b4113f1e10870a284d775d75517576a"
 
 if [[ $# -ne 1 ]]; then

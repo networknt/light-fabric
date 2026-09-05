@@ -24,3 +24,5 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 jsonschema = { workspace = true }
+# start_paused: the bounded thread/archive test must not really wait out its timeout.
+tokio = { workspace = true, features = ["test-util"] }

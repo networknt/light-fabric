@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "adapterId": "codex-app-server-v1",
-  "adapterVersion": "0.153.2",
+  "adapterVersion": "0.153.4",
   "status": "qualified",
   "contractDigestRequired": true,
   "evidenceGates": [

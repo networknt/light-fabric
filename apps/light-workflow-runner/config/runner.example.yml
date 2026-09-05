@@ -49,6 +49,9 @@ allowedCommandTemplateDigests:
 #   # Local personal-subscription profile only. The directory is made visible
 #   # to Codex as CODEX_HOME; credentials are never copied into the workspace.
 #   codexHome: /var/lib/light-workflow-runner/codex-home
+#   # Absolute path to the exact qualified native Codex binary. This avoids
+#   # relying on an npm launcher or a root-owned /usr/local/bin shim.
+#   codexExecutable: /opt/openai/codex
 #
 # Use a separate enterprise-api runner definition with codexHome omitted and
 # the broker block enabled. Startup rejects a configuration containing both.

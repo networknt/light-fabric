@@ -27,6 +27,8 @@ pub struct WorkerProcessConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_home: Option<std::path::PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_executable: Option<std::path::PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub broker: Option<AttemptBrokerConfig>,
 }
 
@@ -74,6 +76,13 @@ impl WorkerProcessConfig {
         {
             return Err("agent worker codexHome must be an absolute path".into());
         }
+        if self
+            .codex_executable
+            .as_ref()
+            .is_some_and(|path| !path.is_absolute())
+        {
+            return Err("agent worker codexExecutable must be an absolute path".into());
+        }
         if self.codex_home.is_some() && self.broker.is_some() {
             return Err(
                 "personal Codex home and enterprise credential broker require separate runner pools"
@@ -91,6 +100,21 @@ impl WorkerProcessConfig {
                 || metadata.uid() != unsafe { libc::geteuid() }
             {
                 return Err("agent worker codexHome must be an owner-only real directory".into());
+            }
+        }
+        #[cfg(unix)]
+        if let Some(path) = &self.codex_executable {
+            let metadata = std::fs::symlink_metadata(path)
+                .map_err(|error| format!("agent worker codexExecutable is unavailable: {error}"))?;
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.file_type().is_symlink()
+                || !metadata.file_type().is_file()
+                || metadata.permissions().mode() & 0o111 == 0
+            {
+                return Err(
+                    "agent worker codexExecutable must be an executable regular non-symlink file"
+                        .into(),
+                );
             }
         }
         for (name, digest) in [
@@ -140,6 +164,41 @@ pub struct WorkerOutcome {
     pub output: Option<serde_json::Value>,
     pub error: Option<String>,
     pub events: u64,
+}
+
+/// Checks a coding thread receipt against what the turn admitted.
+///
+/// A dedicated `close` turn must report CLOSED — archiving the thread is the whole turn,
+/// so anything else is a failure. `closeAfterTurn` instead rides on a turn whose real
+/// result is the patch or the review; when the archive fails the worker commits the
+/// checkpoint as READY and reports `closeError`. That is an accepted outcome: the
+/// implementation or review result still stands and the thread is still resumable, so the
+/// workflow can close it with its own turn rather than losing the work.
+fn validate_thread_receipt(
+    thread: &coding_agent_runtime::CodingThreadControl,
+    receipt: &serde_json::Value,
+) -> Result<(), String> {
+    let accepted: &[&str] = if thread.mode == coding_agent_runtime::CodingThreadMode::Close {
+        &["CLOSED"]
+    } else if thread.close_after_turn {
+        &["CLOSED", "READY"]
+    } else {
+        &["READY"]
+    };
+    if receipt.get("sessionRef") != Some(&serde_json::json!(thread.session_ref))
+        || !receipt
+            .get("state")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|state| accepted.contains(&state))
+        || receipt
+            .get("checkpoint")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| uuid::Uuid::parse_str(value).ok())
+            .is_none()
+    {
+        return Err("worker returned mismatched coding thread receipt".into());
+    }
+    Ok(())
 }
 
 pub async fn run_worker_process(
@@ -220,6 +279,9 @@ pub async fn run_worker_process(
     }
     if let Some(codex_home) = &config.codex_home {
         command.env("LIGHT_CODEX_HOME", codex_home);
+    }
+    if let Some(codex_executable) = &config.codex_executable {
+        command.env("LIGHT_CODEX_EXECUTABLE", codex_executable);
     }
     #[cfg(unix)]
     command.process_group(0);
@@ -316,6 +378,17 @@ pub async fn run_worker_process(
             policy_digest: spec.policy_digest.clone(),
             enterprise_gateway: spec.enterprise_gateway.clone().map(Box::new),
             input: spec.input.clone(),
+            // Measured now, not from the admitted duration, so the handshake the worker
+            // just completed is already deducted. This is the same instant the deadline
+            // arm below fires on, so a worker that respects it is never killed mid-turn
+            // with a result it could have delivered.
+            deadline_ms: Some(
+                execution_deadline
+                    .saturating_duration_since(tokio::time::Instant::now())
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u64::MAX),
+            ),
         },
     )
     .await?;
@@ -375,6 +448,14 @@ pub async fn run_worker_process(
                                 "coding authentication evidence differs from admitted profile"
                                     .into(),
                             );
+                        }
+                        if let Some(thread) = &admitted.thread {
+                            let receipt = output.as_ref().and_then(|v| v.get("codingThread")).ok_or("worker omitted coding thread receipt")?;
+                            validate_thread_receipt(thread, receipt)?;
+                            if thread.mode == coding_agent_runtime::CodingThreadMode::Close {
+                                if validated_patch.is_some() { return Err("thread close emitted a patch".into()); }
+                                break WorkerOutcome { class, output, error, events: sequence };
+                            }
                         }
                         match admitted.role {
                             coding_agent_runtime::CodingRole::Implement => {
@@ -749,6 +830,7 @@ sys.stdin.readline()
             capability_digest,
             sandbox_launcher: None,
             codex_home: None,
+            codex_executable: None,
             broker: None,
         }
     }
@@ -775,6 +857,7 @@ sys.stdin.readline()
         authentication_profile: coding_agent_runtime::CodingAuthenticationProfile,
     ) -> serde_json::Value {
         serde_json::to_value(coding_agent_runtime::CodingTurnSpec {
+            thread: None,
             repository_digest: format!("sha256:{}", "1".repeat(64)),
             base_revision: "a".repeat(40),
             workspace_root: "/workspace/repository".into(),
@@ -916,6 +999,185 @@ sys.stdin.readline()
             )
         });
         assert!(validate_authentication_profile(&lease, &admitted, &config).is_err());
+    }
+
+    /// A worker that blocks for `stall` seconds before delivering its terminal event,
+    /// standing in for the optional post-turn archive. When `respect_budget` is set it
+    /// first checks the remaining execution budget the runner reported and skips the
+    /// block when there is not room for it — which is what the real worker does.
+    fn deadline_reporting_worker(
+        directory: &std::path::Path,
+        name: &str,
+        stall: f32,
+        respect_budget: bool,
+    ) -> WorkerProcessConfig {
+        let capabilities = capabilities();
+        let capability_digest = canonical_digest(&capabilities).unwrap();
+        let executable = directory.join(name);
+        let protocol_version = agent_runtime_protocol::PROTOCOL_VERSION;
+        // `RuntimeCommand` renames only its variants, so the field stays snake_case.
+        let gate = if respect_budget {
+            format!("budget is not None and budget > {stall} * 1000")
+        } else {
+            "True".to_string()
+        };
+        let source = format!(
+            r##"#!/usr/bin/python3
+import datetime,json,sys,time,uuid
+hello=json.loads(sys.stdin.readline())
+i=hello["identity"]
+caps=json.loads(r'''{caps}''')
+def event(sequence,payload):
+ print(json.dumps({{"protocolVersion":"{protocol_version}","eventId":str(uuid.uuid4()),"executionId":i["executionId"],"leaseId":i["leaseId"],"fencingToken":i["fencingToken"],"sequence":sequence,"occurredAt":datetime.datetime.now(datetime.timezone.utc).isoformat(),"payload":payload}},separators=(",",":")),flush=True)
+event(1,{{"type":"ready","capabilities":caps}})
+start=json.loads(sys.stdin.readline())
+budget=start.get("deadline_ms")
+if {gate}:
+ time.sleep({stall})
+event(2,{{"type":"terminal","class":"success","output":{{"budget":budget}},"error":None}})
+"##,
+            caps = serde_json::to_string(&capabilities).unwrap(),
+        );
+        std::fs::write(&executable, &source).unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        WorkerProcessConfig {
+            origin_service_id: "light-agent".into(),
+            executable,
+            binary_digest: format!("sha256:{}", hex::encode(Sha256::digest(&source))),
+            capability_digest,
+            sandbox_launcher: None,
+            codex_home: None,
+            codex_executable: None,
+            broker: None,
+        }
+    }
+
+    /// The execution deadline can arrive before a flat archive bound would elapse. A
+    /// worker can only avoid that by being told how much execution time it actually has,
+    /// so the runner must send a usable remaining budget, and respecting that budget must
+    /// be what separates a delivered result from a deadline kill. A worker-side test sees
+    /// neither the runner's deadline nor its kill, so it cannot detect this.
+    #[tokio::test]
+    async fn the_runner_gives_the_worker_a_budget_that_bounds_optional_work() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = Journal::open(&directory.path().join("journal.sqlite")).unwrap();
+        // Far less time left than the 10s post-turn archive bound.
+        let admitted_ms = 1_500;
+
+        // Respecting the reported budget: the optional work is skipped, and the completed
+        // result is delivered inside the lease.
+        let respecting = deadline_reporting_worker(directory.path(), "respecting.py", 10.0, true);
+        let mut respecting_spec = spec(respecting.capability_digest.clone());
+        respecting_spec.wall_clock_timeout_ms = admitted_ms;
+        let respecting_lease = lease();
+        journal.record_intent(&respecting_lease).unwrap();
+        let (_cancel, cancellation) = watch::channel(false);
+        let outcome = run_worker_process(
+            &respecting_lease,
+            &respecting_spec,
+            &respecting,
+            &journal,
+            cancellation,
+        )
+        .await
+        .expect("a worker that respects its budget must deliver its result");
+        assert_eq!(outcome.class, ResultClass::Success);
+        let budget = outcome
+            .output
+            .as_ref()
+            .and_then(|value| value.get("budget"))
+            .and_then(serde_json::Value::as_u64)
+            .expect("the runner must tell the worker how long it really has");
+        assert!(
+            budget > 0 && budget <= admitted_ms,
+            "reported budget {budget}ms must be positive and within the admitted {admitted_ms}ms"
+        );
+
+        // Ignoring it is exactly the bug: the deadline arrives first and the runner kills
+        // the worker before it can hand back the result it had already earned.
+        let ignoring = deadline_reporting_worker(directory.path(), "ignoring.py", 10.0, false);
+        let mut ignoring_spec = spec(ignoring.capability_digest.clone());
+        ignoring_spec.wall_clock_timeout_ms = admitted_ms;
+        let ignoring_lease = lease();
+        journal.record_intent(&ignoring_lease).unwrap();
+        let (_cancel, cancellation) = watch::channel(false);
+        let error = run_worker_process(
+            &ignoring_lease,
+            &ignoring_spec,
+            &ignoring,
+            &journal,
+            cancellation,
+        )
+        .await
+        .expect_err("blocking past the deadline must lose the turn");
+        assert!(
+            error.contains("deadline expired"),
+            "expected a deadline kill, got: {error}"
+        );
+    }
+
+    #[test]
+    fn a_failed_post_turn_archive_never_discards_the_turn_result() {
+        use coding_agent_runtime::{CodingThreadControl, CodingThreadMode};
+        let thread = |mode, close_after_turn| CodingThreadControl {
+            runner_id: "personal-codex-runner".into(),
+            session_ref: uuid::Uuid::now_v7(),
+            stage_id: "implementation-1".into(),
+            mode,
+            expected_checkpoint: match mode {
+                CodingThreadMode::New => None,
+                _ => Some(uuid::Uuid::now_v7()),
+            },
+            close_after_turn,
+        };
+        let receipt = |control: &CodingThreadControl, state: &str| {
+            serde_json::json!({
+                "sessionRef": control.session_ref,
+                "checkpoint": uuid::Uuid::now_v7().to_string(),
+                "state": state,
+            })
+        };
+
+        // closeAfterTurn rides on a turn whose result is the patch or review. A thread
+        // left READY by a failed archive is accepted, so the result is still delivered.
+        let riding = thread(CodingThreadMode::Resume, true);
+        validate_thread_receipt(&riding, &receipt(&riding, "CLOSED")).unwrap();
+        validate_thread_receipt(&riding, &receipt(&riding, "READY")).unwrap();
+        let mut degraded = receipt(&riding, "READY");
+        degraded["closeError"] = serde_json::json!("App Server request 5 failed");
+        validate_thread_receipt(&riding, &degraded).unwrap();
+
+        // A dedicated close turn does nothing but archive, so READY is a real failure.
+        let closing = thread(CodingThreadMode::Close, false);
+        validate_thread_receipt(&closing, &receipt(&closing, "CLOSED")).unwrap();
+        assert!(validate_thread_receipt(&closing, &receipt(&closing, "READY")).is_err());
+
+        // A turn that never asked to close must not report one.
+        let open = thread(CodingThreadMode::Resume, false);
+        validate_thread_receipt(&open, &receipt(&open, "READY")).unwrap();
+        assert!(validate_thread_receipt(&open, &receipt(&open, "CLOSED")).is_err());
+
+        // Binding and checkpoint identity are still mandatory in every case.
+        assert!(validate_thread_receipt(&riding, &receipt(&thread(CodingThreadMode::Resume, true), "READY")).is_err());
+        let mut unusable = receipt(&riding, "READY");
+        unusable["checkpoint"] = serde_json::json!("not-a-uuid");
+        assert!(validate_thread_receipt(&riding, &unusable).is_err());
+        assert!(validate_thread_receipt(&riding, &serde_json::json!({})).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_executable_must_be_an_absolute_executable_regular_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = fixture(directory.path(), &capabilities(), false);
+        config.codex_executable = Some(std::path::PathBuf::from("codex"));
+        assert!(config.validate().is_err());
+
+        let executable = directory.path().join("codex");
+        std::fs::write(&executable, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        config.codex_executable = Some(executable);
+        assert!(config.validate().is_ok());
     }
 
     #[test]

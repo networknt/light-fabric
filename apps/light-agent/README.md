@@ -108,7 +108,7 @@ agentPolicy:
       productProfileDigest: sha256:<published-coding-profile-digest>
       repositoryUriPrefix: file:///var/lib/light-agent/repositories/
       adapterId: codex-app-server-v1
-      adapterVersion: 0.153.2
+      adapterVersion: 0.153.4
       adapterProtocolVersion: codex-app-server-v2
       actionKind: coding.codex-app-server-v1
       compatibilityDigest: sha256:<approved-cube-compatibility>
@@ -118,7 +118,7 @@ agentPolicy:
       templateVersion: 1
       templateDigest: sha256:<approved-command-template>
       executable: /usr/local/bin/codex
-      binaryDigest: sha256:f8786262ebc0fa1337448a2977332beadec66c8d0cda0ce973c7849766d7943c
+      binaryDigest: sha256:56ef98ab4032d317ab26e9b5e5a175650717351edb16ed9cde0cb6d1734d62da
       schemaDigest: sha256:d3eace08be5dca386bfd1f1e8df650058b4113f1e10870a284d775d75517576a
       requiredFeatures:
         - restricted-model-egress
@@ -128,11 +128,11 @@ agentPolicy:
       qualification:
         schemaVersion: 1
         adapterId: codex-app-server-v1
-        adapterVersion: 0.153.2
+        adapterVersion: 0.153.4
         status: qualified
         evaluatedDimensions: [protocol-lifecycle, approval-mediation, streaming-events, usage-accounting, cancellation, resumability, canonical-patch, review-isolation, authentication-profiles, workspace-isolation, panic-containment, dependency-compatibility, license-compatibility]
         contractDigest: sha256:<exact-launch-contract-digest>
-        evidenceDigest: sha256:268432fcff0f5d90ad58f45be6d8e433baedcb4c6e96e7b16e4c82ee262ebf4c
+        evidenceDigest: sha256:6fe22317953bbfd2192ae9c4bca64828b447731ee00940041b1395f5f7b50bf4
       model: coding-implementer
       reviewModel: coding-reviewer
       # personal-subscription or enterprise-api. This value is immutable for

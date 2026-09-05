@@ -8,27 +8,14 @@ use anyhow::{Context, Result, bail};
 use coding_agent_runtime::{CodingTurnSpec, validate_patch};
 use execution_security::ProtectedPathPolicy;
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
 mod codex_app_server;
+mod coding_session;
 
 pub fn capabilities() -> RuntimeCapabilities {
-    RuntimeCapabilities {
-        adapter_id: coding_agent_runtime::CODEX_APP_SERVER_ADAPTER_ID.into(),
-        adapter_version: coding_agent_runtime::CODEX_APP_SERVER_VERSION.into(),
-        adapter_protocol_version: coding_agent_runtime::CODEX_APP_SERVER_PROTOCOL_VERSION.into(),
-        protocol_version: PROTOCOL_VERSION.into(),
-        actions: BTreeSet::from(["mock".into(), "coding.codex-app-server-v1".into()]),
-        supports_approvals: true,
-        supports_checkpoint: false,
-        supports_session_reuse: false,
-        supports_streaming: true,
-        supports_thread_turn_identity: true,
-        supports_usage: true,
-        maximum_event_bytes: 1024 * 1024,
-    }
+    coding_agent_runtime::codex_worker_capabilities()
 }
 
 pub async fn serve<R, W>(reader: R, mut writer: W) -> Result<()>
@@ -72,6 +59,7 @@ where
                 policy_digest,
                 input,
                 enterprise_gateway,
+                deadline_ms,
             } => {
                 if let Some(gateway) = enterprise_gateway.as_deref() {
                     gateway.validate()?;
@@ -91,6 +79,9 @@ where
                     input,
                     enterprise_gateway.map(|gateway| *gateway),
                     cancel_rx,
+                    deadline_ms.map(|budget| {
+                        tokio::time::Instant::now() + std::time::Duration::from_millis(budget)
+                    }),
                 );
                 tokio::pin!(running);
                 loop {
@@ -150,6 +141,7 @@ async fn run_scenario<W: AsyncWrite + Unpin>(
     input: Value,
     enterprise_gateway: Option<agent_runtime_protocol::EnterpriseGatewayConfig>,
     cancel: tokio::sync::watch::Receiver<Option<String>>,
+    deadline: Option<tokio::time::Instant>,
 ) -> Result<()> {
     let scenario = input
         .get("scenario")
@@ -163,6 +155,7 @@ async fn run_scenario<W: AsyncWrite + Unpin>(
             input,
             enterprise_gateway,
             cancel,
+            deadline,
         )
         .await;
     }
@@ -386,6 +379,7 @@ mod tests {
                 policy_digest: "sha256:policy".into(),
                 enterprise_gateway: None,
                 input: json!({"scenario":"success"}),
+                deadline_ms: None,
             },
         ] {
             client_write
@@ -434,6 +428,7 @@ mod tests {
             writable_roots: writable_roots.clone(),
         };
         let spec = CodingTurnSpec {
+            thread: None,
             repository_digest: format!("sha256:{:064x}", 1),
             base_revision: "a".repeat(40),
             workspace_root: "/workspace/repo".into(),
@@ -468,6 +463,7 @@ mod tests {
                 action_attempt_id: AgentActionAttemptId::new(),
                 policy_digest: "sha256:policy".into(),
                 enterprise_gateway: None,
+                deadline_ms: None,
                 input: json!({"scenario":"coding-fixture","codingSpec":spec,"materializationManifest":manifest}),
             },
         ] {

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "codexVersion": "0.153.4",
+  "target": "x86_64-unknown-linux-musl",
+  "nativeBinarySha256": "56ef98ab4032d317ab26e9b5e5a175650717351edb16ed9cde0cb6d1734d62da",
+  "v2SchemaBundleSha256": "d3eace08be5dca386bfd1f1e8df650058b4113f1e10870a284d775d75517576a",
+  "generatedBy": [
+    "codex app-server generate-json-schema --out <json-directory>",
+    "codex app-server generate-ts --out <typescript-directory>"
+  ],
+  "sourcePackage": "@openai/codex@0.153.4-linux-x64",
+  "qualifiedOn": "2026-09-05",
+  "schemaComparison": "All 1010 generated JSON and TypeScript files are byte-identical to 0.153.2."
+}

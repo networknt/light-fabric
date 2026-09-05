@@ -35,6 +35,22 @@ pub struct AgentRepository {
     execution: Option<Arc<ExecutionClient>>,
 }
 
+fn coding_thread_scope(
+    host: Uuid,
+    origin: &str,
+    policy: &str,
+    boundary: &str,
+    principal: &str,
+    session: AgentSessionId,
+    workflow: Option<Uuid>,
+) -> Result<String> {
+    Ok(agent_core::sha256_digest(&serde_json::to_vec(&json!({
+        "host":host,"origin":origin,"policy":policy,"boundary":boundary,
+        "owner":workflow.map(|id| format!("workflow:{id}"))
+            .unwrap_or_else(|| format!("session:{}:{principal}",session.0))
+    }))?))
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentRuntimeAuthority {
     pub host_id: Uuid,
@@ -1370,6 +1386,60 @@ impl AgentRepository {
         Ok(request_id)
     }
 
+    /// Returns `(job_id, turn_id, product_profile_digest, input)`. The admitted product
+    /// profile travels with the row so the dispatcher can authorize the coding profile
+    /// against the turn's own policy snapshot, exactly as the interactive path does.
+    pub async fn pending_coding_jobs(&self) -> Result<Vec<(Uuid, Uuid, String, Value)>> {
+        let authority = self
+            .authority
+            .as_ref()
+            .context("coding jobs require immutable authority")?;
+        Ok(sqlx::query_as("SELECT j.job_id,j.turn_id,p.product_profile_digest,j.input FROM agent_job_t j
+            JOIN agent_turn_t t ON t.host_id=j.host_id AND t.turn_id=j.turn_id
+            JOIN agent_policy_snapshot_t p ON p.host_id=t.host_id AND p.policy_snapshot_id=t.policy_snapshot_id
+            WHERE j.host_id=$1 AND j.agent_def_id=$2 AND j.policy_digest=$3
+              AND j.data_boundary_digest=$4
+              AND j.state IN ('TURN_CREATED','RUNNING') AND t.state='RECEIVED' AND j.deadline_ts>now()
+              AND j.cancellation_requested_ts IS NULL
+              AND (j.input->>'profile'='coding' OR j.input ? 'coding')
+            ORDER BY j.created_ts LIMIT 100")
+            .bind(authority.host_id).bind(authority.agent_def_id).bind(&authority.policy_digest)
+            .bind(&authority.data_boundary_digest).fetch_all(&self.pool).await?)
+    }
+
+    pub async fn fail_received_coding_turn(
+        &self,
+        host: Uuid,
+        session: AgentSessionId,
+        turn: AgentTurnId,
+        reason: &str,
+    ) -> Result<bool> {
+        let mut tx = self.pool.begin().await?;
+        let changed = sqlx::query("UPDATE agent_turn_t SET state='FAILED',terminal_error=$4,terminal_ts=now(),updated_ts=now()
+            WHERE host_id=$1 AND session_id=$2 AND turn_id=$3 AND state='RECEIVED'")
+            .bind(host).bind(session.0).bind(turn.0).bind(json!({"class":"CODING_DISPATCH_FAILED","message":reason})).execute(&mut *tx).await?.rows_affected();
+        if changed == 1 {
+            sqlx::query("UPDATE agent_session_t SET active_turn_id=NULL,session_version=session_version+1,updated_ts=now()
+                WHERE host_id=$1 AND session_id=$2 AND active_turn_id=$3")
+                .bind(host).bind(session.0).bind(turn.0).execute(&mut *tx).await?;
+            reconcile_turn_quota_usage(&mut tx, host, turn.0, &QuotaSettlement::Release).await?;
+            // The workflow job is terminal with this turn. Without this the job stays
+            // RUNNING until its deadline and reports deadline_exceeded instead of the
+            // dispatch failure that actually ended it.
+            sqlx::query("UPDATE agent_job_t SET state='FAILED',
+                    error=jsonb_build_object('class','CODING_DISPATCH_FAILED','message',$3::text),
+                    terminal_ts=now(),updated_ts=now()
+                WHERE host_id=$1 AND turn_id=$2 AND state IN ('TURN_CREATED','RUNNING')")
+                .bind(host).bind(turn.0).bind(reason).execute(&mut *tx).await?;
+            sqlx::query("SELECT pg_notify('agent_turn_capacity_v1',$1)")
+                .bind(host.to_string())
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(changed == 1)
+    }
+
     pub async fn schedule_coding_adapter_turn(
         &self,
         host_id: Uuid,
@@ -1414,6 +1484,21 @@ impl AgentRepository {
         let data_boundary: String = row.try_get("data_boundary_digest")?;
         let principal: String = row.try_get("principal_id")?;
         let turn_deadline: DateTime<Utc> = row.try_get("deadline_ts")?;
+        // Only persisted workflow linkage or an authenticated Agent session supplies scope.
+        // A request cannot select a foreign workflow/user by passing a native thread ID.
+        let workflow_id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT workflow_process_id FROM agent_job_t WHERE host_id=$1 AND turn_id=$2 AND agent_def_id=$3"
+        ).bind(host_id).bind(turn_id.0).bind(self.authority.as_ref().context("missing authority")?.agent_def_id)
+         .fetch_optional(&mut *tx).await?;
+        let thread_scope = coding_thread_scope(
+            host_id,
+            instance_id,
+            &policy,
+            &data_boundary,
+            &principal,
+            session_id,
+            workflow_id,
+        )?;
         let request_id = turn_id.0;
         let enterprise_gateway =
             runtime
@@ -1478,6 +1563,9 @@ impl AgentRepository {
             required_features.push("personal-subscription-auth-v1".into());
             required_features.push("local-single-user-native-v1".into());
         }
+        if spec.thread.is_some() {
+            required_features.push("workflow-coding-threads-v1".into());
+        }
         let requirements = ExecutionRequirements {
             action_kind: runtime.contract.action_kind.clone(),
             minimum_boundary: if enterprise_gateway.is_some() {
@@ -1506,6 +1594,7 @@ impl AgentRepository {
             policy_digest: policy.clone(),
             input: json!({
                 "codingSpec": spec,
+                "threadScope": thread_scope,
                 "materializationManifest": manifest,
                 "adapterContract": runtime.contract,
                 "adapterQualification": runtime.qualification,
@@ -1567,7 +1656,7 @@ impl AgentRepository {
             ),
             approval_id: None,
             approval_evidence_digest: None,
-            pinned_runner_id: None,
+            pinned_runner_id: spec.thread.as_ref().map(|thread| thread.runner_id.clone()),
             pinned_backend_id: None,
             edge_binding_id: None,
             edge_binding_compatibility_digest: None,
@@ -2884,6 +2973,91 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
+    fn workflow_thread_scope_survives_job_sessions_but_never_crosses_authority() {
+        let host = Uuid::now_v7();
+        let workflow = Uuid::now_v7();
+        let first = coding_thread_scope(
+            host,
+            "agent",
+            "policy",
+            "boundary",
+            "workflow-job:a",
+            AgentSessionId::new(),
+            Some(workflow),
+        )
+        .unwrap();
+        let next = coding_thread_scope(
+            host,
+            "agent",
+            "policy",
+            "boundary",
+            "workflow-job:b",
+            AgentSessionId::new(),
+            Some(workflow),
+        )
+        .unwrap();
+        assert_eq!(first, next);
+        for changed in [
+            coding_thread_scope(
+                host,
+                "agent",
+                "policy",
+                "boundary",
+                "owner",
+                AgentSessionId::new(),
+                Some(Uuid::now_v7()),
+            ),
+            coding_thread_scope(
+                Uuid::now_v7(),
+                "agent",
+                "policy",
+                "boundary",
+                "owner",
+                AgentSessionId::new(),
+                Some(workflow),
+            ),
+            coding_thread_scope(
+                host,
+                "agent",
+                "changed-policy",
+                "boundary",
+                "owner",
+                AgentSessionId::new(),
+                Some(workflow),
+            ),
+            coding_thread_scope(
+                host,
+                "other-agent",
+                "policy",
+                "boundary",
+                "owner",
+                AgentSessionId::new(),
+                Some(workflow),
+            ),
+            coding_thread_scope(
+                host,
+                "agent",
+                "policy",
+                "other-boundary",
+                "owner",
+                AgentSessionId::new(),
+                Some(workflow),
+            ),
+            coding_thread_scope(
+                host,
+                "agent",
+                "policy",
+                "boundary",
+                "owner",
+                AgentSessionId::new(),
+                None,
+            ),
+        ] {
+            assert_ne!(first, changed.unwrap());
+        }
+    }
+
+    #[test]
     fn published_policy_digest_preserves_deployed_serialization_contract() {
         let policy = PolicySnapshot {
             snapshot_id: Uuid::nil(),
@@ -3446,6 +3620,317 @@ mod tests {
                 .as_array()
                 .is_some_and(|messages| messages.len() >= 3)
         );
+        // Exercise the actual SQL workflow -> turn -> coding outbox path in this disposable database.
+        let repository = &restarted;
+        let coding_job = Uuid::now_v7();
+        sqlx::query("INSERT INTO agent_job_t(host_id,job_id,workflow_process_id,workflow_task_id,agent_def_id,
+            idempotency_key,input,input_schema_digest,output_schema,policy_digest,data_boundary_digest,
+            deadline_ts,token_budget,cost_budget_micros,delegation_depth,state)
+            SELECT host_id,$3,workflow_process_id,$3,agent_def_id,$4,jsonb_build_object('profile','coding','coding','{}'::jsonb),input_schema_digest,output_schema,
+            policy_digest,data_boundary_digest,now()+interval '1 hour',token_budget,cost_budget_micros,0,'PENDING'
+            FROM agent_job_t WHERE host_id=$1 AND job_id=$2")
+            .bind(host_id).bind(workflow_job).bind(coding_job).bind(format!("coding:{coding_job}")).execute(&pool).await.unwrap();
+        repository.reconcile_agent_jobs().await.unwrap();
+        assert!(repository.pending_coding_jobs().await.unwrap().is_empty());
+        repository
+            .activate_next_turn(host_id, AgentSessionId(coding_job))
+            .await
+            .unwrap()
+            .unwrap();
+        let (coding_turn, process): (Uuid, Uuid) = sqlx::query_as(
+            "SELECT turn_id,workflow_process_id FROM agent_job_t WHERE host_id=$1 AND job_id=$2",
+        )
+        .bind(host_id)
+        .bind(coding_job)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let pending = repository.pending_coding_jobs().await.unwrap();
+        assert_eq!(pending[0].0, coding_job);
+        // The dispatcher authorizes the coding profile against the turn's own admitted
+        // policy snapshot, so that digest must travel with the pending row.
+        let admitted_product_profile: String = sqlx::query_scalar(
+            "SELECT p.product_profile_digest FROM agent_turn_t t
+               JOIN agent_policy_snapshot_t p ON p.host_id=t.host_id AND p.policy_snapshot_id=t.policy_snapshot_id
+             WHERE t.host_id=$1 AND t.turn_id=$2",
+        )
+        .bind(host_id)
+        .bind(coding_turn)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending[0].2, admitted_product_profile);
+        assert!(
+            wrong_policy_repository
+                .pending_coding_jobs()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        // Immutable authority is the full quadruple; a differing data boundary must not
+        // pick up another boundary's coding job.
+        assert!(
+            AgentRepository::with_authority(
+                pool.clone(),
+                AgentRuntimeAuthority {
+                    data_boundary_digest: digest("wrong-boundary"),
+                    ..authority.clone()
+                },
+            )
+            .pending_coding_jobs()
+            .await
+            .unwrap()
+            .is_empty()
+        );
+        let contract: CodingAdapterContract = serde_json::from_value(json!({
+            "schemaVersion":1,"adapterId":"codex-app-server-v1","adapterVersion":coding_agent_runtime::CODEX_APP_SERVER_VERSION,
+            "adapterProtocolVersion":coding_agent_runtime::CODEX_APP_SERVER_PROTOCOL_VERSION,"actionKind":"coding.codex-app-server-v1",
+            "compatibilityDigest":digest("compatibility"),"imageDigest":digest("image"),"capabilityDigest":digest("capability"),
+            "templateId":"coding-codex-app-server-v1","templateVersion":1,"templateDigest":digest("template"),
+            "executable":"/usr/local/bin/codex","binaryDigest":coding_agent_runtime::CODEX_APP_SERVER_BINARY_DIGEST,
+            "schemaDigest":coding_agent_runtime::CODEX_APP_SERVER_SCHEMA_DIGEST,"requiredFeatures":["codex-app-server-v1"]
+        })).unwrap();
+        let runtime = CodingAdapterRuntime {
+            qualification: coding_agent_runtime::CodingAdapterQualification {
+                schema_version: 1,
+                adapter_id: contract.adapter_id.clone(),
+                adapter_version: contract.adapter_version.clone(),
+                status: coding_agent_runtime::CodingAdapterQualificationStatus::Qualified,
+                evaluated_dimensions:
+                    coding_agent_runtime::CodingAdapterQualificationDimension::required(),
+                contract_digest: Some(contract.digest().unwrap()),
+                evidence_digest:
+                    coding_agent_runtime::CODEX_APP_SERVER_QUALIFICATION_EVIDENCE_DIGEST.into(),
+            },
+            contract,
+            model: "coding-implementer".into(),
+            enterprise_gateway: None,
+        };
+        let manifest = MaterializationManifest {
+            schema_version: 1,
+            materializer_id: "coding".into(),
+            materializer_version: 1,
+            product_profile: agent_materializer::ProductProfile::Coding,
+            runtime_compatibility: digest("compatibility"),
+            packages: vec![],
+            effective_instructions: vec![],
+            allowed_tools: Default::default(),
+            writable_roots: std::collections::BTreeSet::from(["/workspace/repository".into()]),
+        };
+        let coding_spec: CodingTurnSpec = serde_json::from_value(json!({
+            "thread":{"runnerId":"personal-codex-runner","sessionRef":Uuid::now_v7(),"stageId":"phase-1","mode":"new"},
+            "repositoryDigest":digest("bundle"),"baseRevision":"a".repeat(40),"workspaceRoot":"/workspace/repository","prompt":"implement",
+            "modelAlias":"coding-implementer","authenticationProfile":"personal-subscription","role":"implement",
+            "roleProfile":{"profileId":"coding-implement-v1","modelAlias":"coding-implementer","workspaceAuthority":"bounded-write"},
+            "materializationManifestDigest":manifest.digest().unwrap(),"writableRoots":["/workspace/repository"],
+            "allowedTools":["fs.read","fs.write","process.exec"],"maximumPatchBytes":4096,"maximumChangedFiles":1
+        })).unwrap();
+        let input = ImmutableRepositoryInput {
+            artifact_uri: "file:///spool/test.bundle".into(),
+            digest: digest("bundle"),
+            size: 10,
+            media_type: "application/x-git-bundle".into(),
+        };
+        repository
+            .schedule_coding_adapter_turn(
+                host_id,
+                AgentSessionId(coding_job),
+                AgentTurnId(coding_turn),
+                "agent-test",
+                &manifest,
+                &coding_spec,
+                &input,
+                &runtime,
+            )
+            .await
+            .unwrap();
+        assert!(
+            repository
+                .schedule_coding_adapter_turn(
+                    host_id,
+                    AgentSessionId(coding_job),
+                    AgentTurnId(coding_turn),
+                    "agent-test",
+                    &manifest,
+                    &coding_spec,
+                    &input,
+                    &runtime
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            !repository
+                .fail_received_coding_turn(
+                    host_id,
+                    AgentSessionId(coding_job),
+                    AgentTurnId(coding_turn),
+                    "racing dispatcher"
+                )
+                .await
+                .unwrap()
+        );
+        assert!(repository.pending_coding_jobs().await.unwrap().is_empty());
+        let payload: Value = sqlx::query_scalar("SELECT command_payload FROM agent_execution_outbox_t WHERE host_id=$1 AND request_id=$2 AND command_kind='REQUEST'")
+            .bind(host_id).bind(coding_turn).fetch_one(&pool).await.unwrap();
+        let queued: SchedulingRequestSubmission = serde_json::from_value(payload).unwrap();
+        assert_eq!(
+            queued.pinned_runner_id.as_deref(),
+            Some("personal-codex-runner")
+        );
+        let command: AgentWorkerExecutionSpec =
+            serde_json::from_value(queued.execution_spec).unwrap();
+        assert_eq!(
+            command.input["codingSpec"]["thread"],
+            serde_json::to_value(&coding_spec.thread).unwrap()
+        );
+        assert_eq!(
+            command.input["threadScope"],
+            coding_thread_scope(
+                host_id,
+                "agent-test",
+                &authority.policy_digest,
+                &authority.data_boundary_digest,
+                "unused",
+                AgentSessionId::new(),
+                Some(process)
+            )
+            .unwrap()
+        );
+        let requirements: ExecutionRequirements =
+            serde_json::from_value(queued.normalized_requirements).unwrap();
+        assert!(
+            requirements
+                .required_features
+                .iter()
+                .any(|f| f == "workflow-coding-threads-v1")
+        );
+        sqlx::query("DELETE FROM agent_execution_outbox_t WHERE host_id=$1 AND request_id=$2")
+            .bind(host_id)
+            .bind(coding_turn)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM agent_job_t WHERE host_id=$1 AND job_id=$2")
+            .bind(host_id)
+            .bind(coding_job)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM agent_session_t WHERE host_id=$1 AND session_id=$2")
+            .bind(host_id)
+            .bind(coding_job)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // A dispatch that cannot be scheduled must terminalize the workflow job with the
+        // reason that actually ended it, not leave it RUNNING until deadline_exceeded.
+        let failing_job = Uuid::now_v7();
+        sqlx::query("INSERT INTO agent_job_t(host_id,job_id,workflow_process_id,workflow_task_id,agent_def_id,
+            idempotency_key,input,input_schema_digest,output_schema,policy_digest,data_boundary_digest,
+            deadline_ts,token_budget,cost_budget_micros,delegation_depth,state)
+            SELECT host_id,$3,workflow_process_id,$3,agent_def_id,$4,jsonb_build_object('profile','coding','coding','{}'::jsonb),input_schema_digest,output_schema,
+            policy_digest,data_boundary_digest,now()+interval '1 hour',token_budget,cost_budget_micros,0,'PENDING'
+            FROM agent_job_t WHERE host_id=$1 AND job_id=$2")
+            .bind(host_id).bind(workflow_job).bind(failing_job).bind(format!("coding:{failing_job}")).execute(&pool).await.unwrap();
+        repository.reconcile_agent_jobs().await.unwrap();
+        repository
+            .activate_next_turn(host_id, AgentSessionId(failing_job))
+            .await
+            .unwrap()
+            .unwrap();
+        let failing_turn: Uuid =
+            sqlx::query_scalar("SELECT turn_id FROM agent_job_t WHERE host_id=$1 AND job_id=$2")
+                .bind(host_id)
+                .bind(failing_job)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            repository.pending_coding_jobs().await.unwrap()[0].0,
+            failing_job
+        );
+        assert!(
+            repository
+                .fail_received_coding_turn(
+                    host_id,
+                    AgentSessionId(failing_job),
+                    AgentTurnId(failing_turn),
+                    "coding profile is disabled"
+                )
+                .await
+                .unwrap()
+        );
+        let (turn_state, turn_error): (String, Value) = sqlx::query_as(
+            "SELECT state,terminal_error FROM agent_turn_t WHERE host_id=$1 AND turn_id=$2",
+        )
+        .bind(host_id)
+        .bind(failing_turn)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(turn_state, "FAILED");
+        assert_eq!(turn_error["class"], json!("CODING_DISPATCH_FAILED"));
+        let (job_state, job_error): (String, Option<Value>) = sqlx::query_as(
+            "SELECT state,error FROM agent_job_t WHERE host_id=$1 AND job_id=$2",
+        )
+        .bind(host_id)
+        .bind(failing_job)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(job_state, "FAILED");
+        let job_error = job_error.expect("the job records why dispatch ended it");
+        assert_eq!(job_error["class"], json!("CODING_DISPATCH_FAILED"));
+        assert_eq!(job_error["message"], json!("coding profile is disabled"));
+        // Session capacity is released and the turn is no longer dispatchable.
+        let active: Option<Uuid> = sqlx::query_scalar(
+            "SELECT active_turn_id FROM agent_session_t WHERE host_id=$1 AND session_id=$2",
+        )
+        .bind(host_id)
+        .bind(failing_job)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(active.is_none());
+        assert!(repository.pending_coding_jobs().await.unwrap().is_empty());
+        // A second dispatcher losing the same race records nothing further.
+        assert!(
+            !repository
+                .fail_received_coding_turn(
+                    host_id,
+                    AgentSessionId(failing_job),
+                    AgentTurnId(failing_turn),
+                    "racing dispatcher"
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, Value>(
+                "SELECT error FROM agent_job_t WHERE host_id=$1 AND job_id=$2"
+            )
+            .bind(host_id)
+            .bind(failing_job)
+            .fetch_one(&pool)
+            .await
+            .unwrap()["message"],
+            json!("coding profile is disabled")
+        );
+        sqlx::query("DELETE FROM agent_job_t WHERE host_id=$1 AND job_id=$2")
+            .bind(host_id)
+            .bind(failing_job)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM agent_session_t WHERE host_id=$1 AND session_id=$2")
+            .bind(host_id)
+            .bind(failing_job)
+            .execute(&pool)
+            .await
+            .unwrap();
+
         sqlx::query("DELETE FROM agent_job_t WHERE host_id=$1 AND job_id IN ($2,$3)")
             .bind(host_id)
             .bind(workflow_job)

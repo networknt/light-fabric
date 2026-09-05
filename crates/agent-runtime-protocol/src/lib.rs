@@ -334,6 +334,13 @@ pub enum RuntimeCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         enterprise_gateway: Option<Box<EnterpriseGatewayConfig>>,
         input: Value,
+        /// Milliseconds of admitted execution left when this command was written: the
+        /// lesser of the spec's wall-clock timeout and the remaining lease. The runner
+        /// kills the worker at that point, so a worker that wants its result delivered
+        /// must finish and emit inside this budget, reserving time for the terminal
+        /// event itself. Absent only from a runner older than this field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deadline_ms: Option<u64>,
     },
     Cancel {
         reason: String,

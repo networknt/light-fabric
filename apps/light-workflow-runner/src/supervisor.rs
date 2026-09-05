@@ -69,8 +69,22 @@ impl Supervisor {
     }
 
     pub fn backend_capability(&self) -> execution_runner_protocol::BackendCapability {
-        let mut capability = self.backend.capability();
-        if self.agent_worker.is_some() {
+        let mut capability = Self::admitted_backend_capability(
+            self.backend.capability(),
+            self.agent_worker.as_ref(),
+        );
+        capability.available_slots = self.available_capacity();
+        capability.healthy = !self.draining.load(Ordering::Acquire)
+            && self.journal.is_healthy()
+            && self.orphan_reconciliation_healthy.load(Ordering::Acquire);
+        capability
+    }
+
+    pub(crate) fn admitted_backend_capability(
+        mut capability: execution_runner_protocol::BackendCapability,
+        agent_worker: Option<&WorkerProcessConfig>,
+    ) -> execution_runner_protocol::BackendCapability {
+        if agent_worker.is_some() {
             if !capability
                 .actions
                 .iter()
@@ -87,10 +101,7 @@ impl Supervisor {
                     capability.features.push(feature.into());
                 }
             }
-            if self
-                .agent_worker
-                .as_ref()
-                .is_some_and(WorkerProcessConfig::has_restricted_model_egress)
+            if agent_worker.is_some_and(WorkerProcessConfig::has_restricted_model_egress)
                 && !capability
                     .features
                     .iter()
@@ -98,15 +109,47 @@ impl Supervisor {
             {
                 capability.features.push("restricted-model-egress".into());
             }
-            let isolation_feature = if self
-                .agent_worker
-                .as_ref()
-                .is_some_and(|worker| worker.sandbox_launcher.is_some())
+            // Only the dedicated native profile can expose the owner's Codex login.
+            // Admission generation and live registration use this same capability builder.
+            if agent_worker.is_some_and(|worker| {
+                worker.codex_home.is_some()
+                    && worker.sandbox_launcher.is_none()
+                    && worker.broker.is_none()
+            }) && !capability
+                .features
+                .iter()
+                .any(|feature| feature == "personal-subscription-auth-v1")
             {
-                "per-attempt-worker-sandbox-v1"
-            } else {
-                "local-single-user-native-v1"
-            };
+                capability
+                    .features
+                    .push("personal-subscription-auth-v1".into());
+            }
+            // A new runner must not advertise thread reuse for an older installed worker.
+            if agent_worker.is_some_and(|worker| {
+                worker.codex_home.is_some()
+                    && worker.sandbox_launcher.is_none()
+                    && worker.broker.is_none()
+                    && agent_runtime_protocol::canonical_digest(
+                        &coding_agent_runtime::codex_worker_capabilities(),
+                    )
+                    .ok()
+                    .as_ref()
+                        == Some(&worker.capability_digest)
+            }) && !capability
+                .features
+                .iter()
+                .any(|f| f == "workflow-coding-threads-v1")
+            {
+                capability
+                    .features
+                    .push("workflow-coding-threads-v1".into());
+            }
+            let isolation_feature =
+                if agent_worker.is_some_and(|worker| worker.sandbox_launcher.is_some()) {
+                    "per-attempt-worker-sandbox-v1"
+                } else {
+                    "local-single-user-native-v1"
+                };
             if !capability
                 .features
                 .iter()
@@ -115,10 +158,6 @@ impl Supervisor {
                 capability.features.push(isolation_feature.into());
             }
         }
-        capability.available_slots = self.available_capacity();
-        capability.healthy = !self.draining.load(Ordering::Acquire)
-            && self.journal.is_healthy()
-            && self.orphan_reconciliation_healthy.load(Ordering::Acquire);
         capability
     }
 
@@ -1256,6 +1295,69 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use uuid::Uuid;
+
+    #[test]
+    fn personal_auth_capability_requires_native_credential_configuration() {
+        let (supervisor, root) = supervisor(MockBehavior::default());
+        let base = supervisor.backend_capability();
+        let mut worker = WorkerProcessConfig {
+            origin_service_id: "agent".into(),
+            executable: "/worker".into(),
+            binary_digest: format!("sha256:{}", "a".repeat(64)),
+            capability_digest: format!("sha256:{}", "b".repeat(64)),
+            sandbox_launcher: None,
+            codex_home: None,
+            codex_executable: None,
+            broker: None,
+        };
+        let feature = "personal-subscription-auth-v1";
+        assert!(!base.features.iter().any(|f| f == feature));
+        assert!(
+            !Supervisor::admitted_backend_capability(base.clone(), Some(&worker))
+                .features
+                .iter()
+                .any(|f| f == feature)
+        );
+        worker.codex_home = Some("/owner/codex".into());
+        let legacy = Supervisor::admitted_backend_capability(base.clone(), Some(&worker));
+        assert!(
+            !legacy
+                .features
+                .iter()
+                .any(|f| f == "workflow-coding-threads-v1")
+        );
+        worker.capability_digest = agent_runtime_protocol::canonical_digest(
+            &coding_agent_runtime::codex_worker_capabilities(),
+        )
+        .unwrap();
+        let updated = Supervisor::admitted_backend_capability(base.clone(), Some(&worker));
+        assert!(
+            updated
+                .features
+                .iter()
+                .any(|f| f == "workflow-coding-threads-v1")
+        );
+        let personal = Supervisor::admitted_backend_capability(base.clone(), Some(&worker));
+        assert!(personal.features.iter().any(|f| f == feature));
+        let repeated = Supervisor::admitted_backend_capability(personal, Some(&worker));
+        assert_eq!(
+            repeated.features.iter().filter(|f| *f == feature).count(),
+            1
+        );
+        worker.sandbox_launcher = Some(crate::worker_process::WorkerSandboxLauncherConfig {
+            executable: "/sandbox".into(),
+            binary_digest: worker.binary_digest.clone(),
+            profile_digest: worker.binary_digest.clone(),
+            restricted_model_egress: true,
+        });
+        assert!(
+            !Supervisor::admitted_backend_capability(base, Some(&worker))
+                .features
+                .iter()
+                .any(|f| f == feature)
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn secret_shaped_environment_is_rejected() {

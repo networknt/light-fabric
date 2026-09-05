@@ -1,3 +1,4 @@
+mod coding_jobs;
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use axum::{
@@ -2486,6 +2487,8 @@ enum RequestedProfile {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CodingDispatchRequest {
+    #[serde(default)]
+    thread: Option<coding_agent_runtime::CodingThreadControl>,
     repository: ImmutableRepositoryInput,
     base_revision: String,
     workspace_root: String,
@@ -3706,6 +3709,7 @@ async fn handle_socket(
                         writable_roots: writable_roots.clone(),
                     };
                     let spec = CodingTurnSpec {
+                        thread: request.thread.clone(),
                         repository_digest: request.repository.digest.clone(),
                         base_revision: request.base_revision.clone(),
                         workspace_root: request.workspace_root.clone(),
@@ -5494,6 +5498,7 @@ async fn build_agent_state(
         outbound_a2a,
     });
     state.domain.spawn_result_reconciler();
+    coding_jobs::spawn(state.clone());
     state.spawn_native_artifact_retention();
 
     if let Err(err) = state.refresh_effective_catalog().await {

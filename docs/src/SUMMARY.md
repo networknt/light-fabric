@@ -82,6 +82,8 @@
 
 - [Light-Agent](product/light-agent.md)
   - [Coding Harness Integration](product/light-agent/coding-harness-integration.md)
+  - [Workflow Coding Thread Lifecycle](product/light-agent-worker/workflow-thread-lifecycle.md)
+  - [Worker Codex Upgrade Strategy](product/light-agent-worker/codex-upgrade-strategy.md)
   - [Development Workflow Orchestration](product/light-agent/development-workflow-orchestration.md)
   - [Deploy Native](product/light-agent/deploy-native.md)
   - [Deploy Kubernetes](product/light-agent/deploy-kubernetes.md)

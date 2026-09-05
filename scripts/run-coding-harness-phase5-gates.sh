@@ -14,7 +14,7 @@ cargo test --locked -p light-agent-worker --lib \
 app_evidence="contracts/coding-adapters/codex-app-server-v1-qualification.json"
 embedded_evidence="contracts/coding-adapters/codex-embedded-v1-prototype.json"
 test "$(sha256sum "$app_evidence" | cut -d' ' -f1)" = \
-  "268432fcff0f5d90ad58f45be6d8e433baedcb4c6e96e7b16e4c82ee262ebf4c"
+  "6fe22317953bbfd2192ae9c4bca64828b447731ee00940041b1395f5f7b50bf4"
 test "$(sha256sum "$embedded_evidence" | cut -d' ' -f1)" = \
   "98fc7e79b0680efa86f534dd456fd89f7959ed59b1b3bd421727f5a05dcf9174"
 
@@ -45,6 +45,11 @@ if [[ "${LIGHT_RUN_CODEX_EMBEDDED_PROBE:-0}" == "1" ]]; then
     --manifest-path prototypes/codex-embedded-v1/Cargo.toml
   CCACHE_DISABLE=1 cargo run --locked --quiet \
     --manifest-path prototypes/codex-embedded-v1/Cargo.toml -- 10000
+fi
+
+if [[ "${LIGHT_RUN_CODEX_PERSONAL_SMOKE:-0}" == "1" ]]; then
+  LIGHT_CODEX_SMOKE_PROFILE=personal-subscription \
+    ./scripts/run-codex-app-server-smoke.sh
 fi
 
 mdbook build docs

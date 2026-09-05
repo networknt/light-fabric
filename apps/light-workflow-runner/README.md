@@ -56,6 +56,26 @@ LIGHT_WORKFLOW_RUNNER_CONFIG_FILE=/etc/light-workflow-runner/runner.yml \
   light-workflow-runner
 ```
 
+For a host-native personal-subscription pool, set `maximumConcurrency: 1`,
+configure `agentWorker.codexHome` as an owner-only directory, configure
+`agentWorker.codexExecutable` as the absolute path to the qualified native
+Codex binary, and omit `agentWorker.broker`. The runner projects only those two
+paths to `light-agent-worker`; it does not copy or broker the subscription
+credential. Validate the native App Server and a real subscription-backed turn
+before enrollment:
+
+```bash
+LIGHT_RUN_CODEX_PERSONAL_SMOKE=1 \
+LIGHT_CODEX_SMOKE_EXECUTABLE=/absolute/path/to/native/codex \
+CODEX_HOME=/absolute/path/to/owner-only/codex-home \
+  ./scripts/run-coding-harness-phase5-gates.sh
+```
+
+For a controller signed by a private CA, set `SSL_CERT_FILE` to its PEM CA
+bundle in the runner service environment. The WebSocket client loads native
+roots in addition to public roots and continues to verify the controller's
+hostname. Its certificate must include the hostname in `controllerUrl`.
+
 The readiness endpoint is `/readyz`; liveness and cleanup evidence are exposed
 at `/healthz` on `healthAddress`. Prometheus text metrics are exposed at
 `/metrics` on the same internal listener. They cover controller connectivity,

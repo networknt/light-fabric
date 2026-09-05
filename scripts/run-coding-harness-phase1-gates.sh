@@ -4,12 +4,12 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-schema="contracts/codex-app-server/v0.153.2/json/codex_app_server_protocol.v2.schemas.json"
+schema="contracts/codex-app-server/v0.153.4/json/codex_app_server_protocol.v2.schemas.json"
 expected="d3eace08be5dca386bfd1f1e8df650058b4113f1e10870a284d775d75517576a"
 actual="$(sha256sum "$schema" | awk '{print $1}')"
 test "$actual" = "$expected"
-test -f contracts/codex-app-server/v0.153.2/typescript/ClientRequest.ts
-test -f contracts/codex-app-server/v0.153.2/typescript/ServerRequest.ts
+test -f contracts/codex-app-server/v0.153.4/typescript/ClientRequest.ts
+test -f contracts/codex-app-server/v0.153.4/typescript/ServerRequest.ts
 ./scripts/run-codex-app-server-smoke.sh
 
 if rg -n 'light-pi-rpc-adapter|coding\.pi-rpc-v1|PI_RPC_|@earendil-works/pi-coding-agent' \

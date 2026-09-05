@@ -232,6 +232,22 @@ can be minted. If the grant expires or is revoked, the workflow pauses in
 `REAUTHORIZATION_REQUIRED`; possession of an old workflow ID is insufficient
 to continue spending.
 
+## Workflow-owned conversation lifecycle
+
+Keep separate implementer and reviewer sessions during a stage's repeated
+implementation/review/remediation rounds. The workflow supplies `new`, `resume`,
+or `close` in each typed coding job and stores successful checkpoint receipts.
+After stage acceptance, close both sessions; the next stage receives new session
+references. An optional final review can deliberately start with fresh context.
+
+This preserves each role's working context without sharing implementer-private
+history with the reviewer. Each reviewer round still receives the current exact
+candidate, requirements, findings, and test evidence. Durable artifacts remain
+the recovery source; missing/uncertain sessions require an explicit workflow
+recovery decision. See [Workflow Coding Thread Lifecycle](../light-agent-worker/workflow-thread-lifecycle.md)
+for the implemented native Codex contract, runner pinning, failure rules, and
+remaining enterprise/Claude adapter qualification work.
+
 ## Logical Agent Roles
 
 | Role | Role execution profile | Logical model alias | Workspace authority | Output |

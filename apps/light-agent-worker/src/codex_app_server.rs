@@ -34,6 +34,7 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
     input: Value,
     enterprise_gateway: Option<EnterpriseGatewayConfig>,
     cancel: tokio::sync::watch::Receiver<Option<String>>,
+    deadline: Option<tokio::time::Instant>,
 ) -> Result<()> {
     let spec: CodingTurnSpec = serde_json::from_value(required(&input, "codingSpec")?.clone())?;
     spec.validate()?;
@@ -62,6 +63,21 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
     {
         bail!("staged repository does not match the admitted immutable input")
     }
+    // Decided before any thread checkpoint is claimed: a route mismatch is a pre-Codex
+    // rejection and must not consume the workflow's conversation.
+    match (spec.authentication_profile, enterprise_gateway.is_some()) {
+        (CodingAuthenticationProfile::PersonalSubscription, false) => {
+            if std::env::var_os("LIGHT_CODEX_HOME").is_none() {
+                bail!("personal-subscription requires a runner-projected native Codex home")
+            }
+        }
+        (CodingAuthenticationProfile::EnterpriseApi, true) => {
+            if std::env::var_os("LIGHT_CODEX_HOME").is_some() {
+                bail!("enterprise-api forbids native Codex credential-store visibility")
+            }
+        }
+        _ => bail!("Codex authentication profile and enterprise gateway route differ"),
+    }
     let workspace = tempfile::tempdir().context("create Codex workspace")?;
     let repository = workspace.path().join("repository");
     git(
@@ -72,6 +88,36 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
     )
     .await?;
     checkout_base(&repository, &spec.base_revision).await?;
+    // Claiming the checkpoint marks the thread IN_FLIGHT, which is unrecoverable. Every
+    // failure above this point provably never reached Codex, so it leaves the workflow's
+    // thread resumable instead of forcing a brand-new conversation.
+    let mut session = if spec.thread.is_some() {
+        let home = std::env::var_os("LIGHT_CODEX_HOME")
+            .context("persistent coding threads require native Codex home")?;
+        let scope = required(&input, "threadScope")?
+            .as_str()
+            .context("invalid thread scope")?;
+        Some(super::coding_session::CodingSession::open(
+            Path::new(&home),
+            scope,
+            &spec,
+            &contract.digest()?,
+        )?)
+    } else {
+        None
+    };
+    if spec.role == CodingRole::Implement
+        && let Some(session) = &session
+    {
+        if !session.patch().is_empty() {
+            git_apply(&repository, session.patch().as_bytes()).await?;
+        }
+        if let Some(remediation) = &spec.remediation
+            && patch_digest(session.patch()) != remediation.prior_review.artifact_digest
+        {
+            bail!("remediation findings refer to a different session checkpoint patch");
+        }
+    }
 
     let review_scratch = if spec.role == CodingRole::Review {
         let review = spec
@@ -91,19 +137,6 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
     let executable = std::env::var_os("LIGHT_CODEX_EXECUTABLE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(&contract.executable));
-    match (spec.authentication_profile, enterprise_gateway.is_some()) {
-        (CodingAuthenticationProfile::PersonalSubscription, false) => {
-            if std::env::var_os("LIGHT_CODEX_HOME").is_none() {
-                bail!("personal-subscription requires a runner-projected native Codex home")
-            }
-        }
-        (CodingAuthenticationProfile::EnterpriseApi, true) => {
-            if std::env::var_os("LIGHT_CODEX_HOME").is_some() {
-                bail!("enterprise-api forbids native Codex credential-store visibility")
-            }
-        }
-        _ => bail!("Codex authentication profile and enterprise gateway route differ"),
-    }
     let enterprise_home = if let Some(gateway) = &enterprise_gateway {
         Some(prepare_enterprise_gateway(gateway, identity).await?)
     } else {
@@ -176,15 +209,62 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
         &account,
         enterprise_home.as_ref().map(|value| value.3),
     )?;
-    request(
-        &mut stdin,
-        3,
-        "thread/start",
-        thread_start_params(&spec, turn_cwd),
-    )
-    .await?;
+    let (method, params) = thread_open_params(
+        &spec,
+        turn_cwd,
+        session.as_ref().and_then(|s| s.thread_id()),
+    );
+    // The last point at which nothing durable has happened to the native thread. Patch
+    // restoration, remediation binding, review preparation, the Codex spawn and the
+    // authentication checks have all passed, so claiming here is the narrowest window in
+    // which an interruption is genuinely uncertain.
+    if let Some(session) = session.as_mut() {
+        session.begin()?;
+    }
+    request(&mut stdin, 3, method, params).await?;
     let thread = response(&mut stdout, 3).await?;
     let thread_id = string_at(&thread, "/result/thread/id")?;
+    if let Some(expected) = session.as_ref().and_then(|s| s.thread_id())
+        && expected != thread_id
+    {
+        bail!("Codex resumed a different thread");
+    }
+    if spec
+        .thread
+        .as_ref()
+        .is_some_and(|t| t.mode == coding_agent_runtime::CodingThreadMode::Close)
+    {
+        // A dedicated close turn carries no other result, so a failed archive fails it.
+        // It is still bounded: an unanswered request should fail the turn promptly rather
+        // than hold the worker until the runner kills it at the execution deadline.
+        let budget = archive_budget(deadline)
+            .context("too little execution budget left to close the thread")?;
+        tokio::time::timeout(budget, archive_thread(&mut stdin, &mut stdout, thread_id))
+            .await
+            .with_context(|| {
+                format!(
+                    "thread/archive did not answer within {}s",
+                    budget.as_secs_f32()
+                )
+            })??;
+        let receipt = session
+            .as_mut()
+            .context("close requires persisted session")?
+            .finish(thread_id, "", true)?;
+        shutdown(&mut child).await;
+        stderr_drain.abort();
+        return emit(
+            writer,
+            identity,
+            sequence,
+            RuntimeEventPayload::Terminal {
+                class: ResultClass::Success,
+                output: Some(json!({"authentication":authentication,"codingThread":receipt})),
+                error: None,
+            },
+        )
+        .await;
+    }
     request(
         &mut stdin,
         4,
@@ -244,6 +324,16 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
         {
             bail!("review result differs from the admitted review input")
         }
+        let receipt = finish_thread(
+            &mut stdin,
+            &mut stdout,
+            &spec,
+            &mut session,
+            thread_id,
+            "",
+            deadline,
+        )
+        .await?;
         shutdown(&mut child).await;
         stderr_drain.abort();
         return emit(
@@ -252,7 +342,7 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
             sequence,
             RuntimeEventPayload::Terminal {
                 class: ResultClass::Success,
-                output: Some(json!({"adapter":CODEX_APP_SERVER_ADAPTER_ID,"adapterVersion":CODEX_APP_SERVER_VERSION,"threadId":thread_id,"turnId":turn_id,"authentication":authentication,"codingReview":result,"reviewValidationEvidence":terminal.validation_evidence})),
+                output: Some(json!({"adapter":CODEX_APP_SERVER_ADAPTER_ID,"adapterVersion":CODEX_APP_SERVER_VERSION,"threadId":thread_id,"turnId":turn_id,"authentication":authentication,"codingThread":receipt,"codingReview":result,"reviewValidationEvidence":terminal.validation_evidence})),
                 error: None,
             },
         )
@@ -274,6 +364,8 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
         &patch,
         &changed_paths,
     )?;
+    // The durable artifact is published before the thread bookkeeping. A failing
+    // thread/archive must not discard an implementation that already succeeded.
     emit(
         writer,
         identity,
@@ -286,6 +378,16 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
         },
     )
     .await?;
+    let receipt = finish_thread(
+        &mut stdin,
+        &mut stdout,
+        &spec,
+        &mut session,
+        thread_id,
+        &patch,
+        deadline,
+    )
+    .await?;
     shutdown(&mut child).await;
     stderr_drain.abort();
     emit(
@@ -294,7 +396,7 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
         sequence,
         RuntimeEventPayload::Terminal {
             class: ResultClass::Success,
-            output: Some(json!({"adapter":CODEX_APP_SERVER_ADAPTER_ID,"adapterVersion":CODEX_APP_SERVER_VERSION,"threadId":thread_id,"turnId":turn_id,"authentication":authentication,"validationEvidence":terminal.validation_evidence})),
+            output: Some(json!({"adapter":CODEX_APP_SERVER_ADAPTER_ID,"adapterVersion":CODEX_APP_SERVER_VERSION,"threadId":thread_id,"turnId":turn_id,"authentication":authentication,"codingThread":receipt,"validationEvidence":terminal.validation_evidence})),
             error: None,
         },
     )
@@ -608,15 +710,132 @@ async fn drive_turn<W: AsyncWrite + Unpin>(
     bail!("Codex App Server closed before turn completion")
 }
 
+fn thread_open_params(
+    spec: &CodingTurnSpec,
+    cwd: &Path,
+    thread_id: Option<&str>,
+) -> (&'static str, Value) {
+    let mut params = thread_start_params(spec, cwd);
+    if let Some(thread_id) = thread_id {
+        params.as_object_mut().unwrap().remove("ephemeral");
+        params.as_object_mut().unwrap().remove("serviceName");
+        params["threadId"] = json!(thread_id);
+        ("thread/resume", params)
+    } else {
+        ("thread/start", params)
+    }
+}
+
+/// `thread/archive` is a trivial local RPC on an App Server that has just completed a
+/// turn. It is bounded because a server that accepts the request and then never answers
+/// would otherwise hold the worker until the runner kills it at the execution deadline,
+/// destroying a result that was already earned.
+const ARCHIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Kept back from the archive budget for emitting the terminal event and for the runner
+/// to read and journal it. The runner kills the worker at the deadline without draining
+/// stdout, so time spent archiving past this margin buys nothing and costs the result.
+const DELIVERY_RESERVE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long the optional post-turn archive may take.
+///
+/// The turn's result is already committed and is worth more than the cleanup, so the
+/// budget is whatever is left after reserving delivery time — never the flat timeout when
+/// the lease is nearly spent. `None` means the archive must be skipped outright: there is
+/// no time to both close and deliver, and delivery wins.
+fn archive_budget(deadline: Option<tokio::time::Instant>) -> Option<std::time::Duration> {
+    let Some(deadline) = deadline else {
+        // A runner older than `deadlineMs` tells us nothing; fall back to the flat bound.
+        return Some(ARCHIVE_TIMEOUT);
+    };
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    let budget = remaining.saturating_sub(DELIVERY_RESERVE).min(ARCHIVE_TIMEOUT);
+    (!budget.is_zero()).then_some(budget)
+}
+
+/// Commits the checkpoint for a turn that has already succeeded.
+///
+/// The order here is the contract. `finish` runs first, so the turn's result is durable
+/// before any optional bookkeeping is attempted; only then is `closeAfterTurn` honoured,
+/// under a timeout. An archive that fails, or never answers, therefore leaves a committed
+/// READY checkpoint plus a `closeError` in the receipt: the result stands, the thread is
+/// still resumable, and the workflow can close it with a turn of its own.
+///
+/// A dedicated `mode: close` turn is handled separately in `run`, where the archive is
+/// the entire point of the turn and a failure must fail it.
+async fn finish_thread(
+    stdin: &mut tokio::process::ChildStdin,
+    stdout: &mut BufReader<tokio::process::ChildStdout>,
+    spec: &CodingTurnSpec,
+    session: &mut Option<super::coding_session::CodingSession>,
+    thread_id: &str,
+    patch: &str,
+    deadline: Option<tokio::time::Instant>,
+) -> Result<Value> {
+    let Some(session) = session else {
+        return Ok(Value::Null);
+    };
+    // Durable before optional: nothing below may cost the caller this result.
+    let receipt = session.finish(thread_id, patch, false)?;
+    if !spec.thread.as_ref().is_some_and(|t| t.close_after_turn) {
+        return Ok(receipt);
+    }
+    let close = match archive_budget(deadline) {
+        None => Err(
+            "skipped: too little execution budget left to close the thread and still deliver \
+             the result"
+                .to_string(),
+        ),
+        Some(budget) => {
+            match tokio::time::timeout(budget, archive_thread(stdin, stdout, thread_id)).await {
+                Ok(Ok(())) => session.mark_closed().map_err(|error| error.to_string()),
+                Ok(Err(error)) => Err(error.to_string()),
+                Err(_) => Err(format!(
+                    "thread/archive did not answer within {}s",
+                    budget.as_secs_f32()
+                )),
+            }
+        }
+    };
+    Ok(match close {
+        Ok(closed) => closed,
+        // The thread is recorded as it can be proven to be. If the archive itself
+        // succeeded and only the local write failed, a later resume fails against Codex
+        // rather than this turn losing a completed implementation.
+        Err(error) => {
+            let mut receipt = receipt;
+            receipt["closeError"] = json!(error);
+            receipt
+        }
+    })
+}
+
+async fn archive_thread(
+    stdin: &mut tokio::process::ChildStdin,
+    stdout: &mut BufReader<tokio::process::ChildStdout>,
+    thread_id: &str,
+) -> Result<()> {
+    request(stdin, 5, "thread/archive", json!({"threadId":thread_id})).await?;
+    response(stdout, 5).await?;
+    Ok(())
+}
+
 fn thread_start_params(spec: &CodingTurnSpec, cwd: &Path) -> Value {
-    json!({
-        "model": spec.model_alias,
+    let mut value = json!({
         "cwd": cwd,
         "approvalPolicy": "never",
         "sandbox": "workspace-write",
         "serviceName": "light-agent-worker",
-        "ephemeral": true
-    })
+        "ephemeral": spec.thread.is_none()
+    });
+    // Only the enterprise route resolves a Light model alias. A personal subscription
+    // runs the account's own default model, so role separation between implement and
+    // review rests on the prompt, allowed tools and workspace authority pinned by
+    // CodingRoleExecutionProfile, not on the model alias.
+    if spec.authentication_profile == CodingAuthenticationProfile::EnterpriseApi {
+        value["model"] = Value::String(spec.model_alias.clone());
+    }
+    value
 }
 
 fn turn_start_params(
@@ -625,22 +844,28 @@ fn turn_start_params(
     repository: &Path,
     cwd: &Path,
 ) -> Value {
-    let mut prompt = spec.prompt.clone();
+    let mut prompt = format!(
+        "Repository for this turn: {}. It has been reconstructed from the admitted immutable base and candidate/checkpoint patch. Paths and tool results from earlier turns may be stale; use this repository and verify current contents.\n\n{}",
+        repository.display(),
+        spec.prompt
+    );
     let mut value = json!({
         "threadId": thread_id,
         "input": [{"type":"text","text":prompt,"text_elements":[]}],
         "cwd": cwd,
         "approvalPolicy": "never",
-        "model": spec.model_alias,
     });
+    if spec.authentication_profile == CodingAuthenticationProfile::EnterpriseApi {
+        value["model"] = Value::String(spec.model_alias.clone());
+    }
     if spec.role == CodingRole::Implement
         && let Some(remediation) = &spec.remediation
     {
         let findings = serde_json::to_string(&remediation.prior_review.findings)
             .expect("review findings are serializable");
         prompt = format!(
-            "Remediate every accepted finding in this fresh implementation turn. Prior artifact: {}. Findings: {}\n\n{}",
-            remediation.prior_review.artifact_digest, findings, spec.prompt
+            "Remediate every accepted finding in this implementation turn. Prior artifact: {}. Findings: {}\n\n{}",
+            remediation.prior_review.artifact_digest, findings, prompt
         );
         value["input"][0]["text"] = Value::String(prompt.clone());
     }
@@ -955,6 +1180,7 @@ mod tests {
             resolved_finding_ids: std::collections::BTreeSet::new(),
         };
         CodingTurnSpec {
+            thread: None,
             repository_digest: implementation.repository_digest.clone(),
             base_revision: implementation.base_revision.clone(),
             workspace_root: "/workspace/repository".into(),
@@ -987,10 +1213,398 @@ mod tests {
         }
     }
 
+    fn persistent_spec() -> CodingTurnSpec {
+        let mut spec = review_spec("");
+        spec.role = CodingRole::Implement;
+        spec.role_profile =
+            coding_agent_runtime::CodingRoleExecutionProfile::pinned(CodingRole::Implement);
+        spec.model_alias = spec.role_profile.model_alias.clone();
+        spec.review_input = None;
+        spec.allowed_tools = CodingTurnSpec::supported_tools(CodingRole::Implement);
+        spec.writable_roots = std::collections::BTreeSet::from([spec.workspace_root.clone()]);
+        spec.authentication_profile = CodingAuthenticationProfile::PersonalSubscription;
+        spec.thread = Some(coding_agent_runtime::CodingThreadControl {
+            runner_id: "personal-codex-runner".into(),
+            session_ref: uuid::Uuid::now_v7(),
+            stage_id: "implementation-1".into(),
+            mode: coding_agent_runtime::CodingThreadMode::New,
+            expected_checkpoint: None,
+            close_after_turn: false,
+        });
+        spec
+    }
+
+    #[test]
+    fn thread_checkpoints_survive_restart_reject_stale_scope_and_close() {
+        use super::super::coding_session::CodingSession;
+        use coding_agent_runtime::CodingThreadMode;
+        let home = tempfile::tempdir().unwrap();
+        let scope = format!("sha256:{}", "a".repeat(64));
+        let mut spec = persistent_spec();
+        spec.validate().unwrap();
+        let mut first = CodingSession::open(home.path(), &scope, &spec, "contract-a").unwrap();
+        assert!(CodingSession::open(home.path(), &scope, &spec, "contract-a").is_err());
+        let receipt = first
+            .finish("native-thread-a", "candidate-patch", false)
+            .unwrap();
+        drop(first);
+        assert!(CodingSession::open(home.path(), &scope, &spec, "contract-a").is_err());
+        spec.thread.as_mut().unwrap().mode = CodingThreadMode::Resume;
+        spec.thread.as_mut().unwrap().expected_checkpoint =
+            Some(serde_json::from_value(receipt["checkpoint"].clone()).unwrap());
+        for change in ["stage", "role", "base", "tools"] {
+            let mut changed = spec.clone();
+            match change {
+                "stage" => changed.thread.as_mut().unwrap().stage_id = "next-stage".into(),
+                "role" => changed.role = CodingRole::Review,
+                "base" => changed.base_revision = "b".repeat(40),
+                _ => {
+                    changed.allowed_tools.insert("fs.delete".into());
+                }
+            }
+            assert!(CodingSession::open(home.path(), &scope, &changed, "contract-a").is_err());
+        }
+        assert!(
+            CodingSession::open(
+                home.path(),
+                &format!("sha256:{}", "b".repeat(64)),
+                &spec,
+                "contract-a"
+            )
+            .is_err()
+        );
+        assert!(CodingSession::open(home.path(), &scope, &spec, "contract-b").is_err());
+        let mut resumed = CodingSession::open(home.path(), &scope, &spec, "contract-a").unwrap();
+        assert_eq!(resumed.thread_id(), Some("native-thread-a"));
+        assert_eq!(resumed.patch(), "candidate-patch");
+        let receipt2 = resumed
+            .finish("native-thread-a", "updated-patch", false)
+            .unwrap();
+        drop(resumed);
+        assert!(CodingSession::open(home.path(), &scope, &spec, "contract-a").is_err());
+        spec.thread.as_mut().unwrap().expected_checkpoint =
+            Some(serde_json::from_value(receipt2["checkpoint"].clone()).unwrap());
+        let mut closing = CodingSession::open(home.path(), &scope, &spec, "contract-a").unwrap();
+        let closed = closing.finish("native-thread-a", "", true).unwrap();
+        drop(closing);
+        spec.thread.as_mut().unwrap().expected_checkpoint =
+            Some(serde_json::from_value(closed["checkpoint"].clone()).unwrap());
+        assert!(CodingSession::open(home.path(), &scope, &spec, "contract-a").is_err());
+        spec.thread.as_mut().unwrap().session_ref = uuid::Uuid::now_v7();
+        spec.thread.as_mut().unwrap().mode = CodingThreadMode::New;
+        spec.thread.as_mut().unwrap().expected_checkpoint = None;
+        assert!(CodingSession::open(home.path(), &scope, &spec, "contract-a").is_ok());
+    }
+
+    #[test]
+    fn interrupted_session_cannot_silently_resume_or_restart() {
+        use super::super::coding_session::CodingSession;
+        let home = tempfile::tempdir().unwrap();
+        let scope = format!("sha256:{}", "a".repeat(64));
+        let mut spec = persistent_spec();
+        let mut session = CodingSession::open(home.path(), &scope, &spec, "contract").unwrap();
+        session.begin().unwrap();
+        let receipt = session.finish("native-a", "patch", false).unwrap();
+        drop(session);
+        spec.thread.as_mut().unwrap().mode = coding_agent_runtime::CodingThreadMode::Resume;
+        spec.thread.as_mut().unwrap().expected_checkpoint =
+            Some(serde_json::from_value(receipt["checkpoint"].clone()).unwrap());
+
+        // A preflight rejection releases the thread untouched: it never claimed the
+        // native operation, so the very same resume still succeeds afterwards.
+        drop(CodingSession::open(home.path(), &scope, &spec, "contract").unwrap());
+        let mut claimed = CodingSession::open(home.path(), &scope, &spec, "contract").unwrap();
+
+        // Once the native attempt is claimed, an interruption is indistinguishable from
+        // a lost one and neither resume nor restart may silently continue it.
+        claimed.begin().unwrap();
+        drop(claimed);
+        assert!(CodingSession::open(home.path(), &scope, &spec, "contract").is_err());
+        spec.thread.as_mut().unwrap().mode = coding_agent_runtime::CodingThreadMode::New;
+        spec.thread.as_mut().unwrap().expected_checkpoint = None;
+        assert!(CodingSession::open(home.path(), &scope, &spec, "contract").is_err());
+    }
+
+    #[test]
+    fn retention_reclaims_only_long_closed_threads() {
+        use super::super::coding_session::CodingSession;
+        use coding_agent_runtime::CodingThreadMode;
+        let home = tempfile::tempdir().unwrap();
+        let scope = format!("sha256:{}", "a".repeat(64));
+        let root = home.path().join("light-worker-threads");
+        let age = |state: &std::path::Path, old: bool| {
+            let when = if old {
+                std::time::SystemTime::now() - std::time::Duration::from_secs(40 * 24 * 60 * 60)
+            } else {
+                std::time::SystemTime::now()
+            };
+            let file = std::fs::OpenOptions::new().write(true).open(state).unwrap();
+            file.set_times(std::fs::FileTimes::new().set_modified(when))
+                .unwrap();
+        };
+        let checkpoint = |root: &std::path::Path| {
+            std::fs::read_dir(root)
+                .unwrap()
+                .flatten()
+                .map(|entry| entry.path())
+                .find(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
+        };
+
+        // A live (IN_FLIGHT) checkpoint is never reclaimed, however old the file is.
+        let mut spec = persistent_spec();
+        let mut open = CodingSession::open(home.path(), &scope, &spec, "contract").unwrap();
+        open.begin().unwrap();
+        let in_flight = checkpoint(&root).unwrap();
+        age(&in_flight, true);
+        // persistent_spec() mints a fresh sessionRef, so reuse `spec` to hit this key.
+        assert!(CodingSession::open(home.path(), &scope, &spec, "contract").is_err());
+        assert!(in_flight.exists());
+
+        // A recently closed checkpoint is retained so a late resume is still rejected.
+        open.finish("native-a", "", true).unwrap();
+        drop(open);
+        age(&in_flight, false);
+        spec.thread.as_mut().unwrap().mode = CodingThreadMode::Resume;
+        spec.thread.as_mut().unwrap().expected_checkpoint = Some(uuid::Uuid::now_v7());
+        assert!(CodingSession::open(home.path(), &scope, &spec, "contract").is_err());
+        assert!(in_flight.exists());
+
+        // Past the retention window the closed checkpoint is reclaimed by the next
+        // unrelated open, so the owner's Codex home does not grow without bound. The lock
+        // file must survive: flock ownership is per-inode, so unlinking it would let two
+        // processes lock different inodes and both believe they own the thread.
+        age(&in_flight, true);
+        let lock = in_flight.with_extension("lock");
+        age(&lock, true);
+        let mut unrelated = persistent_spec();
+        unrelated.thread.as_mut().unwrap().session_ref = uuid::Uuid::now_v7();
+        drop(CodingSession::open(home.path(), &scope, &unrelated, "contract").unwrap());
+        assert!(!in_flight.exists(), "closed checkpoint was not reclaimed");
+        assert!(lock.exists(), "lock identity must outlive the checkpoint");
+
+        // Reclamation also frees the sessionRef for a genuinely fresh conversation.
+        spec.thread.as_mut().unwrap().mode = CodingThreadMode::New;
+        spec.thread.as_mut().unwrap().expected_checkpoint = None;
+        drop(CodingSession::open(home.path(), &scope, &spec, "contract").unwrap());
+    }
+
+    /// A server that accepts `thread/archive` and then simply never answers, holding
+    /// stdout open. Nothing but a timeout distinguishes this from a slow success.
+    ///
+    /// `sleep` is the fake precisely because it never reads and never writes: the request
+    /// lands in the pipe buffer and is never consumed, and the stdout pipe stays open for
+    /// the process lifetime without ever producing a frame. An echoing stand-in such as
+    /// `cat` would be no use here, since it answers `id: 5` with the request itself.
+    fn unresponsive_app_server() -> (
+        tokio::process::Child,
+        tokio::process::ChildStdin,
+        BufReader<tokio::process::ChildStdout>,
+    ) {
+        let mut child = Command::new("/bin/sleep")
+            .arg("300")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn stand-in App Server");
+        let stdin = child.stdin.take().unwrap();
+        let stdout = BufReader::new(child.stdout.take().unwrap());
+        (child, stdin, stdout)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_nearly_spent_lease_skips_the_archive_rather_than_the_delivery() {
+        use super::super::coding_session::CodingSession;
+        let home = tempfile::tempdir().unwrap();
+        let scope = format!("sha256:{}", "a".repeat(64));
+        let mut spec = persistent_spec();
+        spec.thread.as_mut().unwrap().close_after_turn = true;
+        let mut session = Some(CodingSession::open(home.path(), &scope, &spec, "contract").unwrap());
+        session.as_mut().unwrap().begin().unwrap();
+        let (mut child, mut stdin, mut stdout) = unresponsive_app_server();
+
+        // Two seconds left: less than the delivery reserve, so there is no budget to both
+        // close the thread and hand back the result.
+        let deadline =
+            Some(tokio::time::Instant::now() + std::time::Duration::from_millis(2_000));
+        assert!(archive_budget(deadline).is_none());
+        let started = tokio::time::Instant::now();
+        let receipt = finish_thread(
+            &mut stdin,
+            &mut stdout,
+            &spec,
+            &mut session,
+            "native-a",
+            "the-earned-patch",
+            deadline,
+        )
+        .await
+        .unwrap();
+        let _ = child.kill().await;
+
+        // It returned without ever waiting on the unresponsive server, leaving the whole
+        // remaining lease for the terminal event.
+        assert!(tokio::time::Instant::now().duration_since(started) < std::time::Duration::from_millis(2_000));
+        assert_eq!(receipt["state"], json!("READY"));
+        assert!(
+            receipt["closeError"]
+                .as_str()
+                .is_some_and(|error| error.contains("skipped")),
+            "the workflow must be told the close was never attempted: {receipt}"
+        );
+
+        // The budget scales with what is left, and is never more than the flat bound.
+        let far = tokio::time::Instant::now() + std::time::Duration::from_secs(600);
+        assert_eq!(archive_budget(Some(far)), Some(ARCHIVE_TIMEOUT));
+        let tight = tokio::time::Instant::now() + DELIVERY_RESERVE + std::time::Duration::from_secs(3);
+        assert_eq!(archive_budget(Some(tight)), Some(std::time::Duration::from_secs(3)));
+        assert!(archive_budget(Some(tokio::time::Instant::now())).is_none());
+        // A runner too old to send a budget falls back to the flat bound.
+        assert_eq!(archive_budget(None), Some(ARCHIVE_TIMEOUT));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unanswered_archive_still_delivers_the_committed_result() {
+        use super::super::coding_session::CodingSession;
+        let home = tempfile::tempdir().unwrap();
+        let scope = format!("sha256:{}", "a".repeat(64));
+        let mut spec = persistent_spec();
+        spec.thread.as_mut().unwrap().close_after_turn = true;
+        let mut session = Some(CodingSession::open(home.path(), &scope, &spec, "contract").unwrap());
+        session.as_mut().unwrap().begin().unwrap();
+        let (mut child, mut stdin, mut stdout) = unresponsive_app_server();
+
+        let receipt = finish_thread(
+            &mut stdin,
+            &mut stdout,
+            &spec,
+            &mut session,
+            "native-a",
+            "the-earned-patch",
+            None,
+        )
+        .await
+        .expect("a hung archive must not fail the turn");
+        let _ = child.kill().await;
+
+        // The turn's result is delivered, and the thread is reported exactly as it can be
+        // proven to be: still open, with the reason the close did not happen.
+        assert_eq!(receipt["state"], json!("READY"));
+        assert_eq!(receipt["sessionRef"], json!(spec.thread.unwrap().session_ref));
+        assert!(
+            receipt["checkpoint"]
+                .as_str()
+                .and_then(|value| uuid::Uuid::parse_str(value).ok())
+                .is_some()
+        );
+        assert!(
+            receipt["closeError"]
+                .as_str()
+                .is_some_and(|error| error.contains("did not answer")),
+            "the workflow must be told why the thread is still open: {receipt}"
+        );
+
+        // Committed before the wait: a kill at this point still leaves the patch and a
+        // resumable checkpoint on disk, not an IN_FLIGHT thread the workflow must abandon.
+        drop(session);
+        let stored: Value = serde_json::from_slice(
+            &std::fs::read(
+                std::fs::read_dir(home.path().join("light-worker-threads"))
+                    .unwrap()
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .find(|path| {
+                        path.extension().and_then(|value| value.to_str()) == Some("json")
+                    })
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(stored["state"], json!("READY"));
+        assert_eq!(stored["patch"], json!("the-earned-patch"));
+        assert_eq!(stored["threadId"], json!("native-a"));
+        assert_eq!(stored["checkpoint"], receipt["checkpoint"]);
+    }
+
+    #[test]
+    fn cleanup_never_reclaims_a_thread_another_holder_owns() {
+        use super::super::coding_session::CodingSession;
+        let home = tempfile::tempdir().unwrap();
+        let scope = format!("sha256:{}", "a".repeat(64));
+        let root = home.path().join("light-worker-threads");
+        let spec = persistent_spec();
+
+        // An expired CLOSED record whose lock is still held. This is the observation a
+        // concurrent cleanup pass races on: it looks reclaimable, but its holder may
+        // replace it at any moment.
+        let mut held = CodingSession::open(home.path(), &scope, &spec, "contract").unwrap();
+        held.begin().unwrap();
+        held.finish("native-a", "", true).unwrap();
+        let checkpoint = std::fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
+            .unwrap();
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&checkpoint)
+            .unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(
+            std::time::SystemTime::now() - std::time::Duration::from_secs(40 * 24 * 60 * 60),
+        ))
+        .unwrap();
+
+        // Cleanup runs on every open. While the lock is held it must leave the record
+        // alone, so the holder's next write cannot be destroyed by a stale observation.
+        let mut unrelated = persistent_spec();
+        unrelated.thread.as_mut().unwrap().session_ref = uuid::Uuid::now_v7();
+        drop(CodingSession::open(home.path(), &scope, &unrelated, "contract").unwrap());
+        assert!(
+            checkpoint.exists(),
+            "cleanup reclaimed a thread whose lock was held"
+        );
+
+        // Released, the same record is reclaimable.
+        drop(held);
+        let mut next = persistent_spec();
+        next.thread.as_mut().unwrap().session_ref = uuid::Uuid::now_v7();
+        drop(CodingSession::open(home.path(), &scope, &next, "contract").unwrap());
+        assert!(!checkpoint.exists());
+    }
+
+    #[test]
+    fn persistent_thread_protocol_matches_pinned_schema() {
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../../contracts/codex-app-server/v0.153.4/json/ClientRequest.json"
+        ))
+        .unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let spec = persistent_spec();
+        for previous in [None, Some("native-a")] {
+            let (method, params) =
+                thread_open_params(&spec, Path::new("/workspace/repository"), previous);
+            let request = json!({"id":3,"method":method,"params":params});
+            assert!(validator.is_valid(&request), "{request}");
+            if previous.is_none() {
+                assert_eq!(params["ephemeral"], false);
+            } else {
+                assert_eq!(method, "thread/resume");
+                assert!(params.get("ephemeral").is_none());
+            }
+        }
+        assert!(
+            validator.is_valid(
+                &json!({"id":5,"method":"thread/archive","params":{"threadId":"native-a"}})
+            )
+        );
+    }
+
     #[test]
     fn outbound_protocol_shapes_match_the_pinned_generated_schema() {
         let schema: Value = serde_json::from_str(include_str!(
-            "../../../contracts/codex-app-server/v0.153.2/json/ClientRequest.json"
+            "../../../contracts/codex-app-server/v0.153.4/json/ClientRequest.json"
         ))
         .unwrap();
         let validator = jsonschema::Validator::new(&schema).unwrap();
@@ -1020,7 +1634,7 @@ mod tests {
             "invalid review request: {review_request}"
         );
         let notification_schema: Value = serde_json::from_str(include_str!(
-            "../../../contracts/codex-app-server/v0.153.2/json/ClientNotification.json"
+            "../../../contracts/codex-app-server/v0.153.4/json/ClientNotification.json"
         ))
         .unwrap();
         assert!(
@@ -1028,6 +1642,23 @@ mod tests {
                 .unwrap()
                 .is_valid(&json!({"method":"initialized"}))
         );
+    }
+
+    #[test]
+    fn personal_subscription_uses_the_native_codex_default_model() {
+        let mut spec = review_spec(
+            "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-a\n+b\n",
+        );
+        spec.authentication_profile = CodingAuthenticationProfile::PersonalSubscription;
+        let thread = thread_start_params(&spec, Path::new("/isolated/scratch"));
+        let turn = turn_start_params(
+            &spec,
+            "fresh-review-thread",
+            Path::new("/isolated/repository"),
+            Path::new("/isolated/scratch"),
+        );
+        assert!(thread.get("model").is_none());
+        assert!(turn.get("model").is_none());
     }
 
     #[test]

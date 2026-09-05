@@ -363,6 +363,11 @@ for the alias. Model availability alone is not compatibility.
 
 ## Implementation And Independent Review
 
+The workflow owns thread creation, resumption, and closure. See the
+[implemented lifecycle contract](../light-agent-worker/workflow-thread-lifecycle.md).
+Implementer and reviewer threads remain separate, and both may persist through
+one stage's remediation rounds. New stages allocate new threads.
+
 A separate Claude worker is not required merely to review with a different
 model. The first design uses the same qualified Codex App Server worker variant
 with two immutable role execution profiles:
@@ -383,13 +388,13 @@ sequenceDiagram
     participant R as Reviewer worker
     participant F as Fixed action
 
-    A->>I: Fresh turn: base, requirements, write lease
+    A->>I: New stage thread: base, requirements, write lease
     I-->>A: Canonical patch plus test evidence
     A->>A: Validate protected paths and artifact digest
     A->>R: New thread: immutable base, patch, requirements, evidence
     R-->>A: Structured findings and verdict
     alt Blocking findings
-        A->>I: New remediation turn with accepted findings
+        A->>I: Resume implementer thread with accepted findings
     else Review accepted and approval satisfied
         A->>F: Accepted immutable artifact
         F-->>A: Push, PR, or publish result
@@ -398,7 +403,8 @@ sequenceDiagram
 
 The reviewer must receive:
 
-- a new Light turn and a new harness thread;
+- a new Light turn; create a separate reviewer harness thread at stage entry,
+  then resume that reviewer thread for subsequent rounds in the same stage;
 - a clean read-only reconstruction of the immutable base plus candidate patch;
 - a writable ephemeral scratch/build directory, with language build outputs
   and caches redirected there and excluded from canonical patch calculation;
@@ -431,7 +437,8 @@ failure modes:
 | Harness diversity | Review runs through a separately qualified adapter and worker image | Detect harness-specific prompting, tool, patch, sandbox, or protocol behavior | Authorization to accept business risk or perform an irreversible action |
 | Human approval | An authorized person accepts a precisely digested artifact or action | Confirm intent, accountability, residual risk, timing, and business authority | Technical correctness without model review, tests, and fixed gates |
 
-The default policy uses a fresh review turn and may require model diversity
+The default policy starts an independent reviewer thread at stage entry, resumes
+it across that stage's review rounds, and may require model diversity
 without deploying another harness. Security/authentication changes, destructive
 data or schema migrations, signing/release controls, and broad multi-repository
 contract changes should require a different model family plus human approval.
@@ -631,17 +638,17 @@ shipping claim.
   contract with an immutable Git bundle.
 - `light-workflow-runner` stages that bundle into an execution-specific private
   directory and independently validates the worker's bounded canonical patch.
-- `light-agent-worker` hosts pinned Codex `0.153.2` over local stdio, maps App
+- `light-agent-worker` hosts pinned Codex `0.153.4` over local stdio, maps App
   Server lifecycle, streaming, approval, usage, error, and cancellation events,
-  exports the validated implementation artifact, and runs review in a fresh
-  ephemeral thread over a reconstructed candidate with only an external build
+  exports the validated implementation artifact, and runs review in a separate
+  workflow-controlled thread over a reconstructed candidate with only an external build
   scratch directory writable. Reviewer output is constrained to the structured
   `CodingReviewResult` schema and candidate mutation fails the turn.
 - `light-github-action-provider` requires an approved review bound to the exact
   implementation patch before its fixed create-branch or open-PR action can
   materialize or publish the patch.
 - Exact generated JSON Schema and TypeScript artifacts plus binary and schema
-  provenance are stored under `contracts/codex-app-server/v0.153.2`.
+  provenance are stored under `contracts/codex-app-server/v0.153.4`.
 - `light-agent` has an immutable `codingProfile` projection point.
 - `llm-gateway` implements the `/v1/responses` client surface, and its product
   design documents Codex custom-provider configuration and logical aliases.
@@ -811,7 +818,7 @@ prevents the fixed publish action.
 Implementation status: complete at the coding-harness and fixed-publication
 boundary. `light-agent` selects the two pinned profiles and aliases from trusted
 policy; the runner canonicalizes implementation artifacts and validates review
-results; the worker reconstructs the accepted patch in a new thread with
+results; the worker reconstructs the accepted patch in the reviewer thread with
 scratch-only writes; remediation inputs must carry the complete prior finding
 set; and the GitHub fixed action rejects missing, mismatched, or blocking review
 evidence. `scripts/run-coding-harness-phase3-gates.sh` composes the Phase 0-2
@@ -864,6 +871,16 @@ expressed against the same Portal/workflow/agent contract for both
 `portal-config-loc/all-in-lt` and `light-portal-install`; their packaging and
 browser qualification remain distribution release gates rather than a second
 coding-worker implementation.
+
+The runner accepts an explicit `agentWorker.codexExecutable` for host-native
+personal pools and projects it as `LIGHT_CODEX_EXECUTABLE`. This permits an
+unprivileged local installation to use the exact qualified native binary
+without a `/usr/local/bin` shim. The personal App Server smoke is enabled with
+`LIGHT_RUN_CODEX_PERSONAL_SMOKE=1`; it requires an authenticated ChatGPT
+`CODEX_HOME`, completes a real ephemeral turn with the native default model,
+and can assert that the LLM audit row count is unchanged. Logical Light aliases
+are sent as App Server model names only in the enterprise gateway profile;
+personal subscription turns use the native Codex default model.
 
 `scripts/run-coding-harness-phase4-gates.sh` composes every earlier coding
 harness gate with the profile-separation, account-status, credential lifecycle,
@@ -935,7 +952,7 @@ network-dependent embedded probe; it does not promote the adapter.
   provider attempt.
 - The implementer emits a canonical patch relative to an immutable base; the
   trusted runner enforces protected paths and artifact limits.
-- Review runs in a new thread over a clean read-only repository reconstruction,
+- Review runs in its own stage-scoped thread over a clean read-only repository reconstruction,
   uses only excluded ephemeral build scratch, and emits schema-valid findings.
 - Model diversity can be enabled without deploying a second harness; harness
   diversity requires a separately qualified adapter/image.
