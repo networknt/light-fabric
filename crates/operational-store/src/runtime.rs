@@ -96,20 +96,24 @@ pub fn read_database_url(
     let after_user = value[prefix.len()..]
         .split_once('@')
         .map(|(_, value)| value)
-        .ok_or_else(|| RuntimeValidationError::Contract("database URL authority is missing".into()))?;
+        .ok_or_else(|| {
+            RuntimeValidationError::Contract("database URL authority is missing".into())
+        })?;
     let (authority, path_and_query) = after_user
         .split_once('/')
         .ok_or_else(|| RuntimeValidationError::Contract("database URL path is missing".into()))?;
     let (actual_host, actual_port) = authority
         .rsplit_once(':')
         .ok_or_else(|| RuntimeValidationError::Contract("database URL port is missing".into()))?;
-    let actual_port = actual_port.parse::<u16>().map_err(|_| {
-        RuntimeValidationError::Contract("database URL port is invalid".into())
-    })?;
+    let actual_port = actual_port
+        .parse::<u16>()
+        .map_err(|_| RuntimeValidationError::Contract("database URL port is invalid".into()))?;
     let (actual_database, query) = path_and_query
         .split_once('?')
         .map_or((path_and_query, ""), |(database, query)| (database, query));
-    let ssl_mode = query.split('&').find_map(|pair| pair.strip_prefix("sslmode="));
+    let ssl_mode = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("sslmode="));
     let tls_matches = match expected_tls_mode {
         "DISABLE" => ssl_mode.is_none() || ssl_mode == Some("disable"),
         "PREFER" => ssl_mode == Some("prefer"),
@@ -140,7 +144,10 @@ pub async fn validate_binding(
         || expected.environment.trim().is_empty()
         || expected.server_host.trim().is_empty()
         || expected.port == 0
-        || !matches!(expected.tls_mode, "DISABLE" | "PREFER" | "REQUIRE" | "VERIFY_CA" | "VERIFY_FULL")
+        || !matches!(
+            expected.tls_mode,
+            "DISABLE" | "PREFER" | "REQUIRE" | "VERIFY_CA" | "VERIFY_FULL"
+        )
         || expected.minimum_schema_generation < 1
         || expected.binding_digest.len() != 71
         || !expected.binding_digest.starts_with("sha256:")
@@ -179,7 +186,9 @@ pub async fn validate_binding(
         || binding.try_get::<String, _>("scope_kind")? != "HOST"
         || binding.try_get::<Uuid, _>("scope_id")? != expected.host_id
         || binding.try_get::<Uuid, _>("host_id")? != expected.host_id
-        || binding.try_get::<Option<String>, _>("environment")?.is_some()
+        || binding
+            .try_get::<Option<String>, _>("environment")?
+            .is_some()
         || binding.try_get::<String, _>("database_identity")? != expected.expected_database
         || binding.try_get::<String, _>("deployment_profile")? != "CUSTOMER_MANAGED"
         || binding.try_get::<i64, _>("schema_contract_generation")?
@@ -232,16 +241,66 @@ mod tests {
                 use std::os::unix::fs::PermissionsExt;
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
             }
-            assert!(read_database_url(&path, "postgres", 5432, "DISABLE", database, "agent_runtime").is_ok());
-            assert!(read_database_url(&path, "customer-db", 5432, "DISABLE", database, "agent_runtime").is_err());
-            assert!(read_database_url(&path, "postgres", 5433, "DISABLE", database, "agent_runtime").is_err());
-            assert!(read_database_url(&path, "postgres", 5432, "VERIFY_FULL", database, "agent_runtime").is_err());
+            assert!(
+                read_database_url(
+                    &path,
+                    "postgres",
+                    5432,
+                    "DISABLE",
+                    database,
+                    "agent_runtime"
+                )
+                .is_ok()
+            );
+            assert!(
+                read_database_url(
+                    &path,
+                    "customer-db",
+                    5432,
+                    "DISABLE",
+                    database,
+                    "agent_runtime"
+                )
+                .is_err()
+            );
+            assert!(
+                read_database_url(
+                    &path,
+                    "postgres",
+                    5433,
+                    "DISABLE",
+                    database,
+                    "agent_runtime"
+                )
+                .is_err()
+            );
+            assert!(
+                read_database_url(
+                    &path,
+                    "postgres",
+                    5432,
+                    "VERIFY_FULL",
+                    database,
+                    "agent_runtime"
+                )
+                .is_err()
+            );
             paths.push(path);
         }
         for (expected_index, (_, expected_database)) in audiences.iter().enumerate() {
             for (actual_index, path) in paths.iter().enumerate() {
                 if expected_index != actual_index {
-                    assert!(read_database_url(path, "postgres", 5432, "DISABLE", expected_database, "agent_runtime").is_err());
+                    assert!(
+                        read_database_url(
+                            path,
+                            "postgres",
+                            5432,
+                            "DISABLE",
+                            expected_database,
+                            "agent_runtime"
+                        )
+                        .is_err()
+                    );
                 }
             }
         }

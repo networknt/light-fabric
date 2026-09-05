@@ -53,7 +53,10 @@ async fn main() -> anyhow::Result<()> {
         || store.schema != "operational_meta"
         || store.server_host.trim().is_empty()
         || store.port == 0
-        || !matches!(store.tls_mode.as_str(), "DISABLE" | "PREFER" | "REQUIRE" | "VERIFY_CA" | "VERIFY_FULL")
+        || !matches!(
+            store.tls_mode.as_str(),
+            "DISABLE" | "PREFER" | "REQUIRE" | "VERIFY_CA" | "VERIFY_FULL"
+        )
         || store.credential_generation < 1
     {
         anyhow::bail!("deployer operational-store projection is invalid");

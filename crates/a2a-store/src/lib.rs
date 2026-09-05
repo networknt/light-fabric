@@ -1195,8 +1195,13 @@ async fn append_audit(
     Ok(())
 }
 
-pub fn read_database_url(path: &Path, server_host: &str, port: u16, tls_mode: &str,
-                         expected_database: &str) -> Result<String, StoreError> {
+pub fn read_database_url(
+    path: &Path,
+    server_host: &str,
+    port: u16,
+    tls_mode: &str,
+    expected_database: &str,
+) -> Result<String, StoreError> {
     Ok(operational_store::runtime::read_database_url(
         path,
         server_host,

@@ -695,8 +695,13 @@ async fn load_native_task(
     })
 }
 
-pub fn read_database_url(path: &Path, server_host: &str, port: u16, tls_mode: &str,
-                         expected_database: &str) -> Result<String, ValidationError> {
+pub fn read_database_url(
+    path: &Path,
+    server_host: &str,
+    port: u16,
+    tls_mode: &str,
+    expected_database: &str,
+) -> Result<String, ValidationError> {
     Ok(operational_store::runtime::read_database_url(
         path,
         server_host,

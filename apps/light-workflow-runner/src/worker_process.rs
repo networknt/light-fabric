@@ -1158,7 +1158,13 @@ event(2,{{"type":"terminal","class":"success","output":{{"budget":budget}},"erro
         assert!(validate_thread_receipt(&open, &receipt(&open, "CLOSED")).is_err());
 
         // Binding and checkpoint identity are still mandatory in every case.
-        assert!(validate_thread_receipt(&riding, &receipt(&thread(CodingThreadMode::Resume, true), "READY")).is_err());
+        assert!(
+            validate_thread_receipt(
+                &riding,
+                &receipt(&thread(CodingThreadMode::Resume, true), "READY")
+            )
+            .is_err()
+        );
         let mut unusable = receipt(&riding, "READY");
         unusable["checkpoint"] = serde_json::json!("not-a-uuid");
         assert!(validate_thread_receipt(&riding, &unusable).is_err());

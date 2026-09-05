@@ -243,15 +243,14 @@ mod tests {
 
     #[test]
     fn rejects_unimplemented_secret_reference_sources() {
-        let source = include_str!(
-            "../../../contracts/operational-store-registration/v2/fixture.json"
-        );
+        let source =
+            include_str!("../../../contracts/operational-store-registration/v2/fixture.json");
         let mut value: Value = serde_json::from_str(source).unwrap();
         value["registrationRequest"]["credentialSource"] =
             Value::String("SECRET_REFERENCE".to_string());
-        assert!(serde_json::from_value::<RegistrationRequest>(
-            value["registrationRequest"].clone()
-        )
-        .is_err());
+        assert!(
+            serde_json::from_value::<RegistrationRequest>(value["registrationRequest"].clone())
+                .is_err()
+        );
     }
 }

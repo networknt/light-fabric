@@ -465,7 +465,10 @@ impl WorkflowConfiguration {
             || store.schema != workflow_store::EXPECTED_SCHEMA
             || store.server_host.trim().is_empty()
             || store.port == 0
-            || !matches!(store.tls_mode.as_str(), "DISABLE" | "PREFER" | "REQUIRE" | "VERIFY_CA" | "VERIFY_FULL")
+            || !matches!(
+                store.tls_mode.as_str(),
+                "DISABLE" | "PREFER" | "REQUIRE" | "VERIFY_CA" | "VERIFY_FULL"
+            )
             || !operational_store::runtime::postgres_identifier(&store.expected_database)
             || store.minimum_schema_generation < 1
             || store.credential_generation < 1

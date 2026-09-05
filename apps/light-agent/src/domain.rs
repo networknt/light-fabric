@@ -1426,11 +1426,17 @@ impl AgentRepository {
             // The workflow job is terminal with this turn. Without this the job stays
             // RUNNING until its deadline and reports deadline_exceeded instead of the
             // dispatch failure that actually ended it.
-            sqlx::query("UPDATE agent_job_t SET state='FAILED',
+            sqlx::query(
+                "UPDATE agent_job_t SET state='FAILED',
                     error=jsonb_build_object('class','CODING_DISPATCH_FAILED','message',$3::text),
                     terminal_ts=now(),updated_ts=now()
-                WHERE host_id=$1 AND turn_id=$2 AND state IN ('TURN_CREATED','RUNNING')")
-                .bind(host).bind(turn.0).bind(reason).execute(&mut *tx).await?;
+                WHERE host_id=$1 AND turn_id=$2 AND state IN ('TURN_CREATED','RUNNING')",
+            )
+            .bind(host)
+            .bind(turn.0)
+            .bind(reason)
+            .execute(&mut *tx)
+            .await?;
             sqlx::query("SELECT pg_notify('agent_turn_capacity_v1',$1)")
                 .bind(host.to_string())
                 .execute(&mut *tx)
@@ -3872,14 +3878,13 @@ mod tests {
         .unwrap();
         assert_eq!(turn_state, "FAILED");
         assert_eq!(turn_error["class"], json!("CODING_DISPATCH_FAILED"));
-        let (job_state, job_error): (String, Option<Value>) = sqlx::query_as(
-            "SELECT state,error FROM agent_job_t WHERE host_id=$1 AND job_id=$2",
-        )
-        .bind(host_id)
-        .bind(failing_job)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let (job_state, job_error): (String, Option<Value>) =
+            sqlx::query_as("SELECT state,error FROM agent_job_t WHERE host_id=$1 AND job_id=$2")
+                .bind(host_id)
+                .bind(failing_job)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(job_state, "FAILED");
         let job_error = job_error.expect("the job records why dispatch ended it");
         assert_eq!(job_error["class"], json!("CODING_DISPATCH_FAILED"));

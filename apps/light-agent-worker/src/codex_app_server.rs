@@ -749,7 +749,9 @@ fn archive_budget(deadline: Option<tokio::time::Instant>) -> Option<std::time::D
         return Some(ARCHIVE_TIMEOUT);
     };
     let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-    let budget = remaining.saturating_sub(DELIVERY_RESERVE).min(ARCHIVE_TIMEOUT);
+    let budget = remaining
+        .saturating_sub(DELIVERY_RESERVE)
+        .min(ARCHIVE_TIMEOUT);
     (!budget.is_zero()).then_some(budget)
 }
 
@@ -1419,14 +1421,14 @@ mod tests {
         let scope = format!("sha256:{}", "a".repeat(64));
         let mut spec = persistent_spec();
         spec.thread.as_mut().unwrap().close_after_turn = true;
-        let mut session = Some(CodingSession::open(home.path(), &scope, &spec, "contract").unwrap());
+        let mut session =
+            Some(CodingSession::open(home.path(), &scope, &spec, "contract").unwrap());
         session.as_mut().unwrap().begin().unwrap();
         let (mut child, mut stdin, mut stdout) = unresponsive_app_server();
 
         // Two seconds left: less than the delivery reserve, so there is no budget to both
         // close the thread and hand back the result.
-        let deadline =
-            Some(tokio::time::Instant::now() + std::time::Duration::from_millis(2_000));
+        let deadline = Some(tokio::time::Instant::now() + std::time::Duration::from_millis(2_000));
         assert!(archive_budget(deadline).is_none());
         let started = tokio::time::Instant::now();
         let receipt = finish_thread(
@@ -1444,7 +1446,10 @@ mod tests {
 
         // It returned without ever waiting on the unresponsive server, leaving the whole
         // remaining lease for the terminal event.
-        assert!(tokio::time::Instant::now().duration_since(started) < std::time::Duration::from_millis(2_000));
+        assert!(
+            tokio::time::Instant::now().duration_since(started)
+                < std::time::Duration::from_millis(2_000)
+        );
         assert_eq!(receipt["state"], json!("READY"));
         assert!(
             receipt["closeError"]
@@ -1456,8 +1461,12 @@ mod tests {
         // The budget scales with what is left, and is never more than the flat bound.
         let far = tokio::time::Instant::now() + std::time::Duration::from_secs(600);
         assert_eq!(archive_budget(Some(far)), Some(ARCHIVE_TIMEOUT));
-        let tight = tokio::time::Instant::now() + DELIVERY_RESERVE + std::time::Duration::from_secs(3);
-        assert_eq!(archive_budget(Some(tight)), Some(std::time::Duration::from_secs(3)));
+        let tight =
+            tokio::time::Instant::now() + DELIVERY_RESERVE + std::time::Duration::from_secs(3);
+        assert_eq!(
+            archive_budget(Some(tight)),
+            Some(std::time::Duration::from_secs(3))
+        );
         assert!(archive_budget(Some(tokio::time::Instant::now())).is_none());
         // A runner too old to send a budget falls back to the flat bound.
         assert_eq!(archive_budget(None), Some(ARCHIVE_TIMEOUT));
@@ -1470,7 +1479,8 @@ mod tests {
         let scope = format!("sha256:{}", "a".repeat(64));
         let mut spec = persistent_spec();
         spec.thread.as_mut().unwrap().close_after_turn = true;
-        let mut session = Some(CodingSession::open(home.path(), &scope, &spec, "contract").unwrap());
+        let mut session =
+            Some(CodingSession::open(home.path(), &scope, &spec, "contract").unwrap());
         session.as_mut().unwrap().begin().unwrap();
         let (mut child, mut stdin, mut stdout) = unresponsive_app_server();
 
@@ -1490,7 +1500,10 @@ mod tests {
         // The turn's result is delivered, and the thread is reported exactly as it can be
         // proven to be: still open, with the reason the close did not happen.
         assert_eq!(receipt["state"], json!("READY"));
-        assert_eq!(receipt["sessionRef"], json!(spec.thread.unwrap().session_ref));
+        assert_eq!(
+            receipt["sessionRef"],
+            json!(spec.thread.unwrap().session_ref)
+        );
         assert!(
             receipt["checkpoint"]
                 .as_str()
@@ -1513,9 +1526,7 @@ mod tests {
                     .unwrap()
                     .flatten()
                     .map(|entry| entry.path())
-                    .find(|path| {
-                        path.extension().and_then(|value| value.to_str()) == Some("json")
-                    })
+                    .find(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
                     .unwrap(),
             )
             .unwrap(),

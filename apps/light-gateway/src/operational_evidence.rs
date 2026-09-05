@@ -265,7 +265,10 @@ fn validate_config(config: &GatewayEvidenceConfig) -> Result<(), RuntimeError> {
         || config.minimum_schema_generation < 1
         || config.server_host.trim().is_empty()
         || config.port == 0
-        || !matches!(config.tls_mode.as_str(), "DISABLE" | "PREFER" | "REQUIRE" | "VERIFY_CA" | "VERIFY_FULL")
+        || !matches!(
+            config.tls_mode.as_str(),
+            "DISABLE" | "PREFER" | "REQUIRE" | "VERIFY_CA" | "VERIFY_FULL"
+        )
         || config.credential_generation < 1
         || config.maximum_pending_records < 1
         || config.maximum_pending_bytes < 1
