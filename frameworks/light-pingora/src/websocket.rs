@@ -501,22 +501,41 @@ impl WebSocketRouterRuntime {
         csrf_cookie: Option<&str>,
         protocol_header: Option<&str>,
     ) -> Result<Option<WebSocketHandshake>, WebSocketRouteError> {
-        if path != CONTROLLER_MCP_PATH {
-            if path.starts_with("/ctrl/mcp/") {
-                return Err(WebSocketRouteError::MissingTarget);
-            }
+        if path.starts_with("/ctrl/mcp/") {
+            return Err(WebSocketRouteError::MissingTarget);
+        }
+        // Browser credentials must never select the native passthrough path,
+        // regardless of whether routing uses a path, query, or service header.
+        let browser_request = path == CONTROLLER_MCP_PATH
+            || origin.is_some()
+            || csrf_cookie.is_some()
+            || protocol_header.is_some_and(|value| {
+                value
+                    .split(',')
+                    .any(|token| token.trim().starts_with(CSRF_PROTOCOL_PREFIX))
+            });
+        if !browser_request {
             return Ok(None);
         }
         let origin = origin.ok_or(WebSocketRouteError::MissingOrigin)?;
         let normalized_origin =
             normalize_origin(origin).map_err(|_| WebSocketRouteError::OriginDenied)?;
-        let allowed = self
+        // Use the most specific path boundary, just like service routing. A
+        // query/header target cannot bypass an absent or denying origin policy.
+        let (policy_path, allowed) = self
             .config
             .origin_allowlist
-            .get(CONTROLLER_MCP_PATH)
-            .filter(|allowed| !allowed.is_empty())
-            .is_some_and(|allowed| allowed.iter().any(|entry| entry == &normalized_origin));
-        if !allowed {
+            .iter()
+            .filter(|(prefix, _)| {
+                if path == CONTROLLER_MCP_PATH {
+                    prefix.as_str() == CONTROLLER_MCP_PATH
+                } else {
+                    path_matches_prefix(path, prefix.as_str())
+                }
+            })
+            .max_by_key(|(prefix, _)| prefix.len())
+            .ok_or(WebSocketRouteError::OriginDenied)?;
+        if !allowed.iter().any(|entry| entry == &normalized_origin) {
             return Err(WebSocketRouteError::OriginDenied);
         }
 
@@ -528,7 +547,8 @@ impl WebSocketRouterRuntime {
         let permitted = self
             .config
             .application_protocols
-            .get(CONTROLLER_MCP_PATH)
+            .get(path)
+            .or_else(|| self.config.application_protocols.get(policy_path))
             .map(Vec::as_slice)
             .unwrap_or_default();
         let mut csrf_protocol = None;
@@ -848,6 +868,7 @@ pub fn apply_browser_websocket_upstream_credentials(
     upstream_request: &mut RequestHeader,
     handshake: &WebSocketHandshake,
     trusted_authorization: Option<&str>,
+    preserve_routing_headers: bool,
 ) -> pingora::Result<()> {
     for header in [
         "cookie",
@@ -866,8 +887,10 @@ pub fn apply_browser_websocket_upstream_credentials(
     ] {
         upstream_request.remove_header(header);
     }
-    for header in SERVICE_ID_HEADERS {
-        upstream_request.remove_header(header);
+    if !preserve_routing_headers {
+        for header in SERVICE_ID_HEADERS {
+            upstream_request.remove_header(header);
+        }
     }
     if let Some(authorization) = trusted_authorization {
         upstream_request.insert_header("authorization", authorization)?;
@@ -2215,6 +2238,7 @@ pathPrefixService:
             &mut request,
             &handshake,
             Some("Bearer gateway-verified"),
+            false,
         )
         .expect("sanitize request");
 
@@ -2403,6 +2427,8 @@ pathPrefixService:
 pathPrefixService:
   /ctrl/mcp: com.networknt.controller-1.0.0
 originAllowlist:
+  /chat:
+    - https://portal.example.com
   /ctrl/mcp:
     - https://portal.example.com
 applicationProtocols:
@@ -2413,6 +2439,199 @@ maxConnectionDurationMs: 900000
         )
         .expect("protected config");
         WebSocketRouterRuntime::new(config).expect("protected runtime")
+    }
+
+    #[test]
+    fn chat_handshake_terminates_csrf_protocol_for_an_agent_without_subprotocols() {
+        let runtime = protected_runtime();
+        let handshake = runtime
+            .prepare_handshake(
+                "/chat",
+                Some("https://portal.example.com"),
+                Some("chat-csrf"),
+                Some("csrf.chat-csrf"),
+            )
+            .expect("valid chat offer")
+            .expect("browser chat handshake");
+        assert_eq!(
+            handshake.downstream_protocol(None).unwrap(),
+            "csrf.chat-csrf"
+        );
+        let mut request = RequestHeader::build("GET", b"/chat", Some(8)).unwrap();
+        request
+            .insert_header("cookie", "csrf=chat-csrf; accessToken=browser-secret")
+            .unwrap();
+        request
+            .insert_header("sec-websocket-protocol", "csrf.chat-csrf")
+            .unwrap();
+        apply_browser_websocket_upstream_credentials(
+            &mut request,
+            &handshake,
+            Some("Bearer verified"),
+            false,
+        )
+        .unwrap();
+        assert!(!request.headers.contains_key("sec-websocket-protocol"));
+        assert!(!request.headers.contains_key("cookie"));
+        assert_eq!(request.headers["authorization"], "Bearer verified");
+        for (cookie, offer) in [
+            (None, "csrf.chat-csrf"),
+            (Some("chat-csrf"), "csrf.wrong"),
+            (Some("chat-csrf"), "csrf.chat-csrf, csrf.chat-csrf"),
+        ] {
+            assert!(
+                runtime
+                    .prepare_handshake(
+                        "/chat",
+                        Some("https://portal.example.com"),
+                        cookie,
+                        Some(offer)
+                    )
+                    .is_err()
+            );
+        }
+        // Native clients with an application protocol still use the generic router contract.
+        assert!(
+            runtime
+                .prepare_handshake("/chat", None, None, Some("chat.v1"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn browser_routes_require_explicit_origin_and_csrf_independent_of_target_selection() {
+        let runtime = protected_runtime();
+        for path in ["/chat", "/chat/", "/chat/x"] {
+            for origin in [
+                None,
+                Some("null"),
+                Some("not-an-origin"),
+                Some("https://attacker.example"),
+            ] {
+                assert!(
+                    runtime
+                        .prepare_handshake(path, origin, Some("token"), Some("csrf.token"))
+                        .is_err(),
+                    "{path}: {origin:?}"
+                );
+            }
+            assert!(
+                runtime
+                    .prepare_handshake(
+                        path,
+                        Some("https://portal.example.com"),
+                        Some("token"),
+                        Some("csrf.token")
+                    )
+                    .unwrap()
+                    .is_some()
+            );
+            // A browser cannot choose native passthrough by omitting CSRF.
+            assert!(
+                runtime
+                    .prepare_handshake(path, Some("https://portal.example.com"), None, None)
+                    .is_err()
+            );
+        }
+        // An explicit service target resolves even on an unrelated path, but the
+        // browser handshake must still be denied without a matching allowlist.
+        assert!(
+            runtime
+                .resolve(
+                    "/alternate",
+                    Some("serviceId=agent"),
+                    std::iter::empty::<(&str, &str)>()
+                )
+                .is_ok()
+        );
+        assert!(
+            runtime
+                .prepare_handshake(
+                    "/alternate",
+                    Some("https://portal.example.com"),
+                    Some("token"),
+                    Some("csrf.token")
+                )
+                .is_err()
+        );
+        assert!(
+            runtime
+                .prepare_handshake(
+                    "/chatty",
+                    Some("https://portal.example.com"),
+                    Some("token"),
+                    Some("csrf.token")
+                )
+                .is_err()
+        );
+        let empty = WebSocketRouterRuntime::new(WebSocketRouterConfig::default()).unwrap();
+        assert!(
+            empty
+                .prepare_handshake(
+                    "/chat",
+                    Some("https://portal.example.com"),
+                    Some("token"),
+                    Some("csrf.token")
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn browser_credentials_are_scrubbed_on_aliases_while_preserving_configured_routing_headers() {
+        let runtime = protected_runtime();
+        let handshake = runtime
+            .prepare_handshake(
+                "/chat/x",
+                Some("https://portal.example.com"),
+                Some("token"),
+                Some("csrf.token"),
+            )
+            .unwrap()
+            .unwrap();
+        let decision = runtime
+            .resolve(
+                "/chat/x",
+                Some("serviceId=agent"),
+                std::iter::empty::<(&str, &str)>(),
+            )
+            .unwrap();
+        for preserve in [false, true] {
+            let mut request =
+                RequestHeader::build("GET", b"/chat/x?serviceId=agent", Some(16)).unwrap();
+            for (name, value) in [
+                ("cookie", "accessToken=secret; csrf=token"),
+                ("x-user-id", "spoof"),
+                ("x-roles", "admin"),
+                ("x-light-user", "spoof"),
+                ("x-forwarded-email", "spoof@example.com"),
+                ("service_id", "agent"),
+                ("sec-websocket-protocol", "csrf.token"),
+            ] {
+                request.insert_header(name, value).unwrap();
+            }
+            apply_websocket_upstream_request(&mut request, &decision, preserve).unwrap();
+            apply_browser_websocket_upstream_credentials(
+                &mut request,
+                &handshake,
+                Some("Bearer verified"),
+                preserve,
+            )
+            .unwrap();
+            for name in [
+                "cookie",
+                "x-user-id",
+                "x-roles",
+                "x-light-user",
+                "x-forwarded-email",
+                "sec-websocket-protocol",
+            ] {
+                assert!(!request.headers.contains_key(name), "{name}");
+            }
+            assert_eq!(request.headers.contains_key("service_id"), preserve);
+            assert_eq!(request.headers["authorization"], "Bearer verified");
+        }
     }
 
     #[test]

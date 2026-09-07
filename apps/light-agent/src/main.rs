@@ -2523,13 +2523,73 @@ struct ClientMessage {
 #[serde(tag = "type")]
 enum ServerMessage {
     #[serde(rename = "session")]
-    Session { session_id: String },
+    Session {
+        session_id: String,
+        #[serde(rename = "turnTypes")]
+        turn_types: Vec<&'static str>,
+        #[serde(rename = "defaultTurnType")]
+        default_turn_type: &'static str,
+    },
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "executionAccepted")]
     ExecutionAccepted { profile: String, request_id: String },
     #[serde(rename = "error")]
     Error { message: String },
+}
+
+// Advertise configured UI capabilities only; durable turn admission remains authoritative.
+fn chat_session_message(
+    session_id: String,
+    coding_profile_digest: Option<&str>,
+    session_profile_digest: &str,
+) -> ServerMessage {
+    let coding_configured =
+        coding_profile_digest.is_some_and(|digest| digest == session_profile_digest);
+    ServerMessage::Session {
+        session_id,
+        turn_types: if coding_configured {
+            vec!["chat", "coding"]
+        } else {
+            vec!["chat"]
+        },
+        // A configured adapter does not authorize the next turn or imply a coding request.
+        default_turn_type: "chat",
+    }
+}
+
+#[cfg(test)]
+mod chat_capability_tests {
+    use super::chat_session_message;
+
+    #[test]
+    fn session_advertises_only_configured_turn_types() {
+        let chat =
+            serde_json::to_value(chat_session_message("session".into(), None, "chat-profile"))
+                .unwrap();
+        assert_eq!(
+            chat,
+            serde_json::json!({
+                "type": "session", "session_id": "session", "turnTypes": ["chat"], "defaultTurnType": "chat"
+            })
+        );
+        let coding = serde_json::to_value(chat_session_message(
+            "session".into(),
+            Some("coding-profile"),
+            "coding-profile",
+        ))
+        .unwrap();
+        assert_eq!(coding["turnTypes"], serde_json::json!(["chat", "coding"]));
+        assert_eq!(coding["defaultTurnType"], "chat");
+        let personal = serde_json::to_value(chat_session_message(
+            "session".into(),
+            Some("coding-profile"),
+            "personal-profile",
+        ))
+        .unwrap();
+        assert_eq!(personal["turnTypes"], serde_json::json!(["chat"]));
+        assert_eq!(personal["defaultTurnType"], "chat");
+    }
 }
 
 fn trim_history(history: &mut Vec<ChatMessage>) {
@@ -3452,9 +3512,14 @@ async fn handle_socket(
 
     let _ = sender
         .send(Message::Text(
-            serde_json::to_string(&ServerMessage::Session {
-                session_id: session_id_string.clone(),
-            })
+            serde_json::to_string(&chat_session_message(
+                session_id_string.clone(),
+                state
+                    .coding_profile
+                    .as_ref()
+                    .map(|config| config.product_profile_digest.as_str()),
+                &state.policy_snapshot.product_profile_digest,
+            ))
             .unwrap()
             .into(),
         ))

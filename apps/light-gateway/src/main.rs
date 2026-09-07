@@ -5243,6 +5243,7 @@ impl ProxyHttp for GatewayProxy {
                         upstream_request,
                         handshake,
                         ctx.websocket_trusted_authorization.as_deref(),
+                        ctx.websocket_preserve_routing_headers,
                     )?;
                 }
             } else if let Some(decision) = ctx.router_decision.as_ref() {
@@ -12161,6 +12162,15 @@ pathPrefixService:
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn websocket_gateway_proxies_text_binary_close_subprotocol_and_headers() {
+        assert_websocket_gateway_protocol(false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn websocket_gateway_negotiates_browser_chat_csrf_without_agent_subprotocol() {
+        assert_websocket_gateway_protocol(true).await;
+    }
+
+    async fn assert_websocket_gateway_protocol(browser_chat: bool) {
         let (backend_address, observed_backend, backend_task) =
             spawn_websocket_echo_backend().await;
         let (registry_url, lookup_rx, registry_task) = spawn_fake_registry(backend_address).await;
@@ -12233,6 +12243,9 @@ defaultHandlers: []
             r#"
 defaultProtocol: http
 defaultEnvTag: dev
+originAllowlist:
+  /chat:
+    - https://portal.example.com
 pathPrefixService:
   /chat:
     serviceId: com.networknt.llmchat-1.0.0
@@ -12250,15 +12263,60 @@ pathPrefixService:
         let running = runtime.start().await.expect("start gateway");
         wait_for_tcp(gateway_address).await;
 
+        if browser_chat {
+            for origin in [None, Some("null"), Some("https://attacker.example")] {
+                let mut denied = format!(
+                    "ws://127.0.0.1:{gateway_port}/chat?serviceId=com.networknt.llmchat-1.0.0"
+                )
+                .into_client_request()
+                .unwrap();
+                denied.headers_mut().insert(
+                    "sec-websocket-protocol",
+                    HeaderValue::from_static("csrf.chat-test"),
+                );
+                denied
+                    .headers_mut()
+                    .insert("cookie", HeaderValue::from_static("csrf=chat-test"));
+                if let Some(origin) = origin {
+                    denied
+                        .headers_mut()
+                        .insert("origin", HeaderValue::from_static(origin));
+                }
+                match timeout(TokioDuration::from_secs(5), connect_async(denied))
+                    .await
+                    .unwrap()
+                {
+                    Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                        assert_eq!(response.status().as_u16(), 403)
+                    }
+                    other => panic!("expected Origin rejection, got {other:?}"),
+                }
+            }
+        }
+
         let mut request = format!(
             "ws://127.0.0.1:{gateway_port}/chat?service_id=com.networknt.llmchat-1.0.0&protocol=http&env_tag=dev&room=one"
         )
         .into_client_request()
         .expect("websocket client request");
+        let offered_protocol = if browser_chat {
+            "csrf.chat-test"
+        } else {
+            "chat.v1"
+        };
         request.headers_mut().insert(
             "sec-websocket-protocol",
-            HeaderValue::from_static("chat.v1"),
+            HeaderValue::from_static(offered_protocol),
         );
+        if browser_chat {
+            request
+                .headers_mut()
+                .insert("cookie", HeaderValue::from_static("csrf=chat-test"));
+            request.headers_mut().insert(
+                "origin",
+                HeaderValue::from_static("https://portal.example.com"),
+            );
+        }
         request.headers_mut().insert(
             "authorization",
             HeaderValue::from_static("Bearer agent-token"),
@@ -12281,7 +12339,7 @@ pathPrefixService:
                 .headers()
                 .get("sec-websocket-protocol")
                 .and_then(|value| value.to_str().ok()),
-            Some("chat.v1")
+            Some(offered_protocol)
         );
 
         let lookup = timeout(TokioDuration::from_secs(5), lookup_rx)
@@ -12305,12 +12363,19 @@ pathPrefixService:
         );
         assert_eq!(observed.agent_header.as_deref(), Some("present"));
         assert_eq!(observed.service_id_header, None);
-        assert!(
-            observed
-                .subprotocol
-                .as_deref()
-                .is_some_and(|value| websocket_protocol_contains(value, "chat.v1"))
-        );
+        if browser_chat {
+            assert_eq!(
+                observed.subprotocol, None,
+                "CSRF must terminate at the gateway"
+            );
+        } else {
+            assert!(
+                observed
+                    .subprotocol
+                    .as_deref()
+                    .is_some_and(|value| websocket_protocol_contains(value, "chat.v1"))
+            );
+        }
 
         websocket
             .send(Message::Text("hello".into()))

@@ -1,6 +1,9 @@
 defaultProtocol: ${websocket-router.defaultProtocol:http}
 defaultEnvTag: ${websocket-router.defaultEnvTag:dev}
 pathPrefixService: ${websocket-router.pathPrefixService:{}}
+# Browser routes fail closed without an explicit allowlist. Set
+# websocket-router.originAllowlist in values.yml, e.g. /chat: [https://portal.example.com].
+# Use the actual Portal origin and preserve existing /ctrl/mcp entries.
 originAllowlist: ${websocket-router.originAllowlist:{}}
 applicationProtocols: ${websocket-router.applicationProtocols:{}}
 preserveRoutingHeaders: ${websocket-router.preserveRoutingHeaders:false}

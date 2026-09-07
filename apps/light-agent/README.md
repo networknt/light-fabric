@@ -233,3 +233,34 @@ Runtime Config Server/controller activation is also intentionally not enabled
 by this startup slice. A safe reloader must validate the complete candidate,
 atomically switch admission to it, retain older snapshots for pinned sessions
 and turns, and keep the last-known-good snapshot on rejection.
+
+### Portal chat capabilities
+
+Portal chat selects active deployed instances filtered by product `agt` in the
+current Host. It uses the instance service ID and environment tag for `/chat`
+routing. The Gateway terminates the browser's `csrf.<token>` WebSocket
+subprotocol and forwards the verified bearer identity to the Agent.
+
+After session admission, the Agent sends `type: "session"` with `session_id`,
+`turnTypes`, and `defaultTurnType`. Ordinary agents advertise `["chat"]`;
+agents whose configured coding profile matches the admitted session policy
+advertise `["chat", "coding"]`. Chat remains the default. These fields describe UI capabilities, not permission
+to execute: durable turn admission and coding policy checks still apply.
+Older clients ignore the additive fields. Updated Portal clients fall back to
+ordinary chat when talking to older agents; deploy the updated Agent to expose
+coding selection and the updated Gateway for browser CSRF protocol negotiation.
+
+Browser WebSocket routes require an explicit Origin allowlist. Configure the
+Portal's exact scheme and authority in Gateway `values.yml` (replace the example
+origin with the deployment's Portal origin):
+
+```yaml
+websocket-router.originAllowlist:
+  /chat:
+    - https://portal.example.com
+```
+
+The `/chat` entry also covers `/chat/` and its descendants. Other browser routes
+need their own allowlist entry; query/header service selection does not bypass
+this check. Missing, opaque (`null`), malformed, and unlisted origins are denied.
+Keep any existing `/ctrl/mcp` allowlist entry when adding `/chat`.
