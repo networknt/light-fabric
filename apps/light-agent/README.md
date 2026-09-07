@@ -3,20 +3,41 @@
 The enterprise agent service runs on `light-axum` and persists authenticated
 sessions, turns, actions, approvals, and event projections in PostgreSQL.
 
-Production gateway calls require `LIGHT_AGENT_DELEGATION_SECRET` with at least
-32 bytes. The same value must be configured as
-`LIGHT_GATEWAY_AGENT_DELEGATION_SECRET` on `light-gateway`. Light-agent mints a
-short-lived token for each `tools/list` or exact `tools/call`; it never forwards
-the caller's broad bearer token in this mode.
+Incoming requests, including `/chat`, accept the original user access token.
+The configured `client.yml` JWK provider verifies its signature, and expiry is
+enforced. Host and principal UUID validation remain mandatory. By default,
+`security.issuer` and `security.audience` are empty: there is no additional
+issuer/audience restriction unless operators configure one. This authentication
+path does not require an incoming scope or an agent-specific `sid`, `serviceId`,
+or `service_id` claim.
 
-`LIGHT_AGENT_ALLOW_BROAD_GATEWAY_TOKEN=true` enables the legacy bearer-forwarding
-path for local compatibility only. It is disabled by default.
+Consequently, a valid same-host token can authenticate to multiple agents that
+trust the same JWK provider. Authentication does not establish a per-user grant
+to a particular agent. A missing `agent_def_id`/`agentDefId` selects the deployed
+Agent definition; an explicit mismatched or malformed definition is rejected.
+Session resume still requires matching owner and Agent definition. These checks
+are not a substitute for authorization of individual operations.
+
+Gateway calls forward the caller's original access token unchanged. `tools/list`
+and `tools/call` carry the same bearer credential the caller presented, which
+light-gateway verifies as a normal JWT and evaluates through its access-control
+rules. No token is minted on this path. `LIGHT_AGENT_ALLOW_BROAD_GATEWAY_TOKEN`
+and `LIGHT_GATEWAY_AGENT_DELEGATION_SECRET` have been removed; remove them from
+deployments.
+
+`LIGHT_AGENT_DELEGATION_SECRET` with at least 32 bytes is still required, because
+Knowledge access continues to mint a delegation. Removing that last minting path
+is tracked in light-fabric#373.
 
 Authenticated upload clients obtain a dedicated 60-second Knowledge delegation
 with `POST /knowledge/upload-delegation`. The returned token is valid only for
 `light-knowledge`, carries the server-owned host, Agent, policy, and environment
 binding, and cannot be used for retrieval. `light-knowledge` still authorizes
 the requested Knowledge Base and active `UPLOAD` source before accepting bytes.
+Those checks authorize the Agent's KB binding and source, not the individual
+caller's upload permission. The minting endpoint currently has no separate
+caller-level upload authorization check; accepting a user token must not be
+interpreted as proof that this additional permission was evaluated.
 
 Memory writes use the embedded Memory API/repository and remain operational
 state in `operations.agent_ops`. Portal-command and direct-Config-Server write

@@ -1,17 +1,20 @@
 # light-gateway
 
-## Agent delegation
+## Workflow delegation
 
-Set `LIGHT_GATEWAY_AGENT_DELEGATION_SECRET` to the same 32-byte-or-longer secret
-used by `light-agent`. Delegated MCP requests are signature checked, audience,
-expiry, policy, data-boundary, turn/action, stable-tool, alias, and replay bound,
-then intersected with the gateway's current access-control and tool catalog.
+`light-agent` no longer mints delegations. It forwards the caller's original
+access token, which the gateway verifies as a normal JWT and evaluates through
+access control like any other request. `LIGHT_GATEWAY_AGENT_DELEGATION_SECRET`
+has been removed; remove it from deployments.
+
+`light-workflow` still mints a delegation for nested tool calls. Set
+`LIGHT_GATEWAY_WORKFLOW_DELEGATION_SECRET` to the same 32-byte-or-longer secret
+it uses. Delegated MCP requests are signature checked, audience, expiry, policy,
+data-boundary, turn/action, stable-tool, alias, and replay bound, then
+intersected with the gateway's current access-control and tool catalog.
 Delegation does not bypass normal gateway authorization or response filtering.
-Workflow-backed MCP tools are excluded from agent delegation because their
-execution contract requires the original end-user JWT to propagate through the
-workflow and downstream API calls. X-Scope-Token-only, Basic-auth, and API-key
-callers are likewise unsupported for workflow-backed tools; they may continue
-to call non-workflow MCP tools.
+X-Scope-Token-only, Basic-auth, and API-key callers are unsupported for
+workflow-backed tools; they may continue to call non-workflow MCP tools.
 
 When delegation is enabled, configure
 `LIGHT_GATEWAY_DELEGATION_DATABASE_URL` (or `DATABASE_URL`) for the shared

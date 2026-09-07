@@ -209,18 +209,6 @@ fn default_model_temperature() -> f64 {
     0.7
 }
 
-fn bool_from_env(name: &str, default_value: bool) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(default_value)
-}
-
 fn registry_token(config: &PortalRegistryConfig) -> Option<String> {
     std::env::var("LIGHT_PORTAL_AUTHORIZATION")
         .ok()
@@ -2336,7 +2324,6 @@ fn claim_string<'a>(principal: &'a AuthPrincipal, names: &[&str]) -> Option<&'a 
 fn bind_authenticated_principal(
     principal: &AuthPrincipal,
     expected_host_id: Uuid,
-    expected_service_id: &str,
     default_agent_def_id: Uuid,
 ) -> Result<SessionOwner, HandlerRejection> {
     let host_id = principal
@@ -2349,14 +2336,6 @@ fn bind_authenticated_principal(
     if host_id != expected_host_id {
         return Err(HandlerRejection::forbidden(
             "token is not valid for this host",
-        ));
-    }
-
-    let service_id = claim_string(principal, &["sid", "service_id", "serviceId"])
-        .ok_or_else(|| HandlerRejection::forbidden("token is not bound to an agent service"))?;
-    if service_id != expected_service_id {
-        return Err(HandlerRejection::forbidden(
-            "token is not valid for this agent service",
         ));
     }
 
@@ -2375,6 +2354,11 @@ fn bind_authenticated_principal(
         })
         .transpose()?
         .unwrap_or(default_agent_def_id);
+    if agent_def_id != default_agent_def_id {
+        return Err(HandlerRejection::forbidden(
+            "token agent definition is not published to this Agent instance",
+        ));
+    }
     Ok(SessionOwner {
         principal_id,
         agent_def_id,
@@ -2387,17 +2371,7 @@ async fn authenticate_request(
 ) -> Result<AuthenticatedRequest, HandlerRejection> {
     let token = bearer_token(headers)?;
     let principal = verify_jwt_token(&state.security, token, JwtExpiryMode::Enforce).await?;
-    let owner = bind_authenticated_principal(
-        &principal,
-        state.host_id,
-        &state.service_id,
-        state.agent_def_id,
-    )?;
-    if owner.agent_def_id != state.agent_def_id {
-        return Err(HandlerRejection::forbidden(
-            "token agent definition is not published to this Agent instance",
-        ));
-    }
+    let owner = bind_authenticated_principal(&principal, state.host_id, state.agent_def_id)?;
     let caller_subject = principal
         .user_id
         .clone()
@@ -4479,60 +4453,6 @@ fn tool_result_message(
     }
 }
 
-fn gateway_authorization(
-    state: &AgentState,
-    authenticated: &AuthenticatedRequest,
-    session_id: Uuid,
-    turn_id: Uuid,
-    policy_digest: &str,
-    data_boundary_digest: &str,
-    action: Option<(Uuid, Uuid)>,
-    tool_alias: Option<&str>,
-) -> Result<String> {
-    let Some(signer) = state.delegation_signer.as_ref() else {
-        return Ok(authenticated.authorization.clone());
-    };
-    let now = chrono::Utc::now().timestamp();
-    let token = signer.mint(DelegationClaims {
-        token_id: Uuid::now_v7(),
-        kind: if action.is_some() {
-            DelegationKind::ToolCall
-        } else {
-            DelegationKind::ToolsList
-        },
-        issuer: String::new(),
-        audience: "light-gateway".into(),
-        caller_subject: authenticated.caller_subject.clone(),
-        caller_claims: authenticated.caller_claims.clone(),
-        subject_id: authenticated.caller_subject.clone(),
-        subject_type: authenticated.subject_type.clone(),
-        groups: Some(authenticated.groups.clone()),
-        organizations: Some(authenticated.organizations.clone()),
-        agent_actor: state.service_id.clone(),
-        agent_def_id: Some(authenticated.owner.agent_def_id),
-        agent_policy_version: state.definition_version,
-        host_id: state.host_id,
-        environment: state.env_tag.clone(),
-        session_id,
-        turn_id,
-        action_attempt_id: action.map(|value| value.0),
-        tool_ref: action.map(|value| value.1),
-        tool_alias: tool_alias.map(str::to_string),
-        destination: Some("mcp".into()),
-        workflow_invocation_id: None,
-        workflow_permit_depth: None,
-        workflow_execution_class: None,
-        workflow_budget_ledger_id: None,
-        workflow_budget_generation: None,
-        data_boundary_digest: data_boundary_digest.to_string(),
-        policy_digest: policy_digest.to_string(),
-        replay_id: Uuid::now_v7(),
-        issued_at: now,
-        expires_at: now + 60,
-    })?;
-    Ok(format!("Bearer {token}"))
-}
-
 fn knowledge_authorization(
     state: &AgentState,
     authenticated: &AuthenticatedRequest,
@@ -4772,19 +4692,9 @@ async fn run_agent_loop(
 
     let mut tool_specs: Vec<ToolSpec> = Vec::new();
     let mut accepted_tools = HashMap::new();
-    let list_authorization = gateway_authorization(
-        state,
-        authenticated,
-        Uuid::parse_str(session_id)?,
-        turn_id,
-        policy_digest,
-        data_boundary_digest,
-        None,
-        None,
-    )?;
     let mcp_tools = state
         .mcp_client
-        .list_tools(Some(&list_authorization))
+        .list_tools(Some(&authenticated.authorization))
         .await
         .unwrap_or_else(|e| {
             warn!("Gateway tools/list failed: {}", e);
@@ -5000,7 +4910,7 @@ async fn run_agent_loop(
                 .and_then(|selection| selection.tool_refs.get(&tool_call.name))
                 .copied()
                 .context("accepted gateway tool has no stable catalog reference")?;
-            let (action_attempt_id, stable_tool_ref) = state
+            let (action_attempt_id, _) = state
                 .domain
                 .propose_gateway_action(
                     state.host_id,
@@ -5010,19 +4920,9 @@ async fn run_agent_loop(
                     &tool_call.arguments,
                 )
                 .await?;
-            let action_authorization = gateway_authorization(
-                state,
-                authenticated,
-                Uuid::parse_str(session_id)?,
-                turn_id,
-                policy_digest,
-                data_boundary_digest,
-                Some((action_attempt_id, stable_tool_ref)),
-                Some(&tool_call.name),
-            )?;
             match state
                 .mcp_client
-                .call_tool(Some(&action_authorization), &tool_call.name, args)
+                .call_tool(Some(&authenticated.authorization), &tool_call.name, args)
                 .await
             {
                 Ok(result) => {
@@ -5351,17 +5251,19 @@ async fn build_agent_state(
         None
     };
     lifecycle.register(Arc::new(AgentDatabase(pool.clone())))?;
-    let allow_broad_gateway_token = bool_from_env("LIGHT_AGENT_ALLOW_BROAD_GATEWAY_TOKEN", false);
+    // Gateway calls forward the caller's original access token unchanged. Only
+    // Knowledge access still mints a delegation; see light-fabric#373.
     let delegation_signer = match std::env::var("LIGHT_AGENT_DELEGATION_SECRET") {
         Ok(secret) if !secret.trim().is_empty() => Some(Arc::new(
-            DelegationSigner::new(secret.as_bytes(), "light-agent")
-                .map_err(|e| RuntimeError::Config(format!("invalid delegation configuration: {e}")))?,
+            DelegationSigner::new(secret.as_bytes(), "light-agent").map_err(|e| {
+                RuntimeError::Config(format!("invalid delegation configuration: {e}"))
+            })?,
         )),
-        _ if allow_broad_gateway_token => {
-            warn!("Broad caller bearer forwarding is enabled for the local compatibility profile");
-            None
+        _ => {
+            return Err(RuntimeError::Config(
+                "LIGHT_AGENT_DELEGATION_SECRET is required for Knowledge delegation".into(),
+            ));
         }
-        _ => return Err(RuntimeError::Config("LIGHT_AGENT_DELEGATION_SECRET is required unless LIGHT_AGENT_ALLOW_BROAD_GATEWAY_TOKEN=true is explicitly set for local compatibility".into())),
     };
 
     let host_id = agent_config.operational_store.host_id;
@@ -6202,38 +6104,54 @@ security.skipPathPrefixes: [/health]
     }
 
     #[test]
-    fn principal_binding_rejects_host_or_service_substitution() {
+    fn principal_binding_accepts_user_tokens_without_agent_service_claims() {
         let host_id = Uuid::new_v4();
         let principal_id = Uuid::new_v4();
         let agent_def_id = Uuid::new_v4();
-        let principal = AuthPrincipal {
+        let mut principal = AuthPrincipal {
             user_id: Some(principal_id.to_string()),
             host: Some(host_id.to_string()),
-            claims: serde_json::json!({"sid": "com.networknt.agent.account-1.0.0"}),
+            claims: serde_json::json!({}),
             ..AuthPrincipal::default()
         };
+        for claims in [
+            serde_json::json!({}),
+            serde_json::json!({"sid": "unrelated-login-session"}),
+            serde_json::json!({"serviceId": "another-service"}),
+            serde_json::json!({"service_id": "another-service"}),
+        ] {
+            principal.claims = claims;
+            let owner = bind_authenticated_principal(&principal, host_id, agent_def_id).unwrap();
+            assert_eq!(owner.principal_id, principal_id);
+            assert_eq!(owner.agent_def_id, agent_def_id);
+        }
+        assert!(bind_authenticated_principal(&principal, Uuid::new_v4(), agent_def_id).is_err());
+        principal.user_id = Some("invalid-identity".into());
+        assert!(bind_authenticated_principal(&principal, host_id, agent_def_id).is_err());
+        principal.user_id = None;
+        assert!(bind_authenticated_principal(&principal, host_id, agent_def_id).is_err());
+    }
 
-        let owner = bind_authenticated_principal(
-            &principal,
-            host_id,
-            "com.networknt.agent.account-1.0.0",
-            agent_def_id,
-        )
-        .unwrap();
-        assert_eq!(owner.principal_id, principal_id);
-        assert_eq!(owner.agent_def_id, agent_def_id);
-        assert!(
-            bind_authenticated_principal(
-                &principal,
-                Uuid::new_v4(),
-                "com.networknt.agent.account-1.0.0",
-                agent_def_id
-            )
-            .is_err()
-        );
-        assert!(
-            bind_authenticated_principal(&principal, host_id, "other-agent", agent_def_id).is_err()
-        );
+    #[test]
+    fn principal_binding_enforces_explicit_agent_definition_claims() {
+        let host_id = Uuid::new_v4();
+        let agent_def_id = Uuid::new_v4();
+        let mut principal = AuthPrincipal {
+            user_id: Some(Uuid::new_v4().to_string()),
+            host: Some(host_id.to_string()),
+            ..AuthPrincipal::default()
+        };
+        for key in ["agent_def_id", "agentDefId"] {
+            principal.claims = serde_json::json!({key: agent_def_id.to_string()});
+            assert!(bind_authenticated_principal(&principal, host_id, agent_def_id).is_ok());
+            for value in [Uuid::new_v4().to_string(), "malformed".into()] {
+                principal.claims = serde_json::json!({key: value});
+                let error = bind_authenticated_principal(&principal, host_id, agent_def_id)
+                    .err()
+                    .expect("explicit invalid definition must be rejected");
+                assert_eq!(error.status, 403);
+            }
+        }
     }
 
     #[test]

@@ -385,7 +385,6 @@ impl RegistryHandler for HmacReplayRegistryHandler {
 
 struct GatewayProxy {
     admission: AdmissionGate,
-    agent_delegation: Option<Arc<DelegationVerifier>>,
     workflow_delegation: Option<Arc<DelegationVerifier>>,
     agent_delegation_replay: Option<Arc<dyn DelegationReplayStore>>,
     active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
@@ -968,20 +967,15 @@ impl GatewayProxy {
         {
             return None;
         }
-        if self.agent_delegation.is_none() && self.workflow_delegation.is_none() {
+        if self.workflow_delegation.is_none() {
             return Some(Err(HandlerRejection::unauthorized(
-                "agent delegation is not configured",
+                "workflow delegation is not configured",
             )));
         }
         let claims = self
-            .agent_delegation
+            .workflow_delegation
             .as_ref()
-            .and_then(|verifier| verifier.verify_token(token).ok())
-            .or_else(|| {
-                self.workflow_delegation
-                    .as_ref()
-                    .and_then(|verifier| verifier.verify_token(token).ok())
-            });
+            .and_then(|verifier| verifier.verify_token(token).ok());
         let claims = match claims {
             Some(claims) => claims,
             None => {
@@ -1446,19 +1440,8 @@ impl GatewayProxy {
 
         let (upstream_circuit_error_threshold, upstream_circuit_reset_timeout) =
             upstream_circuit_config(config);
-        let agent_delegation = std::env::var("LIGHT_GATEWAY_AGENT_DELEGATION_SECRET")
-            .ok()
-            .filter(|secret| !secret.trim().is_empty())
-            .map(|secret| {
-                DelegationVerifier::new(secret.as_bytes(), "light-agent", "light-gateway")
-                    .map(Arc::new)
-                    .map_err(|error| {
-                        RuntimeError::Config(format!(
-                            "invalid agent delegation configuration: {error}"
-                        ))
-                    })
-            })
-            .transpose()?;
+        // light-agent forwards the caller's original access token; it no longer
+        // mints delegations for the Gateway.
         let workflow_delegation = std::env::var("LIGHT_GATEWAY_WORKFLOW_DELEGATION_SECRET")
             .ok()
             .filter(|secret| !secret.trim().is_empty())
@@ -1472,12 +1455,11 @@ impl GatewayProxy {
                     })
             })
             .transpose()?;
-        let agent_delegation_replay = if agent_delegation.is_some() || workflow_delegation.is_some()
-        {
+        let agent_delegation_replay = if workflow_delegation.is_some() {
             let database_url = std::env::var("LIGHT_GATEWAY_DELEGATION_DATABASE_URL")
                 .or_else(|_| std::env::var("DATABASE_URL"))
                 .map_err(|_| RuntimeError::Config(
-                    "LIGHT_GATEWAY_DELEGATION_DATABASE_URL (or DATABASE_URL) is required when agent delegation is enabled".to_string(),
+                    "LIGHT_GATEWAY_DELEGATION_DATABASE_URL (or DATABASE_URL) is required when workflow delegation is enabled".to_string(),
                 ))?;
             let pool = PgPoolOptions::new()
                 .max_connections(8)
@@ -1499,7 +1481,6 @@ impl GatewayProxy {
 
         Ok(Self {
             admission,
-            agent_delegation,
             workflow_delegation,
             agent_delegation_replay,
             active_handlers,
