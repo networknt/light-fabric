@@ -4653,6 +4653,7 @@ dependencies = [
 name = "light-client"
 version = "0.2.1"
 dependencies = [
+ "config-loader",
  "reqwest",
  "rustls-pemfile",
  "serde",

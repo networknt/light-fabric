@@ -19,6 +19,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
+      - name: Shared client template parity
+        run: python3 scripts/sync-client-config.py --check
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt

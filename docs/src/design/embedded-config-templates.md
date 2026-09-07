@@ -312,6 +312,46 @@ to become runtime-bootstrap applications.
 
 ## Operator Model
 
+### Shared client template
+
+`crates/light-client/config/client.yml` is the canonical Rust client template.
+It projects TLS, request, OAuth token/JWK, signing, dereference, and routing
+settings into the shared `ClientConfig` model. Product and mounted deployment
+copies are registered in `scripts/client-config-targets.json`.
+
+From the `light-fabric` checkout, synchronize sibling repositories with:
+
+```bash
+python3 scripts/sync-client-config.py
+python3 scripts/sync-client-config.py --check
+cargo test -p light-client --test config_template
+```
+
+Use `--workspace /path/to/workspace` for a different sibling-checkout root.
+Missing repositories are reported as not checked; missing files in a present
+repository and unregistered product templates fail the check. CI checks the
+copies available in its checkout. Before a cross-repository release, run the
+check with all repositories in the manifest present.
+
+The manifest preserves existing product/environment fallback differences
+(local TLS hostname verification, request timeout, retry delay, and OAuth/CA
+locations). All copies expose the same keys. Deployment values and Config
+Server values continue to override these fallbacks. Prefer values.yml for new
+deployment settings instead of introducing another fallback override.
+
+A mounted `client.yml` replaces the entire embedded template. A TLS-only copy
+therefore hides OAuth/JWK settings even when Config Server supplies
+`client.tokenKeyServerUrl` and `client.tokenKeyUri`. Deploy the complete synced
+template, then restart the affected process to reload it. Embedded copies need
+an application rebuild. Synchronizing source files does not restart running
+containers or verify authenticated chat end to end.
+
+The obsolete A2A top-level `connectTimeout`, `requestTimeout`, and
+`maxIdlePerHost` fields were ignored by the shared client model. Its synced
+template uses the supported nested `request` fields and shared defaults.
+Standalone services that do not load `ClientConfig`, and Java `client.yml`
+templates, are outside this manifest.
+
 For a native deployment, the recommended layout becomes:
 
 ```text

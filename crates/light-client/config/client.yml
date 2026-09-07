@@ -1,7 +1,5 @@
-# Generated from light-fabric/crates/light-client/config/client.yml.
-# Update via light-fabric/scripts/sync-client-config.py; see its manifest for fallback overrides.
 tls:
-  verifyHostname: ${client.verifyHostname:false}
+  verifyHostname: ${client.verifyHostname:true}
   caCertPath: ${client.caCertPath:}
   clientCertPath: ${client.clientCertPath:}
   clientKeyPath: ${client.clientKeyPath:}

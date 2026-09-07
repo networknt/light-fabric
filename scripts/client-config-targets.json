@@ -1,0 +1,82 @@
+{
+  "light-fabric/apps/light-a2a/config/client.yml": {},
+  "light-fabric/apps/light-agent/config/client.yml": {},
+  "light-fabric/apps/light-deployer/config/client.yml": {
+    "client.verifyHostname": "false"
+  },
+  "light-fabric/apps/light-gateway/config/client.yml": {
+    "client.earlyRefreshRetryDelay": "30000",
+    "client.timeout": "4000"
+  },
+  "light-fabric/apps/light-knowledge-admin/config/client.yml": {
+    "client.tokenKeyServerUrl": "https://light-oauth:6881",
+    "client.tokenKeyUri": "/oauth2/AZZRJE52eXu3t1hseacnGQ/keys",
+    "client.timeout": "4000"
+  },
+  "light-fabric/apps/light-knowledge/config/client.yml": {},
+  "light-fabric/apps/light-workflow/config/client.yml": {
+    "client.caCertPath": "/config/ca.pem",
+    "client.tokenKeyServerUrl": "https://light-oauth:6881",
+    "client.tokenKeyUri": "/oauth2/AZZRJE52eXu3t1hseacnGQ/keys",
+    "client.timeout": "4000"
+  },
+  "portal-service/apps/portal-service/config/client.yml": {},
+  "light-example-rs/apps/demo-customer-profile-api/config/client.yml": {},
+  "light-example-rs/apps/demo-insurance-claim-mcp-server/config/client.yml": {},
+  "light-example-rs/apps/demo-offer-decision-api/config/client.yml": {},
+  "portal-config-loc/all-in-lt/demo-customer-profile-api-rust/config/client.yml": {
+    "client.verifyHostname": "false"
+  },
+  "portal-config-loc/all-in-lt/demo-insurance-claim-mcp-server-rust/config/client.yml": {
+    "client.verifyHostname": "false"
+  },
+  "portal-config-loc/all-in-lt/demo-offer-decision-api-rust/config/client.yml": {
+    "client.verifyHostname": "false"
+  },
+  "portal-config-loc/all-in-lt/light-a2a-rust/config/client.yml": {},
+  "portal-config-loc/all-in-lt/light-agent-rust/config/client.yml": {
+    "client.verifyHostname": "false"
+  },
+  "portal-config-loc/all-in-pg/light-agent-rust/config/client.yml": {
+    "client.verifyHostname": "false"
+  },
+  "portal-config-dev/demo-customer-profile-api-rust/config/client.yml": {
+    "client.verifyHostname": "false"
+  },
+  "portal-config-dev/demo-insurance-claim-mcp-server-rust/config/client.yml": {
+    "client.verifyHostname": "false"
+  },
+  "portal-config-dev/demo-offer-decision-api-rust/config/client.yml": {
+    "client.verifyHostname": "false"
+  },
+  "portal-config-dev/light-a2a-rust/config/client.yml": {},
+  "portal-config-dev/light-agent-rust/config/client.yml": {
+    "client.verifyHostname": "false"
+  },
+  "portal-config-bootstrap/demo-customer-profile-api-rust/config/client.yml": {
+    "client.verifyHostname": "false"
+  },
+  "portal-config-bootstrap/demo-insurance-claim-mcp-server-rust/config/client.yml": {
+    "client.verifyHostname": "false"
+  },
+  "portal-config-bootstrap/demo-offer-decision-api-rust/config/client.yml": {
+    "client.verifyHostname": "false"
+  },
+  "portal-config-bootstrap/light-a2a-rust/config/client.yml": {},
+  "portal-config-bootstrap/light-agent-rust/config/client.yml": {
+    "client.verifyHostname": "false"
+  },
+  "light-portal-install/demo-customer-profile-api-rust/config/client.yml": {
+    "client.verifyHostname": "false"
+  },
+  "light-portal-install/demo-insurance-claim-mcp-server-rust/config/client.yml": {
+    "client.verifyHostname": "false"
+  },
+  "light-portal-install/demo-offer-decision-api-rust/config/client.yml": {
+    "client.verifyHostname": "false"
+  },
+  "light-portal-install/light-a2a-rust/config/client.yml": {},
+  "light-portal-install/light-agent-rust/config/client.yml": {
+    "client.verifyHostname": "false"
+  }
+}
