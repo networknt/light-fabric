@@ -73,6 +73,11 @@ jobs:
           durable_admission_is_idempotent_fifo_and_projection_rebuildable
           -- --ignored
 
+      - name: Hindsight vector binding and recall
+        env:
+          HINDSIGHT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/operations
+        run: cargo test --locked -p hindsight-client --test postgres -- --ignored
+
   runner-image-and-manifests:
     runs-on: ubuntu-latest
     timeout-minutes: 45

@@ -1,6 +1,5 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use pgvector::Vector;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -59,19 +58,19 @@ impl HindsightMemory for PgHindsightClient {
         metadata: serde_json::Value,
     ) -> Result<Uuid> {
         let unit_id = Uuid::new_v4();
-        let vector = embedding.map(Vector::from);
 
+        // Bind a built-in array; extension types are outside the restricted search path.
         sqlx::query(
             "INSERT INTO agent_memory_unit_t 
             (host_id, unit_id, bank_id, content, fact_type, embedding, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            VALUES ($1, $2, $3, $4, $5, $6::real[]::public.vector, $7)",
         )
         .bind(host_id)
         .bind(unit_id)
         .bind(bank_id)
         .bind(content)
         .bind(fact_type)
-        .bind(vector)
+        .bind(embedding)
         .bind(metadata)
         .execute(&self.pool)
         .await?;
@@ -86,18 +85,16 @@ impl HindsightMemory for PgHindsightClient {
         query_embedding: Vec<f32>,
         limit: i32,
     ) -> Result<Vec<MemoryUnit>> {
-        let vector = Vector::from(query_embedding);
-
         let rows = sqlx::query_as::<_, MemoryUnit>(
             "SELECT unit_id, bank_id, content, fact_type, metadata
             FROM agent_memory_unit_t
             WHERE host_id = $1 AND bank_id = $2
-            ORDER BY embedding <=> $3
+            ORDER BY embedding OPERATOR(public.<=>) $3::real[]::public.vector
             LIMIT $4",
         )
         .bind(host_id)
         .bind(bank_id)
-        .bind(vector)
+        .bind(query_embedding)
         .bind(limit as i64)
         .fetch_all(&self.pool)
         .await?;
