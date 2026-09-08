@@ -1,8 +1,7 @@
 # Configuration ownership implementation and qualification
 
 The four delivery phases are implemented and locally qualified on 2026-09-08.
-The deployment gate defaults to disabled for other installations until their
-migration and release/restore qualification complete. See the [design](control-plane-configuration-ownership.md).
+Managed-write protection is always enforced. See the [design](control-plane-configuration-ownership.md).
 
 ## Authoring contracts
 
@@ -30,12 +29,11 @@ expectedSourceDigest. The instance-properties-v2 manifest includes sourceDigest
 and propertySetDigest. Historical v1 manifests and digests remain unchanged.
 Replay policy v4 registers the new event types while retaining registries v1–v3.
 
-## Rollout
+## Development setup
 
 Apply portal-db/postgres/patch_20260908_llm_configuration_ownership.sql before
-deploying the command/query services. LLM_MANAGED_CONFIGURATION_ENABLED defaults
-to false. Deploy the ownership-release command with the guard, and enable the
-guard only after migration and release/restore qualification.
+starting the command/query services. Managed-write protection is unconditional;
+there is no environment variable or system property to disable it.
 
 Run `portal-db/postgres/tests/llm_configuration_ownership_inventory.sql` against
 the target Portal schema first. It reports accepted material, conflicts, authoring
@@ -92,7 +90,7 @@ Verified through authenticated Portal commands and queries:
   rejected before publication.
 - Release emitted nine generic baselines, left no active ownership rows, and
   reconciled every property version with its event stream. A generic edit then
-  succeeded; explicit publication reclaimed ownership. With the guard enabled,
+  succeeded; explicit publication reclaimed ownership. With managed-write protection,
   another generic write returned `409 LLM_CONFIGURATION_MANAGED`.
 - Publication, snapshot activation, and reload with required chat authentication
   returned HTTP 401 to a valid user-only request. Exact rollback to the stored
@@ -109,8 +107,8 @@ Verified through authenticated Portal commands and queries:
 
 The local services use the `ownership-20260908` image tags. The local-only Compose
 file `portal-config-loc/all-in-lt/.runtime/llm-ownership.compose.yml` selects those
-images and enables the guard. Other deployments must set
-`LLM_MANAGED_CONFIGURATION_ENABLED=true` only after their rollout checks.
+images. Managed-write protection is built into the command service and needs no
+Compose setting.
 
 Additional fixes proven necessary by qualification:
 
@@ -160,10 +158,9 @@ The rerunnable migration upgrades the initial unique constraint. Existing values
 longer than 16 characters must be reconciled before migration; they are not truncated.
 The canonical definitions precede the dump trailer and include column comments.
 
-The checked-in Compose default remains disabled intentionally. The running local
-command service was independently inspected with the guard enabled; the earlier
-live rejection qualification applies to that enabled configuration. A deployment
-using only the disabled default cannot claim the managed-write rejection check.
+Managed-write protection is unconditional, including the host lock for generic
+configuration commands. Generic edits require explicit ownership release. The
+obsolete environment flag and its Compose entries have been removed.
 
 Follow-up validation passed 54 focused persistence tests (including 11 PostgreSQL
 ownership tests) and four request-schema tests, with no skips. The canonical DDL

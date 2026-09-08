@@ -246,29 +246,25 @@ rows and publication ownership. Reconcile them by verified value/digest and
 provenance; reject conflicting content with an actionable report. Do not silently
 choose whichever event happens to arrive last.
 
-## Migration
+## Development setup and existing data
 
-1. Inventory managed properties, their ownership records, existing generic event
-   streams, and current projection versions. Report conflicts read-only first.
-2. Bootstrap endpoint authoring from each instance's last accepted configuration,
-   validating the entire profile and preserving existing requirements. Do not
-   mass-switch required endpoints to optional.
-3. Record migration through supported domain/import commands with provenance;
-   do not manually lower versions or fabricate missing historical edits.
-4. Deploy the domain editor, ownership-release command, and managed-write guards
-   together, keeping the guards disabled until step 5 completes. Switch candidate
-   generation to authoritative authoring, removing the `previous.endpoints` fallback
-   and previous issuer/audience inputs from normal compilation.
-5. Migrate version/provenance semantics, including source-aware revision identity.
-   Qualify ownership release plus managed, detached, and legacy export/import
-   handling, then enable the guards delivered in step 4.
-6. Publish the desired local endpoint policy, activate a new snapshot, and verify
-   both public-user and agent-mediated inference.
+Apply the database patch before starting the command/query services. The domain
+editor, ownership-release command, and managed-write protection are part of the
+same implementation. Protection is always enforced, with no rollout flag.
+
+For existing data, inventory managed properties, ownership records, generic event
+streams, and projection versions. Bootstrap authoritative authoring from each
+instance's last accepted configuration, preserving endpoint requirements and
+recording provenance through supported domain/import commands. Reject conflicts;
+do not lower versions or fabricate historical edits. Normal compilation never
+uses previous generated endpoints or issuer/audience values as authoring inputs.
+
+Publish the desired endpoint policy, activate a new snapshot, and verify public-user
+and agent-mediated inference. Tests cover source-aware revision identity, ownership
+release, and managed, detached, and legacy export/import handling.
 
 Rollback retains immutable prior publications and restores an explicitly selected
-compatible revision. Do not remove ownership guards as a shortcut to rollback.
-Concurrent generic writes during rollout require either a coordinated short write
-freeze or guards deployed before ownership migration.
+compatible revision. Generic editing requires explicit ownership release.
 
 ## Verification matrix
 
