@@ -3,6 +3,7 @@
 
 pub mod admission;
 pub mod audit;
+pub mod authorization;
 pub mod config;
 pub mod credentials;
 pub mod error;
@@ -17,3 +18,5 @@ pub mod usage;
 
 pub use error::LlmGatewayError;
 pub use runtime::{LlmExecution, LlmRequestContext, LlmRuntime};
+
+pub use model_provider::inference::Operation;

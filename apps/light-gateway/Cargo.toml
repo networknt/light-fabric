@@ -32,6 +32,7 @@ url = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+base64 = { workspace = true }
 futures-util = { workspace = true }
 h2 = "0.4"
 hmac = { workspace = true }

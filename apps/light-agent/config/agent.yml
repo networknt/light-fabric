@@ -60,8 +60,6 @@ runtimePolicy:
   schemaVersion: ${agent.runtimePolicy.schemaVersion:1}
   createdAt: ${agent.runtimePolicy.createdAt:}
   validFrom: ${agent.runtimePolicy.validFrom:}
-  refreshAfter: ${agent.runtimePolicy.refreshAfter:}
-  expiresAt: ${agent.runtimePolicy.expiresAt:}
   revocationEpoch: ${agent.runtimePolicy.revocationEpoch:0}
   compatibilityGeneration: ${agent.runtimePolicy.compatibilityGeneration:1}
 

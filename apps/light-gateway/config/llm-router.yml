@@ -109,3 +109,6 @@ networkZones: ${llm-router.networkZones:{}}
 providers: ${llm-router.providers:{}}
 deployments: ${llm-router.deployments:{}}
 aliases: ${llm-router.aliases:{}}
+
+# Trusted projection of Agent gatewayDelegation and active OAuth registration.
+agentDelegation: ${llm-router.agentDelegation:null}

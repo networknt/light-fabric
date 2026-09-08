@@ -8,6 +8,7 @@ pii_profile_migration="$repo_root/crates/llm-gateway/migrations/audit-postgres/0
 embedding_space_migration="$repo_root/crates/llm-gateway/migrations/audit-postgres/0003_embedding_space.sql"
 transport_context_migration="$repo_root/crates/llm-gateway/migrations/audit-postgres/0004_local_transport_context.sql"
 billing_subject_migration="$repo_root/crates/llm-gateway/migrations/audit-postgres/0005_billing_subject.sql"
+authorization_context_migration="$repo_root/crates/llm-gateway/migrations/audit-postgres/0006_authorization_context.sql"
 
 echo "[llm-audit-wal] durability, recovery, corruption, capacity, replay"
 (cd "$repo_root" && cargo test --locked -p llm-gateway audit::tests --lib)
@@ -30,7 +31,7 @@ if [[ -n "$database_url" ]]; then
   echo "[llm-audit-wal] applying schema twice and testing duplicate replay"
   for pass in 1 2; do
     for schema in "$migration" "$pii_profile_migration" "$embedding_space_migration" \
-      "$transport_context_migration" "$billing_subject_migration"; do
+      "$transport_context_migration" "$billing_subject_migration" "$authorization_context_migration"; do
       psql "$database_url" -v ON_ERROR_STOP=1 -f "$schema"
     done
   done

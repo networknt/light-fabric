@@ -1,4 +1,5 @@
 mod coding_jobs;
+mod gateway_credentials;
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use axum::{
@@ -165,7 +166,7 @@ struct SessionOwner {
     agent_def_id: Uuid,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct AuthenticatedRequest {
     authorization: String,
     owner: SessionOwner,
@@ -583,6 +584,7 @@ struct AgentState {
     agent_config: AgentConfig,
     system_prompt: String,
     llm_gateway_token: String,
+    workload_credentials: Option<Arc<gateway_credentials::WorkloadCredentials>>,
     llm_gateway_client: reqwest::Client,
     policy_snapshot: PolicySnapshot,
     default_temperature: f64,
@@ -1885,6 +1887,9 @@ async fn execute_native_a2a_turn(
     task_id: Uuid,
     text: String,
 ) -> Result<()> {
+    if state.workload_credentials.is_some() {
+        bail!("dual-token inference requires an interactive user; native A2A is unsupported");
+    }
     let waiter = state.turn_dispatch.register(turn_id.0).await;
     let deadline = tokio::time::Instant::now() + state.limits.turn_timeout;
     let resolution = loop {
@@ -1925,6 +1930,7 @@ async fn execute_native_a2a_turn(
         &provider_config,
         &state.llm_gateway_token,
         &state.llm_gateway_client,
+        None,
     )?;
     let authenticated = AuthenticatedRequest {
         authorization: String::new(),
@@ -2369,8 +2375,41 @@ async fn authenticate_request(
     headers: &HeaderMap,
     state: &AgentState,
 ) -> Result<AuthenticatedRequest, HandlerRejection> {
+    if state.workload_credentials.is_some() {
+        if headers.get_all("authorization").iter().count() != 1 {
+            return Err(HandlerRejection::unauthorized(
+                "exactly one user credential required",
+            ));
+        }
+        // UI scope headers are deliberately ignored; the Agent owns that credential.
+        let raw = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let token = raw.split_once(' ').map(|(_, token)| token).unwrap_or("");
+        if token.is_empty() || token.bytes().any(|c| c.is_ascii_whitespace() || c == b',') {
+            return Err(HandlerRejection::unauthorized("malformed user credential"));
+        }
+    }
     let token = bearer_token(headers)?;
     let principal = verify_jwt_token(&state.security, token, JwtExpiryMode::Enforce).await?;
+    if let Some(policy) = &state
+        .agent_config
+        .agent_policy
+        .gateway_delegation
+        .dual_token
+    {
+        gateway_credentials::check_claims(
+            &principal.claims,
+            &policy.user_issuer,
+            &policy.user_audience,
+            chrono::Utc::now().timestamp(),
+        )
+        .map_err(|_| HandlerRejection::unauthorized("authentication_required"))?;
+        if principal.user_id.is_none() {
+            return Err(HandlerRejection::unauthorized("user identity required"));
+        }
+    }
     let owner = bind_authenticated_principal(&principal, state.host_id, state.agent_def_id)?;
     let caller_subject = principal
         .user_id
@@ -3142,6 +3181,7 @@ fn build_model_provider(
     config: &ModelProviderConfig,
     llm_gateway_token: &str,
     llm_gateway_client: &reqwest::Client,
+    authority: Option<Arc<dyn model_provider::gateway_authorization::GatewayAuthorization>>,
 ) -> Result<ModelProviderSelection, RuntimeError> {
     let provider_id = normalize_provider_id(&config.provider);
     if provider_id != "gateway" && provider_id != "light-gateway" {
@@ -3155,6 +3195,15 @@ fn build_model_provider(
             "turn model alias does not match the loaded immutable Agent policy".into(),
         ));
     }
+    if agent_config
+        .agent_policy
+        .gateway_delegation
+        .dual_token
+        .is_some()
+        && authority.is_none()
+    {
+        return Err(RuntimeError::Unsupported("dual-token inference requires an interactive user; noninteractive invocation is unsupported".into()));
+    }
     let gateway = &agent_config.agent_policy.model.gateway;
     let provider = CompatibleProvider::new_with_client(
         gateway.name.as_str(),
@@ -3167,6 +3216,11 @@ fn build_model_provider(
             RuntimeError::Config("agentPolicy.model.maximumTokens exceeds u32".into())
         })?,
     ));
+    let provider = if let Some(authority) = authority {
+        provider.with_gateway_authorization(authority)
+    } else {
+        provider
+    };
     Ok(ModelProviderSelection {
         provider: Box::new(provider),
         model,
@@ -3429,6 +3483,23 @@ async fn reject_session_initialization<S>(
         .await;
 }
 
+async fn send_authentication_required<S>(
+    sender: &mut S,
+    client_message_id: Option<&str>,
+    admitted: bool,
+) where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    let _ = sender.send(Message::Text(serde_json::json!({"type":"authentication_required", "clientMessageId":client_message_id,
+        "admitted":admitted, "message":"Renew authentication and reconnect. Admitted turns must not be replayed."}).to_string().into())).await;
+    let _ = sender
+        .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+            code: 4401,
+            reason: "authentication_required".into(),
+        })))
+        .await;
+}
+
 async fn handle_socket(
     socket: WebSocket,
     state: Arc<AgentState>,
@@ -3543,6 +3614,28 @@ async fn handle_socket(
         ))
         .await;
 
+    if state.workload_credentials.is_some() {
+        // Session ownership has already been verified above. Reconcile identifiers,
+        // never replay an accepted or ambiguously completed turn on reconnect.
+        match sqlx::query("SELECT turn_id,client_message_id,state FROM agent_turn_t WHERE host_id=$1 AND session_id=$2 ORDER BY turn_sequence DESC LIMIT 100")
+            .bind(state.host_id).bind(session_id).fetch_all(&state.domain.pool()).await {
+            Ok(rows) => {
+                let turns: Vec<serde_json::Value> = rows.into_iter().map(|row| serde_json::json!({
+                    "turnId": row.get::<Uuid,_>("turn_id"), "clientMessageId": row.get::<String,_>("client_message_id"), "state":row.get::<String,_>("state")
+                })).collect();
+                let _ = sender.send(Message::Text(serde_json::json!({"type":"turn_status", "turns":turns}).to_string().into())).await;
+            }
+            Err(_) => { let _ = sender.send(Message::Text(serde_json::json!({"type":"error", "message":"Previous turn status is unavailable; do not resubmit uncertain turns."}).to_string().into())).await; }
+        }
+        let _ = sender
+            .send(Message::Text(
+                serde_json::json!({"type":"authentication_context",
+            "expiresAt": authenticated.caller_claims.get("exp").and_then(|v| v.as_i64())})
+                .to_string()
+                .into(),
+            ))
+            .await;
+    }
     while let Some(Ok(msg)) = receiver.next().await {
         if let Message::Text(text) = msg {
             let client_msg: ClientMessage = match serde_json::from_str(&text) {
@@ -3564,6 +3657,21 @@ async fn handle_socket(
                     continue;
                 }
             };
+            if state.workload_credentials.is_some()
+                && authenticated
+                    .caller_claims
+                    .get("exp")
+                    .and_then(|v| v.as_i64())
+                    .is_none_or(|exp| exp <= chrono::Utc::now().timestamp())
+            {
+                send_authentication_required(
+                    &mut sender,
+                    client_msg.client_message_id.as_deref(),
+                    false,
+                )
+                .await;
+                break;
+            }
             if client_msg.text.trim().is_empty()
                 || client_msg.text.len() > state.limits.max_user_message_bytes
             {
@@ -3642,6 +3750,14 @@ async fn handle_socket(
                     continue;
                 }
             };
+            let _ = sender
+                .send(Message::Text(
+                    serde_json::json!({"type":"turnAccepted", "clientMessageId":client_message_id,
+                "turnId":admitted.turn_id.0})
+                    .to_string()
+                    .into(),
+                ))
+                .await;
             let dispatch_deadline = tokio::time::Instant::now() + state.limits.turn_timeout;
             let waiter = state.turn_dispatch.register(admitted.turn_id.0).await;
             let turn_resolution = loop {
@@ -3923,11 +4039,35 @@ async fn handle_socket(
                 model: Some(turn_resolution.model_name.clone()),
                 temperature: state.default_temperature,
             };
+            let authority = match state
+                .workload_credentials
+                .as_ref()
+                .map(|credentials| {
+                    credentials.for_turn(&authenticated.authorization, &authenticated.caller_claims)
+                })
+                .transpose()
+            {
+                Ok(authority) => authority,
+                Err(_) => {
+                    let _ = state
+                        .domain
+                        .fail_turn(
+                            state.host_id,
+                            AgentSessionId(session_id),
+                            admitted.turn_id,
+                            "authentication_required",
+                        )
+                        .await;
+                    send_authentication_required(&mut sender, Some(&client_message_id), true).await;
+                    break;
+                }
+            };
             let turn_runtime = match build_model_provider(
                 &state.agent_config,
                 &turn_provider_config,
                 &state.llm_gateway_token,
                 &state.llm_gateway_client,
+                authority,
             ) {
                 Ok(runtime) => runtime,
                 Err(error) => {
@@ -4027,6 +4167,12 @@ async fn handle_socket(
                     }
                 }
                 Ok(Err(e)) => {
+                    if e.downcast_ref::<model_provider::gateway_authorization::GatewayCredentialError>()
+                        .is_some_and(|e| matches!(e, model_provider::gateway_authorization::GatewayCredentialError::AuthenticationRequired)) {
+                        let _ = state.domain.fail_turn_after_model_dispatch(state.host_id, AgentSessionId(session_id), admitted.turn_id, "authentication_required").await;
+                        send_authentication_required(&mut sender, Some(&client_message_id), true).await;
+                        break;
+                    }
                     error!("Agent loop error: {}", e);
                     let _ = state
                         .domain
@@ -5477,11 +5623,32 @@ async fn build_agent_state(
     );
     let turn_dispatch = TurnDispatchCoordinator::new(domain.clone());
     turn_dispatch.spawn(host_id);
+    let security = Arc::new(security);
+    let workload_credentials = if let Some(policy) =
+        &agent_config.agent_policy.gateway_delegation.dual_token
+    {
+        if !verify_hostname || !security.config.enable_verify_jwt || security.config.enable_mock_jwt
+        {
+            return Err(RuntimeError::Config(
+                "dual-token inference requires verified TLS and real JWT verification".into(),
+            ));
+        }
+        Some(Arc::new(gateway_credentials::WorkloadCredentials::new(
+            policy.clone(),
+            build_agent_http_client(ca_cert.as_deref(), true, Duration::from_secs(15))?,
+            security.clone(),
+            host_id.to_string(),
+            agent_config.runtime_policy.env_tag.clone(),
+        )))
+    } else {
+        None
+    };
     let state = Arc::new(AgentState {
         policy_snapshot: agent_config.agent_policy.policy_snapshot.clone(),
         system_prompt: agent_config.compiled_system_prompt(),
         agent_config,
         llm_gateway_token: portal_token,
+        workload_credentials,
         llm_gateway_client,
         default_temperature: model_provider_config.temperature,
         mcp_client,
@@ -5492,7 +5659,7 @@ async fn build_agent_state(
         domain,
         turn_dispatch,
         delegation_signer,
-        security: Arc::new(security),
+        security,
         limits,
         host_id,
         agent_def_id,
@@ -5543,7 +5710,8 @@ fn build_agent_http_client(
 ) -> Result<reqwest::Client, RuntimeError> {
     let mut builder = reqwest::Client::builder()
         .timeout(timeout)
-        .connect_timeout(Duration::from_secs(10));
+        .connect_timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none());
     if let Some(pem) = ca_cert_pem {
         let certificates = light_client::parse_ca_cert_bundle(pem).map_err(|error| {
             RuntimeError::Config(format!("invalid outbound CA certificate bundle: {error}"))
@@ -5665,6 +5833,30 @@ mod tests {
             super::session_initialization_failure(&anyhow::anyhow!("secret database details"));
         assert_eq!((code, close_code), ("SESSION_INITIALIZATION_FAILED", 1011));
         assert!(!message.contains("secret database details"));
+    }
+
+    #[tokio::test]
+    async fn authentication_required_keeps_message_id_and_closes_without_replay() {
+        for admitted in [false, true] {
+            let messages = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let capture = messages.clone();
+            let sink = futures_util::sink::unfold(capture, |messages, message| async move {
+                messages.lock().unwrap().push(message);
+                Ok::<_, std::convert::Infallible>(messages)
+            });
+            futures_util::pin_mut!(sink);
+            super::send_authentication_required(&mut sink, Some("message-123"), admitted).await;
+            let frames = messages.lock().unwrap();
+            assert_eq!(frames.len(), 2);
+            let super::Message::Text(text) = &frames[0] else {
+                panic!("expected auth event")
+            };
+            let event: serde_json::Value = serde_json::from_str(text).unwrap();
+            assert_eq!(event["type"], "authentication_required");
+            assert_eq!(event["clientMessageId"], "message-123");
+            assert_eq!(event["admitted"], admitted);
+            assert!(matches!(&frames[1], super::Message::Close(Some(frame)) if frame.code == 4401));
+        }
     }
 
     #[tokio::test]

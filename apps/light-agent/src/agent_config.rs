@@ -1,6 +1,7 @@
 use a2a_protocol::{A2aOperation, ProtocolProfile};
 use agent_core::{PolicySnapshot, sha256_digest};
 use agent_runtime_protocol::canonical_digest;
+use agent_runtime_protocol::gateway_delegation::GatewayDelegationPolicy;
 use chrono::{DateTime, Utc};
 use knowledge_core::RetrievalFilters;
 use serde::de::{DeserializeOwned, Error as DeError};
@@ -158,12 +159,40 @@ pub struct RuntimePolicyEnvelope {
     pub env_tag: String,
     pub source_event_sequence: i64,
     pub schema_version: u32,
+    #[serde(deserialize_with = "deserialize_publication_time")]
     pub created_at: DateTime<Utc>,
+    #[serde(deserialize_with = "deserialize_publication_time")]
     pub valid_from: DateTime<Utc>,
+    /// Legacy publication timestamps are accepted but do not expire configuration.
+    #[serde(default, skip_serializing, deserialize_with = "ignore_legacy_policy_time")]
     pub refresh_after: DateTime<Utc>,
+    #[serde(default, skip_serializing, deserialize_with = "ignore_legacy_policy_time")]
     pub expires_at: DateTime<Utc>,
     pub revocation_epoch: u64,
     pub compatibility_generation: u64,
+}
+
+// Java OffsetDateTime.toString() omits zero seconds. Accept that historical
+// publication representation while retaining strict validation of the instant.
+fn ignore_legacy_policy_time<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::de::IgnoredAny::deserialize(deserializer)?;
+    Ok(DateTime::<Utc>::default())
+}
+
+fn deserialize_publication_time<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let mut text = String::deserialize(deserializer)?;
+    if text.is_ascii() && matches!(text.as_bytes().get(16), Some(b'Z' | b'+' | b'-')) {
+        text.insert_str(16, ":00");
+    }
+    DateTime::parse_from_rfc3339(&text)
+        .map(|time| time.with_timezone(&Utc))
+        .map_err(serde::de::Error::custom)
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -182,7 +211,7 @@ pub struct AgentPolicy {
     pub knowledge: AgentKnowledgePolicy,
     pub channel: Value,
     pub data_boundary: Value,
-    pub gateway_delegation: Value,
+    pub gateway_delegation: GatewayDelegationPolicy,
     pub session: AgentSessionPolicy,
 }
 
@@ -537,13 +566,7 @@ impl AgentConfig {
         if now < envelope.valid_from {
             return Err("Agent policy is not valid yet".to_string());
         }
-        if now >= envelope.expires_at {
-            return Err("Agent policy has expired".to_string());
-        }
-        if envelope.created_at > envelope.valid_from
-            || envelope.valid_from >= envelope.refresh_after
-            || envelope.refresh_after >= envelope.expires_at
-        {
+        if envelope.created_at > envelope.valid_from {
             return Err("Agent policy validity window is invalid".to_string());
         }
         if policy.definition_version <= 0 {
@@ -571,6 +594,9 @@ impl AgentConfig {
         if policy.model.gateway.base_url.trim().is_empty() {
             return Err("agentPolicy.model.gateway.baseUrl is required".to_string());
         }
+        policy
+            .gateway_delegation
+            .validate(&policy.model.gateway.base_url, &policy.model.alias)?;
         if !policy.model.temperature.is_finite() || !(0.0..=2.0).contains(&policy.model.temperature)
         {
             return Err("agentPolicy.model.temperature must be between 0 and 2".to_string());
@@ -1131,7 +1157,7 @@ mod tests {
             },
             channel: serde_json::json!({}),
             data_boundary: serde_json::json!({}),
-            gateway_delegation: serde_json::json!({}),
+            gateway_delegation: GatewayDelegationPolicy::default(),
             session: AgentSessionPolicy {
                 idle_seconds: 3600,
                 maximum_seconds: 86_400,
@@ -1190,6 +1216,77 @@ mod tests {
             a2a_policy: NativeA2aPolicy::default(),
             a2a_outbound: OutboundA2aPolicy::default(),
         }
+    }
+
+    #[test]
+    fn java_gateway_projection_digest_and_activation_gate() {
+        let raw: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/gateway-projection-v1.json"))
+                .unwrap();
+        let policy: AgentPolicy = serde_json::from_value(raw["agentPolicy"].clone()).unwrap();
+        assert_eq!(
+            canonical_digest(&policy).unwrap(),
+            raw["contentDigest"].as_str().unwrap()
+        );
+        policy
+            .gateway_delegation
+            .validate(&policy.model.gateway.base_url, &policy.model.alias)
+            .unwrap();
+        let now = Utc::now();
+        let mut config = config(now);
+        config.agent_policy.model.alias = policy.model.alias.clone();
+        config.agent_policy.gateway_delegation = policy.gateway_delegation;
+        config.runtime_policy.content_digest = canonical_digest(&config.agent_policy).unwrap();
+        let result = config.validate(
+            "agent.dev.lightapi.net",
+            "com.networknt.agent.support-1.0.0",
+            "dev",
+            now,
+        );
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn java_minute_precision_publication_times_are_validated() {
+        let cfg = config(Utc::now());
+        let mut value = serde_json::to_value(&cfg.runtime_policy).unwrap();
+        value["createdAt"] = serde_json::json!("2026-09-08T04:00Z");
+        value["validFrom"] = serde_json::json!("2026-09-08T00:00-04:00");
+        let parsed: RuntimePolicyEnvelope = serde_yaml::from_str(
+            &serde_yaml::to_string(&value).unwrap()).unwrap();
+        assert_eq!(parsed.created_at, parsed.valid_from);
+        value["validFrom"] = serde_json::json!("2026-99-08T04:00Z");
+        assert!(serde_json::from_value::<RuntimePolicyEnvelope>(value).is_err());
+    }
+
+    #[test]
+    fn legacy_template_empty_policy_timestamps_are_ignored() {
+        let cfg = config(Utc::now());
+        let mut value = serde_json::to_value(&cfg.runtime_policy).unwrap();
+        value["refreshAfter"] = serde_json::json!("");
+        value["expiresAt"] = serde_json::json!("");
+        let yaml = serde_yaml::to_string(&value).unwrap();
+        let parsed = serde_yaml::from_str::<RuntimePolicyEnvelope>(&yaml);
+        assert!(parsed.is_ok(), "legacy template failed: {parsed:?}");
+    }
+
+    #[test]
+    fn offline_policy_survives_old_lease_and_still_checks_integrity() {
+        let now = Utc::now();
+        let mut cfg = config(now);
+        cfg.runtime_policy.refresh_after = now - Duration::days(366);
+        cfg.runtime_policy.expires_at = now - Duration::days(365);
+        let check = |cfg: &AgentConfig, time| cfg.validate(
+            "agent.dev.lightapi.net", "com.networknt.agent.support-1.0.0", "dev", time);
+        assert!(check(&cfg, now + Duration::days(3650)).is_ok());
+        let envelope = serde_json::to_value(&cfg.runtime_policy).unwrap();
+        assert!(envelope.get("expiresAt").is_none());
+        assert!(envelope.get("refreshAfter").is_none());
+        let restored: RuntimePolicyEnvelope = serde_json::from_value(envelope).unwrap();
+        cfg.runtime_policy = restored;
+        assert!(check(&cfg, now).is_ok());
+        cfg.agent_policy.prompt.system.push_str(" altered");
+        assert!(check(&cfg, now).is_err());
     }
 
     #[test]

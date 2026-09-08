@@ -191,6 +191,10 @@ impl LlmRuntime {
             .reserve(
                 alias.audit,
                 AuditStart {
+                    authorization: context
+                        .authorization
+                        .as_ref()
+                        .map(|a| a.assignment_allowed()),
                     request_id: context.request_id.clone(),
                     principal_id: context.principal_id.clone(),
                     billing_subject: context.billing_subject.clone(),

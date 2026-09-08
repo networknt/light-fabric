@@ -2309,6 +2309,7 @@ impl BodyAccessControl for DenyBeforeParse {
 
 fn http_request(body: &[u8]) -> BufferedHttpRequest {
     BufferedHttpRequest {
+        authorization: None,
         method: "POST".to_string(),
         path: "/v1/chat/completions".to_string(),
         headers: BTreeMap::from([
@@ -3891,6 +3892,7 @@ async fn models_never_enumerate_internal_aliases() {
     let http = LlmBufferedHttp::new(runtime, Arc::new(Allow), 4096, 32, Duration::from_secs(1));
     let response = http
         .handle(BufferedHttpRequest {
+            authorization: None,
             method: "GET".to_string(),
             path: "/v1/models".to_string(),
             headers: BTreeMap::new(),
@@ -3914,6 +3916,7 @@ async fn models_never_enumerate_internal_aliases() {
     ] {
         let response = http
             .handle(BufferedHttpRequest {
+                authorization: None,
                 method: "GET".to_string(),
                 path: format!("/v1/models/{alias}"),
                 headers: BTreeMap::new(),
@@ -4168,4 +4171,26 @@ async fn reject_buffered_pii_profile_rejects_streaming_before_provider_dispatch(
 
     assert!(matches!(result, Err(LlmGatewayError::InvalidRequest(_))));
     assert!(received.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn dual_token_alias_restriction_conceals_other_and_unknown_models() {
+    let provider = Arc::new(ScriptedProvider::new(ProviderProtocol::OpenAiChat, vec![]));
+    let runtime = runtime_with(
+        vec![provider.clone()],
+        1,
+        4096,
+        Arc::new(RecordingAudit::default()),
+    );
+    let http = LlmBufferedHttp::new(runtime, Arc::new(Allow), 4096, 32, Duration::from_secs(1));
+    for model in ["default", "unknown-phase4-alias"] {
+        let body =
+            serde_json::json!({"model":model,"messages":[{"role":"user","content":"hello"}]})
+                .to_string();
+        let mut request = http_request(body.as_bytes());
+        request.bound_model_alias = Some("assigned-agent-only".into());
+        request.authorization = Some(llm_gateway::authorization::AuthorizationAudit::default());
+        assert_eq!(http.handle(request).await.status, 404);
+    }
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
 }

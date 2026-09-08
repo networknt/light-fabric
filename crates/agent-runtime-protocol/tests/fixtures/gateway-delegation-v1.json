@@ -1,0 +1,19 @@
+{
+  "dualToken": {
+    "schemaVersion": 1,
+    "profile": "user-agent-dual-token-v1",
+    "gatewayUrl": "https://llm-gateway:8443/v1",
+    "userIssuer": "https://oauth.example.test",
+    "userAudience": "urn:com.networknt",
+    "workloadIssuer": "https://oauth.example.test",
+    "workloadAudience": "urn:com.networknt",
+    "tokenEndpoint": "https://oauth.example.test/oauth2/provider/token",
+    "clientId": "019d8349-41c6-72ef-95c2-4428a40d0e49",
+    "clientSecretFile": "/run/secrets/agent-llm-client-secret",
+    "scopes": [
+      "portal.r"
+    ],
+    "refreshBeforeSeconds": 60,
+    "routeAlias": "assistant-dev"
+  }
+}

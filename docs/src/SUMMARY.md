@@ -81,6 +81,11 @@
 # Product
 
 - [Light-Agent](product/light-agent.md)
+  - [LLM User and Agent Authorization](product/light-agent/llm-dual-token-authorization.md)
+    - [Phase 1 Contract](product/light-agent/llm-dual-token-phase1.md)
+    - [Phase 2 Gateway Implementation](product/light-agent/llm-dual-token-phase2.md)
+    - [Phase 3 Agent Forwarding](product/light-agent/llm-dual-token-phase3.md)
+    - [Phase 4 Rollout and Qualification](product/light-agent/llm-dual-token-phase4.md)
   - [Coding Harness Integration](product/light-agent/coding-harness-integration.md)
   - [Workflow Coding Thread Lifecycle](product/light-agent-worker/workflow-thread-lifecycle.md)
   - [Worker Codex Upgrade Strategy](product/light-agent-worker/codex-upgrade-strategy.md)

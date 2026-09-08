@@ -609,6 +609,7 @@ enum WebhookReplayState {
 }
 
 struct LlmGatewayModule {
+    agent_authorization: Option<llm_gateway::authorization::AgentDelegationConfig>,
     runtime: Arc<LlmRuntime>,
     http: LlmBufferedHttp,
     max_request_body_bytes: usize,
@@ -649,6 +650,42 @@ fn load_llm_gateway_module(
         stop_llm_background_tasks(previous);
         return Ok(None);
     }
+    if let Some(policy) = &config.agent_delegation {
+        policy.validate().map_err(RuntimeError::Config)?;
+        if config.audit_runtime.sink_database_url_env.is_none() {
+            return Err(RuntimeError::Config(
+                "agentDelegation requires a PostgreSQL audit sink".into(),
+            ));
+        }
+        for binding in &policy.bindings {
+            if binding.host_id.to_string() != config.audit_runtime.host_id {
+                return Err(RuntimeError::Config(
+                    "agentDelegation conflicts with audit hostId".into(),
+                ));
+            }
+            let alias = config.aliases.get(&binding.route_alias).ok_or_else(|| {
+                RuntimeError::Config("agentDelegation references an unavailable alias".into())
+            })?;
+            if alias.internal
+                && alias.bound_principal.as_deref()
+                    != Some(binding.agent_def_id.to_string().as_str())
+            {
+                return Err(RuntimeError::Config(
+                    "agentDelegation conflicts with existing alias boundPrincipal".into(),
+                ));
+            }
+        }
+        if config
+            .aliases
+            .values()
+            .filter(|a| a.operations.contains(&llm_gateway::Operation::Generate))
+            .any(|a| a.audit != llm_gateway::config::AuditMode::LocalDurable)
+        {
+            return Err(RuntimeError::Config(
+                "agentDelegation requires local_durable audit for generation aliases".into(),
+            ));
+        }
+    }
     let resolver: Arc<dyn SecretResolver> = Arc::new(EnvironmentReferenceSecretResolver::new(
         config.runtime_material.credential_environment.clone(),
     ));
@@ -673,11 +710,15 @@ fn load_llm_gateway_module(
     });
     let (runtime, audit_sink_task) = match reusable_runtime {
         Some(previous) => {
-            previous.runtime.publish(snapshot);
-            (
-                Arc::clone(&previous.runtime),
-                previous.audit_sink_task.clone(),
-            )
+            let runtime =
+                if config.agent_delegation.is_some() || previous.agent_authorization.is_some() {
+                    // Pin identity policy and routing generation together for in-flight requests.
+                    Arc::new(previous.runtime.fork_snapshot(snapshot))
+                } else {
+                    previous.runtime.publish(snapshot);
+                    Arc::clone(&previous.runtime)
+                };
+            (runtime, previous.audit_sink_task.clone())
         }
         None => {
             let store = Arc::new(LlmSnapshotStore::new(snapshot, 2));
@@ -688,6 +729,7 @@ fn load_llm_gateway_module(
                 .aliases
                 .values()
                 .any(|alias| alias.audit != llm_gateway::config::AuditMode::Disabled)
+                || config.agent_delegation.is_some()
             {
                 let wal_audit = WalAudit::open(
                     WalConfig {
@@ -770,6 +812,7 @@ fn load_llm_gateway_module(
         previous_task.stop();
     }
     Ok(Some(Arc::new(LlmGatewayModule {
+        agent_authorization: config.agent_delegation.clone(),
         runtime,
         http,
         max_request_body_bytes: config.max_request_body_bytes,
@@ -3772,6 +3815,99 @@ impl ProxyHttp for GatewayProxy {
         let handler_ids = ctx.handler_ids.clone();
         for (handler_index, handler_id) in handler_ids.clone().into_iter().enumerate() {
             let started = Instant::now();
+            if matches!(
+                handler_id.as_str(),
+                "security" | "jwt" | "unified-security" | "unified"
+            ) {
+                if let Some(module) = self.llm_gateway.load_full() {
+                    if let Some(required) = module
+                        .agent_authorization
+                        .as_ref()
+                        .and_then(|policy| policy.endpoints.get(&ctx.endpoint))
+                        .copied()
+                    {
+                        if security_execution
+                            .unified_security
+                            .as_ref()
+                            .as_ref()
+                            .is_some_and(|config| {
+                                config.hmac_profile_for(&request_path, &method).is_some()
+                            })
+                        {
+                            return self
+                                .write_llm_error_response(
+                                    session,
+                                    ctx,
+                                    503,
+                                    "service_unavailable",
+                                    "Conflicting route authentication profiles",
+                                )
+                                .await;
+                        }
+                        let Some(runtime) = security_execution.security.as_ref().as_ref() else {
+                            return self
+                                .write_llm_error_response(
+                                    session,
+                                    ctx,
+                                    503,
+                                    "service_unavailable",
+                                    "JWT verification is unavailable",
+                                )
+                                .await;
+                        };
+                        let policy = module
+                            .agent_authorization
+                            .as_ref()
+                            .expect("selected profile");
+                        match policy
+                            .authenticate(
+                                runtime,
+                                &session.req_header().headers,
+                                required,
+                                chrono::Utc::now().timestamp(),
+                            )
+                            .await
+                        {
+                            Ok(mut identity) => {
+                                identity.audit.correlation_id =
+                                    ctx.correlation.correlation_id.clone();
+                                ctx.auth = Some(identity.user.clone());
+                                ctx.llm_identity = Some(identity);
+                                ctx.llm_module = Some(module);
+                                continue;
+                            }
+                            Err(mut failure) => {
+                                failure.audit.correlation_id =
+                                    ctx.correlation.correlation_id.clone();
+                                let status = if module
+                                    .runtime
+                                    .audit_authorization(failure.audit, "unverified", "unverified")
+                                    .await
+                                    .is_err()
+                                {
+                                    503
+                                } else {
+                                    failure.status
+                                };
+                                let code = match status {
+                                    401 => "authentication_error",
+                                    403 => "permission_denied",
+                                    _ => "service_unavailable",
+                                };
+                                return self
+                                    .write_llm_error_response(
+                                        session,
+                                        ctx,
+                                        status,
+                                        code,
+                                        "The request was denied",
+                                    )
+                                    .await;
+                            }
+                        }
+                    }
+                }
+            }
             match handler_id.as_str() {
                 "correlation" => {
                     if let Some(config) = self.correlation_config.load().as_ref().as_ref() {
@@ -4338,7 +4474,11 @@ impl ProxyHttp for GatewayProxy {
                     }
                 }
                 "llm" => {
-                    let Some(module) = self.llm_gateway.load_full() else {
+                    let Some(module) = ctx
+                        .llm_module
+                        .clone()
+                        .or_else(|| self.llm_gateway.load_full())
+                    else {
                         ctx.record_handler_duration(&handler_id, started.elapsed());
                         return self
                             .write_llm_error_response(
@@ -4526,6 +4666,31 @@ impl ProxyHttp for GatewayProxy {
                                 AccessDecision::Denied(message) => {
                                     ctx.record_handler_duration(&handler_id, started.elapsed());
                                     tracing::debug!(reason = %message, "LLM request denied");
+                                    if let Some(identity) = &ctx.llm_identity {
+                                        let mut audit = identity.audit.clone();
+                                        audit.decision = "user_policy_denied".into();
+                                        audit.user_access_decision = Some("denied".into());
+                                        if module
+                                            .runtime
+                                            .audit_authorization(
+                                                audit,
+                                                &identity.principal_id,
+                                                &identity.billing_subject,
+                                            )
+                                            .await
+                                            .is_err()
+                                        {
+                                            return self
+                                                .write_llm_error_response(
+                                                    session,
+                                                    ctx,
+                                                    503,
+                                                    "service_unavailable",
+                                                    "Audit is unavailable",
+                                                )
+                                                .await;
+                                        }
+                                    }
                                     return self
                                         .write_llm_error_response(
                                             session,
@@ -4544,10 +4709,23 @@ impl ProxyHttp for GatewayProxy {
                     };
                     let headers = agent_headers(session)
                         .into_iter()
+                        .filter(|(name, _)| {
+                            !name.eq_ignore_ascii_case("authorization")
+                                && !name.eq_ignore_ascii_case("x-scope-token")
+                        })
                         .map(|(name, value)| (name.to_ascii_lowercase(), value))
                         .collect();
-                    let (principal_id, billing_subject, bound_model_alias) =
-                        llm_billing_context(ctx.auth.as_ref());
+                    let (principal_id, billing_subject, bound_model_alias) = ctx
+                        .llm_identity
+                        .as_ref()
+                        .map(|identity| {
+                            (
+                                identity.principal_id.clone(),
+                                identity.billing_subject.clone(),
+                                identity.bound_alias.clone(),
+                            )
+                        })
+                        .unwrap_or_else(|| llm_billing_context(ctx.auth.as_ref()));
                     let tenant_id = ctx.auth.as_ref().and_then(|auth| {
                         auth.host
                             .clone()
@@ -4580,6 +4758,12 @@ impl ProxyHttp for GatewayProxy {
                         .http
                         .handle_route_with_embedding_ingress(
                             BufferedHttpRequest {
+                                authorization: ctx.llm_identity.as_ref().map(|identity| {
+                                    let mut audit = identity.audit.clone();
+                                    audit.decision = "user_policy_allowed".into();
+                                    audit.user_access_decision = Some("allowed".into());
+                                    audit
+                                }),
                                 method: method.clone(),
                                 path: request_path.clone(),
                                 headers,
@@ -5968,6 +6152,8 @@ struct GatewayRequestContext {
     cors: Option<CorsResponseHeaders>,
     auth: Option<AuthPrincipal>,
     agent_delegation: Option<DelegationClaims>,
+    llm_identity: Option<llm_gateway::authorization::VerifiedIdentity>,
+    llm_module: Option<Arc<LlmGatewayModule>>,
     tokenize_active: bool,
     detokenize_active: bool,
     access_control_active: bool,
@@ -6040,6 +6226,8 @@ impl Default for GatewayRequestContext {
             cors: None,
             auth: None,
             agent_delegation: None,
+            llm_identity: None,
+            llm_module: None,
             tokenize_active: false,
             detokenize_active: false,
             access_control_active: false,
@@ -6076,6 +6264,8 @@ impl Default for GatewayRequestContext {
 
 impl GatewayRequestContext {
     fn begin_request(&mut self) {
+        self.llm_identity = None;
+        self.llm_module = None;
         self.admission_permit = None;
         self.proxy_target = None;
         self.upstream_http2_enabled = false;
@@ -7618,6 +7808,7 @@ fn build_registered_gateway_handler(
 
 #[cfg(test)]
 mod tests {
+    include!("dual_token_tests.rs");
     use super::*;
     use futures_util::{SinkExt, StreamExt};
     use light_runtime::config::ClientConfig;

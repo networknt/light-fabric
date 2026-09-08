@@ -2920,12 +2920,27 @@ async fn persist_runtime_scope(
              content_digest,audience,active,last_seen_ts)
          VALUES($1,$2,$3,$4,$5,$6,'agent',TRUE,now())
          ON CONFLICT(host_id,service_id,instance_id) DO UPDATE
-            SET last_seen_ts=now()
+            SET last_seen_ts=now(), publication_id=EXCLUDED.publication_id,
+                content_digest=EXCLUDED.content_digest
           WHERE runtime_operational_scope_t.environment=EXCLUDED.environment
-            AND runtime_operational_scope_t.publication_id=EXCLUDED.publication_id
-            AND runtime_operational_scope_t.content_digest=EXCLUDED.content_digest
             AND runtime_operational_scope_t.audience=EXCLUDED.audience
             AND runtime_operational_scope_t.active
+            AND ((runtime_operational_scope_t.publication_id=EXCLUDED.publication_id
+                  AND runtime_operational_scope_t.content_digest=EXCLUDED.content_digest)
+                 OR (runtime_operational_scope_t.publication_id<>EXCLUDED.publication_id
+                     AND $7 > (
+                         SELECT max(e.target_version)
+                           FROM operational_reference_evidence_t e
+                          WHERE e.host_id=runtime_operational_scope_t.host_id
+                            AND e.source_service=runtime_operational_scope_t.service_id
+                            AND e.publication_id=runtime_operational_scope_t.publication_id
+                            AND e.reference_kind='AGENT_POLICY'
+                            AND e.source_table='agent_session_t'
+                            AND e.audience='agent'
+                            AND e.issuer=runtime_operational_scope_t.service_id
+                         HAVING bool_and(e.state='ACCEPTED' AND e.target_version IS NOT NULL AND e.target_version>0)
+                            AND min(e.target_version)=max(e.target_version)
+                            AND count(DISTINCT e.target_id)=1)))
          RETURNING instance_id",
     )
     .bind(authority.host_id)
@@ -2934,6 +2949,7 @@ async fn persist_runtime_scope(
     .bind(authority.instance_id)
     .bind(authority.publication_id)
     .bind(&authority.content_digest)
+    .bind(authority.policy_version)
     .fetch_optional(&mut **tx)
     .await?;
     if persisted != Some(authority.instance_id) {
@@ -3069,6 +3085,80 @@ mod tests {
         failed.run("execution", async { Ok(()) }).await;
         assert_eq!(failed.failures, 0);
         assert!(failed.retry_at.is_none());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIGHT_AGENT_TEST_DATABASE_URL"]
+    async fn runtime_scope_transition_requires_forward_accepted_evidence() {
+        let pool = sqlx::PgPool::connect(
+            &std::env::var("LIGHT_AGENT_TEST_DATABASE_URL").expect("test DB required"),
+        )
+        .await
+        .unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("CREATE TEMP TABLE runtime_operational_scope_t(host_id uuid,environment text,service_id text,instance_id uuid,publication_id uuid,content_digest text,audience text,active boolean,last_seen_ts timestamptz,PRIMARY KEY(host_id,service_id,instance_id)) ON COMMIT DROP").execute(&mut *tx).await.unwrap();
+        sqlx::query("CREATE TEMP TABLE operational_reference_evidence_t(host_id uuid,source_service text,publication_id uuid,reference_kind text,source_table text,audience text,issuer text,state text,target_version bigint,target_id uuid) ON COMMIT DROP").execute(&mut *tx).await.unwrap();
+        let mut authority = AgentRuntimeAuthority {
+            host_id: Uuid::now_v7(),
+            agent_def_id: Uuid::now_v7(),
+            definition_version: 1,
+            publication_id: Uuid::now_v7(),
+            content_digest: "old".into(),
+            definition_digest: String::new(),
+            environment: "test".into(),
+            service_id: "agent".into(),
+            instance_id: Uuid::now_v7(),
+            policy_snapshot_id: Uuid::now_v7(),
+            policy_version: 3,
+            policy_digest: String::new(),
+            data_boundary_digest: String::new(),
+            model_provider: String::new(),
+            model_name: String::new(),
+            quota_policies: vec![],
+            model_rates: vec![],
+            service_pools: vec![],
+            edge_runner_bindings: vec![],
+        };
+        persist_runtime_scope(&mut tx, &authority).await.unwrap();
+        persist_runtime_scope(&mut tx, &authority).await.unwrap();
+        let old = authority.clone();
+        authority.publication_id = Uuid::now_v7();
+        authority.content_digest = "new".into();
+        authority.policy_version = 4;
+        // No baseline evidence means no authority to replace the old scope.
+        assert!(persist_runtime_scope(&mut tx, &authority).await.is_err());
+        sqlx::query("INSERT INTO operational_reference_evidence_t VALUES($1,'agent',$2,'AGENT_POLICY','agent_session_t','agent','agent','ACCEPTED',3,$3)")
+            .bind(old.host_id).bind(old.publication_id).bind(old.policy_snapshot_id).execute(&mut *tx).await.unwrap();
+        let mut invalid = authority.clone();
+        invalid.policy_version = 3;
+        assert!(persist_runtime_scope(&mut tx, &invalid).await.is_err());
+        invalid = authority.clone();
+        invalid.environment = "other".into();
+        assert!(persist_runtime_scope(&mut tx, &invalid).await.is_err());
+        persist_runtime_scope(&mut tx, &authority).await.unwrap();
+        sqlx::query("INSERT INTO operational_reference_evidence_t VALUES($1,'agent',$2,'AGENT_POLICY','agent_session_t','agent','agent','ACCEPTED',4,$3)")
+            .bind(authority.host_id).bind(authority.publication_id).bind(authority.policy_snapshot_id).execute(&mut *tx).await.unwrap();
+        assert!(persist_runtime_scope(&mut tx, &old).await.is_err());
+        invalid = authority.clone();
+        invalid.content_digest = "tampered".into();
+        assert!(persist_runtime_scope(&mut tx, &invalid).await.is_err());
+        persist_runtime_scope(&mut tx, &authority).await.unwrap();
+        sqlx::query("UPDATE runtime_operational_scope_t SET active=FALSE")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        invalid = authority.clone();
+        invalid.publication_id = Uuid::now_v7();
+        invalid.policy_version = 5;
+        assert!(persist_runtime_scope(&mut tx, &invalid).await.is_err());
+        assert!(persist_runtime_scope(&mut tx, &authority).await.is_err());
+        let persisted: Uuid =
+            sqlx::query_scalar("SELECT publication_id FROM runtime_operational_scope_t")
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!(persisted, authority.publication_id);
+        tx.rollback().await.unwrap();
     }
 
     #[tokio::test]
@@ -3516,6 +3606,32 @@ mod tests {
             })
             .await
             .unwrap();
+        // A fresh WebSocket may resume the same identity, but never change owner.
+        for resumed_principal in [principal_id, Uuid::now_v7()] {
+            let result = repository
+                .create_or_resume_session(&SessionSpec {
+                    host_id,
+                    session_id: session,
+                    principal_id: resumed_principal.to_string(),
+                    user_id: Some(resumed_principal),
+                    agent_def_id,
+                    definition_version: 1,
+                    model_provider: GATEWAY_PROVIDER_ID.into(),
+                    model_name: "mock".into(),
+                    maximum_active_sessions: 10,
+                    bank_id: None,
+                    policy: policy.clone(),
+                    idle_expires_at: Utc::now() + Duration::hours(1),
+                    maximum_expires_at: Utc::now() + Duration::hours(2),
+                    resume_handle_digest: digest(&session.to_string()),
+                })
+                .await;
+            assert_eq!(
+                result.is_ok(),
+                resumed_principal == principal_id,
+                "{result:?}"
+            );
+        }
         sqlx::query("INSERT INTO agent_memory_bank_t(host_id,bank_id,agent_def_id,user_id,bank_name) VALUES($1,$2,$3,$4,'test-history')")
             .bind(host_id).bind(session.0).bind(agent_def_id).bind(principal_id)
             .execute(&pool).await.unwrap();

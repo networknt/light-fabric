@@ -24,6 +24,8 @@ pub enum EmbeddingWorkloadLane {
 #[serde(rename_all = "camelCase")]
 pub struct LlmRouterConfig {
     #[serde(default)]
+    pub agent_delegation: Option<crate::authorization::AgentDelegationConfig>,
+    #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_path_prefix")]
     pub path_prefix: String,
@@ -83,6 +85,7 @@ pub struct LlmRouterConfig {
 impl Default for LlmRouterConfig {
     fn default() -> Self {
         Self {
+            agent_delegation: None,
             enabled: false,
             path_prefix: default_path_prefix(),
             max_request_body_bytes: default_body_bytes(),

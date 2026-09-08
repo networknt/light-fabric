@@ -47,3 +47,9 @@ thiserror = { workspace = true }
 
 [build-dependencies]
 config-embed-build = { path = "../../crates/config-embed-build" }
+
+[dev-dependencies]
+base64 = "0.22"
+hmac.workspace = true
+sha2.workspace = true
+tempfile = "3"

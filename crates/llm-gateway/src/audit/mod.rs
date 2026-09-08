@@ -19,6 +19,7 @@ use model_provider::inference::Operation;
 
 #[derive(Debug, Clone)]
 pub struct AuditStart {
+    pub authorization: Option<crate::authorization::AuthorizationAudit>,
     pub request_id: String,
     pub principal_id: String,
     pub billing_subject: String,
@@ -81,6 +82,8 @@ pub enum AuditEventKind {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AuditEvent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization: Option<crate::authorization::AuthorizationAudit>,
     pub schema_version: u16,
     pub event_id: String,
     pub kind: AuditEventKind,
@@ -397,6 +400,7 @@ fn event(
     admitted_at: Instant,
 ) -> AuditEvent {
     AuditEvent {
+        authorization: start.authorization.clone(),
         schema_version: 1,
         event_id: Uuid::now_v7().to_string(),
         kind,
@@ -464,6 +468,7 @@ mod tests {
 
     fn start() -> AuditStart {
         AuditStart {
+            authorization: None,
             request_id: Uuid::now_v7().to_string(),
             principal_id: "principal-secret".to_string(),
             billing_subject: "billing-secret".to_string(),

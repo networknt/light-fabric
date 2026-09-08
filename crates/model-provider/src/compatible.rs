@@ -12,6 +12,10 @@ pub struct CompatibleProvider {
     pub api_key: Option<String>,
     pub max_tokens: Option<u32>,
     pub client: Client,
+    gateway_authorization: Option<(
+        String,
+        std::sync::Arc<dyn crate::gateway_authorization::GatewayAuthorization>,
+    )>,
 }
 
 #[derive(Debug, Serialize)]
@@ -133,8 +137,20 @@ impl CompatibleProvider {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.map(ToString::to_string),
             max_tokens: None,
+            gateway_authorization: None,
             client,
         }
+    }
+
+    /// The caller must supply a TLS-verifying, redirect-disabled client.
+    /// Credentials are acquired per call and never installed in client defaults.
+    pub fn with_gateway_authorization(
+        mut self,
+        authority: std::sync::Arc<dyn crate::gateway_authorization::GatewayAuthorization>,
+    ) -> Self {
+        self.api_key = None;
+        self.gateway_authorization = Some((self.base_url.clone(), authority));
+        self
     }
 
     pub fn with_max_tokens(mut self, max_tokens: Option<u32>) -> Self {
@@ -248,7 +264,10 @@ impl CompatibleProvider {
             .post(format!("{}/chat/completions", self.base_url))
             .json(&native_request);
 
-        if let Some(api_key) = &self.api_key {
+        if let Some((destination, authority)) = &self.gateway_authorization {
+            anyhow::ensure!(destination == &self.base_url, "gateway destination changed");
+            request = request.headers(authority.credentials().await?.headers()?);
+        } else if let Some(api_key) = &self.api_key {
             request = request.header("Authorization", format!("Bearer {api_key}"));
         }
 
@@ -256,6 +275,9 @@ impl CompatibleProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+            if self.gateway_authorization.is_some() {
+                anyhow::bail!("gateway inference rejected ({status})");
+            }
             let body = response.text().await.unwrap_or_default();
             anyhow::bail!("{} API error ({}): {}", self.name, status, body);
         }

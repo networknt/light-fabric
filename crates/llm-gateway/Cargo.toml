@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+light-security = { path = "../light-security" }
 agent-runtime-protocol = { path = "../agent-runtime-protocol" }
 arc-swap = "1.7"
 async-stream = "0.3"

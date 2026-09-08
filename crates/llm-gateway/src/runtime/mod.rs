@@ -44,6 +44,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct LlmRequestContext {
+    pub authorization: Option<crate::authorization::AuthorizationAudit>,
     pub request_id: String,
     pub principal_id: String,
     pub billing_subject: String,
@@ -59,6 +60,7 @@ impl LlmRequestContext {
             billing_subject: principal_id.clone(),
             principal_id,
             tenant_id: None,
+            authorization: None,
             deadline: Instant::now() + timeout,
         }
     }
@@ -165,6 +167,56 @@ pub struct LlmRuntime {
 }
 
 impl LlmRuntime {
+    pub fn audit_admission(&self) -> Arc<dyn AuditAdmission> {
+        Arc::clone(&self.audit)
+    }
+
+    pub fn fork_snapshot(&self, snapshot: LlmPublishedSnapshot) -> Self {
+        Self {
+            store: Arc::new(LlmSnapshotStore::new(snapshot, 2)),
+            audit: Arc::clone(&self.audit),
+            global_permits: Arc::clone(&self.global_permits),
+            stream_permits: Arc::clone(&self.stream_permits),
+            stream_start_barrier: Arc::clone(&self.stream_start_barrier),
+            embedding_memory_metrics: Arc::clone(&self.embedding_memory_metrics),
+        }
+    }
+
+    pub async fn audit_authorization(
+        &self,
+        identity: crate::authorization::AuthorizationAudit,
+        principal: &str,
+        billing: &str,
+    ) -> Result<(), LlmGatewayError> {
+        let root = self.snapshot();
+        let start = AuditStart {
+            authorization: Some(identity),
+            request_id: Uuid::now_v7().to_string(),
+            principal_id: principal.into(),
+            billing_subject: billing.into(),
+            alias: String::new(),
+            operation: Operation::Generate,
+            generation: root.generation,
+            snapshot_digest: root.digest.clone(),
+            max_attempts: 0,
+            pii_profile: "none".into(),
+            expected_embedding_space_id: None,
+            expected_embedding_space_revision: None,
+            selected_embedding_space_id: None,
+            selected_embedding_space_revision: None,
+        };
+        self.audit
+            .reserve(crate::config::AuditMode::LocalDurable, start)
+            .await?
+            .finish(AuditFinish {
+                terminal: "rejected",
+                attempts: 0,
+                charged_micros: 0,
+                usage_complete: true,
+            })
+            .await
+    }
+
     pub fn new(store: Arc<LlmSnapshotStore>, audit: Arc<dyn AuditAdmission>) -> Self {
         let permits = store.load().global_concurrency;
         let stream_permits = store.load().global_stream_concurrency;
@@ -342,6 +394,10 @@ impl LlmRuntime {
             .reserve(
                 alias.audit,
                 AuditStart {
+                    authorization: context
+                        .authorization
+                        .as_ref()
+                        .map(|a| a.assignment_allowed()),
                     request_id: context.request_id.clone(),
                     principal_id: context.principal_id.clone(),
                     billing_subject: context.billing_subject.clone(),
@@ -980,6 +1036,10 @@ impl LlmRuntime {
             .reserve(
                 alias.audit,
                 AuditStart {
+                    authorization: context
+                        .authorization
+                        .as_ref()
+                        .map(|a| a.assignment_allowed()),
                     request_id: context.request_id.clone(),
                     principal_id: context.principal_id.clone(),
                     billing_subject: context.billing_subject.clone(),
@@ -1561,6 +1621,7 @@ impl LlmRuntime {
             .reserve(
                 alias.audit,
                 AuditStart {
+                    authorization: None,
                     request_id: uuid::Uuid::now_v7().to_string(),
                     principal_id: principal_id.to_string(),
                     billing_subject: billing_subject.to_string(),

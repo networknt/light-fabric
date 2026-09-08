@@ -22,6 +22,7 @@ use crate::runtime::{
 
 #[derive(Debug, Clone)]
 pub struct BufferedHttpRequest {
+    pub authorization: Option<crate::authorization::AuthorizationAudit>,
     pub method: String,
     pub path: String,
     pub headers: BTreeMap<String, String>,
@@ -162,6 +163,34 @@ impl LlmBufferedHttp {
                 LlmHttpResponse::Streaming(response)
             }
             Err(error) => {
+                if matches!(
+                    &error,
+                    LlmGatewayError::AliasNotFound | LlmGatewayError::Forbidden
+                ) && let Some(mut identity) = request.authorization.clone()
+                {
+                    identity.agent_assignment_decision = Some("denied".into());
+                    identity.decision = match &error {
+                        LlmGatewayError::AliasNotFound => "model_not_found",
+                        LlmGatewayError::Forbidden => "route_restriction_denied",
+                        _ => "request_rejected",
+                    }
+                    .into();
+                    if self
+                        .runtime
+                        .audit_authorization(
+                            identity,
+                            &request.principal_id,
+                            &request.billing_subject,
+                        )
+                        .await
+                        .is_err()
+                    {
+                        return LlmHttpResponse::Buffered(public_error(
+                            LlmGatewayError::AuditUnavailable,
+                            &request.trusted_request_id,
+                        ));
+                    }
+                }
                 if request.path == "/anthropic/v1/messages" {
                     LlmHttpResponse::Buffered(public_anthropic_error(
                         error,
@@ -344,7 +373,11 @@ impl LlmBufferedHttp {
             .as_deref()
             .is_some_and(|bound| Some(bound) != requested_model)
         {
-            return Err(LlmGatewayError::Forbidden);
+            return Err(if request.authorization.is_some() {
+                LlmGatewayError::AliasNotFound
+            } else {
+                LlmGatewayError::Forbidden
+            });
         }
         let streaming = match raw.get("stream") {
             None | Some(Value::Null) | Some(Value::Bool(false)) => false,
@@ -448,6 +481,7 @@ impl LlmBufferedHttp {
         }
         validate_images(&canonical)?;
         let context = LlmRequestContext {
+            authorization: request.authorization.clone(),
             // Audit/request identity is always gateway-issued UUIDv7. The
             // independently trusted correlation ID remains the response
             // header and is never forced into the audit database UUID key.
@@ -676,6 +710,7 @@ impl LlmBufferedHttp {
             return Err(LlmGatewayError::PayloadTooLarge);
         }
         let context = LlmRequestContext {
+            authorization: request.authorization.clone(),
             request_id: request.trusted_request_id.clone(),
             principal_id: request.principal_id.clone(),
             billing_subject: request.billing_subject.clone(),

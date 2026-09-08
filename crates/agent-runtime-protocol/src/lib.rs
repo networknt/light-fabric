@@ -1,3 +1,5 @@
+pub mod gateway_delegation;
+
 use agent_core::{AgentActionAttemptId, AgentSessionId, AgentTurnId, ResultClass};
 use chrono::{DateTime, Utc};
 use execution_runner_protocol::{ExecutionId, LeaseId};

@@ -40,3 +40,5 @@ pub use traits::{
     ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities, TokenUsage, ToolCall,
     ToolSpec,
 };
+
+pub mod gateway_authorization;

@@ -1,0 +1,1 @@
+{"aliasName":"agent-private","operations":["generate"],"deployments":["deployment-1"],"audit":"disabled","requiredCapabilities":{},"requireExpectedEmbeddingSpace":false,"embeddingWorkloadLane":"standard","internal":true,"boundPrincipal":"019d82bf-ab5e-791a-885c-d08aafa2b614","maxAttempts":1}
