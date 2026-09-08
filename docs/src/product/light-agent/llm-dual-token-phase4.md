@@ -38,13 +38,13 @@ The local `llm_audit` database has now received migration
 constraint were verified afterward. This additive migration does not enable the
 profile or constitute persisted dual-token audit evidence.
 
-The local deployment overlay is `all-in-lt/dual-token.compose.yml`. Compatible
-issuer, Agent, gateway and Portal publisher images are deployed. The selected
-Tech Support Agent has a published dual-token contract, a separate renewable
-OAuth service client, and an internal alias using the existing Agent binding.
-Gateway publication and its normal configuration snapshot remain pending.
-See `all-in-lt/dual-token/README.md` in `portal-config-loc` for local identifiers
-and activation prerequisites. No bearer credentials belong in that record.
+Local deployment now uses `portal-config-loc/all-in-lt/docker-compose.yml`;
+the temporary dual-token overlay has been retired. Public certificates reside in
+each service's `config/cert.pem`. The separate renewable OAuth workload credential
+remains in the external Tech Support credential volume.
+Event artifacts and historical qualification notes are retained in
+`light-portal-event/genai/20260908-agent-llm-dual-token/`. The historical notes are
+not current deployment instructions. No bearer credentials belong in that record.
 
 ## Remaining implementation
 

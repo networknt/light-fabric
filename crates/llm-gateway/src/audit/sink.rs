@@ -1,5 +1,6 @@
 use super::{AuditEventKind, AuditWal, WalRecord};
 use chrono::{DateTime, Utc};
+use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
 use std::sync::Arc;
 use std::time::Duration;
@@ -136,7 +137,18 @@ async fn ingest_record(
 ) -> Result<(), sqlx::Error> {
     let event = &record.event;
     let event_id = Uuid::parse_str(&event.event_id).map_err(protocol_error)?;
-    let request_id = Uuid::parse_str(&event.request_id).map_err(protocol_error)?;
+    let (request_id, legacy_request_id) =
+        stored_request_id(&event.host_id, &event.request_day, &event.request_id);
+    let mut transport_context = event
+        .transport_context
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(protocol_error)?;
+    if legacy_request_id {
+        let context = transport_context.get_or_insert_with(|| serde_json::json!({}));
+        context["legacyRequestId"] = serde_json::Value::String(event.request_id.clone());
+    }
     let event_ts = DateTime::parse_from_rfc3339(&event.timestamp)
         .map_err(protocol_error)?
         .with_timezone(&Utc);
@@ -187,7 +199,7 @@ async fn ingest_record(
     .bind(&event.billing_subject_digest)
     .bind(event.charged_micros.and_then(|value| i64::try_from(value).ok()))
     .bind(event.usage_complete)
-    .bind(event.transport_context.as_ref().map(|value| serde_json::to_string(value)).transpose().map_err(protocol_error)?)
+    .bind(transport_context.as_ref().map(serde_json::to_string).transpose().map_err(protocol_error)?)
     .bind(event.authorization.as_ref().map(serde_json::to_string).transpose().map_err(protocol_error)?)
     .execute(&mut **transaction)
     .await?
@@ -230,6 +242,22 @@ async fn ingest_record(
     Ok(())
 }
 
+// Older gateways used correlation IDs as request identities. Preserve those WAL
+// groups deterministically, without rewriting events or dropping an unacknowledged batch.
+// UUID identities pass through unchanged; legacy IDs remain available in transport metadata.
+fn stored_request_id(host: &str, day: &str, request: &str) -> (Uuid, bool) {
+    if let Ok(id) = Uuid::parse_str(request) {
+        return (id, false);
+    }
+    let material = serde_json::json!(["lightapi-llm-legacy-request-v1", host, day, request]);
+    let digest = Sha256::digest(material.to_string().as_bytes());
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x80; // RFC 9562 UUIDv8, application-defined SHA-256 payload.
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    (Uuid::from_bytes(bytes), true)
+}
+
 fn protocol_error(error: impl std::fmt::Display) -> sqlx::Error {
     sqlx::Error::Protocol(format!("invalid LLM audit WAL event: {error}"))
 }
@@ -237,6 +265,29 @@ fn protocol_error(error: impl std::fmt::Display) -> sqlx::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_request_mapping_is_stable_scoped_and_keeps_uuid_ids() {
+        let id = Uuid::now_v7();
+        assert_eq!(
+            stored_request_id("host", "2026-09-08", &id.to_string()),
+            (id, false)
+        );
+        let legacy = stored_request_id("host", "2026-09-08", "light-portal-test-chat");
+        assert!(legacy.1);
+        assert_eq!(
+            legacy,
+            stored_request_id("host", "2026-09-08", "light-portal-test-chat")
+        );
+        assert_ne!(
+            legacy,
+            stored_request_id("other-host", "2026-09-08", "light-portal-test-chat")
+        );
+        assert_ne!(
+            legacy,
+            stored_request_id("host", "2026-09-09", "light-portal-test-chat")
+        );
+    }
 
     #[tokio::test]
     async fn explicit_stop_aborts_the_audit_sink_worker() {

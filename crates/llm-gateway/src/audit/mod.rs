@@ -718,6 +718,39 @@ mod tests {
 
     #[ignore = "requires LLM_AUDIT_TEST_DATABASE_URL"]
     #[tokio::test]
+    async fn postgres_sink_recovers_legacy_correlation_ids_without_losing_metadata() {
+        let database_url = std::env::var("LLM_AUDIT_TEST_DATABASE_URL").unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let audit = WalAudit::open(config(directory.path()), "host-a").unwrap();
+        let mut audit_start = start();
+        let legacy = format!("light-portal-test-{}", Uuid::now_v7());
+        audit_start.request_id = legacy.clone();
+        let reservation = audit
+            .reserve(AuditMode::LocalDurable, audit_start)
+            .await
+            .unwrap();
+        reservation
+            .finish(AuditFinish {
+                terminal: "complete",
+                attempts: 0,
+                charged_micros: 0,
+                usage_complete: true,
+            })
+            .await
+            .unwrap();
+        let records = audit.wal.replay_batch(16, 64 * 1024).unwrap();
+        let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
+        sink::ingest_batch(&pool, &records).await.unwrap();
+        sink::ingest_batch(&pool, &records).await.unwrap();
+        let (events, requests): (i64, i64) = sqlx::query_as(
+            "SELECT count(*),count(DISTINCT request_id) FROM llm_audit_event_t WHERE transport_context->>'legacyRequestId'=$1",
+        ).bind(&legacy).fetch_one(&pool).await.unwrap();
+        assert_eq!(events, 2);
+        assert_eq!(requests, 1);
+    }
+
+    #[ignore = "requires LLM_AUDIT_TEST_DATABASE_URL"]
+    #[tokio::test]
     async fn postgres_sink_duplicate_delivery_is_idempotent_when_database_is_available() {
         let Ok(database_url) = std::env::var("LLM_AUDIT_TEST_DATABASE_URL") else {
             panic!("LLM_AUDIT_TEST_DATABASE_URL must be set to run this test");

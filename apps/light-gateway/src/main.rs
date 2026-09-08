@@ -4749,11 +4749,9 @@ impl ProxyHttp for GatewayProxy {
                                 })
                             })
                     });
-                    let trusted_request_id = ctx
-                        .correlation
-                        .correlation_id
-                        .clone()
-                        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+                    // Correlation headers are caller-controlled and may be non-UUID or reused.
+                    // Allocate an independent identity for every admitted inference request.
+                    let trusted_request_id = uuid::Uuid::now_v7().to_string();
                     let response = module
                         .http
                         .handle_route_with_embedding_ingress(

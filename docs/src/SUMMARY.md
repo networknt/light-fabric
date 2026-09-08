@@ -103,6 +103,8 @@
   - [Light Rule](product/light-gateway/light-rule.md)
   - [LLM Gateway](product/light-gateway/llm-gateway.md)
     - [API Contract](product/light-gateway/llm-gateway-api.md)
+    - [Control-plane Configuration Ownership](product/light-gateway/control-plane-configuration-ownership.md)
+      - [Implementation and Qualification](product/light-gateway/configuration-ownership-implementation.md)
     - [Phase 0 ADR: Public Compatibility](adr/llm-gateway/0001-public-compatibility.md)
     - [Phase 0 ADR: Application Body Contract](adr/llm-gateway/0002-application-body-contract.md)
     - [Phase 0 ADR: Runtime Snapshot](adr/llm-gateway/0003-runtime-snapshot.md)
