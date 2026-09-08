@@ -75,6 +75,17 @@ Light-Agent has no Config Server database credential.
 Resuming a session requires the exact policy snapshot and Agent-definition
 version admitted from Config Server.
 
+Session expiry and projection maintenance run independently of execution polling.
+Each reconciliation step backs off separately on failure (2 seconds up to a
+60-second cap) and logs its stage and next retry interval. A failed execution
+service therefore cannot indefinitely prevent expired sessions from releasing
+active-session slots. Database failures can still delay local cleanup.
+
+If WebSocket session initialization fails, the agent sends an `error` frame with
+a machine-readable `code`, then a close frame. `SESSION_LIMIT_EXCEEDED` uses
+close code 1013; other initialization failures use 1011 with a safe public
+message. Full internal errors remain in agent logs.
+
 Shared runner state is owned by Controller in `operations.execution_ops`, not
 by the Agent database connection. Portal publishes
 `agentPolicy.execution.executionApiUrl`; the existing workload token must

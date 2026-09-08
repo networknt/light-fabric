@@ -28,6 +28,9 @@ RUN cargo build --locked --release --target x86_64-unknown-linux-musl
 # Stage 2: Create the minimal runtime image
 FROM debian:bookworm-slim
 
+# Deployment preflight requires independent session cleanup and structured WS errors.
+LABEL io.lightapi.agent.session-lifecycle="1"
+
 # Install runtime dependencies and create a non-root user
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl && \

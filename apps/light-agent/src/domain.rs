@@ -28,6 +28,46 @@ use execution_runner_protocol::{
     SchedulingRequestSubmission, canonical_sha256,
 };
 
+#[derive(Debug, thiserror::Error)]
+#[error("configured Agent active-session limit exceeded")]
+pub struct ActiveSessionLimitExceeded;
+
+// Each step owns its retry deadline: an unavailable execution API must not
+// suppress database-only maintenance. Failures log only when retried (up to 60s).
+#[derive(Default)]
+struct ReconciliationRetry {
+    retry_at: Option<tokio::time::Instant>,
+    failures: u32,
+}
+
+impl ReconciliationRetry {
+    async fn run<T>(&mut self, stage: &str, work: impl std::future::Future<Output = Result<T>>) {
+        if self
+            .retry_at
+            .is_some_and(|deadline| deadline > tokio::time::Instant::now())
+        {
+            return;
+        }
+        match work.await {
+            Ok(_) => {
+                if self.failures > 0 {
+                    tracing::info!(stage, "agent reconciliation step recovered");
+                }
+                self.failures = 0;
+                self.retry_at = None;
+            }
+            Err(error) => {
+                self.failures = self.failures.saturating_add(1);
+                let retry_seconds = (1u64 << self.failures.min(6)).min(60);
+                self.retry_at = Some(
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(retry_seconds),
+                );
+                tracing::warn!(stage, retry_seconds, %error, "agent reconciliation step failed");
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AgentRepository {
     pool: PgPool,
@@ -947,30 +987,43 @@ impl AgentRepository {
     pub fn spawn_result_reconciler(&self) -> tokio::task::JoinHandle<()> {
         let repository = self.clone();
         tokio::spawn(async move {
-            loop {
-                if let Err(error) = repository.listen_and_reconcile().await {
-                    tracing::warn!("agent execution-result reconciler disconnected: {error}");
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                }
-            }
+            repository.listen_and_reconcile().await;
         })
     }
 
-    async fn listen_and_reconcile(&self) -> Result<()> {
+    async fn listen_and_reconcile(&self) {
+        let mut retries: [ReconciliationRetry; 6] = Default::default();
         loop {
-            self.dispatch_execution_outbox().await?;
-            self.reconcile_agent_jobs().await?;
-            self.reconcile_execution_results().await?;
-            self.reconcile_expiry_and_cleanup().await?;
-            self.reconcile_projections().await?;
-            let retention_days = std::env::var("LIGHT_AGENT_QUOTA_USAGE_RETENTION_DAYS")
-                .ok()
-                .and_then(|value| value.parse::<i32>().ok())
-                .unwrap_or(30)
-                .clamp(1, 3650);
-            self.sweep_quota_usage(retention_days, 1_000).await?;
+            self.reconcile_once(&mut retries).await;
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
+    }
+
+    async fn reconcile_once(&self, retries: &mut [ReconciliationRetry; 6]) {
+        // Keep local lifetime enforcement independent of every remote dependency.
+        retries[0]
+            .run("expiry_and_cleanup", self.reconcile_expiry_and_cleanup())
+            .await;
+        retries[1]
+            .run("execution_outbox", self.dispatch_execution_outbox())
+            .await;
+        retries[2]
+            .run("agent_jobs", self.reconcile_agent_jobs())
+            .await;
+        retries[3]
+            .run("execution_results", self.reconcile_execution_results())
+            .await;
+        retries[4]
+            .run("projections", self.reconcile_projections())
+            .await;
+        let retention_days = std::env::var("LIGHT_AGENT_QUOTA_USAGE_RETENTION_DAYS")
+            .ok()
+            .and_then(|value| value.parse::<i32>().ok())
+            .unwrap_or(30)
+            .clamp(1, 3650);
+        retries[5]
+            .run("quota_sweep", self.sweep_quota_usage(retention_days, 1_000))
+            .await;
     }
 
     pub async fn sweep_quota_usage(&self, retention_days: i32, batch_size: i64) -> Result<u64> {
@@ -1909,7 +1962,7 @@ impl AgentRepository {
             .fetch_one(&mut *tx)
             .await?;
             if active >= spec.maximum_active_sessions as i64 {
-                bail!("configured Agent active-session limit exceeded")
+                return Err(ActiveSessionLimitExceeded.into());
             }
             enforce_quotas(
                 &mut tx,
@@ -2975,6 +3028,114 @@ async fn append_event(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn reconciliation_retry_is_independent_capped_and_resets() {
+        let mut failed = super::ReconciliationRetry::default();
+        let mut healthy = super::ReconciliationRetry::default();
+        let mut calls = 0;
+        failed
+            .run("execution", async {
+                Err::<(), _>(anyhow::anyhow!("HTTP 404"))
+            })
+            .await;
+        failed
+            .run("execution", async {
+                calls += 1;
+                Ok(())
+            })
+            .await;
+        assert_eq!(calls, 0, "backoff must skip the failing dependency");
+        healthy
+            .run("expiry", async {
+                calls += 1;
+                Ok(())
+            })
+            .await;
+        assert_eq!(calls, 1);
+        for _ in 0..10 {
+            failed.retry_at = None;
+            failed
+                .run("execution", async {
+                    Err::<(), _>(anyhow::anyhow!("HTTP 403"))
+                })
+                .await;
+        }
+        let delay = failed
+            .retry_at
+            .unwrap()
+            .duration_since(tokio::time::Instant::now());
+        assert!(delay.as_secs() >= 59 && delay.as_secs() <= 60);
+        failed.retry_at = None;
+        failed.run("execution", async { Ok(()) }).await;
+        assert_eq!(failed.failures, 0);
+        assert!(failed.retry_at.is_none());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIGHT_AGENT_TEST_DATABASE_URL"]
+    async fn reconciliation_expires_sessions_when_execution_is_unavailable() {
+        let url = std::env::var("LIGHT_AGENT_TEST_DATABASE_URL")
+            .expect("set LIGHT_AGENT_TEST_DATABASE_URL");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .after_connect(|connection, _| {
+                Box::pin(async move {
+                    // Every replacement connection also excludes all application schemas.
+                    sqlx::query("SET search_path TO pg_temp, pg_catalog")
+                        .execute(connection)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .unwrap();
+        // Session-local fixture; no production rows are modified.
+        sqlx::raw_sql("CREATE TEMP TABLE agent_approval_t(state text, decision_ts timestamptz, decision_reason text, expires_ts timestamptz);
+            CREATE TEMP TABLE agent_turn_t(host_id uuid, session_id uuid, turn_id uuid, state text, terminal_error jsonb, terminal_ts timestamptz, updated_ts timestamptz, deadline_ts timestamptz);
+            CREATE TEMP TABLE agent_session_t(host_id uuid,session_id uuid,state text,cleanup_state text,execution_session_id uuid,updated_ts timestamptz,idle_expires_ts timestamptz,maximum_expires_ts timestamptz,active_turn_id uuid,session_version bigint);")
+            .execute(&pool).await.unwrap();
+        let id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO agent_session_t(host_id,session_id,state,idle_expires_ts,maximum_expires_ts) VALUES($1,$1,'ACTIVE',now()-interval '1 minute',now()+interval '1 hour')")
+            .bind(id).execute(&pool).await.unwrap();
+        let repository = super::AgentRepository::new(pool.clone());
+        let mut retries = Default::default();
+        repository.reconcile_once(&mut retries).await;
+        assert_eq!(retries[0].failures, 0);
+        assert!(retries[3].failures > 0, "execution is unavailable");
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM agent_session_t WHERE session_id=$1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(state, "EXPIRED");
+        // A second expired session must be cleaned even during execution backoff.
+        sqlx::query("UPDATE agent_session_t SET state='ACTIVE' WHERE session_id=$1")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        repository.reconcile_once(&mut retries).await;
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM agent_session_t WHERE session_id=$1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(state, "EXPIRED");
+        pool.acquire().await.unwrap().close().await.unwrap();
+        let visible: bool = sqlx::query_scalar("SELECT to_regclass('agent_session_t') IS NOT NULL")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(
+            !visible,
+            "reconnected pool must not fall through to a real session table"
+        );
+        pool.close().await;
+    }
+
     use super::*;
     use std::collections::BTreeMap;
 

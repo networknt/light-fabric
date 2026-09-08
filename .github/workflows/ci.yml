@@ -73,6 +73,10 @@ jobs:
           durable_admission_is_idempotent_fifo_and_projection_rebuildable
           -- --ignored
 
+      - name: Session expiry during execution outage
+        env:
+          LIGHT_AGENT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/operations
+        run: cargo test --locked -p light-agent --lib reconciliation_expires_sessions_when_execution_is_unavailable -- --ignored
       - name: Hindsight vector binding and recall
         env:
           HINDSIGHT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/operations

@@ -73,8 +73,8 @@ use light_agent::agent_config::{
     CodingProfilePolicy,
 };
 use light_agent::domain::{
-    AgentRepository, AgentRuntimeAuthority, CodingAdapterRuntime, EdgeActionSpec, SessionSpec,
-    TurnRuntimeResolution,
+    ActiveSessionLimitExceeded, AgentRepository, AgentRuntimeAuthority, CodingAdapterRuntime,
+    EdgeActionSpec, SessionSpec, TurnRuntimeResolution,
 };
 
 mod embedded_config {
@@ -3395,6 +3395,40 @@ fn coding_profile_from_policy(
     }))
 }
 
+fn session_initialization_failure(error: &anyhow::Error) -> (&'static str, &'static str, u16) {
+    if error.downcast_ref::<ActiveSessionLimitExceeded>().is_some() {
+        (
+            "SESSION_LIMIT_EXCEEDED",
+            "The agent's active-session limit has been reached. Resume an existing session or wait for a session to expire.",
+            1013,
+        )
+    } else {
+        (
+            "SESSION_INITIALIZATION_FAILED",
+            "Unable to create or resume the session. Try a new session or check the agent logs.",
+            1011,
+        )
+    }
+}
+
+async fn reject_session_initialization<S>(
+    sender: &mut S,
+    code: &str,
+    message: &str,
+    close_code: u16,
+) where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    let payload = serde_json::json!({"type": "error", "code": code, "message": message});
+    let _ = sender.send(Message::Text(payload.to_string().into())).await;
+    let _ = sender
+        .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+            code: close_code,
+            reason: code.to_string().into(),
+        })))
+        .await;
+}
+
 async fn handle_socket(
     socket: WebSocket,
     state: Arc<AgentState>,
@@ -3411,12 +3445,26 @@ async fn handle_socket(
     let Some(idle_expires_at) = now.checked_add_signed(chrono::Duration::seconds(idle_seconds))
     else {
         error!("Configured Agent idle session lifetime overflows UTC time");
+        reject_session_initialization(
+            &mut sender,
+            "SESSION_CONFIGURATION_INVALID",
+            "Agent session lifetime configuration is invalid",
+            1011,
+        )
+        .await;
         return;
     };
     let Some(maximum_expires_at) =
         now.checked_add_signed(chrono::Duration::seconds(maximum_seconds))
     else {
         error!("Configured Agent maximum session lifetime overflows UTC time");
+        reject_session_initialization(
+            &mut sender,
+            "SESSION_CONFIGURATION_INVALID",
+            "Agent session lifetime configuration is invalid",
+            1011,
+        )
+        .await;
         return;
     };
     if let Err(err) = state
@@ -3442,6 +3490,8 @@ async fn handle_socket(
         .await
     {
         error!("Failed to create or resume durable session: {err}");
+        let (code, message, close_code) = session_initialization_failure(&err);
+        reject_session_initialization(&mut sender, code, message, close_code).await;
         return;
     }
 
@@ -3453,19 +3503,13 @@ async fn handle_socket(
         .await
     {
         error!("Failed to initialize session memory bank: {}", e);
-        match serde_json::to_string(&ServerMessage::Error {
-            message: "Failed to initialize session memory".to_string(),
-        }) {
-            Ok(payload) => {
-                let _ = sender.send(Message::Text(payload.into())).await;
-            }
-            Err(serialize_err) => {
-                error!(
-                    "Failed to serialize session initialization error: {}",
-                    serialize_err
-                );
-            }
-        }
+        reject_session_initialization(
+            &mut sender,
+            "SESSION_MEMORY_INITIALIZATION_FAILED",
+            "Failed to initialize session memory",
+            1011,
+        )
+        .await;
         return;
     }
     if let Err(e) = state
@@ -3474,13 +3518,13 @@ async fn handle_socket(
         .await
     {
         error!("Failed to bind durable session to memory bank: {}", e);
-        let payload = serde_json::to_string(&ServerMessage::Error {
-            message: "Failed to bind session memory".to_string(),
-        })
-        .unwrap_or_else(|_| {
-            "{\"type\":\"error\",\"message\":\"Session initialization failed\"}".to_string()
-        });
-        let _ = sender.send(Message::Text(payload.into())).await;
+        reject_session_initialization(
+            &mut sender,
+            "SESSION_MEMORY_BINDING_FAILED",
+            "Failed to bind session memory",
+            1011,
+        )
+        .await;
         return;
     }
 
@@ -5611,6 +5655,51 @@ impl RegistryHandler for AgentRegistryHandler {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn session_limit_error_remains_typed_through_context() {
+        let error =
+            anyhow::Error::new(super::ActiveSessionLimitExceeded).context("create session request");
+        let (code, _, close_code) = super::session_initialization_failure(&error);
+        assert_eq!((code, close_code), ("SESSION_LIMIT_EXCEEDED", 1013));
+        let (code, message, close_code) =
+            super::session_initialization_failure(&anyhow::anyhow!("secret database details"));
+        assert_eq!((code, close_code), ("SESSION_INITIALIZATION_FAILED", 1011));
+        assert!(!message.contains("secret database details"));
+    }
+
+    #[tokio::test]
+    async fn session_initialization_rejection_sends_error_then_close() {
+        use futures_util::SinkExt;
+        let messages = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let capture = messages.clone();
+        let sink = futures_util::sink::unfold(capture, |messages, message| async move {
+            messages.lock().unwrap().push(message);
+            Ok::<_, std::convert::Infallible>(messages)
+        });
+        futures_util::pin_mut!(sink);
+        super::reject_session_initialization(
+            &mut sink,
+            "SESSION_LIMIT_EXCEEDED",
+            "Session limit reached",
+            1013,
+        )
+        .await;
+        sink.flush().await.unwrap();
+        let frames = messages.lock().unwrap();
+        assert_eq!(frames.len(), 2);
+        let super::Message::Text(text) = &frames[0] else {
+            panic!("expected error text")
+        };
+        let payload: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(payload["type"], "error");
+        assert_eq!(payload["code"], "SESSION_LIMIT_EXCEEDED");
+        let super::Message::Close(Some(close)) = &frames[1] else {
+            panic!("expected close frame")
+        };
+        assert_eq!(close.code, 1013);
+        assert_eq!(close.reason, "SESSION_LIMIT_EXCEEDED");
+    }
+
     use super::{
         AgentCatalogCache, AgentLimits, CatalogCacheKey, CatalogSkill, CatalogTool,
         CatalogToolPolicy, ChatMessage, EffectiveAgentCatalog, MAX_SESSION_MESSAGES,
