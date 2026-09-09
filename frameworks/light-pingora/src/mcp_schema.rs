@@ -21,7 +21,6 @@ const DEFAULT_MAX_CONCURRENT_VALIDATIONS: usize = 32;
 const DEFAULT_VALIDATION_WATCHDOG_MS: u64 = 50;
 const REGEX_SIZE_LIMIT_BYTES: usize = 1_048_576;
 const REGEX_DFA_SIZE_LIMIT_BYTES: usize = 1_048_576;
-const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 static VALIDATION_WATCHDOG_EXCEEDED: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -701,6 +700,51 @@ fn advertised_schema(schema: &JsonValue) -> JsonValue {
     JsonValue::Object(advertised)
 }
 
+pub(crate) fn legacy_output_schema(schema: &JsonValue) -> JsonValue {
+    fn rebase(node: &mut JsonValue) {
+        let Some(object) = node.as_object_mut() else {
+            return;
+        };
+        if let Some(reference) = object.get_mut("$ref") {
+            if let Some(suffix) = reference.as_str().and_then(|s| s.strip_prefix('#')) {
+                *reference = JsonValue::String(format!("#/properties/value{suffix}"));
+            }
+        }
+        for (key, child) in object {
+            match schema_keyword_shape(key) {
+                Some(
+                    SchemaKeywordShape::PropertyMap
+                    | SchemaKeywordShape::PatternPropertyMap
+                    | SchemaKeywordShape::DefinitionMap
+                    | SchemaKeywordShape::SameLocationMap,
+                ) => {
+                    if let Some(map) = child.as_object_mut() {
+                        for child in map.values_mut() {
+                            rebase(child);
+                        }
+                    }
+                }
+                Some(SchemaKeywordShape::SameLocationArray | SchemaKeywordShape::TupleArray) => {
+                    if let Some(array) = child.as_array_mut() {
+                        for child in array {
+                            rebase(child);
+                        }
+                    }
+                }
+                Some(_) => rebase(child),
+                None => {}
+            }
+        }
+    }
+    let mut nested = schema.clone();
+    if let Some(object) = nested.as_object_mut() {
+        object.remove("$id");
+        object.remove("$schema");
+    }
+    rebase(&mut nested);
+    serde_json::json!({"type":"object","properties":{"value":nested},"required":["value"],"additionalProperties":false})
+}
+
 enum SchemaRoot {
     InputObject,
     Any,
@@ -1264,6 +1308,7 @@ fn prepare_gateway_annotations(
     config: &McpSchemaConfig,
     tool_name: &str,
 ) -> Result<(Vec<HeaderExtraction>, Vec<MaskRule>), String> {
+    validate_header_paths(schema, true, false)?;
     let mut headers = BTreeMap::<Vec<LogicalPathSegment>, Vec<HeaderCandidate>>::new();
     let mut masks = BTreeMap::<Vec<LogicalPathSegment>, BTreeSet<Option<String>>>::new();
 
@@ -1349,22 +1394,11 @@ fn prepare_gateway_annotations(
                         ));
                     }
                 };
-                if value_kind == HeaderValueKind::Integer {
-                    let minimum = object.get("minimum").and_then(JsonValue::as_i64);
-                    let maximum = object.get("maximum").and_then(JsonValue::as_i64);
-                    if minimum.is_none_or(|value| value < -MAX_SAFE_INTEGER)
-                        || maximum.is_none_or(|value| value > MAX_SAFE_INTEGER)
-                    {
-                        return Err(format!(
-                            "mcp-router tool `{tool_name}` x-mcp-header integer requires a safe minimum and maximum"
-                        ));
-                    }
-                }
                 headers
                     .entry(path.into_iter().map(LogicalPathSegment::Property).collect())
                     .or_default()
                     .push(HeaderCandidate {
-                        header_name: header.to_string(),
+                        header_name: format!("Mcp-Param-{header}"),
                         value_kind,
                     });
             }
@@ -1447,6 +1481,23 @@ fn prepare_gateway_annotations(
         });
     }
     Ok((header_plan, mask_plan))
+}
+
+// Inspect schema positions only, including unused definitions. Instance data in
+// default/enum/examples is not a schema. Do not resolve refs for this check:
+// annotations in their target are already visited at the definition location.
+fn validate_header_paths(schema: &JsonValue, direct: bool, property: bool) -> Result<(), String> {
+    let Some(object) = schema.as_object() else {
+        return Ok(());
+    };
+    if object.contains_key("x-mcp-header") && !(direct && property) {
+        return Err("x-mcp-header must be reachable through direct properties only".to_string());
+    }
+    for child in schema_children(object, true) {
+        let is_property = child.keyword == "properties";
+        validate_header_paths(child.schema, direct && is_property, is_property)?;
+    }
+    Ok(())
 }
 
 fn fixed_property_path(path: &[LogicalPathSegment]) -> Option<Vec<String>> {
@@ -1857,7 +1908,7 @@ mod tests {
             "required":["x-mask"],
             "properties":{
                 "x-mask":{"type":"string"},
-                "secret":{"type":"string","x-mask":true,"x-mask-pattern":".*","x-sensitive":true,"x-mcp-header":"Mcp-Param-Secret"},
+                "secret":{"type":"string","x-mask":true,"x-mask-pattern":".*","x-sensitive":true,"x-mcp-header":"Secret"},
                 "payload":{"type":"object","default":{"x-sensitive":"data"}}
             },
             "$defs":{"x-sensitive":{"type":"string","const":"x-mask"}},
@@ -1871,10 +1922,7 @@ mod tests {
             "data"
         );
         assert_eq!(advertised["examples"][0]["x-sensitive"], "data");
-        assert_eq!(
-            advertised["properties"]["secret"]["x-mcp-header"],
-            "Mcp-Param-Secret"
-        );
+        assert_eq!(advertised["properties"]["secret"]["x-mcp-header"], "Secret");
         assert!(advertised["properties"]["secret"].get("x-mask").is_none());
         assert!(
             advertised["properties"]["secret"]
@@ -2076,14 +2124,12 @@ mod tests {
             &[tool(
                 json!({
                     "type":"object",
-                    "$defs":{"requestId":{"type":"object","properties":{
-                        "id":{"type":"string","x-mcp-header":"Mcp-Param-Request-Id"}
-                    }}},
+
                     "properties":{
-                        "region":{"type":"string","x-mcp-header":"Mcp-Param-Region"},
-                        "request":{"$ref":"#/$defs/requestId"},
+                        "region":{"type":"string","x-mcp-header":"Region"},
+                        "request":{"type":"object","properties":{"id":{"type":"string","x-mcp-header":"Request-Id"}}},
                         "nested":{"type":"object","properties":{
-                            "active":{"type":"boolean","x-mcp-header":"Mcp-Param-Active"}
+                            "active":{"type":"boolean","x-mcp-header":"Active"}
                         }}
                     }
                 }),
@@ -2109,7 +2155,6 @@ mod tests {
             json!({"type":"object","properties":{"x":{"type":"number","x-mcp-header":"X"}}}),
             json!({"type":"object","properties":{"x":{"type":"string","x-mask":true,"x-mcp-header":"X"}}}),
             json!({"type":"object","properties":{"x":{"type":"string","x-mcp-header":"Same"},"y":{"type":"string","x-mcp-header":"same"}}}),
-            json!({"type":"object","properties":{"x":{"type":"integer","x-mcp-header":"X"}}}),
             json!({"type":"object","properties":{"x":{"type":"string","x-mcp-header":"Connection"}}}),
             json!({"type":"object","properties":{"x":{"type":"string","x-mcp-header":"mcp-session-id"}}}),
             json!({"type":"object","properties":{"x":{"type":"string","x-mcp-header":":path"}}}),
@@ -2122,45 +2167,26 @@ mod tests {
 
     #[test]
     fn composed_header_annotations_deduplicate_and_conflicts_fail_closed() {
-        let prepared = prepare_tools(
-            &[tool(
-                json!({
-                    "type":"object",
-                    "oneOf":[
-                        {"properties":{"kind":{"const":"a"},"requestId":{"type":"string","x-mcp-header":"Mcp-Param-Request-Id"}},"required":["kind","requestId"]},
-                        {"properties":{"kind":{"const":"b"},"requestId":{"type":"string","x-mcp-header":"mcp-param-request-id"}},"required":["kind","requestId"]}
-                    ]
-                }),
-                None,
-            )],
-            &McpSchemaConfig::default(),
-            false,
-        )
-        .expect("equivalent branch annotations deduplicate");
-        let headers = &prepared["test.tool"].header_extractions;
-        assert_eq!(headers.len(), 1);
-        assert_eq!(headers[0].property_path, ["requestId"]);
-
         for schema in [
             json!({
                 "type":"object",
                 "oneOf":[
-                    {"properties":{"requestId":{"type":"string","x-mcp-header":"Mcp-Param-A"}}},
-                    {"properties":{"requestId":{"type":"string","x-mcp-header":"Mcp-Param-B"}}}
+                    {"properties":{"requestId":{"type":"string","x-mcp-header":"A"}}},
+                    {"properties":{"requestId":{"type":"string","x-mcp-header":"B"}}}
                 ]
             }),
             json!({
                 "type":"object",
                 "oneOf":[
-                    {"properties":{"requestId":{"type":"string","x-mcp-header":"Mcp-Param-Request-Id"}}},
-                    {"properties":{"requestId":{"type":"integer","minimum":0,"maximum":10,"x-mcp-header":"Mcp-Param-Request-Id"}}}
+                    {"properties":{"requestId":{"type":"string","x-mcp-header":"Request-Id"}}},
+                    {"properties":{"requestId":{"type":"integer","minimum":0,"maximum":10,"x-mcp-header":"Request-Id"}}}
                 ]
             }),
         ] {
             let error = prepare_tools(&[tool(schema, None)], &McpSchemaConfig::default(), false)
                 .expect_err("conflicting branch annotations must fail");
             assert_eq!(error.reason_code, "SCHEMA_ANNOTATION_INVALID");
-            assert!(error.reason.contains("conflicting x-mcp-header"));
+            assert!(error.reason.contains("direct properties"));
         }
     }
 
@@ -2172,11 +2198,12 @@ mod tests {
                     "type":"object",
                     "$defs":{
                         "shared":{"type":"string","x-mask":true},
-                        "unused":{"type":"number","x-mcp-header":"not a header"}
+                        "unused":{"type":"number"}
                     },
                     "properties":{
                         "left":{"$ref":"#/$defs/shared"},
                         "right":{"$ref":"#/$defs/shared"},
+                        "region":{"type":"string","x-mcp-header":"Region"},
                         "metadata":{
                             "type":"object",
                             "default":{"x-mcp-header":"not a header","x-mask":true},
@@ -2184,7 +2211,7 @@ mod tests {
                         }
                     },
                     "if":{"properties":{"kind":{"const":"region"}}},
-                    "then":{"properties":{"region":{"type":"string","x-mcp-header":"Mcp-Param-Region"}}},
+                    "then":{"properties":{"region":{"type":"string"}}},
                     "else":{"properties":{"account":{"type":"string","x-sensitive":true}}}
                 }),
                 None,
@@ -2202,9 +2229,9 @@ mod tests {
     #[test]
     fn non_mappable_headers_and_conflicting_masks_fail_closed() {
         for schema in [
-            json!({"type":"object","patternProperties":{"^x-":{"type":"string","x-mcp-header":"Mcp-Param-X"}}}),
-            json!({"type":"object","not":{"properties":{"secret":{"type":"string","x-mcp-header":"Mcp-Param-Secret"}}}}),
-            json!({"type":"object","if":{"properties":{"secret":{"type":"string","x-mcp-header":"Mcp-Param-Secret"}}}}),
+            json!({"type":"object","patternProperties":{"^x-":{"type":"string","x-mcp-header":"X"}}}),
+            json!({"type":"object","not":{"properties":{"secret":{"type":"string","x-mcp-header":"Secret"}}}}),
+            json!({"type":"object","if":{"properties":{"secret":{"type":"string","x-mcp-header":"Secret"}}}}),
             json!({
                 "type":"object",
                 "oneOf":[
@@ -2229,7 +2256,7 @@ mod tests {
             }),
             json!({
                 "type":"object",
-                "properties":{"requestId":{"type":"string","x-mcp-header":"Mcp-Param-Request-Id"}},
+                "properties":{"requestId":{"type":"string","x-mcp-header":"Request-Id"}},
                 "additionalProperties":{"x-sensitive":true}
             }),
             json!({
@@ -2239,7 +2266,7 @@ mod tests {
                         "type":"object",
                         "x-sensitive":true,
                         "properties":{
-                            "token":{"type":"string","x-mcp-header":"Mcp-Param-Token"}
+                            "token":{"type":"string","x-mcp-header":"Token"}
                         }
                     }
                 }
@@ -2330,6 +2357,12 @@ mod tests {
         let error = prepare_tools(&[tool(diamond, None)], &config, false)
             .expect_err("diamond expansion must hit the monotonic visit budget");
         assert_eq!(error.reason_code, "SCHEMA_GRAPH_VISIT_LIMIT_EXCEEDED");
+    }
+
+    #[test]
+    fn accepts_unbounded_integer_parameter_header_schema() {
+        let schema = json!({"type":"object","properties":{"count":{"type":"integer","x-mcp-header":"Count"}}});
+        assert!(prepare_tools(&[tool(schema, None)], &McpSchemaConfig::default(), false).is_ok());
     }
 
     #[test]

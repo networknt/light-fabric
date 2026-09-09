@@ -60,7 +60,7 @@ pub const MCP_ROUTER_MODULE_ID: &str = "light-pingora/mcp-router";
 pub const MCP_ROUTER_CONFIG_NAME: &str = "mcp-router";
 
 const DEFAULT_MCP_PATH: &str = "/mcp";
-const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
+const DEFAULT_PROTOCOL_VERSION: &str = "2025-11-25";
 pub const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
 const MCP_PROTOCOL_VERSION_HEADER: &str = "mcp-protocol-version";
 const MCP_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -126,6 +126,8 @@ pub struct McpRouterConfig {
     #[serde(default)]
     pub protocols: McpProtocolsConfig,
     #[serde(default)]
+    pub authorization: Option<McpAuthorizationConfig>,
+    #[serde(default)]
     pub schema: McpSchemaConfig,
     #[serde(default)]
     pub workflow: McpWorkflowRuntimeConfig,
@@ -145,10 +147,141 @@ impl Default for McpRouterConfig {
             max_json_depth: default_max_json_depth(),
             origin_allowlist: Vec::new(),
             protocols: McpProtocolsConfig::default(),
+            authorization: None,
             schema: McpSchemaConfig::default(),
             workflow: McpWorkflowRuntimeConfig::default(),
             tools: Vec::new(),
         }
+    }
+}
+
+/// Public resource metadata. Token verification remains in the security chain.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpAuthorizationConfig {
+    pub resource: String,
+    pub authorization_servers: Vec<String>,
+    #[serde(default)]
+    pub scopes_supported: Vec<String>,
+    #[serde(default)]
+    pub required_scopes: Vec<String>,
+}
+
+impl McpAuthorizationConfig {
+    fn validate(&self, path: &str) -> Result<(), RuntimeError> {
+        let invalid = || {
+            RuntimeError::Unsupported(
+                "invalid mcp-router.authorization resource, issuer, or scope".into(),
+            )
+        };
+        let validate_url = |value: &str| -> Result<Url, RuntimeError> {
+            let url = Url::parse(value).map_err(|_| invalid())?;
+            let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+            if !(url.scheme() == "https" || (url.scheme() == "http" && local))
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.fragment().is_some()
+                || url.query().is_some()
+            {
+                return Err(invalid());
+            }
+            Ok(url)
+        };
+        if validate_url(&self.resource)?.path() != path || self.authorization_servers.is_empty() {
+            return Err(invalid());
+        }
+        for issuer in &self.authorization_servers {
+            validate_url(issuer)?;
+        }
+        for scope in self.scopes_supported.iter().chain(&self.required_scopes) {
+            if scope.is_empty()
+                || !scope
+                    .bytes()
+                    .all(|b| b == 0x21 || (0x23..=0x5b).contains(&b) || (0x5d..=0x7e).contains(&b))
+            {
+                return Err(invalid());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn authorize(
+        &self,
+        principal: Option<&AuthPrincipal>,
+    ) -> Result<(), crate::security::HandlerRejection> {
+        let unauthorized = || {
+            crate::security::HandlerRejection::new(
+                401,
+                "ERR10002",
+                "invalid MCP resource credential",
+            )
+            .with_header("www-authenticate", self.challenge(false))
+        };
+        let principal = principal.ok_or_else(unauthorized)?;
+        let issuer = principal
+            .claims
+            .get("iss")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(unauthorized)?;
+        let audience = principal.claims.get("aud");
+        let matches_audience = audience.is_some_and(|value| {
+            value.as_str() == Some(self.resource.as_str())
+                || value.as_array().is_some_and(|values| {
+                    values
+                        .iter()
+                        .any(|v| v.as_str() == Some(self.resource.as_str()))
+                })
+        });
+        if !self.authorization_servers.iter().any(|s| s == issuer) || !matches_audience {
+            return Err(unauthorized());
+        }
+        let scopes = principal
+            .claims
+            .get("scope")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("")
+            .split_ascii_whitespace()
+            .collect::<BTreeSet<_>>();
+        if self
+            .required_scopes
+            .iter()
+            .any(|s| !scopes.contains(s.as_str()))
+        {
+            return Err(crate::security::HandlerRejection::new(
+                403,
+                "ERR10007",
+                "insufficient MCP scope",
+            )
+            .with_header("www-authenticate", self.challenge(true)));
+        }
+        Ok(())
+    }
+
+    pub fn metadata_path(&self) -> String {
+        let url = Url::parse(&self.resource).expect("validated resource");
+        format!(
+            "/.well-known/oauth-protected-resource{}",
+            url.path().trim_end_matches('/')
+        )
+    }
+
+    pub fn metadata(&self) -> JsonValue {
+        json!({"resource":self.resource,"authorization_servers":self.authorization_servers,
+            "bearer_methods_supported":["header"],"scopes_supported":self.scopes_supported})
+    }
+
+    pub fn challenge(&self, insufficient_scope: bool) -> String {
+        let mut url = Url::parse(&self.resource).expect("validated resource");
+        url.set_path(&self.metadata_path());
+        let mut challenge = format!("Bearer resource_metadata=\"{url}\"");
+        if insufficient_scope {
+            challenge.push_str(", error=\"insufficient_scope\"");
+        }
+        if !self.required_scopes.is_empty() {
+            challenge.push_str(&format!(", scope=\"{}\"", self.required_scopes.join(" ")));
+        }
+        challenge
     }
 }
 
@@ -1387,12 +1520,12 @@ impl<'a> StatelessFrontendAdapter<'a> {
         version: &str,
     ) -> Result<McpHttpResponse, RuntimeError> {
         let _profile = FrontendProfile::Stateless;
-        rpc_error_response(
+        rpc_error_with_data(
             response_mode,
-            400,
             id,
-            -32600,
+            -32022,
             format!("MCP stateless protocol version `{version}` is disabled"),
+            json!({"requested":version,"supported":[]}),
         )
     }
 
@@ -1701,6 +1834,13 @@ impl McpDiscoveryResolver for PortalRegistryClient {
 }
 
 impl McpRouterRuntime {
+    pub fn authorization(&self) -> Option<&McpAuthorizationConfig> {
+        self.config
+            .enabled
+            .then_some(self.config.authorization.as_ref())
+            .flatten()
+    }
+
     pub fn new(config: McpRouterConfig) -> Result<Self, RuntimeError> {
         Self::new_with_discovery(config, None)
     }
@@ -2097,11 +2237,16 @@ impl McpRouterRuntime {
                 backend_sessions.extend(session.backend_sessions.into_values());
             }
         }
-        if reset_backend_sessions {
-            for session in previous_store.sessions.values_mut() {
-                backend_sessions
-                    .extend(std::mem::take(&mut session.backend_sessions).into_values());
-            }
+        for session in previous_store.sessions.values_mut() {
+            session.backend_sessions.retain(|_, backend| {
+                if reset_backend_sessions || !protocol_version_supported(&backend.protocol_version)
+                {
+                    backend_sessions.push(backend.clone());
+                    false
+                } else {
+                    true
+                }
+            });
         }
         let retained = previous_store.clone();
         drop(previous_store);
@@ -2157,11 +2302,16 @@ impl McpRouterRuntime {
             .filter_map(|session_id| store.remove(session_id))
             .flat_map(|session| session.backend_sessions.into_values())
             .collect::<Vec<_>>();
-        if reset_backend_sessions {
-            for session in store.sessions.values_mut() {
-                backend_sessions
-                    .extend(std::mem::take(&mut session.backend_sessions).into_values());
-            }
+        for session in store.sessions.values_mut() {
+            session.backend_sessions.retain(|_, backend| {
+                if reset_backend_sessions || !protocol_version_supported(&backend.protocol_version)
+                {
+                    backend_sessions.push(backend.clone());
+                    false
+                } else {
+                    true
+                }
+            });
         }
         drop(store);
         let evicted = incompatible_ids.len() as u64;
@@ -2305,14 +2455,8 @@ impl McpRouterRuntime {
                 );
             }
         };
-        if payload.is_array() {
-            return rpc_error_response(
-                response_mode,
-                400,
-                JsonValue::Null,
-                -32600,
-                "JSON-RPC batch requests are not supported",
-            );
+        if let Some(batch) = payload.as_array() {
+            return self.handle_legacy_batch(request, context, batch).await;
         }
         let Some(message) = payload.as_object() else {
             return rpc_error_response(
@@ -2378,6 +2522,92 @@ impl McpRouterRuntime {
                 &self.config.protocols.stateless.versions,
             ),
         }
+    }
+
+    async fn handle_legacy_batch(
+        &self,
+        request: McpHttpRequest,
+        context: &McpRequestContext,
+        batch: &[JsonValue],
+    ) -> Result<McpHttpResponse, RuntimeError> {
+        if let Err(error) = crate::mcp_stateless::require_dual_accept(&request.headers) {
+            return json_error_response(400, JsonValue::Null, -32600, error.message);
+        }
+        let versions = all_headers(&request.headers, MCP_PROTOCOL_VERSION_HEADER);
+        if (!versions.is_empty() && versions.as_slice() != ["2025-03-26"])
+            || batch.is_empty()
+            || batch.len() > 64
+            || batch.iter().any(|entry| {
+                !entry.is_object()
+                    || entry.get("method").and_then(JsonValue::as_str) == Some("initialize")
+                    || json_value_depth(entry) >= self.config.max_json_depth
+            })
+        {
+            return json_error_response(
+                400,
+                JsonValue::Null,
+                -32600,
+                "batches require 1-64 non-initialize messages and the 2025-03-26 profile",
+            );
+        }
+        let session = match self
+            .validate_frontend_session(&request.path, &request.headers, context)
+            .await
+        {
+            Ok(session) => session,
+            Err(error) => {
+                return json_error_response(
+                    error.status,
+                    JsonValue::Null,
+                    error.code,
+                    error.message,
+                );
+            }
+        };
+        if session.protocol_version != "2025-03-26" {
+            return json_error_response(
+                400,
+                JsonValue::Null,
+                -32600,
+                "batch session version mismatch",
+            );
+        }
+        let mut responses = Vec::new();
+        for entry in batch {
+            let response = self
+                .handle_legacy_post(
+                    request.clone(),
+                    context,
+                    McpResponseMode::Json,
+                    entry.clone(),
+                )
+                .await?;
+            if let Some(bytes) = response.body.buffered() {
+                if !bytes.is_empty() {
+                    responses.push(serde_json::from_slice::<JsonValue>(bytes)?);
+                }
+            }
+            if !json_value_fits(
+                &json!(responses),
+                self.config.max_response_body_bytes.saturating_sub(64),
+            )? {
+                return json_error_response(
+                    400,
+                    JsonValue::Null,
+                    -32000,
+                    "batch response exceeds gateway limit; executed calls must not be replayed",
+                );
+            }
+        }
+        if responses.is_empty() {
+            return Ok(accepted_response_with_protocol_version(Some("2025-03-26")));
+        }
+        // March permits a batched SSE response; use it instead of a nonstandard
+        // JSON array HTTP response (its JSON response form is one object).
+        response_with_protocol_version(
+            rpc_body_response(McpResponseMode::EventStream, 200, json!(responses)),
+            Some("2025-03-26"),
+        )
     }
 
     async fn handle_stateless_post(
@@ -2607,7 +2837,9 @@ impl McpRouterRuntime {
         let acknowledgment = json!({
             "jsonrpc": "2.0",
             "method": "notifications/subscriptions/acknowledged",
-            "params": {"notifications": honored}
+            "params": {"notifications": honored, "_meta": {
+                "io.modelcontextprotocol/subscriptionId": id.clone()
+            }}
         });
         let notification = json!({
             "jsonrpc": "2.0",
@@ -2621,7 +2853,9 @@ impl McpRouterRuntime {
         let terminal = json!({
             "jsonrpc": "2.0",
             "id": id.clone(),
-            "result": {"resultType": "complete"}
+            "result": {"resultType": "complete", "_meta": {
+                "io.modelcontextprotocol/subscriptionId": id.clone()
+            }}
         });
         let deadline = match subscription_deadline(
             context,
@@ -3060,10 +3294,16 @@ impl McpRouterRuntime {
                     request: context,
                 };
                 match self.handle_tool_call(message, &effective).await {
-                    Ok(result) => response_with_protocol_version(
-                        rpc_result_response(response_mode, 200, id, result),
-                        Some(session.protocol_version.as_str()),
-                    ),
+                    Ok(mut result) => {
+                        // Early validation/tool errors bypass the normal output adapter.
+                        if let Some(object) = result.as_object_mut() {
+                            object.remove("resultType");
+                        }
+                        response_with_protocol_version(
+                            rpc_result_response(response_mode, 200, id, result),
+                            Some(session.protocol_version.as_str()),
+                        )
+                    }
                     Err(error) => response_with_protocol_version(
                         rpc_error_response(response_mode, 200, id, error.code, error.message),
                         Some(session.protocol_version.as_str()),
@@ -3289,7 +3529,7 @@ impl McpRouterRuntime {
                     );
                 }
                 Err(McpSessionError {
-                    status: 400,
+                    status: 404,
                     code: -32000,
                     message: "unknown MCP session id".to_string(),
                 })
@@ -3313,7 +3553,7 @@ impl McpRouterRuntime {
                 })
             } else {
                 Err(McpSessionError {
-                    status: 400,
+                    status: 404,
                     code: -32000,
                     message: "unknown MCP session id".to_string(),
                 })
@@ -3362,7 +3602,7 @@ impl McpRouterRuntime {
         let session = store
             .get(session_id.as_str())
             .ok_or_else(|| McpSessionError {
-                status: 400,
+                status: 404,
                 code: -32000,
                 message: "unknown MCP session id".to_string(),
             })?;
@@ -3408,7 +3648,10 @@ impl McpRouterRuntime {
                     toolCount = tool_names.len(),
                     "mcp tools/list visibility cache hit"
                 );
-                return self.tools_list_response_from_names(tool_names);
+                return legacy_tool_list(
+                    self.tools_list_response_from_names(tool_names),
+                    effective.protocol_version,
+                );
             }
             tracing::debug!(
                 target: "light_pingora::mcp",
@@ -3458,7 +3701,10 @@ impl McpRouterRuntime {
                 .await
                 .insert(cache_key, visible_tool_names.clone());
         }
-        self.tools_list_response_from_names(visible_tool_names)
+        legacy_tool_list(
+            self.tools_list_response_from_names(visible_tool_names),
+            effective.protocol_version,
+        )
     }
 
     fn tools_list_response_from_names(&self, tool_names: Vec<String>) -> JsonValue {
@@ -3965,7 +4211,15 @@ impl McpRouterRuntime {
             effective,
             context,
         );
-        Ok(result)
+        Ok(if effective.frontend_profile == FrontendProfile::Legacy {
+            legacy_tool_result(
+                result,
+                tool.advertised_output_schema.as_ref(),
+                effective.protocol_version,
+            )
+        } else {
+            result
+        })
     }
 
     async fn execute_workflow_tool(
@@ -5157,7 +5411,7 @@ impl McpRouterRuntime {
         effective: &EffectiveMcpRequestContext<'_>,
         inbound_meta: Option<&JsonValue>,
     ) -> Result<JsonValue, McpExecutionError> {
-        let (client_info, capabilities) = match effective.frontend_profile {
+        let (client_info, _capabilities) = match effective.frontend_profile {
             FrontendProfile::Stateless => {
                 let meta = inbound_meta.and_then(JsonValue::as_object).ok_or_else(|| {
                     McpExecutionError::invalid_params("stateless tools/call requires params._meta")
@@ -5188,7 +5442,32 @@ impl McpRouterRuntime {
             STATELESS_PROTOCOL_META_KEY.to_string(),
             JsonValue::String(STATELESS_PROTOCOL_VERSION.to_string()),
         );
-        meta.insert(CLIENT_CAPABILITIES_META_KEY.to_string(), capabilities);
+        // This gateway terminates MCP and cannot bridge MRTR or arbitrary
+        // extensions. A caller's capabilities are not this adapter's capabilities.
+        meta.insert(CLIENT_CAPABILITIES_META_KEY.to_string(), json!({}));
+        if let Some(inbound) = inbound_meta.and_then(JsonValue::as_object) {
+            for key in [
+                "progressToken",
+                "io.modelcontextprotocol/logLevel",
+                "traceparent",
+                "tracestate",
+                "baggage",
+            ] {
+                if let Some(value) = inbound.get(key) {
+                    let valid = if key == "progressToken" {
+                        value.is_string() || value.is_i64() || value.is_u64()
+                    } else {
+                        value.is_string()
+                    };
+                    if !valid || serde_json::to_vec(value).map_or(true, |v| v.len() > 8192) {
+                        return Err(McpExecutionError::invalid_params(
+                            "invalid or oversized backend request metadata",
+                        ));
+                    }
+                    meta.insert(key.to_string(), value.clone());
+                }
+            }
+        }
         if let Some(client_info) = client_info {
             meta.insert(CLIENT_INFO_META_KEY.to_string(), client_info);
         }
@@ -5449,6 +5728,7 @@ impl McpRouterRuntime {
         };
         let message = parse_mcp_backend_response(&body, content_type.as_deref())
             .map_err(McpExecutionError::execution_failed)?;
+        validate_backend_response_id(&message, &request["id"])?;
         if let Some(error) = message.get("error") {
             let message = error
                 .get("message")
@@ -5489,6 +5769,11 @@ impl McpRouterRuntime {
                 .get(frontend_session_id)
                 .ok_or_else(|| McpExecutionError::execution_failed("unknown MCP session id"))?;
             if let Some(backend_session) = session.backend_sessions.get(target_key.as_str()) {
+                if !protocol_version_supported(&backend_session.protocol_version) {
+                    return Err(McpExecutionError::execution_failed(
+                        "backend session uses a retired MCP version",
+                    ));
+                }
                 return Ok(backend_session.clone());
             }
         }
@@ -5601,6 +5886,7 @@ impl McpRouterRuntime {
                     "invalid MCP backend initialize response: {error}"
                 ))
             })?;
+        validate_backend_response_id(&message, &request["id"])?;
         if let Some(error) = message.get("error") {
             let message = error
                 .get("message")
@@ -5615,7 +5901,11 @@ impl McpRouterRuntime {
             .get("protocolVersion")
             .and_then(JsonValue::as_str)
             .filter(|version| protocol_version_supported(version))
-            .unwrap_or(protocol_version)
+            .ok_or_else(|| {
+                McpExecutionError::execution_failed(
+                    "backend MCP initialize returned a missing or unsupported protocol version",
+                )
+            })?
             .to_string();
         if result.is_null() {
             return Err(McpExecutionError::execution_failed(
@@ -5913,6 +6203,45 @@ fn workflow_mcp_error_result_with_instance(
     result
 }
 
+fn legacy_tool_list(mut result: JsonValue, version: &str) -> JsonValue {
+    if let Some(tools) = result.get_mut("tools").and_then(JsonValue::as_array_mut) {
+        for tool in tools {
+            if let Some(object) = tool.as_object_mut() {
+                if version == "2025-03-26" {
+                    object.remove("outputSchema");
+                } else if let Some(schema) = object.get_mut("outputSchema") {
+                    if schema.get("type").and_then(JsonValue::as_str) != Some("object") {
+                        *schema = crate::mcp_schema::legacy_output_schema(schema);
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
+fn legacy_tool_result(
+    mut result: JsonValue,
+    schema: Option<&JsonValue>,
+    version: &str,
+) -> JsonValue {
+    if let Some(object) = result.as_object_mut() {
+        object.remove("resultType");
+        if version == "2025-03-26" {
+            // Older clients receive the existing text representation.
+            object.remove("structuredContent");
+        } else if let Some(value) = object.get_mut("structuredContent") {
+            if !value.is_object()
+                || schema
+                    .is_some_and(|s| s.get("type").and_then(JsonValue::as_str) != Some("object"))
+            {
+                *value = json!({"value":value.clone()});
+            }
+        }
+    }
+    result
+}
+
 fn stateless_tool_result(mut result: JsonValue) -> JsonValue {
     let Some(result) = result.as_object_mut() else {
         return mcp_tool_error_result("Tool returned an invalid result envelope");
@@ -5953,9 +6282,12 @@ fn expected_parameter_headers(
                         HeaderValueKind::String => value
                             .as_str()
                             .map(|value| ExpectedParameterValue::String(value.to_string())),
-                        HeaderValueKind::Integer => {
-                            value.as_i64().map(ExpectedParameterValue::Integer)
-                        }
+                        HeaderValueKind::Integer => value
+                            .as_i64()
+                            .filter(|v| {
+                                (-9_007_199_254_740_991..=9_007_199_254_740_991).contains(v)
+                            })
+                            .map(ExpectedParameterValue::Integer),
                         HeaderValueKind::Boolean => {
                             value.as_bool().map(ExpectedParameterValue::Boolean)
                         }
@@ -6460,6 +6792,9 @@ fn load_mcp_router_config(
 }
 
 fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
+    if let Some(authorization) = &config.authorization {
+        authorization.validate(&config.path)?;
+    }
     if !config.path.starts_with('/') {
         return Err(RuntimeError::Unsupported(format!(
             "mcp-router.path `{}` must start with `/`",
@@ -8188,10 +8523,7 @@ fn all_headers<'a>(headers: &'a [(String, String)], name: &str) -> Vec<&'a str> 
 }
 
 fn protocol_version_supported(version: &str) -> bool {
-    matches!(
-        version,
-        "2025-11-25" | "2025-06-18" | "2025-03-26" | "2024-11-05"
-    )
+    matches!(version, "2025-11-25" | "2025-06-18" | "2025-03-26")
 }
 
 fn normalize_mcp_origin(raw: &str) -> Result<String, String> {
@@ -8261,6 +8593,13 @@ fn classification_rejection_response(
             -32600,
             format!("unsupported MCP protocol version `{version}`"),
         ),
+        ClassificationRejection::MissingRequestMetadata => rpc_error_response(
+            response_mode,
+            400,
+            id,
+            -32602,
+            "missing required request metadata",
+        ),
         ClassificationRejection::InvalidJsonRpcRequest => {
             rpc_error_response(response_mode, 400, id, -32600, "invalid JSON-RPC request")
         }
@@ -8288,15 +8627,15 @@ fn classification_rejection_response_for_post(
                 -32020,
                 "MCP protocol version header does not match request metadata",
             ),
-            ClassificationRejection::UnsupportedProtocolVersion(version) => rpc_error_response(
+            ClassificationRejection::UnsupportedProtocolVersion(version) => rpc_error_with_data(
                 response_mode,
-                400,
                 id,
                 -32022,
                 format!(
                     "unsupported MCP protocol version `{version}`; supported stateless versions: {}",
                     supported_stateless_versions.join(", ")
                 ),
+                json!({"requested": version, "supported": supported_stateless_versions}),
             ),
             other => classification_rejection_response(response_mode, id, other),
         };
@@ -8309,10 +8648,29 @@ fn stateless_error_response(
     error: StatelessRequestError,
     version: &str,
 ) -> Result<McpHttpResponse, RuntimeError> {
+    let id = if id.is_string() || id.is_i64() || id.is_u64() {
+        id
+    } else {
+        JsonValue::Null
+    };
     response_with_protocol_version(
+        // Metadata shape errors are invalid params, not missing operation capabilities.
+        // This tools-only adapter requires no client capability and does not emit -32021.
         json_error_response(error.status, id, error.code, error.message),
         Some(version),
     )
+}
+
+fn rpc_error_with_data(
+    mode: McpResponseMode,
+    id: JsonValue,
+    code: i64,
+    message: impl Into<String>,
+    data: JsonValue,
+) -> Result<McpHttpResponse, RuntimeError> {
+    let payload = json!({"jsonrpc":"2.0", "id":id,
+        "error":{"code":code,"message":message.into(),"data":data}});
+    rpc_body_response(mode, 400, payload)
 }
 
 fn stateless_catalog_limit_error() -> McpSessionError {
@@ -8676,6 +9034,21 @@ fn backend_target_host_for_log(url: &str) -> String {
         .unwrap_or_else(|| "<unknown>".to_string())
 }
 
+fn validate_backend_response_id(
+    message: &JsonValue,
+    expected: &JsonValue,
+) -> Result<(), McpExecutionError> {
+    if message.get("jsonrpc").and_then(JsonValue::as_str) != Some("2.0")
+        || message.get("id") != Some(expected)
+        || message.get("result").is_some() == message.get("error").is_some()
+    {
+        return Err(McpExecutionError::execution_failed(
+            "backend MCP response has an invalid envelope or id",
+        ));
+    }
+    Ok(())
+}
+
 fn parse_mcp_backend_response(
     body: &[u8],
     content_type: Option<&str>,
@@ -8688,8 +9061,41 @@ fn parse_mcp_backend_response(
         Err(_) => {}
     }
 
-    parse_sse_json_message(body)
-        .ok_or_else(|| "backend returned text/event-stream without a JSON data message".to_string())
+    let text = std::str::from_utf8(body).map_err(|_| "backend SSE is not UTF-8")?;
+    let normalized = text.replace("\r\n", "\n");
+    let mut response = None;
+    for event in normalized.split("\n\n") {
+        let lines = event
+            .lines()
+            .filter_map(|line| {
+                line.strip_prefix("data:")
+                    .map(|s| s.strip_prefix(' ').unwrap_or(s))
+            })
+            .collect::<Vec<_>>();
+        if lines.is_empty() {
+            continue;
+        }
+        let message: JsonValue = serde_json::from_str(&lines.join("\n"))
+            .map_err(|_| "invalid JSON in backend SSE event")?;
+        if message.get("jsonrpc").and_then(JsonValue::as_str) != Some("2.0") {
+            return Err("invalid JSON-RPC backend SSE envelope".to_string());
+        }
+        if message.get("method").is_some() {
+            if message.get("id").is_some() {
+                return Err("independent backend requests are unsupported".to_string());
+            }
+            continue;
+        }
+        if message.get("result").is_some() == message.get("error").is_some()
+            || message.get("id").is_none()
+        {
+            return Err("invalid backend SSE response".to_string());
+        }
+        if response.replace(message).is_some() {
+            return Err("multiple backend responses on a request-scoped stream".to_string());
+        }
+    }
+    response.ok_or_else(|| "backend SSE ended before its final response".to_string())
 }
 
 fn looks_like_event_stream(body: &[u8], content_type: Option<&str>) -> bool {
@@ -8701,38 +9107,6 @@ fn looks_like_event_stream(body: &[u8], content_type: Option<&str>) -> bool {
         || body.starts_with(b"id:")
         || body.starts_with(b"retry:")
         || body.starts_with(b"event:")
-}
-
-fn parse_sse_json_message(body: &[u8]) -> Option<JsonValue> {
-    let text = std::str::from_utf8(body).ok()?;
-    let mut data_lines = Vec::new();
-
-    for line in text.lines() {
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        if line.is_empty() {
-            if let Some(value) = parse_sse_data_lines(&data_lines) {
-                return Some(value);
-            }
-            data_lines.clear();
-            continue;
-        }
-        if line.starts_with(':') {
-            continue;
-        }
-        if let Some(value) = line.strip_prefix("data:") {
-            data_lines.push(value.strip_prefix(' ').unwrap_or(value));
-        }
-    }
-
-    parse_sse_data_lines(&data_lines)
-}
-
-fn parse_sse_data_lines(data_lines: &[&str]) -> Option<JsonValue> {
-    if data_lines.is_empty() {
-        return None;
-    }
-    let data = data_lines.join("\n");
-    serde_json::from_str::<JsonValue>(&data).ok()
 }
 
 fn sse_message_body(body: &JsonValue) -> Result<Vec<u8>, RuntimeError> {
@@ -8812,14 +9186,14 @@ fn default_max_json_depth() -> usize {
 }
 
 fn default_legacy_protocol_versions() -> Vec<String> {
-    ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
+    ["2025-11-25", "2025-06-18", "2025-03-26"]
         .into_iter()
         .map(str::to_string)
         .collect()
 }
 
 fn default_stateless_protocol_versions() -> Vec<String> {
-    Vec::new()
+    vec![STATELESS_PROTOCOL_VERSION.to_string()]
 }
 
 fn default_stateless_discover_ttl_ms() -> u64 {
@@ -8965,6 +9339,62 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
+
+    #[test]
+    fn r6_seeded_parser_mutation_corpus_is_bounded_and_panic_free() {
+        // Reproducible mutation qualification, not a coverage-guided fuzzing claim.
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
+        let seed = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#;
+        let mut state = 379_u64;
+        for case in 0..4096 {
+            let mut bytes = seed.to_vec();
+            for _ in 0..1 + case % 8 {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let index = state as usize % bytes.len();
+                bytes[index] = (state >> 32) as u8;
+            }
+            if case % 5 == 0 {
+                bytes.truncate(case % bytes.len());
+            }
+            let text = String::from_utf8_lossy(&bytes);
+            let _ = crate::mcp_stateless::decode_header_value(&text);
+            let _ = crate::mcp_stateless::decode_header_value(&format!("base64:{text}"));
+            let _ = parse_mcp_backend_response(&bytes, Some("application/json"));
+            let mut sse = b"data: ".to_vec();
+            sse.extend_from_slice(&bytes);
+            sse.extend_from_slice(b"\n\n");
+            let _ = parse_mcp_backend_response(&sse, Some("text/event-stream"));
+            let value = serde_json::from_slice::<JsonValue>(&bytes).unwrap_or_else(
+                |_| json!({"jsonrpc":"2.0","id":case,"method":text,"params":{"_meta":{}}}),
+            );
+            assert!(json_value_depth(&value) < 128);
+            if let Some(message) = value.as_object() {
+                let headers = vec![(MCP_METHOD_HEADER.to_string(), text.to_string())];
+                let _ = validate_stateless_request(&headers, message);
+                let _ = classify_post(runtime.classifier_config(), &[&text], false, message);
+                assert_eq!(
+                    classify_post(runtime.classifier_config(), &[&text, &text], false, message),
+                    Err(ClassificationRejection::MultipleProtocolVersionHeaders)
+                );
+            }
+        }
+        for depth in 0..96 {
+            let mut schema = json!({"type":"string","maxLength":128});
+            for _ in 0..depth {
+                schema = json!({"type":"object","properties":{"next":schema}});
+            }
+            let tool: McpToolConfig = serde_json::from_value(json!({
+                "name":"mutation_fixture","path":"/fixture","inputSchema":schema
+            }))
+            .expect("tool shape");
+            let _ = prepare_tools(&[tool], &McpSchemaConfig::default(), true);
+        }
+        eprintln!(
+            "R6 deterministic mutation qualification: seed=379, parser cases=4096, schema depths=96, crashes=0"
+        );
+    }
 
     #[test]
     fn workflow_bearer_headers_are_normalized_consistently() {
@@ -9222,7 +9652,7 @@ tools:
             .await
             .expect("handle")
             .expect("response");
-        assert_eq!(response.status, 400);
+        assert_eq!(response.status, 404);
         let body = serde_json::from_slice::<JsonValue>(
             response.body.buffered().expect("buffered response"),
         )
@@ -9529,7 +9959,21 @@ tools:
                 .any(|v| v == "2025-11-25")
         );
         assert!(!config.protocols.stateless.enabled);
-        assert!(config.protocols.stateless.versions.is_empty());
+        assert_eq!(
+            config.protocols.stateless.versions,
+            [STATELESS_PROTOCOL_VERSION]
+        );
+        let defaults = McpRouterConfig::default();
+        assert!(!defaults.protocols.stateless.enabled);
+        assert_eq!(
+            defaults.protocols.stateless.versions,
+            config.protocols.stateless.versions
+        );
+        let template = include_str!("../../../apps/light-gateway/config/mcp-router.yml");
+        assert!(template.contains("enabled: ${mcp-router.protocols.stateless.enabled:false}"));
+        assert!(
+            template.contains("versions: ${mcp-router.protocols.stateless.versions:[2026-07-28]}")
+        );
     }
 
     #[test]
@@ -10478,7 +10922,7 @@ endpointRules:
             .expect("handle")
             .expect("response");
 
-        assert_eq!(response.status, 400);
+        assert_eq!(response.status, 404);
         let body = serde_json::from_slice::<JsonValue>(
             response.body.buffered().expect("buffered response"),
         )
@@ -10969,14 +11413,14 @@ endpointRules:
 
         assert!(requests[1].starts_with("POST /mcp HTTP/1.1"));
         assert!(requests[1].contains("mcp-session-id: backend-session"));
-        assert!(requests[1].contains("mcp-protocol-version: 2025-06-18"));
+        assert!(requests[1].contains(&format!("mcp-protocol-version: {DEFAULT_PROTOCOL_VERSION}")));
         let backend_initialized = request_json_body(&requests[1]);
         assert_eq!(backend_initialized["method"], "notifications/initialized");
 
         assert!(requests[2].starts_with("POST /mcp HTTP/1.1"));
         assert!(!requests[2].contains("authorization: Bearer abc"));
         assert!(requests[2].contains("mcp-session-id: backend-session"));
-        assert!(requests[2].contains("mcp-protocol-version: 2025-06-18"));
+        assert!(requests[2].contains(&format!("mcp-protocol-version: {DEFAULT_PROTOCOL_VERSION}")));
         assert!(
             !requests[2]
                 .contains(format!("{MCP_SESSION_ID_HEADER}: {gateway_session_id}").as_str())
@@ -11199,7 +11643,12 @@ endpointRules:
         )
         .expect("json body");
         assert_eq!(body["id"], "1");
-        assert_eq!(body["result"]["content"][0]["text"], "cloudy");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("envelope or id")
+        );
         let requests = received.await.expect("server requests");
         let backend_initialize = request_json_body(&requests[0]);
         let backend_call = request_json_body(&requests[2]);
@@ -11503,7 +11952,7 @@ endpointRules:
         );
         assert!(requests[2].starts_with("DELETE /mcp HTTP/1.1"));
         assert!(requests[2].contains("mcp-session-id: backend-session"));
-        assert!(requests[2].contains("mcp-protocol-version: 2025-06-18"));
+        assert!(requests[2].contains(&format!("mcp-protocol-version: {DEFAULT_PROTOCOL_VERSION}")));
     }
 
     #[tokio::test]
@@ -11574,7 +12023,7 @@ endpointRules:
         );
         assert!(requests[2].starts_with("DELETE /mcp HTTP/1.1"));
         assert!(requests[2].contains("mcp-session-id: backend-session"));
-        assert!(requests[2].contains("mcp-protocol-version: 2025-06-18"));
+        assert!(requests[2].contains(&format!("mcp-protocol-version: {DEFAULT_PROTOCOL_VERSION}")));
     }
 
     #[tokio::test]
@@ -11665,7 +12114,7 @@ endpointRules:
             .await
             .expect("handle")
             .expect("response");
-        assert_eq!(response.status, 400);
+        assert_eq!(response.status, 404);
 
         let requests = received.await.expect("server requests");
         assert_eq!(requests.len(), 4);
@@ -11678,7 +12127,7 @@ endpointRules:
         assert!(requests[3].starts_with("DELETE /mcp HTTP/1.1"));
         assert!(!requests[3].contains("authorization: Bearer abc"));
         assert!(requests[3].contains("mcp-session-id: backend-session"));
-        assert!(requests[3].contains("mcp-protocol-version: 2025-06-18"));
+        assert!(requests[3].contains(&format!("mcp-protocol-version: {DEFAULT_PROTOCOL_VERSION}")));
     }
 
     #[tokio::test]
@@ -11733,7 +12182,7 @@ endpointRules:
         assert_eq!(requests.len(), 1);
         assert!(requests[0].starts_with("DELETE /mcp HTTP/1.1"));
         assert!(requests[0].contains("mcp-session-id: backend-session"));
-        assert!(requests[0].contains("mcp-protocol-version: 2025-06-18"));
+        assert!(requests[0].contains(&format!("mcp-protocol-version: {DEFAULT_PROTOCOL_VERSION}")));
     }
 
     #[tokio::test]
@@ -12219,7 +12668,7 @@ endpointRules:
         )
         .expect("json");
         assert_eq!(body["result"]["isError"], true);
-        assert_eq!(body["result"]["resultType"], "complete");
+        assert!(body["result"].get("resultType").is_none());
         assert!(body["error"].is_null());
         assert!(!body["result"].to_string().contains("properties"));
     }
@@ -12257,7 +12706,7 @@ endpointRules:
         )
         .expect("json");
         assert_eq!(body["result"]["isError"], true);
-        assert_eq!(body["result"]["resultType"], "complete");
+        assert!(body["result"].get("resultType").is_none());
         assert!(body["result"].get("structuredContent").is_none());
         received.await.expect("backend request");
     }
@@ -12294,7 +12743,7 @@ endpointRules:
             response.body.buffered().expect("buffered response"),
         )
         .expect("json");
-        assert_eq!(body["result"]["structuredContent"], json!([1, 2]));
+        assert_eq!(body["result"]["structuredContent"], json!({"value":[1, 2]}));
         assert_eq!(
             serde_json::from_str::<JsonValue>(
                 body["result"]["content"][0]["text"].as_str().unwrap()
@@ -12338,7 +12787,10 @@ endpointRules:
             .expect("response");
         let body: JsonValue =
             serde_json::from_slice(response.body.buffered().expect("body")).expect("JSON response");
-        assert_eq!(body["result"]["structuredContent"], json!([{"id":"1"}]));
+        assert_eq!(
+            body["result"]["structuredContent"]["value"],
+            json!([{"id":"1"}])
+        );
         assert_eq!(
             serde_json::from_str::<JsonValue>(
                 body["result"]["content"][0]["text"].as_str().expect("text")
@@ -12646,7 +13098,7 @@ endpointRules:
                 None,
                 json!({
                     "type":"object",
-                    "properties":{"requestId":{"type":"string","x-mcp-header":"Mcp-Param-Request-Id"}},
+                    "properties":{"requestId":{"type":"string","x-mcp-header":"Request-Id"}},
                     "oneOf":[
                         {"properties":{"kind":{"const":"public"},"value":{"type":"string"}},"required":["kind","value"]},
                         {"properties":{"kind":{"const":"private"},"secret":{"type":"string","x-mask":true,"x-sensitive":true}},"required":["kind","secret"]}
@@ -12661,7 +13113,7 @@ endpointRules:
         assert!(schema.get("oneOf").is_some());
         assert_eq!(
             schema["properties"]["requestId"]["x-mcp-header"],
-            "Mcp-Param-Request-Id"
+            "Request-Id"
         );
         assert!(
             schema["oneOf"][1]["properties"]["secret"]
@@ -13250,6 +13702,27 @@ endpointRules:
         (format!("http://{address}"), hits, task)
     }
 
+    // Symbolic fixture IDs stand for the ID of the request just received.
+    // Other literal IDs stay untouched so mismatch tests remain meaningful.
+    fn echo_fixture_request_id(response: String, request: &str) -> String {
+        if !response.contains("\"id\":\"backend") {
+            return response;
+        }
+        let Some((headers, body)) = response.split_once("\r\n\r\n") else {
+            return response;
+        };
+        let id = request_json_body(request)["id"].to_string();
+        let body = body
+            .replace("\"id\":\"backend-init\"", &format!("\"id\":{id}"))
+            .replace("\"id\":\"backend\"", &format!("\"id\":{id}"));
+        let headers = headers
+            .lines()
+            .filter(|line| !line.to_ascii_lowercase().starts_with("content-length:"))
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        format!("{headers}\r\ncontent-length: {}\r\n\r\n{body}", body.len())
+    }
+
     async fn spawn_http_sequence_server(
         responses: Vec<String>,
     ) -> (String, oneshot::Receiver<Vec<String>>) {
@@ -13275,6 +13748,7 @@ endpointRules:
                     }
                 }
                 requests.push(String::from_utf8_lossy(&request_bytes).to_string());
+                let response = echo_fixture_request_id(response, requests.last().unwrap());
                 stream
                     .write_all(response.as_bytes())
                     .await
@@ -13319,6 +13793,7 @@ endpointRules:
                     }
                 }
                 requests.push(String::from_utf8_lossy(&request_bytes).to_string());
+                let response = echo_fixture_request_id(response, requests.last().unwrap());
                 if let Some(first_seen_tx) = first_seen_tx.take() {
                     let _ = first_seen_tx.send(());
                     if let Some(release_rx) = release_rx.take() {
@@ -13508,7 +13983,7 @@ endpointRules:
     async fn mcp_proxy_tool_retries_configured_retryable_status() {
         let backend_result = json!({
             "jsonrpc": "2.0",
-            "id": "retry-success",
+            "id": "backend",
             "result": mcp_text_result("ok")
         });
         let (base, received) = spawn_http_sequence_server(vec![
@@ -14362,6 +14837,130 @@ endpointRules:
         assert!(request.contains("state=ON"));
     }
 
+    #[test]
+    fn parameter_header_values_enforce_safe_integers_and_encode_empty_strings() {
+        let config = stateless_test_config(vec![test_tool(
+            "headers",
+            "Headers",
+            "http://127.0.0.1:1",
+            McpHttpMethod::Post,
+            None,
+            json!({"type":"object","properties":{"count":{"type":"integer","x-mcp-header":"Count"},"text":{"type":"string","x-mcp-header":"Text"}}}),
+        )]);
+        let runtime = McpRouterRuntime::new(config).unwrap();
+        let tool = runtime.tools.get("headers").unwrap();
+        assert!(expected_parameter_headers(tool, &json!({"count":42,"text":""})).is_ok());
+        for value in [9_007_199_254_740_992i64, -9_007_199_254_740_992i64] {
+            assert!(expected_parameter_headers(tool, &json!({"count":value})).is_err());
+        }
+        let encoded = crate::mcp_stateless::encode_header_value("").unwrap();
+        assert_eq!(encoded, "=?base64??=");
+        assert_eq!(
+            crate::mcp_stateless::decode_header_value(&encoded).unwrap(),
+            ""
+        );
+    }
+
+    #[tokio::test]
+    async fn policy_reload_revokes_cached_catalog_and_tool_call() {
+        fn policy(role: &str) -> Arc<crate::access_control::AccessControlRuntime> {
+            Arc::new(crate::access_control::AccessControlRuntime::new(
+                Some(crate::access_control::AccessControlConfig {
+                    tools_list_access_control:
+                        crate::access_control::ToolsListAccessControlConfig {
+                            mode: crate::access_control::ToolsListAccessControlMode::Permission,
+                            ..Default::default()
+                        },
+                    ..Default::default()
+                }),
+                serde_yaml::from_str(&format!(
+                    r#"
+ruleBodies:
+  allow:
+    common: Y
+    ruleId: allow
+    ruleName: Allow configured role
+    ruleType: req-acc
+    expression: "true"
+    actions:
+      - actionClassName: com.networknt.rule.RoleBasedAccessControlAction
+endpointRules:
+  accounts@call:
+    req-acc: [allow]
+    permission:
+      roles: {role}
+"#
+                ))
+                .unwrap(),
+            ))
+        }
+        async fn request(runtime: &McpRouterRuntime, method: &str) -> JsonValue {
+            let params = if method == "tools/call" {
+                json!({"name":"accounts","arguments":{}})
+            } else {
+                json!({})
+            };
+            let response = runtime
+                .handle_request_with_context(
+                    stateless_request(method, params, None),
+                    McpRequestContext {
+                        auth: Some(AuthPrincipal {
+                            user_id: Some("same-user".into()),
+                            role: Some("manager".into()),
+                            claims: json!({"sub":"same-user","role":"manager"}),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            serde_json::from_slice(response.body.buffered().unwrap()).unwrap()
+        }
+        let (base, received) = spawn_http_server(http_json_response(json!({"ok":true}))).await;
+        let mut config = stateless_test_config(vec![test_tool(
+            "accounts",
+            "Accounts",
+            &base,
+            McpHttpMethod::Get,
+            Some("accounts@call"),
+            default_input_schema(),
+        )]);
+        config.protocols.stateless.enabled = true;
+        let original =
+            McpRouterRuntime::new_with_policy(config.clone(), Some(policy("manager"))).unwrap();
+        for _ in 0..2 {
+            let body = request(&original, "tools/list").await;
+            assert_eq!(
+                body["result"]["tools"].as_array().map(Vec::len),
+                Some(1),
+                "{body}"
+            );
+        }
+        assert!(original.stateless_tools_list_cache.lock().await.len() > 0);
+        let allowed = request(&original, "tools/call").await;
+        assert_eq!(
+            allowed["result"]["structuredContent"]["ok"], true,
+            "{allowed}"
+        );
+        received.await.unwrap();
+        let mut reloaded =
+            McpRouterRuntime::new_with_policy(config, Some(policy("admin"))).unwrap();
+        reloaded.preserve_state_from(&original);
+        for _ in 0..2 {
+            assert_eq!(
+                request(&reloaded, "tools/list").await["result"]["tools"],
+                json!([])
+            );
+        }
+        // The backend listener is gone: denial must occur before any backend attempt.
+        assert_eq!(
+            request(&reloaded, "tools/call").await["error"]["code"],
+            -32001
+        );
+    }
+
     #[tokio::test]
     async fn preserve_state_from_carries_sessions_across_reload() {
         let original = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
@@ -14567,7 +15166,7 @@ endpointRules:
                 "type":"object",
                 "required":["region"],
                 "properties":{
-                    "region":{"type":"string","x-mcp-header":"Mcp-Param-Region"}
+                    "region":{"type":"string","x-mcp-header":"Region"}
                 }
             }),
         );
@@ -14670,7 +15269,7 @@ endpointRules:
                 "type":"object",
                 "required":["region"],
                 "properties":{
-                    "region":{"type":"string","x-mcp-header":"Mcp-Param-Region"}
+                    "region":{"type":"string","x-mcp-header":"Region"}
                 }
             }),
         );
@@ -14711,7 +15310,7 @@ endpointRules:
                 "type":"object",
                 "oneOf":[
                     {
-                        "properties":{"kind":{"const":"region"},"region":{"type":"string","x-mcp-header":"Mcp-Param-Region"}},
+                        "properties":{"kind":{"const":"region"},"region":{"type":"string","x-mcp-header":"Region"}},
                         "required":["kind","region"]
                     },
                     {
@@ -14724,32 +15323,10 @@ endpointRules:
         );
         let mut config = stateless_test_config(vec![tool]);
         config.protocols.stateless.enabled = true;
-        let runtime = McpRouterRuntime::new(config).expect("runtime");
-        let mut request = stateless_request(
-            "tools/call",
-            json!({"name":"conditional-header","arguments":{"kind":"account","account":"secret"}}),
-            None,
-        );
-        request
-            .headers
-            .push(("Mcp-Param-Region".into(), "ca-central".into()));
-        let response = runtime
-            .handle_request(request)
-            .await
-            .expect("handle")
-            .expect("response");
-        assert_eq!(response.status, 400);
-        let body = serde_json::from_slice::<JsonValue>(
-            response.body.buffered().expect("buffered response"),
-        )
-        .expect("json");
-        assert_eq!(body["error"]["code"], -32020);
-        assert!(
-            body["error"]["message"]
-                .as_str()
-                .expect("message")
-                .contains("not applicable when its argument is absent or null")
-        );
+        let error = McpRouterRuntime::new(config)
+            .err()
+            .expect("invalid composed header");
+        assert!(error.to_string().contains("direct properties"));
     }
 
     #[tokio::test]
@@ -14788,6 +15365,212 @@ endpointRules:
                 .expect("text")
                 .contains("does not support stateless calls")
         );
+        assert_eq!(runtime.sessions.lock().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn backend_initialize_rejects_unknown_missing_version_and_accepts_supported_alternative()
+    {
+        for version in [json!("2099-01-01"), JsonValue::Null] {
+            let (base, received) = spawn_http_server(http_json_response(json!({"jsonrpc":"2.0","id":1,
+                "result":{"protocolVersion":version,"capabilities":{},"serverInfo":{"name":"test","version":"1"}}}))).await;
+            let runtime = McpRouterRuntime::new(McpRouterConfig::default()).unwrap();
+            let result = runtime
+                .initialize_backend_session(
+                    Url::parse(&base).unwrap(),
+                    "2025-11-25",
+                    &[],
+                    None,
+                    true,
+                )
+                .await;
+            assert!(result.is_err());
+            assert!(
+                result
+                    .err()
+                    .unwrap()
+                    .message
+                    .contains("missing or unsupported protocol version")
+            );
+            assert_eq!(
+                request_json_body(&received.await.unwrap())["method"],
+                "initialize"
+            );
+        }
+        let (base, received) = spawn_http_sequence_server(vec![
+            backend_initialize_response("negotiated"),
+            http_empty_response(202),
+        ])
+        .await;
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).unwrap();
+        let result = runtime
+            .initialize_backend_session(Url::parse(&base).unwrap(), "2025-11-25", &[], None, true)
+            .await
+            .unwrap();
+        assert_eq!(result.protocol_version, DEFAULT_PROTOCOL_VERSION);
+        let requests = received.await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            request_json_body(&requests[1])["method"],
+            "notifications/initialized"
+        );
+    }
+
+    #[test]
+    fn mcp_resource_metadata_binds_issuer_audience_and_scope() {
+        let auth = McpAuthorizationConfig {
+            resource: "https://gateway.example/mcp".into(),
+            authorization_servers: vec!["https://issuer.example".into()],
+            scopes_supported: vec!["tools:read".into()],
+            required_scopes: vec!["tools:read".into()],
+        };
+        auth.validate("/mcp").unwrap();
+        assert_eq!(
+            auth.metadata_path(),
+            "/.well-known/oauth-protected-resource/mcp"
+        );
+        assert!(auth.challenge(false).contains(
+            "resource_metadata=\"https://gateway.example/.well-known/oauth-protected-resource/mcp\""
+        ));
+        assert_eq!(auth.authorize(None).unwrap_err().status, 401);
+        let mut principal = AuthPrincipal {
+            claims: json!({"iss":"https://issuer.example","aud":"https://gateway.example/mcp","scope":"tools:read"}),
+            ..AuthPrincipal::default()
+        };
+        auth.authorize(Some(&principal)).unwrap();
+        principal.claims["scope"] = json!("other");
+        let error = auth.authorize(Some(&principal)).unwrap_err();
+        assert_eq!(error.status, 403);
+        assert!(error.headers[0].1.contains("insufficient_scope"));
+        principal.claims["aud"] = json!("https://other.example/mcp");
+        assert_eq!(auth.authorize(Some(&principal)).unwrap_err().status, 401);
+        for bad in [
+            "http://public.example/mcp",
+            "https://user:secret@example/mcp",
+            "https://example/mcp#fragment",
+        ] {
+            let mut invalid = auth.clone();
+            invalid.resource = bad.into();
+            assert!(invalid.validate("/mcp").is_err());
+        }
+    }
+
+    #[test]
+    fn backend_sse_selects_final_and_rejects_ambiguous_or_incomplete_streams() {
+        let progress =
+            "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}\n\n";
+        let final_event = "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n";
+        let stream = format!(": heartbeat\r\n\r\n{progress}{final_event}");
+        let value =
+            parse_mcp_backend_response(stream.as_bytes(), Some(EVENT_STREAM_CONTENT_TYPE)).unwrap();
+        validate_backend_response_id(&value, &json!(1)).unwrap();
+        assert!(validate_backend_response_id(&value, &json!("1")).is_err());
+        for invalid in [
+            progress.to_string(),
+            format!("{final_event}{final_event}"),
+            "data: not-json\n\n".to_string(),
+            "data: {\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"sampling/createMessage\"}\n\n"
+                .to_string(),
+        ] {
+            assert!(
+                parse_mcp_backend_response(invalid.as_bytes(), Some(EVENT_STREAM_CONTENT_TYPE))
+                    .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn backend_sse_progress_before_final_preserves_only_supported_metadata() {
+        let data = concat!(
+            ": keepalive\n\n",
+            "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"progressToken\":\"p1\",\"progress\":1}}\n\n",
+            "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\",\"content\":[{\"type\":\"text\",\"text\":\"finished\"}]}}\n\n"
+        );
+        let http = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{data}",
+            data.len()
+        );
+        let (base, received) = spawn_http_server(http).await;
+        let mut config =
+            stateless_test_config(vec![stateless_mcp_backend_tool("modern_backend", &base)]);
+        config.protocols.stateless.enabled = true;
+        let runtime = McpRouterRuntime::new(config).unwrap();
+        let mut request = stateless_request(
+            "tools/call",
+            json!({"name":"modern_backend","arguments":{}}),
+            None,
+        );
+        let mut body: JsonValue = serde_json::from_slice(&request.body).unwrap();
+        let meta = body["params"]["_meta"].as_object_mut().unwrap();
+        meta.insert("progressToken".into(), json!("p1"));
+        meta.insert(
+            "traceparent".into(),
+            json!("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"),
+        );
+        meta.insert("privateCredential".into(), json!("must-not-forward"));
+        meta.insert(
+            CLIENT_CAPABILITIES_META_KEY.into(),
+            json!({"extensions":{"unimplemented":{}}}),
+        );
+        request.body = serde_json::to_vec(&body).unwrap();
+        let response = runtime.handle_request(request).await.unwrap().unwrap();
+        let result: JsonValue = serde_json::from_slice(response.body.buffered().unwrap()).unwrap();
+        assert_eq!(result["result"]["content"][0]["text"], "finished");
+        let sent = received.await.unwrap();
+        let sent_body = request_json_body(&sent);
+        let forwarded = &sent_body["params"]["_meta"];
+        assert_eq!(forwarded[CLIENT_CAPABILITIES_META_KEY], json!({}));
+        assert_eq!(forwarded["progressToken"], "p1");
+        assert_eq!(
+            forwarded["traceparent"],
+            body["params"]["_meta"]["traceparent"]
+        );
+        assert!(forwarded.get("privateCredential").is_none());
+        assert!(!sent.to_ascii_lowercase().contains("mcp-session-id:"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires R2_PUBLICATION_OUTPUT generated by Portal McpBackendPublicationTest"]
+    async fn portal_published_stateless_backend_executes_without_initialize() {
+        let path = std::env::var("R2_PUBLICATION_OUTPUT").expect("Portal publication artifact");
+        let mut config: McpRouterConfig =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            config.tools[0].backend_mcp_protocol,
+            Some(McpBackendProtocol::Stateless)
+        );
+        assert_eq!(
+            config.tools[0].backend_credential_mode,
+            Some(McpBackendCredentialMode::Anonymous)
+        );
+        assert!(config.tools[0].session_independent);
+        assert_eq!(
+            config.tools[0].backend_resource.as_deref(),
+            Some("http://127.0.0.1:18979/mcp")
+        );
+        let (base, received) =
+            spawn_http_server(http_json_response(json!({"jsonrpc":"2.0","id":1,
+            "result":{"resultType":"complete","content":[{"type":"text","text":"published"}]}})))
+            .await;
+        // Rebind only the fixture's socket address; all protocol/credential fields
+        // and the runtime schema come from the production Portal compiler.
+        config.tools[0].target_host = Some(base.clone());
+        config.tools[0].backend_resource = Some(format!("{base}/mcp"));
+        let runtime = McpRouterRuntime::new(config).unwrap();
+        let response = runtime
+            .handle_request(stateless_request(
+                "tools/call",
+                json!({"name":"echo","arguments":{}}),
+                None,
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        let body: JsonValue = serde_json::from_slice(response.body.buffered().unwrap()).unwrap();
+        assert_eq!(body["result"]["content"][0]["text"], "published", "{body}");
+        let request = received.await.unwrap();
+        assert_eq!(request_json_body(&request)["method"], "tools/call");
+        assert!(!request.to_ascii_lowercase().contains("mcp-session-id:"));
         assert_eq!(runtime.sessions.lock().await.len(), 0);
     }
 
@@ -14917,6 +15700,10 @@ endpointRules:
             acknowledgment["params"]["notifications"]["toolsListChanged"],
             true
         );
+        assert_eq!(
+            acknowledgment["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+            1
+        );
         assert_eq!(runtime.subscriptions.active_count(), 1);
 
         let mut reloaded_config = runtime.config.clone();
@@ -14940,6 +15727,10 @@ endpointRules:
         );
         let terminal = sse_json(&stream.next_frame().await.expect("terminal result"));
         assert_eq!(terminal["id"], 1);
+        assert_eq!(
+            terminal["result"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+            1
+        );
         assert_eq!(terminal["result"]["resultType"], "complete");
         assert!(stream.next_frame().await.is_none());
         assert_eq!(runtime.subscriptions.active_count(), 0);
@@ -15424,7 +16215,7 @@ endpointRules:
         tool.input_schema = json!({
             "type":"object",
             "required":["city"],
-            "properties":{"city":{"type":"string","x-mcp-header":"Mcp-Param-City"}}
+            "properties":{"city":{"type":"string","x-mcp-header":"City"}}
         });
         tool.input_schema_configured = true;
         let mut config = stateless_test_config(vec![tool]);
@@ -15957,6 +16748,80 @@ endpointRules:
             .expect("response");
         assert_eq!(response.status, 405);
         assert!(runtime.sessions.lock().await.contains_key(&session_id));
+    }
+
+    #[tokio::test]
+    async fn retired_2024_rejected_at_configuration_frontend_and_backend() {
+        let mut config = McpRouterConfig::default();
+        config.protocols.legacy.versions.push("2024-11-05".into());
+        assert!(McpRouterRuntime::new(config).is_err());
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).unwrap();
+        let response=runtime.handle_request(McpHttpRequest{method:"POST".into(),path:"/mcp".into(),headers:vec![accept_json()],
+            body:serde_json::to_vec(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}})).unwrap()}).await.unwrap().unwrap();
+        let body: JsonValue = serde_json::from_slice(response.body.buffered().unwrap()).unwrap();
+        assert!(body.get("error").is_some());
+        assert_eq!(runtime.sessions.lock().await.len(), 0);
+        let (base,received)=spawn_http_server(http_json_response(json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"old","version":"1"}}}))).await;
+        assert!(
+            runtime
+                .initialize_backend_session(
+                    Url::parse(&base).unwrap(),
+                    DEFAULT_PROTOCOL_VERSION,
+                    &[],
+                    None,
+                    true
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            request_json_body(&received.await.unwrap())["method"],
+            "initialize"
+        );
+    }
+
+    #[tokio::test]
+    async fn reload_removes_retired_backend_even_when_frontend_and_config_are_retained() {
+        let (base, received) = spawn_http_server(http_empty_response(202)).await;
+        let original = McpRouterRuntime::new(McpRouterConfig::default()).unwrap();
+        let mut session = McpGatewaySession::new(DEFAULT_PROTOCOL_VERSION.into(), "alice".into());
+        session.backend_sessions.insert(
+            base.clone(),
+            McpBackendSession {
+                target_url: base,
+                session_id: Some("retired".into()),
+                protocol_version: "2024-11-05".into(),
+                agent_headers: Vec::new(),
+                allow_private_target_host: true,
+            },
+        );
+        original
+            .sessions
+            .lock()
+            .await
+            .insert("retained".into(), session);
+        let mut reloaded = McpRouterRuntime::new(McpRouterConfig::default()).unwrap();
+        reloaded.preserve_state_from(&original);
+        assert!(
+            reloaded
+                .sessions
+                .lock()
+                .await
+                .get("retained")
+                .unwrap()
+                .backend_sessions
+                .is_empty()
+        );
+        let request = tokio::time::timeout(Duration::from_secs(3), received)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(request.starts_with("DELETE "));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("mcp-session-id: retired")
+        );
     }
 
     #[tokio::test]
@@ -16973,5 +17838,215 @@ toolMetadata:
         let revoked_digest = canonical_sha256(&stable_subject_claims(&revoked_role)).unwrap();
         assert_eq!(first_digest, refreshed_digest);
         assert_ne!(first_digest, revoked_digest);
+    }
+    #[tokio::test]
+    async fn final_contract_rejects_invalid_ids_and_returns_version_error_data() {
+        let mut runtime = stateless_test_runtime(Vec::new());
+        runtime.config.protocols.stateless.enabled = true;
+        for invalid in [
+            JsonValue::Null,
+            json!({}),
+            json!([]),
+            json!(true),
+            json!(1.5),
+        ] {
+            let mut req = stateless_request("server/discover", json!({}), None);
+            let mut body: JsonValue = serde_json::from_slice(&req.body).unwrap();
+            body["id"] = invalid;
+            req.body = serde_json::to_vec(&body).unwrap();
+            let response = runtime.handle_request(req).await.unwrap().unwrap();
+            let body: JsonValue =
+                serde_json::from_slice(response.body.buffered().unwrap()).unwrap();
+            assert_eq!(response.status, 400);
+            assert_eq!(body["error"]["code"], -32600);
+            assert!(body["id"].is_null());
+        }
+        let response = classification_rejection_response_for_post(
+            McpResponseMode::Json,
+            json!(1),
+            ClassificationRejection::UnsupportedProtocolVersion("future".into()),
+            true,
+            &[STATELESS_PROTOCOL_VERSION.to_string()],
+        )
+        .unwrap();
+        let body: JsonValue = serde_json::from_slice(response.body.buffered().unwrap()).unwrap();
+        assert_eq!(
+            body["error"]["data"],
+            json!({"requested":"future","supported":[STATELESS_PROTOCOL_VERSION]})
+        );
+        let response = StatelessFrontendAdapter::disabled_response(
+            McpResponseMode::Json,
+            json!(1),
+            STATELESS_PROTOCOL_VERSION,
+        )
+        .unwrap();
+        let body: JsonValue = serde_json::from_slice(response.body.buffered().unwrap()).unwrap();
+        assert_eq!(body["error"]["code"], -32022);
+        assert_eq!(body["error"]["data"]["supported"], json!([]));
+    }
+
+    #[test]
+    fn legacy_output_wrapper_rebases_refs_and_preserves_business_value() {
+        let schema = json!({"$defs":{"items":{"type":"array","items":{"type":"integer"}}},"$ref":"#/$defs/items"});
+        let list = legacy_tool_list(
+            json!({"tools":[{"name":"items","outputSchema":schema}]}),
+            "2025-11-25",
+        );
+        let result = legacy_tool_result(
+            json!({"structuredContent":[1,2],"resultType":"complete"}),
+            Some(&schema),
+            "2025-11-25",
+        );
+        let validator = jsonschema::draft202012::new(&list["tools"][0]["outputSchema"]).unwrap();
+        assert!(validator.is_valid(&result["structuredContent"]));
+        assert!(!validator.is_valid(&json!({"value":["wrong"]})));
+        assert_eq!(result["structuredContent"]["value"], json!([1, 2]));
+        assert!(result.get("resultType").is_none());
+    }
+    #[tokio::test]
+    async fn march_batch_accepts_absent_version_header_but_rejects_conflicts() {
+        for version in ["2025-03-26", "2025-06-18", "2025-11-25"] {
+            for supplied in [
+                None,
+                Some("2025-03-26"),
+                Some("2025-06-18"),
+                Some("duplicate"),
+            ] {
+                let runtime = McpRouterRuntime::new(McpRouterConfig::default()).unwrap();
+                let mut headers = vec![
+                    accept_sse(),
+                    session_header_with_protocol(&runtime, version),
+                ];
+                if let Some(value) = supplied {
+                    headers.push((MCP_PROTOCOL_VERSION_HEADER.into(), value.into()));
+                    if value == "duplicate" {
+                        headers.push((MCP_PROTOCOL_VERSION_HEADER.into(), "2025-03-26".into()));
+                    }
+                }
+                let response = runtime
+                    .handle_request(McpHttpRequest {
+                        method: "POST".into(),
+                        path: "/mcp".into(),
+                        headers,
+                        body: serde_json::to_vec(
+                            &json!([{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{}}]),
+                        )
+                        .unwrap(),
+                    })
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let valid = version == "2025-03-26"
+                    && (supplied.is_none() || supplied == Some("2025-03-26"));
+                assert_eq!(
+                    response.status,
+                    if valid { 200 } else { 400 },
+                    "{version} {supplied:?}"
+                );
+                if valid {
+                    assert_eq!(sse_json(response.body.buffered().unwrap())[0]["id"], 7);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn march_batch_is_session_bound_and_keeps_response_ids() {
+        let runtime = McpRouterRuntime::new(McpRouterConfig::default()).unwrap();
+        let headers = vec![
+            accept_sse(),
+            session_header_with_protocol(&runtime, "2025-03-26"),
+            (
+                MCP_PROTOCOL_VERSION_HEADER.to_string(),
+                "2025-03-26".to_string(),
+            ),
+        ];
+        let req = |body| McpHttpRequest {
+            method: "POST".into(),
+            path: "/mcp".into(),
+            headers: headers.clone(),
+            body: serde_json::to_vec(&body).unwrap(),
+        };
+        let response = runtime
+            .handle_request(req(json!([
+                {"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}},
+                {"jsonrpc":"2.0","method":"notifications/initialized"},
+                {"jsonrpc":"2.0","id":"second","method":"tools/list","params":{}}
+            ])))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status, 200);
+        let body = sse_json(response.body.buffered().unwrap());
+        assert_eq!(body.as_array().unwrap().len(), 2);
+        assert_eq!(body[0]["id"], 1);
+        assert_eq!(body[1]["id"], "second");
+        let response = runtime
+            .handle_request(req(
+                json!([{"jsonrpc":"2.0","method":"notifications/initialized"}]),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status, 202);
+        let response = runtime
+            .handle_request(req(json!([{"jsonrpc":"2.0","id":1,"method":"initialize"}])))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status, 400);
+        let mut request = req(json!([{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}]));
+        request
+            .headers
+            .retain(|(name, _)| name != MCP_SESSION_ID_HEADER);
+        assert_eq!(
+            runtime
+                .handle_request(request)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            400
+        );
+    }
+    #[tokio::test]
+    async fn unavailable_legacy_sessions_return_404_for_every_retained_revision() {
+        for version in ["2025-03-26", "2025-06-18", "2025-11-25"] {
+            for expired in [false, true] {
+                let runtime = McpRouterRuntime::new(McpRouterConfig::default()).unwrap();
+                if expired {
+                    let mut session = McpGatewaySession::new(version.into(), "test-client".into());
+                    session.last_accessed = Instant::now()
+                        .checked_sub(MCP_SESSION_IDLE_TIMEOUT + Duration::from_secs(1))
+                        .unwrap();
+                    runtime
+                        .sessions
+                        .lock()
+                        .await
+                        .insert("unavailable".into(), session);
+                }
+                for method in ["POST", "DELETE"] {
+                    let response = runtime
+                        .handle_request(McpHttpRequest {
+                            method: method.into(),
+                            path: "/mcp".into(),
+                            headers: vec![
+                                accept_json(),
+                                (MCP_SESSION_ID_HEADER.into(), "unavailable".into()),
+                                (MCP_PROTOCOL_VERSION_HEADER.into(), version.into()),
+                            ],
+                            body: if method == "POST" {
+                                br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.to_vec()
+                            } else {
+                                vec![]
+                            },
+                        })
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(response.status, 404, "{version} {method} expired={expired}");
+                }
+            }
+        }
     }
 }

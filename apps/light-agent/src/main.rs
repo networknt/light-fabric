@@ -180,9 +180,15 @@ struct AuthenticatedRequest {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpClientConfig {
+    #[serde(default = "default_mcp_protocol_version")]
+    pub protocol_version: String,
     pub gateway_url: String,
     pub path: String,
     pub timeout_ms: u64,
+}
+
+fn default_mcp_protocol_version() -> String {
+    "2025-11-25".into()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -5128,7 +5134,7 @@ async fn run_agent_loop(
                         .await?;
                     let mut text_result = String::new();
                     for content in result.content {
-                        if let McpContent::Text { text } = content {
+                        if let McpContent::Text { text, .. } = content {
                             if !text_result.is_empty() {
                                 text_result.push('\n');
                             }
@@ -5276,7 +5282,11 @@ async fn build_agent_state(
         mcp_config.timeout_ms,
         limits.max_gateway_response_bytes,
     )
-    .map_err(|e| RuntimeError::Config(format!("failed to build MCP gateway client: {e}")))?;
+    .map_err(|e| RuntimeError::Config(format!("failed to build MCP gateway client: {e}")))?
+    .with_profile(
+        mcp_client::McpProfile::from_version(&mcp_config.protocol_version)
+            .map_err(|e| RuntimeError::Config(e.to_string()))?,
+    );
 
     let database_url_file = PathBuf::from(&agent_config.operational_store.database_url_file);
     let db_url = agent_store::read_database_url(
@@ -6786,11 +6796,13 @@ security.skipPathPrefixes: [/health]
                 name: "get_invoice".into(),
                 description: String::new(),
                 input_schema: serde_json::json!({}),
+                ..McpTool::default()
             },
             McpTool {
                 name: "get_profile".into(),
                 description: String::new(),
                 input_schema: serde_json::json!({}),
+                ..McpTool::default()
             },
         ];
 

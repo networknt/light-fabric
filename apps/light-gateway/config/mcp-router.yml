@@ -6,6 +6,7 @@ maxRequestBodyBytes: ${mcp-router.maxRequestBodyBytes:1048576}
 maxResponseBodyBytes: ${mcp-router.maxResponseBodyBytes:4194304}
 maxJsonDepth: ${mcp-router.maxJsonDepth:128}
 originAllowlist: ${mcp-router.originAllowlist:[]}
+authorization: ${mcp-router.authorization:null}
 workflow:
   invocationUrl: ${mcp-router.workflow.invocationUrl:}
   permitPools: ${mcp-router.workflow.permitPools:[64, 32]}
@@ -22,9 +23,9 @@ schema:
 protocols:
   legacy:
     enabled: ${mcp-router.protocols.legacy.enabled:true}
-    versions: ${mcp-router.protocols.legacy.versions:[2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05]}
+    versions: ${mcp-router.protocols.legacy.versions:[2025-11-25, 2025-06-18, 2025-03-26]}
   stateless:
-    enabled: ${mcp-router.protocols.stateless.enabled:true}
+    enabled: ${mcp-router.protocols.stateless.enabled:false}
     versions: ${mcp-router.protocols.stateless.versions:[2026-07-28]}
     discoverTtlMs: ${mcp-router.protocols.stateless.discoverTtlMs:30000}
     discoverCacheScope: ${mcp-router.protocols.stateless.discoverCacheScope:private}

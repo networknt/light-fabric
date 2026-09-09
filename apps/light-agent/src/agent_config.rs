@@ -164,9 +164,17 @@ pub struct RuntimePolicyEnvelope {
     #[serde(deserialize_with = "deserialize_publication_time")]
     pub valid_from: DateTime<Utc>,
     /// Legacy publication timestamps are accepted but do not expire configuration.
-    #[serde(default, skip_serializing, deserialize_with = "ignore_legacy_policy_time")]
+    #[serde(
+        default,
+        skip_serializing,
+        deserialize_with = "ignore_legacy_policy_time"
+    )]
     pub refresh_after: DateTime<Utc>,
-    #[serde(default, skip_serializing, deserialize_with = "ignore_legacy_policy_time")]
+    #[serde(
+        default,
+        skip_serializing,
+        deserialize_with = "ignore_legacy_policy_time"
+    )]
     pub expires_at: DateTime<Utc>,
     pub revocation_epoch: u64,
     pub compatibility_generation: u64,
@@ -1252,8 +1260,8 @@ mod tests {
         let mut value = serde_json::to_value(&cfg.runtime_policy).unwrap();
         value["createdAt"] = serde_json::json!("2026-09-08T04:00Z");
         value["validFrom"] = serde_json::json!("2026-09-08T00:00-04:00");
-        let parsed: RuntimePolicyEnvelope = serde_yaml::from_str(
-            &serde_yaml::to_string(&value).unwrap()).unwrap();
+        let parsed: RuntimePolicyEnvelope =
+            serde_yaml::from_str(&serde_yaml::to_string(&value).unwrap()).unwrap();
         assert_eq!(parsed.created_at, parsed.valid_from);
         value["validFrom"] = serde_json::json!("2026-99-08T04:00Z");
         assert!(serde_json::from_value::<RuntimePolicyEnvelope>(value).is_err());
@@ -1276,8 +1284,14 @@ mod tests {
         let mut cfg = config(now);
         cfg.runtime_policy.refresh_after = now - Duration::days(366);
         cfg.runtime_policy.expires_at = now - Duration::days(365);
-        let check = |cfg: &AgentConfig, time| cfg.validate(
-            "agent.dev.lightapi.net", "com.networknt.agent.support-1.0.0", "dev", time);
+        let check = |cfg: &AgentConfig, time| {
+            cfg.validate(
+                "agent.dev.lightapi.net",
+                "com.networknt.agent.support-1.0.0",
+                "dev",
+                time,
+            )
+        };
         assert!(check(&cfg, now + Duration::days(3650)).is_ok());
         let envelope = serde_json::to_value(&cfg.runtime_policy).unwrap();
         assert!(envelope.get("expiresAt").is_none());

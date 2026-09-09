@@ -57,10 +57,10 @@ impl StatelessRequestError {
         }
     }
 
-    fn capability(message: impl Into<String>) -> Self {
+    fn params(message: impl Into<String>) -> Self {
         Self {
             status: 400,
-            code: -32021,
+            code: -32602,
             message: message.into(),
         }
     }
@@ -87,6 +87,14 @@ pub(crate) fn validate_stateless_request(
             "stateless MCP notification POSTs are not supported",
         ));
     }
+    if !message
+        .get("id")
+        .is_some_and(|id| id.is_string() || id.is_i64() || id.is_u64())
+    {
+        return Err(StatelessRequestError::invalid(
+            "request id must be a string or integer",
+        ));
+    }
     let method = message
         .get("method")
         .and_then(JsonValue::as_str)
@@ -104,16 +112,16 @@ pub(crate) fn validate_stateless_request(
     let params = message
         .get("params")
         .and_then(JsonValue::as_object)
-        .ok_or_else(|| StatelessRequestError::invalid("params must be an object"))?;
+        .ok_or_else(|| StatelessRequestError::params("params must be an object"))?;
     let meta = params
         .get("_meta")
         .and_then(JsonValue::as_object)
-        .ok_or_else(|| StatelessRequestError::invalid("params._meta must be an object"))?;
+        .ok_or_else(|| StatelessRequestError::params("params._meta must be an object"))?;
     if !meta
         .get(CLIENT_CAPABILITIES_META_KEY)
         .is_some_and(JsonValue::is_object)
     {
-        return Err(StatelessRequestError::capability(
+        return Err(StatelessRequestError::params(
             "missing required client capabilities metadata",
         ));
     }
@@ -240,7 +248,9 @@ fn require_json_content_type(headers: &[(String, String)]) -> Result<(), Statele
     Ok(())
 }
 
-fn require_dual_accept(headers: &[(String, String)]) -> Result<(), StatelessRequestError> {
+pub(crate) fn require_dual_accept(
+    headers: &[(String, String)],
+) -> Result<(), StatelessRequestError> {
     let values = all_headers(headers, "accept");
     let mut json = false;
     let mut event_stream = false;
@@ -320,11 +330,6 @@ pub(crate) fn encode_header_value(value: &str) -> Result<String, StatelessReques
     {
         return Ok(value.to_string());
     }
-    if value.is_empty() {
-        return Err(StatelessRequestError::header(
-            "empty MCP semantic header values are not allowed",
-        ));
-    }
     Ok(format!("=?base64?{}?=", STANDARD.encode(value.as_bytes())))
 }
 
@@ -387,7 +392,7 @@ mod tests {
             validate_stateless_request(&super::tests::headers(), &request)
                 .unwrap_err()
                 .code,
-            -32021
+            -32602
         );
         let mut request = super::tests::request();
         request["params"]["_meta"][CLIENT_INFO_META_KEY] = json!({"name":"missing-version"});

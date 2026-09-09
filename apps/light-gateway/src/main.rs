@@ -2006,8 +2006,25 @@ impl GatewayProxy {
         &self,
         session: &mut Session,
         ctx: &mut GatewayRequestContext,
-        rejection: HandlerRejection,
+        mut rejection: HandlerRejection,
     ) -> pingora::Result<bool> {
+        if rejection.status == 401 {
+            let runtime = self.mcp_router.load();
+            if let Some(runtime) = runtime
+                .as_ref()
+                .as_ref()
+                .filter(|r| r.matches_path(&ctx.request_path))
+            {
+                if let Some(auth) = runtime.authorization() {
+                    rejection
+                        .headers
+                        .retain(|(name, _)| !name.eq_ignore_ascii_case("www-authenticate"));
+                    rejection
+                        .headers
+                        .push(("www-authenticate".into(), auth.challenge(false)));
+                }
+            }
+        }
         let body = Bytes::from(format!("{}: {}", rejection.code, rejection.message));
         self.write_bytes_response_with_headers(
             session,
@@ -3721,6 +3738,44 @@ impl ProxyHttp for GatewayProxy {
 
         let method = session.req_header().method.as_str().to_string();
         ctx.method = method.clone();
+        // RFC 9728 metadata is public and must remain discoverable before
+        // bearer verification. It contains configured public URLs only.
+        let mcp_runtime = self.mcp_router.load();
+        if let Some(auth) = mcp_runtime
+            .as_ref()
+            .as_ref()
+            .and_then(|r| r.authorization())
+        {
+            if request_path == auth.metadata_path() {
+                if method != "GET" && method != "HEAD" {
+                    return self
+                        .write_bytes_response_with_headers(
+                            session,
+                            ctx,
+                            405,
+                            None,
+                            None,
+                            Bytes::new(),
+                            &[("allow".into(), "GET, HEAD".into())],
+                        )
+                        .await;
+                }
+                return self
+                    .write_bytes_response_with_headers(
+                        session,
+                        ctx,
+                        200,
+                        Some("application/json"),
+                        None,
+                        Bytes::from(
+                            serde_json::to_vec(&auth.metadata())
+                                .map_err(|e| pingora_internal_error(e.into()))?,
+                        ),
+                        &[("cache-control".into(), "public, max-age=300".into())],
+                    )
+                    .await;
+            }
+        }
         let security_execution = self.security_execution.load();
         ctx.security_execution = Some(Arc::clone(&security_execution));
         let active_handlers = Arc::clone(&security_execution.active_handlers);
@@ -4837,6 +4892,11 @@ impl ProxyHttp for GatewayProxy {
                     if !runtime.matches_path(&request_path) {
                         ctx.record_handler_duration(&handler_id, started.elapsed());
                         continue;
+                    }
+                    if let Some(auth) = runtime.authorization() {
+                        if let Err(rejection) = auth.authorize(ctx.auth.as_ref()) {
+                            return self.write_rejection_response(session, ctx, rejection).await;
+                        }
                     }
                     let path_with_query = match session.req_header().uri.query() {
                         Some(query) => format!("{request_path}?{query}"),
@@ -12595,6 +12655,95 @@ pathPrefixService:
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn mcp_oauth_metadata_and_challenge_over_live_pingora() {
+        let config_dir = TempDir::new().expect("config temp dir");
+        let external_dir = TempDir::new().expect("external temp dir");
+        let gateway_port = free_tcp_port();
+        let gateway_address = format!("127.0.0.1:{gateway_port}")
+            .parse::<std::net::SocketAddr>()
+            .expect("gateway address");
+        std::fs::write(
+            config_dir.path().join("server.yml"),
+            format!(
+                r#"
+ip: 127.0.0.1
+advertisedAddress: 127.0.0.1
+httpPort: {gateway_port}
+enableHttp: true
+httpsPort: 8443
+enableHttps: false
+serviceId: com.networknt.light-gateway-1.0.0
+enableRegistry: false
+startOnRegistryFailure: true
+dynamicPort: false
+environment: dev
+shutdownGracefulPeriod: 100
+"#
+            ),
+        )
+        .expect("write server config");
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            r#"
+handlers:
+  - mcp
+paths:
+  - path: /mcp
+    method: POST
+    exec:
+      - mcp
+defaultHandlers: []
+"#,
+        )
+        .expect("write handler config");
+        std::fs::write(
+            config_dir.path().join(light_pingora::MCP_ROUTER_FILE),
+            r#"
+enabled: true
+path: /mcp
+protocols:
+  legacy:
+    enabled: true
+    versions: ["2025-11-25", "2025-06-18", "2025-03-26"]
+  stateless:
+    enabled: true
+    versions: ["2026-07-28"]
+    maxSubscriptionDurationMs: 2000
+tools: []
+authorization:
+  resource: https://gateway.example/mcp
+  authorizationServers: ["https://issuer.example"]
+  scopesSupported: ["tools:read"]
+  requiredScopes: ["tools:read"]
+"#,
+        )
+        .expect("write mcp config");
+
+        let runtime = LightRuntimeBuilder::new(PingoraTransport::new(GatewayApp::default()))
+            .with_config_dir(config_dir.path())
+            .with_external_config_dir(external_dir.path())
+            .build();
+        let running = runtime.start().await.expect("start gateway");
+        wait_for_tcp(gateway_address).await;
+
+        let metadata = raw_http_exchange(gateway_address,
+            "GET /.well-known/oauth-protected-resource/mcp HTTP/1.1\r\nHost: gateway.example\r\nConnection: close\r\n\r\n").await;
+        let metadata = String::from_utf8(metadata).unwrap();
+        assert!(metadata.starts_with("HTTP/1.1 200"), "{metadata}");
+        assert!(metadata.contains("\"resource\":\"https://gateway.example/mcp\""));
+        assert!(metadata.contains("https://issuer.example"));
+        let denied = raw_http_exchange(gateway_address,
+            "POST /mcp HTTP/1.1\r\nHost: gateway.example\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+        let denied = String::from_utf8(denied).unwrap();
+        assert!(denied.starts_with("HTTP/1.1 401"), "{denied}");
+        assert!(denied.contains(
+            "resource_metadata=\"https://gateway.example/.well-known/oauth-protected-resource/mcp\""
+        ));
+        assert!(denied.contains("scope=\"tools:read\""));
+        running.shutdown().await.expect("shutdown gateway");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn mcp_subscription_streams_ack_before_terminal_over_live_pingora() {
         let config_dir = TempDir::new().expect("config temp dir");
         let external_dir = TempDir::new().expect("external temp dir");
@@ -12644,7 +12793,7 @@ path: /mcp
 protocols:
   legacy:
     enabled: true
-    versions: ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
+    versions: ["2025-11-25", "2025-06-18", "2025-03-26"]
   stateless:
     enabled: true
     versions: ["2026-07-28"]
@@ -12720,6 +12869,13 @@ tools: []
         .await
         .expect("terminal result timeout");
 
+        assert_eq!(
+            String::from_utf8_lossy(&received)
+                .matches("\"io.modelcontextprotocol/subscriptionId\":\"live-subscription\"")
+                .count(),
+            2,
+            "both acknowledgment and terminal result must carry the subscription id"
+        );
         running.shutdown().await.expect("shutdown gateway");
     }
 
@@ -13466,4 +13622,6 @@ endpointRules:
             "127.0.0.1:8082"
         );
     }
+    include!("mcp_conformance_tests.rs");
+
 }

@@ -1,3 +1,5 @@
 gatewayUrl: ${mcp-client.gatewayUrl:https://localhost}
 path: ${mcp-client.path:/mcp}
 timeoutMs: ${mcp-client.timeoutMs:5000}
+# Explicit legacy profile until the target gateway is qualified for stateless.
+protocolVersion: ${mcp-client.protocolVersion:2025-11-25}

@@ -311,7 +311,11 @@ mod tests {
         }
         let policy: super::AgentDelegationConfig = serde_json::from_value(value).unwrap();
         policy.validate().unwrap();
-        assert!(!serde_json::to_string(&policy).unwrap().contains("expiresAt"));
+        assert!(
+            !serde_json::to_string(&policy)
+                .unwrap()
+                .contains("expiresAt")
+        );
     }
     use super::*;
     fn policy() -> AgentDelegationConfig {

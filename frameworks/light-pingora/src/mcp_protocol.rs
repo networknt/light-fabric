@@ -25,6 +25,7 @@ pub(crate) enum Classification {
 pub(crate) enum ClassificationRejection {
     MultipleProtocolVersionHeaders,
     ProtocolVersionMismatch,
+    MissingRequestMetadata,
     UnsupportedProtocolVersion(String),
     InvalidJsonRpcRequest,
     MissingLegacySession,
@@ -94,6 +95,9 @@ pub(crate) fn classify_post(
         || body_version.is_some_and(|version| contains(config.stateless_versions, version));
 
     if claims_stateless {
+        if header_version.is_some() && body_version.is_none() {
+            return Err(ClassificationRejection::MissingRequestMetadata);
+        }
         let (Some(header_version), Some(body_version)) = (header_version, body_version) else {
             return Err(ClassificationRejection::ProtocolVersionMismatch);
         };
@@ -225,7 +229,7 @@ mod tests {
         );
         assert_eq!(
             classify_post(config(), &[STATELESS_PROTOCOL_VERSION], false, &legacy_call),
-            Err(ClassificationRejection::ProtocolVersionMismatch)
+            Err(ClassificationRejection::MissingRequestMetadata)
         );
     }
 

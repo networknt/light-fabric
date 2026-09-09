@@ -34,7 +34,14 @@ pub struct JsonRpcError {
     pub data: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl std::fmt::Display for JsonRpcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MCP error ({}): {}", self.code, self.message)
+    }
+}
+impl std::error::Error for JsonRpcError {}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpTool {
     pub name: String,
@@ -42,11 +49,19 @@ pub struct McpTool {
     pub description: String,
     #[serde(default)]
     pub input_schema: serde_json::Value,
+    #[serde(default)]
+    pub output_schema: Option<serde_json::Value>,
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpToolsListResult {
     pub tools: Vec<McpTool>,
+    #[serde(default, rename = "nextCursor")]
+    pub next_cursor: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,17 +69,50 @@ pub struct McpToolCallResult {
     pub content: Vec<McpContent>,
     #[serde(default, rename = "isError")]
     pub is_error: bool,
+    #[serde(default, rename = "structuredContent")]
+    pub structured_content: Option<serde_json::Value>,
+    #[serde(default, rename = "resultType")]
+    pub result_type: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum McpContent {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        text: String,
+        #[serde(default, flatten)]
+        extra: serde_json::Map<String, serde_json::Value>,
+    },
     #[serde(rename = "image")]
     Image {
         data: String,
         #[serde(rename = "mimeType")]
         mime_type: String,
+        #[serde(default, flatten)]
+        extra: serde_json::Map<String, serde_json::Value>,
+    },
+    #[serde(rename = "audio")]
+    Audio {
+        data: String,
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+        #[serde(default, flatten)]
+        extra: serde_json::Map<String, serde_json::Value>,
+    },
+    #[serde(rename = "resource")]
+    Resource {
+        resource: serde_json::Value,
+        #[serde(default, flatten)]
+        extra: serde_json::Map<String, serde_json::Value>,
+    },
+    #[serde(rename = "resource_link")]
+    ResourceLink {
+        uri: String,
+        name: String,
+        #[serde(default, flatten)]
+        extra: serde_json::Map<String, serde_json::Value>,
     },
 }
