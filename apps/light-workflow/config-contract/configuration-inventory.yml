@@ -379,11 +379,93 @@ yamlProperties:
   - {file: security.yml, path: bootstrapFromKeyService, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: client.yml, path: tls.verifyHostname, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: client.yml, path: tls.caCertPath, finalAuthority: deploymentBootstrap, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: tls.clientCertPath, finalAuthority: deploymentBootstrap, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: tls.clientKeyPath, finalAuthority: deploymentBootstrap, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: tls.tlsVersion, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.multipleAuthServers, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.cache.capacity, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: client.yml, path: oauth.token.tokenRenewBeforeExpired, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: client.yml, path: oauth.token.expiredRefreshRetryDelay, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: client.yml, path: oauth.token.earlyRefreshRetryDelay, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: client.yml, path: oauth.token.server_url, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.serviceId, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.proxyHost, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.proxyPort, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.enableHttp2, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.client_credentials.uri, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.client_credentials.client_id, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.client_credentials.client_secret, finalAuthority: secretEnvironment, reloadClass: restartRequired, sensitivity: secret}
+  - {file: client.yml, path: oauth.token.client_credentials.scope, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.client_credentials.serviceIdAuthServers, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.authorization_code.uri, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.authorization_code.client_id, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.authorization_code.client_secret, finalAuthority: secretEnvironment, reloadClass: restartRequired, sensitivity: secret}
+  - {file: client.yml, path: oauth.token.authorization_code.redirect_uri, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.authorization_code.scope, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.refresh_token.uri, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.refresh_token.client_id, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.refresh_token.client_secret, finalAuthority: secretEnvironment, reloadClass: restartRequired, sensitivity: secret}
+  - {file: client.yml, path: oauth.token.refresh_token.scope, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.token_exchange.uri, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.token_exchange.client_id, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.token_exchange.client_secret, finalAuthority: secretEnvironment, reloadClass: restartRequired, sensitivity: secret}
+  - {file: client.yml, path: oauth.token.token_exchange.scope, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.token_exchange.subjectToken, finalAuthority: secretEnvironment, reloadClass: restartRequired, sensitivity: secret}
+  - {file: client.yml, path: oauth.token.token_exchange.subjectTokenType, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.token_exchange.requestedTokenType, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.token_exchange.audience, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: client.yml, path: oauth.token.key.server_url, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.key.serviceId, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: client.yml, path: oauth.token.key.uri, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.key.client_id, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.key.client_secret, finalAuthority: secretEnvironment, reloadClass: restartRequired, sensitivity: secret}
+  - {file: client.yml, path: oauth.token.key.serviceIdAuthServers, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: client.yml, path: oauth.token.key.enableHttp2, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.token.key.audience, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.sign.server_url, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.sign.serviceId, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.sign.uri, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.sign.timeout, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: client.yml, path: oauth.sign.client_id, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.sign.client_secret, finalAuthority: secretEnvironment, reloadClass: restartRequired, sensitivity: secret}
+  - {file: client.yml, path: oauth.sign.proxyHost, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.sign.proxyPort, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.sign.enableHttp2, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.sign.key.server_url, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.sign.key.serviceId, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.sign.key.uri, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.sign.key.client_id, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.sign.key.client_secret, finalAuthority: secretEnvironment, reloadClass: restartRequired, sensitivity: secret}
+  - {file: client.yml, path: oauth.sign.key.enableHttp2, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.sign.key.audience, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.deref.server_url, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.deref.serviceId, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.deref.uri, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.deref.client_id, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.deref.client_secret, finalAuthority: secretEnvironment, reloadClass: restartRequired, sensitivity: secret}
+  - {file: client.yml, path: oauth.deref.proxyHost, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.deref.proxyPort, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: oauth.deref.enableHttp2, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: pathPrefixServices, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: request.errorThreshold, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
   - {file: client.yml, path: request.connectTimeout, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
   - {file: client.yml, path: request.timeout, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: client.yml, path: request.resetTimeout, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: client.yml, path: request.injectOpenTracing, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: request.injectCallerId, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: request.enableHttp2, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: request.connectionPoolSize, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: client.yml, path: request.connectionExpireTime, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: client.yml, path: request.maxReqPerConn, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: client.yml, path: request.maxConnectionNumPerHost, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: client.yml, path: request.minConnectionNumPerHost, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: client.yml, path: request.maxRequestRetry, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: client.yml, path: request.requestRetryDelay, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: client.yml, path: request.poolMetricsEnabled, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: client.yml, path: request.poolWarmUpEnabled, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: client.yml, path: request.poolWarmUpSize, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: client.yml, path: request.healthCheckEnabled, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: client.yml, path: request.healthCheckIntervalMs, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
   - {file: workflow.yml, path: invocation.allowedCallerServiceIds, finalAuthority: configServer, reloadClass: reloadable, sensitivity: internal}
   - {file: workflow.yml, path: invocation.waitListenerConnections, finalAuthority: configServer, reloadClass: reloadable, sensitivity: public}
   - {file: workflow.yml, path: invocation.ignoreUserJwtExpiry, finalAuthority: configServer, reloadClass: reloadable, sensitivity: internal}
