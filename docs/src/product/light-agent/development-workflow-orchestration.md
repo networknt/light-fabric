@@ -11,6 +11,13 @@ worker, harness, model-routing, and authentication details are defined in
 
 ## Decision
 
+The companion [Shared Task Workspaces](shared-task-workspaces.md) design defines
+persistent multi-repository task worktrees, workspace-wide agent access, review
+of shared uncommitted changes, indexing, and task PRs targeting `develop` before
+release promotion to `master`. It adds a workspace execution mode alongside the
+immutable bundle path while retaining the lifecycle and trusted-action ownership
+defined here.
+
 Use a hybrid architecture:
 
 - `light-agent` owns interactive requirement collection and each bounded

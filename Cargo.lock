@@ -5061,6 +5061,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "light-workspace"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "task-workspace",
+ "tempfile",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7700,6 +7711,20 @@ dependencies = [
  "filetime",
  "libc",
  "xattr",
+]
+
+[[package]]
+name = "task-workspace"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "hex",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]

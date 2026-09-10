@@ -15,6 +15,11 @@ and GitHub issue lifecycle built on these workers is defined in
 
 ## Decision
 
+For the proposed persistent multi-repository input mode, see
+[Shared Task Workspaces](shared-task-workspaces.md). It defines runner-managed
+worktrees and shared implementation/review access without changing the existing
+bundle contract or making the adapter the workspace authority.
+
 Use `light-agent` as the durable enterprise agent authority and run each
 workspace-aware coding loop through `light-agent-worker` in a runner-managed
 sandbox.

@@ -90,6 +90,8 @@
   - [Workflow Coding Thread Lifecycle](product/light-agent-worker/workflow-thread-lifecycle.md)
   - [Worker Codex Upgrade Strategy](product/light-agent-worker/codex-upgrade-strategy.md)
   - [Development Workflow Orchestration](product/light-agent/development-workflow-orchestration.md)
+  - [Shared Task Workspaces](product/light-agent/shared-task-workspaces.md)
+    - [Local Workspace Runtime](product/light-agent/shared-task-workspaces-runtime.md)
   - [Deploy Native](product/light-agent/deploy-native.md)
   - [Deploy Kubernetes](product/light-agent/deploy-kubernetes.md)
 - [Light-Deployer](product/light-deployer.md)
