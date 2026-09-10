@@ -51,14 +51,16 @@ pub(crate) fn classify_request_head(
     config: ClassifierConfig<'_>,
     head: RequestHead<'_>,
 ) -> Result<Option<Classification>, ClassificationRejection> {
+    let method = head.method.to_ascii_uppercase();
+    // POST classification must see the body before choosing the revision-specific
+    // error envelope. classify_post still rejects every duplicate version header.
+    if method == "POST" {
+        return Ok(None);
+    }
     if head.protocol_versions.len() > 1 {
         return Err(ClassificationRejection::MultipleProtocolVersionHeaders);
     }
     let version = head.protocol_versions.first().copied();
-    let method = head.method.to_ascii_uppercase();
-    if method == "POST" {
-        return Ok(None);
-    }
     if version.is_some_and(is_known_stateless_version) {
         return Err(ClassificationRejection::MethodNotAllowed);
     }

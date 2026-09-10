@@ -17904,6 +17904,23 @@ toolMetadata:
         assert!(result.get("resultType").is_none());
     }
     #[tokio::test]
+    async fn duplicate_modern_version_headers_use_header_mismatch_envelope() {
+        let mut config = stateless_test_config(Vec::new());
+        config.protocols.stateless.enabled = true;
+        let runtime = McpRouterRuntime::new(config).unwrap();
+        let mut request = stateless_request("server/discover", json!({}), None);
+        request.headers.push((
+            MCP_PROTOCOL_VERSION_HEADER.into(),
+            STATELESS_PROTOCOL_VERSION.into(),
+        ));
+        let response = runtime.handle_request(request).await.unwrap().unwrap();
+        assert_eq!(response.status, 400);
+        let body: JsonValue = serde_json::from_slice(response.body.buffered().unwrap()).unwrap();
+        assert_eq!(body["error"]["code"], -32020);
+        assert_eq!(runtime.sessions.lock().await.len(), 0);
+    }
+
+    #[tokio::test]
     async fn march_batch_accepts_absent_version_header_but_rejects_conflicts() {
         for version in ["2025-03-26", "2025-06-18", "2025-11-25"] {
             for supplied in [
