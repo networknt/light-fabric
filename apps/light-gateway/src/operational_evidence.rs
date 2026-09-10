@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 pub const GATEWAY_EVIDENCE_FILE: &str = "gateway-evidence.yml";
 pub const GATEWAY_EVIDENCE_MODULE_ID: &str = "light-gateway/gateway-evidence";
-const GATEWAY_EVIDENCE_CONFIG_NAME: &str = "gatewayEvidence";
+const GATEWAY_EVIDENCE_CONFIG_NAME: &str = "gateway-evidence";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -281,7 +281,7 @@ fn validate_config(config: &GatewayEvidenceConfig) -> Result<(), RuntimeError> {
         || !config.binding_digest.starts_with("sha256:")
     {
         return Err(RuntimeError::Config(
-            "invalid enabled gatewayEvidence projection".into(),
+            "invalid enabled gateway-evidence projection".into(),
         ));
     }
     Ok(())
