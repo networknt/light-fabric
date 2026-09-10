@@ -34,9 +34,6 @@
     "client.verifyHostname": "false"
   },
   "portal-config-loc/all-in-lt/light-a2a-rust/config/client.yml": {},
-  "portal-config-loc/all-in-lt/light-agent-rust/config/client.yml": {
-    "client.verifyHostname": "false"
-  },
   "portal-config-loc/all-in-pg/light-agent-rust/config/client.yml": {
     "client.verifyHostname": "false"
   },
@@ -75,8 +72,5 @@
   "light-portal-install/demo-offer-decision-api-rust/config/client.yml": {
     "client.verifyHostname": "false"
   },
-  "light-portal-install/light-a2a-rust/config/client.yml": {},
-  "light-portal-install/light-agent-rust/config/client.yml": {
-    "client.verifyHostname": "false"
-  }
+  "light-portal-install/light-a2a-rust/config/client.yml": {}
 }

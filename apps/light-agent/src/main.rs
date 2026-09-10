@@ -2557,23 +2557,80 @@ enum ServerMessage {
     Error { message: String },
 }
 
-// Advertise configured UI capabilities only; durable turn admission remains authoritative.
+// Resolve and authorize client requests before any durable turn admission.
+fn resolve_client_turn(
+    message: &ClientMessage,
+    policy: Option<&light_agent::agent_config::AgentTurnPolicy>,
+) -> Result<RequestedProfile, String> {
+    let inferred = if message.coding.is_some() {
+        RequestedProfile::Coding
+    } else if message.edge_action.is_some() {
+        RequestedProfile::PersonalAssistant
+    } else {
+        RequestedProfile::Enterprise
+    };
+    let requested = message.profile.unwrap_or(inferred);
+    if requested != inferred || (message.coding.is_some() && message.edge_action.is_some()) {
+        return Err("Profile and typed execution payload do not match".into());
+    }
+    authorize_turn_type(requested, policy)?;
+    Ok(requested)
+}
+
+fn authorize_turn_type(
+    profile: RequestedProfile,
+    policy: Option<&light_agent::agent_config::AgentTurnPolicy>,
+) -> Result<(), String> {
+    let Some(policy) = policy else {
+        return Ok(());
+    };
+    let turn_type = match profile {
+        RequestedProfile::Enterprise => "chat",
+        RequestedProfile::Coding => "coding",
+        // This policy governs Chat/Coding only. Edge actions remain subject to
+        // personal-profile matching and schedule_edge_action's binding/approval checks.
+        RequestedProfile::PersonalAssistant => return Ok(()),
+    };
+    if policy.allowed_turn_types.iter().any(|t| t == turn_type) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Turn type '{turn_type}' is not allowed by this agent policy"
+        ))
+    }
+}
+
 fn chat_session_message(
     session_id: String,
     coding_profile_digest: Option<&str>,
     session_profile_digest: &str,
+    turn_policy: Option<&light_agent::agent_config::AgentTurnPolicy>,
 ) -> ServerMessage {
     let coding_configured =
         coding_profile_digest.is_some_and(|digest| digest == session_profile_digest);
+    let legacy_types = if coding_configured {
+        vec!["chat", "coding"]
+    } else {
+        vec!["chat"]
+    };
+    let turn_types: Vec<_> = legacy_types
+        .into_iter()
+        .filter(|t| {
+            turn_policy.is_none_or(|p| p.allowed_turn_types.iter().any(|allowed| allowed == t))
+        })
+        .collect();
+    let default_turn_type = turn_policy
+        .and_then(|p| {
+            turn_types
+                .iter()
+                .copied()
+                .find(|t| *t == p.default_turn_type)
+        })
+        .unwrap_or_else(|| turn_types.first().copied().unwrap_or(""));
     ServerMessage::Session {
         session_id,
-        turn_types: if coding_configured {
-            vec!["chat", "coding"]
-        } else {
-            vec!["chat"]
-        },
-        // A configured adapter does not authorize the next turn or imply a coding request.
-        default_turn_type: "chat",
+        turn_types,
+        default_turn_type,
     }
 }
 
@@ -2582,10 +2639,65 @@ mod chat_capability_tests {
     use super::chat_session_message;
 
     #[test]
+    fn explicit_turn_policies_preserve_typed_edge_requests_without_allowing_profile_spoofing() {
+        for types in [vec!["chat"], vec!["coding"], vec!["chat", "coding"]] {
+            let policy = light_agent::agent_config::AgentTurnPolicy {
+                allowed_turn_types: types.iter().map(|t| t.to_string()).collect(),
+                default_turn_type: types[0].into(),
+            };
+            for explicit_profile in [false, true] {
+                let mut request = serde_json::json!({"text": "edge task", "edgeAction": {
+                    "edgeBindingId": "01a05d30-0000-7000-8000-000000000001",
+                    "action": "test", "arguments": {}, "schemaDigest": "sha256:test"
+                }});
+                if explicit_profile {
+                    request["profile"] = serde_json::json!("personal-assistant");
+                }
+                let request: super::ClientMessage = serde_json::from_value(request).unwrap();
+                assert_eq!(
+                    super::resolve_client_turn(&request, Some(&policy)).unwrap(),
+                    super::RequestedProfile::PersonalAssistant
+                );
+            }
+            let spoof: super::ClientMessage = serde_json::from_value(serde_json::json!({
+                "text": "chat disguised as edge", "profile": "personal-assistant"
+            }))
+            .unwrap();
+            assert!(super::resolve_client_turn(&spoof, Some(&policy)).is_err());
+        }
+    }
+
+    #[test]
+    fn legacy_and_explicit_chat_requests_cannot_bypass_coding_only_policy() {
+        let policy = light_agent::agent_config::AgentTurnPolicy {
+            allowed_turn_types: vec!["coding".into()],
+            default_turn_type: "coding".into(),
+        };
+        for value in [
+            serde_json::json!({"text": "hello"}),
+            serde_json::json!({"text": "hello", "profile": "enterprise"}),
+            serde_json::json!({"text": "hello", "profile": "coding"}),
+        ] {
+            let request: super::ClientMessage = serde_json::from_value(value).unwrap();
+            assert!(super::resolve_client_turn(&request, Some(&policy)).is_err());
+        }
+        let request: super::ClientMessage =
+            serde_json::from_value(serde_json::json!({"text": "hello"})).unwrap();
+        assert_eq!(
+            super::resolve_client_turn(&request, None).unwrap(),
+            super::RequestedProfile::Enterprise
+        );
+    }
+
+    #[test]
     fn session_advertises_only_configured_turn_types() {
-        let chat =
-            serde_json::to_value(chat_session_message("session".into(), None, "chat-profile"))
-                .unwrap();
+        let chat = serde_json::to_value(chat_session_message(
+            "session".into(),
+            None,
+            "chat-profile",
+            None,
+        ))
+        .unwrap();
         assert_eq!(
             chat,
             serde_json::json!({
@@ -2596,6 +2708,7 @@ mod chat_capability_tests {
             "session".into(),
             Some("coding-profile"),
             "coding-profile",
+            None,
         ))
         .unwrap();
         assert_eq!(coding["turnTypes"], serde_json::json!(["chat", "coding"]));
@@ -2604,10 +2717,64 @@ mod chat_capability_tests {
             "session".into(),
             Some("coding-profile"),
             "personal-profile",
+            None,
         ))
         .unwrap();
         assert_eq!(personal["turnTypes"], serde_json::json!(["chat"]));
         assert_eq!(personal["defaultTurnType"], "chat");
+    }
+    #[test]
+    fn explicit_policy_controls_session_default_and_rejects_disallowed_profiles() {
+        use super::{RequestedProfile, authorize_turn_type};
+        use light_agent::agent_config::AgentTurnPolicy;
+        for (types, default) in [
+            (vec!["chat"], "chat"),
+            (vec!["coding"], "coding"),
+            (vec!["chat", "coding"], "coding"),
+        ] {
+            let policy = AgentTurnPolicy {
+                allowed_turn_types: types.iter().map(|t| t.to_string()).collect(),
+                default_turn_type: default.into(),
+            };
+            let message = serde_json::to_value(chat_session_message(
+                "session".into(),
+                Some("profile"),
+                "profile",
+                Some(&policy),
+            ))
+            .unwrap();
+            assert_eq!(message["turnTypes"], serde_json::json!(types));
+            assert_eq!(message["defaultTurnType"], default);
+            for (profile, name) in [
+                (RequestedProfile::Enterprise, "chat"),
+                (RequestedProfile::Coding, "coding"),
+            ] {
+                assert_eq!(
+                    authorize_turn_type(profile, Some(&policy)).is_ok(),
+                    types.contains(&name)
+                );
+            }
+            assert!(
+                authorize_turn_type(RequestedProfile::PersonalAssistant, Some(&policy)).is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn coding_only_never_falls_back_to_chat_on_profile_mismatch() {
+        let policy = light_agent::agent_config::AgentTurnPolicy {
+            allowed_turn_types: vec!["coding".into()],
+            default_turn_type: "coding".into(),
+        };
+        let message = serde_json::to_value(chat_session_message(
+            "session".into(),
+            Some("coding"),
+            "other",
+            Some(&policy),
+        ))
+        .unwrap();
+        assert_eq!(message["turnTypes"], serde_json::json!([]));
+        assert_eq!(message["defaultTurnType"], "");
     }
 }
 
@@ -3514,6 +3681,31 @@ async fn handle_socket(
 ) {
     let (mut sender, mut receiver) = socket.split();
     let session_id_string = session_id.to_string();
+    let session_message = chat_session_message(
+        session_id_string.clone(),
+        state
+            .coding_profile
+            .as_ref()
+            .map(|c| c.product_profile_digest.as_str()),
+        &state.policy_snapshot.product_profile_digest,
+        state
+            .agent_config
+            .agent_policy
+            .execution
+            .turn_policy
+            .as_ref(),
+    );
+    if matches!(&session_message, ServerMessage::Session { turn_types, .. } if turn_types.is_empty())
+    {
+        reject_session_initialization(
+            &mut sender,
+            "SESSION_CONFIGURATION_INVALID",
+            "Agent policy has no turn types compatible with this session",
+            1008,
+        )
+        .await;
+        return;
+    }
     let durable_policy = state.policy_snapshot.clone();
     let session_policy = &state.agent_config.agent_policy.session;
     let now = chrono::Utc::now();
@@ -3607,16 +3799,7 @@ async fn handle_socket(
 
     let _ = sender
         .send(Message::Text(
-            serde_json::to_string(&chat_session_message(
-                session_id_string.clone(),
-                state
-                    .coding_profile
-                    .as_ref()
-                    .map(|config| config.product_profile_digest.as_str()),
-                &state.policy_snapshot.product_profile_digest,
-            ))
-            .unwrap()
-            .into(),
+            serde_json::to_string(&session_message).unwrap().into(),
         ))
         .await;
 
@@ -3695,29 +3878,28 @@ async fn handle_socket(
                 continue;
             }
 
-            let inferred_profile = if client_msg.coding.is_some() {
-                RequestedProfile::Coding
-            } else if client_msg.edge_action.is_some() {
-                RequestedProfile::PersonalAssistant
-            } else {
-                RequestedProfile::Enterprise
+            // Reject disallowed explicit and inferred types before durable admission.
+            let requested_profile = match resolve_client_turn(
+                &client_msg,
+                state
+                    .agent_config
+                    .agent_policy
+                    .execution
+                    .turn_policy
+                    .as_ref(),
+            ) {
+                Ok(profile) => profile,
+                Err(message) => {
+                    let _ = sender
+                        .send(Message::Text(
+                            serde_json::to_string(&ServerMessage::Error { message })
+                                .unwrap()
+                                .into(),
+                        ))
+                        .await;
+                    continue;
+                }
             };
-            let requested_profile = client_msg.profile.unwrap_or(inferred_profile);
-            let profile_shape_valid = requested_profile == inferred_profile
-                && !(client_msg.coding.is_some() && client_msg.edge_action.is_some())
-                && (requested_profile != RequestedProfile::Coding || client_msg.coding.is_some());
-            if !profile_shape_valid {
-                let _ = sender
-                    .send(Message::Text(
-                        serde_json::to_string(&ServerMessage::Error {
-                            message: "Profile and typed execution payload do not match".into(),
-                        })
-                        .unwrap()
-                        .into(),
-                    ))
-                    .await;
-                continue;
-            }
 
             let user_text = client_msg.text.clone();
             let client_message_id = client_msg

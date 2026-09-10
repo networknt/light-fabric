@@ -112,6 +112,7 @@ agentPolicy:
     edgeRunnerBindings: ${agent.agentPolicy.execution.edgeRunnerBindings:[]}
     approvalRules: ${agent.agentPolicy.execution.approvalRules:[]}
     codingProfile: ${agent.agentPolicy.execution.codingProfile:{}}
+    turnPolicy: ${agent.agentPolicy.execution.turnPolicy:{}}
   catalog:
     cacheTtlSeconds: ${agent.agentPolicy.catalog.cacheTtlSeconds:60}
     staleOnErrorSeconds: ${agent.agentPolicy.catalog.staleOnErrorSeconds:300}

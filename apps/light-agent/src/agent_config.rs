@@ -286,6 +286,40 @@ pub struct AgentExecutionPolicy {
     pub approval_rules: Vec<Value>,
     #[serde(default, deserialize_with = "deserialize_optional_non_empty_map")]
     pub coding_profile: Option<CodingProfilePolicy>,
+    // Omit legacy absence from signed material; {} is the Config Server empty map.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_non_empty_map",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub turn_policy: Option<AgentTurnPolicy>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentTurnPolicy {
+    pub allowed_turn_types: Vec<String>,
+    pub default_turn_type: String,
+}
+
+impl AgentTurnPolicy {
+    pub fn validate(&self, coding_configured: bool) -> Result<(), String> {
+        if self.allowed_turn_types.is_empty()
+            || self
+                .allowed_turn_types
+                .iter()
+                .any(|t| t != "chat" && t != "coding")
+            || self.allowed_turn_types.iter().collect::<HashSet<_>>().len()
+                != self.allowed_turn_types.len()
+            || !self.allowed_turn_types.contains(&self.default_turn_type)
+        {
+            return Err("agentPolicy.execution.turnPolicy requires unique chat/coding allowedTurnTypes and a defaultTurnType in that set".into());
+        }
+        if self.allowed_turn_types.iter().any(|t| t == "coding") && !coding_configured {
+            return Err("agentPolicy.execution.turnPolicy coding requires codingProfile".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -591,6 +625,16 @@ impl AgentConfig {
                 || !skill.digest.starts_with("sha256:")
             {
                 return Err("agentPolicy.skills contains an invalid skill projection".to_string());
+            }
+        }
+        if let Some(turn_policy) = &policy.execution.turn_policy {
+            turn_policy.validate(policy.execution.coding_profile.is_some())?;
+            if turn_policy.allowed_turn_types.iter().any(|t| t == "coding")
+                && policy.execution.coding_profile.as_ref().is_some_and(|p| {
+                    p.product_profile_digest != policy.policy_snapshot.product_profile_digest
+                })
+            {
+                return Err("agentPolicy.execution.turnPolicy coding requires a matching product profile digest".into());
             }
         }
         if policy.model.provider != "gateway" {
@@ -1008,6 +1052,31 @@ mod tests {
     }
 
     #[test]
+    fn turn_policy_rejects_invalid_types_defaults_and_missing_coding_profile() {
+        for value in [
+            serde_json::json!({"allowedTurnTypes": [], "defaultTurnType": "chat"}),
+            serde_json::json!({"allowedTurnTypes": ["chat", "chat"], "defaultTurnType": "chat"}),
+            serde_json::json!({"allowedTurnTypes": ["other"], "defaultTurnType": "other"}),
+            serde_json::json!({"allowedTurnTypes": ["coding"], "defaultTurnType": "chat"}),
+        ] {
+            let p: AgentTurnPolicy = serde_json::from_value(value).unwrap();
+            assert!(p.validate(true).is_err());
+        }
+        let p: AgentTurnPolicy = serde_json::from_value(serde_json::json!({
+            "allowedTurnTypes": ["coding"], "defaultTurnType": "coding"
+        }))
+        .unwrap();
+        assert!(p.validate(false).is_err());
+        assert!(p.validate(true).is_ok());
+        assert!(
+            serde_json::from_value::<AgentTurnPolicy>(serde_json::json!({
+                "allowedTurnTypes": ["chat"], "defaultTurnType": "chat", "unknown": true
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn java_portal_flattened_empty_values_preserve_digest_contract() {
         let fixture = r#"{"agentDefId":"019d82bf-ab5e-791a-885c-d08aafa2b614","policySnapshot":{"snapshotId":"01a05d30-0000-7000-8000-000000000002","definitionDigest":"sha256:be35b6d853200d676a398e2f3ce8f58dc0f464a7c124ef0051c45d43753e65a1","productProfileDigest":"sha256:21be0163c81abd92121c99dddc95d0ac7d78647fe8f78172c1655a76e143bc31","modelDigest":"sha256:bd845e5a18e7c20041c25c6539c497f41ce27533de12e02f3b22000bf2d23cb2","catalogDigest":"sha256:0335a42d3d5fb9fd161ae19413e00e4421d8cca3e8e9f0be6978860f9e98677a","memoryDigest":"sha256:f03b2d6941c243aa01e80e685fef205d54961742ae5735579c0b2287077a383a","executionDigest":"sha256:13e1f4b064bd36177be2126f08278d08170f7f9887800dc5f68e2df9116a990c","channelDigest":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","dataBoundaryDigest":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","tools":{}},"session":{"idleSeconds":3600,"maximumSeconds":86400,"maximumActiveSessions":1,"maximumQueuedTurns":100},"memory":{"writeMode":"operational","personalProfileDigest":"","rules":{}},"model":{"provider":"gateway","alias":"assistant-dev","temperature":0.7,"maximumTokens":1000000,"gateway":{"name":"llm-gateway","baseUrl":"https://llm-gateway:8443/v1"}},"definitionVersion":2,"dataBoundary":{},"knowledge":{"endpoint":"","allowPrivatePlaintext":false,"bindings":[],"retrieval":{"topK":5,"tokenBudget":2000,"filters":{}}},"skills":[],"gatewayDelegation":{},"execution":{"maximumTurnSeconds":120,"maximumModelCalls":10,"maximumActionCalls":20,"maximumUserMessageBytes":65536,"maximumToolArgumentBytes":65536,"maximumToolOutputBytes":65536,"maximumGatewayResponseBytes":1048576,"maximumResponseBytes":65536,"maximumOutputDepth":16,"maximumOutputItems":1024,"maximumTurnTokens":1000000,"executionApiUrl":"https://controller:8438/","quotaPolicies":[],"modelRates":[],"servicePools":[],"edgeRunnerBindings":[],"approvalRules":[],"codingProfile":{}},"prompt":{"system":"Account Agent"},"channel":{},"catalog":{"cacheTtlSeconds":60,"staleOnErrorSeconds":300,"effectiveCatalog":{}}}"#;
         let policy: AgentPolicy =
@@ -1142,6 +1211,7 @@ mod tests {
                 edge_runner_bindings: vec![],
                 approval_rules: vec![],
                 coding_profile: None,
+                turn_policy: None,
             },
             catalog: AgentCatalogPolicy {
                 cache_ttl_seconds: 60,
